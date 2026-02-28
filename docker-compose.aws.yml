@@ -1,0 +1,49 @@
+# Docker Compose for AWS Deployment
+# Uses AWS default profile credentials
+
+version: '3.8'
+
+services:
+  ignite-platform:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - AWS_PROFILE=jamesventure
+      - AWS_REGION=us-east-1
+      - DATABASE_URL=postgres://ignite:ignite@db:5432/ignite?sslmode=disable
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ignite-data:/app/data
+    depends_on:
+      - db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=ignite
+      - POSTGRES_PASSWORD=ignite
+      - POSTGRES_DB=ignite
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # Optional: Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  ignite-data:
+  postgres-data:

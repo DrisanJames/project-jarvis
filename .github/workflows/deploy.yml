@@ -1,0 +1,151 @@
+name: Build & Deploy to ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: ignite-upside-down
+  ECS_CLUSTER: apex-cluster
+  ECS_SERVICE: ignite-service
+  TASK_FAMILY: ignite-upside-down
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cross-compile Go binary
+        run: |
+          mkdir -p build
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/server ./cmd/server/
+
+      - name: Build React frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Generate production config
+        run: |
+          cp config/config.example.yaml config/config.yaml
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Register new ECS task definition
+        id: task-def
+        env:
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          cat > task-def.json << TASKEOF
+          {
+            "family": "${{ env.TASK_FAMILY }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "512",
+            "memory": "1024",
+            "executionRoleArn": "arn:aws:iam::146361001621:role/apex-ecs-execution-role",
+            "taskRoleArn": "arn:aws:iam::146361001621:role/apex-ecs-task-role",
+            "containerDefinitions": [
+              {
+                "name": "ignite-server",
+                "image": "${IMAGE}",
+                "essential": true,
+                "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
+                "environment": [
+                  {"name": "DATABASE_URL", "value": "${{ secrets.DATABASE_URL }}"},
+                  {"name": "REDIS_URL", "value": "${{ secrets.REDIS_URL }}"},
+                  {"name": "GOOGLE_CLIENT_ID", "value": "${{ secrets.GOOGLE_CLIENT_ID }}"},
+                  {"name": "GOOGLE_CLIENT_SECRET", "value": "${{ secrets.GOOGLE_CLIENT_SECRET }}"},
+                  {"name": "SESSION_SECRET", "value": "${{ secrets.SESSION_SECRET }}"},
+                  {"name": "AUTH_ALLOWED_DOMAIN", "value": "jamesventurescorp.com"},
+                  {"name": "AUTH_BASE_URL", "value": "https://projectjarvis.io"},
+                  {"name": "DATANORM_S3_BUCKET", "value": "jvc-email-data"},
+                  {"name": "DATANORM_S3_REGION", "value": "us-east-2"},
+                  {"name": "AWS_REGION", "value": "us-west-2"},
+                  {"name": "ENVIRONMENT", "value": "production"}
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/ignite-upside-down",
+                    "awslogs-region": "us-west-2",
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                }
+              }
+            ]
+          }
+          TASKEOF
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Create or update ECS service
+        env:
+          TASK_DEF_ARN: ${{ steps.task-def.outputs.task_def_arn }}
+        run: |
+          SERVICE_EXISTS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query 'services[?status==`ACTIVE`].serviceName' --output text 2>/dev/null || true)
+          if [ -z "$SERVICE_EXISTS" ]; then
+            echo "Creating new ECS service..."
+            aws ecs create-service \
+              --cluster $ECS_CLUSTER \
+              --service-name $ECS_SERVICE \
+              --task-definition $TASK_DEF_ARN \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[subnet-06b263d3ff15bc126,subnet-0b34236379abe1b57,subnet-0620259e81b20cf7f],securityGroups=[sg-0c423b3225f0c9479],assignPublicIp=ENABLED}" \
+              --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:us-west-2:146361001621:targetgroup/ignite-tg/1b54a22da9086ffb,containerName=ignite-server,containerPort=8080"
+          else
+            echo "Updating existing ECS service..."
+            aws ecs update-service \
+              --cluster $ECS_CLUSTER \
+              --service $ECS_SERVICE \
+              --task-definition $TASK_DEF_ARN \
+              --force-new-deployment
+          fi
+
+      - name: Wait for service stability
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE || echo "Timed out waiting — check AWS console"

@@ -1,0 +1,207 @@
+/* =============================================================================
+   SEARCHABLE MULTI-SELECT COMPONENT
+   Modern, scalable selection UI for segments and suppression lists
+   ============================================================================= */
+
+.searchable-multi-select {
+  width: 100%;
+}
+
+/* Label */
+.sms-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #2d3748;
+  margin-bottom: 8px;
+}
+
+.sms-label-icon {
+  color: #667eea;
+  font-size: 0.85rem;
+}
+
+.sms-create-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #667eea;
+  color: #667eea;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.sms-create-btn:hover {
+  background: #667eea;
+  color: #fff;
+}
+
+/* Empty State */
+.sms-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: #fffaf0;
+  border: 1px solid #fbd38d;
+  border-radius: 10px;
+  color: #c05621;
+  font-size: 0.9rem;
+}
+
+.sms-empty svg {
+  font-size: 1rem;
+}
+
+/* Estimate Bar */
+.sms-estimate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #667eea10, #764ba210);
+  border: 1px solid #667eea30;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #553c9a;
+  font-weight: 500;
+}
+
+.sms-estimate svg {
+  color: #667eea;
+}
+
+/* Option Styling */
+.sms-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.sms-option-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sms-option-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.sms-option-lock {
+  color: #c53030;
+  font-size: 0.75rem;
+}
+
+.sms-option-star {
+  color: #d69e2e;
+  font-size: 0.75rem;
+}
+
+.sms-option-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sms-option-required {
+  background: #fed7d7;
+  color: #c53030;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sms-option-count {
+  font-size: 0.8rem;
+  color: #718096;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.sms-option-check {
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+/* Multi-value Tags */
+.sms-tag-content {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sms-tag-lock {
+  font-size: 0.65rem;
+  margin-right: 2px;
+}
+
+.sms-tag-count {
+  font-size: 0.75rem;
+  color: #718096;
+  margin-left: 2px;
+}
+
+/* Group Headers */
+.searchable-multi-select [class*="-group"] {
+  padding: 0;
+}
+
+.searchable-multi-select [class*="-groupHeading"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 12px 6px;
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.searchable-multi-select [class*="-group"]:first-of-type [class*="-groupHeading"] {
+  border-top: none;
+  margin-top: 0;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sms-label {
+    flex-wrap: wrap;
+  }
+  
+  .sms-create-btn {
+    margin-left: 0;
+    margin-top: 8px;
+    width: 100%;
+  }
+}
+
+/* Animations */
+@keyframes sms-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.searchable-multi-select [class*="-menu"] {
+  animation: sms-fade-in 0.15s ease-out;
+}

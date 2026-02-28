@@ -1,0 +1,140 @@
+# Project Jarvis Configuration
+# Copy to config.yaml and fill in values, or set environment variables.
+server:
+  port: 8080
+  host: "localhost"
+
+sparkpost:
+  api_key: ""          # SPARKPOST_API_KEY
+  base_url: "https://api.sparkpost.com/api/v1"
+  timeout_seconds: 30
+
+mailgun:
+  api_key: ""          # MAILGUN_API_KEY
+  base_url: "https://api.mailgun.net"
+  timeout_seconds: 30
+  enabled: false
+  domains: []
+
+ses:
+  region: "us-west-2"
+  access_key: ""       # AWS_SES_ACCESS_KEY
+  secret_key: ""       # AWS_SES_SECRET_KEY
+  timeout_seconds: 30
+  enabled: false
+  isps:
+    - "Att"
+    - "Yahoo"
+    - "Gmail"
+    - "Hotmail"
+    - "Aol"
+    - "Icloud"
+    - "Cox"
+    - "WP"
+
+ongage:
+  base_url: ""         # ONGAGE_BASE_URL
+  username: ""         # ONGAGE_USERNAME
+  password: ""         # ONGAGE_PASSWORD
+  account_code: ""     # ONGAGE_ACCOUNT_CODE
+  list_id: ""
+  timeout_seconds: 60
+  enabled: false
+  lookback_days: 30
+
+everflow:
+  api_key: ""          # EVERFLOW_API_KEY
+  base_url: "https://api.eflow.team"
+  timezone_id: 90
+  currency_id: "USD"
+  enabled: false
+  lookback_days: 30
+  affiliate_ids: []
+
+openai:
+  api_key: ""          # OPENAI_API_KEY
+  model: "gpt-4o"
+  enabled: false
+
+azure:
+  connection_string: ""  # AZURE_CONNECTION_STRING
+  table_name: ""
+  gap_threshold_hours: 24
+  enabled: false
+
+snowflake:
+  connection_string: ""
+  account: ""
+  user: ""
+  password: ""
+  database: ""
+  schema: ""
+  warehouse: ""
+  enabled: false
+
+polling:
+  interval_seconds: 60
+  historical_days: 30
+  analysis_window_days: 7
+
+storage:
+  type: "aws"
+  local_path: "./data"
+  s3_bucket: ""
+  dynamodb_table: ""
+  aws_region: "us-east-1"
+  aws_profile: "default"
+
+kanban:
+  enabled: false
+  max_active_tasks: 20
+  max_new_tasks_per_run: 3
+  ai_run_interval_mins: 60
+
+agent:
+  baseline_recalc_hours: 24
+  correlation_recalc_hours: 168
+  anomaly_sigma: 2.0
+  min_data_points: 100
+
+fallback_thresholds:
+  complaint_rate_warning: 0.0003
+  complaint_rate_critical: 0.0005
+  bounce_rate_warning: 0.03
+  bounce_rate_critical: 0.05
+  block_rate_warning: 0.003
+  block_rate_critical: 0.005
+
+esp_contracts: []
+
+revenue_model:
+  enabled: false
+
+ip_pools: {}
+
+auth:
+  enabled: true
+  google_client_id: ""        # GOOGLE_CLIENT_ID
+  google_client_secret: ""    # GOOGLE_CLIENT_SECRET
+  allowed_domain: "jamesventurescorp.com"
+  session_secret: ""          # SESSION_SECRET
+  cookie_name: "ignite_session"
+  cookie_max_age: 86400
+
+ovhcloud:
+  endpoint: "ovh-us"
+  application_key: ""
+  application_secret: ""
+  consumer_key: ""
+
+datanorm:
+  enabled: true
+  s3_bucket: "jvc-email-data"
+  s3_region: "us-east-2"
+  aws_profile: ""     # Empty on ECS (uses IAM role)
+  interval_minutes: 5
+  default_list_id: "00000000-0000-0000-0000-000000000001"
+
+mailing:
+  enabled: true
+  database_url: ""    # DATABASE_URL

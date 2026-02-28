@@ -1,0 +1,54 @@
+# Dependencies & build artifacts
+web/node_modules
+# web/dist included for production image
+web/.vite
+node_modules
+
+# Git
+.git
+.gitignore
+
+# IDE
+.cursor
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yml
+Dockerfile.*
+docker/
+
+# CI/CD
+.github
+
+# Test & dev files
+scripts/
+*_test.go
+**/*_test.go
+*.test
+coverage.out
+
+# Documentation
+*.md
+LICENSE
+REFACTORING_PLAN.md
+
+# Env files (secrets — never bake into image)
+.env
+.env.*
+
+# Data
+data/
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# SSL certs
+ssl/

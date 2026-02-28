@@ -1,0 +1,50 @@
+{
+    "family": "ignite-upside-down-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "512",
+    "memory": "1024",
+    "executionRoleArn": "arn:aws:iam::146361001621:role/ignite-upside-down-exec-role",
+    "taskRoleArn": "arn:aws:iam::146361001621:role/ignite-upside-down-task-role",
+    "containerDefinitions": [
+        {
+            "name": "ignite-api",
+            "image": "146361001621.dkr.ecr.us-east-1.amazonaws.com/ignite-upside-down:latest",
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "hostPort": 8080,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {"name": "PORT", "value": "8080"},
+                {"name": "ENV", "value": "production"},
+                {"name": "AWS_REGION", "value": "us-east-1"},
+                {"name": "DATABASE_URL", "value": "postgres://ignite:Ign1t3Esp2026!@ignite-postgres.cmp62462ub9o.us-east-1.rds.amazonaws.com:5432/ignite?sslmode=require"},
+                {"name": "REDIS_URL", "value": "redis://ignite-redis.j32tmb.0001.use1.cache.amazonaws.com:6379"},
+                {"name": "IGNITE_S3_BUCKET", "value": "ignite-esp-146361001621"},
+                {"name": "IGNITE_S3_PREFIX", "value": "ignite/knowledge/"},
+                {"name": "TRACKING_URL", "value": "http://ignite-upside-down-alb-349670800.us-east-1.elb.amazonaws.com"},
+                {"name": "TRACKING_SECRET", "value": "ignite-tracking-prod-2026"},
+                {"name": "DEV_MODE", "value": "false"}
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/ignite-upside-down",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "api"
+                }
+            },
+            "healthCheck": {
+                "command": ["CMD-SHELL", "wget -q --spider http://localhost:8080/health/live || exit 1"],
+                "interval": 30,
+                "timeout": 10,
+                "retries": 5,
+                "startPeriod": 180
+            }
+        }
+    ]
+}

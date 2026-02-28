@@ -1,0 +1,962 @@
+/* ============================================================================
+   InjectionAnalytics.css
+   Enterprise-grade stock-market style injection analytics dashboard
+   All classes prefixed with .ia- (injection analytics)
+   ============================================================================ */
+
+/* ── Layout ── */
+.ia-container {
+  padding: 1.5rem;
+  background: #0a0e17;
+  min-height: 100vh;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  animation: ia-fadeIn 0.4s ease-out;
+}
+
+/* ── Header ── */
+.ia-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.ia-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ia-header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+
+.ia-header-title svg {
+  color: #3b82f6;
+  font-size: 1.25rem;
+}
+
+.ia-header-subtitle {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin: 0;
+  padding-left: 2.25rem;
+}
+
+.ia-header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.ia-last-updated {
+  font-size: 0.7rem;
+  color: #475569;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  white-space: nowrap;
+}
+
+/* ── Range Selector ── */
+.ia-range-selector {
+  display: flex;
+  gap: 2px;
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.ia-range-pill {
+  padding: 0.35rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  letter-spacing: 0.03em;
+}
+
+.ia-range-pill:hover {
+  color: #94a3b8;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.ia-range-pill.active {
+  background: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4), 0 0 4px rgba(59, 130, 246, 0.2);
+}
+
+/* ── Auto-Refresh Toggle ── */
+.ia-auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ia-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: #1e293b;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.ia-toggle.on {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: #3b82f6;
+}
+
+.ia-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #475569;
+  transition: all 0.3s ease;
+}
+
+.ia-toggle.on .ia-toggle-knob {
+  left: 18px;
+  background: #3b82f6;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.5);
+}
+
+/* ── Ticker Strip ── */
+.ia-ticker-strip {
+  display: flex;
+  gap: 1px;
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 0.75rem 0;
+  margin-bottom: 1.5rem;
+  overflow-x: auto;
+  animation: ia-slideUp 0.5s ease-out 0.1s both;
+}
+
+.ia-ticker-strip::-webkit-scrollbar {
+  height: 0;
+  display: none;
+}
+
+.ia-ticker-item {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 1rem;
+  border-right: 1px solid #1e293b;
+  transition: background 0.3s ease;
+}
+
+.ia-ticker-item:last-child {
+  border-right: none;
+}
+
+.ia-ticker-item:hover {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.ia-ticker-label {
+  font-size: 0.65rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.ia-ticker-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+
+.ia-ticker-change {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.ia-ticker-change.positive {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.ia-ticker-change.negative {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ia-ticker-change.neutral {
+  color: #64748b;
+  background: rgba(100, 116, 139, 0.1);
+}
+
+/* Pulse animation for active ticker items */
+.ia-ticker-item.flash-green {
+  animation: ia-flashGreen 1s ease-out;
+}
+
+.ia-ticker-item.flash-red {
+  animation: ia-flashRed 1s ease-out;
+}
+
+/* ── Charts ── */
+.ia-chart-section {
+  margin-bottom: 1.5rem;
+  animation: ia-slideUp 0.5s ease-out 0.2s both;
+}
+
+.ia-big-board {
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.ia-big-board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.ia-big-board-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ia-big-board-title svg {
+  color: #3b82f6;
+  font-size: 0.875rem;
+}
+
+.ia-chart-legend-custom {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.ia-chart-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: #94a3b8;
+}
+
+.ia-chart-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ia-chart-legend-line {
+  width: 16px;
+  height: 2px;
+  display: inline-block;
+  border-radius: 1px;
+}
+
+.ia-chart-legend-line.dashed {
+  background: repeating-linear-gradient(
+    90deg,
+    currentColor 0px,
+    currentColor 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  height: 2px;
+}
+
+.ia-secondary-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  animation: ia-slideUp 0.5s ease-out 0.3s both;
+}
+
+.ia-chart-card {
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.ia-chart-card-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ia-chart-card-title svg {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+/* ── Stats Cards Row ── */
+.ia-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  animation: ia-slideUp 0.5s ease-out 0.35s both;
+}
+
+.ia-stat-card {
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.ia-stat-card:hover {
+  border-color: #334155;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.ia-stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+
+.ia-stat-card.peak::before {
+  background: linear-gradient(90deg, #10b981, transparent);
+}
+
+.ia-stat-card.low::before {
+  background: linear-gradient(90deg, #ef4444, transparent);
+}
+
+.ia-stat-card.volatility::before {
+  background: linear-gradient(90deg, #f59e0b, transparent);
+}
+
+.ia-stat-card.revenue::before {
+  background: linear-gradient(90deg, #8b5cf6, transparent);
+}
+
+.ia-stat-card-label {
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ia-stat-card-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+
+.ia-stat-card-sub {
+  font-size: 0.7rem;
+  color: #475569;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.ia-stat-badge {
+  display: inline-flex;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  width: fit-content;
+}
+
+.ia-stat-badge.stable {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.ia-stat-badge.moderate {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.ia-stat-badge.volatile {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.ia-stat-badge.highly-volatile {
+  background: rgba(239, 68, 68, 0.25);
+  color: #ef4444;
+}
+
+/* ── Tables ── */
+.ia-table-section {
+  margin-bottom: 1.5rem;
+  animation: ia-slideUp 0.5s ease-out 0.4s both;
+}
+
+.ia-table-container {
+  background: #131825;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ia-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #1e293b;
+}
+
+.ia-table-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ia-table-title svg {
+  color: #3b82f6;
+  font-size: 0.8rem;
+}
+
+.ia-table-scroll {
+  overflow-x: auto;
+}
+
+.ia-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.ia-table thead th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid #1e293b;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.ia-table thead th:hover {
+  color: #94a3b8;
+}
+
+.ia-table thead th.sorted {
+  color: #3b82f6;
+}
+
+.ia-table thead th .ia-sort-icon {
+  margin-left: 0.35rem;
+  font-size: 0.6rem;
+  opacity: 0.5;
+}
+
+.ia-table thead th.sorted .ia-sort-icon {
+  opacity: 1;
+}
+
+.ia-table tbody tr {
+  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+  transition: background 0.2s ease;
+}
+
+.ia-table tbody tr:nth-child(even) {
+  background: rgba(19, 24, 37, 0.5);
+}
+
+.ia-table tbody tr:hover {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.ia-table tbody td {
+  padding: 0.7rem 1rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.75rem;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.ia-table tbody td.ia-text-cell {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+/* Volume bar inside table cells */
+.ia-volume-bar-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ia-volume-bar {
+  height: 6px;
+  background: #1e293b;
+  border-radius: 3px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 40px;
+  max-width: 80px;
+}
+
+.ia-volume-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  transition: width 0.5s ease;
+}
+
+/* Rate coloring */
+.ia-rate.good {
+  color: #10b981;
+}
+
+.ia-rate.warning {
+  color: #f59e0b;
+}
+
+.ia-rate.bad {
+  color: #ef4444;
+}
+
+/* Trend indicator */
+.ia-trend-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.ia-trend-indicator.up {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.ia-trend-indicator.down {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ia-trend-indicator.flat {
+  color: #64748b;
+  background: rgba(100, 116, 139, 0.1);
+}
+
+/* ── Loading Skeleton ── */
+.ia-skeleton {
+  background: linear-gradient(
+    90deg,
+    #131825 25%,
+    #1e293b 50%,
+    #131825 75%
+  );
+  background-size: 200% 100%;
+  animation: ia-shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+
+.ia-skeleton-header {
+  height: 60px;
+  margin-bottom: 1.5rem;
+}
+
+.ia-skeleton-ticker {
+  height: 80px;
+  margin-bottom: 1.5rem;
+  border-radius: 10px;
+}
+
+.ia-skeleton-chart {
+  height: 400px;
+  margin-bottom: 1.5rem;
+  border-radius: 12px;
+}
+
+.ia-skeleton-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.ia-skeleton-card {
+  height: 280px;
+  border-radius: 12px;
+}
+
+.ia-skeleton-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.ia-skeleton-stat {
+  height: 120px;
+  border-radius: 12px;
+}
+
+.ia-skeleton-table {
+  height: 320px;
+  border-radius: 12px;
+  margin-bottom: 1.5rem;
+}
+
+/* ── Error State ── */
+.ia-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+  gap: 1rem;
+}
+
+.ia-error-icon {
+  font-size: 2.5rem;
+  color: #ef4444;
+  opacity: 0.7;
+}
+
+.ia-error-message {
+  font-size: 1rem;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.ia-error-retry {
+  padding: 0.5rem 1.5rem;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ia-error-retry:hover {
+  background: #2563eb;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+}
+
+/* ── Empty State ── */
+.ia-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+  gap: 0.75rem;
+  color: #475569;
+}
+
+.ia-empty-icon {
+  font-size: 2rem;
+  opacity: 0.5;
+}
+
+/* ── Custom Recharts Tooltip ── */
+.ia-tooltip {
+  background: #1a2035 !important;
+  border: 1px solid #2d3a52 !important;
+  border-radius: 10px !important;
+  padding: 0.875rem 1rem !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5) !important;
+  min-width: 200px;
+}
+
+.ia-tooltip-date {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #2d3a52;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.ia-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.2rem 0;
+}
+
+.ia-tooltip-label {
+  font-size: 0.7rem;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ia-tooltip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ia-tooltip-value {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* ── Section dividers ── */
+.ia-section-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.75rem;
+  padding-left: 0.25rem;
+}
+
+/* ── Animations ── */
+@keyframes ia-fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ia-slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ia-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes ia-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes ia-flashGreen {
+  0% {
+    background: rgba(16, 185, 129, 0.15);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes ia-flashRed {
+  0% {
+    background: rgba(239, 68, 68, 0.15);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes ia-tickerSlide {
+  0% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+/* ── Recharts Overrides ── */
+.ia-container .recharts-cartesian-grid-horizontal line,
+.ia-container .recharts-cartesian-grid-vertical line {
+  stroke: #1e293b;
+  stroke-opacity: 0.6;
+}
+
+.ia-container .recharts-text {
+  fill: #64748b;
+  font-size: 0.65rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.ia-container .recharts-legend-item-text {
+  color: #94a3b8 !important;
+  font-size: 0.7rem !important;
+}
+
+.ia-container .recharts-brush-slide {
+  fill: rgba(59, 130, 246, 0.15);
+  stroke: #3b82f6;
+}
+
+.ia-container .recharts-brush-traveller rect {
+  fill: #3b82f6;
+  rx: 3;
+}
+
+.ia-container .recharts-brush rect:first-child {
+  fill: #131825;
+  stroke: #1e293b;
+}
+
+.ia-container .recharts-reference-line line {
+  stroke-dasharray: 6 4;
+}
+
+/* ── Responsive ── */
+@media (max-width: 1200px) {
+  .ia-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ia-secondary-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .ia-container {
+    padding: 1rem;
+  }
+
+  .ia-header {
+    flex-direction: column;
+  }
+
+  .ia-stats-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-ticker-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .ia-ticker-item {
+    min-width: 120px;
+  }
+
+  .ia-skeleton-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-skeleton-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-table tbody td,
+  .ia-table thead th {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.7rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .ia-header-title {
+    font-size: 1.2rem;
+  }
+
+  .ia-range-pill {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.65rem;
+  }
+
+  .ia-stat-card-value {
+    font-size: 1.2rem;
+  }
+}

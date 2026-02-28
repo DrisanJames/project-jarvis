@@ -1,0 +1,281 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Analytics Center – Comprehensive Mail & AI Analytics
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ac-container { min-height: 100vh; background: #0a0a1a; color: #e0e0e0; padding: 28px 32px; }
+
+/* ─── Header ────────────────────────────────────────────────────────────── */
+.ac-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
+.ac-header-left { display: flex; align-items: center; gap: 16px; }
+.ac-header-icon { width: 52px; height: 52px; border-radius: 16px; background: linear-gradient(135deg, #3b82f6, #6366f1); display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; flex-shrink: 0; }
+.ac-header h1 { margin: 0; font-size: 26px; font-weight: 700; color: #fff; }
+.ac-header p { margin: 4px 0 0; font-size: 14px; color: #8b8fa3; }
+.ac-header-right { display: flex; align-items: center; gap: 12px; }
+
+.ac-range-selector { display: flex; background: #111128; border: 1px solid #1e1e3a; border-radius: 10px; overflow: hidden; }
+.ac-range-selector button { padding: 8px 16px; background: none; border: none; color: #6b7280; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+.ac-range-selector button:hover { color: #c0c4d0; }
+.ac-range-selector button.active { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
+
+.ac-refresh-btn { background: rgba(59, 130, 246, 0.12); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.25); padding: 8px 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; font-family: inherit; }
+.ac-refresh-btn:hover:not(:disabled) { background: rgba(59, 130, 246, 0.2); }
+.ac-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ac-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px; color: #6b7280; }
+.ac-loading p { margin: 16px 0 0; }
+
+/* ─── KPI Hero Cards ────────────────────────────────────────────────────── */
+.ac-kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 24px; }
+.ac-kpi { background: #111128; border: 1px solid #1e1e3a; border-radius: 14px; padding: 18px; display: flex; align-items: center; gap: 14px; transition: all 0.2s; }
+.ac-kpi:hover { border-color: #2d2d5a; transform: translateY(-1px); }
+.ac-kpi-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.ac-kpi.sent .ac-kpi-icon { background: rgba(59, 130, 246, 0.12); color: #60a5fa; }
+.ac-kpi.opens .ac-kpi-icon { background: rgba(16, 185, 129, 0.12); color: #34d399; }
+.ac-kpi.clicks .ac-kpi-icon { background: rgba(245, 158, 11, 0.12); color: #fbbf24; }
+.ac-kpi.revenue .ac-kpi-icon { background: rgba(139, 92, 246, 0.12); color: #a78bfa; }
+.ac-kpi.bounces .ac-kpi-icon { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+.ac-kpi.complaints .ac-kpi-icon { background: rgba(236, 72, 153, 0.12); color: #f472b6; }
+.ac-kpi-body { display: flex; flex-direction: column; min-width: 0; }
+.ac-kpi-value { font-size: 22px; font-weight: 700; color: #fff; line-height: 1.1; }
+.ac-kpi-label { font-size: 11px; color: #6b7280; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; }
+.ac-kpi-sub { font-size: 11px; color: #4b5563; margin-top: 1px; }
+
+/* ─── Two-Column Layout ─────────────────────────────────────────────────── */
+.ac-two-col { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 20px; }
+.ac-col-left, .ac-col-right { display: flex; flex-direction: column; gap: 20px; }
+
+/* ─── Generic Card ──────────────────────────────────────────────────────── */
+.ac-card { background: #111128; border: 1px solid #1e1e3a; border-radius: 14px; padding: 20px; }
+.ac-card h3 { margin: 0 0 16px; font-size: 14px; font-weight: 600; color: #c0c4d0; display: flex; align-items: center; gap: 8px; }
+.ac-card h3 svg { color: #818cf8; font-size: 14px; }
+.ac-empty-mini { text-align: center; padding: 24px; color: #4b5563; font-size: 13px; }
+
+/* ─── Daily Trend Chart ─────────────────────────────────────────────────── */
+.ac-trend-chart { display: flex; flex-direction: column; gap: 10px; }
+.ac-trend-bars { display: flex; gap: 2px; align-items: flex-end; height: 140px; }
+.ac-trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; }
+.ac-bar-wrap { flex: 1; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; align-items: center; }
+.ac-bar { width: 80%; max-width: 20px; border-radius: 3px 3px 0 0; min-height: 2px; transition: height 0.3s; }
+.ac-bar-sent { background: linear-gradient(180deg, #3b82f6, #1d4ed8); }
+.ac-bar-opens { background: linear-gradient(180deg, #10b981, #059669); }
+.ac-trend-label { font-size: 8px; color: #4b5563; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30px; }
+.ac-trend-legend { display: flex; gap: 16px; font-size: 11px; color: #6b7280; }
+.ac-legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.ac-dot-sent { background: #3b82f6; }
+.ac-dot-opens { background: #10b981; }
+
+/* ─── Campaign Performance Table ────────────────────────────────────────── */
+.ac-table-wrap { overflow-x: auto; }
+.ac-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ac-table th { text-align: left; padding: 8px 10px; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; border-bottom: 1px solid #1e1e3a; white-space: nowrap; }
+.ac-table td { padding: 10px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); color: #c0c4d0; }
+.ac-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+.ac-camp-name { display: flex; align-items: center; gap: 8px; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.ac-camp-status { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ac-camp-status.completed, .ac-camp-status.sent { background: #10b981; }
+.ac-camp-status.sending, .ac-camp-status.active { background: #3b82f6; }
+.ac-camp-status.draft { background: #6b7280; }
+.ac-camp-status.paused { background: #f59e0b; }
+.ac-good { color: #10b981; }
+.ac-ok { color: #f59e0b; }
+.ac-bad { color: #ef4444; }
+
+/* ─── Deliverability ────────────────────────────────────────────────────── */
+.ac-deliver-grid { display: flex; gap: 24px; align-items: center; margin-bottom: 12px; }
+.ac-deliver-metric { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.ac-deliver-ring { position: relative; width: 90px; height: 90px; border-radius: 50%; background: conic-gradient(var(--ring-color, #10b981) var(--ring-pct, 0%), rgba(255,255,255,0.06) var(--ring-pct, 0%)); display: flex; align-items: center; justify-content: center; }
+.ac-deliver-ring::before { content: ''; position: absolute; inset: 7px; border-radius: 50%; background: #111128; }
+.ac-deliver-ring span { position: relative; font-size: 18px; font-weight: 700; color: var(--ring-color, #10b981); }
+.ac-deliver-label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; }
+.ac-deliver-details { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.ac-dd-row { display: flex; justify-content: space-between; font-size: 12px; color: #8b8fa3; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.ac-dd-row strong { color: #e0e0e0; }
+.ac-bounce-breakdown { margin-top: 10px; }
+.ac-bounce-breakdown h4 { font-size: 11px; font-weight: 600; color: #6b7280; margin: 0 0 6px; text-transform: uppercase; }
+.ac-bounce-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.ac-bounce-tag { padding: 3px 10px; border-radius: 8px; font-size: 11px; background: rgba(239, 68, 68, 0.08); color: #f87171; }
+
+/* ─── AI Intelligence Card ──────────────────────────────────────────────── */
+.ac-ai-card { background: linear-gradient(135deg, #111128, #161640); border-color: rgba(99, 102, 241, 0.15); }
+.ac-ai-card h3 svg { color: #a78bfa; }
+.ac-ai-hero { display: flex; align-items: center; gap: 24px; margin-bottom: 14px; }
+.ac-ai-ring { position: relative; width: 80px; height: 80px; border-radius: 50%; background: conic-gradient(var(--ai-color, #6b7280) var(--ai-pct, 0%), rgba(255,255,255,0.06) var(--ai-pct, 0%)); display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; }
+.ac-ai-ring::before { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: #131338; }
+.ac-ai-ring-val { position: relative; font-size: 22px; font-weight: 700; color: var(--ai-color, #6b7280); line-height: 1; }
+.ac-ai-ring-lbl { position: relative; font-size: 8px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; }
+.ac-ai-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; flex: 1; }
+.ac-ai-stat { display: flex; flex-direction: column; align-items: center; padding: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; }
+.ac-ai-stat svg { font-size: 12px; color: #818cf8; margin-bottom: 2px; }
+.ac-ai-sv { font-size: 16px; font-weight: 700; color: #fff; }
+.ac-ai-sl { font-size: 9px; color: #6b7280; text-transform: uppercase; }
+.ac-ai-last-learn { font-size: 12px; color: #6b7280; display: flex; align-items: center; gap: 6px; margin-bottom: 14px; }
+.ac-ai-last-learn svg { color: #818cf8; font-size: 11px; }
+.ac-ai-last-learn strong { color: #c0c4d0; }
+
+.ac-agent-list { display: flex; flex-direction: column; gap: 6px; }
+.ac-agent-mini { padding: 8px 12px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; }
+.ac-agent-mini-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.ac-agent-mini-name { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+.ac-agent-mini-status { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; padding: 2px 8px; border-radius: 8px; }
+.ac-st-active { background: rgba(16, 185, 129, 0.12); color: #10b981; }
+.ac-st-idle { background: rgba(245, 158, 11, 0.12); color: #f59e0b; }
+.ac-st-sleeping { background: rgba(99, 102, 241, 0.12); color: #818cf8; }
+.ac-st-dormant { background: rgba(107, 114, 128, 0.12); color: #6b7280; }
+.ac-agent-mini-stats { display: flex; gap: 12px; font-size: 11px; color: #6b7280; }
+
+/* ─── Engagement Distribution ───────────────────────────────────────────── */
+.ac-engage-dist { display: flex; flex-direction: column; gap: 10px; }
+.ac-engage-bar-full { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: rgba(255,255,255,0.04); }
+.ac-engage-seg { min-width: 2px; transition: width 0.4s; }
+.ac-seg-high, .ac-legend-dot.ac-seg-high { background: #10b981; }
+.ac-seg-med, .ac-legend-dot.ac-seg-med { background: #f59e0b; }
+.ac-seg-low, .ac-legend-dot.ac-seg-low { background: #ef4444; }
+.ac-seg-none, .ac-legend-dot.ac-seg-none { background: #4b5563; }
+.ac-engage-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: #8b8fa3; }
+.ac-engage-avg { font-size: 12px; color: #6b7280; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.04); }
+.ac-engage-avg strong { color: #e0e0e0; font-size: 16px; }
+
+/* ─── Optimal Send ──────────────────────────────────────────────────────── */
+.ac-optimal-card { background: linear-gradient(135deg, #111128, #141436); border-color: rgba(59, 130, 246, 0.15); }
+.ac-optimal { display: flex; flex-direction: column; gap: 12px; }
+.ac-optimal-time { display: flex; gap: 20px; align-items: baseline; }
+.ac-optimal-day { font-size: 24px; font-weight: 700; color: #60a5fa; }
+.ac-optimal-hour { font-size: 24px; font-weight: 700; color: #fff; }
+.ac-optimal-conf { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #6b7280; }
+.ac-conf-bar { flex: 1; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+.ac-conf-bar div { height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 3px; transition: width 0.4s; }
+.ac-conf-pct { font-weight: 700; color: #60a5fa; min-width: 36px; text-align: right; }
+.ac-reasoning { margin: 0; padding: 0 0 0 16px; font-size: 12px; color: #8b8fa3; }
+.ac-reasoning li { margin-bottom: 4px; }
+
+/* ─── Revenue List ──────────────────────────────────────────────────────── */
+.ac-rev-list { display: flex; flex-direction: column; gap: 6px; }
+.ac-rev-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.02); }
+.ac-rev-item:hover { background: rgba(255,255,255,0.04); }
+.ac-rev-rank { font-size: 12px; font-weight: 700; color: #4b5563; min-width: 24px; }
+.ac-rev-body { flex: 1; min-width: 0; }
+.ac-rev-name { display: block; font-size: 13px; font-weight: 500; color: #e0e0e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-rev-meta { font-size: 10px; color: #6b7280; }
+.ac-rev-amount { font-size: 15px; font-weight: 700; color: #a78bfa; white-space: nowrap; }
+
+/* ─── ISP Distribution ──────────────────────────────────────────────────── */
+.ac-isp-dist { display: flex; flex-direction: column; gap: 8px; }
+.ac-isp-row { display: flex; align-items: center; gap: 8px; }
+.ac-isp-name { font-size: 12px; color: #8b8fa3; min-width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-isp-bar-bg { flex: 1; height: 6px; background: rgba(255,255,255,0.04); border-radius: 3px; overflow: hidden; }
+.ac-isp-bar-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.4s; }
+.ac-isp-count { font-size: 12px; font-weight: 600; color: #c0c4d0; min-width: 24px; text-align: right; }
+
+/* ─── Benchmarks ────────────────────────────────────────────────────────── */
+.ac-bench-card { background: linear-gradient(135deg, #111128, #141430); }
+.ac-bench-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.ac-bench-item { padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); border-radius: 10px; }
+.ac-bench-label { display: block; font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
+.ac-bench-compare { display: flex; align-items: center; gap: 6px; }
+.ac-bench-yours { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 3px; }
+.ac-bench-yours svg { font-size: 10px; }
+.ac-bench-vs { font-size: 10px; color: #4b5563; }
+.ac-bench-industry { font-size: 13px; color: #6b7280; }
+
+/* ─── SparkPost Daily Cap ───────────────────────────────────────────────── */
+.ac-cap-card { background: linear-gradient(135deg, #111128, #13132e); border-color: rgba(59, 130, 246, 0.12); }
+.ac-cap-card h3 svg { color: #60a5fa; }
+.ac-cap-content { display: flex; flex-direction: column; gap: 14px; }
+.ac-cap-hero { display: flex; align-items: center; gap: 20px; }
+.ac-cap-ring { position: relative; width: 76px; height: 76px; border-radius: 50%; background: conic-gradient(var(--cap-color, #10b981) var(--cap-pct, 0%), rgba(255,255,255,0.06) var(--cap-pct, 0%)); display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; }
+.ac-cap-ring::before { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: #12122e; }
+.ac-cap-ring-val { position: relative; font-size: 20px; font-weight: 700; color: var(--cap-color, #10b981); line-height: 1; }
+.ac-cap-ring-lbl { position: relative; font-size: 8px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; }
+.ac-cap-stats { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.ac-cap-stat { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: rgba(255,255,255,0.02); border-radius: 6px; }
+.ac-cap-sv { font-size: 15px; font-weight: 700; color: #e0e0e0; }
+.ac-cap-sl { font-size: 10px; color: #6b7280; text-transform: uppercase; }
+.ac-cap-remaining { color: #10b981; }
+.ac-cap-bar-wrap { display: flex; flex-direction: column; gap: 4px; }
+.ac-cap-bar { height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+.ac-cap-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+.ac-cap-healthy { background: linear-gradient(90deg, #10b981, #059669); }
+.ac-cap-warning { background: linear-gradient(90deg, #f59e0b, #d97706); }
+.ac-cap-critical { background: linear-gradient(90deg, #ef4444, #dc2626); }
+.ac-cap-labels { display: flex; justify-content: space-between; font-size: 10px; color: #4b5563; }
+.ac-cap-alert { font-size: 11px; padding: 8px 10px; border-radius: 8px; line-height: 1.4; }
+.ac-cap-under { background: rgba(59, 130, 246, 0.08); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.15); }
+.ac-cap-near { background: rgba(239, 68, 68, 0.08); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.15); }
+
+/* ─── ISP Agent Performance Card ────────────────────────────────────────── */
+.ac-agent-perf-card { background: linear-gradient(135deg, #111128, #141436); border-color: rgba(99, 102, 241, 0.12); }
+.ac-agent-perf-card h3 svg { color: #818cf8; }
+.ac-agent-perf-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.ac-agent-perf-stat { display: flex; flex-direction: column; align-items: center; padding: 10px 6px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; }
+.ac-agent-perf-val { font-size: 18px; font-weight: 700; color: #fff; line-height: 1.2; }
+.ac-agent-perf-lbl { font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 2px; }
+.ac-agent-perf-chart { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.ac-agent-perf-chart h4 { font-size: 11px; font-weight: 600; color: #6b7280; margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+.ac-agent-perf-bar-row { display: flex; align-items: center; gap: 8px; }
+.ac-agent-perf-bar-label { font-size: 12px; color: #8b8fa3; min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-agent-perf-bar-track { flex: 1; height: 8px; background: rgba(255,255,255,0.04); border-radius: 4px; overflow: hidden; }
+.ac-agent-perf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s; min-width: 2px; }
+.ac-agent-perf-bar-fill.ac-st-active { background: linear-gradient(90deg, #10b981, #34d399); }
+.ac-agent-perf-bar-fill.ac-st-idle { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.ac-agent-perf-bar-fill.ac-st-sleeping { background: linear-gradient(90deg, #6366f1, #818cf8); }
+.ac-agent-perf-bar-fill.ac-st-dormant { background: linear-gradient(90deg, #4b5563, #6b7280); }
+.ac-agent-perf-bar-fill.ac-st-sending { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+.ac-agent-perf-bar-fill.ac-st-adapting { background: linear-gradient(90deg, #a78bfa, #c4b5fd); }
+.ac-agent-perf-bar-val { font-size: 11px; font-weight: 600; color: #c0c4d0; min-width: 36px; text-align: right; }
+
+/* ─── Statistical Intelligence Bar ──────────────────────────────────────── */
+.ac-intel-bar {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  margin-bottom: 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(15,23,42,0.95), rgba(30,41,59,0.95));
+  backdrop-filter: blur(10px);
+}
+.ac-intel-item {
+  flex: 1;
+  min-width: 100px;
+  padding: 10px 12px;
+  border-right: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+.ac-intel-item:last-child { border-right: none; }
+.ac-intel-label {
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: #6b7280;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ac-intel-value {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: #e2e8f0;
+  line-height: 1.2;
+}
+.ac-intel-sub {
+  font-size: 10px;
+  font-family: monospace;
+  color: #64748b;
+  font-weight: 600;
+}
+
+/* ─── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 1200px) {
+  .ac-kpi-grid { grid-template-columns: repeat(3, 1fr); }
+  .ac-two-col { grid-template-columns: 1fr; }
+}
+@media (max-width: 900px) {
+  .ac-kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .ac-container { padding: 16px; }
+}
+@media (max-width: 600px) {
+  .ac-kpi-grid { grid-template-columns: 1fr; }
+}

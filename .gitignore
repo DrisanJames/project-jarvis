@@ -1,0 +1,45 @@
+# Environment files (contain secrets)
+.env
+.env.aws
+.env.production
+.env.local
+
+# Compiled binaries
+bin/
+build/
+/main
+/server
+/ignite-server
+/worker
+/sparkpost-monitor
+/upside-down
+
+# Sensitive config (secrets injected via env vars in production)
+config/config.yaml
+
+# Frontend build artifacts
+web/dist/
+web/node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+test_results*.txt
+*.test
+coverage/
+
+# Data directory (runtime data)
+data/
+
+# Jarvis local config
+.jarvis/
