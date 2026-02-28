@@ -45,7 +45,7 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm run build
+          npx vite build
 
       - name: Generate production config
         run: |
