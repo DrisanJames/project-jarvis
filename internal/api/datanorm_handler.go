@@ -104,8 +104,38 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	query := `SELECT id, original_key, renamed_key, classification, record_count, error_count, status, error_message, original_exists, processed_at, created_at, file_size, started_at
-		FROM data_import_log`
+	type LogEntry struct {
+		ID             string  `json:"id"`
+		OriginalKey    string  `json:"original_key"`
+		RenamedKey     string  `json:"renamed_key"`
+		Classification string  `json:"classification"`
+		RecordCount    int     `json:"record_count"`
+		ErrorCount     int     `json:"error_count"`
+		Status         string  `json:"status"`
+		ErrorMessage   *string `json:"error_message,omitempty"`
+		OriginalExists bool    `json:"original_exists"`
+		ProcessedAt    *string `json:"processed_at,omitempty"`
+		CreatedAt      string  `json:"created_at"`
+		FileSize       int64   `json:"file_size"`
+		StartedAt      *string `json:"started_at,omitempty"`
+	}
+
+	// Try with extended columns first, fall back to base columns if they don't exist yet
+	extCols := `, file_size, started_at`
+	hasExtCols := true
+	var testErr error
+	h.db.QueryRowContext(r.Context(), `SELECT file_size FROM data_import_log LIMIT 0`).Scan()
+	if testErr = r.Context().Err(); testErr != nil {
+		http.Error(w, `{"error":"context cancelled"}`, http.StatusInternalServerError)
+		return
+	}
+	if _, testErr = h.db.ExecContext(r.Context(), `SELECT file_size FROM data_import_log LIMIT 0`); testErr != nil {
+		hasExtCols = false
+		extCols = ""
+	}
+
+	baseCols := `id, original_key, renamed_key, classification, record_count, error_count, status, error_message, original_exists, processed_at, created_at`
+	query := `SELECT ` + baseCols + extCols + ` FROM data_import_log`
 	args := []interface{}{}
 
 	if statusFilter != "" {
@@ -123,30 +153,25 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type LogEntry struct {
-		ID             string  `json:"id"`
-		OriginalKey    string  `json:"original_key"`
-		RenamedKey     string  `json:"renamed_key"`
-		Classification string  `json:"classification"`
-		RecordCount    int     `json:"record_count"`
-		ErrorCount     int     `json:"error_count"`
-		Status         string  `json:"status"`
-		ErrorMessage   *string `json:"error_message,omitempty"`
-		OriginalExists bool    `json:"original_exists"`
-		ProcessedAt    *string `json:"processed_at,omitempty"`
-		CreatedAt      string  `json:"created_at"`
-		FileSize       int64   `json:"file_size"`
-		StartedAt      *string `json:"started_at,omitempty"`
-	}
-
 	var logs []LogEntry
 	for rows.Next() {
 		var e LogEntry
-		var processedAt, errorMsg, startedAt sql.NullString
-		err := rows.Scan(&e.ID, &e.OriginalKey, &e.RenamedKey, &e.Classification,
-			&e.RecordCount, &e.ErrorCount, &e.Status, &errorMsg, &e.OriginalExists,
-			&processedAt, &e.CreatedAt, &e.FileSize, &startedAt)
-		if err != nil {
+		var processedAt, errorMsg sql.NullString
+		var scanErr error
+		if hasExtCols {
+			var startedAt sql.NullString
+			scanErr = rows.Scan(&e.ID, &e.OriginalKey, &e.RenamedKey, &e.Classification,
+				&e.RecordCount, &e.ErrorCount, &e.Status, &errorMsg, &e.OriginalExists,
+				&processedAt, &e.CreatedAt, &e.FileSize, &startedAt)
+			if startedAt.Valid {
+				e.StartedAt = &startedAt.String
+			}
+		} else {
+			scanErr = rows.Scan(&e.ID, &e.OriginalKey, &e.RenamedKey, &e.Classification,
+				&e.RecordCount, &e.ErrorCount, &e.Status, &errorMsg, &e.OriginalExists,
+				&processedAt, &e.CreatedAt)
+		}
+		if scanErr != nil {
 			continue
 		}
 		if errorMsg.Valid {
@@ -154,9 +179,6 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		if processedAt.Valid {
 			e.ProcessedAt = &processedAt.String
-		}
-		if startedAt.Valid {
-			e.StartedAt = &startedAt.String
 		}
 		logs = append(logs, e)
 	}

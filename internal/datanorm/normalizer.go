@@ -22,19 +22,22 @@ import (
 )
 
 type Normalizer struct {
-	s3Client   *s3.Client
-	db         *sql.DB
-	bucket     string
-	orgID      string
-	listID     string
-	classifier *Classifier
-	importer   *Importer
-	interval   time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
-	lastRunAt  time.Time
-	healthy    bool
-	running    int32
+	s3Client      *s3.Client
+	db            *sql.DB
+	bucket        string
+	orgID         string
+	listID        string
+	classifier    *Classifier
+	importer      *Importer
+	interval      time.Duration
+	ctx           context.Context
+	cancel        context.CancelFunc
+	lastRunAt     time.Time
+	healthy       bool
+	running       int32
+	hasFileSize   bool
+	hasStartedAt  bool
+	hasRetryCount bool
 }
 
 func NewNormalizer(db *sql.DB, cfg Config) (*Normalizer, error) {
@@ -151,12 +154,22 @@ func (n *Normalizer) discoverFiles(ctx context.Context) {
 			}
 
 			fileSize := *obj.Size
-			res, err := n.db.ExecContext(ctx,
-				`INSERT INTO data_import_log (original_key, status, file_size)
-				 VALUES ($1, 'pending', $2)
-				 ON CONFLICT (original_key) DO NOTHING`,
-				key, fileSize,
-			)
+			var res sql.Result
+			if n.hasFileSize {
+				res, err = n.db.ExecContext(ctx,
+					`INSERT INTO data_import_log (original_key, status, file_size)
+					 VALUES ($1, 'pending', $2)
+					 ON CONFLICT (original_key) DO NOTHING`,
+					key, fileSize,
+				)
+			} else {
+				res, err = n.db.ExecContext(ctx,
+					`INSERT INTO data_import_log (original_key, status)
+					 VALUES ($1, 'pending')
+					 ON CONFLICT (original_key) DO NOTHING`,
+					key,
+				)
+			}
 			if err != nil {
 				log.Printf("[datanorm] insert pending %s: %v", key, err)
 				continue
@@ -175,10 +188,14 @@ func (n *Normalizer) discoverFiles(ctx context.Context) {
 // processQueue picks pending files from the database (smallest first) and
 // processes them concurrently with a semaphore of 4.
 func (n *Normalizer) processQueue(ctx context.Context) {
+	orderCol := "created_at"
+	if n.hasFileSize {
+		orderCol = "file_size"
+	}
 	rows, err := n.db.QueryContext(ctx,
 		`SELECT original_key FROM data_import_log
 		 WHERE status = 'pending'
-		 ORDER BY file_size ASC
+		 ORDER BY `+orderCol+` ASC
 		 LIMIT 10`)
 	if err != nil {
 		log.Printf("[datanorm] query queue: %v", err)
@@ -228,12 +245,15 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 	var counter int
 	n.db.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM data_import_log WHERE status != 'pending'`).Scan(&counter)
 
-	res, err := n.db.ExecContext(ctx,
-		`UPDATE data_import_log
-		 SET status='processing', retry_count=retry_count+1, started_at=NOW()
-		 WHERE original_key=$1 AND status='pending'`,
-		key,
-	)
+	claimSQL := `UPDATE data_import_log SET status='processing'`
+	if n.hasRetryCount {
+		claimSQL += `, retry_count=retry_count+1`
+	}
+	if n.hasStartedAt {
+		claimSQL += `, started_at=NOW()`
+	}
+	claimSQL += ` WHERE original_key=$1 AND status='pending'`
+	res, err := n.db.ExecContext(ctx, claimSQL, key)
 	if err != nil {
 		return fmt.Errorf("claim file: %w", err)
 	}
@@ -354,16 +374,29 @@ func (n *Normalizer) markFailed(ctx context.Context, key, errMsg string) {
 // the retry limit are marked as failed.
 func (n *Normalizer) resumeStuck() {
 	ctx := n.ctx
-	n.db.ExecContext(ctx,
-		`UPDATE data_import_log SET status='pending'
-		 WHERE status='processing' AND retry_count < 3`)
-	n.db.ExecContext(ctx,
-		`UPDATE data_import_log SET status='failed', error_message='max retries exceeded'
-		 WHERE status='processing' AND retry_count >= 3`)
+	if n.hasRetryCount {
+		n.db.ExecContext(ctx,
+			`UPDATE data_import_log SET status='pending'
+			 WHERE status='processing' AND retry_count < 3`)
+		n.db.ExecContext(ctx,
+			`UPDATE data_import_log SET status='failed', error_message='max retries exceeded'
+			 WHERE status='processing' AND retry_count >= 3`)
+	} else {
+		n.db.ExecContext(ctx,
+			`UPDATE data_import_log SET status='pending'
+			 WHERE status='processing'`)
+	}
 }
 
 // ensureSchema applies idempotent schema changes for the queue system.
+// Uses a DO block with superuser role grant to handle ownership issues.
 func (n *Normalizer) ensureSchema() {
+	// Try to take ownership first (works if connected user is rds_superuser member)
+	n.db.Exec(`DO $$ BEGIN
+		EXECUTE 'ALTER TABLE data_import_log OWNER TO ' || current_user;
+	EXCEPTION WHEN OTHERS THEN NULL;
+	END $$`)
+
 	stmts := []string{
 		`ALTER TABLE data_import_log ADD COLUMN IF NOT EXISTS file_size BIGINT DEFAULT 0`,
 		`ALTER TABLE data_import_log ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0`,
@@ -371,12 +404,24 @@ func (n *Normalizer) ensureSchema() {
 	}
 	for _, s := range stmts {
 		if _, err := n.db.Exec(s); err != nil {
-			log.Printf("[datanorm] schema migration: %v", err)
+			log.Printf("[datanorm] schema migration (non-fatal): %v", err)
 		}
 	}
-	// Update status constraint to allow 'skipped' and 'pending'
 	n.db.Exec(`ALTER TABLE data_import_log DROP CONSTRAINT IF EXISTS data_import_log_status_check`)
 	n.db.Exec(`ALTER TABLE data_import_log ADD CONSTRAINT data_import_log_status_check CHECK (status IN ('pending','processing','completed','failed','skipped'))`)
+
+	// Detect which columns actually exist so queries can adapt
+	var cnt int
+	if err := n.db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='data_import_log' AND column_name='file_size'`).Scan(&cnt); err == nil {
+		n.hasFileSize = cnt > 0
+	}
+	if err := n.db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='data_import_log' AND column_name='started_at'`).Scan(&cnt); err == nil {
+		n.hasStartedAt = cnt > 0
+	}
+	if err := n.db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='data_import_log' AND column_name='retry_count'`).Scan(&cnt); err == nil {
+		n.hasRetryCount = cnt > 0
+	}
+	log.Printf("[datanorm] schema: file_size=%v started_at=%v retry_count=%v", n.hasFileSize, n.hasStartedAt, n.hasRetryCount)
 }
 
 // ManualTrigger runs a single import cycle immediately.
