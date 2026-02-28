@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -191,13 +192,21 @@ func (imp *Importer) importMailable(ctx context.Context, records []*NormalizedRe
 		data_source = COALESCE(EXCLUDED.data_source, mailing_subscribers.data_source),
 		updated_at = NOW()`)
 
-	result, err := imp.db.ExecContext(ctx, b.String(), args...)
-	if err != nil {
-		log.Printf("[datanorm] multi-row insert error (%d records): %v", len(records), err)
-		return 0, len(records)
+	query := b.String()
+	for attempt := 0; attempt < 3; attempt++ {
+		result, err := imp.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			if strings.Contains(err.Error(), "deadlock") && attempt < 2 {
+				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+				continue
+			}
+			log.Printf("[datanorm] multi-row insert error (%d records): %v", len(records), err)
+			return 0, len(records)
+		}
+		affected, _ := result.RowsAffected()
+		return int(affected), len(records) - int(affected)
 	}
-	affected, _ := result.RowsAffected()
-	return int(affected), len(records) - int(affected)
+	return 0, len(records)
 }
 
 const suppressionCols = 9
