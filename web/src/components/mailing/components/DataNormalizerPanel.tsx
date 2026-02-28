@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faDatabase, faCheckCircle, faTimesCircle, faSpinner,
   faSync, faPlay, faFileImport, faExclamationTriangle,
-  faChartBar, faServer, faClock, faFileAlt,
+  faChartBar, faServer, faClock, faFileAlt, faHourglass,
 } from '@fortawesome/free-solid-svg-icons';
 
 interface NormalizerStatus {
@@ -27,6 +27,8 @@ interface ImportLog {
   original_exists: boolean;
   processed_at?: string;
   created_at: string;
+  file_size: number;
+  started_at?: string;
 }
 
 interface QualityBreakdown {
@@ -45,6 +47,7 @@ const STATUS_COLORS: Record<string, string> = {
   processing: '#f59e0b',
   failed: '#ef4444',
   pending: '#6b7280',
+  skipped: '#8b5cf6',
 };
 
 const CLASSIFICATION_COLORS: Record<string, string> = {
@@ -52,6 +55,20 @@ const CLASSIFICATION_COLORS: Record<string, string> = {
   suppression: '#ef4444',
   warmup: '#f59e0b',
 };
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '—';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function formatEta(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return '—';
+  if (seconds < 60) return `~${Math.round(seconds)}s`;
+  if (seconds < 3600) return `~${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  return `~${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
 
 export const DataNormalizerPanel: React.FC = () => {
   const [status, setStatus] = useState<NormalizerStatus | null>(null);
@@ -62,6 +79,7 @@ export const DataNormalizerPanel: React.FC = () => {
   const [qualityData, setQualityData] = useState<QualityBreakdown[]>([]);
   const [domainData, setDomainData] = useState<DomainBreakdown[]>([]);
   const [subscriberCount, setSubscriberCount] = useState(0);
+  const [avgRowBytes, setAvgRowBytes] = useState(100);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -75,8 +93,16 @@ export const DataNormalizerPanel: React.FC = () => {
       const res = await fetch(`/api/mailing/data-normalizer/logs?limit=20&offset=${page * 20}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
-        setLogs(data.logs || []);
-        if (data.logs?.length === 20) setTotalLogs(Math.max(totalLogs, (page + 1) * 20 + 1));
+        const entries: ImportLog[] = data.logs || [];
+        setLogs(entries);
+        if (entries.length === 20) setTotalLogs(Math.max(totalLogs, (page + 1) * 20 + 1));
+
+        const completed = entries.filter(l => l.status === 'completed' && l.file_size > 0 && l.record_count > 0);
+        if (completed.length > 0) {
+          const totalSize = completed.reduce((s, l) => s + l.file_size, 0);
+          const totalRows = completed.reduce((s, l) => s + l.record_count, 0);
+          setAvgRowBytes(Math.max(totalSize / totalRows, 50));
+        }
       }
     } catch { /* */ }
   }, [page, totalLogs]);
@@ -118,12 +144,31 @@ export const DataNormalizerPanel: React.FC = () => {
     ? Math.round(((status.files.completed + status.files.failed) / Math.max(status.files.total, 1)) * 100)
     : 0;
 
+  const pendingCount = status?.files
+    ? status.files.total - status.files.completed - status.files.failed - status.files.processing
+    : 0;
+
   const formatNumber = (n: number) => n.toLocaleString();
 
   const formatTime = (iso?: string) => {
     if (!iso) return '—';
     const d = new Date(iso);
     return d.toLocaleString();
+  };
+
+  const estimateTotal = (log: ImportLog) => {
+    if (log.file_size <= 0) return 0;
+    return Math.round(log.file_size / avgRowBytes);
+  };
+
+  const computeEta = (log: ImportLog): string => {
+    if (log.status !== 'processing' || !log.started_at || log.record_count === 0) return '—';
+    const elapsed = (Date.now() - new Date(log.started_at).getTime()) / 1000;
+    if (elapsed <= 0) return '—';
+    const rate = log.record_count / elapsed;
+    const est = estimateTotal(log);
+    const remaining = Math.max(est - log.record_count, 0);
+    return formatEta(remaining / rate);
   };
 
   const maxDomain = Math.max(...domainData.map(d => d.count), 1);
@@ -164,56 +209,16 @@ export const DataNormalizerPanel: React.FC = () => {
       </div>
 
       {/* Status Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 24 }}>
-        <StatCard
-          icon={faFileImport}
-          label="Total Files"
-          value={status?.files.total ?? 0}
-          color="#818cf8"
-        />
-        <StatCard
-          icon={faCheckCircle}
-          label="Completed"
-          value={status?.files.completed ?? 0}
-          color="#22c55e"
-        />
-        <StatCard
-          icon={faSpinner}
-          label="Processing"
-          value={status?.files.processing ?? 0}
-          color="#f59e0b"
-        />
-        <StatCard
-          icon={faTimesCircle}
-          label="Failed"
-          value={status?.files.failed ?? 0}
-          color="#ef4444"
-        />
-        <StatCard
-          icon={faFileAlt}
-          label="Records Imported"
-          value={formatNumber(status?.records.imported ?? 0)}
-          color="#3b82f6"
-        />
-        <StatCard
-          icon={faExclamationTriangle}
-          label="Record Errors"
-          value={formatNumber(status?.records.errors ?? 0)}
-          color={status?.records.errors ? '#ef4444' : '#6b7280'}
-        />
-        <StatCard
-          icon={faServer}
-          label="Subscribers"
-          value={formatNumber(subscriberCount)}
-          color="#8b5cf6"
-        />
-        <StatCard
-          icon={faClock}
-          label="Last Run"
-          value={status?.last_run_at ? new Date(status.last_run_at).toLocaleTimeString() : '—'}
-          color="#6b7280"
-          small
-        />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
+        <StatCard icon={faFileImport} label="Total Files" value={status?.files.total ?? 0} color="#818cf8" />
+        <StatCard icon={faHourglass} label="Pending" value={pendingCount} color="#a78bfa" />
+        <StatCard icon={faSpinner} label="Processing" value={status?.files.processing ?? 0} color="#f59e0b" />
+        <StatCard icon={faCheckCircle} label="Completed" value={status?.files.completed ?? 0} color="#22c55e" />
+        <StatCard icon={faTimesCircle} label="Failed" value={status?.files.failed ?? 0} color="#ef4444" />
+        <StatCard icon={faFileAlt} label="Records Imported" value={formatNumber(status?.records.imported ?? 0)} color="#3b82f6" />
+        <StatCard icon={faExclamationTriangle} label="Record Errors" value={formatNumber(status?.records.errors ?? 0)} color={status?.records.errors ? '#ef4444' : '#6b7280'} />
+        <StatCard icon={faServer} label="Subscribers" value={formatNumber(subscriberCount)} color="#8b5cf6" />
+        <StatCard icon={faClock} label="Last Run" value={status?.last_run_at ? new Date(status.last_run_at).toLocaleTimeString() : '—'} color="#6b7280" small />
       </div>
 
       {/* Progress Bar */}
@@ -317,76 +322,111 @@ export const DataNormalizerPanel: React.FC = () => {
                 <th style={thStyle}>File</th>
                 <th style={thStyle}>Type</th>
                 <th style={thStyle}>Status</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Records</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Size</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Progress</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Errors</th>
+                <th style={thStyle}>ETA</th>
                 <th style={thStyle}>Processed</th>
               </tr>
             </thead>
             <tbody>
               {logs.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: '#6b7280' }}>No import records yet</td></tr>
+                <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: '#6b7280' }}>No import records yet</td></tr>
               ) : (
-                logs.map(log => (
-                  <tr key={log.id} style={{ borderBottom: '1px solid #1e1e2e' }}>
-                    <td style={tdStyle} title={log.original_key}>
-                      <span style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
-                        {log.original_key.split('/').pop()}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>
-                      <span style={{
-                        background: CLASSIFICATION_COLORS[log.classification] + '22',
-                        color: CLASSIFICATION_COLORS[log.classification],
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        textTransform: 'uppercase',
-                      }}>
-                        {log.classification}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        color: STATUS_COLORS[log.status],
-                        fontWeight: 600,
-                        fontSize: 12,
-                      }}>
-                        <FontAwesomeIcon
-                          icon={log.status === 'completed' ? faCheckCircle : log.status === 'processing' ? faSpinner : log.status === 'failed' ? faTimesCircle : faClock}
-                          spin={log.status === 'processing'}
-                          style={{ fontSize: 11 }}
-                        />
-                        {log.status}
-                      </span>
-                      {log.error_message && (
-                        <div style={{ fontSize: 11, color: '#ef4444', marginTop: 2, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message}>
-                          {log.error_message}
-                        </div>
-                      )}
-                    </td>
-                    <td style={{
-                      ...tdStyle,
-                      textAlign: 'right',
-                      fontVariantNumeric: 'tabular-nums',
-                      animation: log.status === 'processing' ? 'pulse-count 2s ease-in-out infinite' : undefined,
-                    }}>
-                      {formatNumber(log.record_count)}
-                      {log.status === 'processing' && log.record_count > 0 && (
-                        <span style={{ color: '#f59e0b', fontSize: 10, marginLeft: 4 }}>LIVE</span>
-                      )}
-                    </td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? '#ef4444' : '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
-                      {formatNumber(log.error_count)}
-                    </td>
-                    <td style={{ ...tdStyle, color: '#8b8fa3', fontSize: 12 }}>
-                      {formatTime(log.processed_at)}
-                    </td>
-                  </tr>
-                ))
+                logs.map(log => {
+                  const est = estimateTotal(log);
+                  const pct = est > 0 ? Math.min(Math.round((log.record_count / est) * 100), 100) : 0;
+                  return (
+                    <tr key={log.id} style={{ borderBottom: '1px solid #1e1e2e' }}>
+                      <td style={tdStyle} title={log.original_key}>
+                        <span style={{ maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
+                          {log.original_key.split('/').pop()}
+                        </span>
+                      </td>
+                      <td style={tdStyle}>
+                        {log.classification ? (
+                          <span style={{
+                            background: (CLASSIFICATION_COLORS[log.classification] || '#6b7280') + '22',
+                            color: CLASSIFICATION_COLORS[log.classification] || '#6b7280',
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                          }}>
+                            {log.classification}
+                          </span>
+                        ) : (
+                          <span style={{ color: '#4b5563', fontSize: 11 }}>—</span>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          color: STATUS_COLORS[log.status] || '#6b7280',
+                          fontWeight: 600,
+                          fontSize: 12,
+                        }}>
+                          <FontAwesomeIcon
+                            icon={log.status === 'completed' ? faCheckCircle : log.status === 'processing' ? faSpinner : log.status === 'failed' ? faTimesCircle : faClock}
+                            spin={log.status === 'processing'}
+                            style={{ fontSize: 11 }}
+                          />
+                          {log.status}
+                        </span>
+                        {log.error_message && (
+                          <div style={{ fontSize: 11, color: '#ef4444', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message}>
+                            {log.error_message}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: '#8b8fa3', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                        {formatBytes(log.file_size)}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                        {log.status === 'pending' ? (
+                          <span style={{ color: '#4b5563' }}>—</span>
+                        ) : log.status === 'processing' ? (
+                          <div style={{ minWidth: 120 }}>
+                            <div style={{
+                              fontSize: 12,
+                              animation: 'pulse-count 2s ease-in-out infinite',
+                            }}>
+                              {formatNumber(log.record_count)} / ~{formatNumber(est)}
+                              <span style={{ color: '#f59e0b', fontSize: 10, marginLeft: 4 }}>LIVE</span>
+                            </div>
+                            <div style={{ height: 4, borderRadius: 2, background: '#2a2a3e', marginTop: 3 }}>
+                              <div style={{
+                                height: '100%',
+                                width: `${pct}%`,
+                                borderRadius: 2,
+                                background: 'linear-gradient(90deg, #6366f1, #22c55e)',
+                                transition: 'width 0.5s',
+                              }} />
+                            </div>
+                          </div>
+                        ) : (
+                          <span>{formatNumber(log.record_count)}</span>
+                        )}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? '#ef4444' : '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatNumber(log.error_count)}
+                      </td>
+                      <td style={{ ...tdStyle, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                        {log.status === 'processing' ? (
+                          <span style={{ color: '#f59e0b' }}>{computeEta(log)}</span>
+                        ) : (
+                          <span style={{ color: '#4b5563' }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ ...tdStyle, color: '#8b8fa3', fontSize: 12 }}>
+                        {formatTime(log.processed_at)}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

@@ -176,6 +176,8 @@ func (s *Server) SetNormalizer(normalizer *datanorm.Normalizer) {
 			r.Get("/status", handler.HandleStatus)
 			r.Get("/logs", handler.HandleLogs)
 			r.Get("/quality-breakdown", handler.HandleQualityBreakdown)
+			r.Post("/skip", handler.HandleSkip)
+			r.Post("/retry", handler.HandleRetry)
 		})
 	}
 }

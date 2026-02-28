@@ -99,12 +99,12 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := r.URL.Query().Get("status"); v != "" {
 		switch v {
-		case "completed", "failed", "processing", "pending":
+		case "completed", "failed", "processing", "pending", "skipped":
 			statusFilter = v
 		}
 	}
 
-	query := `SELECT id, original_key, renamed_key, classification, record_count, error_count, status, error_message, original_exists, processed_at, created_at
+	query := `SELECT id, original_key, renamed_key, classification, record_count, error_count, status, error_message, original_exists, processed_at, created_at, file_size, started_at
 		FROM data_import_log`
 	args := []interface{}{}
 
@@ -135,15 +135,17 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		OriginalExists bool    `json:"original_exists"`
 		ProcessedAt    *string `json:"processed_at,omitempty"`
 		CreatedAt      string  `json:"created_at"`
+		FileSize       int64   `json:"file_size"`
+		StartedAt      *string `json:"started_at,omitempty"`
 	}
 
 	var logs []LogEntry
 	for rows.Next() {
 		var e LogEntry
-		var processedAt, errorMsg sql.NullString
+		var processedAt, errorMsg, startedAt sql.NullString
 		err := rows.Scan(&e.ID, &e.OriginalKey, &e.RenamedKey, &e.Classification,
 			&e.RecordCount, &e.ErrorCount, &e.Status, &errorMsg, &e.OriginalExists,
-			&processedAt, &e.CreatedAt)
+			&processedAt, &e.CreatedAt, &e.FileSize, &startedAt)
 		if err != nil {
 			continue
 		}
@@ -152,6 +154,9 @@ func (h *DataNormHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		if processedAt.Valid {
 			e.ProcessedAt = &processedAt.String
+		}
+		if startedAt.Valid {
+			e.StartedAt = &startedAt.String
 		}
 		logs = append(logs, e)
 	}
@@ -227,4 +232,56 @@ func (h *DataNormHandler) HandleQualityBreakdown(w http.ResponseWriter, r *http.
 	result["domains"] = domRows
 
 	json.NewEncoder(w).Encode(result)
+}
+
+// HandleSkip sets a file's status to 'skipped' so it won't be processed.
+func (h *DataNormHandler) HandleSkip(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var body struct {
+		OriginalKey string `json:"original_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.OriginalKey == "" {
+		http.Error(w, `{"error":"original_key required"}`, http.StatusBadRequest)
+		return
+	}
+
+	res, err := h.db.ExecContext(r.Context(),
+		`UPDATE data_import_log SET status='skipped' WHERE original_key=$1 AND status IN ('pending','failed')`,
+		body.OriginalKey)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		http.Error(w, `{"error":"file not found or not in skippable state"}`, http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "original_key": body.OriginalKey})
+}
+
+// HandleRetry resets a file back to 'pending' so it gets reprocessed.
+func (h *DataNormHandler) HandleRetry(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var body struct {
+		OriginalKey string `json:"original_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.OriginalKey == "" {
+		http.Error(w, `{"error":"original_key required"}`, http.StatusBadRequest)
+		return
+	}
+
+	res, err := h.db.ExecContext(r.Context(),
+		`UPDATE data_import_log SET status='pending', retry_count=0, error_message=NULL WHERE original_key=$1 AND status IN ('failed','skipped')`,
+		body.OriginalKey)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		http.Error(w, `{"error":"file not found or not in retryable state"}`, http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "pending", "original_key": body.OriginalKey})
 }

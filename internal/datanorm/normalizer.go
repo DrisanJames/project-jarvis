@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,7 +34,7 @@ type Normalizer struct {
 	cancel     context.CancelFunc
 	lastRunAt  time.Time
 	healthy    bool
-	running    int32 // atomic flag: 1 = run in progress
+	running    int32
 }
 
 func NewNormalizer(db *sql.DB, cfg Config) (*Normalizer, error) {
@@ -77,6 +76,7 @@ func NewNormalizer(db *sql.DB, cfg Config) (*Normalizer, error) {
 
 func (n *Normalizer) Start() {
 	n.ctx, n.cancel = context.WithCancel(context.Background())
+	n.ensureSchema()
 	go func() {
 		n.resumeStuck()
 		n.runOnce()
@@ -99,13 +99,14 @@ func (n *Normalizer) Stop() {
 	}
 }
 
-func (n *Normalizer) IsHealthy() bool  { return n.healthy }
+func (n *Normalizer) IsHealthy() bool    { return n.healthy }
 func (n *Normalizer) LastRunAt() time.Time { return n.lastRunAt }
-func (n *Normalizer) IsRunning() bool   { return atomic.LoadInt32(&n.running) == 1 }
+func (n *Normalizer) IsRunning() bool     { return atomic.LoadInt32(&n.running) == 1 }
 
+// runOnce executes one cycle: discover new files, then process a batch from the queue.
 func (n *Normalizer) runOnce() {
 	if !atomic.CompareAndSwapInt32(&n.running, 0, 1) {
-		return // already running
+		return
 	}
 	defer atomic.StoreInt32(&n.running, 0)
 
@@ -113,19 +114,91 @@ func (n *Normalizer) runOnce() {
 	n.lastRunAt = time.Now()
 	n.healthy = true
 
-	keys, err := n.listUnprocessed(ctx)
+	n.discoverFiles(ctx)
+	n.processQueue(ctx)
+}
+
+// discoverFiles scans the S3 bucket and inserts every new CSV as a pending
+// entry in data_import_log. Already-known files are skipped via ON CONFLICT.
+func (n *Normalizer) discoverFiles(ctx context.Context) {
+	paginator := s3.NewListObjectsV2Paginator(n.s3Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(n.bucket),
+	})
+
+	inserted := 0
+	for paginator.HasMorePages() {
+		if ctx.Err() != nil {
+			return
+		}
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			log.Printf("[datanorm] list S3 objects error: %v", err)
+			n.healthy = false
+			return
+		}
+
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+
+			if obj.Size == nil || *obj.Size == 0 {
+				continue
+			}
+			if strings.HasPrefix(key, "processed/") {
+				continue
+			}
+			if !strings.HasSuffix(strings.ToLower(key), ".csv") {
+				continue
+			}
+
+			fileSize := *obj.Size
+			res, err := n.db.ExecContext(ctx,
+				`INSERT INTO data_import_log (original_key, status, file_size)
+				 VALUES ($1, 'pending', $2)
+				 ON CONFLICT (original_key) DO NOTHING`,
+				key, fileSize,
+			)
+			if err != nil {
+				log.Printf("[datanorm] insert pending %s: %v", key, err)
+				continue
+			}
+			if rows, _ := res.RowsAffected(); rows > 0 {
+				inserted++
+			}
+		}
+	}
+
+	if inserted > 0 {
+		log.Printf("[datanorm] discovered %d new files", inserted)
+	}
+}
+
+// processQueue picks pending files from the database (smallest first) and
+// processes them concurrently with a semaphore of 4.
+func (n *Normalizer) processQueue(ctx context.Context) {
+	rows, err := n.db.QueryContext(ctx,
+		`SELECT original_key FROM data_import_log
+		 WHERE status = 'pending'
+		 ORDER BY file_size ASC
+		 LIMIT 10`)
 	if err != nil {
-		log.Printf("[datanorm] list unprocessed error: %v", err)
-		n.healthy = false
+		log.Printf("[datanorm] query queue: %v", err)
 		return
 	}
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err == nil {
+			keys = append(keys, k)
+		}
+	}
+	rows.Close()
 
 	if len(keys) == 0 {
-		log.Printf("[datanorm] no new files to process")
 		return
 	}
 
-	log.Printf("[datanorm] found %d unprocessed files", len(keys))
+	log.Printf("[datanorm] processing batch of %d files from queue", len(keys))
 
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
@@ -146,76 +219,28 @@ func (n *Normalizer) runOnce() {
 	wg.Wait()
 }
 
-// listUnprocessed lists all unprocessed CSV objects in the bucket,
-// sorted by LastModified descending so the most recently uploaded
-// files are processed first.
-func (n *Normalizer) listUnprocessed(ctx context.Context) ([]string, error) {
-	knownKeys := make(map[string]bool)
-	rows, err := n.db.QueryContext(ctx, `SELECT original_key FROM data_import_log`)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var k string
-			rows.Scan(&k)
-			knownKeys[k] = true
-		}
-	}
-
-	type s3File struct {
-		key     string
-		modTime time.Time
-	}
-
-	var unprocessed []s3File
-	paginator := s3.NewListObjectsV2Paginator(n.s3Client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(n.bucket),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list S3 objects: %w", err)
-		}
-
-		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
-
-			if obj.Size == nil || *obj.Size == 0 {
-				continue
-			}
-			if strings.HasPrefix(key, "processed/") {
-				continue
-			}
-			if knownKeys[key] {
-				continue
-			}
-			if !strings.HasSuffix(strings.ToLower(key), ".csv") {
-				continue
-			}
-
-			var modTime time.Time
-			if obj.LastModified != nil {
-				modTime = *obj.LastModified
-			}
-			unprocessed = append(unprocessed, s3File{key: key, modTime: modTime})
-		}
-	}
-
-	sort.Slice(unprocessed, func(i, j int) bool {
-		return unprocessed[i].modTime.After(unprocessed[j].modTime)
-	})
-
-	keys := make([]string, len(unprocessed))
-	for i, f := range unprocessed {
-		keys[i] = f.key
-	}
-	return keys, nil
-}
-
-// processFile downloads once with a buffered reader: peeks the first line for
-// classification and header detection, then streams the full import.
-// Supports headerless CSVs by detecting email-shaped values in the first row.
+// processFile downloads a file from S3, detects headers, classifies it,
+// and imports records into the database. The file must already exist in
+// data_import_log with status='pending'.
 func (n *Normalizer) processFile(ctx context.Context, key string) error {
+	// Atomically claim the file — if another worker grabbed it, skip.
+	titleCaser := cases.Title(language.English)
+	var counter int
+	n.db.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM data_import_log WHERE status != 'pending'`).Scan(&counter)
+
+	res, err := n.db.ExecContext(ctx,
+		`UPDATE data_import_log
+		 SET status='processing', retry_count=retry_count+1, started_at=NOW()
+		 WHERE original_key=$1 AND status='pending'`,
+		key,
+	)
+	if err != nil {
+		return fmt.Errorf("claim file: %w", err)
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return nil
+	}
+
 	log.Printf("[datanorm] processing %s", key)
 
 	getOutput, err := n.s3Client.GetObject(ctx, &s3.GetObjectInput{
@@ -223,6 +248,7 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		n.markFailed(ctx, key, fmt.Sprintf("get S3 object: %v", err))
 		return fmt.Errorf("get S3 object: %w", err)
 	}
 	defer getOutput.Body.Close()
@@ -233,49 +259,40 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 	if err != nil {
 		if err == io.EOF {
 			log.Printf("[datanorm] empty file %s, skipping", key)
+			n.markFailed(ctx, key, "empty file")
 			return nil
 		}
+		n.markFailed(ctx, key, fmt.Sprintf("peek header: %v", err))
 		return fmt.Errorf("peek header: %w", err)
 	}
 
 	firstRow := parseCSVLine(headerLine)
 
-	// Detect whether this file has headers or is headerless
 	var preMapping *ColumnMapping
 	headerless := false
 
 	mapping := MapColumns(firstRow)
 	if mapping != nil {
-		// Normal file with recognized headers
 		preMapping = nil
 	} else {
-		// No recognized header — check if the first row contains email data
 		preMapping = MapColumnsHeaderless(firstRow)
 		if preMapping != nil {
 			headerless = true
 			log.Printf("[datanorm] headerless CSV detected for %s (email at col %d)", key, preMapping.EmailIdx)
 		} else {
 			log.Printf("[datanorm] skipping %s: no email column in header or data", key)
-			return fmt.Errorf("no email column detected in header or first row")
+			n.markFailed(ctx, key, "no email column detected in header or first row")
+			return fmt.Errorf("no email column detected")
 		}
 	}
 
 	classification := n.classifier.Classify(key, firstRow)
 
-	titleCaser := cases.Title(language.English)
-	var counter int
-	n.db.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM data_import_log`).Scan(&counter)
 	renamedKey := fmt.Sprintf("processed/%05d-JVC-%s.csv", counter, titleCaser.String(string(classification)))
-
-	_, err = n.db.ExecContext(ctx,
-		`INSERT INTO data_import_log (original_key, renamed_key, classification, status)
-		VALUES ($1, $2, $3, 'processing')
-		ON CONFLICT (original_key) DO NOTHING`,
-		key, renamedKey, string(classification),
+	n.db.ExecContext(ctx,
+		`UPDATE data_import_log SET renamed_key=$1, classification=$2 WHERE original_key=$3`,
+		renamedKey, string(classification), key,
 	)
-	if err != nil {
-		return fmt.Errorf("insert import log: %w", err)
-	}
 
 	onProgress := func(imported, errors int) {
 		n.db.ExecContext(ctx,
@@ -332,27 +349,34 @@ func (n *Normalizer) markFailed(ctx context.Context, key, errMsg string) {
 	)
 }
 
+// resumeStuck resets files left in 'processing' state (from a prior crash)
+// back to 'pending' so the queue picks them up. Files that have exceeded
+// the retry limit are marked as failed.
 func (n *Normalizer) resumeStuck() {
 	ctx := n.ctx
-	rows, err := n.db.QueryContext(ctx,
-		`SELECT original_key FROM data_import_log WHERE status = 'processing'`)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+	n.db.ExecContext(ctx,
+		`UPDATE data_import_log SET status='pending'
+		 WHERE status='processing' AND retry_count < 3`)
+	n.db.ExecContext(ctx,
+		`UPDATE data_import_log SET status='failed', error_message='max retries exceeded'
+		 WHERE status='processing' AND retry_count >= 3`)
+}
 
-	for rows.Next() {
-		var origKey string
-		if err := rows.Scan(&origKey); err != nil {
-			continue
-		}
-		log.Printf("[datanorm] resuming stuck import: %s", origKey)
-		// Reset status so processFile can re-insert
-		n.db.ExecContext(ctx, `DELETE FROM data_import_log WHERE original_key = $1`, origKey)
-		if err := n.processFile(ctx, origKey); err != nil {
-			log.Printf("[datanorm] resume failed for %s: %v", origKey, err)
+// ensureSchema applies idempotent schema changes for the queue system.
+func (n *Normalizer) ensureSchema() {
+	stmts := []string{
+		`ALTER TABLE data_import_log ADD COLUMN IF NOT EXISTS file_size BIGINT DEFAULT 0`,
+		`ALTER TABLE data_import_log ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0`,
+		`ALTER TABLE data_import_log ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`,
+	}
+	for _, s := range stmts {
+		if _, err := n.db.Exec(s); err != nil {
+			log.Printf("[datanorm] schema migration: %v", err)
 		}
 	}
+	// Update status constraint to allow 'skipped' and 'pending'
+	n.db.Exec(`ALTER TABLE data_import_log DROP CONSTRAINT IF EXISTS data_import_log_status_check`)
+	n.db.Exec(`ALTER TABLE data_import_log ADD CONSTRAINT data_import_log_status_check CHECK (status IN ('pending','processing','completed','failed','skipped'))`)
 }
 
 // ManualTrigger runs a single import cycle immediately.
@@ -360,10 +384,7 @@ func (n *Normalizer) ManualTrigger() {
 	go n.runOnce()
 }
 
-// peekHeaderLine reads the first line from a bufio.Reader using Peek
-// without consuming the bytes, so the full stream can be re-read.
 func peekHeaderLine(br *bufio.Reader) (string, error) {
-	// Peek progressively larger chunks to find the newline
 	for size := 4096; size <= 64*1024; size *= 2 {
 		peeked, err := br.Peek(size)
 		if len(peeked) > 0 {
@@ -379,12 +400,10 @@ func peekHeaderLine(br *bufio.Reader) (string, error) {
 			return "", err
 		}
 	}
-	// Header line is very long; return what we have
 	peeked, _ := br.Peek(64 * 1024)
 	return strings.TrimRight(string(peeked), "\r\n"), nil
 }
 
-// parseCSVLine splits a single CSV header line into fields.
 func parseCSVLine(line string) []string {
 	r := csv.NewReader(strings.NewReader(line))
 	r.LazyQuotes = true
