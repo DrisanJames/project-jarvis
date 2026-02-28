@@ -66,6 +66,9 @@ func (imp *Importer) ImportFromReader(
 	imported, errCount := 0, 0
 
 	for {
+		if ctx.Err() != nil {
+			return imported, errCount, ctx.Err()
+		}
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
@@ -130,6 +133,19 @@ const mailableCols = 12
 func (imp *Importer) importMailable(ctx context.Context, records []*NormalizedRecord, dataSource string) (int, int) {
 	if len(records) == 0 {
 		return 0, 0
+	}
+
+	// De-duplicate by email within the batch (keep last occurrence)
+	seen := make(map[string]int, len(records))
+	for i, rec := range records {
+		seen[rec.Email] = i
+	}
+	if len(seen) < len(records) {
+		deduped := make([]*NormalizedRecord, 0, len(seen))
+		for _, idx := range seen {
+			deduped = append(deduped, records[idx])
+		}
+		records = deduped
 	}
 
 	var b strings.Builder
