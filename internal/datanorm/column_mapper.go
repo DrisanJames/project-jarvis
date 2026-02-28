@@ -194,3 +194,39 @@ var skipColumns = map[string]bool{
 func ShouldSkipColumn(headerName string) bool {
 	return skipColumns[strings.ToLower(strings.TrimSpace(headerName))]
 }
+
+// LooksLikeEmail returns true if the value appears to be an email address.
+// Used to detect headerless CSVs where the first row is data, not column names.
+func LooksLikeEmail(val string) bool {
+	v := strings.TrimSpace(val)
+	if len(v) < 5 || len(v) > 254 {
+		return false
+	}
+	at := strings.LastIndex(v, "@")
+	if at < 1 || at >= len(v)-1 {
+		return false
+	}
+	domain := v[at+1:]
+	return strings.Contains(domain, ".") && len(domain) >= 3
+}
+
+// MapColumnsHeaderless builds a ColumnMapping for a CSV with no header row
+// by scanning the first data row for a cell that looks like an email address.
+// Returns nil if no email-shaped value is found.
+func MapColumnsHeaderless(firstRow []string) *ColumnMapping {
+	m := &ColumnMapping{
+		EmailIdx: -1,
+		FieldMap: make(map[int]CanonicalField),
+	}
+	for i, val := range firstRow {
+		val = strings.TrimSpace(val)
+		if m.EmailIdx < 0 && LooksLikeEmail(val) {
+			m.EmailIdx = i
+			m.FieldMap[i] = FieldEmail
+		}
+	}
+	if m.EmailIdx < 0 {
+		return nil
+	}
+	return m
+}

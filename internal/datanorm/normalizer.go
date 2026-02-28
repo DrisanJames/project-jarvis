@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -125,19 +127,28 @@ func (n *Normalizer) runOnce() {
 
 	log.Printf("[datanorm] found %d unprocessed files", len(keys))
 
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
 	for _, key := range keys {
 		if ctx.Err() != nil {
-			return
+			break
 		}
-		if err := n.processFile(ctx, key); err != nil {
-			log.Printf("[datanorm] process file %s error: %v", key, err)
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(k string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := n.processFile(ctx, k); err != nil {
+				log.Printf("[datanorm] process file %s error: %v", k, err)
+			}
+		}(key)
 	}
+	wg.Wait()
 }
 
-// listUnprocessed uses a paginator to list ALL objects in the bucket,
-// skipping processed/ prefix, 0-byte directory placeholders, and
-// keys already tracked in data_import_log.
+// listUnprocessed lists all unprocessed CSV objects in the bucket,
+// sorted by LastModified descending so the most recently uploaded
+// files are processed first.
 func (n *Normalizer) listUnprocessed(ctx context.Context) ([]string, error) {
 	knownKeys := make(map[string]bool)
 	rows, err := n.db.QueryContext(ctx, `SELECT original_key FROM data_import_log`)
@@ -150,7 +161,12 @@ func (n *Normalizer) listUnprocessed(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	var unprocessed []string
+	type s3File struct {
+		key     string
+		modTime time.Time
+	}
+
+	var unprocessed []s3File
 	paginator := s3.NewListObjectsV2Paginator(n.s3Client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(n.bucket),
 	})
@@ -165,7 +181,7 @@ func (n *Normalizer) listUnprocessed(ctx context.Context) ([]string, error) {
 			key := aws.ToString(obj.Key)
 
 			if obj.Size == nil || *obj.Size == 0 {
-				continue // directory placeholder
+				continue
 			}
 			if strings.HasPrefix(key, "processed/") {
 				continue
@@ -176,14 +192,29 @@ func (n *Normalizer) listUnprocessed(ctx context.Context) ([]string, error) {
 			if !strings.HasSuffix(strings.ToLower(key), ".csv") {
 				continue
 			}
-			unprocessed = append(unprocessed, key)
+
+			var modTime time.Time
+			if obj.LastModified != nil {
+				modTime = *obj.LastModified
+			}
+			unprocessed = append(unprocessed, s3File{key: key, modTime: modTime})
 		}
 	}
-	return unprocessed, nil
+
+	sort.Slice(unprocessed, func(i, j int) bool {
+		return unprocessed[i].modTime.After(unprocessed[j].modTime)
+	})
+
+	keys := make([]string, len(unprocessed))
+	for i, f := range unprocessed {
+		keys[i] = f.key
+	}
+	return keys, nil
 }
 
-// processFile downloads once with a buffered reader: peeks the header for
-// classification, then continues reading the same stream for the full import.
+// processFile downloads once with a buffered reader: peeks the first line for
+// classification and header detection, then streams the full import.
+// Supports headerless CSVs by detecting email-shaped values in the first row.
 func (n *Normalizer) processFile(ctx context.Context, key string) error {
 	log.Printf("[datanorm] processing %s", key)
 
@@ -196,8 +227,7 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 	}
 	defer getOutput.Body.Close()
 
-	// Buffer the stream so we can peek the header and then replay it
-	bufReader := bufio.NewReaderSize(getOutput.Body, 4096)
+	bufReader := bufio.NewReaderSize(getOutput.Body, 256*1024)
 
 	headerLine, err := peekHeaderLine(bufReader)
 	if err != nil {
@@ -208,8 +238,29 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 		return fmt.Errorf("peek header: %w", err)
 	}
 
-	header := parseCSVLine(headerLine)
-	classification := n.classifier.Classify(key, header)
+	firstRow := parseCSVLine(headerLine)
+
+	// Detect whether this file has headers or is headerless
+	var preMapping *ColumnMapping
+	headerless := false
+
+	mapping := MapColumns(firstRow)
+	if mapping != nil {
+		// Normal file with recognized headers
+		preMapping = nil
+	} else {
+		// No recognized header — check if the first row contains email data
+		preMapping = MapColumnsHeaderless(firstRow)
+		if preMapping != nil {
+			headerless = true
+			log.Printf("[datanorm] headerless CSV detected for %s (email at col %d)", key, preMapping.EmailIdx)
+		} else {
+			log.Printf("[datanorm] skipping %s: no email column in header or data", key)
+			return fmt.Errorf("no email column detected in header or first row")
+		}
+	}
+
+	classification := n.classifier.Classify(key, firstRow)
 
 	titleCaser := cases.Title(language.English)
 	var counter int
@@ -226,15 +277,21 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 		return fmt.Errorf("insert import log: %w", err)
 	}
 
-	// The bufReader still contains the full stream (header + body)
-	// since peekHeaderLine only used Peek, not Read.
-	imported, errCount, importErr := n.importer.ImportFromReader(ctx, bufReader, classification, key)
+	onProgress := func(imported, errors int) {
+		n.db.ExecContext(ctx,
+			`UPDATE data_import_log SET record_count=$1, error_count=$2 WHERE original_key=$3`,
+			imported, errors, key)
+	}
+
+	imported, errCount, importErr := n.importer.ImportFromReader(
+		ctx, bufReader, classification, key,
+		preMapping, headerless, onProgress,
+	)
 	if importErr != nil {
 		n.markFailed(ctx, key, importErr.Error())
 		return importErr
 	}
 
-	// Copy to processed/ location
 	_, copyErr := n.s3Client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(n.bucket),
 		CopySource: aws.String(n.bucket + "/" + key),
@@ -263,8 +320,8 @@ func (n *Normalizer) processFile(ctx context.Context, key string) error {
 		}
 	}
 
-	log.Printf("[datanorm] completed %s -> %s: imported=%d errors=%d classification=%s",
-		key, renamedKey, imported, errCount, classification)
+	log.Printf("[datanorm] completed %s -> %s: imported=%d errors=%d classification=%s headerless=%v",
+		key, renamedKey, imported, errCount, classification, headerless)
 	return nil
 }
 

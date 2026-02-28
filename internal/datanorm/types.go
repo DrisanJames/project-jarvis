@@ -36,6 +36,9 @@ type Config struct {
 	Interval   time.Duration
 }
 
+// ProgressFunc is called periodically during import with running totals.
+type ProgressFunc func(imported, errors int)
+
 // SubscriberEvent is the Go representation of a subscriber_events row.
 type SubscriberEvent struct {
 	ID         int64

@@ -24,26 +24,42 @@ func NewImporter(db *sql.DB, orgID, listID string) *Importer {
 	return &Importer{db: db, orgID: orgID, listID: listID}
 }
 
-const importBatchSize = 500
+const importBatchSize = 2000
 
 // ImportFromReader reads a CSV stream, maps columns to canonical fields,
-// normalizes values, and imports records. Returns (imported, errors, err).
-func (imp *Importer) ImportFromReader(ctx context.Context, r io.Reader, classification Classification, sourceFile string) (int, int, error) {
+// normalizes values, and imports records.
+//
+// When preMapping is non-nil and headerless is true, the first row is treated
+// as data (no header consumed). Otherwise the first row is read as the header.
+//
+// onProgress is called after each batch flush with running totals.
+func (imp *Importer) ImportFromReader(
+	ctx context.Context, r io.Reader,
+	classification Classification, sourceFile string,
+	preMapping *ColumnMapping, headerless bool,
+	onProgress ProgressFunc,
+) (int, int, error) {
 	reader := csv.NewReader(stripBOM(r))
 	reader.FieldsPerRecord = -1
 	reader.LazyQuotes = true
 
-	header, err := reader.Read()
-	if err != nil {
-		if err == io.EOF {
-			return 0, 0, nil
-		}
-		return 0, 0, fmt.Errorf("read header: %w", err)
-	}
+	var mapping *ColumnMapping
 
-	mapping := MapColumns(header)
-	if mapping == nil {
-		return 0, 0, fmt.Errorf("no email column detected in header: %v", header)
+	if headerless && preMapping != nil {
+		mapping = preMapping
+	} else {
+		header, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				return 0, 0, nil
+			}
+			return 0, 0, fmt.Errorf("read header: %w", err)
+		}
+
+		mapping = MapColumns(header)
+		if mapping == nil {
+			return 0, 0, fmt.Errorf("no email column detected in header: %v", header)
+		}
 	}
 
 	var batch []*NormalizedRecord
@@ -65,7 +81,6 @@ func (imp *Importer) ImportFromReader(ctx context.Context, r io.Reader, classifi
 			continue
 		}
 
-		// Fill domain group from email if not set by a dedicated column
 		if rec.DomainGroup == "" {
 			rec.DomainGroup = InferDomainGroupFromEmail(rec.Email)
 		}
@@ -77,6 +92,10 @@ func (imp *Importer) ImportFromReader(ctx context.Context, r io.Reader, classifi
 			imported += n
 			errCount += e
 			batch = batch[:0]
+
+			if onProgress != nil {
+				onProgress(imported, errCount)
+			}
 		}
 	}
 
@@ -84,6 +103,10 @@ func (imp *Importer) ImportFromReader(ctx context.Context, r io.Reader, classifi
 		n, e := imp.flushBatch(ctx, classification, batch)
 		imported += n
 		errCount += e
+
+		if onProgress != nil {
+			onProgress(imported, errCount)
+		}
 	}
 
 	return imported, errCount, nil
@@ -102,77 +125,83 @@ func (imp *Importer) flushBatch(ctx context.Context, classification Classificati
 	}
 }
 
+const mailableCols = 12
+
 func (imp *Importer) importMailable(ctx context.Context, records []*NormalizedRecord, dataSource string) (int, int) {
-	tx, err := imp.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, len(records)
+	if len(records) == 0 {
+		return 0, 0
 	}
 
-	imported, errCount := 0, 0
-	for _, rec := range records {
-		_, err := tx.ExecContext(ctx, "SAVEPOINT batch_sp")
-		if err != nil {
-			errCount++
-			continue
+	var b strings.Builder
+	b.WriteString(`INSERT INTO mailing_subscribers
+		(id, organization_id, list_id, email, email_hash, status,
+		 first_name, last_name, source,
+		 data_source, data_quality_score, verification_status,
+		 custom_fields, created_at, updated_at)
+	VALUES `)
+
+	args := make([]interface{}, 0, len(records)*mailableCols)
+	for i, rec := range records {
+		if i > 0 {
+			b.WriteByte(',')
 		}
 
-		emailHash := sha256Hex(rec.Email)
-		subID := uuid.New()
+		base := i * mailableCols
+		fmt.Fprintf(&b, "($%d,$%d,$%d,$%d,$%d,'confirmed',$%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW(),NOW())",
+			base+1, base+2, base+3, base+4, base+5,
+			base+6, base+7, base+8, base+9, base+10, base+11, base+12)
 
+		emailHash := sha256Hex(rec.Email)
 		customFields := buildCustomFields(rec)
 		customJSON, _ := json.Marshal(customFields)
 
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO mailing_subscribers
-				(id, organization_id, list_id, email, email_hash, status,
-				 first_name, last_name, source,
-				 data_source, data_quality_score, verification_status,
-				 custom_fields, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, 'confirmed',
-				$6, $7, $8,
-				$9, $10, $11,
-				$12, NOW(), NOW())
-			ON CONFLICT (list_id, email) DO UPDATE SET
-				first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), mailing_subscribers.first_name),
-				last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), mailing_subscribers.last_name),
-				data_quality_score = GREATEST(EXCLUDED.data_quality_score, mailing_subscribers.data_quality_score),
-				verification_status = CASE
-					WHEN EXCLUDED.verification_status IN ('verified','invalid') THEN EXCLUDED.verification_status
-					ELSE COALESCE(mailing_subscribers.verification_status, EXCLUDED.verification_status)
-				END,
-				custom_fields = mailing_subscribers.custom_fields || EXCLUDED.custom_fields,
-				data_source = COALESCE(EXCLUDED.data_source, mailing_subscribers.data_source),
-				updated_at = NOW()`,
-			subID, imp.orgID, imp.listID, rec.Email, emailHash,
+		args = append(args,
+			uuid.New(), imp.orgID, imp.listID, rec.Email, emailHash,
 			rec.FirstName, rec.LastName, rec.SourceFile,
 			dataSource, rec.QualityScore, rec.VerificationStatus,
 			string(customJSON),
 		)
-		if err != nil {
-			tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT batch_sp")
-			errCount++
-			continue
-		}
-
-		tx.ExecContext(ctx, "RELEASE SAVEPOINT batch_sp")
-		imported++
 	}
 
-	if err := tx.Commit(); err != nil {
-		log.Printf("[datanorm] commit error: %v", err)
+	b.WriteString(` ON CONFLICT (list_id, email) DO UPDATE SET
+		first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), mailing_subscribers.first_name),
+		last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), mailing_subscribers.last_name),
+		data_quality_score = GREATEST(EXCLUDED.data_quality_score, mailing_subscribers.data_quality_score),
+		verification_status = CASE
+			WHEN EXCLUDED.verification_status IN ('verified','invalid') THEN EXCLUDED.verification_status
+			ELSE COALESCE(mailing_subscribers.verification_status, EXCLUDED.verification_status)
+		END,
+		custom_fields = mailing_subscribers.custom_fields || EXCLUDED.custom_fields,
+		data_source = COALESCE(EXCLUDED.data_source, mailing_subscribers.data_source),
+		updated_at = NOW()`)
+
+	result, err := imp.db.ExecContext(ctx, b.String(), args...)
+	if err != nil {
+		log.Printf("[datanorm] multi-row insert error (%d records): %v", len(records), err)
 		return 0, len(records)
 	}
-	return imported, errCount
+	affected, _ := result.RowsAffected()
+	return int(affected), len(records) - int(affected)
 }
 
+const suppressionCols = 9
+
 func (imp *Importer) importSuppression(ctx context.Context, records []*NormalizedRecord) (int, int) {
-	tx, err := imp.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, len(records)
+	if len(records) == 0 {
+		return 0, 0
 	}
 
-	imported, errCount := 0, 0
-	for _, rec := range records {
+	var b strings.Builder
+	b.WriteString(`INSERT INTO mailing_global_suppressions
+		(organization_id, email, md5_hash, reason, source, isp, dsn_code, dsn_diag, source_ip, created_at)
+	VALUES `)
+
+	args := make([]interface{}, 0, len(records)*suppressionCols)
+	for i, rec := range records {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(rec.Email)))
 		md5hash := hash[:32]
 
@@ -185,26 +214,25 @@ func (imp *Importer) importSuppression(ctx context.Context, records []*Normalize
 			source = rec.SourceFile
 		}
 
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO mailing_global_suppressions
-				(organization_id, email, md5_hash, reason, source, isp, dsn_code, dsn_diag, source_ip, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-			ON CONFLICT (organization_id, md5_hash) DO NOTHING`,
+		base := i * suppressionCols
+		fmt.Fprintf(&b, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW())",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+
+		args = append(args,
 			imp.orgID, rec.Email, md5hash, reason, source,
 			rec.DomainGroup, rec.DSNStatus, rec.DSNDiag, rec.SourceIP,
 		)
-		if err != nil {
-			errCount++
-			continue
-		}
-		imported++
 	}
 
-	if err := tx.Commit(); err != nil {
-		log.Printf("[datanorm] suppression commit error: %v", err)
+	b.WriteString(` ON CONFLICT (organization_id, md5_hash) DO NOTHING`)
+
+	result, err := imp.db.ExecContext(ctx, b.String(), args...)
+	if err != nil {
+		log.Printf("[datanorm] suppression multi-row insert error (%d records): %v", len(records), err)
 		return 0, len(records)
 	}
-	return imported, errCount
+	affected, _ := result.RowsAffected()
+	return int(affected), len(records) - int(affected)
 }
 
 // buildCustomFields constructs the JSONB custom_fields from the normalized record,
@@ -249,7 +277,6 @@ func buildCustomFields(rec *NormalizedRecord) map[string]interface{} {
 		cf["external_id"] = rec.ExternalID
 	}
 
-	// Remaining unmapped columns
 	for k, v := range rec.Extra {
 		cf[k] = v
 	}

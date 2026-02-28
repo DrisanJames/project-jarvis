@@ -130,6 +130,7 @@ export const DataNormalizerPanel: React.FC = () => {
 
   return (
     <div style={{ padding: '24px', color: '#e2e8f0', maxWidth: 1200 }}>
+      <style>{`@keyframes pulse-count { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
@@ -367,8 +368,16 @@ export const DataNormalizerPanel: React.FC = () => {
                         </div>
                       )}
                     </td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                    <td style={{
+                      ...tdStyle,
+                      textAlign: 'right',
+                      fontVariantNumeric: 'tabular-nums',
+                      animation: log.status === 'processing' ? 'pulse-count 2s ease-in-out infinite' : undefined,
+                    }}>
                       {formatNumber(log.record_count)}
+                      {log.status === 'processing' && log.record_count > 0 && (
+                        <span style={{ color: '#f59e0b', fontSize: 10, marginLeft: 4 }}>LIVE</span>
+                      )}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? '#ef4444' : '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
                       {formatNumber(log.error_count)}
