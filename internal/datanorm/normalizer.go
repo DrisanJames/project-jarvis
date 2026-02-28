@@ -157,15 +157,15 @@ func (n *Normalizer) discoverFiles(ctx context.Context) {
 			var res sql.Result
 			if n.hasFileSize {
 				res, err = n.db.ExecContext(ctx,
-					`INSERT INTO data_import_log (original_key, status, file_size)
-					 VALUES ($1, 'pending', $2)
+					`INSERT INTO data_import_log (original_key, status, classification, file_size)
+					 VALUES ($1, 'pending', 'mailable', $2)
 					 ON CONFLICT (original_key) DO NOTHING`,
 					key, fileSize,
 				)
 			} else {
 				res, err = n.db.ExecContext(ctx,
-					`INSERT INTO data_import_log (original_key, status)
-					 VALUES ($1, 'pending')
+					`INSERT INTO data_import_log (original_key, status, classification)
+					 VALUES ($1, 'pending', 'mailable')
 					 ON CONFLICT (original_key) DO NOTHING`,
 					key,
 				)
