@@ -238,7 +238,8 @@ func RegisterFullMailingRoutes(r chi.Router, db *sql.DB, sparkpostKey string) {
 
 // HandleDashboard returns mailing dashboard
 func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
 	dashboard := map[string]interface{}{
 		"overview":           map[string]interface{}{},
@@ -248,12 +249,16 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		"inbox_profiles":     0,
 		"total_suppressions": 0,
 		"active_automations": 0,
+		"pmta_connected":     false,
+		"pmta_server_count":  0,
 	}
 
-	// Get counts
+	// Use pre-aggregated counts from mailing_lists to avoid scanning 400k subscribers
 	var totalSubs, totalLists, totalCampaigns int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE status = 'confirmed'").Scan(&totalSubs)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_lists WHERE status = 'active'").Scan(&totalLists)
+	svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(active_count), 0)::int, COUNT(*)
+		FROM mailing_lists WHERE status = 'active'
+	`).Scan(&totalSubs, &totalLists)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
 
 	var totalSent, totalOpens, totalClicks int
@@ -363,13 +368,19 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		dashboard["recent_campaigns"] = recentCampaigns
 	}
 
-	// Server connectivity status
+	// Server connectivity — check both delivery servers and sending profiles for PMTA/SMTP
 	var pmtaServers int
 	svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_delivery_servers WHERE type = 'pmta' AND active = true
 	`).Scan(&pmtaServers)
-	dashboard["pmta_connected"] = pmtaServers > 0
-	dashboard["pmta_server_count"] = pmtaServers
+	var smtpProfiles int
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_sending_profiles
+		WHERE (type = 'pmta' OR type = 'smtp') AND status = 'active'
+	`).Scan(&smtpProfiles)
+	totalPMTA := pmtaServers + smtpProfiles
+	dashboard["pmta_connected"] = totalPMTA > 0
+	dashboard["pmta_server_count"] = totalPMTA
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dashboard)

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -245,48 +246,55 @@ func (svc *MailingService) HandleAddSuppression(w http.ResponseWriter, r *http.R
 	})
 }
 
-// HandleListActivity returns subscriber activity stats across all lists
+// HandleListActivity returns subscriber activity stats using lightweight queries.
+// Uses data_import_log for recent import counts to avoid scanning mailing_subscribers.
 func (svc *MailingService) HandleListActivity(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var new24h, new7d, unsubs7d int
-
+	var new24h, new7d int
+	// Use import log for recent subscriber counts (avoids full table scan)
 	svc.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_subscribers 
-		WHERE created_at > NOW() - INTERVAL '24 hours'
+		SELECT COALESCE(SUM(record_count), 0)::int FROM data_import_log
+		WHERE status = 'completed' AND completed_at > NOW() - INTERVAL '24 hours'
 	`).Scan(&new24h)
 
 	svc.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_subscribers 
-		WHERE created_at > NOW() - INTERVAL '7 days'
+		SELECT COALESCE(SUM(record_count), 0)::int FROM data_import_log
+		WHERE status = 'completed' AND completed_at > NOW() - INTERVAL '7 days'
 	`).Scan(&new7d)
 
+	// Unsubscribes from tracking events (lightweight)
+	var unsubs7d int
 	svc.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_subscribers 
-		WHERE status = 'unsubscribed' AND updated_at > NOW() - INTERVAL '7 days'
+		SELECT COUNT(*) FROM mailing_tracking_events
+		WHERE event_type = 'unsubscribe' AND created_at > NOW() - INTERVAL '7 days'
 	`).Scan(&unsubs7d)
 
 	type activityItem struct {
 		Action    string    `json:"action"`
-		Email     string    `json:"email"`
-		List      string    `json:"list"`
+		Details   string    `json:"details"`
 		Timestamp time.Time `json:"timestamp"`
 	}
 	var activity []activityItem
 
+	// Recent imports as activity (fast — small table)
 	rows, err := svc.db.QueryContext(ctx, `
-		SELECT s.email, COALESCE(l.name, ''), s.created_at
-		FROM mailing_subscribers s
-		LEFT JOIN mailing_lists l ON s.list_id = l.id
-		ORDER BY s.created_at DESC LIMIT 10
+		SELECT classification, original_key, record_count, COALESCE(completed_at, started_at, created_at)
+		FROM data_import_log
+		ORDER BY created_at DESC LIMIT 10
 	`)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var a activityItem
-			rows.Scan(&a.Email, &a.List, &a.Timestamp)
-			a.Action = "subscribed"
-			activity = append(activity, a)
+			var class, key string
+			var count int
+			var ts time.Time
+			rows.Scan(&class, &key, &count, &ts)
+			activity = append(activity, activityItem{
+				Action:    "import_" + class,
+				Details:   fmt.Sprintf("%s (%d records)", key, count),
+				Timestamp: ts,
+			})
 		}
 	}
 
