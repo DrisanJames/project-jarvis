@@ -230,8 +230,8 @@ func main() {
 			log.Println("Mailing Platform routes registered")
 
 			// Set pool limits early to prevent connection exhaustion
-			mailingDB.SetMaxOpenConns(10)
-			mailingDB.SetMaxIdleConns(3)
+			mailingDB.SetMaxOpenConns(25)
+			mailingDB.SetMaxIdleConns(5)
 			mailingDB.SetConnMaxLifetime(5 * time.Minute)
 			mailingDB.SetConnMaxIdleTime(30 * time.Second)
 
