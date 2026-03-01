@@ -191,5 +191,6 @@ func (s *Server) RegisterHealthRoutes() {
 	s.router.Get("/health", hc.HandleHealth)
 	s.router.Get("/health/live", hc.HandleLiveness)
 	s.router.Get("/health/ready", hc.HandleReadiness)
+	s.router.Get("/health/detailed", hc.HandleDetailed)
 	s.router.Get("/health/db-stats", hc.HandleDBStats)
 }

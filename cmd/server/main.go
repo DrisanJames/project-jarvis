@@ -234,7 +234,7 @@ func main() {
 			mailingDB.SetConnMaxIdleTime(30 * time.Second)
 
 			// Test connection with timeout — only start background workers if DB is reachable
-			pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
 			if err := mailingDB.PingContext(pingCtx); err != nil {
 				pingCancel()
 				log.Printf("Warning: Mailing database ping failed: %v — routes registered but workers skipped", err)

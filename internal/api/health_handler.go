@@ -56,21 +56,25 @@ const healthVersion = "1.0.0"
 //
 //	GET /health
 func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	// Fast path for ALB health checks — no dependency checks, instant 200.
+	// Use /health/detailed for full dependency status, /health/ready for 503 on failure.
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "healthy",
+		"version": healthVersion,
+		"uptime":  formatUptime(time.Since(hc.startTime)),
+	})
+}
+
+// HandleDetailed runs full dependency checks and reports status.
+func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) {
 	checks := hc.runAllChecks(r.Context())
-
 	overall := determineOverallStatus(checks)
-
-	status := HealthStatus{
+	respondJSON(w, http.StatusOK, HealthStatus{
 		Status:  overall,
 		Version: healthVersion,
 		Uptime:  formatUptime(time.Since(hc.startTime)),
 		Checks:  checks,
-	}
-
-	// Always return 200 for the general health endpoint.
-	// The status field in the JSON body conveys health.
-	// Use /health/ready for probes that need HTTP 503 on failure.
-	respondJSON(w, http.StatusOK, status)
+	})
 }
 
 // HandleLiveness is a simple liveness probe — always returns 200 if the server
