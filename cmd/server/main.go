@@ -214,10 +214,10 @@ func main() {
 			log.Println("Mailing Platform routes registered")
 
 			// Set pool limits early to prevent connection exhaustion
-			mailingDB.SetMaxOpenConns(50)
-			mailingDB.SetMaxIdleConns(10)
+			mailingDB.SetMaxOpenConns(10)
+			mailingDB.SetMaxIdleConns(3)
 			mailingDB.SetConnMaxLifetime(5 * time.Minute)
-			mailingDB.SetConnMaxIdleTime(1 * time.Minute)
+			mailingDB.SetConnMaxIdleTime(30 * time.Second)
 
 			// Test connection with timeout — only start background workers if DB is reachable
 			pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
