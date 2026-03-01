@@ -170,9 +170,18 @@ func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS sending_profile_id UUID`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS send_type VARCHAR(20) DEFAULT 'blast'`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS max_recipients INTEGER DEFAULT 0`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS throttle_speed VARCHAR(30) DEFAULT 'gentle'`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS preview_text VARCHAR(255)`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS plain_content TEXT`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS everflow_creative_id INTEGER`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS everflow_offer_id INTEGER`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS tracking_link_template TEXT`,
 	}
 	
 	for _, migration := range migrations {
-		cb.db.ExecContext(ctx, migration)
+		if _, err := cb.db.ExecContext(ctx, migration); err != nil {
+			log.Printf("[CampaignBuilder] Migration failed: %s: %v", migration[:60], err)
+		}
 	}
 }

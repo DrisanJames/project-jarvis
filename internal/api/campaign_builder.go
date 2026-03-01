@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
@@ -73,20 +74,21 @@ func getOrganizationUUID(r *http.Request) uuid.UUID {
 
 // ensureSchema ensures the campaign table has the correct constraints
 func (cb *CampaignBuilder) ensureSchema() {
-	// Drop old restrictive constraint if it exists
+	// Drop restrictive constraints that conflict with application-level values
 	cb.db.Exec(`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`)
-	
-	// Add updated constraint with all valid statuses (including 'preparing' for edit lock window)
+	cb.db.Exec(`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`)
+
 	cb.db.Exec(`
 		ALTER TABLE mailing_campaigns 
 		ADD CONSTRAINT mailing_campaigns_status_check 
 		CHECK (status IN ('draft', 'scheduled', 'preparing', 'sending', 'paused', 'completed', 'completed_with_errors', 'cancelled', 'failed', 'deleted', 'sent'))
 	`)
-	
-	// Ensure queued_count column exists for tracking enqueue progress
+
 	cb.db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`)
-	
-	log.Println("CampaignBuilder: Schema constraints updated (includes 'preparing' status)")
+
+	cb.ensureCampaignColumns(context.Background())
+
+	log.Println("CampaignBuilder: Schema constraints and columns updated")
 }
 
 // RegisterRoutes registers campaign builder routes
