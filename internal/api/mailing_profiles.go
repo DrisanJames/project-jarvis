@@ -42,7 +42,7 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 	argIdx := 1
 
 	if search != "" {
-		conditions = append(conditions, fmt.Sprintf("email ILIKE $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("(email ILIKE $%d OR email_hash ILIKE $%d)", argIdx, argIdx))
 		args = append(args, "%"+search+"%")
 		argIdx++
 	}
@@ -70,11 +70,11 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 	if tier != "" {
 		switch tier {
 		case "high":
-			conditions = append(conditions, "engagement_score >= 70")
+			conditions = append(conditions, "engagement_score >= 0.70")
 		case "medium":
-			conditions = append(conditions, "engagement_score >= 40 AND engagement_score < 70")
+			conditions = append(conditions, "engagement_score >= 0.40 AND engagement_score < 0.70")
 		case "low":
-			conditions = append(conditions, "engagement_score > 0 AND engagement_score < 40")
+			conditions = append(conditions, "engagement_score > 0 AND engagement_score < 0.40")
 		case "inactive":
 			conditions = append(conditions, "engagement_score = 0")
 		}
@@ -88,7 +88,7 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 	// Sort
 	validSorts := map[string]string{
 		"engagement": "engagement_score",
-		"sent":       "total_sent",
+		"sent":       "total_sends",
 		"opens":      "total_opens",
 		"clicks":     "total_clicks",
 		"recent":     "updated_at",
@@ -109,12 +109,11 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 	var total int
 	svc.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 
-	// Data query - use only columns known to exist in the table
 	dataQuery := fmt.Sprintf(`
-		SELECT email, domain, total_sent, total_opens, total_clicks,
+		SELECT COALESCE(email, email_hash), domain, COALESCE(total_sends,0), COALESCE(total_opens,0), COALESCE(total_clicks,0),
 		       COALESCE(total_bounces,0), COALESCE(total_complaints,0),
-		       engagement_score, best_send_hour, best_send_day,
-		       last_sent_at, last_open_at, last_click_at,
+		       COALESCE(engagement_score,0), COALESCE(optimal_send_hour,10), COALESCE(optimal_send_day,2),
+		       last_send_at, last_open_at, last_click_at,
 		       updated_at
 		FROM mailing_inbox_profiles %s
 		ORDER BY %s

@@ -155,6 +155,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [variants, setVariants] = useState<ContentVariant[]>([
     { variant_name: 'A', from_name: '', subject: '', html_content: '', split_percent: 100 },
   ]);
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
@@ -253,13 +255,22 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setLoading(false);
   }, [orgId, selectedISPs, audienceEstimate]);
 
+  const fetchTemplates = useCallback(async () => {
+    try {
+      const res = await fetch('/api/mailing/templates');
+      const data = await res.json();
+      setTemplates(data.templates || []);
+    } catch { /* noop */ }
+  }, []);
+
   // Load data on step entry
   useEffect(() => {
     if (step === 1) fetchReadiness();
     if (step === 2) fetchDomains();
+    if (step === 3) fetchTemplates();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchDomains, fetchAudienceData, fetchIntel]);
+  }, [step, fetchReadiness, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -468,6 +479,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     </div>
   );
 
+  const loadTemplate = (tpl: any, variantIdx: number) => {
+    updateVariant(variantIdx, 'subject', tpl.subject || '');
+    updateVariant(variantIdx, 'html_content', tpl.html_content || '');
+    if (tpl.from_name) updateVariant(variantIdx, 'from_name', tpl.from_name);
+    setShowTemplatePicker(false);
+  };
+
   const renderStep3 = () => (
     <div className="wiz-step-content">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -475,12 +493,45 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           <h3 style={{ margin: 0 }}>Content + A/B Split Testing</h3>
           <p style={{ margin: '4px 0 0', color: '#8b8fa3', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
         </div>
-        {variants.length < 4 && (
-          <button onClick={addVariant} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
-            <FontAwesomeIcon icon={faPlus} /> Add Variant
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setShowTemplatePicker(!showTemplatePicker)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+            <FontAwesomeIcon icon={faPenFancy} /> Load Template
           </button>
-        )}
+          {variants.length < 4 && (
+            <button onClick={addVariant} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+              <FontAwesomeIcon icon={faPlus} /> Add Variant
+            </button>
+          )}
+        </div>
       </div>
+
+      {showTemplatePicker && (
+        <div style={{ background: '#1e1f2e', border: '1px solid #6366f1', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 12px', color: '#a78bfa', fontSize: 14 }}>Content Library — Select a Template</h4>
+          {templates.length === 0 ? (
+            <p style={{ color: '#8b8fa3', fontSize: 13 }}>No templates saved yet. Create templates in the Content Library tab.</p>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+              {templates.map((tpl: any) => (
+                <div key={tpl.id} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, padding: 12, cursor: 'pointer', transition: 'border-color 0.2s' }}
+                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#6366f1')}
+                  onMouseLeave={e => (e.currentTarget.style.borderColor = '#2d2e3e')}>
+                  <strong style={{ color: '#e2e4ed', fontSize: 13, display: 'block', marginBottom: 4 }}>{tpl.name}</strong>
+                  <span style={{ color: '#8b8fa3', fontSize: 12 }}>{tpl.subject || tpl.description || 'No subject'}</span>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                    {variants.map((v, idx) => (
+                      <button key={idx} onClick={() => loadTemplate(tpl, idx)}
+                        style={{ fontSize: 11, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer' }}>
+                        {String.fromCodePoint(0x2192)} Variant {v.variant_name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {variants.map((v, idx) => (
         <div key={idx} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>

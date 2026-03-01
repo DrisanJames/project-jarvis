@@ -102,7 +102,7 @@ export const ConsciousnessDashboard: React.FC = () => {
   const [state, setState] = useState<ConsciousnessState | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignMetrics[]>([]);
   const [liveThoughts, setLiveThoughts] = useState<Thought[]>([]);
-  const [activeSection, setActiveSection] = useState<'overview' | 'philosophies' | 'thoughts' | 'campaigns'>('overview');
+  const [activeSection, setActiveSection] = useState<'campaigns' | 'overview' | 'philosophies' | 'thoughts'>('campaigns');
   const [selectedISP, setSelectedISP] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
@@ -110,12 +110,37 @@ export const ConsciousnessDashboard: React.FC = () => {
 
   const fetchState = useCallback(async () => {
     try {
-      const [stateRes, campaignsRes] = await Promise.all([
+      const [stateRes, campaignsRes, dbCampaignsRes] = await Promise.all([
         fetch('/api/mailing/consciousness/state'),
         fetch('/api/mailing/campaign-events/campaigns'),
+        fetch('/api/mailing/campaigns'),
       ]);
       if (stateRes.ok) setState(await stateRes.json());
-      if (campaignsRes.ok) setCampaigns(await campaignsRes.json());
+      const inMemory = campaignsRes.ok ? await campaignsRes.json() : [];
+      let merged = Array.isArray(inMemory) ? inMemory : [];
+      // If in-memory tracker is empty, build metrics from DB campaigns
+      if (merged.length === 0 && dbCampaignsRes.ok) {
+        const dbData = await dbCampaignsRes.json();
+        const dbCamps = dbData.campaigns || [];
+        merged = dbCamps
+          .filter((c: any) => c.status === 'completed' || c.status === 'sending' || c.status === 'completed_with_errors')
+          .map((c: any) => ({
+            campaign_id: c.id,
+            started_at: c.started_at || c.created_at,
+            updated_at: c.updated_at,
+            sent: c.sent_count || 0,
+            delivered: c.sent_count || 0,
+            soft_bounce: 0, hard_bounce: 0,
+            complaints: 0,
+            unsubscribes: c.unsubscribe_count || 0,
+            opens: c.open_count || 0,
+            unique_opens: c.open_count || 0,
+            clicks: c.click_count || 0,
+            unique_clicks: c.click_count || 0,
+            inactive: 0,
+          }));
+      }
+      setCampaigns(merged);
     } catch {
       // silent
     } finally {
@@ -205,9 +230,9 @@ export const ConsciousnessDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Section Tabs */}
+      {/* Section Tabs — Campaigns (live mail flow) is primary */}
       <div style={styles.sectionTabs}>
-        {(['overview', 'philosophies', 'thoughts', 'campaigns'] as const).map(section => (
+        {(['campaigns', 'overview', 'philosophies', 'thoughts'] as const).map(section => (
           <button
             key={section}
             onClick={() => setActiveSection(section)}
@@ -217,12 +242,12 @@ export const ConsciousnessDashboard: React.FC = () => {
             }}
           >
             <FontAwesomeIcon icon={
+              section === 'campaigns' ? faChartBar :
               section === 'overview' ? faEye :
               section === 'philosophies' ? faLightbulb :
-              section === 'thoughts' ? faCommentDots :
-              faChartBar
+              faCommentDots
             } style={{ marginRight: 6 }} />
-            {section.charAt(0).toUpperCase() + section.slice(1)}
+            {section === 'campaigns' ? 'Mail Flow' : section.charAt(0).toUpperCase() + section.slice(1)}
             {section === 'thoughts' && liveThoughts.length > 0 && (
               <span style={styles.liveDot} />
             )}
@@ -232,10 +257,10 @@ export const ConsciousnessDashboard: React.FC = () => {
 
       {/* Content */}
       <div style={styles.content}>
+        {activeSection === 'campaigns' && renderCampaigns(campaigns)}
         {activeSection === 'overview' && renderOverview(state, campaigns, allThoughts)}
         {activeSection === 'philosophies' && renderPhilosophies(filteredPhilosophies, selectedISP, setSelectedISP)}
         {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef)}
-        {activeSection === 'campaigns' && renderCampaigns(campaigns)}
       </div>
     </div>
   );
@@ -494,12 +519,38 @@ function renderThoughts(thoughts: Thought[], endRef: React.RefObject<HTMLDivElem
 }
 
 function renderCampaigns(campaigns: CampaignMetrics[]) {
+  const totals = campaigns.reduce((acc, c) => ({
+    sent: acc.sent + c.sent,
+    delivered: acc.delivered + c.delivered,
+    opens: acc.opens + c.opens,
+    clicks: acc.clicks + c.clicks,
+    bounces: acc.bounces + c.soft_bounce + c.hard_bounce,
+    complaints: acc.complaints + c.complaints,
+  }), { sent: 0, delivered: 0, opens: 0, clicks: 0, bounces: 0, complaints: 0 });
+
   return (
     <div>
+      {/* PMTA Throughput Summary */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 20 }}>
+        {[
+          { label: 'Total Sent', value: totals.sent, color: '#8b5cf6' },
+          { label: 'Delivered', value: totals.delivered, color: '#10b981' },
+          { label: 'Opens', value: totals.opens, color: '#06b6d4' },
+          { label: 'Clicks', value: totals.clicks, color: '#3b82f6' },
+          { label: 'Bounces', value: totals.bounces, color: '#f59e0b' },
+          { label: 'Complaints', value: totals.complaints, color: '#ef4444' },
+        ].map(m => (
+          <div key={m.label} style={{ background: '#1e1f2e', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid #2d2e3e' }}>
+            <div style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }}>{m.value.toLocaleString()}</div>
+            <div style={{ color: '#8b8fa3', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+          </div>
+        ))}
+      </div>
+
       {campaigns.length === 0 ? (
         <div style={styles.emptyState}>
           <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: '#374151', marginBottom: 16 }} />
-          <p style={{ color: '#64748b' }}>No campaigns tracked yet. Events will appear as campaigns are sent.</p>
+          <p style={{ color: '#64748b' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
         </div>
       ) : (
         <div style={styles.campaignGrid}>

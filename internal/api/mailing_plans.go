@@ -160,11 +160,12 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 
 	// Query per-ISP aggregate metrics from inbox profiles
+	// Uses total_sends (017 schema) with COALESCE fallback
 	rows, err := svc.db.QueryContext(ctx, `
 		SELECT 
 			domain,
 			COUNT(*) as profiles_count,
-			COALESCE(SUM(total_sent), 0) as total_sends,
+			COALESCE(SUM(total_sends), 0) as total_sends,
 			COALESCE(SUM(total_opens), 0) as total_opens,
 			COALESCE(SUM(total_clicks), 0) as total_clicks,
 			COALESCE(SUM(total_bounces), 0) as total_bounces,
@@ -172,11 +173,11 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			COALESCE(AVG(engagement_score), 0) as avg_engagement,
 			COALESCE(MAX(updated_at), NOW()) as last_learning,
 			COALESCE(MIN(updated_at), NOW()) as first_learning,
-			COALESCE(AVG(best_send_hour), 10) as avg_best_hour,
-			COALESCE(AVG(best_send_day), 2) as avg_best_day,
-			COUNT(CASE WHEN engagement_score >= 70 THEN 1 END) as high_count,
-			COUNT(CASE WHEN engagement_score >= 40 AND engagement_score < 70 THEN 1 END) as medium_count,
-			COUNT(CASE WHEN engagement_score > 0 AND engagement_score < 40 THEN 1 END) as low_count,
+			COALESCE(AVG(optimal_send_hour), 10) as avg_best_hour,
+			COALESCE(AVG(optimal_send_day), 2) as avg_best_day,
+			COUNT(CASE WHEN engagement_score >= 0.70 THEN 1 END) as high_count,
+			COUNT(CASE WHEN engagement_score >= 0.40 AND engagement_score < 0.70 THEN 1 END) as medium_count,
+			COUNT(CASE WHEN engagement_score > 0 AND engagement_score < 0.40 THEN 1 END) as low_count,
 			COUNT(CASE WHEN engagement_score = 0 THEN 1 END) as inactive_count,
 			COUNT(CASE WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '7 days' THEN 1 END) as recent_openers,
 			COUNT(CASE WHEN last_click_at IS NOT NULL AND last_click_at > NOW() - INTERVAL '7 days' THEN 1 END) as recent_clickers

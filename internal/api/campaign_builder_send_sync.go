@@ -242,11 +242,40 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		
 		if sendErr == nil && result["success"] == true {
 			sent++
-			// Record sent event
+
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_time, metadata)
-				VALUES ($1, $2, $3, $4, 'sent', NOW(), $5)
+				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_at, event_time, metadata)
+				VALUES ($1, $2, $3, $4, 'sent', NOW(), NOW(), $5)
 			`, emailID, campUUID, sub.ID, sub.Email, fmt.Sprintf(`{"message_id": "%v", "vendor": "%s"}`, result["message_id"], profile.VendorType))
+
+			// Bootstrap inbox profile for this recipient
+			recipientDomain := ""
+			if atIdx := strings.LastIndex(sub.Email, "@"); atIdx >= 0 {
+				recipientDomain = strings.ToLower(sub.Email[atIdx+1:])
+			}
+			isp := extractISP(sub.Email)
+			hash := emailHash(sub.Email)
+			cb.db.ExecContext(ctx, `
+				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_sends, last_send_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+				ON CONFLICT (email_hash) DO UPDATE SET total_sends = mailing_inbox_profiles.total_sends + 1, last_send_at = NOW(), updated_at = NOW()
+			`, hash, sub.Email, recipientDomain, isp)
+
+			// Spawn/update ISP agent
+			cb.db.ExecContext(ctx, `
+				INSERT INTO mailing_isp_agents (id, organization_id, isp, domain, total_sends, total_campaigns, status, last_active_at, created_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, 1, 'active', NOW(), NOW(), NOW())
+				ON CONFLICT (organization_id, domain) DO UPDATE SET
+					total_sends = mailing_isp_agents.total_sends + 1,
+					status = 'active',
+					last_active_at = NOW(),
+					updated_at = NOW()
+			`, orgID, isp, recipientDomain)
+
+			// Notify in-memory tracker
+			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
+				cb.mailingSvc.onTrackingEvent(campUUID.String(), "sent", sub.Email, isp)
+			}
 		} else {
 			failed++
 		}

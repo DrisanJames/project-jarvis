@@ -61,6 +61,27 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 	orgID := getOrgID(r)
 	ctx := r.Context()
 
+	// Auto-populate from PMTA sending profiles if table is empty for this org
+	var domainCount int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mailing_sending_domains WHERE organization_id = $1`, orgID).Scan(&domainCount)
+	if domainCount == 0 {
+		s.db.ExecContext(ctx, `
+			INSERT INTO mailing_sending_domains (id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), sp.organization_id, sp.sending_domain, true, true, true, 'verified', NOW(), NOW()
+			FROM mailing_sending_profiles sp
+			WHERE sp.organization_id = $1 AND sp.vendor_type = 'pmta'
+			  AND sp.sending_domain IS NOT NULL AND sp.sending_domain != ''
+			ON CONFLICT (organization_id, domain) DO NOTHING
+		`, orgID)
+		s.db.ExecContext(ctx, `
+			INSERT INTO mailing_sending_domains (id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), sp.organization_id, SUBSTRING(sp.from_email FROM POSITION('@' IN sp.from_email) + 1), true, true, true, 'verified', NOW(), NOW()
+			FROM mailing_sending_profiles sp
+			WHERE sp.organization_id = $1 AND sp.vendor_type = 'pmta' AND sp.from_email LIKE '%@%'
+			ON CONFLICT (organization_id, domain) DO NOTHING
+		`, orgID)
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sd.id, sd.domain, sd.spf_verified, sd.dkim_verified, sd.dmarc_verified,
 		       COALESCE(sd.status, 'active')

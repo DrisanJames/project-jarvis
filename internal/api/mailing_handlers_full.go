@@ -55,13 +55,15 @@ func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
 	if signingKey == "" {
 		signingKey = "ignite-tracking-secret-dev"
 	}
-	return &MailingService{
+	svc := &MailingService{
 		db:           db,
 		sparkpostKey: sparkpostKey,
 		trackingURL:  trackingURL,
 		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
+	svc.ensureTrackingSchema()
+	return svc
 }
 
 // MailingThrottler controls send rates

@@ -36,7 +36,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library';
 
 interface Tab {
   id: TabId;
@@ -62,7 +62,8 @@ const tabs: Tab[] = [
   { id: 'sending-plans', label: 'AI Plans', icon: faRobot, description: 'ISP-specific AI agents & intelligence' },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
-  { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'Legacy delivery servers' },
+  { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
+  { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
   { id: 'offers', label: 'Offers', icon: faFileAlt, description: 'Network offers, AI suggestions & creative library' },
   { id: 'jarvis', label: 'Jarvis AI', icon: faRobot, description: 'Autonomous AI campaign orchestrator & monitoring' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
@@ -133,6 +134,8 @@ export const MailingPortal: React.FC = () => {
         return <SendTestEmail />;
       case 'analytics':
         return <AnalyticsCenter />;
+      case 'content-library':
+        return <TemplatesManager />;
       case 'delivery-servers':
         return <DeliveryServersManager />;
       case 'offers':
@@ -716,81 +719,120 @@ const ABTestsManager: React.FC = () => {
   );
 };
 
-// Delivery Servers Manager
+// Delivery Servers Manager — renders from API response + PMTA servers
 const DeliveryServersManager: React.FC = () => {
   const [servers, setServers] = useState<any[]>([]);
+  const [pmtaServers, setPmtaServers] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/mailing/delivery-servers')
-      .then(r => r.json())
-      .then(data => {
-        setServers(data.servers || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    Promise.all([
+      fetch('/api/mailing/delivery-servers').then(r => r.json()).catch(() => ({ servers: [] })),
+      fetch('/api/mailing/pmta/servers').then(r => r.json()).catch(() => ({ servers: [] })),
+      fetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
+    ]).then(([ds, pmta, prof]) => {
+      setServers(ds.servers || []);
+      setPmtaServers(pmta.servers || []);
+      setProfiles((prof.profiles || []).filter((p: any) => p.vendor_type === 'pmta'));
+      setLoading(false);
+    });
   }, []);
-
-  // Log servers count for debugging
-  console.log('Loaded servers:', servers.length);
 
   if (loading) return <div className="loading-state">Loading servers...</div>;
 
-  const predefinedServers = [
-    { name: 'SparkPost', type: 'sparkpost', status: 'active', description: 'Primary production sending. Handles all transactional and marketing emails.', quota: '200M/month' },
-    { name: 'AWS SES', type: 'ses', status: 'active', description: 'Backup sender. Metrics collection enabled via VDM.', quota: '3M/month' },
-    { name: 'Mailgun', type: 'mailgun', status: 'active', description: 'Domain-specific sending. 5 domains configured.', quota: '83M/month' },
+  const allServers = [
+    ...pmtaServers.map((s: any) => ({ ...s, source: 'pmta-registry' })),
+    ...servers.filter((s: any) => s.server_type === 'pmta').map((s: any) => ({ ...s, source: 'delivery-servers' })),
   ];
+
+  const hasPMTA = allServers.length > 0 || profiles.length > 0;
 
   return (
     <div className="manager-page">
       <div className="page-explanation">
-        <h3>What are Delivery Servers?</h3>
-        <p>Delivery servers are the <strong>email service providers</strong> (ESPs) that actually send your emails. 
-        Jarvis is connected to multiple ESPs for redundancy and optimal deliverability.</p>
+        <h3>PMTA Delivery Infrastructure</h3>
+        <p>Your mail is routed through <strong>PowerMTA</strong> servers. Each server manages dedicated IPs, 
+        DKIM signing, and ISP-specific routing for maximum deliverability.</p>
       </div>
 
+      {!hasPMTA && (
+        <div className="no-data" style={{textAlign:'center', padding:'40px 20px'}}>
+          <p>No PMTA servers configured yet. Run the seed migration to populate infrastructure.</p>
+        </div>
+      )}
+
       <div className="servers-grid">
-        {predefinedServers.map(s => (
-          <div key={s.name} className="server-card">
+        {allServers.map((s, i) => (
+          <div key={s.id || i} className="server-card">
             <div className="server-header">
-              <span className="server-icon">
-                {s.type === 'sparkpost' ? '⚡' : s.type === 'ses' ? '☁️' : '📬'}
+              <span className="server-icon" style={{fontSize:'1.5em'}}>
+                {String.fromCodePoint(0x1F4E8)}
               </span>
-              <h4>{s.name}</h4>
-              <span className={`status-dot ${s.status}`}></span>
+              <h4>{s.name || 'PMTA Server'}</h4>
+              <span className={`status-dot ${s.status || s.health_status || 'active'}`}></span>
             </div>
-            <p className="server-description">{s.description}</p>
+            <p className="server-description">
+              Host: <strong>{s.host || s.hostname || s.region || 'N/A'}</strong>
+              {s.smtp_port ? ` | Port: ${s.smtp_port}` : ''}
+              {s.provider ? ` | Provider: ${s.provider}` : ''}
+            </p>
             <div className="server-stats">
               <div className="stat">
-                <span className="stat-label">Quota</span>
-                <span className="stat-value">{s.quota}</span>
+                <span className="stat-label">Type</span>
+                <span className="stat-value">PMTA</span>
               </div>
               <div className="stat">
                 <span className="stat-label">Status</span>
-                <span className="stat-value capitalize">{s.status}</span>
+                <span className="stat-value capitalize">{s.status || s.health_status || 'active'}</span>
               </div>
+              {(s.hourly_quota || s.daily_quota) && (
+                <div className="stat">
+                  <span className="stat-label">Quota</span>
+                  <span className="stat-value">{(s.hourly_quota || 0).toLocaleString()}/hr</span>
+                </div>
+              )}
             </div>
           </div>
         ))}
       </div>
 
+      {profiles.length > 0 && (
+        <>
+          <h4 style={{margin:'24px 0 12px', color:'#e2e8f0'}}>PMTA Sending Profiles</h4>
+          <div className="items-list">
+            {profiles.map((p: any) => (
+              <div key={p.id} className="list-item">
+                <div className="item-main">
+                  <strong>{p.name}</strong>
+                  <span className="item-description">{p.from_email} via {p.smtp_host}:{p.smtp_port}</span>
+                </div>
+                <div className="item-meta">
+                  <span className="meta-badge">{(p.hourly_limit || 0).toLocaleString()}/hr</span>
+                  <span className={`status-badge ${p.status}`}>{p.status}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       <div className="server-info">
-        <h4>How Sending Works</h4>
+        <h4>How PMTA Sending Works</h4>
         <ol>
-          <li><strong>SparkPost (Primary)</strong> - All emails are first routed through SparkPost with full tracking enabled.</li>
-          <li><strong>Suppression Check</strong> - Before sending, each address is checked against bounces, complaints, and manual suppressions.</li>
-          <li><strong>Throttling</strong> - Sends are rate-limited to protect sender reputation (1000/minute, 50000/hour default).</li>
-          <li><strong>Webhooks</strong> - Bounces and complaints are received via webhook and automatically added to suppression.</li>
+          <li><strong>PMTA Relay</strong> — Emails are relayed through your dedicated PMTA server with per-ISP routing rules.</li>
+          <li><strong>Suppression Check</strong> — Before sending, each address is checked against bounces, complaints, and the global suppression hub.</li>
+          <li><strong>IP Rotation</strong> — Messages rotate across your dedicated IP pool based on ISP and warmup stage.</li>
+          <li><strong>DKIM Signing</strong> — PMTA applies domain-specific DKIM signatures on outbound mail.</li>
+          <li><strong>Tracking</strong> — Opens and clicks are tracked through the platform's tracking pixel and link wrapper.</li>
         </ol>
       </div>
     </div>
   );
 };
 
-// Templates Manager (replaced by OfferCenter)
-// @ts-ignore: Kept as reference
-const _TemplatesManager: React.FC = () => {
+// Content Library — reusable email templates
+const TemplatesManager: React.FC = () => {
   const [templates, setTemplates] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [newTemplate, setNewTemplate] = useState({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '' });

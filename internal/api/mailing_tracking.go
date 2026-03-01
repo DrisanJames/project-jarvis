@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +16,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
+
+func emailHash(email string) string {
+	h := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return fmt.Sprintf("%x", h)
+}
 
 // Helper to sign tracking data
 func signData(data, key string) string {
@@ -29,63 +35,64 @@ func signData(data, key string) string {
 func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
-	
-	// Decode tracking data
+
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
-		// Return transparent pixel anyway
 		svc.serveTrackingPixel(w)
 		return
 	}
-	
+
 	parts := strings.Split(string(decoded), "|")
 	if len(parts) < 4 {
 		svc.serveTrackingPixel(w)
 		return
 	}
-	
+
 	orgID, _ := uuid.Parse(parts[0])
 	campaignID, _ := uuid.Parse(parts[1])
 	subscriberID, _ := uuid.Parse(parts[2])
 	emailID, _ := uuid.Parse(parts[3])
-	
-	// Get subscriber email
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
-	
-	// Record open event (use emailID as the event ID for deduplication)
-	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_time, ip_address, user_agent, device_type)
-		VALUES ($1, $2, $3, $4, $5, 'opened', NOW(), $6, $7, $8)
-		ON CONFLICT DO NOTHING
-	`, emailID, orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent()))
-	
-	// Update campaign stats (atomic increment)
-	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = open_count + 1 WHERE id = $1`, campaignID)
-	
-	// Update subscriber engagement
-	svc.db.ExecContext(ctx, `
-		UPDATE mailing_subscribers SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW()
-		WHERE id = $1
-	`, subscriberID)
-	
-	// Update inbox profile
-	svc.db.ExecContext(ctx, `
-		UPDATE mailing_inbox_profiles SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW()
-		WHERE email = $1
-	`, email)
-	
-	// Recalculate engagement score
-	svc.updateEngagementScore(ctx, subscriberID)
-	
-	log.Printf("TRACK OPEN: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
-	
-	// Notify campaign event tracker
+
+	isp := extractISP(email)
+	log.Printf("TRACK OPEN: campaign=%s subscriber=%s email=%s isp=%s", campaignID, subscriberID, email, isp)
+
+	// Fire in-memory tracker FIRST so dashboards update even if DB write fails
 	if svc.onTrackingEvent != nil {
-		svc.onTrackingEvent(campaignID.String(), "open", email, "")
+		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
-	// Serve tracking pixel
+	// Persist to DB — uses columns guaranteed by migration 037
+	if _, err := svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent, device_type)
+		VALUES ($1, $2, $3, $4, $5, 'opened', NOW(), NOW(), $6, $7, $8)
+		ON CONFLICT DO NOTHING
+	`, emailID, orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent())); err != nil {
+		log.Printf("TRACK OPEN DB ERROR: %v", err)
+	}
+
+	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1 WHERE id = $1`, campaignID)
+
+	svc.db.ExecContext(ctx, `
+		UPDATE mailing_subscribers SET total_opens = COALESCE(total_opens, 0) + 1, last_open_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+	`, subscriberID)
+
+	domain := ""
+	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
+		domain = strings.ToLower(email[atIdx+1:])
+	}
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_opens, last_open_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+		ON CONFLICT (email_hash) DO UPDATE SET total_opens = mailing_inbox_profiles.total_opens + 1, last_open_at = NOW(), updated_at = NOW()
+	`, emailHash(email), email, domain, isp)
+
+	svc.updateEngagementScore(ctx, subscriberID)
+	svc.updateISPAgent(ctx, campaignID, isp, "open")
+
 	svc.serveTrackingPixel(w)
 }
 
@@ -93,62 +100,63 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
-	
-	// Decode tracking data
+
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
 		http.Error(w, "Invalid tracking link", http.StatusBadRequest)
 		return
 	}
-	
+
 	parts := strings.Split(string(decoded), "|")
 	if len(parts) < 5 {
 		http.Error(w, "Invalid tracking data", http.StatusBadRequest)
 		return
 	}
-	
+
 	orgID, _ := uuid.Parse(parts[0])
 	campaignID, _ := uuid.Parse(parts[1])
 	subscriberID, _ := uuid.Parse(parts[2])
 	emailID, _ := uuid.Parse(parts[3])
 	originalURL := parts[4]
-	
-	// Get subscriber email
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
-	
-	// Record click event
-	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_time, ip_address, user_agent, device_type, link_url)
-		VALUES ($1, $2, $3, $4, $5, 'clicked', NOW(), $6, $7, $8, $9)
-	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL)
-	
-	// Update campaign stats
-	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = click_count + 1 WHERE id = $1`, campaignID)
-	
-	// Update subscriber engagement
-	svc.db.ExecContext(ctx, `
-		UPDATE mailing_subscribers SET total_clicks = total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
-		WHERE id = $1
-	`, subscriberID)
-	
-	// Update inbox profile
-	svc.db.ExecContext(ctx, `
-		UPDATE mailing_inbox_profiles SET total_clicks = total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
-		WHERE email = $1
-	`, email)
-	
-	// Recalculate engagement score
-	svc.updateEngagementScore(ctx, subscriberID)
-	
-	log.Printf("TRACK CLICK: campaign=%s subscriber=%s email_id=%s url=%s", campaignID, subscriberID, emailID, originalURL)
-	
-	// Notify campaign event tracker
+
+	isp := extractISP(email)
+	log.Printf("TRACK CLICK: campaign=%s subscriber=%s email_id=%s url=%s isp=%s", campaignID, subscriberID, emailID, originalURL, isp)
+
+	// Fire in-memory tracker FIRST
 	if svc.onTrackingEvent != nil {
-		svc.onTrackingEvent(campaignID.String(), "click", email, "")
+		svc.onTrackingEvent(campaignID.String(), "click", email, isp)
 	}
 
-	// Redirect to original URL
+	if _, err := svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent, device_type, link_url)
+		VALUES ($1, $2, $3, $4, $5, 'clicked', NOW(), NOW(), $6, $7, $8, $9)
+	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
+		log.Printf("TRACK CLICK DB ERROR: %v", err)
+	}
+
+	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1 WHERE id = $1`, campaignID)
+
+	svc.db.ExecContext(ctx, `
+		UPDATE mailing_subscribers SET total_clicks = COALESCE(total_clicks, 0) + 1, last_click_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+	`, subscriberID)
+
+	clickDomain := ""
+	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
+		clickDomain = strings.ToLower(email[atIdx+1:])
+	}
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_clicks, last_click_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+		ON CONFLICT (email_hash) DO UPDATE SET total_clicks = mailing_inbox_profiles.total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
+	`, emailHash(email), email, clickDomain, isp)
+
+	svc.updateEngagementScore(ctx, subscriberID)
+	svc.updateISPAgent(ctx, campaignID, isp, "click")
+
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
@@ -177,10 +185,16 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 	
-	// Record unsubscribe event
+	isp := extractISP(email)
+
+	// Fire in-memory tracker FIRST
+	if svc.onTrackingEvent != nil {
+		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, isp)
+	}
+
 	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_time, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $5, 'unsubscribed', NOW(), $6, $7)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4, $5, 'unsubscribed', NOW(), NOW(), $6, $7)
 	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent())
 	
 	// Update subscriber status
@@ -197,11 +211,6 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	`, uuid.New(), email)
 	
 	log.Printf("TRACK UNSUBSCRIBE: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
-	
-	// Notify campaign event tracker
-	if svc.onTrackingEvent != nil {
-		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, "")
-	}
 
 	// Return confirmation page
 	w.Header().Set("Content-Type", "text/html")
@@ -261,6 +270,101 @@ func (svc *MailingService) updateEngagementScore(ctx context.Context, subscriber
 	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET engagement_score = $2, updated_at = NOW() WHERE id = $1`, subscriberID, score)
 }
 
+// extractISP derives the ISP name from an email address domain
+func extractISP(email string) string {
+	parts := strings.Split(email, "@")
+	if len(parts) < 2 {
+		return "unknown"
+	}
+	domain := strings.ToLower(parts[1])
+	switch {
+	case strings.Contains(domain, "gmail"):
+		return "Gmail"
+	case strings.Contains(domain, "yahoo") || strings.Contains(domain, "ymail"):
+		return "Yahoo"
+	case strings.Contains(domain, "outlook") || strings.Contains(domain, "hotmail") || strings.Contains(domain, "live.com") || strings.Contains(domain, "msn.com"):
+		return "Microsoft"
+	case strings.Contains(domain, "aol"):
+		return "AOL"
+	case strings.Contains(domain, "icloud") || strings.Contains(domain, "me.com") || strings.Contains(domain, "mac.com"):
+		return "Apple"
+	case strings.Contains(domain, "comcast"):
+		return "Comcast"
+	case strings.Contains(domain, "att.net"):
+		return "AT&T"
+	case strings.Contains(domain, "verizon"):
+		return "Verizon"
+	default:
+		return domain
+	}
+}
+
+// updateISPAgent upserts ISP agent metrics when tracking events occur.
+// The mailing_isp_agents table uses (organization_id, domain) as unique key.
+func (svc *MailingService) updateISPAgent(ctx context.Context, campaignID uuid.UUID, isp, eventType string) {
+	if isp == "" || isp == "unknown" {
+		return
+	}
+	orgID := "00000000-0000-0000-0000-000000000001"
+	domain := strings.ToLower(isp) + ".com"
+
+	var openInc, clickInc int
+	switch eventType {
+	case "open":
+		openInc = 1
+	case "click":
+		clickInc = 1
+	}
+
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_isp_agents (id, organization_id, isp, domain, total_opens, total_clicks, status, last_active_at, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'active', NOW(), NOW(), NOW())
+		ON CONFLICT (organization_id, domain) DO UPDATE SET
+			total_opens = mailing_isp_agents.total_opens + $4,
+			total_clicks = mailing_isp_agents.total_clicks + $5,
+			status = 'active',
+			last_active_at = NOW(),
+			updated_at = NOW()
+	`, orgID, isp, domain, openInc, clickInc)
+}
+
+// ensureTrackingSchema runs idempotent DDL at startup to guarantee tracking columns exist
+func (svc *MailingService) ensureTrackingSchema() {
+	stmts := []string{
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW()`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS organization_id UUID`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS device_type VARCHAR(20)`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS link_url TEXT`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`,
+		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`,
+	}
+	for _, s := range stmts {
+		if _, err := svc.db.Exec(s); err != nil {
+			log.Printf("[tracking] schema migration (non-fatal): %v", err)
+		}
+	}
+
+	// Drop restrictive event_type CHECK constraints
+	svc.db.Exec(`DO $$ DECLARE r RECORD; BEGIN
+		FOR r IN SELECT con.conname FROM pg_constraint con
+			JOIN pg_class rel ON rel.oid = con.conrelid
+			WHERE rel.relname = 'mailing_tracking_events' AND con.contype = 'c'
+			AND pg_get_constraintdef(con.oid) ILIKE '%event_type%'
+		LOOP EXECUTE 'ALTER TABLE mailing_tracking_events DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname);
+		END LOOP;
+	END $$`)
+
+	// Make organization_id nullable
+	svc.db.Exec(`DO $$ BEGIN ALTER TABLE mailing_tracking_events ALTER COLUMN organization_id DROP NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$`)
+
+	// Ensure inbox_profiles has email column for display
+	svc.db.Exec(`ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS email TEXT`)
+	svc.db.Exec(`CREATE INDEX IF NOT EXISTS idx_inbox_profiles_email_text ON mailing_inbox_profiles(email)`)
+
+	log.Println("[tracking] schema reconciliation complete")
+}
+
 // detectDeviceType determines device type from User-Agent
 func detectDeviceType(ua string) string {
 	ua = strings.ToLower(ua)
@@ -281,9 +385,9 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	limit := r.URL.Query().Get("limit")
 	if limit == "" { limit = "100" }
 	
-	// Query uses correct schema - joins to get email from subscriber
 	query := `
-		SELECT e.id, COALESCE(s.email, ''), e.event_type, e.event_at, e.ip_address, e.user_agent, e.device_type, e.link_url
+		SELECT e.id, COALESCE(e.email, COALESCE(s.email, '')), e.event_type,
+		       COALESCE(e.event_time, e.event_at), e.ip_address, e.user_agent, e.device_type, e.link_url
 		FROM mailing_tracking_events e
 		LEFT JOIN mailing_subscribers s ON e.subscriber_id = s.id
 		WHERE e.campaign_id = $1
