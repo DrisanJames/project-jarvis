@@ -139,6 +139,16 @@ func main() {
 	// Set the full config on server for handlers that need it (e.g., IP pool types)
 	server.SetConfig(cfg)
 
+	// Start HTTP server early so ALB health checks pass during initialization.
+	// The basic /health handler is already registered from SetupRoutes.
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
+		log.Printf("Starting server on %s (early start for health checks)", addr)
+		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
 	// Initialize Mailing Platform with PostgreSQL
 	if cfg.Mailing.Enabled && cfg.Mailing.DatabaseURL != "" {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
@@ -882,13 +892,7 @@ func main() {
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
-		log.Printf("Starting server on %s", addr)
-		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
-	}()
+	log.Println("All services initialized — server is ready")
 
 	<-done
 	log.Println("Shutting down...")
