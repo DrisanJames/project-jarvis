@@ -3,12 +3,15 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/smtp"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -512,26 +515,113 @@ func (svc *MailingService) sendViaSendGrid(ctx context.Context, apiKey, to, from
 	}, nil
 }
 
-// sendViaSMTP sends email through SMTP relay
+// sendViaSMTP sends email through an SMTP relay (PMTA or generic).
 func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port int, username, password, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
 	if host == "" {
 		return nil, fmt.Errorf("SMTP host not configured")
 	}
 
-	// For SMTP, we would use net/smtp or a library like gomail
-	// This is a simplified implementation
-	log.Printf("SMTP: Would send to %s via %s:%d", to, host, port)
+	messageID := fmt.Sprintf("%s@%s", uuid.New().String(), host)
 
-	// Generate a message ID
-	messageID := fmt.Sprintf("<%s@%s>", uuid.New().String(), host)
+	// Build MIME message
+	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
+	var msg bytes.Buffer
+	msg.WriteString(fmt.Sprintf("From: %s <%s>\r\n", fromName, fromEmail))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	msg.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	if replyEmail != "" {
+		msg.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
+	}
+	msg.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
+	msg.WriteString("\r\n")
+
+	if textContent != "" {
+		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		msg.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+		msg.WriteString(textContent)
+		msg.WriteString("\r\n")
+	}
+	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	msg.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+	msg.WriteString(htmlContent)
+	msg.WriteString("\r\n")
+	msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+
+	// Connect to SMTP server
+	addr := fmt.Sprintf("%s:%d", host, port)
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+	}
+
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("SMTP client init: %w", err)
+	}
+	defer client.Close()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: true}
+		if tlsErr := client.StartTLS(tlsCfg); tlsErr != nil {
+			log.Printf("[SMTP] STARTTLS failed (continuing without TLS): %v", tlsErr)
+		}
+	}
+
+	if username != "" && password != "" {
+		auth := &smtpPlainAuth{user: username, pass: password}
+		if authErr := client.Auth(auth); authErr != nil {
+			log.Printf("[SMTP] AUTH failed (continuing, relay may still work): %v", authErr)
+		}
+	}
+
+	if err := client.Mail(fromEmail); err != nil {
+		return nil, fmt.Errorf("MAIL FROM: %w", err)
+	}
+	if err := client.Rcpt(to); err != nil {
+		return nil, fmt.Errorf("RCPT TO: %w", err)
+	}
+	w, err := client.Data()
+	if err != nil {
+		return nil, fmt.Errorf("DATA: %w", err)
+	}
+	if _, err := w.Write(msg.Bytes()); err != nil {
+		return nil, fmt.Errorf("write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("DATA close: %w", err)
+	}
+	client.Quit()
+
+	log.Printf("[SMTP] Sent to %s via %s (id: %s)", to, addr, messageID)
 
 	return map[string]interface{}{
 		"success":    true,
-		"message_id": messageID,
+		"message_id": fmt.Sprintf("<%s>", messageID),
 		"to":         to,
 		"sent_at":    time.Now().Format(time.RFC3339),
 		"note":       fmt.Sprintf("Sent via SMTP %s:%d", host, port),
 	}, nil
+}
+
+// smtpPlainAuth implements smtp.Auth without the TLS requirement that
+// Go's stdlib PlainAuth enforces. PMTA on private networks doesn't use TLS.
+type smtpPlainAuth struct {
+	user, pass string
+}
+
+func (a *smtpPlainAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	resp := []byte("\x00" + a.user + "\x00" + a.pass)
+	return "PLAIN", resp, nil
+}
+
+func (a *smtpPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	return nil, nil
 }
 
 // HandleSendEmail sends an email (full version)
