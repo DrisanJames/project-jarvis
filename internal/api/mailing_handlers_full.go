@@ -62,7 +62,8 @@ func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
 		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
-	go svc.ensureTrackingSchema()
+	// DDL migrations moved to SQL migration files — skip at runtime to avoid table locks
+	// go svc.ensureTrackingSchema()
 	return svc
 }
 

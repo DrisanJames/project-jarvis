@@ -42,10 +42,7 @@ func NewABTestingService(db *sql.DB, mailingSvc *MailingService) *ABTestingServi
 
 // ensureSchema ensures required tables exist
 func (s *ABTestingService) ensureSchema() {
-	// Add columns to campaigns if not exist
-	s.db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS is_ab_test BOOLEAN DEFAULT FALSE`)
-	s.db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS ab_test_id UUID`)
-	s.db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS ab_variant_id UUID`)
+	// DDL migrations moved to SQL migration files — skip at runtime
 }
 
 // RegisterRoutes registers A/B testing routes under campaigns

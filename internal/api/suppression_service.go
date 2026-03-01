@@ -87,32 +87,7 @@ func (s *SuppressionService) ensureTables() {
 		)
 	`)
 
-	// Add missing columns to existing tables (migrations)
-	s.db.Exec(`ALTER TABLE mailing_suppression_lists ADD COLUMN IF NOT EXISTS is_global BOOLEAN DEFAULT FALSE`)
-	s.db.Exec(`ALTER TABLE mailing_suppression_lists ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'internal'`)
-
-	s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS mailing_suppression_entries (
-			id VARCHAR(100) PRIMARY KEY,
-			list_id VARCHAR(100) REFERENCES mailing_suppression_lists(id),
-			email VARCHAR(255),
-			md5_hash VARCHAR(64),
-			reason VARCHAR(100),
-			source VARCHAR(100),
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-			UNIQUE(list_id, md5_hash)
-		)
-	`)
-
-	// Add missing columns to existing entries table (migrations)
-	s.db.Exec(`ALTER TABLE mailing_suppression_entries ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'manual'`)
-	s.db.Exec(`ALTER TABLE mailing_suppression_entries ADD COLUMN IF NOT EXISTS is_global BOOLEAN DEFAULT FALSE`)
-
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_suppression_entries_hash ON mailing_suppression_entries(md5_hash)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_suppression_entries_list ON mailing_suppression_entries(list_id)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_suppression_entries_email ON mailing_suppression_entries(email)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_suppression_entries_global ON mailing_suppression_entries(is_global)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_suppression_entries_category ON mailing_suppression_entries(category)`)
+	// DDL migrations for suppression tables moved to SQL migration files — skip at runtime
 
 	// Ensure Global Suppression List exists (industry standard)
 	s.ensureGlobalSuppressionList()

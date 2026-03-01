@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"database/sql"
 	"log"
 	"net/http"
@@ -74,12 +73,8 @@ func getOrganizationUUID(r *http.Request) uuid.UUID {
 
 // ensureSchema ensures the campaign table has the correct constraints
 func (cb *CampaignBuilder) ensureSchema() {
-	cb.db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`)
-
-	// ensureCampaignColumns handles dropping/re-creating all constraints
-	cb.ensureCampaignColumns(context.Background())
-
-	log.Println("CampaignBuilder: Schema constraints and columns updated")
+	// DDL migrations moved to SQL migration files — skip at runtime to avoid table locks
+	log.Println("CampaignBuilder: Schema initialized (DDL skipped)")
 }
 
 // RegisterRoutes registers campaign builder routes
