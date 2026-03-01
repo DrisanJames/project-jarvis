@@ -328,8 +328,12 @@ func (svc *MailingService) updateISPAgent(ctx context.Context, campaignID uuid.U
 	`, orgID, isp, domain, openInc, clickInc)
 }
 
-// ensureTrackingSchema runs idempotent DDL at startup to guarantee tracking columns exist
+// ensureTrackingSchema runs idempotent DDL at startup to guarantee tracking columns exist.
+// Runs with a timeout to avoid blocking server startup if locks are held.
 func (svc *MailingService) ensureTrackingSchema() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	stmts := []string{
 		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT`,
 		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW()`,
@@ -340,13 +344,12 @@ func (svc *MailingService) ensureTrackingSchema() {
 		`ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`,
 	}
 	for _, s := range stmts {
-		if _, err := svc.db.Exec(s); err != nil {
+		if _, err := svc.db.ExecContext(ctx, s); err != nil {
 			log.Printf("[tracking] schema migration (non-fatal): %v", err)
 		}
 	}
 
-	// Drop restrictive event_type CHECK constraints
-	svc.db.Exec(`DO $$ DECLARE r RECORD; BEGIN
+	svc.db.ExecContext(ctx, `DO $$ DECLARE r RECORD; BEGIN
 		FOR r IN SELECT con.conname FROM pg_constraint con
 			JOIN pg_class rel ON rel.oid = con.conrelid
 			WHERE rel.relname = 'mailing_tracking_events' AND con.contype = 'c'
@@ -355,12 +358,10 @@ func (svc *MailingService) ensureTrackingSchema() {
 		END LOOP;
 	END $$`)
 
-	// Make organization_id nullable
-	svc.db.Exec(`DO $$ BEGIN ALTER TABLE mailing_tracking_events ALTER COLUMN organization_id DROP NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$`)
+	svc.db.ExecContext(ctx, `DO $$ BEGIN ALTER TABLE mailing_tracking_events ALTER COLUMN organization_id DROP NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$`)
 
-	// Ensure inbox_profiles has email column for display
-	svc.db.Exec(`ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS email TEXT`)
-	svc.db.Exec(`CREATE INDEX IF NOT EXISTS idx_inbox_profiles_email_text ON mailing_inbox_profiles(email)`)
+	svc.db.ExecContext(ctx, `ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS email TEXT`)
+	svc.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_inbox_profiles_email_text ON mailing_inbox_profiles(email)`)
 
 	log.Println("[tracking] schema reconciliation complete")
 }

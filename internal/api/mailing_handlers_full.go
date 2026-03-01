@@ -62,7 +62,7 @@ func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
 		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
-	svc.ensureTrackingSchema()
+	go svc.ensureTrackingSchema()
 	return svc
 }
 
