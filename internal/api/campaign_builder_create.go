@@ -162,7 +162,9 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 	tx, err := cb.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("Error starting transaction for campaign creation: %v", err)
-		http.Error(w, `{"error":"Failed to create campaign"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create campaign", "detail": "begin_tx: " + err.Error()})
 		return
 	}
 	defer tx.Rollback()
@@ -194,20 +196,18 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 		campaignStatus)
 	
 	if err != nil {
-		log.Printf("Error creating campaign: %v", err)
-		// Rollback the failed transaction before running DDL migrations
+		log.Printf("Error creating campaign (attempt 1): %v", err)
 		tx.Rollback()
-		// Try to add missing columns (DDL runs outside any transaction)
 		cb.ensureCampaignColumns(ctx)
-		// Start a new transaction for the retry
 		tx, err = cb.db.BeginTx(ctx, nil)
 		if err != nil {
 			log.Printf("Error starting retry transaction: %v", err)
-			http.Error(w, `{"error":"Failed to create campaign"}`, http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create campaign", "detail": err.Error()})
 			return
 		}
 		defer tx.Rollback()
-		// Retry insert with simpler schema
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO mailing_campaigns (
 				id, organization_id, name, subject, preview_text,
@@ -228,9 +228,10 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 			input.SendType, input.ScheduledAt, input.ThrottleSpeed, input.MaxRecipients,
 			campaignStatus)
 		if err != nil {
-			log.Printf("Error creating campaign (retry): %v", err)
-			log.Printf("ERROR: failed to create campaign (retry): %v", err)
-			http.Error(w, `{"error":"Failed to create campaign"}`, http.StatusInternalServerError)
+			log.Printf("Error creating campaign (attempt 2): %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create campaign", "detail": err.Error()})
 			return
 		}
 	}
