@@ -308,6 +308,42 @@ func determineOverallStatus(checks map[string]ComponentCheck) string {
 	return "healthy"
 }
 
+// HandleDBStats returns raw database/sql pool statistics for diagnostics.
+func (hc *HealthChecker) HandleDBStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if hc.db == nil {
+		w.Write([]byte(`{"error":"no database configured"}`))
+		return
+	}
+	stats := hc.db.Stats()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	pingErr := ""
+	pingStart := time.Now()
+	if err := hc.db.PingContext(ctx); err != nil {
+		pingErr = err.Error()
+	}
+	pingLatency := time.Since(pingStart)
+
+	var pgInfo string
+	row := hc.db.QueryRowContext(ctx, `SELECT version()`)
+	if row != nil {
+		row.Scan(&pgInfo)
+	}
+
+	var activeConns int
+	row2 := hc.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()`)
+	if row2 != nil {
+		row2.Scan(&activeConns)
+	}
+
+	fmt.Fprintf(w, `{"pool":{"max_open":%d,"open":%d,"in_use":%d,"idle":%d,"wait_count":%d,"wait_duration":"%s","max_idle_closed":%d,"max_idle_time_closed":%d,"max_lifetime_closed":%d},"ping":{"latency":"%s","error":"%s"},"pg_version":"%s","pg_active_conns":%d}`,
+		stats.MaxOpenConnections, stats.OpenConnections, stats.InUse, stats.Idle,
+		stats.WaitCount, stats.WaitDuration, stats.MaxIdleClosed, stats.MaxIdleTimeClosed, stats.MaxLifetimeClosed,
+		pingLatency, pingErr, pgInfo, activeConns)
+}
+
 // formatUptime produces a human-readable uptime string like "3d 4h 12m 5s".
 func formatUptime(d time.Duration) string {
 	days := int(d.Hours()) / 24
