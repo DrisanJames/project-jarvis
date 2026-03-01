@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -249,7 +250,8 @@ func (svc *MailingService) HandleAddSuppression(w http.ResponseWriter, r *http.R
 // HandleListActivity returns subscriber activity stats using lightweight queries.
 // Uses data_import_log for recent import counts to avoid scanning mailing_subscribers.
 func (svc *MailingService) HandleListActivity(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
 
 	var new24h, new7d int
 	// Use import log for recent subscriber counts (avoids full table scan)
