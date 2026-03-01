@@ -113,7 +113,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// ============================================
 	// Initialize template service (with caching) and context builder
 	templateSvc := mailing.NewTemplateService()
-	contextBuilder := mailing.NewContextBuilder(cb.db, "https://track.ignite.media", "signing-key-placeholder")
+	contextBuilder := mailing.NewContextBuilder(cb.db, cb.mailingSvc.trackingURL, cb.mailingSvc.signingKey)
 	
 	// Pre-validate template syntax ONCE before the loop
 	// This prevents sending malformed templates to subscribers
