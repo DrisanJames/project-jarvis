@@ -107,7 +107,8 @@ jobs:
                   {"name": "ENVIRONMENT", "value": "production"},
                   {"name": "TRACKING_URL", "value": "${{ secrets.TRACKING_URL }}"},
                   {"name": "TRACKING_SECRET", "value": "${{ secrets.TRACKING_SECRET }}"},
-                  {"name": "SQS_TRACKING_QUEUE_URL", "value": "https://sqs.us-west-2.amazonaws.com/146361001621/ignite-tracking-events"}
+                  {"name": "SQS_TRACKING_QUEUE_URL", "value": "https://sqs.us-west-2.amazonaws.com/146361001621/ignite-tracking-events"},
+                  {"name": "ADMIN_API_KEY", "value": "a8314a1ea88b78bcb4540ed683c8234512f2f6666ba09be3ceefdb39dfd88b04"}
                 ],
                 "logConfiguration": {
                   "logDriver": "awslogs",

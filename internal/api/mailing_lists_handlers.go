@@ -179,10 +179,10 @@ func (svc *MailingService) HandleAddSubscriber(w http.ResponseWriter, r *http.Re
 		domain = parts[1]
 	}
 	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_inbox_profiles (id, email, domain, engagement_score, created_at, updated_at)
-		VALUES ($1, $2, $3, 50.0, NOW(), NOW())
-		ON CONFLICT (email) DO NOTHING
-	`, uuid.New(), email, domain)
+		INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, engagement_score, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 0.50, NOW(), NOW())
+		ON CONFLICT (email_hash) DO UPDATE SET email = EXCLUDED.email
+	`, uuid.New(), emailHash, email, domain)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

@@ -64,9 +64,14 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	r.Route("/api", func(r chi.Router) {
 		apiRouter = r // capture so late-registered groups can use it
 		// Apply auth middleware to all API routes (skip in dev mode)
+		adminKey := os.Getenv("ADMIN_API_KEY")
 		if authManager != nil && !devMode {
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					if adminKey != "" && req.Header.Get("X-Admin-Key") == adminKey {
+						next.ServeHTTP(w, req)
+						return
+					}
 					if !authManager.IsAuthenticated(req) {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusUnauthorized)
