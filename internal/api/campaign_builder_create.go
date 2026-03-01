@@ -49,7 +49,7 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 	
 	// Defaults
 	if input.SendType == "" {
-		input.SendType = "instant"
+		input.SendType = "blast"
 	}
 	if input.ThrottleSpeed == "" {
 		input.ThrottleSpeed = "gentle" // Default to gentle for better deliverability
