@@ -54,6 +54,19 @@ func checkPortAvailable(host string, port int) error {
 	return nil
 }
 
+func extractHost(dsn string) string {
+	at := strings.Index(dsn, "@")
+	if at < 0 {
+		return "(unknown)"
+	}
+	rest := dsn[at+1:]
+	slash := strings.Index(rest, "/")
+	if slash >= 0 {
+		rest = rest[:slash]
+	}
+	return rest
+}
+
 func main() {
 	log.Println("╔════════════════════════════════════════════════════════════╗")
 	log.Println("║  IGNITE Production Server (cmd/server/main.go)            ║")
@@ -150,8 +163,9 @@ func main() {
 			if strings.Contains(dbURL, "?") {
 				sep = "&"
 			}
-			dbURL += sep + "connect_timeout=10&statement_timeout=30000"
+			dbURL += sep + "connect_timeout=5"
 		}
+		log.Printf("DB URL host portion: ...@%s/...", extractHost(dbURL))
 		mailingDB, err := sql.Open("postgres", dbURL)
 		if err != nil {
 			log.Printf("Warning: Failed to connect to mailing database: %v", err)
