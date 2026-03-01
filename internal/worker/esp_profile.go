@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // ProfileBasedSender resolves a sending profile from the database and
@@ -85,6 +86,11 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		}
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
+		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
+			// api_endpoint is stored in the 'region' variable (COALESCE(api_endpoint, 'us-east-1'))
+			sender := NewPMTAAPISender(region, s.db)
+			return sender.Send(ctx, msg)
+		}
 		host := smtpHost.String
 		if host == "" {
 			return nil, fmt.Errorf("profile %s: no SMTP host for PMTA", msg.ProfileID)

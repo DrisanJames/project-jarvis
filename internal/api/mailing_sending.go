@@ -179,7 +179,26 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		}
 		result, err = svc.sendViaSendGrid(ctx, apiKey, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
 
-	case "smtp", "pmta":
+	case "pmta":
+		if profile.APIEndpoint != nil && *profile.APIEndpoint != "" {
+			result, err = svc.sendViaPMTAAPI(ctx, *profile.APIEndpoint, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
+		} else {
+			host := ""
+			if profile.SMTPHost != nil {
+				host = *profile.SMTPHost
+			}
+			user := ""
+			if profile.SMTPUser != nil {
+				user = *profile.SMTPUser
+			}
+			pass := ""
+			if profile.SMTPPass != nil {
+				pass = *profile.SMTPPass
+			}
+			result, err = svc.sendViaSMTP(ctx, host, profile.SMTPPort, user, pass, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
+		}
+
+	case "smtp":
 		host := ""
 		if profile.SMTPHost != nil {
 			host = *profile.SMTPHost
@@ -622,6 +641,97 @@ func (a *smtpPlainAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 
 func (a *smtpPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	return nil, nil
+}
+
+// sendViaPMTAAPI sends email through PMTA's HTTP injection API (port 19000).
+// This avoids SMTP port blocking issues between AWS and OVH.
+// Endpoint: POST {api_endpoint}/api/inject/v1
+func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
+	if apiEndpoint == "" {
+		return nil, fmt.Errorf("PMTA API endpoint not configured")
+	}
+
+	injectURL := strings.TrimRight(apiEndpoint, "/") + "/api/inject/v1"
+
+	// Build the RFC822 message content for PMTA injection
+	messageID := fmt.Sprintf("%s@pmta-api", uuid.New().String())
+	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
+
+	var rfc822 bytes.Buffer
+	rfc822.WriteString(fmt.Sprintf("From: %s <%s>\r\n", fromName, fromEmail))
+	rfc822.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	rfc822.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	rfc822.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
+	rfc822.WriteString("MIME-Version: 1.0\r\n")
+	if replyEmail != "" {
+		rfc822.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
+	}
+	rfc822.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
+	rfc822.WriteString("\r\n")
+
+	if textContent != "" {
+		rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		rfc822.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+		rfc822.WriteString(textContent)
+		rfc822.WriteString("\r\n")
+	}
+	rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	rfc822.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+	rfc822.WriteString(htmlContent)
+	rfc822.WriteString("\r\n")
+	rfc822.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+
+	// PMTA injection API payload
+	payload := map[string]interface{}{
+		"envelope_sender": fromEmail,
+		"recipients":      []map[string]string{{"email": to}},
+		"content":         rfc822.String(),
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal PMTA payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", injectURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create PMTA request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("PMTA API request to %s: %w", injectURL, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("PMTA API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var pmtaResp map[string]interface{}
+	json.Unmarshal(respBody, &pmtaResp)
+
+	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", to, injectURL, messageID, resp.StatusCode)
+
+	return map[string]interface{}{
+		"success":       true,
+		"message_id":    fmt.Sprintf("<%s>", messageID),
+		"to":            to,
+		"sent_at":       time.Now().Format(time.RFC3339),
+		"note":          fmt.Sprintf("Sent via PMTA HTTP API %s", apiEndpoint),
+		"pmta_response": pmtaResp,
+	}, nil
 }
 
 // HandleSendEmail sends an email (full version)
