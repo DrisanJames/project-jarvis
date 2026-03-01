@@ -255,12 +255,12 @@ func (svc *MailingService) HandleListActivity(w http.ResponseWriter, r *http.Req
 	// Use import log for recent subscriber counts (avoids full table scan)
 	svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(record_count), 0)::int FROM data_import_log
-		WHERE status = 'completed' AND completed_at > NOW() - INTERVAL '24 hours'
+		WHERE status = 'completed' AND processed_at > NOW() - INTERVAL '24 hours'
 	`).Scan(&new24h)
 
 	svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(record_count), 0)::int FROM data_import_log
-		WHERE status = 'completed' AND completed_at > NOW() - INTERVAL '7 days'
+		WHERE status = 'completed' AND processed_at > NOW() - INTERVAL '7 days'
 	`).Scan(&new7d)
 
 	// Unsubscribes from tracking events (lightweight)
@@ -279,7 +279,7 @@ func (svc *MailingService) HandleListActivity(w http.ResponseWriter, r *http.Req
 
 	// Recent imports as activity (fast — small table)
 	rows, err := svc.db.QueryContext(ctx, `
-		SELECT classification, original_key, record_count, COALESCE(completed_at, started_at, created_at)
+		SELECT classification, original_key, record_count, COALESCE(processed_at, started_at, created_at)
 		FROM data_import_log
 		ORDER BY created_at DESC LIMIT 10
 	`)
