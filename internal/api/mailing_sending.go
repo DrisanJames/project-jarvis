@@ -728,45 +728,39 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 	return query, args
 }
 
-// injectTracking adds tracking pixel and click tracking to HTML
+// injectTracking adds tracking pixel and click tracking to HTML.
+// URLs use the public /track/ routes (not /api/mailing/track/) so they
+// work without authentication and match the SendWorkerPool format.
 func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscriberID, emailID uuid.UUID) string {
-	baseURL := "http://localhost:8080" // Would come from config
-	
-	// Create tracking data
 	trackingData := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
+	sig := signData(trackingData, svc.signingKey)
 	encoded := base64.URLEncoding.EncodeToString([]byte(trackingData))
-	
-	// Add tracking pixel before </body>
-	pixel := fmt.Sprintf(`<img src="%s/api/mailing/track/open/%s" width="1" height="1" style="display:none" />`, baseURL, encoded)
+
+	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`,
+		svc.trackingURL, encoded, sig)
 	if strings.Contains(html, "</body>") {
 		html = strings.Replace(html, "</body>", pixel+"</body>", 1)
 	} else {
 		html += pixel
 	}
-	
-	// Replace links with tracked versions
+
 	linkRegex := regexp.MustCompile(`href=["'](https?://[^"']+)["']`)
 	html = linkRegex.ReplaceAllStringFunc(html, func(match string) string {
-		// Extract URL
 		urlMatch := linkRegex.FindStringSubmatch(match)
 		if len(urlMatch) < 2 {
 			return match
 		}
 		originalURL := urlMatch[1]
-		
-		// Skip if already a tracking URL
 		if strings.Contains(originalURL, "/track/") {
 			return match
 		}
-		
-		// Create tracked URL
+
 		linkData := fmt.Sprintf("%s|%s", trackingData, originalURL)
+		linkSig := signData(linkData, svc.signingKey)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
-		trackedURL := fmt.Sprintf("%s/api/mailing/track/click/%s", baseURL, linkEncoded)
-		
-		return fmt.Sprintf(`href="%s"`, trackedURL)
+		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, svc.trackingURL, linkEncoded, linkSig)
 	})
-	
+
 	return html
 }
 

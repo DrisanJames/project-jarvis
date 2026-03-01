@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -46,11 +47,19 @@ func (svc *MailingService) SetGlobalSuppressionHub(hub GlobalSuppressionChecker)
 }
 
 func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
+	trackingURL := os.Getenv("TRACKING_URL")
+	if trackingURL == "" {
+		trackingURL = "http://localhost:8080"
+	}
+	signingKey := os.Getenv("TRACKING_SECRET")
+	if signingKey == "" {
+		signingKey = "ignite-tracking-secret-dev"
+	}
 	return &MailingService{
 		db:           db,
 		sparkpostKey: sparkpostKey,
-		trackingURL:  "http://localhost:8080",
-		signingKey:   "ignite-tracking-secret-2026",
+		trackingURL:  trackingURL,
+		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
 }
