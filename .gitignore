@@ -44,3 +44,4 @@ data/
 
 # Jarvis local config
 .jarvis/
+.cursor/

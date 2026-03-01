@@ -149,30 +149,47 @@ func (s *PMTASender) updateIPCounters(ipID string) {
 }
 
 // sendSMTP performs the raw SMTP transaction with the PMTA server.
+// If AUTH fails (common when PMTA has no inbound TLS), it reconnects
+// without AUTH since the relay is typically open.
 func (s *PMTASender) sendSMTP(ctx context.Context, addr, from, to string, msg []byte) error {
 	dialer := &net.Dialer{Timeout: 30 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("SMTP connect to %s: %w", addr, err)
+
+	dialAndSetup := func(tryAuth bool) (*smtp.Client, error) {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+		}
+		c, err := smtp.NewClient(conn, s.smtpHost)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("SMTP client: %w", err)
+		}
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			tlsCfg := &tls.Config{ServerName: s.smtpHost, InsecureSkipVerify: true}
+			if tlsErr := c.StartTLS(tlsCfg); tlsErr != nil {
+				log.Printf("[PMTA] STARTTLS failed (continuing without TLS): %v", tlsErr)
+			}
+		}
+		if tryAuth && s.username != "" && s.password != "" {
+			if authErr := c.Auth(&pmtaPlainAuth{user: s.username, pass: s.password}); authErr != nil {
+				log.Printf("[PMTA] AUTH failed: %v", authErr)
+				c.Close()
+				return nil, authErr
+			}
+		}
+		return c, nil
 	}
-	client, err := smtp.NewClient(conn, s.smtpHost)
+
+	client, err := dialAndSetup(s.username != "" && s.password != "")
+	if err != nil && s.username != "" && s.password != "" {
+		log.Printf("[PMTA] Retrying without AUTH (server may be open relay)")
+		client, err = dialAndSetup(false)
+	}
 	if err != nil {
-		conn.Close()
-		return fmt.Errorf("SMTP client: %w", err)
+		return fmt.Errorf("SMTP setup: %w", err)
 	}
 	defer client.Close()
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		tlsCfg := &tls.Config{ServerName: s.smtpHost, InsecureSkipVerify: true}
-		if err := client.StartTLS(tlsCfg); err != nil {
-			log.Printf("[PMTA] STARTTLS failed (continuing without TLS): %v", err)
-		}
-	}
-	if s.username != "" && s.password != "" {
-		if err := client.Auth(&pmtaPlainAuth{user: s.username, pass: s.password}); err != nil {
-			log.Printf("[PMTA] AUTH failed (continuing, relay may still work): %v", err)
-		}
-	}
 	if err := client.Mail(from); err != nil {
 		return fmt.Errorf("MAIL FROM: %w", err)
 	}

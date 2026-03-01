@@ -570,34 +570,47 @@ func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port in
 	msg.WriteString("\r\n")
 	msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
-	// Connect to SMTP server
 	addr := fmt.Sprintf("%s:%d", host, port)
 	dialer := &net.Dialer{Timeout: 30 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+
+	dialAndSetup := func(tryAuth bool) (*smtp.Client, error) {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+		}
+		c, err := smtp.NewClient(conn, host)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("SMTP client init: %w", err)
+		}
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: true}
+			if tlsErr := c.StartTLS(tlsCfg); tlsErr != nil {
+				log.Printf("[SMTP] STARTTLS failed (continuing without TLS): %v", tlsErr)
+			}
+		}
+		if tryAuth && username != "" && password != "" {
+			auth := &smtpPlainAuth{user: username, pass: password}
+			if authErr := c.Auth(auth); authErr != nil {
+				log.Printf("[SMTP] AUTH failed: %v", authErr)
+				c.Close()
+				return nil, authErr
+			}
+		}
+		return c, nil
 	}
 
-	client, err := smtp.NewClient(conn, host)
+	// Try with AUTH first; if it kills the connection, reconnect without AUTH
+	// (PMTA with open relay rejects AUTH when no inbound TLS is configured)
+	client, err := dialAndSetup(username != "" && password != "")
+	if err != nil && username != "" && password != "" {
+		log.Printf("[SMTP] Retrying without AUTH (server may be open relay)")
+		client, err = dialAndSetup(false)
+	}
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("SMTP client init: %w", err)
+		return nil, fmt.Errorf("SMTP setup: %w", err)
 	}
 	defer client.Close()
-
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: true}
-		if tlsErr := client.StartTLS(tlsCfg); tlsErr != nil {
-			log.Printf("[SMTP] STARTTLS failed (continuing without TLS): %v", tlsErr)
-		}
-	}
-
-	if username != "" && password != "" {
-		auth := &smtpPlainAuth{user: username, pass: password}
-		if authErr := client.Auth(auth); authErr != nil {
-			log.Printf("[SMTP] AUTH failed (continuing, relay may still work): %v", authErr)
-		}
-	}
 
 	if err := client.Mail(fromEmail); err != nil {
 		return nil, fmt.Errorf("MAIL FROM: %w", err)
