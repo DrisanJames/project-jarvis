@@ -158,13 +158,15 @@ func main() {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
 
 		dbURL := cfg.Mailing.DatabaseURL
-		if !strings.Contains(dbURL, "connect_timeout") {
-			sep := "?"
-			if strings.Contains(dbURL, "?") {
-				sep = "&"
-			}
-			dbURL += sep + "connect_timeout=5"
+		sep := "?"
+		if strings.Contains(dbURL, "?") {
+			sep = "&"
 		}
+		if !strings.Contains(dbURL, "connect_timeout") {
+			dbURL += sep + "connect_timeout=5"
+			sep = "&"
+		}
+		dbURL += sep + "options=-c%20statement_timeout%3D15000%20-c%20idle_in_transaction_session_timeout%3D15000"
 		log.Printf("DB URL host portion: ...@%s/...", extractHost(dbURL))
 		mailingDB, err := sql.Open("postgres", dbURL)
 		if err != nil {
