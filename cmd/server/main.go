@@ -204,14 +204,19 @@ func main() {
 			server.SetMailingDB(mailingDB)
 			log.Println("Mailing Platform routes registered")
 
-			// Test connection — only start background workers if DB is reachable
-			if err := mailingDB.Ping(); err != nil {
+			// Set pool limits early to prevent connection exhaustion
+			mailingDB.SetMaxOpenConns(50)
+			mailingDB.SetMaxIdleConns(10)
+			mailingDB.SetConnMaxLifetime(5 * time.Minute)
+			mailingDB.SetConnMaxIdleTime(1 * time.Minute)
+
+			// Test connection with timeout — only start background workers if DB is reachable
+			pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := mailingDB.PingContext(pingCtx); err != nil {
+				pingCancel()
 				log.Printf("Warning: Mailing database ping failed: %v — routes registered but workers skipped", err)
 			} else {
-				mailingDB.SetMaxOpenConns(100)
-				mailingDB.SetMaxIdleConns(25)
-				mailingDB.SetConnMaxLifetime(5 * time.Minute)
-				mailingDB.SetConnMaxIdleTime(1 * time.Minute)
+				pingCancel()
 				log.Println("Mailing Platform database connected successfully")
 			
 			// Start Backpressure Monitor

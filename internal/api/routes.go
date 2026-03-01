@@ -40,7 +40,7 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"https://projectjarvis.io", "http://localhost:5173", "http://localhost:8080"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Admin-Key", "X-Organization-ID"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
