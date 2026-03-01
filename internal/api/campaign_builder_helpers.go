@@ -158,8 +158,21 @@ func nullIfZero(n int) interface{} {
 	return n
 }
 
-// ensureCampaignColumns adds any missing columns to the campaigns table
+// ensureCampaignColumns adds any missing columns and drops restrictive constraints
 func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
+	// Drop restrictive CHECK constraints that block application-level values.
+	// PostgreSQL may auto-name inline constraints as tablename_colname_check,
+	// with numeric suffixes if recreated.
+	constraints := []string{
+		`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`,
+		`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check1`,
+		`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`,
+		`ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`,
+	}
+	for _, ddl := range constraints {
+		cb.db.ExecContext(ctx, ddl)
+	}
+
 	migrations := []string{
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`,
@@ -184,4 +197,11 @@ func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
 			log.Printf("[CampaignBuilder] Migration failed: %s: %v", migration[:60], err)
 		}
 	}
+
+	// Re-add status constraint with the full set of valid values
+	cb.db.ExecContext(ctx, `
+		ALTER TABLE mailing_campaigns 
+		ADD CONSTRAINT mailing_campaigns_status_check 
+		CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))
+	`)
 }
