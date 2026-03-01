@@ -11,14 +11,15 @@ export const Card: React.FC<CardProps> = ({ children, className = '', style }) =
 };
 
 interface CardHeaderProps {
-  title: React.ReactNode;
+  title?: React.ReactNode;
   action?: React.ReactNode;
+  children?: React.ReactNode;
 }
 
-export const CardHeader: React.FC<CardHeaderProps> = ({ title, action }) => {
+export const CardHeader: React.FC<CardHeaderProps> = ({ title, action, children }) => {
   return (
     <div className="card-header">
-      <h3 className="card-title">{title}</h3>
+      <h3 className="card-title">{title || children}</h3>
       {action && <div>{action}</div>}
     </div>
   );

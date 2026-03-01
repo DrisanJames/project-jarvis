@@ -14,6 +14,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/ignite/sparkpost-monitor/internal/agent"
 	"github.com/ignite/sparkpost-monitor/internal/api"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
@@ -28,6 +29,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/datanorm"
+	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
@@ -111,8 +113,17 @@ func main() {
 		}
 		
 		authManager = auth.NewAuthManager(&cfg.Auth, baseURL)
+
+		// Pre-flight: validate OAuth credentials against Google before accepting traffic.
+		// This prevents silent misconfiguration from surfacing only at user login time.
+		log.Println("Validating Google OAuth credentials...")
+		if err := authManager.ValidateCredentials(context.Background()); err != nil {
+			log.Fatalf("OAuth pre-flight FAILED: %v", err)
+		}
+		log.Println("Google OAuth credentials validated successfully")
+
 		authManager.CleanupExpiredSessions()
-		log.Printf("Google OAuth enabled for domain: %s", cfg.Auth.AllowedDomain)
+		log.Printf("Google OAuth enabled for domain: %s (callback: %s/auth/callback)", cfg.Auth.AllowedDomain, baseURL)
 	} else {
 		log.Println("Authentication disabled")
 	}
@@ -238,6 +249,20 @@ func main() {
 			}
 			sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
 
+			// Start SQS tracking event consumer
+			var trackingConsumer *tracking.Consumer
+			if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {
+				awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+				if err != nil {
+					log.Printf("Warning: AWS config for SQS consumer failed: %v", err)
+				} else {
+					sqsClient := sqs.NewFromConfig(awsCfg)
+					trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
+					trackingConsumer.Start(ctx)
+					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
+				}
+			}
+
 			sendWorkerPool.Start()
 			log.Printf("SendWorkerPool: Starting 10 workers (batch_size=100)")
 			
@@ -282,6 +307,9 @@ func main() {
 				<-ctx.Done()
 				campaignScheduler.Stop()
 				sendWorkerPool.Stop()
+				if trackingConsumer != nil {
+					trackingConsumer.Stop()
+				}
 				if normalizer != nil {
 					normalizer.Stop()
 				}

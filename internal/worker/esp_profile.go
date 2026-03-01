@@ -29,7 +29,7 @@ func NewProfileBasedSender(db *sql.DB) *ProfileBasedSender {
 // appropriate ESP sender, and delegates delivery.
 func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
 	var vendorType, apiKey, apiSecret, sendingDomain, region string
-	var smtpHost sql.NullString
+	var smtpHost, smtpUsername, smtpPassword sql.NullString
 	var smtpPort sql.NullInt64
 
 	err := s.db.QueryRowContext(ctx, `
@@ -38,10 +38,11 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 			   COALESCE(api_secret, ''),
 			   COALESCE(sending_domain, ''),
 			   COALESCE(api_endpoint, 'us-east-1'),
-			   smtp_host, smtp_port
+			   smtp_host, smtp_port,
+			   smtp_username, smtp_password
 		FROM mailing_sending_profiles
 		WHERE id = $1
-	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort)
+	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword)
 
 	if err != nil {
 		log.Printf("[ProfileBasedSender] No profile %s, looking for default", msg.ProfileID)
@@ -51,11 +52,12 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 				   COALESCE(api_secret, ''),
 				   COALESCE(sending_domain, ''),
 				   COALESCE(api_endpoint, 'us-east-1'),
-				   smtp_host, smtp_port
+				   smtp_host, smtp_port,
+				   smtp_username, smtp_password
 			FROM mailing_sending_profiles
 			WHERE is_default = true AND status = 'active'
 			LIMIT 1
-		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort)
+		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword)
 		if err != nil {
 			return nil, fmt.Errorf("no sending profile found and no default configured")
 		}
@@ -91,7 +93,9 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		if smtpPort.Valid && smtpPort.Int64 > 0 {
 			port = int(smtpPort.Int64)
 		}
-		return NewPMTASender(host, port, apiKey, apiSecret, s.db).Send(ctx, msg)
+		user := smtpUsername.String
+		pass := smtpPassword.String
+		return NewPMTASender(host, port, user, pass, s.db).Send(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unsupported vendor type: %s", vendorType)
 	}

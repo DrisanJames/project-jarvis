@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"log"
@@ -161,9 +162,15 @@ func (s *PMTASender) sendSMTP(ctx context.Context, addr, from, to string, msg []
 	}
 	defer client.Close()
 
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		tlsCfg := &tls.Config{ServerName: s.smtpHost, InsecureSkipVerify: true}
+		if err := client.StartTLS(tlsCfg); err != nil {
+			log.Printf("[PMTA] STARTTLS failed (continuing without TLS): %v", err)
+		}
+	}
 	if s.username != "" && s.password != "" {
-		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, s.smtpHost)); err != nil {
-			return fmt.Errorf("SMTP AUTH: %w", err)
+		if err := client.Auth(&pmtaPlainAuth{user: s.username, pass: s.password}); err != nil {
+			log.Printf("[PMTA] AUTH failed (continuing, relay may still work): %v", err)
 		}
 	}
 	if err := client.Mail(from); err != nil {
@@ -183,4 +190,20 @@ func (s *PMTASender) sendSMTP(ctx context.Context, addr, from, to string, msg []
 		return fmt.Errorf("DATA close: %w", err)
 	}
 	return client.Quit()
+}
+
+// pmtaPlainAuth implements smtp.Auth without the TLS requirement that
+// stdlib's PlainAuth enforces. PMTA servers on private networks typically
+// do not use TLS on the submission port.
+type pmtaPlainAuth struct {
+	user, pass string
+}
+
+func (a *pmtaPlainAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	resp := []byte("\x00" + a.user + "\x00" + a.pass)
+	return "PLAIN", resp, nil
+}
+
+func (a *pmtaPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	return nil, nil
 }

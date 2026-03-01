@@ -84,19 +84,19 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 	// Fallback to single profile or default
 	if profileID == "" {
 		if input.SendingProfileID != nil && *input.SendingProfileID != "" {
-			// Check profile exists, is active, AND has API key configured
-			var hasAPIKey bool
+			// Check profile exists, is active, AND has credentials (API key or SMTP)
+			var hasCredentials bool
 			err := cb.db.QueryRowContext(ctx, `
 				SELECT id, from_name, from_email, COALESCE(reply_email, ''),
-				       (api_key IS NOT NULL AND api_key != '') as has_api_key
+				       ((api_key IS NOT NULL AND api_key != '') OR (smtp_host IS NOT NULL AND smtp_host != '')) as has_credentials
 				FROM mailing_sending_profiles WHERE id = $1 AND status = 'active'
-			`, *input.SendingProfileID).Scan(&profileID, &fromName, &fromEmail, &replyEmail, &hasAPIKey)
+			`, *input.SendingProfileID).Scan(&profileID, &fromName, &fromEmail, &replyEmail, &hasCredentials)
 			if err != nil {
 				http.Error(w, `{"error":"sending profile not found or inactive"}`, http.StatusBadRequest)
 				return
 			}
-			if !hasAPIKey {
-				http.Error(w, `{"error":"sending profile is not configured - API credentials are missing"}`, http.StatusBadRequest)
+			if !hasCredentials {
+				http.Error(w, `{"error":"sending profile is not configured - credentials are missing (need API key or SMTP host)"}`, http.StatusBadRequest)
 				return
 			}
 		} else {
@@ -105,7 +105,7 @@ func (cb *CampaignBuilder) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 				SELECT id, from_name, from_email, COALESCE(reply_email, '')
 				FROM mailing_sending_profiles 
 				WHERE is_default = true AND status = 'active' 
-				  AND api_key IS NOT NULL AND api_key != ''
+				  AND ((api_key IS NOT NULL AND api_key != '') OR (smtp_host IS NOT NULL AND smtp_host != ''))
 				LIMIT 1
 			`).Scan(&profileID, &fromName, &fromEmail, &replyEmail)
 			if err != nil {

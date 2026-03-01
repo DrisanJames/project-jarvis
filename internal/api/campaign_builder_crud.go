@@ -267,17 +267,17 @@ func (cb *CampaignBuilder) HandleUpdateCampaign(w http.ResponseWriter, r *http.R
 	
 	// Validate sending profile if being changed
 	if input.SendingProfileID != nil && *input.SendingProfileID != "" {
-		var hasAPIKey bool
+		var hasCredentials bool
 		err := cb.db.QueryRowContext(ctx, `
-			SELECT (api_key IS NOT NULL AND api_key != '') as has_api_key
+			SELECT ((api_key IS NOT NULL AND api_key != '') OR (smtp_host IS NOT NULL AND smtp_host != '')) as has_credentials
 			FROM mailing_sending_profiles WHERE id = $1 AND status = 'active'
-		`, *input.SendingProfileID).Scan(&hasAPIKey)
+		`, *input.SendingProfileID).Scan(&hasCredentials)
 		if err != nil {
 			http.Error(w, `{"error":"sending profile not found or inactive"}`, http.StatusBadRequest)
 			return
 		}
-		if !hasAPIKey {
-			http.Error(w, `{"error":"sending profile is not configured - API credentials are missing"}`, http.StatusBadRequest)
+		if !hasCredentials {
+			http.Error(w, `{"error":"sending profile is not configured - credentials are missing (need API key or SMTP host)"}`, http.StatusBadRequest)
 			return
 		}
 	}

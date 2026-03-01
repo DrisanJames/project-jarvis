@@ -4,6 +4,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -444,8 +445,13 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// LoadFromEnv loads configuration with environment variable overrides
+// LoadFromEnv loads configuration with environment variable overrides.
+// It automatically loads a .env file (if present) before reading env vars,
+// so secrets can live in .env locally and in real env vars on ECS.
 func LoadFromEnv(path string) (*Config, error) {
+	// Load .env file if it exists (no error if missing)
+	_ = godotenv.Load()
+
 	cfg, err := Load(path)
 	if err != nil {
 		return nil, err

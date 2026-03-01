@@ -451,8 +451,9 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		log.Printf("Error marking sent: %v", err)
 	}
 	
-	// Update campaign sent count
+	// Update campaign sent count and subscriber email count
 	p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'sent_count', 1)`, item.CampaignID)
+	p.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_emails_received = COALESCE(total_emails_received, 0) + 1, updated_at = NOW() WHERE id = $1`, item.SubscriberID)
 	
 	return nil
 }

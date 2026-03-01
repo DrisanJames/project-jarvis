@@ -167,6 +167,9 @@ func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS esp_quotas JSONB DEFAULT '[]'`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS throttle_rate_per_minute INTEGER`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS throttle_duration_hours INTEGER`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS sending_profile_id UUID`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS send_type VARCHAR(20) DEFAULT 'blast'`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS max_recipients INTEGER DEFAULT 0`,
 	}
 	
 	for _, migration := range migrations {

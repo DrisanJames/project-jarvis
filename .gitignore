@@ -13,6 +13,7 @@ build/
 /worker
 /sparkpost-monitor
 /upside-down
+/tracking
 
 # Sensitive config (secrets injected via env vars in production)
 config/config.yaml

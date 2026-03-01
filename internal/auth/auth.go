@@ -350,6 +350,49 @@ func (am *AuthManager) getUserInfo(accessToken string) (*GoogleUserInfo, error) 
 	return &userInfo, nil
 }
 
+// ValidateCredentials performs a lightweight check against Google's token
+// endpoint to verify the OAuth client ID and secret are valid. This catches
+// stale/rotated credentials at boot instead of at first user login.
+func (am *AuthManager) ValidateCredentials(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Use the token endpoint with an invalid grant to provoke a distinguishable error.
+	// Google returns "invalid_client" for bad credentials vs "invalid_grant" for
+	// bad code — so we can tell the difference.
+	vals := fmt.Sprintf("grant_type=authorization_code&code=validation_probe&client_id=%s&client_secret=%s&redirect_uri=%s",
+		am.oauth2Config.ClientID, am.oauth2Config.ClientSecret, am.oauth2Config.RedirectURL)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", google.Endpoint.TokenURL, strings.NewReader(vals))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("token endpoint unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// "invalid_grant" or "invalid_request" means the client itself is fine,
+	// but the dummy code is (obviously) wrong — that's the success case.
+	if strings.Contains(bodyStr, "invalid_grant") || strings.Contains(bodyStr, "invalid_request") || strings.Contains(bodyStr, "redirect_uri_mismatch") {
+		return nil
+	}
+
+	// "invalid_client" means the client ID or secret is wrong.
+	if strings.Contains(bodyStr, "invalid_client") {
+		return fmt.Errorf("Google OAuth credentials are INVALID (client_id or client_secret rejected by Google). "+
+			"Verify in GCP Console → APIs & Services → Credentials for project %s", am.oauth2Config.ClientID[:12]+"...")
+	}
+
+	return fmt.Errorf("unexpected response from Google token endpoint (HTTP %d): %s", resp.StatusCode, bodyStr)
+}
+
 // CleanupExpiredSessions removes expired sessions periodically
 func (am *AuthManager) CleanupExpiredSessions() {
 	ticker := time.NewTicker(5 * time.Minute)
