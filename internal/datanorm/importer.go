@@ -25,7 +25,7 @@ func NewImporter(db *sql.DB, orgID, listID string) *Importer {
 	return &Importer{db: db, orgID: orgID, listID: listID}
 }
 
-const importBatchSize = 2000
+const importBatchSize = 5000
 
 // ImportFromReader reads a CSV stream, maps columns to canonical fields,
 // normalizes values, and imports records.

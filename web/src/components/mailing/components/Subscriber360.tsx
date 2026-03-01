@@ -225,8 +225,8 @@ export default function Subscriber360() {
                       </div>
                       <p className="text-gray-400 text-xs">
                         Source: {event.source}
-                        {event.metadata?.page_path && ` · ${event.metadata.page_path}`}
-                        {event.metadata?.dwell_ms && ` · ${Math.round(Number(event.metadata.dwell_ms) / 1000)}s dwell`}
+                        {event.metadata?.page_path ? ` · ${String(event.metadata.page_path)}` : null}
+                        {event.metadata?.dwell_ms ? ` · ${Math.round(Number(event.metadata.dwell_ms) / 1000)}s dwell` : null}
                       </p>
                     </div>
                   </div>

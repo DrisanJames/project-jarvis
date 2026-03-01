@@ -117,6 +117,9 @@ func (c *Consciousness) SetCampaignTracker(t *CampaignEventTracker) {
 // Start begins the consciousness loops: conviction observation, signal
 // reflection, campaign monitoring, and periodic philosophy synthesis.
 func (c *Consciousness) Start(ctx context.Context) {
+	// Restore persisted state from S3 before starting live loops
+	c.restoreState(ctx)
+
 	convCh := c.convictions.Subscribe("consciousness")
 	go c.observeConvictions(ctx, convCh)
 
@@ -133,7 +136,49 @@ func (c *Consciousness) Start(ctx context.Context) {
 		Content:  "Consciousness online. Observing conviction stream, signal snapshots, and campaign events.",
 		Severity: "info",
 	})
+
+	// Immediately reflect on any existing campaigns
+	go func() {
+		time.Sleep(5 * time.Second)
+		c.reflectOnCampaigns()
+	}()
+
 	log.Println("[consciousness] started — observing convictions, signals, and campaigns")
+}
+
+func (c *Consciousness) restoreState(ctx context.Context) {
+	if c.s3Client == nil {
+		return
+	}
+	key := "consciousness/state.json"
+	result, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		log.Printf("[consciousness] no persisted state to restore: %v", err)
+		return
+	}
+	defer result.Body.Close()
+
+	var saved ConsciousnessState
+	if err := json.NewDecoder(result.Body).Decode(&saved); err != nil {
+		log.Printf("[consciousness] failed to decode persisted state: %v", err)
+		return
+	}
+
+	c.mu.Lock()
+	for _, p := range saved.Philosophies {
+		p := p
+		c.philosophies[fmt.Sprintf("%s/%s", p.ISP, p.Domain)] = &p
+	}
+	c.thoughts = saved.Thoughts
+	if len(c.thoughts) > c.maxThoughts {
+		c.thoughts = c.thoughts[len(c.thoughts)-c.maxThoughts:]
+	}
+	c.mu.Unlock()
+
+	log.Printf("[consciousness] restored %d philosophies and %d thoughts from S3", len(saved.Philosophies), len(saved.Thoughts))
 }
 
 // Stop terminates the consciousness.

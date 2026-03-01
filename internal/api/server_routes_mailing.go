@@ -88,6 +88,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// Core CRUD
 			r.Get("/dashboard", svc.HandleDashboard)
 			r.Get("/lists", svc.HandleGetLists)
+			r.Get("/lists/activity", svc.HandleListActivity)
 			r.Post("/lists", svc.HandleCreateList)
 			r.Get("/lists/{listId}/subscribers", svc.HandleGetSubscribers)
 			r.Post("/lists/{listId}/subscribers", svc.HandleAddSubscriber)

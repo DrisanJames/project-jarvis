@@ -103,6 +103,10 @@ interface DashboardStats {
   by_reason: { reason: string; count: number }[];
   recent_activity: { action: string; details: string; timestamp: string }[];
   global_suppression: GlobalSuppressionStats;
+  bloom_filter_memory?: string;
+  lookup_latency?: string;
+  optizmo_sync_status?: string;
+  sync_schedule?: string;
 }
 
 type ViewMode = 'dashboard' | 'lists' | 'create' | 'edit' | 'entries' | 'optizmo' | 'bulk-upload' | 'auto-refresh';
@@ -139,6 +143,10 @@ export const SuppressionPortal: React.FC = () => {
         by_source: statsData.by_source || [],
         by_reason: statsData.by_reason || [],
         recent_activity: statsData.recent_activity || [],
+        bloom_filter_memory: statsData.bloom_filter_memory,
+        lookup_latency: statsData.lookup_latency,
+        optizmo_sync_status: statsData.optizmo_sync_status,
+        sync_schedule: statsData.sync_schedule,
         global_suppression: {
           total: globalSupp.total || 0,
           hard_bounces: globalSupp.hard_bounces || 0,
@@ -699,21 +707,21 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
             <div className="health-metric">
               <div className="health-metric-header">
                 <span>Bloom Filter Memory</span>
-                <span className="health-value good">Optimal</span>
+                <span className="health-value good" title="Data from API">{stats.bloom_filter_memory || '—'}</span>
               </div>
               <div className="health-bar">
-                <div className="health-bar-fill" style={{ width: '35%' }} />
+                <div className="health-bar-fill" style={{ width: stats.bloom_filter_memory ? '35%' : '0%' }} />
               </div>
-              <span className="health-detail">~280 MB for 10M records</span>
+              <span className="health-detail">{stats.bloom_filter_memory ? `${stats.bloom_filter_memory} for suppression records` : 'Awaiting backend data'}</span>
             </div>
 
             <div className="health-metric">
               <div className="health-metric-header">
                 <span>Lookup Latency</span>
-                <span className="health-value good">&lt;1ms</span>
+                <span className="health-value good" title="Data from API">{stats.lookup_latency || '—'}</span>
               </div>
               <div className="health-bar">
-                <div className="health-bar-fill excellent" style={{ width: '15%' }} />
+                <div className="health-bar-fill excellent" style={{ width: stats.lookup_latency ? '15%' : '0%' }} />
               </div>
               <span className="health-detail">O(1) Bloom + O(log n) verify</span>
             </div>
@@ -721,12 +729,12 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
             <div className="health-metric">
               <div className="health-metric-header">
                 <span>Optizmo Sync</span>
-                <span className="health-value good">Connected</span>
+                <span className="health-value good" title="Data from API">{stats.optizmo_sync_status || '—'}</span>
               </div>
               <div className="health-bar">
-                <div className="health-bar-fill syncing" style={{ width: '100%' }} />
+                <div className="health-bar-fill syncing" style={{ width: stats.optizmo_sync_status ? '100%' : '0%' }} />
               </div>
-              <span className="health-detail">Daily delta at 2:00 AM UTC</span>
+              <span className="health-detail">{stats.sync_schedule || 'Awaiting backend data'}</span>
             </div>
 
             <div className="health-metric">

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -62,9 +63,65 @@ func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
 		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
-	// DDL migrations moved to SQL migration files — skip at runtime to avoid table locks
-	// go svc.ensureTrackingSchema()
+	go svc.fixSubscriberCountTrigger()
 	return svc
+}
+
+// fixSubscriberCountTrigger replaces the O(n²) COUNT(*) trigger with O(1) increment
+func (svc *MailingService) fixSubscriberCountTrigger() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Check if already migrated (fast trigger function exists)
+	var exists bool
+	svc.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'update_list_counts_fast')`).Scan(&exists)
+	if exists {
+		return
+	}
+
+	log.Println("[mailing] Applying subscriber count trigger fix (one-time)...")
+
+	svc.db.ExecContext(ctx, `DROP TRIGGER IF EXISTS trigger_update_list_counts ON mailing_subscribers`)
+	svc.db.ExecContext(ctx, `DROP FUNCTION IF EXISTS update_list_counts()`)
+
+	svc.db.ExecContext(ctx, `
+		CREATE OR REPLACE FUNCTION update_list_counts_fast() RETURNS TRIGGER AS $$
+		BEGIN
+			IF TG_OP = 'INSERT' THEN
+				UPDATE mailing_lists SET subscriber_count = subscriber_count + 1,
+					active_count = CASE WHEN NEW.status = 'confirmed' THEN active_count + 1 ELSE active_count END,
+					updated_at = NOW() WHERE id = NEW.list_id;
+			ELSIF TG_OP = 'DELETE' THEN
+				UPDATE mailing_lists SET subscriber_count = GREATEST(subscriber_count - 1, 0),
+					active_count = CASE WHEN OLD.status = 'confirmed' THEN GREATEST(active_count - 1, 0) ELSE active_count END,
+					updated_at = NOW() WHERE id = OLD.list_id;
+			ELSIF TG_OP = 'UPDATE' AND OLD.status != NEW.status THEN
+				UPDATE mailing_lists SET
+					active_count = active_count
+						+ CASE WHEN NEW.status = 'confirmed' THEN 1 ELSE 0 END
+						- CASE WHEN OLD.status = 'confirmed' THEN 1 ELSE 0 END,
+					updated_at = NOW() WHERE id = NEW.list_id;
+			END IF;
+			RETURN NULL;
+		END;
+		$$ LANGUAGE plpgsql
+	`)
+
+	svc.db.ExecContext(ctx, `
+		CREATE TRIGGER trigger_update_list_counts
+			AFTER INSERT OR UPDATE OR DELETE ON mailing_subscribers
+			FOR EACH ROW EXECUTE FUNCTION update_list_counts_fast()
+	`)
+
+	// Recalculate once
+	svc.db.ExecContext(ctx, `
+		UPDATE mailing_lists SET
+			subscriber_count = (SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = mailing_lists.id),
+			active_count = (SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = mailing_lists.id AND status = 'confirmed'),
+			updated_at = NOW()
+	`)
+
+	log.Println("[mailing] Subscriber count trigger fixed — imports will now be fast")
 }
 
 // MailingThrottler controls send rates
@@ -305,6 +362,14 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	if recentCampaigns != nil {
 		dashboard["recent_campaigns"] = recentCampaigns
 	}
+
+	// Server connectivity status
+	var pmtaServers int
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_delivery_servers WHERE type = 'pmta' AND active = true
+	`).Scan(&pmtaServers)
+	dashboard["pmta_connected"] = pmtaServers > 0
+	dashboard["pmta_server_count"] = pmtaServers
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dashboard)

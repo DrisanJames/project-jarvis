@@ -200,8 +200,8 @@ export const MailingPortal: React.FC = () => {
             </div>
           </div>
           <div className="connection-status">
-            <span className="status-dot active"></span>
-            <span>PMTA Connected</span>
+            <span className={`status-dot ${realTimeStats?.pmta_connected ? 'active' : ''}`}></span>
+            <span>{realTimeStats?.pmta_connected ? `PMTA Connected (${realTimeStats.pmta_server_count})` : realTimeStats ? 'PMTA Offline' : 'Connecting...'}</span>
           </div>
           {/* Back to Analytics hidden — PMTA-only mode. Uncomment to restore.
           <button className="back-to-analytics" onClick={() => window.location.href = '/'}>

@@ -175,13 +175,15 @@ export const ListPortal: React.FC = () => {
   // Fetch dashboard data
   const fetchDashboard = useCallback(async () => {
     try {
-      const [listsRes, segmentsRes] = await Promise.all([
+      const [listsRes, segmentsRes, activityRes] = await Promise.all([
         orgFetch('/api/mailing/lists'),
         orgFetch('/api/mailing/segments'),
+        orgFetch('/api/mailing/lists/activity').catch(() => null),
       ]);
 
       const listsData = await listsRes.json().catch(() => ({ lists: [] }));
       const segmentsData = await segmentsRes.json().catch(() => ({ segments: [] }));
+      const activityData = activityRes ? await activityRes.json().catch(() => ({})) : {};
 
       const allLists: List[] = listsData.lists || [];
       const allSegments: Segment[] = segmentsData.segments || [];
@@ -198,9 +200,9 @@ export const ListPortal: React.FC = () => {
         total_subscribers: totalSubscribers,
         total_segments: allSegments.length,
         active_subscribers: activeSubscribers,
-        new_subscribers_24h: 0, // Would come from API
-        new_subscribers_7d: 0,
-        unsubscribes_7d: 0,
+        new_subscribers_24h: activityData?.new_subscribers_24h || 0,
+        new_subscribers_7d: activityData?.new_subscribers_7d || 0,
+        unsubscribes_7d: activityData?.unsubscribes_7d || 0,
         avg_engagement: totalSubscribers > 0 ? Math.round((activeSubscribers / totalSubscribers) * 100) : 0,
         lists_by_status: [
           { status: 'active', count: allLists.filter(l => l.status === 'active').length },
@@ -210,7 +212,7 @@ export const ListPortal: React.FC = () => {
         top_lists: allLists
           .sort((a, b) => (b.subscriber_count || 0) - (a.subscriber_count || 0))
           .slice(0, 5),
-        recent_activity: [],
+        recent_activity: activityData?.recent_activity || [],
       });
     } catch (err) {
       console.error('Failed to fetch dashboard:', err);

@@ -101,6 +101,7 @@ interface WarmupTier {
 
 interface Snapshot {
   is_running: boolean;
+  campaign_name?: string;
   recent_events: SendEvent[];
   decisions: AgentDecision[];
   consultations: Consultation[];
@@ -113,6 +114,7 @@ interface Snapshot {
     esp: string;
     total_records: number;
     dry_run: boolean;
+    campaign_name?: string;
   };
 }
 
@@ -330,7 +332,7 @@ export const MissionControl: React.FC = () => {
             <div className="mc-panel">
               {/* Funnel */}
               <div className="mc-card">
-                <h3 className="mc-card-title"><FontAwesomeIcon icon={faChartLine} /> Offer Funnel — Sam's Club $50 Membership</h3>
+                <h3 className="mc-card-title"><FontAwesomeIcon icon={faChartLine} /> Offer Funnel — {snapshot.campaign_name || config.campaign_name || 'Active Campaign'}</h3>
                 <div className="mc-funnel">
                   {[
                     { label: 'Sent', value: funnel.total_sent, rate: '100%', cls: 'blue' },

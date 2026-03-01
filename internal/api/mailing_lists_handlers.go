@@ -245,6 +245,59 @@ func (svc *MailingService) HandleAddSuppression(w http.ResponseWriter, r *http.R
 	})
 }
 
+// HandleListActivity returns subscriber activity stats across all lists
+func (svc *MailingService) HandleListActivity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var new24h, new7d, unsubs7d int
+
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers 
+		WHERE created_at > NOW() - INTERVAL '24 hours'
+	`).Scan(&new24h)
+
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers 
+		WHERE created_at > NOW() - INTERVAL '7 days'
+	`).Scan(&new7d)
+
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers 
+		WHERE status = 'unsubscribed' AND updated_at > NOW() - INTERVAL '7 days'
+	`).Scan(&unsubs7d)
+
+	type activityItem struct {
+		Action    string    `json:"action"`
+		Email     string    `json:"email"`
+		List      string    `json:"list"`
+		Timestamp time.Time `json:"timestamp"`
+	}
+	var activity []activityItem
+
+	rows, err := svc.db.QueryContext(ctx, `
+		SELECT s.email, COALESCE(l.name, ''), s.created_at
+		FROM mailing_subscribers s
+		LEFT JOIN mailing_lists l ON s.list_id = l.id
+		ORDER BY s.created_at DESC LIMIT 10
+	`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var a activityItem
+			rows.Scan(&a.Email, &a.List, &a.Timestamp)
+			a.Action = "subscribed"
+			activity = append(activity, a)
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"new_subscribers_24h": new24h,
+		"new_subscribers_7d":  new7d,
+		"unsubscribes_7d":    unsubs7d,
+		"recent_activity":    activity,
+	})
+}
+
 // HandleRemoveSuppression removes email from suppression
 func (svc *MailingService) HandleRemoveSuppression(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
