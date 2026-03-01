@@ -38,7 +38,28 @@ func (cb *CampaignBuilder) HandleSendTestCampaign(w http.ResponseWriter, r *http
 	
 	results := []map[string]interface{}{}
 	for _, email := range input.TestEmails {
-		result, _ := cb.mailingSvc.sendViaSparkPost(ctx, email, fromEmail, fromName, "[TEST] "+subject, htmlContent, "")
+		// Use the profile's vendor type to route correctly
+		var vendorType, smtpHost, smtpUser, smtpPass string
+		var smtpPort int
+		if profileID != "" {
+			cb.db.QueryRowContext(ctx, `
+				SELECT COALESCE(vendor_type,''), COALESCE(smtp_host,''), COALESCE(smtp_port,25),
+				       COALESCE(smtp_username,''), COALESCE(smtp_password,'')
+				FROM mailing_sending_profiles WHERE id = $1
+			`, profileID).Scan(&vendorType, &smtpHost, &smtpPort, &smtpUser, &smtpPass)
+		}
+
+		var result map[string]interface{}
+		var sendErr error
+		switch vendorType {
+		case "pmta", "smtp":
+			result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, smtpPort, smtpUser, smtpPass, email, fromEmail, fromName, "", "[TEST] "+subject, htmlContent, "")
+		default:
+			result, sendErr = cb.mailingSvc.sendViaSparkPost(ctx, email, fromEmail, fromName, "[TEST] "+subject, htmlContent, "")
+		}
+		if sendErr != nil {
+			result = map[string]interface{}{"success": false, "error": sendErr.Error()}
+		}
 		result["email"] = email
 		results = append(results, result)
 	}

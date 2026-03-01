@@ -103,12 +103,13 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
 		)
 		if err != nil {
-			// Fall back to hardcoded defaults if no profile exists
-			profile.VendorType = "sparkpost"
-			profile.FromName = "IGNITE Team"
-			profile.FromEmail = "noreply@ignitemediagroup.co"
-			apiKey := svc.sparkpostKey
-			profile.APIKey = &apiKey
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   "No default sending profile configured. Create one in Domain Center → Sending Profiles and mark it as default.",
+			})
+			return
 		}
 	}
 
@@ -167,7 +168,7 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		}
 		result, err = svc.sendViaSendGrid(ctx, apiKey, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
 
-	case "smtp":
+	case "smtp", "pmta":
 		host := ""
 		if profile.SMTPHost != nil {
 			host = *profile.SMTPHost
