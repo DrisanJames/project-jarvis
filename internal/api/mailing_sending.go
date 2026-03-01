@@ -96,20 +96,28 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			return
 		}
 	} else {
-		// Use default profile
-		profileQuery += " AND is_default = true LIMIT 1"
-		err := svc.db.QueryRowContext(ctx, profileQuery).Scan(
+		// Use default profile, fall back to any active profile
+		defaultQuery := profileQuery + " AND is_default = true LIMIT 1"
+		err := svc.db.QueryRowContext(ctx, defaultQuery).Scan(
 			&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
 			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
 		)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"error":   "No default sending profile configured. Create one in Domain Center → Sending Profiles and mark it as default.",
-			})
-			return
+			// No default — try any active profile (prefer PMTA/SMTP over API-based)
+			fallbackQuery := profileQuery + " ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1"
+			err = svc.db.QueryRowContext(ctx, fallbackQuery).Scan(
+				&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
+				&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
+			)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": false,
+					"error":   "No sending profiles configured. Create one in Domain Center → Sending Profiles.",
+				})
+				return
+			}
 		}
 	}
 
