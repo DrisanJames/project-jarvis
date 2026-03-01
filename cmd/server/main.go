@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -153,7 +154,15 @@ func main() {
 	if cfg.Mailing.Enabled && cfg.Mailing.DatabaseURL != "" {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
 
-		mailingDB, err := sql.Open("postgres", cfg.Mailing.DatabaseURL)
+		dbURL := cfg.Mailing.DatabaseURL
+		if !strings.Contains(dbURL, "connect_timeout") {
+			sep := "?"
+			if strings.Contains(dbURL, "?") {
+				sep = "&"
+			}
+			dbURL += sep + "connect_timeout=10&statement_timeout=30000"
+		}
+		mailingDB, err := sql.Open("postgres", dbURL)
 		if err != nil {
 			log.Printf("Warning: Failed to connect to mailing database: %v", err)
 		} else {
