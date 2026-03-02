@@ -141,6 +141,8 @@ type QueueItem struct {
 	ProfileID    string
 	ESPType      string
 	Priority     int
+	FirstName    string
+	LastName     string
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -305,7 +307,9 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 			COALESCE(camp.from_email, ''),
 			COALESCE(camp.reply_to, ''),
 			COALESCE(camp.sending_profile_id::text, ''),
-			COALESCE(sp.vendor_type, 'ses')
+			COALESCE(sp.vendor_type, 'ses'),
+			COALESCE(s.first_name, ''),
+			COALESCE(s.last_name, '')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -335,6 +339,8 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 			&item.ReplyTo,
 			&profileID,
 			&espType,
+			&item.FirstName,
+			&item.LastName,
 		)
 		if err != nil {
 			continue
@@ -374,29 +380,48 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 	
-	// Inject preview text (preheader) into HTML if provided
-	htmlContent := item.HTMLContent
-	if item.PreviewText != "" {
-		htmlContent = injectPreviewText(htmlContent, item.PreviewText)
+	// ── Personalization: replace merge fields in subject, preheader, body ──
+	subject := personalizeContent(item.Subject, item.Email, item.FirstName, item.LastName)
+	previewText := personalizeContent(item.PreviewText, item.Email, item.FirstName, item.LastName)
+	htmlContent := personalizeContent(item.HTMLContent, item.Email, item.FirstName, item.LastName)
+	textContent := personalizeContent(item.TextContent, item.Email, item.FirstName, item.LastName)
+
+	if previewText != "" {
+		htmlContent = injectPreviewText(htmlContent, previewText)
 	}
 
-	// Replace tracking link merge tags at send time
 	htmlContent = replaceTrackingMergeTags(htmlContent, item.CampaignID.String(), item.SubscriberID.String())
 
-	// Inject open pixel, click redirects, and unsubscribe link
+	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
+	var unsubURL string
 	if p.trackingURL != "" {
 		htmlContent = p.injectTrackingPixelAndLinks(
 			htmlContent,
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
 		)
-		unsubURL := p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String())
+		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String())
 		headers["List-Unsubscribe"] = fmt.Sprintf("<%s>", unsubURL)
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+
+		// Replace {{ system.unsubscribe_url }} in body if present
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.unsubscribe_url }}", unsubURL)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.unsubscribe_url}}", unsubURL)
+
+		// CAN-SPAM: if no unsub link exists in the body, inject one before </body>
+		if !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {
+			unsubBlock := fmt.Sprintf(
+				`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
+					`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsubURL)
+			if idx := strings.LastIndex(strings.ToLower(htmlContent), "</body>"); idx >= 0 {
+				htmlContent = htmlContent[:idx] + unsubBlock + htmlContent[idx:]
+			} else {
+				htmlContent += unsubBlock
+			}
+		}
 	}
 	headers["X-Job"] = item.CampaignID.String()
 
-	// Build message
 	msg := &EmailMessage{
 		ID:           item.ID.String(),
 		CampaignID:   item.CampaignID.String(),
@@ -405,10 +430,10 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		FromName:     item.FromName,
 		FromEmail:    item.FromEmail,
 		ReplyTo:      item.ReplyTo,
-		Subject:      item.Subject,
+		Subject:      subject,
 		HTMLContent:  htmlContent,
-		TextContent:  item.TextContent,
-		PreviewText:  item.PreviewText,
+		TextContent:  textContent,
+		PreviewText:  previewText,
 		ProfileID:    item.ProfileID,
 		ESPType:      item.ESPType,
 		Headers:      headers,
@@ -681,4 +706,48 @@ func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID string)
 	sig := p.trackSign(data)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
 	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", p.trackingURL, encoded, sig)
+}
+
+// personalizeContent replaces all merge-field variations with subscriber data.
+// Handles {{ field }}, {{field}}, and [FIELD] syntaxes with case-insensitive matching.
+func personalizeContent(content, email, firstName, lastName string) string {
+	if content == "" {
+		return content
+	}
+
+	fullName := strings.TrimSpace(firstName + " " + lastName)
+	emailLocal := email
+	emailDomain := ""
+	if at := strings.LastIndex(email, "@"); at >= 0 {
+		emailLocal = email[:at]
+		emailDomain = email[at+1:]
+	}
+
+	replacements := []struct{ tags []string; value string }{
+		{[]string{"{{ first_name }}", "{{first_name}}", "[FIRST_NAME]"}, firstName},
+		{[]string{"{{ last_name }}", "{{last_name}}", "[LAST_NAME]"}, lastName},
+		{[]string{"{{ full_name }}", "{{full_name}}", "[FULL_NAME]"}, fullName},
+		{[]string{"{{ email }}", "{{email}}", "[EMAIL]", "{{EMAIL}}", "{{ EMAIL }}"}, email},
+		{[]string{"{{ FIRST_NAME }}", "{{ LAST_NAME }}", "{{ FULL_NAME }}"}, ""},
+		{[]string{"{{ email_local }}", "{{email_local}}"}, emailLocal},
+		{[]string{"{{ email_domain }}", "{{email_domain}}"}, emailDomain},
+	}
+	// Apply the concrete-value replacements first
+	replacements[4].tags = nil // skip the empty row
+	for _, r := range replacements {
+		for _, tag := range r.tags {
+			if strings.Contains(content, tag) {
+				content = strings.ReplaceAll(content, tag, r.value)
+			}
+		}
+	}
+	// Uppercase variants
+	content = strings.ReplaceAll(content, "{{ FIRST_NAME }}", firstName)
+	content = strings.ReplaceAll(content, "{{ LAST_NAME }}", lastName)
+	content = strings.ReplaceAll(content, "{{ FULL_NAME }}", fullName)
+	content = strings.ReplaceAll(content, "{{FIRST_NAME}}", firstName)
+	content = strings.ReplaceAll(content, "{{LAST_NAME}}", lastName)
+	content = strings.ReplaceAll(content, "{{FULL_NAME}}", fullName)
+
+	return content
 }

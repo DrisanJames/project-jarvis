@@ -535,7 +535,7 @@ func (svc *MailingService) sendViaSendGrid(ctx context.Context, apiKey, to, from
 }
 
 // sendViaSMTP sends email through an SMTP relay (PMTA or generic).
-func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port int, username, password, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
+func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port int, username, password, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string, extraHeaders ...map[string]string) (map[string]interface{}, error) {
 	if host == "" {
 		return nil, fmt.Errorf("SMTP host not configured")
 	}
@@ -552,6 +552,11 @@ func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port in
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	if replyEmail != "" {
 		msg.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
+	}
+	for _, hdrs := range extraHeaders {
+		for k, v := range hdrs {
+			msg.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
 	}
 	msg.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
 	msg.WriteString("\r\n")

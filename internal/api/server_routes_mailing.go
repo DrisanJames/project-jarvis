@@ -24,7 +24,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// Register mailing routes INSIDE the /api sub-router so they
 		// automatically inherit the auth middleware from SetupRoutes.
 		// Path is /mailing (relative to /api), so final URL is /api/mailing/*.
-		sparkpostKey := "3150faa70a8b75b57a2ce5277a8c5fc7dc401d1c" // From config
+		sparkpostKey := os.Getenv("SPARKPOST_API_KEY")
+		if sparkpostKey == "" {
+			sparkpostKey = "3150faa70a8b75b57a2ce5277a8c5fc7dc401d1c"
+		}
 		svc := NewMailingService(db, sparkpostKey)
 		s.mailingSvc = svc
 		advSvc := NewAdvancedMailingService(db)

@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -470,73 +471,76 @@ func (s *SuppressionService) HandleSuppressionAudit(w http.ResponseWriter, r *ht
 	json.NewEncoder(w).Encode(map[string]interface{}{"audit_log": entries})
 }
 
-// HandleOneClickUnsubscribe handles RFC 8058 one-click unsubscribe
+// HandleOneClickUnsubscribe handles RFC 8058 one-click unsubscribe.
+// Feeds ALL suppression repositories: entries table, legacy table, and global hub.
 func (s *SuppressionService) HandleOneClickUnsubscribe(w http.ResponseWriter, r *http.Request) {
-	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	// RFC 8058 requires List-Unsubscribe=One-Click header
-	listUnsubscribe := r.PostFormValue("List-Unsubscribe")
 	email := r.PostFormValue("email")
-
 	if email == "" {
-		// Try to extract from token
 		token := r.PostFormValue("token")
 		if token != "" {
-			// Decode token to get email
-			// For now, use token as email if no email provided
 			email = token
 		}
 	}
-
 	if email == "" {
 		http.Error(w, "Email required", http.StatusBadRequest)
 		return
 	}
 
-	// Add to global suppression
+	emailLower := strings.ToLower(strings.TrimSpace(email))
+	md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
+
+	// 1. Suppression entries table
 	id := fmt.Sprintf("unsub-%d", time.Now().UnixNano())
-	_, err := s.db.Exec(`
-		INSERT INTO mailing_suppression_entries (id, email, reason, source)
-		VALUES ($1, $2, 'one_click_unsubscribe', 'rfc8058')
+	s.db.Exec(`
+		INSERT INTO mailing_suppression_entries (id, email, md5_hash, reason, source, is_global)
+		VALUES ($1, $2, $3, 'one_click_unsubscribe', 'rfc8058', true)
 		ON CONFLICT DO NOTHING
-	`, id, strings.ToLower(email))
+	`, id, emailLower, md5Hash)
 
-	if err != nil {
-		log.Printf("One-click unsubscribe failed for %s: %v", logger.RedactEmail(email), err)
-	}
+	// 2. Legacy suppression table
+	s.db.Exec(`
+		INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, 'one_click_unsubscribe', 'rfc8058', true, NOW(), NOW())
+		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'one_click_unsubscribe', updated_at = NOW()
+	`, emailLower)
 
-	// RFC 8058 requires 200 OK response
+	// 3. Global suppression hub (single source of truth)
+	s.db.Exec(`
+		INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+		SELECT gen_random_uuid(), (SELECT id FROM organizations LIMIT 1), $1, $2, 'unsubscribe', 'rfc8058_one_click', NOW()
+		WHERE NOT EXISTS (SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = $2)
+	`, emailLower, md5Hash)
+
+	// 4. Update subscriber status
+	s.db.Exec(`UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE LOWER(email) = $1`, emailLower)
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Unsubscribed successfully"))
-
-	log.Printf("One-click unsubscribe processed for %s (list: %s)", logger.RedactEmail(email), listUnsubscribe)
+	log.Printf("One-click unsubscribe → global suppression: %s", logger.RedactEmail(email))
 }
 
 // HandleListUnsubscribeHeader returns the List-Unsubscribe header value
 func (s *SuppressionService) HandleListUnsubscribeHeader(w http.ResponseWriter, r *http.Request) {
-	// Generate a one-click unsubscribe URL
 	baseURL := r.URL.Query().Get("base_url")
 	if baseURL == "" {
-		baseURL = "https://mail.example.com"
+		baseURL = "https://projectjarvis.io"
 	}
 
 	email := r.URL.Query().Get("email")
 	campaignID := r.URL.Query().Get("campaign_id")
 
-	// Generate header value per RFC 8058
 	unsubscribeURL := fmt.Sprintf("%s/api/mailing/unsubscribe/one-click?email=%s&campaign=%s",
 		baseURL, email, campaignID)
-	mailtoURL := fmt.Sprintf("mailto:unsubscribe@example.com?subject=Unsubscribe%%20%s", email)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"List-Unsubscribe":           fmt.Sprintf("<%s>, <%s>", unsubscribeURL, mailtoURL),
-		"List-Unsubscribe-Post":      "List-Unsubscribe=One-Click",
-		"one_click_url":              unsubscribeURL,
-		"mailto_url":                 mailtoURL,
+		"List-Unsubscribe":      fmt.Sprintf("<%s>", unsubscribeURL),
+		"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+		"one_click_url":         unsubscribeURL,
 	})
 }

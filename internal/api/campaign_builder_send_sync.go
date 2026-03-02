@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -213,11 +214,34 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		// Inject tracking (AFTER personalization)
 		emailID := uuid.New()
 		trackedHTML := cb.mailingSvc.injectTracking(personalizedHTML, orgID, campUUID, sub.ID, emailID)
-		
-		// Send via the appropriate profile/vendor
+
+		// Generate unsub URL and inject into body + headers
+		unsubData := fmt.Sprintf("%s|%s|%s", orgID, campUUID.String(), sub.ID.String())
+		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+		unsubURL := fmt.Sprintf("%s/track/unsubscribe/%s", cb.mailingSvc.trackingURL, unsubEncoded)
+		trackedHTML = strings.ReplaceAll(trackedHTML, "{{ system.unsubscribe_url }}", unsubURL)
+		trackedHTML = strings.ReplaceAll(trackedHTML, "{{system.unsubscribe_url}}", unsubURL)
+
+		if unsubURL != "" && !strings.Contains(strings.ToLower(trackedHTML), "/track/unsubscribe/") && !strings.Contains(strings.ToLower(trackedHTML), "unsubscribe") {
+			unsubBlock := fmt.Sprintf(
+				`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
+					`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsubURL)
+			if idx := strings.LastIndex(strings.ToLower(trackedHTML), "</body>"); idx >= 0 {
+				trackedHTML = trackedHTML[:idx] + unsubBlock + trackedHTML[idx:]
+			} else {
+				trackedHTML += unsubBlock
+			}
+		}
+
+		unsubHeaders := map[string]string{}
+		if unsubURL != "" {
+			unsubHeaders["List-Unsubscribe"] = fmt.Sprintf("<%s>", unsubURL)
+			unsubHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+		}
+
 		var result map[string]interface{}
 		var sendErr error
-		
+
 		switch profile.VendorType {
 		case "ses":
 			result, sendErr = cb.mailingSvc.sendViaSES(ctx, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText)
@@ -237,7 +261,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			if profile.SMTPPass.Valid { smtpPass = profile.SMTPPass.String }
 			port := 25
 			if profile.SMTPPort.Valid && profile.SMTPPort.Int64 > 0 { port = int(profile.SMTPPort.Int64) }
-			result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, port, smtpUser, smtpPass, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText)
+			result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, port, smtpUser, smtpPass, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText, unsubHeaders)
 		default:
 			result, sendErr = cb.mailingSvc.sendViaSparkPost(ctx, sub.Email, campaign.FromEmail, campaign.FromName, personalizedSubject, trackedHTML, personalizedText)
 		}

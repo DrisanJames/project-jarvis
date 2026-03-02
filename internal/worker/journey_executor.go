@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -379,7 +380,15 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	// PERSONALIZATION ENGINE
 	// ============================================
 	templateSvc := mailing.NewTemplateService()
-	contextBuilder := mailing.NewContextBuilder(je.db, "https://track.ignite.media", "signing-key-placeholder")
+	trackURL := os.Getenv("TRACKING_URL")
+	if trackURL == "" {
+		trackURL = "https://track.ignite.media"
+	}
+	sigKey := os.Getenv("TRACKING_SIGNING_KEY")
+	if sigKey == "" {
+		sigKey = "jarvis-default-signing-key-change-in-production"
+	}
+	contextBuilder := mailing.NewContextBuilder(je.db, trackURL, sigKey)
 	
 	// Load subscriber data for personalization
 	sub := je.loadSubscriberByEmail(ctx, enrollment.SubscriberEmail)

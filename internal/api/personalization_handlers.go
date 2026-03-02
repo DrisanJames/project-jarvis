@@ -5,11 +5,26 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
+
+func getTrackingURL() string {
+	if v := os.Getenv("TRACKING_URL"); v != "" {
+		return v
+	}
+	return "https://projectjarvis.io"
+}
+
+func getSigningKey() string {
+	if v := os.Getenv("TRACKING_SIGNING_KEY"); v != "" {
+		return v
+	}
+	return "jarvis-default-signing-key-change-in-production"
+}
 
 // PersonalizationService handles template preview and merge tag APIs
 type PersonalizationService struct {
@@ -23,7 +38,7 @@ func NewPersonalizationService(db *sql.DB) *PersonalizationService {
 	return &PersonalizationService{
 		db:             db,
 		templateSvc:    mailing.NewTemplateService(),
-		contextBuilder: mailing.NewContextBuilder(db, "https://track.ignite.media", "signing-key-placeholder"),
+		contextBuilder: mailing.NewContextBuilder(db, getTrackingURL(), getSigningKey()),
 	}
 }
 

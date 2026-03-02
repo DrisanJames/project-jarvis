@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
 func emailHash(email string) string {
@@ -160,34 +162,33 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
-// HandleTrackUnsubscribe records an unsubscribe event
+// HandleTrackUnsubscribe records an unsubscribe event and feeds the single
+// global suppression repository — every unsub, regardless of source, lands here.
 func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
-	
+
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
 		http.Error(w, "Invalid unsubscribe link", http.StatusBadRequest)
 		return
 	}
-	
+
 	parts := strings.Split(string(decoded), "|")
-	if len(parts) < 4 {
+	if len(parts) < 3 {
 		http.Error(w, "Invalid data", http.StatusBadRequest)
 		return
 	}
-	
+
 	orgID, _ := uuid.Parse(parts[0])
 	campaignID, _ := uuid.Parse(parts[1])
 	subscriberID, _ := uuid.Parse(parts[2])
-	
-	// Get subscriber email
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
-	
+
 	isp := extractISP(email)
 
-	// Fire in-memory tracker FIRST
 	if svc.onTrackingEvent != nil {
 		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, isp)
 	}
@@ -196,28 +197,38 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent)
 		VALUES ($1, $2, $3, $4, $5, 'unsubscribed', NOW(), NOW(), $6, $7)
 	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent())
-	
-	// Update subscriber status
+
 	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1`, subscriberID)
-	
-	// Update campaign stats
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET unsubscribe_count = COALESCE(unsubscribe_count, 0) + 1 WHERE id = $1`, campaignID)
-	
-	// Add to suppression list
+
+	// Feed the single suppression repository — legacy table
 	svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
 		VALUES ($1, $2, 'User unsubscribed', 'unsubscribe', true, NOW(), NOW())
 		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'User unsubscribed', updated_at = NOW()
 	`, uuid.New(), email)
-	
-	log.Printf("TRACK UNSUBSCRIBE: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
 
-	// Return confirmation page
+	// Feed the single suppression repository — global hub table (MD5-keyed)
+	if email != "" {
+		emailLower := strings.ToLower(strings.TrimSpace(email))
+		md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
+		svc.db.ExecContext(ctx, `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, isp, created_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, 'unsubscribe', 'tracking_link', $4, NOW())
+			ON CONFLICT (organization_id, md5_hash) DO UPDATE SET reason = 'unsubscribe', updated_at = NOW()
+		`, orgID, emailLower, md5Hash, isp)
+	}
+
+	log.Printf("TRACK UNSUBSCRIBE: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
+
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<!DOCTYPE html><html><body style="font-family:Arial;text-align:center;padding:50px;">
-		<h1>You have been unsubscribed</h1>
-		<p>You will no longer receive emails from us.</p>
-	</body></html>`))
+	w.Write([]byte(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Unsubscribed</title></head>
+<body style="font-family:system-ui,Arial,sans-serif;text-align:center;padding:60px 20px;background:#f8f9fa;">
+<div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,.08);">
+<h1 style="color:#1a1a2e;font-size:24px;">You have been unsubscribed</h1>
+<p style="color:#64748b;font-size:15px;">You will no longer receive emails from us. This change is effective immediately.</p>
+</div></body></html>`))
 }
 
 // serveTrackingPixel returns a 1x1 transparent GIF
