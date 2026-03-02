@@ -24,8 +24,7 @@ func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request
 	`)
 	if err != nil {
 		log.Printf("[HandleGetLists] query error: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"lists": []map[string]interface{}{}, "total": 0})
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "database temporarily unavailable"})
 		return
 	}
 	defer rows.Close()

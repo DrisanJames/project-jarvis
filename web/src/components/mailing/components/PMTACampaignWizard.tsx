@@ -191,37 +191,72 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<any>(null);
+  const [domainError, setDomainError] = useState('');
+  // Reset deploy result when navigating away from step 6
+  useEffect(() => {
+    if (step !== 6 && deployResult) setDeployResult(null);
+  }, [step, deployResult]);
 
-  // ── Data fetching ────────────────────────────────────────────────────────
+  // ── Data fetching with retry ────────────────────────────────────────────
+
+  const fetchWithRetry = useCallback(async (url: string, opts?: RequestInit, retries = 2): Promise<Response> => {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await orgFetch(url, orgId, opts);
+        if (res.ok) return res;
+        if (i < retries && res.status >= 500) {
+          await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+          continue;
+        }
+        return res;
+      } catch (err) {
+        if (i < retries) {
+          await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    return orgFetch(url, orgId, opts);
+  }, [orgId]);
 
   const fetchReadiness = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await orgFetch(`${API_BASE}/pmta-campaign/readiness`, orgId);
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/readiness`);
       const data = await res.json();
       setISPReadiness(data.isps || []);
-    } catch { /* noop */ }
+    } catch (err) {
+      console.warn('[Wizard] readiness fetch failed:', err);
+    }
     setLoading(false);
-  }, [orgId]);
+  }, [fetchWithRetry]);
 
   const fetchDomains = useCallback(async () => {
+    setDomainError('');
     try {
-      const res = await orgFetch(`${API_BASE}/pmta-campaign/sending-domains`, orgId);
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/sending-domains`);
+      if (!res.ok) {
+        setDomainError('Failed to load sending domains. Retry or check Domain Center.');
+        return;
+      }
       const data = await res.json();
       setSendingDomains(data.domains || []);
-    } catch { /* noop */ }
-  }, [orgId]);
+    } catch {
+      setDomainError('Network error loading domains. Click retry.');
+    }
+  }, [fetchWithRetry]);
 
   const fetchAudienceData = useCallback(async () => {
     setAudienceError('');
     try {
       const [listRes, segRes, suppRes] = await Promise.all([
-        orgFetch(`${API_BASE}/lists`, orgId),
-        orgFetch(`${API_BASE}/segments`, orgId),
-        orgFetch(`${API_BASE}/suppression-lists`, orgId),
+        fetchWithRetry(`${API_BASE}/lists`),
+        fetchWithRetry(`${API_BASE}/segments`),
+        fetchWithRetry(`${API_BASE}/suppression-lists`),
       ]);
       if (!listRes.ok || !segRes.ok || !suppRes.ok) {
-        setAudienceError('Some audience data failed to load. Check your lists/segments configuration.');
+        setAudienceError('Some audience data failed to load. Retrying didn\'t help — check configuration.');
       }
       const listData = await listRes.json();
       const segData = await segRes.json();
@@ -230,9 +265,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setSegments(Array.isArray(segData) ? segData : segData.segments || []);
       setSuppressionLists(Array.isArray(suppData) ? suppData : suppData.lists || []);
     } catch {
-      setAudienceError('Failed to load audience data. Please try again.');
+      setAudienceError('Failed to load audience data — network error. Click retry.');
     }
-  }, [orgId]);
+  }, [fetchWithRetry]);
 
   const fetchAudienceEstimate = useCallback(async () => {
     if (selectedLists.length === 0 && selectedSegments.length === 0) {
@@ -240,7 +275,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       return;
     }
     try {
-      const res = await orgFetch(`${API_BASE}/pmta-campaign/estimate-audience`, orgId, {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/estimate-audience`, {
         method: 'POST',
         body: JSON.stringify({
           list_ids: selectedLists,
@@ -251,8 +286,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       });
       const data = await res.json();
       setAudienceEstimate(data);
-    } catch { /* noop */ }
-  }, [orgId, selectedLists, selectedSegments, selectedSuppLists, selectedISPs]);
+    } catch (err) {
+      console.warn('[Wizard] audience estimate failed:', err);
+    }
+  }, [fetchWithRetry, selectedLists, selectedSegments, selectedSuppLists, selectedISPs]);
 
   const fetchIntel = useCallback(async () => {
     setLoading(true);
@@ -263,7 +300,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           audiencePerISP[k] = v;
         }
       }
-      const res = await orgFetch(`${API_BASE}/pmta-campaign/intel`, orgId, {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/intel`, {
         method: 'POST',
         body: JSON.stringify({
           target_isps: selectedISPs,
@@ -274,17 +311,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       });
       const data = await res.json();
       setISPIntel(data.isps || []);
-    } catch { /* noop */ }
+    } catch (err) {
+      console.warn('[Wizard] intel fetch failed:', err);
+    }
     setLoading(false);
-  }, [orgId, selectedISPs, audienceEstimate]);
+  }, [fetchWithRetry, orgId, selectedISPs, audienceEstimate]);
 
   const fetchTemplates = useCallback(async () => {
     try {
-      const res = await orgFetch(`${API_BASE}/templates`, orgId);
+      const res = await fetchWithRetry(`${API_BASE}/templates`);
       const data = await res.json();
       setTemplates(data.templates || []);
-    } catch { /* noop */ }
-  }, [orgId]);
+    } catch (err) {
+      console.warn('[Wizard] templates fetch failed:', err);
+    }
+  }, [fetchWithRetry]);
 
   const handleAIGenerate = useCallback(async () => {
     if (!aiCampaignType || !selectedDomain) return;
@@ -412,6 +453,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const handleDeploy = async () => {
     setDeploying(true);
+    setDeployResult(null);
     try {
       const payload: Record<string, any> = {
         name: campaignName,
@@ -430,10 +472,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       if (sendMode === 'scheduled' && scheduledAt) {
         payload.scheduled_at = new Date(scheduledAt).toISOString();
       }
-      const res = await orgFetch(`${API_BASE}/pmta-campaign/deploy`, orgId, {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/deploy`, {
         method: 'POST',
         body: JSON.stringify(payload),
-      });
+      }, 3);
       const data = await res.json();
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
@@ -441,7 +483,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         setDeployResult(data);
       }
     } catch (err: any) {
-      setDeployResult({ error: err?.message || 'Deploy failed — network error' });
+      setDeployResult({ error: err?.message || 'Deploy failed — network error. Click Deploy to retry.' });
     }
     setDeploying(false);
   };
@@ -568,7 +610,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
         Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
       </p>
-      {sendingDomains.length === 0 && (
+      {domainError && (
+        <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 8px' }}>{domainError}</p>
+          <button onClick={fetchDomains} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 16px', fontSize: 13, cursor: 'pointer' }}>
+            Retry
+          </button>
+        </div>
+      )}
+      {!domainError && sendingDomains.length === 0 && (
         <div style={{ textAlign: 'center', padding: 40, color: '#8b8fa3' }}>
           No sending domains configured. Add domains in Domain Center first.
         </div>
@@ -881,6 +931,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       {audienceError && (
         <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> {audienceError}
+          <button onClick={fetchAudienceData} style={{ marginLeft: 'auto', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>
+            Retry
+          </button>
         </div>
       )}
 
@@ -1068,6 +1121,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <FontAwesomeIcon icon={faTimesCircle} size="3x" style={{ marginBottom: 12 }} />
               <h3>Deploy Failed</h3>
               <p>{deployResult.error}</p>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 16 }}>
+                <button onClick={handleDeploy} disabled={deploying}
+                  style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                  {deploying ? 'Retrying…' : 'Retry Deploy'}
+                </button>
+                <button onClick={() => setDeployResult(null)}
+                  style={{ background: 'transparent', color: '#e2e4ed', border: '1px solid #2d2e3e', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                  Edit Campaign
+                </button>
+              </div>
             </div>
           ) : (
             <div style={{ color: '#10b981' }}>

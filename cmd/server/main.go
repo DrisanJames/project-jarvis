@@ -166,7 +166,7 @@ func main() {
 			dbURL += sep + "connect_timeout=5"
 			sep = "&"
 		}
-		dbURL += sep + "options=-c%20statement_timeout%3D15000%20-c%20idle_in_transaction_session_timeout%3D15000"
+		dbURL += sep + "options=-c%20statement_timeout%3D30000%20-c%20idle_in_transaction_session_timeout%3D30000"
 		log.Printf("DB URL host portion: ...@%s/...", extractHost(dbURL))
 		mailingDB, err := sql.Open("postgres", dbURL)
 		if err != nil {
@@ -229,11 +229,10 @@ func main() {
 			server.SetMailingDB(mailingDB)
 			log.Println("Mailing Platform routes registered")
 
-			// Set pool limits early to prevent connection exhaustion
-			mailingDB.SetMaxOpenConns(25)
-			mailingDB.SetMaxIdleConns(5)
-			mailingDB.SetConnMaxLifetime(5 * time.Minute)
-			mailingDB.SetConnMaxIdleTime(30 * time.Second)
+		mailingDB.SetMaxOpenConns(25)
+		mailingDB.SetMaxIdleConns(15)
+		mailingDB.SetConnMaxLifetime(5 * time.Minute)
+		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
 			// Test connection with timeout — only start background workers if DB is reachable
 			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
