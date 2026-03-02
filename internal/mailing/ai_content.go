@@ -30,9 +30,9 @@ type AIContentService struct {
 
 // NewAIContentService creates a new AI content service
 func NewAIContentService(db *sql.DB, anthropicKey, openaiKey string) *AIContentService {
-	model := "claude-sonnet-4-20250514"
+	model := "claude-opus-4-6"
 	if anthropicKey == "" && openaiKey != "" {
-		model = "gpt-4o"
+		model = "gpt-5.2"
 	}
 	return &AIContentService{
 		db:           db,
@@ -980,7 +980,7 @@ Generate suggestions now:`)
 
 func (s *AIContentService) callAnthropicForSubjects(ctx context.Context, prompt string, count int) ([]SubjectSuggestion, error) {
 	reqBody := map[string]interface{}{
-		"model": "claude-sonnet-4-20250514",
+		"model": "claude-opus-4-6",
 		"max_tokens": 2000,
 		"messages": []map[string]string{
 			{
@@ -1031,7 +1031,7 @@ func (s *AIContentService) callAnthropicForSubjects(ctx context.Context, prompt 
 
 func (s *AIContentService) callOpenAIForSubjects(ctx context.Context, prompt string, count int) ([]SubjectSuggestion, error) {
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
+		"model": "gpt-5.2",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
@@ -1199,7 +1199,7 @@ Respond with only the number, nothing else.`, text)
 
 func (s *AIContentService) callAnthropicSimple(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model": "claude-sonnet-4-20250514",
+		"model": "claude-opus-4-6",
 		"max_tokens": 100,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
@@ -1243,7 +1243,7 @@ func (s *AIContentService) callAnthropicSimple(ctx context.Context, prompt strin
 
 func (s *AIContentService) callOpenAISimple(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5.2",
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

@@ -354,7 +354,7 @@ RESPOND WITH EXACTLY THIS JSON STRUCTURE (no wrapping, no markdown):
 
 func (s *AIContentService) callClaudeForTemplates(ctx context.Context, prompt string) ([]GeneratedVariation, error) {
 	reqBody := map[string]interface{}{
-		"model":      "claude-sonnet-4-20250514",
+		"model":      "claude-opus-4-6",
 		"max_tokens": 16000,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},

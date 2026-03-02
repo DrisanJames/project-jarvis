@@ -76,9 +76,8 @@ func NewBedrockAgent(modelID string, agent *Agent, knowledgeBase *KnowledgeBase)
 
 	client := bedrockruntime.NewFromConfig(cfg)
 
-	// Default to Claude 3 Sonnet if not specified
 	if modelID == "" {
-		modelID = "anthropic.claude-3-sonnet-20240229-v1:0"
+		modelID = "anthropic.claude-opus-4-6-v1:0"
 	}
 
 	ba := &BedrockAgent{

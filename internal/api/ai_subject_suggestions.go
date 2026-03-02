@@ -52,7 +52,7 @@ type OfferPerformance struct {
 func NewAISubjectSuggestionService(db *sql.DB, openAICfg config.OpenAIConfig) *AISubjectSuggestionService {
 	model := openAICfg.Model
 	if model == "" {
-		model = "gpt-4o-mini" // Cost-effective default for suggestions
+		model = "gpt-5.2"
 	}
 	return &AISubjectSuggestionService{
 		db:        db,

@@ -178,7 +178,7 @@ export const AgentChat: React.FC = () => {
                 borderRadius: '4px',
               }}>
                 <FontAwesomeIcon icon={faMagic} />
-                GPT-4
+                GPT-5.2
               </span>
             )}
           </span>
