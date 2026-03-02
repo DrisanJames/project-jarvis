@@ -173,7 +173,7 @@ func (svc *MailingService) HandleAddSubscriber(w http.ResponseWriter, r *http.Re
 
 	if err != nil {
 		log.Printf("Error adding subscriber: %v", err)
-		http.Error(w, `{"error":"failed to add subscriber"}`, http.StatusInternalServerError)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add subscriber: " + err.Error()})
 		return
 	}
 
