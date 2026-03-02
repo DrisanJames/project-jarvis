@@ -1,6 +1,0 @@
-feat: upgrade all AI models to Claude 4.6 Opus and GPT-5.2
-
-PMTA agents and HTML template generation now use claude-opus-4-6.
-Orchestrators (OpenAI agent, subject suggestions, config defaults) now
-use gpt-5.2. Bedrock agent defaults to anthropic.claude-opus-4-6-v1:0.
-Replaces all stale claude-sonnet-4, gpt-4o, and gpt-4o-mini references.

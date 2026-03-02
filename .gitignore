@@ -7,6 +7,7 @@
 # Compiled binaries
 bin/
 build/
+*.exe
 /main
 /server
 /ignite-server
@@ -14,6 +15,8 @@ build/
 /sparkpost-monitor
 /upside-down
 /tracking
+COMMIT_MSG.tmp
+do_commit.bat
 
 # Sensitive config (secrets injected via env vars in production)
 config/config.yaml
