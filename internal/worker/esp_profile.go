@@ -92,18 +92,7 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		}
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
-		// Prefer HTTP injection API (bypasses AWS port 25 blocking)
-		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
-			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
-				return NewPMTAAPISender(region, s.db)
-			}).Send(ctx, msg)
-		}
 		host := smtpHost.String
-		if host == "" {
-			return nil, fmt.Errorf("profile %s: no SMTP host for PMTA", msg.ProfileID)
-		}
-		// Default to port 587 (submission) instead of 25 — AWS ECS Fargate
-		// blocks outbound port 25 by default. Port 587 is unrestricted.
 		port := 587
 		if smtpPort.Valid && smtpPort.Int64 > 0 {
 			port = int(smtpPort.Int64)
@@ -111,14 +100,30 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		user := smtpUsername.String
 		pass := smtpPassword.String
 
-		// Try HTTP API first if host is known (construct from SMTP host)
-		apiURL := fmt.Sprintf("http://%s:19000", host)
-		return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
-			return &pmtaComboSender{
-				apiSender:  NewPMTAAPISender(apiURL, s.db),
-				smtpSender: NewPMTASender(host, port, user, pass, s.db),
-			}
-		}).Send(ctx, msg)
+		// Determine HTTP API endpoint (explicit or derived from SMTP host)
+		apiURL := ""
+		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
+			apiURL = region
+		} else if host != "" {
+			apiURL = fmt.Sprintf("http://%s:19000", host)
+		}
+
+		// Always use combo sender: HTTP API first, SMTP fallback
+		if host != "" {
+			return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
+				return &pmtaComboSender{
+					apiSender:  NewPMTAAPISender(apiURL, s.db),
+					smtpSender: NewPMTASender(host, port, user, pass, s.db),
+				}
+			}).Send(ctx, msg)
+		}
+		// No SMTP host — try HTTP API alone
+		if apiURL != "" {
+			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
+				return NewPMTAAPISender(apiURL, s.db)
+			}).Send(ctx, msg)
+		}
+		return nil, fmt.Errorf("profile %s: no SMTP host or API endpoint for PMTA", msg.ProfileID)
 	default:
 		return nil, fmt.Errorf("unsupported vendor type: %s", vendorType)
 	}
