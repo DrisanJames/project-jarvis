@@ -172,6 +172,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
+  const [sendMode, setSendMode] = useState<'immediate' | 'scheduled'>('immediate');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<any>(null);
 
@@ -277,6 +282,24 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     if (step === 4) fetchAudienceEstimate();
   }, [step, selectedLists, selectedSegments, selectedSuppLists, fetchAudienceEstimate]);
 
+  // Fetch send-time recommendations when user switches to scheduled mode
+  useEffect(() => {
+    if (sendMode !== 'scheduled' || recsLoaded || selectedISPs.length === 0) return;
+    let cancelled = false;
+    setRecsLoading(true);
+    orgFetch(`${API_BASE}/pmta-campaign/send-time-recommendations?isps=${selectedISPs.join(',')}`, orgId)
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled) {
+          setRecommendations(data.recommendations || []);
+          setRecsLoaded(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setRecsLoaded(true); })
+      .finally(() => { if (!cancelled) setRecsLoading(false); });
+    return () => { cancelled = true; };
+  }, [sendMode, recsLoaded, selectedISPs, orgId]);
+
   // ── Step validation ──────────────────────────────────────────────────────
 
   const canProceed = (): boolean => {
@@ -287,7 +310,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                      Math.abs(variants.reduce((s, v) => s + v.split_percent, 0) - 100) < 1;
       case 4: return selectedLists.length > 0 || selectedSegments.length > 0;
       case 5: return true;
-      case 6: return campaignName.trim() !== '';
+      case 6: return campaignName.trim() !== '' && (sendMode === 'immediate' || !!scheduledAt);
       default: return false;
     }
   };
@@ -297,21 +320,26 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const handleDeploy = async () => {
     setDeploying(true);
     try {
+      const payload: Record<string, any> = {
+        name: campaignName,
+        target_isps: selectedISPs,
+        sending_domain: selectedDomain,
+        variants,
+        inclusion_segments: selectedSegments,
+        inclusion_lists: selectedLists,
+        exclusion_lists: selectedSuppLists,
+        send_days: [],
+        send_hour: new Date().getUTCHours(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        throttle_strategy: 'auto',
+        send_mode: sendMode,
+      };
+      if (sendMode === 'scheduled' && scheduledAt) {
+        payload.scheduled_at = new Date(scheduledAt).toISOString();
+      }
       const res = await orgFetch(`${API_BASE}/pmta-campaign/deploy`, orgId, {
         method: 'POST',
-        body: JSON.stringify({
-          name: campaignName,
-          target_isps: selectedISPs,
-          sending_domain: selectedDomain,
-          variants,
-          inclusion_segments: selectedSegments,
-          inclusion_lists: selectedLists,
-          exclusion_lists: selectedSuppLists,
-          send_days: [],
-          send_hour: new Date().getUTCHours(),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          throttle_strategy: 'auto',
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       setDeployResult(data);
@@ -394,8 +422,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           const selected = selectedISPs.includes(r.isp);
           return (
             <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={selected}
+              aria-label={`Select ${meta.label} ISP`}
               key={r.isp}
               onClick={() => toggleISP(r.isp)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleISP(r.isp); } }}
               style={{
                 background: selected ? `${meta.color}15` : '#1e1f2e',
                 border: `2px solid ${selected ? meta.color : '#2d2e3e'}`,
@@ -813,6 +846,110 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             />
           </div>
 
+          {/* Send mode toggle */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {(['immediate', 'scheduled'] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => { setSendMode(mode); if (mode === 'immediate') { setScheduledAt(''); } }}
+                style={{
+                  flex: 1, padding: '10px 0', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  background: sendMode === mode ? (mode === 'immediate' ? '#6366f120' : '#f59e0b20') : '#1e1f2e',
+                  color: sendMode === mode ? (mode === 'immediate' ? '#a78bfa' : '#f59e0b') : '#8b8fa3',
+                  border: `2px solid ${sendMode === mode ? (mode === 'immediate' ? '#6366f1' : '#f59e0b') : '#2d2e3e'}`,
+                }}
+              >
+                {mode === 'immediate' ? 'Send Now' : 'Schedule for Later'}
+              </button>
+            ))}
+          </div>
+
+          {/* Scheduled: recommendations + date picker */}
+          {sendMode === 'scheduled' && (
+            <div style={{ marginBottom: 16 }}>
+              {recsLoading && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                  {[1, 2, 3].map(i => (
+                    <div key={i} style={{ height: 48, background: 'linear-gradient(90deg, #1e1f2e 25%, #2d2e3e 50%, #1e1f2e 75%)', borderRadius: 8, animation: 'shimmer 1.5s infinite' }} />
+                  ))}
+                </div>
+              )}
+              {!recsLoading && recommendations.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#e2e4ed' }}>Recommended Send Windows</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {recommendations.map((rec: any) => {
+                      const meta = ISP_META[rec.isp];
+                      return (
+                        <div key={rec.isp} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 8, padding: 10 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                            <span>{meta?.emoji || '🌐'}</span>
+                            <strong style={{ color: meta?.color || '#e2e4ed', fontSize: 13 }}>{rec.display_name}</strong>
+                            <span style={{
+                              fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 600,
+                              background: rec.data_quality?.has_historical ? '#10b98120' : '#64748b20',
+                              color: rec.data_quality?.has_historical ? '#10b981' : '#8b8fa3',
+                              border: `1px solid ${rec.data_quality?.has_historical ? '#10b98140' : '#64748b40'}`,
+                            }}>
+                              {rec.data_quality?.has_historical
+                                ? `Based on ${(rec.data_quality.total_sends || 0).toLocaleString()} sends`
+                                : 'Industry standard'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {(rec.windows || []).slice(0, 3).map((w: any, i: number) => (
+                              <button
+                                key={i}
+                                onClick={() => {
+                                  const now = new Date();
+                                  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+                                  const targetDay = days.indexOf(w.day_of_week);
+                                  const currentDay = now.getDay();
+                                  let daysUntil = (targetDay - currentDay + 7) % 7;
+                                  if (daysUntil === 0 && now.getHours() >= w.start_hour) daysUntil = 7;
+                                  const target = new Date(now);
+                                  target.setDate(target.getDate() + daysUntil);
+                                  target.setHours(w.start_hour, 0, 0, 0);
+                                  const pad = (n: number) => n.toString().padStart(2, '0');
+                                  setScheduledAt(`${target.getFullYear()}-${pad(target.getMonth()+1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}`);
+                                }}
+                                style={{
+                                  padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                                  background: w.source === 'historical' ? '#6366f115' : '#1a1b2e',
+                                  color: w.source === 'historical' ? '#a78bfa' : '#8b8fa3',
+                                  border: `1px solid ${w.source === 'historical' ? '#6366f140' : '#2d2e3e'}`,
+                                }}
+                              >
+                                {w.day_of_week} {w.start_hour}:00–{w.end_hour}:00 UTC
+                                {w.source === 'historical' && ` (${w.open_rate.toFixed(1)}% open)`}
+                              </button>
+                            ))}
+                          </div>
+                          {rec.data_quality?.has_historical && (
+                            <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#2d2e3e', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${Math.min((rec.data_quality.total_sends / 1000) * 100, 100)}%`, background: '#10b981', borderRadius: 2 }} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div>
+                <label style={{ fontSize: 12, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>Send Date & Time</label>
+                <input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={e => setScheduledAt(e.target.value)}
+                  min={new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16)}
+                  style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, color: '#e2e4ed', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
             <SummaryCard title="Target ISPs" value={selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')} />
@@ -825,15 +962,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
           <button
             onClick={handleDeploy}
-            disabled={deploying || !campaignName.trim()}
+            disabled={deploying || !campaignName.trim() || (sendMode === 'scheduled' && !scheduledAt)}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              width: '100%', padding: '14px 0', background: deploying ? '#4b5563' : '#6366f1',
+              width: '100%', padding: '14px 0',
+              background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#6366f1'),
               color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
-              cursor: deploying ? 'not-allowed' : 'pointer',
+              cursor: (deploying || (sendMode === 'scheduled' && !scheduledAt)) ? 'not-allowed' : 'pointer',
             }}
           >
-            {deploying ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</> : <><FontAwesomeIcon icon={faRocket} /> Deploy Campaign</>}
+            {deploying
+              ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
+              : sendMode === 'scheduled'
+                ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
+                : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
+            }
           </button>
         </>
       )}

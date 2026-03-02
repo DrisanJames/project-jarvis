@@ -581,6 +581,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			pmtaCampaignAPI.RegisterRoutes(r)
 
+			// === PMTA SEND-TIME RECOMMENDATIONS ===
+			sendTimeHandler := NewPMTASendTimeHandler(db)
+			sendTimeHandler.RegisterRoutes(r)
+
 			// === GLOBAL SUPPRESSION HUB — Single Source of Truth ===
 			globalHub := engine.NewGlobalSuppressionHub(db, engineOrgID, suppressionDir)
 			_ = globalHub.LoadFromDB(context.Background())
@@ -646,10 +650,13 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 						ISP:        isp,
 					})
 
-					// Unsubscribes also go to global suppression
-					if eventType == "unsubscribe" {
-						globalHub.Suppress(context.Background(), recipient, "unsubscribe", "tracking_pixel", isp, "", "", "", campaignID)
-					}
+				// Unsubscribes and hard bounces go to global suppression
+				switch eventType {
+				case "unsubscribe":
+					globalHub.Suppress(context.Background(), recipient, "unsubscribe", "tracking_pixel", isp, "", "", "", campaignID)
+				case "bounced":
+					globalHub.Suppress(context.Background(), recipient, "hard_bounce", "sync_send", isp, "", "", "", campaignID)
+				}
 				})
 			}
 

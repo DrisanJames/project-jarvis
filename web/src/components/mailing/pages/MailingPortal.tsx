@@ -64,7 +64,6 @@ const tabs: Tab[] = [
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
-  { id: 'offers', label: 'Offers', icon: faFileAlt, description: 'Network offers, AI suggestions & creative library' },
   { id: 'jarvis', label: 'Jarvis AI', icon: faRobot, description: 'Autonomous AI campaign orchestrator & monitoring' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
 ];
@@ -729,7 +728,7 @@ const DeliveryServersManager: React.FC = () => {
   useEffect(() => {
     Promise.all([
       fetch('/api/mailing/delivery-servers').then(r => r.json()).catch(() => ({ servers: [] })),
-      fetch('/api/mailing/pmta/servers').then(r => r.json()).catch(() => ({ servers: [] })),
+      fetch('/api/mailing/pmta-servers').then(r => r.json()).catch(() => ({ servers: [] })),
       fetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
     ]).then(([ds, pmta, prof]) => {
       setServers(ds.servers || []);

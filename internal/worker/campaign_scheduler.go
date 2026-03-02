@@ -446,6 +446,26 @@ func (cs *CampaignScheduler) getRecipientCount(ctx context.Context, campaign Sch
 		}
 	}
 
+	// Fallback: resolve from mailing_campaign_lists join table (used by PMTA wizard)
+	if !campaign.ListID.Valid && !campaign.SegmentID.Valid {
+		err := cs.db.QueryRowContext(ctx, `
+			SELECT COUNT(DISTINCT s.id)
+			FROM mailing_subscribers s
+			JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
+			WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
+			  AND s.status = 'confirmed'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM mailing_subscribers es
+			    JOIN mailing_campaign_lists el ON el.list_id = es.list_id
+			    WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
+			      AND es.email = s.email
+			  )
+		`, campaign.ID).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to count campaign_lists recipients: %w", err)
+		}
+	}
+
 	// Apply max recipients limit if set
 	if campaign.MaxRecipients.Valid && campaign.MaxRecipients.Int64 > 0 && int64(count) > campaign.MaxRecipients.Int64 {
 		count = int(campaign.MaxRecipients.Int64)
@@ -620,7 +640,53 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			args = []interface{}{campaign.ListID.String}
 		}
 	} else {
-		return 0, fmt.Errorf("campaign has no list or segment")
+		// Resolve from mailing_campaign_lists join table (used by PMTA wizard campaigns)
+		if len(suppressionListIDs) > 0 {
+			query = `
+				SELECT DISTINCT s.id, s.email
+				FROM mailing_subscribers s
+				JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
+				WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
+				AND s.status = 'confirmed'
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_suppressions sup
+					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_subscribers es
+					JOIN mailing_campaign_lists el ON el.list_id = es.list_id
+					WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
+					  AND es.email = s.email
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_suppression_entries se
+					WHERE se.md5_hash = MD5(LOWER(TRIM(s.email)))
+					  AND se.list_id = ANY($2)
+				)
+				ORDER BY s.id
+			`
+			args = []interface{}{campaign.ID, pq.Array(suppressionListIDs)}
+		} else {
+			query = `
+				SELECT DISTINCT s.id, s.email
+				FROM mailing_subscribers s
+				JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
+				WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
+				AND s.status = 'confirmed'
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_suppressions sup
+					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_subscribers es
+					JOIN mailing_campaign_lists el ON el.list_id = es.list_id
+					WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
+					  AND es.email = s.email
+				)
+				ORDER BY s.id
+			`
+			args = []interface{}{campaign.ID}
+		}
 	}
 
 	// Apply limit if set

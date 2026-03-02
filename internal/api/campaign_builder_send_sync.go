@@ -13,7 +13,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
 )
 
 // HandleSendCampaign sends a campaign immediately using the selected profile
@@ -278,6 +280,24 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			}
 		} else {
 			failed++
+
+			bounceType := smtputil.ClassifyError(sendErr)
+			ispGroup := isp.Group(sub.Email)
+			eventType := "bounced"
+			if bounceType == smtputil.BounceSoft {
+				eventType = "soft_bounced"
+			}
+
+			// Record bounce tracking event
+			cb.db.ExecContext(ctx, `
+				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_at, event_time, metadata)
+				VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
+			`, uuid.New(), campUUID, sub.ID, sub.Email, eventType,
+				fmt.Sprintf(`{"bounce_type":"%s","error":"%s","isp":"%s"}`, bounceType, sendErr.Error(), ispGroup))
+
+			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
+				cb.mailingSvc.onTrackingEvent(campUUID.String(), eventType, sub.Email, ispGroup)
+			}
 		}
 		
 		// Apply throttle delay

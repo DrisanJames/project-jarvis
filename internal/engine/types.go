@@ -562,6 +562,8 @@ type PMTACampaignInput struct {
 	SendHour          int              `json:"send_hour"`
 	Timezone          string           `json:"timezone"`
 	ThrottleStrategy  string           `json:"throttle_strategy"`
+	SendMode          string           `json:"send_mode"`     // "immediate" or "scheduled"
+	ScheduledAt       *time.Time       `json:"scheduled_at"`  // required when send_mode="scheduled"
 }
 
 // ContentVariant represents one A/B variant of campaign content.
@@ -575,13 +577,15 @@ type ContentVariant struct {
 
 // PMTACampaignResult is returned after deploying a PMTA campaign.
 type PMTACampaignResult struct {
-	CampaignID    string   `json:"campaign_id"`
-	Name          string   `json:"name"`
-	Status        string   `json:"status"`
-	TargetISPs    []ISP    `json:"target_isps"`
-	TotalAudience int      `json:"total_audience"`
-	VariantCount  int      `json:"variant_count"`
-	AgentIDs      []string `json:"agent_ids"`
+	CampaignID    string     `json:"campaign_id"`
+	Name          string     `json:"name"`
+	Status        string     `json:"status"`
+	SendMode      string     `json:"send_mode"`
+	SendsAt       *time.Time `json:"sends_at,omitempty"`
+	TargetISPs    []ISP      `json:"target_isps"`
+	TotalAudience int        `json:"total_audience"`
+	VariantCount  int        `json:"variant_count"`
+	AgentIDs      []string   `json:"agent_ids"`
 }
 
 // AudienceEstimateRequest is the input for audience estimation with ISP breakdown.

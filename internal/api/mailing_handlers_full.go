@@ -300,6 +300,13 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		WHERE status = 'active' AND daily_limit > 0
 	`).Scan(&dailyCapacity)
 	if dailyCapacity == 0 {
+		// Try PMTA server registry capacity before falling back to hardcoded default
+		svc.db.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(COALESCE(daily_quota, 0)), 0)
+			FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
+		`).Scan(&dailyCapacity)
+	}
+	if dailyCapacity == 0 {
 		dailyCapacity = 500000 // fallback default
 	}
 
@@ -368,7 +375,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		dashboard["recent_campaigns"] = recentCampaigns
 	}
 
-	// Server connectivity — check both delivery servers and sending profiles for PMTA/SMTP
+	// Server connectivity — check delivery servers, sending profiles, AND pmta_servers registry
 	var pmtaServers int
 	svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_delivery_servers WHERE type = 'pmta' AND active = true
@@ -378,7 +385,11 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		SELECT COUNT(*) FROM mailing_sending_profiles
 		WHERE (type = 'pmta' OR type = 'smtp') AND status = 'active'
 	`).Scan(&smtpProfiles)
-	totalPMTA := pmtaServers + smtpProfiles
+	var pmtaRegistry int
+	svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
+	`).Scan(&pmtaRegistry)
+	totalPMTA := pmtaServers + smtpProfiles + pmtaRegistry
 	dashboard["pmta_connected"] = totalPMTA > 0
 	dashboard["pmta_server_count"] = totalPMTA
 
