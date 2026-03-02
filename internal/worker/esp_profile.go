@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ProfileBasedSender resolves a sending profile from the database and
@@ -91,6 +92,7 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		}
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
+		// Prefer HTTP injection API (bypasses AWS port 25 blocking)
 		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
 			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
 				return NewPMTAAPISender(region, s.db)
@@ -100,18 +102,48 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		if host == "" {
 			return nil, fmt.Errorf("profile %s: no SMTP host for PMTA", msg.ProfileID)
 		}
-		port := 25
+		// Default to port 587 (submission) instead of 25 — AWS ECS Fargate
+		// blocks outbound port 25 by default. Port 587 is unrestricted.
+		port := 587
 		if smtpPort.Valid && smtpPort.Int64 > 0 {
 			port = int(smtpPort.Int64)
 		}
 		user := smtpUsername.String
 		pass := smtpPassword.String
-		return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
-			return NewPMTASender(host, port, user, pass, s.db)
+
+		// Try HTTP API first if host is known (construct from SMTP host)
+		apiURL := fmt.Sprintf("http://%s:19000", host)
+		return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
+			return &pmtaComboSender{
+				apiSender:  NewPMTAAPISender(apiURL, s.db),
+				smtpSender: NewPMTASender(host, port, user, pass, s.db),
+			}
 		}).Send(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unsupported vendor type: %s", vendorType)
 	}
+}
+
+// pmtaComboSender tries the PMTA HTTP injection API first, then falls back
+// to SMTP. This ensures delivery works even when AWS blocks port 25 or the
+// PMTA HTTP API isn't available on the target host.
+type pmtaComboSender struct {
+	apiSender  ESPSender
+	smtpSender ESPSender
+	useAPI     int32 // 1 = API works, -1 = API failed/skip, 0 = unknown
+}
+
+func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
+	if atomic.LoadInt32(&c.useAPI) >= 0 {
+		result, err := c.apiSender.Send(ctx, msg)
+		if err == nil {
+			atomic.StoreInt32(&c.useAPI, 1)
+			return result, nil
+		}
+		log.Printf("[PMTA-Combo] HTTP API failed (%v), falling back to SMTP", err)
+		atomic.StoreInt32(&c.useAPI, -1)
+	}
+	return c.smtpSender.Send(ctx, msg)
 }
 
 // getCachedSender retrieves a cached sender or creates one via the factory.

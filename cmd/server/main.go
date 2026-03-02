@@ -969,6 +969,7 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
 		{"reset_orphaned_sending", `UPDATE mailing_campaigns SET status = 'failed', completed_at = NOW(), updated_at = NOW() WHERE status = 'sending' AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))`},
+		{"fix_pmta_port_25_to_587", `UPDATE mailing_sending_profiles SET smtp_port = 587, api_endpoint = 'http://' || smtp_host || ':19000', updated_at = NOW() WHERE vendor_type = 'pmta' AND smtp_port = 25 AND smtp_host IS NOT NULL AND smtp_host != ''`},
 	}
 
 	var ok, fail int

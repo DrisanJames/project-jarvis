@@ -144,7 +144,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			   created_at, updated_at
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1
-		  AND api_key IS NOT NULL AND api_key != ''
+		  AND (api_key IS NOT NULL AND api_key != '' OR vendor_type = 'pmta' OR vendor_type = 'smtp')
 	`
 	args := []interface{}{orgID}
 	argNum := 2

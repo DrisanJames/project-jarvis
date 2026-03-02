@@ -201,19 +201,20 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 	ctx, cancel := context.WithTimeout(cs.ctx, 30*time.Second)
 	defer cancel()
 	
-	// Find campaigns in 'sending' status where all queue items are done
+	// Find campaigns in 'sending' status where all queue items are done.
+	// Queue statuses: queued → sending → sent/failed/skipped/dead_letter
 	rows, err := cs.db.QueryContext(ctx, `
 		SELECT c.id, 
 			   COALESCE(SUM(CASE WHEN q.status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
-			   COALESCE(SUM(CASE WHEN q.status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+			   COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter') THEN 1 ELSE 0 END), 0) as failed,
 			   COALESCE(SUM(CASE WHEN q.status = 'skipped' THEN 1 ELSE 0 END), 0) as skipped,
-			   COALESCE(SUM(CASE WHEN q.status = 'pending' OR q.status = 'claimed' THEN 1 ELSE 0 END), 0) as pending,
+			   COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) as pending,
 			   COUNT(q.id) as total
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_campaign_queue q ON q.campaign_id = c.id
 		WHERE c.status = 'sending'
 		GROUP BY c.id
-		HAVING COALESCE(SUM(CASE WHEN q.status = 'pending' OR q.status = 'claimed' THEN 1 ELSE 0 END), 0) = 0
+		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
 		   AND COUNT(q.id) > 0
 	`)
 	if err != nil {
