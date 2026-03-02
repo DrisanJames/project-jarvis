@@ -980,6 +980,21 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_quizfiesta_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'QuizFiesta PMTA', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com', 'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.quizfiesta.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
+		// Fix list_ids that contain list names instead of UUIDs (campaigns stuck as scheduled)
+		{"fix_list_ids_names_to_uuids", `
+			UPDATE mailing_campaigns c
+			SET list_ids = (
+				SELECT jsonb_agg(l.id::text)
+				FROM mailing_lists l,
+				     jsonb_array_elements_text(c.list_ids) AS name_val
+				WHERE l.organization_id = c.organization_id
+				  AND l.name = name_val
+			), updated_at = NOW()
+			WHERE c.status IN ('scheduled','preparing')
+			  AND jsonb_typeof(c.list_ids) = 'array'
+			  AND jsonb_array_length(c.list_ids) > 0
+			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
+		`},
 	}
 
 	var ok, fail int

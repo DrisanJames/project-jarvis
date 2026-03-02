@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -567,8 +569,10 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		"sending_domain":    input.SendingDomain,
 		"throttle_strategy": input.ThrottleStrategy,
 	})
-	inclusionListsJSON, _ := json.Marshal(input.InclusionLists)
-	suppressionListsJSON, _ := json.Marshal(input.ExclusionLists)
+	inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.InclusionLists)
+	exclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.ExclusionLists)
+	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
+	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
@@ -750,7 +754,8 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 			"target_isps":    []map[string]string{{"name": "Gmail", "domain": "gmail.com"}, {"name": "Yahoo", "domain": "yahoo.com"}, {"name": "Microsoft", "domain": "outlook.com"}, {"name": "ATT", "domain": "att.net"}},
 			"sending_domain": c.domain,
 		})
-		inclusionListsJSON, _ := json.Marshal([]string{"PMTA Test List"})
+		inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, []string{"PMTA Test List"})
+		inclusionListsJSON, _ := json.Marshal(inclusionIDs)
 
 		html := htmlTemplate(c.fromName, c.color)
 
@@ -789,6 +794,36 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 		"campaigns": results,
 		"message":   "Dynamic tags test campaigns deployed",
 	})
+}
+
+// resolveListNamesToIDs converts a mix of list names and/or UUIDs into
+// actual list UUIDs. The PMTA wizard UI sends list names (e.g. "PMTA Test List")
+// but the campaign scheduler expects UUIDs in the list_ids JSONB column.
+func resolveListNamesToIDs(ctx context.Context, db *sql.DB, orgID string, names []string) []string {
+	if len(names) == 0 {
+		return names
+	}
+	var ids []string
+	for _, name := range names {
+		// Already a UUID? Keep it.
+		if _, err := uuid.Parse(name); err == nil {
+			ids = append(ids, name)
+			continue
+		}
+		// Otherwise look up by name
+		var listID string
+		err := db.QueryRowContext(ctx, `
+			SELECT id::text FROM mailing_lists
+			WHERE organization_id = $1 AND name = $2
+			LIMIT 1
+		`, orgID, name).Scan(&listID)
+		if err == nil {
+			ids = append(ids, listID)
+		} else {
+			log.Printf("[resolveListNamesToIDs] list %q not found for org %s: %v", name, orgID, err)
+		}
+	}
+	return ids
 }
 
 // domainToISPLookup maps an email domain to its ISP identifier.
