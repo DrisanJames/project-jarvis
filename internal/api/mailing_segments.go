@@ -17,13 +17,26 @@ import (
 func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := getOrgIDFromRequest(r)
-	
-	rows, _ := s.db.QueryContext(ctx, `
+
+	empty := map[string]interface{}{"segments": []map[string]interface{}{}}
+	if orgID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(empty)
+		return
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, description, segment_type, subscriber_count, status, created_at
 		FROM mailing_segments WHERE organization_id = $1 ORDER BY created_at DESC
 	`, orgID)
+	if err != nil {
+		log.Printf("[HandleGetSegments] query error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(empty)
+		return
+	}
 	defer rows.Close()
-	
+
 	var segments []map[string]interface{}
 	for rows.Next() {
 		var id uuid.UUID
@@ -36,8 +49,10 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 			"subscriber_count": subCount, "status": status, "created_at": createdAt,
 		})
 	}
-	if segments == nil { segments = []map[string]interface{}{} }
-	
+	if segments == nil {
+		segments = []map[string]interface{}{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"segments": segments})
 }

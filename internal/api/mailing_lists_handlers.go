@@ -18,10 +18,16 @@ import (
 // HandleGetLists returns all lists
 func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, _ := svc.db.QueryContext(ctx, `
+	rows, err := svc.db.QueryContext(ctx, `
 		SELECT id, name, description, subscriber_count, status, created_at 
 		FROM mailing_lists ORDER BY created_at DESC
 	`)
+	if err != nil {
+		log.Printf("[HandleGetLists] query error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"lists": []map[string]interface{}{}, "total": 0})
+		return
+	}
 	defer rows.Close()
 
 	var lists []map[string]interface{}

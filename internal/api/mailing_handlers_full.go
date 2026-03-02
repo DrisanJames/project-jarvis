@@ -270,7 +270,9 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	`).Scan(&totalSent, &totalOpens, &totalClicks, &totalRevenue)
 
 	var suppressed int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressed)
+	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressed); err != nil {
+		suppressed = 0
+	}
 	dashboard["total_suppressions"] = suppressed
 
 	// Count inbox profiles
@@ -280,7 +282,9 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 
 	// Count active automations
 	var activeAutomations int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_automation_workflows WHERE status = 'active'").Scan(&activeAutomations)
+	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM automation_flows WHERE status = 'active'").Scan(&activeAutomations); err != nil {
+		activeAutomations = 0
+	}
 	dashboard["active_automations"] = activeAutomations
 
 	// Calculate actual daily sends (emails sent today)
@@ -300,9 +304,8 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		WHERE status = 'active' AND daily_limit > 0
 	`).Scan(&dailyCapacity)
 	if dailyCapacity == 0 {
-		// Try PMTA server registry capacity before falling back to hardcoded default
 		svc.db.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(COALESCE(daily_quota, 0)), 0)
+			SELECT COUNT(*) * 100000
 			FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
 		`).Scan(&dailyCapacity)
 	}
@@ -347,44 +350,46 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		"click_rate":    clickRate,
 	}
 
-	// Get recent campaigns
-	rows, _ := svc.db.QueryContext(ctx, `
+	var recentCampaigns []map[string]interface{}
+	if rows, qErr := svc.db.QueryContext(ctx, `
 		SELECT id, name, status, sent_count, open_count, click_count, created_at
 		FROM mailing_campaigns ORDER BY created_at DESC LIMIT 5
-	`)
-	defer rows.Close()
-
-	var recentCampaigns []map[string]interface{}
-	for rows.Next() {
-		var id uuid.UUID
-		var name, status string
-		var sentCount, openCount, clickCount int
-		var createdAt time.Time
-		rows.Scan(&id, &name, &status, &sentCount, &openCount, &clickCount, &createdAt)
-		recentCampaigns = append(recentCampaigns, map[string]interface{}{
-			"id":          id.String(),
-			"name":        name,
-			"status":      status,
-			"sent_count":  sentCount,
-			"open_count":  openCount,
-			"click_count": clickCount,
-			"created_at":  createdAt,
-		})
+	`); qErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var name, status string
+			var sentCount, openCount, clickCount int
+			var createdAt time.Time
+			rows.Scan(&id, &name, &status, &sentCount, &openCount, &clickCount, &createdAt)
+			recentCampaigns = append(recentCampaigns, map[string]interface{}{
+				"id":          id.String(),
+				"name":        name,
+				"status":      status,
+				"sent_count":  sentCount,
+				"open_count":  openCount,
+				"click_count": clickCount,
+				"created_at":  createdAt,
+			})
+		}
 	}
 	if recentCampaigns != nil {
 		dashboard["recent_campaigns"] = recentCampaigns
 	}
 
-	// Server connectivity — check delivery servers, sending profiles, AND pmta_servers registry
 	var pmtaServers int
-	svc.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_delivery_servers WHERE type = 'pmta' AND active = true
-	`).Scan(&pmtaServers)
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_delivery_servers WHERE server_type = 'pmta' AND status = 'active'
+	`).Scan(&pmtaServers); err != nil {
+		pmtaServers = 0
+	}
 	var smtpProfiles int
-	svc.db.QueryRowContext(ctx, `
+	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_sending_profiles
-		WHERE (type = 'pmta' OR type = 'smtp') AND status = 'active'
-	`).Scan(&smtpProfiles)
+		WHERE (vendor_type = 'pmta' OR vendor_type = 'smtp') AND status = 'active'
+	`).Scan(&smtpProfiles); err != nil {
+		smtpProfiles = 0
+	}
 	var pmtaRegistry int
 	svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
