@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/intel", s.HandleCampaignIntel)
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
+		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 	})
 }
 
@@ -627,6 +629,165 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		TotalAudience: 0,
 		VariantCount:  len(input.Variants),
 		AgentIDs:      []string{},
+	})
+}
+
+// HandleDeployDynamicTagsTest deploys two test campaigns (DiscountBlog + QuizFiesta)
+// that exercise every dynamic merge tag. Triggered via GET for easy browser invocation.
+func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	scheduleOffsetStr := r.URL.Query().Get("offset_min")
+	offset := 15
+	if scheduleOffsetStr != "" {
+		if v, err := strconv.Atoi(scheduleOffsetStr); err == nil && v > 5 {
+			offset = v
+		}
+	}
+
+	htmlTemplate := func(brand, color string) string {
+		return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>` + brand + ` Dynamic Tags</title></head>` +
+			`<body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#f8f9fa;">` +
+			`<div style="background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 4px rgba(0,0,0,.1);">` +
+			`<h1 style="color:` + color + `;margin-bottom:5px;">Hello {{ first_name | default: "Friend" }}!</h1>` +
+			`<p style="color:#666;font-size:14px;margin-top:0;">Dynamic Tags E2E Test &mdash; ` + brand + `</p>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<h3 style="color:#2c3e50;">Profile Tags</h3>` +
+			`<table style="width:100%;border-collapse:collapse;font-size:14px;">` +
+			`<tr><td style="padding:6px 0;color:#888;">first_name:</td><td style="padding:6px 0;font-weight:bold;">{{ first_name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">last_name:</td><td style="padding:6px 0;font-weight:bold;">{{ last_name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">full_name:</td><td style="padding:6px 0;font-weight:bold;">{{ full_name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">email:</td><td style="padding:6px 0;font-weight:bold;">{{ email }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">email_local:</td><td style="padding:6px 0;font-weight:bold;">{{ email_local }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">email_domain:</td><td style="padding:6px 0;font-weight:bold;">{{ email_domain }}</td></tr>` +
+			`</table>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<h3 style="color:#2c3e50;">Campaign Tags</h3>` +
+			`<table style="width:100%;border-collapse:collapse;font-size:14px;">` +
+			`<tr><td style="padding:6px 0;color:#888;">campaignId:</td><td style="padding:6px 0;font-weight:bold;">{{ campaignId }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">campaign_name:</td><td style="padding:6px 0;font-weight:bold;">{{ campaign_name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">campaign.name:</td><td style="padding:6px 0;font-weight:bold;">{{ campaign.name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">campaign.from_name:</td><td style="padding:6px 0;font-weight:bold;">{{ campaign.from_name }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">campaign.from_email:</td><td style="padding:6px 0;font-weight:bold;">{{ campaign.from_email }}</td></tr>` +
+			`</table>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<h3 style="color:#2c3e50;">System &amp; Date Tags</h3>` +
+			`<table style="width:100%;border-collapse:collapse;font-size:14px;">` +
+			`<tr><td style="padding:6px 0;color:#888;">today:</td><td style="padding:6px 0;font-weight:bold;">{{ today }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">year:</td><td style="padding:6px 0;font-weight:bold;">{{ year }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">system.current_date:</td><td style="padding:6px 0;font-weight:bold;">{{ system.current_date }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">system.current_weekday:</td><td style="padding:6px 0;font-weight:bold;">{{ system.current_weekday }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">system.current_month:</td><td style="padding:6px 0;font-weight:bold;">{{ system.current_month }}</td></tr>` +
+			`</table>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<h3 style="color:#2c3e50;">Subscriber Tags</h3>` +
+			`<table style="width:100%;border-collapse:collapse;font-size:14px;">` +
+			`<tr><td style="padding:6px 0;color:#888;">subscriber.id:</td><td style="padding:6px 0;font-weight:bold;">{{ subscriber.id }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">subscriber.status:</td><td style="padding:6px 0;font-weight:bold;">{{ subscriber.status }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">subscriber.timezone:</td><td style="padding:6px 0;font-weight:bold;">{{ subscriber.timezone }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">subscriber.source:</td><td style="padding:6px 0;font-weight:bold;">{{ subscriber.source }}</td></tr>` +
+			`</table>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<h3 style="color:#2c3e50;">Engagement Tags</h3>` +
+			`<table style="width:100%;border-collapse:collapse;font-size:14px;">` +
+			`<tr><td style="padding:6px 0;color:#888;">engagement.score:</td><td style="padding:6px 0;font-weight:bold;">{{ engagement.score }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">engagement.total_emails:</td><td style="padding:6px 0;font-weight:bold;">{{ engagement.total_emails }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">engagement.total_opens:</td><td style="padding:6px 0;font-weight:bold;">{{ engagement.total_opens }}</td></tr>` +
+			`<tr><td style="padding:6px 0;color:#888;">engagement.total_clicks:</td><td style="padding:6px 0;font-weight:bold;">{{ engagement.total_clicks }}</td></tr>` +
+			`</table>` +
+			`<hr style="border:none;border-top:1px solid #eee;margin:20px 0;">` +
+			`<p style="text-align:center;color:#999;font-size:12px;">Campaign ID: {{ campaignId }} | Sent {{ today }}<br>` +
+			`<a href="{{ system.unsubscribe_url }}" style="color:#999;">Unsubscribe</a></p>` +
+			`</div></body></html>`
+	}
+
+	type campaignDef struct {
+		name, domain, fromName, subject, color string
+	}
+	campaigns := []campaignDef{
+		{
+			name:     "DiscountBlog Dynamic Tags Test",
+			domain:   "em.discountblog.com",
+			fromName: "DiscountBlog",
+			subject:  `Hey {{ first_name | default: "Friend" }}, Your Exclusive Deals for {{ today }}`,
+			color:    "#e74c3c",
+		},
+		{
+			name:     "QuizFiesta Dynamic Tags Test",
+			domain:   "em.quizfiesta.com",
+			fromName: "QuizFiesta",
+			subject:  `{{ first_name | default: "Hey" }}, Brain Teaser - {{ system.current_weekday }} Edition`,
+			color:    "#ff9800",
+		},
+	}
+
+	var results []map[string]interface{}
+	for i, c := range campaigns {
+		scheduledAt := time.Now().Add(time.Duration(offset+i*15) * time.Minute)
+		campaignID := uuid.New().String()
+
+		var profileID, fromEmail, fromName, replyTo sql.NullString
+		s.db.QueryRowContext(ctx, `
+			SELECT id, from_email, from_name, reply_email
+			FROM mailing_sending_profiles
+			WHERE organization_id = $1 AND vendor_type = 'pmta'
+			  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
+			  AND status = 'active'
+			ORDER BY created_at DESC LIMIT 1
+		`, orgID, c.domain).Scan(&profileID, &fromEmail, &fromName, &replyTo)
+
+		resolvedFromName := c.fromName
+		if fromName.Valid && fromName.String != "" {
+			resolvedFromName = fromName.String
+		}
+		resolvedFromEmail := ""
+		if fromEmail.Valid {
+			resolvedFromEmail = fromEmail.String
+		}
+
+		espQuotas, _ := json.Marshal(map[string]interface{}{
+			"target_isps":    []map[string]string{{"name": "Gmail", "domain": "gmail.com"}, {"name": "Yahoo", "domain": "yahoo.com"}, {"name": "Microsoft", "domain": "outlook.com"}, {"name": "ATT", "domain": "att.net"}},
+			"sending_domain": c.domain,
+		})
+		inclusionListsJSON, _ := json.Marshal([]string{"PMTA Test List"})
+
+		html := htmlTemplate(c.fromName, c.color)
+
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO mailing_campaigns (
+				id, organization_id, name, status, scheduled_at,
+				from_name, from_email, reply_to, subject, html_content,
+				sending_profile_id, esp_quotas, list_ids,
+				send_type, created_at, updated_at
+			) VALUES (
+				$1, $2, $3, 'scheduled', $4,
+				$5, $6, $7, $8, $9,
+				$10, $11, $12,
+				'blast', NOW(), NOW()
+			)
+		`, campaignID, orgID, c.name, scheduledAt,
+			resolvedFromName, resolvedFromEmail, replyTo,
+			c.subject, html,
+			profileID, string(espQuotas), string(inclusionListsJSON),
+		)
+
+		status := "scheduled"
+		if err != nil {
+			status = "error: " + err.Error()
+		}
+		results = append(results, map[string]interface{}{
+			"campaign_id":  campaignID,
+			"name":         c.name,
+			"domain":       c.domain,
+			"scheduled_at": scheduledAt.Format(time.RFC3339),
+			"status":       status,
+		})
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"campaigns": results,
+		"message":   "Dynamic tags test campaigns deployed",
 	})
 }
 
