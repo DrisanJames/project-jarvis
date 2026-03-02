@@ -5,7 +5,7 @@ import {
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer,
   faFileAlt, /* faArrowLeft, */ faFire, faGlobe,
-  faSpinner, faRocket, faShieldAlt,
+  faSpinner, faRocket, faShieldAlt, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -66,6 +66,7 @@ const tabs: Tab[] = [
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
   { id: 'jarvis', label: 'Jarvis AI', icon: faRobot, description: 'Autonomous AI campaign orchestrator & monitoring' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
+  { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
 
 export const MailingPortal: React.FC = () => {
@@ -153,6 +154,8 @@ export const MailingPortal: React.FC = () => {
         return <ConsciousnessDashboard />;
       case 'data-import':
         return <DataNormalizerPanel />;
+      case 'site-traffic':
+        return <SiteTrafficDashboard />;
       default:
         return <EnhancedDashboard />;
     }
@@ -975,6 +978,220 @@ const TemplatesManager: React.FC = () => {
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+// ─── Site Traffic Dashboard ────────────────────────────────────────────────
+const SiteTrafficDashboard: React.FC = () => {
+  const { organization } = useAuth();
+  const orgId = organization?.id || '';
+  const [traffic, setTraffic] = useState<any>(null);
+  const [domains, setDomains] = useState<any[]>([]);
+  const [selectedDomain, setSelectedDomain] = useState('');
+  const [timeRange, setTimeRange] = useState('24h');
+  const [snippet, setSnippet] = useState('');
+  const [snippetDomain, setSnippetDomain] = useState('discountblog.com');
+  const [showSnippet, setShowSnippet] = useState(false);
+  const [liveEvents, setLiveEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchTraffic = React.useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ range: timeRange });
+      if (selectedDomain) params.set('domain', selectedDomain);
+      const res = await fetch(`/api/mailing/site-pixel/traffic?${params}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
+      });
+      if (res.ok) setTraffic(await res.json());
+    } catch {}
+    setLoading(false);
+  }, [orgId, selectedDomain, timeRange]);
+
+  const fetchDomains = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/mailing/site-pixel/domains', {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setDomains(d.domains || []);
+      }
+    } catch {}
+  }, [orgId]);
+
+  useEffect(() => { fetchDomains(); }, [fetchDomains]);
+  useEffect(() => { fetchTraffic(); const iv = setInterval(fetchTraffic, 15000); return () => clearInterval(iv); }, [fetchTraffic]);
+
+  useEffect(() => {
+    const es = new EventSource('/api/mailing/site-pixel/traffic/stream');
+    es.onmessage = (e) => {
+      try {
+        const evt = JSON.parse(e.data);
+        if (evt.type === 'event') {
+          setLiveEvents(prev => [evt, ...prev].slice(0, 50));
+        }
+        if (evt.active_visitors !== undefined && traffic) {
+          setTraffic((prev: any) => prev ? { ...prev, active_visitors: evt.active_visitors } : prev);
+        }
+      } catch {}
+    };
+    return () => es.close();
+  }, []);
+
+  const fetchSnippet = async () => {
+    try {
+      const res = await fetch(`/api/mailing/site-pixel/snippet?domain=${encodeURIComponent(snippetDomain)}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setSnippet(d.snippet || '');
+      }
+    } catch {}
+  };
+
+  const cardStyle: React.CSSProperties = { background: '#1e1f2e', borderRadius: 10, padding: '16px 20px', border: '1px solid #2d2e3e' };
+  const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e2e4ed', lineHeight: 1 };
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: '#8b8fa3', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginTop: 4 };
+
+  return (
+    <div className="manager-page">
+      <div className="page-explanation">
+        <h3>Site Traffic Intelligence</h3>
+        <p>Real-time visitor tracking from your owned content sites. Install the pixel on any domain to see live traffic, top pages, and visitor engagement flowing into Jarvis.</p>
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}
+          style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, color: '#e2e4ed', padding: '8px 12px', fontSize: 13 }}>
+          <option value="">All Domains</option>
+          {domains.map((d: any) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+        </select>
+        {['1h','24h','7d','30d'].map(r => (
+          <button key={r} onClick={() => setTimeRange(r)}
+            style={{ background: timeRange === r ? '#6366f1' : '#14151f', color: '#e2e4ed', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer' }}>
+            {r === '1h' ? '1 Hour' : r === '24h' ? '24 Hours' : r === '7d' ? '7 Days' : '30 Days'}
+          </button>
+        ))}
+        <button onClick={() => { setShowSnippet(!showSnippet); if (!snippet) fetchSnippet(); }}
+          style={{ marginLeft: 'auto', background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          {showSnippet ? 'Hide Pixel Code' : 'Get Pixel Code'}
+        </button>
+      </div>
+
+      {/* Pixel Snippet */}
+      {showSnippet && (
+        <div style={{ ...cardStyle, marginBottom: 16 }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'center' }}>
+            <label style={{ fontSize: 12, color: '#8b8fa3' }}>Domain:</label>
+            <input value={snippetDomain} onChange={e => setSnippetDomain(e.target.value)}
+              style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '6px 10px', fontSize: 13, width: 200 }} />
+            <button onClick={fetchSnippet} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
+              Generate
+            </button>
+          </div>
+          {snippet && (
+            <div>
+              <p style={{ fontSize: 12, color: '#8b8fa3', margin: '0 0 8px' }}>Paste this before the closing <code>&lt;/body&gt;</code> tag on every page of <strong>{snippetDomain}</strong>:</p>
+              <pre style={{ background: '#0d0e1a', borderRadius: 8, padding: 14, fontSize: 11, color: '#a5b4fc', overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid #2d2e3e' }}>
+                {snippet}
+              </pre>
+              <button onClick={() => navigator.clipboard.writeText(snippet)} style={{ marginTop: 8, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
+                Copy to Clipboard
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 60, color: '#8b8fa3' }}><FontAwesomeIcon icon={faSpinner} spin size="2x" /></div>
+      ) : (
+        <>
+          {/* Stats Cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
+            <div style={{ ...cardStyle, borderLeft: '3px solid #10b981' }}>
+              <div style={{ ...statStyle, color: '#10b981' }}>{traffic?.active_visitors ?? 0}</div>
+              <div style={labelStyle}>Active Now</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={statStyle}>{(traffic?.total_pageviews ?? 0).toLocaleString()}</div>
+              <div style={labelStyle}>Page Views</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={statStyle}>{(traffic?.unique_visitors ?? 0).toLocaleString()}</div>
+              <div style={labelStyle}>Unique Visitors</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={statStyle}>{domains.length}</div>
+              <div style={labelStyle}>Tracked Domains</div>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            {/* Top Pages */}
+            <div style={cardStyle}>
+              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>Top Pages</h4>
+              {(traffic?.top_pages || []).length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No page view data yet. Install the pixel to start tracking.</p>}
+              {(traffic?.top_pages || []).slice(0, 10).map((p: any, i: number) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #1a1b2e', fontSize: 12 }}>
+                  <span style={{ color: '#a5b4fc', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
+                  <span style={{ color: '#8b8fa3', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Live Event Feed */}
+            <div style={cardStyle}>
+              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>
+                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#10b981', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
+                Live Event Feed
+              </h4>
+              {liveEvents.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>Waiting for events... Install the pixel to see real-time traffic.</p>}
+              <div style={{ maxHeight: 280, overflow: 'auto' }}>
+                {liveEvents.map((evt, i) => (
+                  <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid #1a1b2e', fontSize: 11 }}>
+                    <span style={{ color: '#6366f1', marginRight: 8 }}>{evt.event_type}</span>
+                    <span style={{ color: '#e2e4ed' }}>{evt.page_url || evt.page_title || '/'}</span>
+                    <span style={{ color: '#4b5563', float: 'right' }}>{evt.domain}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Tracked Domains Table */}
+          <div style={cardStyle}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>Tracked Domains (24h)</h4>
+            {domains.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No domains reporting yet.</p>}
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #2d2e3e' }}>
+                  <th style={{ textAlign: 'left', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Domain</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Page Views</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Unique Visitors</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {domains.map((d: any, i: number) => (
+                  <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid #1a1b2e' }}>
+                    <td style={{ padding: 8, color: '#a5b4fc' }}>{d.domain}</td>
+                    <td style={{ padding: 8, color: '#e2e4ed', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
+                    <td style={{ padding: 8, color: '#e2e4ed', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
+                    <td style={{ padding: 8, color: '#8b8fa3', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 };

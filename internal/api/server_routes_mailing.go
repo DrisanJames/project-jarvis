@@ -35,8 +35,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 
 		// Site engagement events — public (called from coupon-site beacons)
 		eventWriter := datanorm.NewEventWriter(db)
-		siteEventsHandler := NewSiteEventsHandler(eventWriter)
+		siteEventsHandler := NewSiteEventsHandler(db, eventWriter)
 		s.router.Post("/api/v1/site-events", siteEventsHandler.HandleSiteEvent)
+		s.router.Options("/api/v1/site-events", siteEventsHandler.HandleSiteEvent)
 		s.router.Get("/api/v1/site-events/beacon", siteEventsHandler.HandleSiteEventBeacon)
 
 		// SSE real-time event stream (uses pg_notify)
@@ -85,6 +86,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		})
 
 		s.apiRouter.Route("/mailing", func(r chi.Router) {
+			// Site pixel management and real-time traffic
+			r.Get("/site-pixel/snippet", siteEventsHandler.HandleGetPixelSnippet)
+			r.Get("/site-pixel/traffic", siteEventsHandler.HandleGetSiteTraffic)
+			r.Get("/site-pixel/traffic/stream", siteEventsHandler.HandleSiteTrafficStream)
+			r.Get("/site-pixel/domains", siteEventsHandler.HandleGetTrackedDomains)
+
 			// Core CRUD
 			r.Get("/dashboard", svc.HandleDashboard)
 			r.Get("/lists", svc.HandleGetLists)

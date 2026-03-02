@@ -24,6 +24,7 @@ func NewEventWriter(db *sql.DB) *EventWriter {
 var notifyEventTypes = map[string]bool{
 	"open": true, "click": true, "conversion": true,
 	"hard_bounce": true, "complaint": true, "unsubscribe": true,
+	"page_view": true, "engagement": true,
 }
 
 // WriteEvent inserts a single event. If notify is true AND the event type
