@@ -830,96 +830,150 @@ const DeliveryServersManager: React.FC = () => {
   );
 };
 
-// Content Library — reusable email templates
+// Content Library — reusable email templates organized by sending domain folders
 const TemplatesManager: React.FC = () => {
+  const [folders, setFolders] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '' });
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetch('/api/mailing/templates')
+  const fetchFolders = useCallback(() => {
+    fetch('/api/mailing/template-folders', { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => setFolders(data.folders || []))
+      .catch(() => {});
+  }, []);
+
+  const fetchTemplates = useCallback(() => {
+    const url = selectedFolder
+      ? `/api/mailing/template-folders/${selectedFolder}/templates`
+      : '/api/mailing/templates';
+    fetch(url, { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         setTemplates(data.templates || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [selectedFolder]);
+
+  useEffect(() => { fetchFolders(); }, [fetchFolders]);
+  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
 
   const createTemplate = async () => {
     try {
+      const payload: any = { ...newTemplate };
+      if (selectedFolder) payload.folder_id = selectedFolder;
       const res = await fetch('/api/mailing/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTemplate),
+        credentials: 'include',
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
-        const data = await res.json();
-        setTemplates(prev => [data, ...prev]);
+        fetchTemplates();
         setShowCreate(false);
         setNewTemplate({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '' });
       }
-    } catch (err) {}
+    } catch {}
   };
 
-  const cloneTemplate = async (id: string) => {
+  const deleteTemplate = async (id: string) => {
     try {
-      const res = await fetch(`/api/mailing/templates/${id}/clone`, { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        setTemplates(prev => [data, ...prev]);
-      }
-    } catch (err) {}
+      await fetch(`/api/mailing/templates/${id}`, { method: 'DELETE', credentials: 'include' });
+      fetchTemplates();
+    } catch {}
   };
 
   if (loading) return <div className="loading-state">Loading templates...</div>;
 
+  const selectedFolderObj = folders.find((f: any) => f.id === selectedFolder);
+
   return (
     <div className="manager-page">
       <div className="page-explanation">
-        <h3>What are Templates?</h3>
-        <p>Templates are <strong>reusable email designs</strong> that you can use across multiple campaigns. 
-        Create once, use many times.</p>
+        <h3>Content Library</h3>
+        <p>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the PMTA Campaign wizard are automatically filed here.</p>
       </div>
 
-      <div className="manager-header">
-        <span>{templates.length} Templates</span>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>+ Create Template</button>
-      </div>
+      {/* Folder sidebar + template list */}
+      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
+        {/* Folders */}
+        <div style={{ background: '#1e1f2e', borderRadius: 10, padding: 12 }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 13, color: '#8b8fa3' }}>Folders</h4>
+          <div
+            onClick={() => setSelectedFolder(null)}
+            style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === null ? '#6366f115' : 'transparent', color: selectedFolder === null ? '#a78bfa' : '#e2e4ed', border: selectedFolder === null ? '1px solid #6366f1' : '1px solid transparent' }}
+          >
+            All Templates
+          </div>
+          {folders.map((f: any) => (
+            <div
+              key={f.id}
+              onClick={() => setSelectedFolder(f.id)}
+              style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === f.id ? '#6366f115' : 'transparent', color: selectedFolder === f.id ? '#a78bfa' : '#e2e4ed', border: selectedFolder === f.id ? '1px solid #6366f1' : '1px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <span style={{ fontSize: 14 }}>📁</span> {f.name}
+            </div>
+          ))}
+          {folders.length === 0 && <p style={{ fontSize: 11, color: '#64748b', margin: '8px 0 0' }}>No folders yet. Save templates from the AI Generator to create domain folders automatically.</p>}
+        </div>
 
-      {showCreate && (
-        <div className="create-form template-form">
-          <h4>Create Email Template</h4>
-          <input placeholder="Template Name" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} />
-          <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} />
-          <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} />
-          <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} />
-          <input placeholder="From Email" value={newTemplate.from_email} onChange={e => setNewTemplate(p => ({...p, from_email: e.target.value}))} />
-          <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={10} />
-          <div className="form-actions">
-            <button onClick={() => setShowCreate(false)}>Cancel</button>
-            <button className="btn-primary" onClick={createTemplate}>Create</button>
+        {/* Templates */}
+        <div>
+          <div className="manager-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontSize: 14, color: '#e2e4ed' }}>
+              {selectedFolderObj ? `📁 ${selectedFolderObj.name}` : 'All Templates'} — {templates.length} template{templates.length !== 1 ? 's' : ''}
+            </span>
+            <button className="btn-primary" onClick={() => setShowCreate(true)} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>+ Create Template</button>
+          </div>
+
+          {showCreate && (
+            <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16, marginBottom: 12 }}>
+              <h4 style={{ margin: '0 0 12px', color: '#a78bfa', fontSize: 14 }}>Create Email Template</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                <input placeholder="Template Name" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
+              </div>
+              <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button onClick={() => setShowCreate(false)} style={{ background: 'transparent', color: '#8b8fa3', border: '1px solid #2d2e3e', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+                <button onClick={createTemplate} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Create</button>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {templates.map((t: any) => (
+              <div key={t.id} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div>
+                    <strong style={{ color: '#e2e4ed', fontSize: 14 }}>{t.name}</strong>
+                    <span style={{ marginLeft: 8, fontSize: 11, color: '#8b8fa3' }}>{t.description}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ background: t.status === 'active' ? '#10b98120' : '#6366f120', color: t.status === 'active' ? '#10b981' : '#6366f1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
+                    <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ background: 'none', border: '1px solid #2d2e3e', color: '#a78bfa', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Preview</button>
+                    <button onClick={() => deleteTemplate(t.id)} style={{ background: 'none', border: '1px solid #2d2e3e', color: '#ef4444', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Delete</button>
+                  </div>
+                </div>
+                {t.subject && <div style={{ fontSize: 12, color: '#8b8fa3' }}>Subject: <span style={{ color: '#c4b5fd' }}>{t.subject}</span></div>}
+                {t.from_name && <div style={{ fontSize: 12, color: '#8b8fa3' }}>From: <span style={{ color: '#c4b5fd' }}>{t.from_name}</span></div>}
+                {previewId === t.id && t.html_content && (
+                  <div style={{ marginTop: 10, background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
+                    <iframe srcDoc={t.html_content} title={`Preview ${t.name}`} style={{ width: '100%', height: 400, border: 'none' }} sandbox="allow-same-origin" />
+                  </div>
+                )}
+              </div>
+            ))}
+            {templates.length === 0 && <p style={{ textAlign: 'center', color: '#64748b', fontSize: 13, padding: 40 }}>No templates yet. Use the AI Generator in the PMTA Campaign wizard to create templates automatically.</p>}
           </div>
         </div>
-      )}
-
-      <div className="items-list">
-        {templates.map(t => (
-          <div key={t.id} className="list-item">
-            <div className="item-main">
-              <strong>{t.name}</strong>
-              <span className="item-description">{t.description || t.subject}</span>
-            </div>
-            <div className="item-meta">
-              <span className={`status-badge ${t.status}`}>{t.status}</span>
-            </div>
-            <div className="item-actions">
-              <button onClick={() => cloneTemplate(t.id)}>Clone</button>
-            </div>
-          </div>
-        ))}
-        {templates.length === 0 && <p className="no-data">No templates yet. Create one to speed up campaign creation.</p>}
       </div>
     </div>
   );

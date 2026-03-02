@@ -38,6 +38,7 @@ func (h *AIContentHandlers) RegisterRoutes(r chi.Router) {
 	r.Post("/recommend-segments", h.HandleRecommendSegments)
 	r.Post("/improve-content", h.HandleImproveContent)
 	r.Post("/generate-ctas", h.HandleGenerateCTAs)
+	r.Post("/generate-templates", h.HandleGenerateTemplates)
 }
 
 // SubjectLineRequest represents the request for subject line generation
@@ -391,4 +392,31 @@ func (h *AIContentHandlers) HandleGenerateCTAs(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// HandleGenerateTemplates generates 5 complete HTML email template variations using AI.
+// POST /api/mailing/ai/generate-templates
+func (h *AIContentHandlers) HandleGenerateTemplates(w http.ResponseWriter, r *http.Request) {
+	var req mailing.TemplateGenerationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.CampaignType == "" {
+		http.Error(w, `{"error":"campaign_type is required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.SendingDomain == "" {
+		http.Error(w, `{"error":"sending_domain is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.service.GenerateEmailTemplates(r.Context(), req)
+	if err != nil {
+		http.Error(w, `{"error":"template generation failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }

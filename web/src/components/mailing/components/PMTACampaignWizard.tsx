@@ -5,6 +5,7 @@ import {
   faPenFancy, faUsers, faBrain, faRocket, faSpinner,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt,
+  faMagic, faSave, faFolderOpen, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 
@@ -158,6 +159,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [templates, setTemplates] = useState<any[]>([]);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
+  // AI Generation state
+  const [showAIGenerator, setShowAIGenerator] = useState(false);
+  const [aiCampaignType, setAICampaignType] = useState('');
+  const [aiGenerating, setAIGenerating] = useState(false);
+  const [aiVariations, setAIVariations] = useState<any[]>([]);
+  const [aiSelectedIdxs, setAISelectedIdxs] = useState<number[]>([]);
+  const [aiPreviewIdx, setAIPreviewIdx] = useState<number | null>(null);
+  const [aiError, setAIError] = useState('');
+  const [aiSaving, setAISaving] = useState(false);
+
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
   const [segments, setSegments] = useState<{ id: string; name: string; cached_count: number }[]>([]);
@@ -274,6 +285,81 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setTemplates(data.templates || []);
     } catch { /* noop */ }
   }, [orgId]);
+
+  const handleAIGenerate = useCallback(async () => {
+    if (!aiCampaignType || !selectedDomain) return;
+    setAIGenerating(true);
+    setAIError('');
+    setAIVariations([]);
+    setAISelectedIdxs([]);
+    setAIPreviewIdx(null);
+    try {
+      const res = await orgFetch(`${API_BASE}/ai/generate-templates`, orgId, {
+        method: 'POST',
+        body: JSON.stringify({ campaign_type: aiCampaignType, sending_domain: selectedDomain }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAIError(data.error || `Generation failed (HTTP ${res.status})`);
+      } else {
+        setAIVariations(data.variations || []);
+      }
+    } catch (err: any) {
+      setAIError(err?.message || 'Generation failed — network error');
+    }
+    setAIGenerating(false);
+  }, [aiCampaignType, selectedDomain, orgId]);
+
+  const handleAIUseSelected = () => {
+    if (aiSelectedIdxs.length === 0) return;
+    const picked = aiSelectedIdxs.map(i => aiVariations[i]).filter(Boolean);
+    const names = ['A', 'B', 'C', 'D'];
+    const newVariants: ContentVariant[] = picked.map((v, i) => ({
+      variant_name: names[i] || String.fromCharCode(65 + i),
+      from_name: v.from_name || '',
+      subject: v.subject || '',
+      html_content: v.html_content || '',
+      split_percent: Math.floor(100 / picked.length),
+    }));
+    if (newVariants.length > 0) {
+      const remainder = 100 - newVariants.reduce((s, v) => s + v.split_percent, 0);
+      newVariants[newVariants.length - 1].split_percent += remainder;
+    }
+    setVariants(newVariants);
+    setShowAIGenerator(false);
+  };
+
+  const handleAISaveToLibrary = async () => {
+    if (aiSelectedIdxs.length === 0 || !selectedDomain) return;
+    setAISaving(true);
+    try {
+      const folderRes = await orgFetch(`${API_BASE}/template-folders`, orgId, {
+        method: 'POST',
+        body: JSON.stringify({ path: selectedDomain }),
+      });
+      const folder = await folderRes.json();
+      const folderId = folder?.id;
+
+      for (const idx of aiSelectedIdxs) {
+        const v = aiVariations[idx];
+        if (!v) continue;
+        await orgFetch(`${API_BASE}/templates`, orgId, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: `${aiCampaignType} — Variant ${v.variant_name}`,
+            description: `AI-generated ${aiCampaignType} template for ${selectedDomain}`,
+            subject: v.subject,
+            from_name: v.from_name,
+            html_content: v.html_content,
+            folder_id: folderId || undefined,
+            status: 'active',
+          }),
+        });
+      }
+      fetchTemplates();
+    } catch { /* noop */ }
+    setAISaving(false);
+  };
 
   // Load data on step entry
   useEffect(() => {
@@ -538,6 +624,138 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setShowTemplatePicker(false);
   };
 
+  const CAMPAIGN_TYPES = [
+    { id: 'welcome', label: 'Welcome Series', desc: 'New subscriber onboarding' },
+    { id: 'newsletter', label: 'Newsletter', desc: 'Content-driven update' },
+    { id: 'promotional', label: 'Promotional', desc: 'Offers & deals' },
+    { id: 'winback', label: 'Win-Back', desc: 'Re-engage dormant subs' },
+    { id: 're-engagement', label: 'Re-Engagement', desc: 'Gentle nudge campaign' },
+    { id: 'announcement', label: 'Announcement', desc: 'Product or feature reveal' },
+    { id: 'trivia', label: 'Trivia / Interactive', desc: 'Fun engagement campaign' },
+  ];
+
+  const renderAIGenerator = () => (
+    <div style={{ background: '#1a1033', border: '1px solid #7c3aed', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <h4 style={{ margin: 0, color: '#c4b5fd', fontSize: 15 }}><FontAwesomeIcon icon={faMagic} /> AI Template Generator</h4>
+          <p style={{ margin: '4px 0 0', color: '#8b8fa3', fontSize: 12 }}>Select a campaign type. AI will analyze <strong style={{ color: '#a78bfa' }}>{selectedDomain}</strong> for branding and generate 5 production-ready variations.</p>
+        </div>
+        <button onClick={() => setShowAIGenerator(false)} style={{ background: 'none', border: 'none', color: '#8b8fa3', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
+      </div>
+
+      {/* Campaign type selector */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8, marginBottom: 16 }}>
+        {CAMPAIGN_TYPES.map(ct => (
+          <div
+            key={ct.id}
+            role="button"
+            tabIndex={0}
+            aria-pressed={aiCampaignType === ct.id}
+            onClick={() => setAICampaignType(ct.id)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAICampaignType(ct.id); } }}
+            style={{
+              background: aiCampaignType === ct.id ? '#7c3aed20' : '#14151f',
+              border: `2px solid ${aiCampaignType === ct.id ? '#7c3aed' : '#2d2e3e'}`,
+              borderRadius: 8, padding: '10px 12px', cursor: 'pointer', transition: 'all 0.2s',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, color: aiCampaignType === ct.id ? '#c4b5fd' : '#e2e4ed' }}>{ct.label}</div>
+            <div style={{ fontSize: 11, color: '#8b8fa3', marginTop: 2 }}>{ct.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Generate button */}
+      <button
+        onClick={handleAIGenerate}
+        disabled={!aiCampaignType || aiGenerating}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, background: aiCampaignType && !aiGenerating ? '#7c3aed' : '#4b5563',
+          color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 600,
+          cursor: aiCampaignType && !aiGenerating ? 'pointer' : 'not-allowed', width: '100%', justifyContent: 'center',
+        }}
+      >
+        {aiGenerating ? <><FontAwesomeIcon icon={faSpinner} spin /> Analyzing {selectedDomain} &amp; generating 5 variations...</> : <><FontAwesomeIcon icon={faMagic} /> Generate 5 Variations</>}
+      </button>
+
+      {aiError && (
+        <div style={{ marginTop: 12, background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', color: '#ff8a80', fontSize: 13 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} /> {aiError}
+        </div>
+      )}
+
+      {/* Generated variations */}
+      {aiVariations.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ color: '#c4b5fd', fontSize: 13, fontWeight: 600 }}>Select variations to use ({aiSelectedIdxs.length} selected)</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={handleAISaveToLibrary}
+                disabled={aiSelectedIdxs.length === 0 || aiSaving}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 && !aiSaving ? '#1e1f2e' : 'transparent', color: aiSelectedIdxs.length > 0 ? '#10b981' : '#4b5563', border: '1px solid #2d2e3e', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
+              >
+                <FontAwesomeIcon icon={aiSaving ? faSpinner : faSave} spin={aiSaving} /> Save to Library
+              </button>
+              <button
+                onClick={handleAIUseSelected}
+                disabled={aiSelectedIdxs.length === 0}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 ? '#7c3aed' : '#4b5563', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
+              >
+                <FontAwesomeIcon icon={faCheck} /> Use Selected
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
+            {aiVariations.map((v: any, idx: number) => {
+              const isSelected = aiSelectedIdxs.includes(idx);
+              return (
+                <div
+                  key={idx}
+                  onClick={() => setAISelectedIdxs(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx])}
+                  style={{
+                    background: isSelected ? '#7c3aed15' : '#14151f',
+                    border: `2px solid ${isSelected ? '#7c3aed' : '#2d2e3e'}`,
+                    borderRadius: 10, padding: 14, cursor: 'pointer', transition: 'all 0.2s', position: 'relative',
+                  }}
+                >
+                  {isSelected && (
+                    <div style={{ position: 'absolute', top: 8, right: 8, background: '#7c3aed', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <FontAwesomeIcon icon={faCheck} style={{ color: '#fff', fontSize: 11 }} />
+                    </div>
+                  )}
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#c4b5fd', marginBottom: 8 }}>Variant {v.variant_name}</div>
+                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 4 }}>From: <span style={{ color: '#e2e4ed' }}>{v.from_name}</span></div>
+                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 10 }}>Subject: <span style={{ color: '#e2e4ed' }}>{v.subject}</span></div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAIPreviewIdx(aiPreviewIdx === idx ? null : idx); }}
+                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 6, padding: '6px 0', fontSize: 11, cursor: 'pointer' }}
+                    >
+                      <FontAwesomeIcon icon={faEye} /> Preview
+                    </button>
+                  </div>
+                  {aiPreviewIdx === idx && (
+                    <div style={{ marginTop: 10, background: '#fff', borderRadius: 8, overflow: 'hidden', maxHeight: 300, overflowY: 'auto' }}>
+                      <iframe
+                        srcDoc={v.html_content}
+                        title={`Preview ${v.variant_name}`}
+                        style={{ width: '100%', height: 280, border: 'none' }}
+                        sandbox="allow-same-origin"
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const renderStep3 = () => (
     <div className="wiz-step-content">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -546,7 +764,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           <p style={{ margin: '4px 0 0', color: '#8b8fa3', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setShowTemplatePicker(!showTemplatePicker)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+          <button onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #7c3aed, #6366f1)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+            <FontAwesomeIcon icon={faMagic} /> Generate
+          </button>
+          <button onClick={() => { setShowTemplatePicker(!showTemplatePicker); setShowAIGenerator(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
             <FontAwesomeIcon icon={faPenFancy} /> Load Template
           </button>
           {variants.length < 4 && (
@@ -584,6 +805,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           )}
         </div>
       )}
+
+      {showAIGenerator && renderAIGenerator()}
 
       {variants.map((v, idx) => (
         <div key={idx} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
