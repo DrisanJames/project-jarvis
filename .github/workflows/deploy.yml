@@ -41,6 +41,11 @@ jobs:
           mkdir -p build
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/server ./cmd/server/
 
+      - name: Run database migrations
+        run: go run ./cmd/migrate/ migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
       - name: Build React frontend
         working-directory: web
         run: |

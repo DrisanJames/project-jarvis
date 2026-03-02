@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -73,8 +75,10 @@ func getOrganizationUUID(r *http.Request) uuid.UUID {
 
 // ensureSchema ensures the campaign table has the correct constraints
 func (cb *CampaignBuilder) ensureSchema() {
-	// DDL migrations moved to SQL migration files — skip at runtime to avoid table locks
-	log.Println("CampaignBuilder: Schema initialized (DDL skipped)")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cb.ensureCampaignColumns(ctx)
+	log.Println("CampaignBuilder: Schema initialized")
 }
 
 // RegisterRoutes registers campaign builder routes
