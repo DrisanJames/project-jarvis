@@ -245,7 +245,11 @@ func main() {
 			} else {
 				pingCancel()
 				log.Println("Mailing Platform database connected successfully")
-			
+
+			// Run critical schema migrations at startup (DB is inside VPC,
+			// so migrations must run from the server, not the CI runner).
+			runStartupMigrations(mailingDB)
+
 			// Start Backpressure Monitor
 			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
 			go backpressure.Start(ctx)
@@ -934,4 +938,47 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+// runStartupMigrations applies critical schema fixes that must run before
+// the scheduler and send workers start. These are idempotent and safe to
+// re-run on every boot.
+func runStartupMigrations(db *sql.DB) {
+	migrations := []struct {
+		name string
+		sql  string
+	}{
+		{"drop_status_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
+		{"drop_campaign_type_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
+		{"add_status_check", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
+		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
+		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
+		{"add_suppression_segment_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_segment_ids JSONB DEFAULT '[]'`},
+		{"add_queue_locked_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
+		{"add_queue_worker_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
+		{"create_suppressions_table", `CREATE TABLE IF NOT EXISTS mailing_suppressions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			email VARCHAR(255) NOT NULL,
+			reason TEXT,
+			source VARCHAR(50),
+			active BOOLEAN DEFAULT true,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW(),
+			CONSTRAINT mailing_suppressions_email_key UNIQUE (email)
+		)`},
+		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
+		{"reset_orphaned_sending", `UPDATE mailing_campaigns SET status = 'failed', completed_at = NOW(), updated_at = NOW() WHERE status = 'sending' AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))`},
+	}
+
+	var ok, fail int
+	for _, m := range migrations {
+		if _, err := db.Exec(m.sql); err != nil {
+			log.Printf("[StartupMigration] %s: ERROR %v", m.name, err)
+			fail++
+		} else {
+			ok++
+		}
+	}
+	log.Printf("[StartupMigration] Complete: %d OK, %d errors", ok, fail)
 }
