@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -373,6 +374,13 @@ func (cs *CampaignScheduler) processCampaign(ctx context.Context, campaign Sched
 	defer lock.Release(ctx)
 
 	log.Printf("[CampaignScheduler] Processing campaign: %s (%s)", campaign.Name, campaign.ID)
+
+	// projectjarvis.io is reserved for system notifications — block campaign sends
+	if fromDomain := extractDomain(campaign.FromEmail); strings.EqualFold(fromDomain, "projectjarvis.io") || strings.HasSuffix(fromDomain, ".projectjarvis.io") {
+		log.Printf("[CampaignScheduler] BLOCKED: campaign %s uses reserved projectjarvis.io domain", campaign.ID)
+		cs.markCampaignFailed(ctx, campaign.ID, "projectjarvis.io is reserved for system notifications")
+		return
+	}
 
 	// Lock the campaign for processing (set status to 'sending')
 	result, err := cs.db.ExecContext(ctx, `

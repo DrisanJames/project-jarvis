@@ -80,7 +80,7 @@ func (s *Sender) sendViaSparkPost(ctx context.Context, server *DeliveryServer, t
 			{"address": map[string]string{"email": to}},
 		},
 		"content": map[string]interface{}{
-			"from":    map[string]string{"email": server.Name + "@mail.ignite.com"},
+			"from":    map[string]string{"email": server.Name + "@" + extractSendingDomain(server)},
 			"subject": subject,
 			"html":    html,
 			"text":    plain,
@@ -274,4 +274,16 @@ func (cs *CampaignSender) ProcessQueue(ctx context.Context, batchSize int) (int,
 		sent++
 	}
 	return sent, nil
+}
+
+func extractSendingDomain(server *DeliveryServer) string {
+	if server.Settings != nil {
+		if d, ok := server.Settings["sending_domain"].(string); ok && d != "" {
+			return d
+		}
+	}
+	if server.Region != "" && strings.Contains(server.Region, ".") {
+		return server.Region
+	}
+	return "mail.projectjarvis.io"
 }

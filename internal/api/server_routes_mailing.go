@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -556,12 +557,26 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			}
 			executor := engine.NewExecutor(pmtaHost, pmtaSSHPort, pmtaSSHUser, pmtaSSHKey)
 
-			alerterCfg := engine.AlerterConfig{
-				SMTPHost: os.Getenv("ALERT_SMTP_HOST"),
-				SMTPPort: 25,
-				From:     "engine@ignitemailing.com",
-				To:       []string{"drisanjames@gmail.com"},
+		alertSMTPPort := 587
+		if p := os.Getenv("ALERT_SMTP_PORT"); p != "" {
+			if parsed, err := strconv.Atoi(p); err == nil {
+				alertSMTPPort = parsed
 			}
+		}
+		alertFrom := os.Getenv("ALERT_FROM")
+		if alertFrom == "" {
+			alertFrom = "alerts@projectjarvis.io"
+		}
+		alertTo := os.Getenv("ALERT_TO")
+		if alertTo == "" {
+			alertTo = "drisan@jamesventurescorp.com"
+		}
+		alerterCfg := engine.AlerterConfig{
+			SMTPHost: os.Getenv("ALERT_SMTP_HOST"),
+			SMTPPort: alertSMTPPort,
+			From:     alertFrom,
+			To:       []string{alertTo},
+		}
 			alerter := engine.NewAlerter(alerterCfg)
 
 			pmtaMgmtHost := os.Getenv("PMTA_MGMT_HOST")

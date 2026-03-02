@@ -93,23 +93,21 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
 		host := smtpHost.String
-		port := 587
+		port := 587 // safe default; overridden by profile value
 		if smtpPort.Valid && smtpPort.Int64 > 0 {
 			port = int(smtpPort.Int64)
 		}
 		user := smtpUsername.String
 		pass := smtpPassword.String
 
-		// Determine HTTP API endpoint (explicit or derived from SMTP host)
+		// api_endpoint from the sending profile (stored in `region`)
 		apiURL := ""
 		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
 			apiURL = region
-		} else if host != "" {
-			apiURL = fmt.Sprintf("http://%s:19000", host)
 		}
 
-		// Always use combo sender: HTTP API first, SMTP fallback
-		if host != "" {
+		// Combo sender: try HTTP injection API first (if configured), SMTP fallback
+		if host != "" && apiURL != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
 				return &pmtaComboSender{
 					apiSender:  NewPMTAAPISender(apiURL, s.db),
@@ -117,7 +115,13 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 				}
 			}).Send(ctx, msg)
 		}
-		// No SMTP host — try HTTP API alone
+		// SMTP only (no HTTP API endpoint configured)
+		if host != "" {
+			return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
+				return NewPMTASender(host, port, user, pass, s.db)
+			}).Send(ctx, msg)
+		}
+		// HTTP API only (no SMTP host)
 		if apiURL != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
 				return NewPMTAAPISender(apiURL, s.db)

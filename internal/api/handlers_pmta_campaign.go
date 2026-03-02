@@ -495,6 +495,15 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign name is required"})
 		return
 	}
+
+	// projectjarvis.io is reserved for system notifications only
+	if strings.EqualFold(input.SendingDomain, "projectjarvis.io") || strings.HasSuffix(strings.ToLower(input.SendingDomain), ".projectjarvis.io") {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "projectjarvis.io is reserved for system notifications. Use a dedicated sending domain (e.g. discountblog.com, quizfiesta.com).",
+		})
+		return
+	}
+
 	if len(input.Variants) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
 		return

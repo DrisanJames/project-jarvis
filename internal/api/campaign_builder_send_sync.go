@@ -61,7 +61,13 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		http.Error(w, fmt.Sprintf(`{"error":"cannot send campaign in %s status"}`, campaign.Status), http.StatusBadRequest)
 		return
 	}
-	
+
+	// projectjarvis.io is reserved for system notifications only
+	if fromDomain := extractDomainFromEmail(campaign.FromEmail); strings.EqualFold(fromDomain, "projectjarvis.io") || strings.HasSuffix(strings.ToLower(fromDomain), ".projectjarvis.io") {
+		http.Error(w, `{"error":"projectjarvis.io is reserved for system notifications. Use a dedicated sending domain."}`, http.StatusBadRequest)
+		return
+	}
+
 	// Get sending profile details
 	var profile struct {
 		ID         string
@@ -259,7 +265,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			if profile.SMTPUser.Valid { smtpUser = profile.SMTPUser.String }
 			smtpPass := ""
 			if profile.SMTPPass.Valid { smtpPass = profile.SMTPPass.String }
-			port := 25
+			port := 587 // safe default; overridden by profile value
 			if profile.SMTPPort.Valid && profile.SMTPPort.Int64 > 0 { port = int(profile.SMTPPort.Int64) }
 			result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, port, smtpUser, smtpPass, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText, unsubHeaders)
 		default:
@@ -372,4 +378,11 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		"vendor":        profile.VendorType,
 		"throttle_speed": campaign.ThrottleSpeed,
 	})
+}
+
+func extractDomainFromEmail(email string) string {
+	if idx := strings.LastIndex(email, "@"); idx >= 0 {
+		return email[idx+1:]
+	}
+	return email
 }
