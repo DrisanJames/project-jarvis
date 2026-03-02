@@ -145,6 +145,8 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, sub *Subscriber, cam
 			"from_email":   campaign.FromEmail,
 		}
 		rc["campaign"] = campaignData
+		rc["campaignId"] = campaign.ID.String()
+		rc["campaign_name"] = campaign.Name
 	}
 
 	// ============================================

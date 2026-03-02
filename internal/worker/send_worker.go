@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"github.com/lib/pq"
 )
@@ -143,6 +144,24 @@ type QueueItem struct {
 	Priority     int
 	FirstName    string
 	LastName     string
+
+	// Extended subscriber fields for full Liquid personalization
+	CustomFields        mailing.JSON
+	EngagementScore     float64
+	TotalEmailsReceived int
+	TotalOpens          int
+	TotalClicks         int
+	LastOpenAt          *time.Time
+	LastClickAt         *time.Time
+	LastEmailAt         *time.Time
+	OptimalSendHourUTC  *int
+	Timezone            string
+	SubscriberStatus    string
+	SubscriberSource    string
+	SubscribedAt        time.Time
+
+	// Campaign metadata for template context
+	CampaignName string
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -309,7 +328,21 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 			COALESCE(camp.sending_profile_id::text, ''),
 			COALESCE(sp.vendor_type, 'ses'),
 			COALESCE(s.first_name, ''),
-			COALESCE(s.last_name, '')
+			COALESCE(s.last_name, ''),
+			s.custom_fields,
+			COALESCE(s.engagement_score, 0),
+			COALESCE(s.total_emails_received, 0),
+			COALESCE(s.total_opens, 0),
+			COALESCE(s.total_clicks, 0),
+			s.last_open_at,
+			s.last_click_at,
+			s.last_email_at,
+			s.optimal_send_hour_utc,
+			COALESCE(s.timezone, ''),
+			COALESCE(s.status, 'confirmed'),
+			COALESCE(s.source, ''),
+			COALESCE(s.subscribed_at, s.created_at),
+			COALESCE(camp.name, '')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -341,8 +374,23 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 			&espType,
 			&item.FirstName,
 			&item.LastName,
+			&item.CustomFields,
+			&item.EngagementScore,
+			&item.TotalEmailsReceived,
+			&item.TotalOpens,
+			&item.TotalClicks,
+			&item.LastOpenAt,
+			&item.LastClickAt,
+			&item.LastEmailAt,
+			&item.OptimalSendHourUTC,
+			&item.Timezone,
+			&item.SubscriberStatus,
+			&item.SubscriberSource,
+			&item.SubscribedAt,
+			&item.CampaignName,
 		)
 		if err != nil {
+			log.Printf("SendWorkerPool: scan error: %v", err)
 			continue
 		}
 		item.ProfileID = profileID
@@ -380,11 +428,14 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 	
-	// ── Personalization: replace merge fields in subject, preheader, body ──
-	subject := personalizeContent(item.Subject, item.Email, item.FirstName, item.LastName)
-	previewText := personalizeContent(item.PreviewText, item.Email, item.FirstName, item.LastName)
-	htmlContent := personalizeContent(item.HTMLContent, item.Email, item.FirstName, item.LastName)
-	textContent := personalizeContent(item.TextContent, item.Email, item.FirstName, item.LastName)
+	// ── Personalization: full Liquid template engine with all subscriber data ──
+	renderCtx := p.buildRenderContext(item)
+	templateSvc := mailing.NewTemplateService()
+
+	subject, _ := templateSvc.Render("s:"+item.CampaignID.String(), item.Subject, renderCtx)
+	previewText, _ := templateSvc.Render("pv:"+item.CampaignID.String(), item.PreviewText, renderCtx)
+	htmlContent, _ := templateSvc.Render("h:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.HTMLContent, renderCtx)
+	textContent, _ := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
 
 	if previewText != "" {
 		htmlContent = injectPreviewText(htmlContent, previewText)
@@ -708,8 +759,87 @@ func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID string)
 	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", p.trackingURL, encoded, sig)
 }
 
+// buildRenderContext constructs a full Liquid render context from a queue item,
+// matching the schema produced by mailing.ContextBuilder.BuildContext but built
+// from data already loaded in the claim query (no extra DB round-trips).
+func (p *SendWorkerPool) buildRenderContext(item QueueItem) mailing.RenderContext {
+	rc := make(mailing.RenderContext)
+
+	// Top-level profile fields
+	rc["first_name"] = item.FirstName
+	rc["last_name"] = item.LastName
+	rc["email"] = item.Email
+	rc["full_name"] = strings.TrimSpace(item.FirstName + " " + item.LastName)
+	if parts := strings.SplitN(item.Email, "@", 2); len(parts) == 2 {
+		rc["email_local"] = parts[0]
+		rc["email_domain"] = parts[1]
+	}
+
+	// Custom fields
+	if item.CustomFields != nil {
+		rc["custom"] = map[string]interface{}(item.CustomFields)
+	} else {
+		rc["custom"] = make(map[string]interface{})
+	}
+
+	// Engagement
+	rc["engagement"] = map[string]interface{}{
+		"score":             item.EngagementScore,
+		"total_emails":      item.TotalEmailsReceived,
+		"total_opens":       item.TotalOpens,
+		"total_clicks":      item.TotalClicks,
+		"subscribed_at":     item.SubscribedAt,
+		"optimal_send_hour": item.OptimalSendHourUTC,
+	}
+
+	// System fields
+	now := time.Now()
+	system := map[string]interface{}{
+		"current_date":    now.Format("January 2, 2006"),
+		"current_year":    now.Year(),
+		"current_month":   now.Month().String(),
+		"current_day":     now.Day(),
+		"current_weekday": now.Weekday().String(),
+		"current_hour":    now.Hour(),
+		"timestamp":       now.Unix(),
+	}
+	if p.trackingURL != "" {
+		system["unsubscribe_url"] = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String())
+		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", p.trackingURL, item.SubscriberID.String())
+		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", p.trackingURL, item.CampaignID.String(), item.SubscriberID.String())
+	}
+	rc["system"] = system
+	rc["now"] = now
+	rc["today"] = now.Format("January 2, 2006")
+	rc["year"] = now.Year()
+
+	// Campaign metadata
+	rc["campaign"] = map[string]interface{}{
+		"id":          item.CampaignID.String(),
+		"name":        item.CampaignName,
+		"subject":     item.Subject,
+		"preview_text": item.PreviewText,
+		"from_name":   item.FromName,
+		"from_email":  item.FromEmail,
+	}
+	rc["campaignId"] = item.CampaignID.String()
+	rc["campaign_name"] = item.CampaignName
+
+	// Subscriber metadata
+	rc["subscriber"] = map[string]interface{}{
+		"id":            item.SubscriberID.String(),
+		"status":        item.SubscriberStatus,
+		"source":        item.SubscriberSource,
+		"timezone":      item.Timezone,
+		"subscribed_at": item.SubscribedAt,
+	}
+
+	return rc
+}
+
 // personalizeContent replaces all merge-field variations with subscriber data.
 // Handles {{ field }}, {{field}}, and [FIELD] syntaxes with case-insensitive matching.
+// Kept as fallback; the primary path now uses the full Liquid TemplateService.
 func personalizeContent(content, email, firstName, lastName string) string {
 	if content == "" {
 		return content
