@@ -480,6 +480,14 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
 		return
 	}
+	for i, v := range input.Variants {
+		if strings.TrimSpace(v.HTMLContent) == "" {
+			respondJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName),
+			})
+			return
+		}
+	}
 	if len(input.TargetISPs) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
 		return

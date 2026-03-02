@@ -166,6 +166,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
   const [selectedSuppLists, setSelectedSuppLists] = useState<string[]>([]);
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
+  const [audienceError, setAudienceError] = useState('');
 
   // Step 5 state
   const [ispIntel, setISPIntel] = useState<ISPIntel[]>([]);
@@ -201,19 +202,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   }, [orgId]);
 
   const fetchAudienceData = useCallback(async () => {
+    setAudienceError('');
     try {
       const [listRes, segRes, suppRes] = await Promise.all([
         orgFetch(`${API_BASE}/lists`, orgId),
         orgFetch(`${API_BASE}/segments`, orgId),
         orgFetch(`${API_BASE}/suppression-lists`, orgId),
       ]);
+      if (!listRes.ok || !segRes.ok || !suppRes.ok) {
+        setAudienceError('Some audience data failed to load. Check your lists/segments configuration.');
+      }
       const listData = await listRes.json();
       const segData = await segRes.json();
       const suppData = await suppRes.json();
       setLists(Array.isArray(listData) ? listData : listData.lists || []);
       setSegments(Array.isArray(segData) ? segData : segData.segments || []);
       setSuppressionLists(Array.isArray(suppData) ? suppData : suppData.lists || []);
-    } catch { /* noop */ }
+    } catch {
+      setAudienceError('Failed to load audience data. Please try again.');
+    }
   }, [orgId]);
 
   const fetchAudienceEstimate = useCallback(async () => {
@@ -262,11 +269,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const fetchTemplates = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/templates');
+      const res = await orgFetch(`${API_BASE}/templates`, orgId);
       const data = await res.json();
       setTemplates(data.templates || []);
     } catch { /* noop */ }
-  }, []);
+  }, [orgId]);
 
   // Load data on step entry
   useEffect(() => {
@@ -306,7 +313,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     switch (step) {
       case 1: return selectedISPs.length > 0;
       case 2: return selectedDomain !== '';
-      case 3: return variants.every(v => v.from_name && v.subject) &&
+      case 3: return variants.every(v => v.from_name && v.subject && v.html_content.trim().length > 0) &&
                      Math.abs(variants.reduce((s, v) => s + v.split_percent, 0) - 100) < 1;
       case 4: return selectedLists.length > 0 || selectedSegments.length > 0;
       case 5: return true;
@@ -342,9 +349,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      setDeployResult(data);
-    } catch (err) {
-      setDeployResult({ error: 'Deploy failed' });
+      if (!res.ok) {
+        setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
+      } else {
+        setDeployResult(data);
+      }
+    } catch (err: any) {
+      setDeployResult({ error: err?.message || 'Deploy failed — network error' });
     }
     setDeploying(false);
   };
@@ -477,13 +488,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {sendingDomains.map(d => (
+        {sendingDomains.map(d => {
+          const domainSelected = selectedDomain === d.domain;
+          return (
           <div
+            role="button"
+            tabIndex={0}
+            aria-pressed={domainSelected}
+            aria-label={`Select ${d.domain} sending domain`}
             key={d.domain}
             onClick={() => setSelectedDomain(d.domain)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedDomain(d.domain); } }}
             style={{
-              background: selectedDomain === d.domain ? '#6366f115' : '#1e1f2e',
-              border: `2px solid ${selectedDomain === d.domain ? '#6366f1' : '#2d2e3e'}`,
+              background: domainSelected ? '#6366f115' : '#1e1f2e',
+              border: `2px solid ${domainSelected ? '#6366f1' : '#2d2e3e'}`,
               borderRadius: 10, padding: 14, cursor: 'pointer',
               transition: 'all 0.2s',
             }}
@@ -507,7 +525,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <span style={{ color: '#8b8fa3' }}>Rep: {d.reputation_score.toFixed(0)}%</span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -636,6 +655,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
         Select inclusion lists/segments and exclusion suppression lists.
       </p>
+      {audienceError && (
+        <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} /> {audienceError}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         {/* Inclusion */}
