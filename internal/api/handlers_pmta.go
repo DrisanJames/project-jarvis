@@ -1177,13 +1177,17 @@ func (s *PMTAService) HandleReconciliationPerIP(w http.ResponseWriter, r *http.R
 // =============================================================================
 
 func getOrgID(r *http.Request) string {
+	orgID, err := GetOrgIDStringFromRequest(r)
+	if err == nil && orgID != "" {
+		return orgID
+	}
 	if orgID := r.Header.Get("X-Organization-ID"); orgID != "" {
 		return orgID
 	}
 	if orgID := r.URL.Query().Get("organization_id"); orgID != "" {
 		return orgID
 	}
-	return "00000000-0000-0000-0000-000000000001"
+	return defaultOrgID
 }
 
 func encodeDKIMPublicKey(der []byte) string {

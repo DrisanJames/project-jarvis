@@ -125,9 +125,8 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 		// Use dynamic org context extraction
 		var err error
 		orgID, err = GetOrgIDStringFromRequest(r)
-		if err != nil {
-			respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "organization context required"})
-			return
+		if err != nil || orgID == "" {
+			orgID = defaultOrgID
 		}
 	}
 	vendorType := r.URL.Query().Get("vendor_type")
@@ -245,9 +244,8 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 	if input.OrganizationID == "" {
 		var err error
 		input.OrganizationID, err = GetOrgIDStringFromRequest(r)
-		if err != nil {
-			respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "organization context required"})
-			return
+		if err != nil || input.OrganizationID == "" {
+			input.OrganizationID = defaultOrgID
 		}
 	}
 	smtpPort := 587

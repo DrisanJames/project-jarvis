@@ -55,11 +55,14 @@ func (cb *CampaignBuilder) SetRedisClient(client *redis.Client) {
 	cb.redisClient = client
 }
 
-// getOrganizationID extracts the organization ID from the request using the dynamic org context
+const defaultOrgID = "00000000-0000-0000-0000-000000000001"
+
+// getOrganizationID extracts the organization ID from the request using the dynamic org context.
+// Falls back to the default org ID so UUID-column queries never receive an empty string.
 func getOrganizationID(r *http.Request) string {
 	orgID, err := GetOrgIDStringFromRequest(r)
-	if err != nil {
-		return "" // Return empty string on error - caller should handle
+	if err != nil || orgID == "" {
+		return defaultOrgID
 	}
 	return orgID
 }
@@ -67,8 +70,9 @@ func getOrganizationID(r *http.Request) string {
 // getOrganizationUUID extracts the organization ID from the request and parses it as UUID
 func getOrganizationUUID(r *http.Request) uuid.UUID {
 	orgID, err := GetOrgIDFromRequest(r)
-	if err != nil {
-		return uuid.Nil // Return nil UUID on error - caller should handle
+	if err != nil || orgID == uuid.Nil {
+		parsed, _ := uuid.Parse(defaultOrgID)
+		return parsed
 	}
 	return orgID
 }

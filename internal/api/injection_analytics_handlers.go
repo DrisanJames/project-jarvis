@@ -204,21 +204,8 @@ func (h *InjectionAnalyticsHandler) HandleGetInjectionAnalytics(w http.ResponseW
 	if orgID == "" {
 		var err error
 		orgID, err = GetOrgIDStringFromRequest(r)
-		if err != nil {
-			orgID = ""
-		}
-	}
-	if orgID == "" {
-		// Fallback: try to discover an org ID from existing data
-		for _, tbl := range []string{"mailing_isp_metrics", "mailing_campaigns", "mailing_subscribers", "mailing_lists"} {
-			_ = h.db.QueryRow(fmt.Sprintf("SELECT DISTINCT organization_id FROM %s LIMIT 1", tbl)).Scan(&orgID)
-			if orgID != "" {
-				break
-			}
-		}
-		// If still empty, use a default — don't block the request
-		if orgID == "" {
-			orgID = "default"
+		if err != nil || orgID == "" {
+			orgID = defaultOrgID
 		}
 	}
 

@@ -270,9 +270,8 @@ func (h *AIContentHandlers) HandleRecommendSegments(w http.ResponseWriter, r *ht
 	if orgID == "" {
 		var err error
 		orgID, err = GetOrgIDStringFromRequest(r)
-		if err != nil {
-			http.Error(w, `{"error":"organization context required"}`, http.StatusUnauthorized)
-			return
+		if err != nil || orgID == "" {
+			orgID = defaultOrgID
 		}
 	}
 

@@ -20,10 +20,9 @@ func NewAdvancedMailingService(db *sql.DB) *AdvancedMailingService {
 func getOrgIDFromRequest(r *http.Request) string {
 	orgID := r.Header.Get("X-Organization-ID")
 	if orgID == "" {
-		// Use dynamic org context extraction
 		orgIDStr, err := GetOrgIDStringFromRequest(r)
-		if err != nil {
-			return "" // Will be caught by handler validation
+		if err != nil || orgIDStr == "" {
+			return defaultOrgID
 		}
 		return orgIDStr
 	}

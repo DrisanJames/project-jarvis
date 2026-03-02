@@ -13,8 +13,8 @@ import (
 // getOrgIDString returns the organization ID as a string using the dynamic org context
 func getOrgIDString(r *http.Request) string {
 	orgID, err := GetOrgIDStringFromRequest(r)
-	if err != nil {
-		return "" // Return empty string on error - caller should handle
+	if err != nil || orgID == "" {
+		return defaultOrgID
 	}
 	return orgID
 }

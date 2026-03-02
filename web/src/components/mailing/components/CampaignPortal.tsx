@@ -2150,7 +2150,7 @@ export const CampaignPortal: React.FC<{
       // Fetch campaigns
       const campaignsRes = await orgFetch(`${API_BASE}/campaigns`, organization?.id);
       const campaignsData = await campaignsRes.json();
-      const allCampaigns: Campaign[] = campaignsData.campaigns || [];
+      const allCampaigns: Campaign[] = campaignsData.data || campaignsData.campaigns || [];
 
       // Calculate stats
       const stats: DashboardStats = {

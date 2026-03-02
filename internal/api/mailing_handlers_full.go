@@ -406,13 +406,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 func (svc *MailingService) HandleGetCampaigns(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	
-	// Get organization ID dynamically
-	orgID, err := GetOrgIDStringFromRequest(r)
-	log.Printf("[HandleGetCampaigns] OrgID: %s, Error: %v", orgID, err)
-	if err != nil || orgID == "" {
-		http.Error(w, `{"error":"organization context required"}`, http.StatusUnauthorized)
-		return
-	}
+	orgID := getOrganizationID(r)
 	
 	rows, err := svc.db.QueryContext(ctx, `
 		SELECT id, name, subject, from_name, from_email, status, sent_count, open_count, click_count, revenue, created_at

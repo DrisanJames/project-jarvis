@@ -18,10 +18,6 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	pag := ParsePagination(r, 50, 200)
 
 	orgID := getOrganizationID(r)
-	if orgID == "" {
-		// Log the issue for debugging
-		log.Printf("[CampaignBuilder] Warning: Empty org ID from request")
-	}
 	status := r.URL.Query().Get("status")
 
 	// Build WHERE clause (shared between count and data queries)
@@ -42,11 +38,16 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Build data query
+	// Build data query — return all fields the frontend Campaign interface expects
 	query := `
-		SELECT c.id, c.name, c.subject, c.status, 
-			   c.sent_count, c.open_count, c.click_count,
-			   c.created_at, c.scheduled_at, c.completed_at,
+		SELECT c.id, c.name, COALESCE(c.subject,''), c.status,
+			   COALESCE(c.total_recipients,0), COALESCE(c.sent_count,0),
+			   COALESCE(c.open_count,0), COALESCE(c.click_count,0),
+			   COALESCE(c.bounce_count,0), COALESCE(c.complaint_count,0),
+			   COALESCE(c.unsubscribe_count,0), COALESCE(c.revenue,0),
+			   COALESCE(c.from_name,''), COALESCE(c.from_email,''),
+			   COALESCE(c.throttle_speed,''),
+			   c.created_at, c.scheduled_at, c.started_at, c.completed_at,
 			   COALESCE(p.name, '') as profile_name,
 			   COALESCE(p.vendor_type, '') as vendor_type,
 			   COALESCE(l.name, '') as list_name
@@ -59,7 +60,6 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 	args = append(args, pag.Limit, pag.Offset)
 
-	log.Printf("[CampaignBuilder] Query: %s with args: %v", query, args)
 	rows, err := cb.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("[CampaignBuilder] Query error: %v", err)
@@ -70,34 +70,54 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 
 	campaigns := []map[string]interface{}{}
 	for rows.Next() {
-		var id, name, subject, status, profileName, vendorType, listName string
-		var sentCount, openCount, clickCount int
+		var id, name, subject, status string
+		var totalRecipients, sentCount, openCount, clickCount int
+		var bounceCount, complaintCount, unsubscribeCount int
+		var revenue float64
+		var fromName, fromEmail, throttleSpeed string
+		var profileName, vendorType, listName string
 		var createdAt time.Time
-		var scheduledAt, completedAt sql.NullTime
+		var scheduledAt, startedAt, completedAt sql.NullTime
 
 		rows.Scan(&id, &name, &subject, &status,
-			&sentCount, &openCount, &clickCount,
-			&createdAt, &scheduledAt, &completedAt,
+			&totalRecipients, &sentCount,
+			&openCount, &clickCount,
+			&bounceCount, &complaintCount,
+			&unsubscribeCount, &revenue,
+			&fromName, &fromEmail,
+			&throttleSpeed,
+			&createdAt, &scheduledAt, &startedAt, &completedAt,
 			&profileName, &vendorType, &listName)
 
 		campaign := map[string]interface{}{
-			"id":           id,
-			"name":         name,
-			"subject":      subject,
-			"status":       status,
-			"sent_count":   sentCount,
-			"open_count":   openCount,
-			"click_count":  clickCount,
-			"open_rate":    calcRate(openCount, sentCount),
-			"click_rate":   calcRate(clickCount, sentCount),
-			"created_at":   createdAt,
-			"profile_name": profileName,
-			"vendor":       vendorType,
-			"list_name":    listName,
+			"id":                id,
+			"name":              name,
+			"subject":           subject,
+			"status":            status,
+			"total_recipients":  totalRecipients,
+			"sent_count":        sentCount,
+			"open_count":        openCount,
+			"click_count":       clickCount,
+			"bounce_count":      bounceCount,
+			"complaint_count":   complaintCount,
+			"unsubscribe_count": unsubscribeCount,
+			"revenue":           revenue,
+			"from_name":         fromName,
+			"from_email":        fromEmail,
+			"throttle_speed":    throttleSpeed,
+			"open_rate":         calcRate(openCount, sentCount),
+			"click_rate":        calcRate(clickCount, sentCount),
+			"created_at":        createdAt,
+			"profile_name":      profileName,
+			"vendor":            vendorType,
+			"list_name":         listName,
 		}
 
 		if scheduledAt.Valid {
 			campaign["scheduled_at"] = scheduledAt.Time
+		}
+		if startedAt.Valid {
+			campaign["started_at"] = startedAt.Time
 		}
 		if completedAt.Valid {
 			campaign["completed_at"] = completedAt.Time
