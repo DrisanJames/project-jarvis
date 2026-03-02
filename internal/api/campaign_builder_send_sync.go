@@ -70,21 +70,24 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 
 	// Get sending profile details
 	var profile struct {
-		ID         string
-		VendorType string
-		APIKey     sql.NullString
-		SMTPHost   sql.NullString
-		SMTPPort   sql.NullInt64
-		SMTPUser   sql.NullString
-		SMTPPass   sql.NullString
+		ID          string
+		VendorType  string
+		APIKey      sql.NullString
+		SMTPHost    sql.NullString
+		SMTPPort    sql.NullInt64
+		SMTPUser    sql.NullString
+		SMTPPass    sql.NullString
+		APIEndpoint sql.NullString
 	}
 	
 	if campaign.ProfileID.Valid {
 		cb.db.QueryRowContext(ctx, `
-			SELECT id, vendor_type, api_key, smtp_host, smtp_port, smtp_username, smtp_password
+			SELECT id, vendor_type, api_key, smtp_host, smtp_port, smtp_username, smtp_password,
+			       api_endpoint
 			FROM mailing_sending_profiles WHERE id = $1
 		`, campaign.ProfileID.String).Scan(&profile.ID, &profile.VendorType, &profile.APIKey,
-			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass)
+			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
+			&profile.APIEndpoint)
 	}
 	
 	// Update status to sending
@@ -259,15 +262,21 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			domain := strings.Split(campaign.FromEmail, "@")[1]
 			result, sendErr = cb.mailingSvc.sendViaMailgun(ctx, apiKey, domain, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText)
 		case "pmta":
-			smtpHost := ""
-			if profile.SMTPHost.Valid { smtpHost = profile.SMTPHost.String }
-			smtpUser := ""
-			if profile.SMTPUser.Valid { smtpUser = profile.SMTPUser.String }
-			smtpPass := ""
-			if profile.SMTPPass.Valid { smtpPass = profile.SMTPPass.String }
-			port := 587 // safe default; overridden by profile value
-			if profile.SMTPPort.Valid && profile.SMTPPort.Int64 > 0 { port = int(profile.SMTPPort.Int64) }
-			result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, port, smtpUser, smtpPass, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText, unsubHeaders)
+			// Try HTTP bridge first (bypasses AWS SMTP port blocking), fall back to SMTP
+			if profile.APIEndpoint.Valid && profile.APIEndpoint.String != "" {
+				result, sendErr = cb.mailingSvc.sendViaPMTAAPI(ctx, profile.APIEndpoint.String, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText)
+			}
+			if result == nil || sendErr != nil {
+				smtpHost := ""
+				if profile.SMTPHost.Valid { smtpHost = profile.SMTPHost.String }
+				smtpUser := ""
+				if profile.SMTPUser.Valid { smtpUser = profile.SMTPUser.String }
+				smtpPass := ""
+				if profile.SMTPPass.Valid { smtpPass = profile.SMTPPass.String }
+				port := 587
+				if profile.SMTPPort.Valid && profile.SMTPPort.Int64 > 0 { port = int(profile.SMTPPort.Int64) }
+				result, sendErr = cb.mailingSvc.sendViaSMTP(ctx, smtpHost, port, smtpUser, smtpPass, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText, unsubHeaders)
+			}
 		default:
 			result, sendErr = cb.mailingSvc.sendViaSparkPost(ctx, sub.Email, campaign.FromEmail, campaign.FromName, personalizedSubject, trackedHTML, personalizedText)
 		}

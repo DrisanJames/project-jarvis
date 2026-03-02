@@ -970,6 +970,14 @@ func runStartupMigrations(db *sql.DB) {
 		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
 		{"reset_orphaned_sending", `UPDATE mailing_campaigns SET status = 'failed', completed_at = NOW(), updated_at = NOW() WHERE status = 'sending' AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))`},
 		{"unstick_locked_queue_items", `UPDATE mailing_campaign_queue SET status = 'queued', worker_id = NULL, locked_at = NULL WHERE status = 'sending' AND locked_at < NOW() - INTERVAL '10 minutes'`},
+		// Ensure api_endpoint column exists before referencing it
+		{"add_api_endpoint_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS api_endpoint VARCHAR(500)`},
+		// One-time fix: profiles seeded with wrong host 178.128.215.13 → correct OVH PMTA server
+		{"fix_pmta_host_178_to_ovh", `UPDATE mailing_sending_profiles SET smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE vendor_type = 'pmta' AND smtp_host = '178.128.215.13'`},
+		// Ensure PMTA profiles with correct host also have api_endpoint set
+		{"set_api_endpoint_for_ovh", `UPDATE mailing_sending_profiles SET api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE vendor_type = 'pmta' AND smtp_host = '15.204.101.125' AND (api_endpoint IS NULL OR api_endpoint = '')`},
+		// Seed quizfiesta.com profile if not present
+		{"seed_quizfiesta_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'QuizFiesta PMTA', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com', 'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.quizfiesta.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 	}
 
 	var ok, fail int

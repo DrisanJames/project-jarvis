@@ -139,9 +139,10 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			   spf_verified, dkim_verified, dmarc_verified, domain_verified, credentials_verified,
 			   last_verification_at, verification_error,
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
-			   ip_pool, status, is_default, 
+			   ip_pool, status, is_default,
 			   CASE WHEN api_key IS NOT NULL AND api_key != '' THEN true ELSE false END as is_configured,
-			   created_at, updated_at
+			   created_at, updated_at,
+			   smtp_host, COALESCE(smtp_port, 0), smtp_username, api_endpoint
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1
 		  AND (api_key IS NOT NULL AND api_key != '' OR vendor_type = 'pmta' OR vendor_type = 'smtp')
@@ -181,6 +182,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			&p.LastVerificationAt, &p.VerificationError,
 			&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
 			&p.IPPool, &p.Status, &p.IsDefault, &p.IsConfigured, &p.CreatedAt, &p.UpdatedAt,
+			&p.SMTPHost, &p.SMTPPort, &p.SMTPUsername, &p.APIEndpoint,
 		)
 		if err != nil {
 			log.Printf("Error scanning profile: %v", err)
