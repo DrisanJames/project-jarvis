@@ -593,9 +593,8 @@ export const AnalyticsCenter: React.FC = () => {
                 })()}
               </div>
 
-              {/* SparkPost Daily Cap */}
               <div className="ac-card ac-cap-card">
-                <h3><FontAwesomeIcon icon={faEnvelope} /> SparkPost Daily Cap</h3>
+                <h3><FontAwesomeIcon icon={faEnvelope} /> PMTA Daily Cap</h3>
                 {(() => {
                   const cap = dashData?.daily_capacity || 0;
                   const used = dashData?.daily_used || 0;
@@ -638,7 +637,7 @@ export const AnalyticsCenter: React.FC = () => {
                       </div>
                       {util < 50 && cap > 0 && (
                         <div className="ac-cap-alert ac-cap-under">
-                          SparkPost is underutilized. You have capacity for {fmt(remaining)} more emails today.
+                          PMTA is underutilized. You have capacity for {fmt(remaining)} more emails today.
                         </div>
                       )}
                       {util > 90 && (

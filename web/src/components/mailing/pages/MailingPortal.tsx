@@ -253,7 +253,7 @@ const EnhancedDashboard: React.FC = () => {
             <span className="status-badge active">Active</span>
           </div>
           <div className="system-description">
-            <p>Production emails are sent via <strong>SparkPost API</strong> with real-time tracking.</p>
+            <p>Production emails are routed through <strong>PowerMTA</strong> with per-ISP delivery optimization.</p>
           </div>
           {/* Daily Cap Gauge */}
           <div className="daily-cap-section">

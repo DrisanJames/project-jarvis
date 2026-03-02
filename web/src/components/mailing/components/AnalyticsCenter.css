@@ -177,7 +177,7 @@
 .ac-bench-vs { font-size: 10px; color: #4b5563; }
 .ac-bench-industry { font-size: 13px; color: #6b7280; }
 
-/* ─── SparkPost Daily Cap ───────────────────────────────────────────────── */
+/* ─── PMTA Daily Cap ───────────────────────────────────────────────────── */
 .ac-cap-card { background: linear-gradient(135deg, #111128, #13132e); border-color: rgba(59, 130, 246, 0.12); }
 .ac-cap-card h3 svg { color: #60a5fa; }
 .ac-cap-content { display: flex; flex-direction: column; gap: 14px; }
