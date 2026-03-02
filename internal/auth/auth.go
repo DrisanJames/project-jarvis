@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/ignite/sparkpost-monitor/internal/config"
 
 	"golang.org/x/oauth2"
@@ -49,7 +50,10 @@ type AuthManager struct {
 	sessions     map[string]*Session
 	sessionMu    sync.RWMutex
 	baseURL      string
+	rdb          *redis.Client
 }
+
+const redisSessionPrefix = "session:"
 
 // NewAuthManager creates a new authentication manager
 func NewAuthManager(cfg *config.AuthConfig, baseURL string) *AuthManager {
@@ -70,6 +74,12 @@ func NewAuthManager(cfg *config.AuthConfig, baseURL string) *AuthManager {
 		sessions:     make(map[string]*Session),
 		baseURL:      baseURL,
 	}
+}
+
+// SetRedisClient enables Redis-backed sessions so they persist across restarts.
+func (am *AuthManager) SetRedisClient(rdb *redis.Client) {
+	am.rdb = rdb
+	log.Println("Auth: Redis session store enabled — sessions persist across deploys")
 }
 
 // generateState creates a random state string for OAuth
@@ -187,9 +197,7 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: time.Now().Add(time.Duration(am.config.CookieMaxAge) * time.Second),
 	}
 
-	am.sessionMu.Lock()
-	am.sessions[sessionID] = session
-	am.sessionMu.Unlock()
+	am.storeSession(sessionID, session)
 
 	log.Printf("Auth: User logged in: %s (%s)", userInfo.Email, userInfo.Name)
 
@@ -210,9 +218,7 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 func (am *AuthManager) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(am.config.CookieName)
 	if err == nil {
-		am.sessionMu.Lock()
-		delete(am.sessions, cookie.Value)
-		am.sessionMu.Unlock()
+		am.deleteSession(cookie.Value)
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -265,19 +271,13 @@ func (am *AuthManager) GetSession(r *http.Request) *Session {
 		return nil
 	}
 
-	am.sessionMu.RLock()
-	session, exists := am.sessions[cookie.Value]
-	am.sessionMu.RUnlock()
-
-	if !exists {
+	session := am.loadSession(cookie.Value)
+	if session == nil {
 		return nil
 	}
 
-	// Check if session has expired
 	if time.Now().After(session.ExpiresAt) {
-		am.sessionMu.Lock()
-		delete(am.sessions, cookie.Value)
-		am.sessionMu.Unlock()
+		am.deleteSession(cookie.Value)
 		return nil
 	}
 
@@ -393,7 +393,8 @@ func (am *AuthManager) ValidateCredentials(ctx context.Context) error {
 	return fmt.Errorf("unexpected response from Google token endpoint (HTTP %d): %s", resp.StatusCode, bodyStr)
 }
 
-// CleanupExpiredSessions removes expired sessions periodically
+// CleanupExpiredSessions removes expired in-memory sessions periodically.
+// Redis sessions expire via TTL automatically.
 func (am *AuthManager) CleanupExpiredSessions() {
 	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
@@ -408,4 +409,64 @@ func (am *AuthManager) CleanupExpiredSessions() {
 			am.sessionMu.Unlock()
 		}
 	}()
+}
+
+// ── Redis-backed session helpers ────────────────────────────────────────────
+
+func (am *AuthManager) storeSession(id string, s *Session) {
+	am.sessionMu.Lock()
+	am.sessions[id] = s
+	am.sessionMu.Unlock()
+
+	if am.rdb != nil {
+		data, err := json.Marshal(s)
+		if err != nil {
+			log.Printf("Auth: failed to marshal session for Redis: %v", err)
+			return
+		}
+		ttl := time.Until(s.ExpiresAt)
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		if err := am.rdb.Set(context.Background(), redisSessionPrefix+id, data, ttl).Err(); err != nil {
+			log.Printf("Auth: failed to store session in Redis: %v", err)
+		}
+	}
+}
+
+func (am *AuthManager) loadSession(id string) *Session {
+	am.sessionMu.RLock()
+	s, ok := am.sessions[id]
+	am.sessionMu.RUnlock()
+	if ok {
+		return s
+	}
+
+	if am.rdb == nil {
+		return nil
+	}
+
+	data, err := am.rdb.Get(context.Background(), redisSessionPrefix+id).Bytes()
+	if err != nil {
+		return nil
+	}
+	var sess Session
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return nil
+	}
+
+	am.sessionMu.Lock()
+	am.sessions[id] = &sess
+	am.sessionMu.Unlock()
+	return &sess
+}
+
+func (am *AuthManager) deleteSession(id string) {
+	am.sessionMu.Lock()
+	delete(am.sessions, id)
+	am.sessionMu.Unlock()
+
+	if am.rdb != nil {
+		am.rdb.Del(context.Background(), redisSessionPrefix+id)
+	}
 }

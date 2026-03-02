@@ -217,8 +217,11 @@ func main() {
 					redisClient.Close()
 					redisClient = nil
 				} else {
-					server.SetRedisClient(redisClient)
-					log.Printf("Redis connected: %s (distributed locking enabled)", redisURL)
+				server.SetRedisClient(redisClient)
+				if authManager != nil {
+					authManager.SetRedisClient(redisClient)
+				}
+				log.Printf("Redis connected: %s (distributed locking + persistent sessions enabled)", redisURL)
 				}
 				pingCancel()
 			} else {
