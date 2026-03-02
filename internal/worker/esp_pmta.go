@@ -10,14 +10,213 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// PMTASender sends emails via a PowerMTA server over SMTP.
-// Uses X-Virtual-MTA headers to route messages through specific IPs for
-// domain-level reputation isolation.
+// =============================================================================
+// VMTA POOL — In-memory IP rotation cache with warmup enforcement
+// =============================================================================
+
+type vmtaEntry struct {
+	ID               string
+	Hostname         string
+	Status           string // "active" or "warmup"
+	WarmupDailyLimit int
+	TodaySent        int64 // from mailing_ip_warmup_log.actual_sent
+}
+
+type vmtaPool struct {
+	mu       sync.RWMutex
+	ips      []vmtaEntry
+	idx      uint64
+	loadedAt time.Time
+	ttl      time.Duration
+	db       *sql.DB
+}
+
+func newVMTAPool(db *sql.DB) *vmtaPool {
+	return &vmtaPool{
+		db:  db,
+		ttl: 30 * time.Second,
+	}
+}
+
+// refresh loads the IP pool from the database if stale.
+func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
+	p.mu.RLock()
+	if time.Since(p.loadedAt) < p.ttl && len(p.ips) > 0 {
+		p.mu.RUnlock()
+		return
+	}
+	p.mu.RUnlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if time.Since(p.loadedAt) < p.ttl && len(p.ips) > 0 {
+		return
+	}
+
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT ip.id, ip.hostname, ip.status,
+		       COALESCE(ip.warmup_daily_limit, 50),
+		       COALESCE(wl.actual_sent, 0)
+		FROM mailing_ip_addresses ip
+		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+		JOIN mailing_sending_profiles sp ON sp.ip_pool = pool.name
+		LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
+		WHERE sp.id = $1
+		  AND ip.status IN ('active', 'warmup')
+		  AND pool.status = 'active'
+		ORDER BY ip.last_sent_at ASC NULLS FIRST
+	`, profileID)
+	if err != nil {
+		log.Printf("[vmtaPool] refresh error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var ips []vmtaEntry
+	for rows.Next() {
+		var e vmtaEntry
+		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent); err != nil {
+			continue
+		}
+		ips = append(ips, e)
+	}
+	if len(ips) > 0 {
+		p.ips = ips
+		p.loadedAt = time.Now()
+	}
+}
+
+// next returns the next available IP, enforcing warmup daily limits.
+func (p *vmtaPool) next() (vmtaEntry, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.ips) == 0 {
+		return vmtaEntry{}, fmt.Errorf("no IPs in pool")
+	}
+
+	for attempts := 0; attempts < len(p.ips); attempts++ {
+		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
+		ip := p.ips[idx]
+		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
+			continue
+		}
+		return ip, nil
+	}
+	return vmtaEntry{}, fmt.Errorf("all IPs exhausted warmup daily limits")
+}
+
+// =============================================================================
+// SMTP CONNECTION POOL
+// =============================================================================
+
+type smtpPool struct {
+	host     string
+	port     int
+	username string
+	password string
+	idle     chan *smtp.Client
+	maxSize  int
+}
+
+func newSMTPPool(host string, port int, username, password string, size int) *smtpPool {
+	return &smtpPool{
+		host:     host,
+		port:     port,
+		username: username,
+		password: password,
+		idle:     make(chan *smtp.Client, size),
+		maxSize:  size,
+	}
+}
+
+func (p *smtpPool) get(ctx context.Context) (*smtp.Client, error) {
+	// Try to get an idle connection (non-blocking)
+	select {
+	case client := <-p.idle:
+		// Health check: send NOOP to verify connection is alive
+		if err := client.Noop(); err != nil {
+			client.Close()
+			return p.dial(ctx)
+		}
+		return client, nil
+	default:
+		return p.dial(ctx)
+	}
+}
+
+func (p *smtpPool) put(client *smtp.Client) {
+	// Reset the connection state for reuse
+	if err := client.Reset(); err != nil {
+		client.Close()
+		return
+	}
+	select {
+	case p.idle <- client:
+		// Returned to pool
+	default:
+		// Pool full, close this connection
+		client.Close()
+	}
+}
+
+func (p *smtpPool) dial(ctx context.Context) (*smtp.Client, error) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	addr := fmt.Sprintf("%s:%d", p.host, p.port)
+
+	dialOne := func(tryAuth bool) (*smtp.Client, error) {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+		}
+		c, err := smtp.NewClient(conn, p.host)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("SMTP client: %w", err)
+		}
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			tlsCfg := &tls.Config{ServerName: p.host, InsecureSkipVerify: true}
+			if tlsErr := c.StartTLS(tlsCfg); tlsErr != nil {
+				log.Printf("[PMTA] STARTTLS failed (continuing without TLS): %v", tlsErr)
+			}
+		}
+		if tryAuth && p.username != "" && p.password != "" {
+			if authErr := c.Auth(&pmtaPlainAuth{user: p.username, pass: p.password}); authErr != nil {
+				c.Close()
+				return nil, authErr
+			}
+		}
+		return c, nil
+	}
+
+	client, err := dialOne(p.username != "" && p.password != "")
+	if err != nil && p.username != "" && p.password != "" {
+		log.Printf("[PMTA] Retrying without AUTH (server may be open relay)")
+		client, err = dialOne(false)
+	}
+	return client, err
+}
+
+func (p *smtpPool) close() {
+	close(p.idle)
+	for client := range p.idle {
+		client.Quit()
+	}
+}
+
+// =============================================================================
+// PMTASender — SMTP-based PMTA sender with connection pool + VMTA cache
+// =============================================================================
+
 type PMTASender struct {
 	smtpHost string
 	smtpPort int
@@ -28,9 +227,11 @@ type PMTASender struct {
 	mgmtHost string
 	mgmtPort int
 	mgmtKey  string
+
+	connPool *smtpPool
+	ipPool   *vmtaPool
 }
 
-// NewPMTASender creates a PMTA sender configured with SMTP credentials.
 func NewPMTASender(smtpHost string, smtpPort int, username, password string, db *sql.DB) *PMTASender {
 	return &PMTASender{
 		smtpHost: smtpHost,
@@ -39,19 +240,26 @@ func NewPMTASender(smtpHost string, smtpPort int, username, password string, db 
 		password: password,
 		db:       db,
 		client:   &http.Client{Timeout: 30 * time.Second},
+		connPool: newSMTPPool(smtpHost, smtpPort, username, password, 20),
+		ipPool:   newVMTAPool(db),
 	}
 }
 
-// Send delivers a single email through PMTA, selecting a VMTA from the
-// sending profile's IP pool for round-robin rotation.
 func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
 	if s.smtpHost == "" {
 		return nil, fmt.Errorf("PMTA SMTP host not configured")
 	}
 
-	vmtaName, ipID, err := s.selectVMTA(ctx, msg.ProfileID)
+	// Refresh VMTA cache, then select next IP via round-robin
+	s.ipPool.refresh(ctx, msg.ProfileID)
+	vmtaName := ""
+	ipID := ""
+	ip, err := s.ipPool.next()
 	if err != nil {
 		log.Printf("[PMTA] VMTA selection failed, sending without routing: %v", err)
+	} else {
+		vmtaName = ip.Hostname
+		ipID = ip.ID
 	}
 
 	messageID := fmt.Sprintf("%s@pmta", uuid.New().String())
@@ -98,98 +306,40 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	bodyBuf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
 	fullMessage := headerBuf.String() + bodyBuf.String()
-	addr := fmt.Sprintf("%s:%d", s.smtpHost, s.smtpPort)
-	if err := s.sendSMTP(ctx, addr, msg.FromEmail, msg.Email, []byte(fullMessage)); err != nil {
-		return nil, fmt.Errorf("PMTA SMTP send failed: %w", err)
+
+	// Get a pooled SMTP connection and send
+	smtpClient, err := s.connPool.get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("PMTA SMTP pool get failed: %w", err)
 	}
+
+	sendErr := s.sendOnClient(smtpClient, msg.FromEmail, msg.Email, []byte(fullMessage))
+	if sendErr != nil {
+		// Connection is likely dead; discard it and retry once with a fresh one
+		smtpClient.Close()
+		smtpClient, err = s.connPool.dial(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("PMTA SMTP reconnect failed: %w", err)
+		}
+		sendErr = s.sendOnClient(smtpClient, msg.FromEmail, msg.Email, []byte(fullMessage))
+		if sendErr != nil {
+			smtpClient.Close()
+			return nil, fmt.Errorf("PMTA SMTP send failed after retry: %w", sendErr)
+		}
+	}
+
+	// Return connection to pool for reuse
+	s.connPool.put(smtpClient)
 
 	if ipID != "" {
 		go s.updateIPCounters(ipID)
 	}
 
-	log.Printf("[PMTA] Sent to %s (id: %s, vmta: %s)", msg.Email, messageID, vmtaName)
 	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta", SentAt: time.Now()}, nil
 }
 
-// selectVMTA picks the least-recently-used IP from the sending profile's pool.
-func (s *PMTASender) selectVMTA(ctx context.Context, profileID string) (string, string, error) {
-	if s.db == nil || profileID == "" {
-		return "", "", nil
-	}
-	var vmtaHostname, ipID string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT ip.id, ip.hostname
-		FROM mailing_ip_addresses ip
-		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-		JOIN mailing_sending_profiles sp ON sp.ip_pool = pool.name
-		WHERE sp.id = $1
-		  AND ip.status IN ('active', 'warmup')
-		  AND pool.status = 'active'
-		ORDER BY ip.last_sent_at ASC NULLS FIRST
-		LIMIT 1
-	`, profileID).Scan(&ipID, &vmtaHostname)
-	if err != nil {
-		return "", "", fmt.Errorf("no available VMTA for profile %s: %w", profileID, err)
-	}
-	return vmtaHostname, ipID, nil
-}
-
-// updateIPCounters increments the send counter and updates last_sent_at.
-func (s *PMTASender) updateIPCounters(ipID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE mailing_ip_addresses
-		SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW()
-		WHERE id = $1
-	`, ipID)
-	if err != nil {
-		log.Printf("[PMTA] Failed to update IP counters for %s: %v", ipID, err)
-	}
-}
-
-// sendSMTP performs the raw SMTP transaction with the PMTA server.
-// If AUTH fails (common when PMTA has no inbound TLS), it reconnects
-// without AUTH since the relay is typically open.
-func (s *PMTASender) sendSMTP(ctx context.Context, addr, from, to string, msg []byte) error {
-	dialer := &net.Dialer{Timeout: 30 * time.Second}
-
-	dialAndSetup := func(tryAuth bool) (*smtp.Client, error) {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
-		}
-		c, err := smtp.NewClient(conn, s.smtpHost)
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("SMTP client: %w", err)
-		}
-		if ok, _ := c.Extension("STARTTLS"); ok {
-			tlsCfg := &tls.Config{ServerName: s.smtpHost, InsecureSkipVerify: true}
-			if tlsErr := c.StartTLS(tlsCfg); tlsErr != nil {
-				log.Printf("[PMTA] STARTTLS failed (continuing without TLS): %v", tlsErr)
-			}
-		}
-		if tryAuth && s.username != "" && s.password != "" {
-			if authErr := c.Auth(&pmtaPlainAuth{user: s.username, pass: s.password}); authErr != nil {
-				log.Printf("[PMTA] AUTH failed: %v", authErr)
-				c.Close()
-				return nil, authErr
-			}
-		}
-		return c, nil
-	}
-
-	client, err := dialAndSetup(s.username != "" && s.password != "")
-	if err != nil && s.username != "" && s.password != "" {
-		log.Printf("[PMTA] Retrying without AUTH (server may be open relay)")
-		client, err = dialAndSetup(false)
-	}
-	if err != nil {
-		return fmt.Errorf("SMTP setup: %w", err)
-	}
-	defer client.Close()
-
+// sendOnClient performs MAIL FROM / RCPT TO / DATA on an existing connection.
+func (s *PMTASender) sendOnClient(client *smtp.Client, from, to string, msg []byte) error {
 	if err := client.Mail(from); err != nil {
 		return fmt.Errorf("MAIL FROM: %w", err)
 	}
@@ -206,7 +356,33 @@ func (s *PMTASender) sendSMTP(ctx context.Context, addr, from, to string, msg []
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("DATA close: %w", err)
 	}
-	return client.Quit()
+	return nil
+}
+
+// updateIPCounters increments send counters on both mailing_ip_addresses
+// and mailing_ip_warmup_log (so warmup threshold checks have accurate data).
+func (s *PMTASender) updateIPCounters(ipID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_ip_addresses
+		SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+	`, ipID)
+	if err != nil {
+		log.Printf("[PMTA] Failed to update IP counters for %s: %v", ipID, err)
+	}
+
+	// Also update warmup log so checkThresholds and daily limit enforcement stay in sync
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE mailing_ip_warmup_log
+		SET actual_sent = actual_sent + 1
+		WHERE ip_id = $1 AND date = CURRENT_DATE
+	`, ipID)
+	if err != nil {
+		log.Printf("[PMTA] Failed to update warmup log for %s: %v", ipID, err)
+	}
 }
 
 // pmtaPlainAuth implements smtp.Auth without the TLS requirement that

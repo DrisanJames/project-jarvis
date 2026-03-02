@@ -6,15 +6,20 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 )
 
 // ProfileBasedSender resolves a sending profile from the database and
 // delegates to the appropriate ESP sender. This is the default sender
 // used by the send worker pool — it reads credentials from the
 // mailing_sending_profiles table per message.
+//
+// Sender instances are cached per profile ID so that PMTA's SMTP
+// connection pool and VMTA cache are reused across messages.
 type ProfileBasedSender struct {
 	db          *sql.DB
 	senderCache map[string]ESPSender
+	mu          sync.RWMutex
 }
 
 // NewProfileBasedSender creates a profile-based sender that reads
@@ -87,9 +92,9 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
 		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
-			// api_endpoint is stored in the 'region' variable (COALESCE(api_endpoint, 'us-east-1'))
-			sender := NewPMTAAPISender(region, s.db)
-			return sender.Send(ctx, msg)
+			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
+				return NewPMTAAPISender(region, s.db)
+			}).Send(ctx, msg)
 		}
 		host := smtpHost.String
 		if host == "" {
@@ -101,8 +106,30 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		}
 		user := smtpUsername.String
 		pass := smtpPassword.String
-		return NewPMTASender(host, port, user, pass, s.db).Send(ctx, msg)
+		return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
+			return NewPMTASender(host, port, user, pass, s.db)
+		}).Send(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unsupported vendor type: %s", vendorType)
 	}
+}
+
+// getCachedSender retrieves a cached sender or creates one via the factory.
+func (s *ProfileBasedSender) getCachedSender(key string, factory func() ESPSender) ESPSender {
+	s.mu.RLock()
+	if cached, ok := s.senderCache[key]; ok {
+		s.mu.RUnlock()
+		return cached
+	}
+	s.mu.RUnlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Double-check after write lock
+	if cached, ok := s.senderCache[key]; ok {
+		return cached
+	}
+	sender := factory()
+	s.senderCache[key] = sender
+	return sender
 }

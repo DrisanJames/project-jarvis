@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/lib/pq"
 )
 
 // PMTACampaignService exposes PMTA-native campaign wizard endpoints.
@@ -423,36 +424,54 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		afterSuppressions = 0
 	}
 
-	// ISP breakdown (estimated distribution)
+	// Real ISP breakdown from subscriber email domains
 	ispBreakdown := make(map[string]int)
-	ispDistribution := map[string]float64{
-		"gmail":     0.30,
-		"yahoo":     0.15,
-		"microsoft": 0.20,
-		"apple":     0.10,
-		"comcast":   0.08,
-		"att":       0.07,
-		"cox":       0.05,
-		"charter":   0.05,
+	if len(req.ListIDs) > 0 {
+		domainRows, dErr := s.db.QueryContext(ctx, `
+			SELECT LOWER(SUBSTRING(s.email FROM POSITION('@' IN s.email) + 1)) AS domain,
+			       COUNT(*) AS cnt
+			FROM mailing_subscribers s
+			WHERE s.list_id = ANY($1) AND s.status = 'active'
+			GROUP BY domain
+			ORDER BY cnt DESC
+		`, pq.Array(req.ListIDs))
+		if dErr == nil {
+			defer domainRows.Close()
+			for domainRows.Next() {
+				var domain string
+				var cnt int
+				if domainRows.Scan(&domain, &cnt) == nil {
+					isp := domainToISPLookup(domain)
+					ispBreakdown[isp] += cnt
+				}
+			}
+		}
 	}
 
-	// Filter to only targeted ISPs and redistribute
+	// Subtract suppressions proportionally
+	if suppressedCount > 0 && len(ispBreakdown) > 0 {
+		total := 0
+		for _, c := range ispBreakdown {
+			total += c
+		}
+		if total > 0 {
+			ratio := float64(afterSuppressions) / float64(total)
+			for isp, c := range ispBreakdown {
+				ispBreakdown[isp] = int(float64(c) * ratio)
+			}
+		}
+	}
+
+	// Filter to only targeted ISPs if specified
 	if len(req.TargetISPs) > 0 {
-		totalShare := 0.0
+		targetSet := make(map[string]bool)
 		for _, isp := range req.TargetISPs {
-			if share, ok := ispDistribution[string(isp)]; ok {
-				totalShare += share
-			}
+			targetSet[string(isp)] = true
 		}
-		for _, isp := range req.TargetISPs {
-			if share, ok := ispDistribution[string(isp)]; ok {
-				normalizedShare := share / totalShare
-				ispBreakdown[string(isp)] = int(float64(afterSuppressions) * normalizedShare)
+		for isp := range ispBreakdown {
+			if !targetSet[isp] {
+				delete(ispBreakdown, isp)
 			}
-		}
-	} else {
-		for isp, share := range ispDistribution {
-			ispBreakdown[isp] = int(float64(afterSuppressions) * share)
 		}
 	}
 
@@ -611,4 +630,30 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		VariantCount:  len(input.Variants),
 		AgentIDs:      []string{},
 	})
+}
+
+// domainToISPLookup maps an email domain to its ISP identifier.
+// Mirrors the canonical DomainToISP map in worker/advanced_throttle.go
+// to avoid a cross-package import.
+var ispDomainMap = map[string]string{
+	"gmail.com": "gmail", "googlemail.com": "gmail",
+	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
+	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo", "yahoo.co.uk": "yahoo", "yahoo.co.jp": "yahoo", "yahoo.ca": "yahoo",
+	"aol.com": "yahoo",
+	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
+	"comcast.net": "comcast", "xfinity.com": "comcast",
+	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
+	"cox.net": "cox",
+	"charter.net": "charter", "spectrum.net": "charter",
+	"verizon.net": "verizon",
+	"protonmail.com": "protonmail", "proton.me": "protonmail",
+	"zoho.com": "zoho",
+}
+
+func domainToISPLookup(domain string) string {
+	d := strings.ToLower(domain)
+	if isp, ok := ispDomainMap[d]; ok {
+		return isp
+	}
+	return "other"
 }

@@ -85,6 +85,8 @@ type ScheduledCampaign struct {
 	MaxRecipients          sql.NullInt64
 	SuppressionLists       []string
 	AISendTimeOptimization bool
+	ListIDs                []string // from list_ids JSONB (PMTA wizard multi-list path)
+	SuppressionListIDs     []string // from suppression_list_ids JSONB
 }
 
 // NewCampaignScheduler creates a new campaign scheduler
@@ -296,7 +298,9 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			COALESCE(from_name, ''), COALESCE(from_email, ''),
 			list_id, segment_id, sending_profile_id,
 			COALESCE(scheduled_at, send_at), COALESCE(throttle_speed, 'gentle'),
-			max_recipients, COALESCE(ai_send_time_optimization, false)
+			max_recipients, COALESCE(ai_send_time_optimization, false),
+			COALESCE(list_ids::text, '[]'),
+			COALESCE(suppression_list_ids::text, '[]')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
 		  AND COALESCE(scheduled_at, send_at) <= NOW()
@@ -314,6 +318,7 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 	var campaigns []ScheduledCampaign
 	for rows.Next() {
 		var c ScheduledCampaign
+		var listIDsJSON, suppListIDsJSON string
 		err := rows.Scan(
 			&c.ID, &c.Name, &c.Subject,
 			&c.HTMLContent, &c.TextContent,
@@ -321,10 +326,17 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			&c.ListID, &c.SegmentID, &c.ProfileID,
 			&c.ScheduledAt, &c.ThrottleSpeed,
 			&c.MaxRecipients, &c.AISendTimeOptimization,
+			&listIDsJSON, &suppListIDsJSON,
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] Error scanning campaign: %v", err)
 			continue
+		}
+		if listIDsJSON != "" && listIDsJSON != "[]" && listIDsJSON != "null" {
+			json.Unmarshal([]byte(listIDsJSON), &c.ListIDs)
+		}
+		if suppListIDsJSON != "" && suppListIDsJSON != "[]" && suppListIDsJSON != "null" {
+			json.Unmarshal([]byte(suppListIDsJSON), &c.SuppressionListIDs)
 		}
 		campaigns = append(campaigns, c)
 	}
@@ -446,23 +458,41 @@ func (cs *CampaignScheduler) getRecipientCount(ctx context.Context, campaign Sch
 		}
 	}
 
-	// Fallback: resolve from mailing_campaign_lists join table (used by PMTA wizard)
-	if !campaign.ListID.Valid && !campaign.SegmentID.Valid {
-		err := cs.db.QueryRowContext(ctx, `
-			SELECT COUNT(DISTINCT s.id)
-			FROM mailing_subscribers s
-			JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
-			WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
-			  AND s.status = 'confirmed'
-			  AND NOT EXISTS (
-			    SELECT 1 FROM mailing_subscribers es
-			    JOIN mailing_campaign_lists el ON el.list_id = es.list_id
-			    WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
-			      AND es.email = s.email
-			  )
-		`, campaign.ID).Scan(&count)
-		if err != nil {
-			return 0, fmt.Errorf("failed to count campaign_lists recipients: %w", err)
+	// Resolve from list_ids JSONB (PMTA wizard multi-list path)
+	if !campaign.ListID.Valid && !campaign.SegmentID.Valid && len(campaign.ListIDs) > 0 {
+		if len(campaign.SuppressionListIDs) > 0 {
+			err := cs.db.QueryRowContext(ctx, `
+				SELECT COUNT(DISTINCT s.id)
+				FROM mailing_subscribers s
+				WHERE s.list_id = ANY($1)
+				  AND s.status = 'confirmed'
+				  AND NOT EXISTS (
+				      SELECT 1 FROM mailing_suppressions sup
+				      WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				  )
+				  AND NOT EXISTS (
+				      SELECT 1 FROM mailing_suppression_entries se
+				      WHERE se.md5_hash = MD5(LOWER(TRIM(s.email)))
+				        AND se.list_id = ANY($2)
+				  )
+			`, pq.Array(campaign.ListIDs), pq.Array(campaign.SuppressionListIDs)).Scan(&count)
+			if err != nil {
+				return 0, fmt.Errorf("failed to count list_ids recipients: %w", err)
+			}
+		} else {
+			err := cs.db.QueryRowContext(ctx, `
+				SELECT COUNT(DISTINCT s.id)
+				FROM mailing_subscribers s
+				WHERE s.list_id = ANY($1)
+				  AND s.status = 'confirmed'
+				  AND NOT EXISTS (
+				      SELECT 1 FROM mailing_suppressions sup
+				      WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				  )
+			`, pq.Array(campaign.ListIDs)).Scan(&count)
+			if err != nil {
+				return 0, fmt.Errorf("failed to count list_ids recipients: %w", err)
+			}
 		}
 	}
 
@@ -476,20 +506,20 @@ func (cs *CampaignScheduler) getRecipientCount(ctx context.Context, campaign Sch
 
 // enqueueSubscribers adds all subscribers to the send queue
 func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign ScheduledCampaign) (int, error) {
-	// =================================================================
-	// Load suppression list IDs from the JSONB column on mailing_campaigns.
-	// This is the source of truth — campaign builder stores them here,
-	// and the send worker also reads from here for its per-email check.
-	// =================================================================
-	var suppressionListIDs []string
-	var rawSuppJSON sql.NullString
-	cs.db.QueryRowContext(ctx, `
-		SELECT suppression_list_ids::text FROM mailing_campaigns WHERE id = $1
-	`, campaign.ID).Scan(&rawSuppJSON)
-	if rawSuppJSON.Valid && rawSuppJSON.String != "" && rawSuppJSON.String != "[]" && rawSuppJSON.String != "null" {
-		json.Unmarshal([]byte(rawSuppJSON.String), &suppressionListIDs)
+	// Suppression list IDs are now loaded from the campaign struct
+	// (parsed from suppression_list_ids JSONB in processReadyCampaigns).
+	// Fall back to DB query only for legacy campaigns that pre-date the struct field.
+	suppressionListIDs := campaign.SuppressionListIDs
+	if len(suppressionListIDs) == 0 {
+		var rawSuppJSON sql.NullString
+		cs.db.QueryRowContext(ctx, `
+			SELECT suppression_list_ids::text FROM mailing_campaigns WHERE id = $1
+		`, campaign.ID).Scan(&rawSuppJSON)
+		if rawSuppJSON.Valid && rawSuppJSON.String != "" && rawSuppJSON.String != "[]" && rawSuppJSON.String != "null" {
+			json.Unmarshal([]byte(rawSuppJSON.String), &suppressionListIDs)
+		}
 	}
-	
+
 	if len(suppressionListIDs) > 0 {
 		log.Printf("[CampaignScheduler] Campaign %s: filtering against %d suppression lists at enqueue time", campaign.ID, len(suppressionListIDs))
 	}
@@ -639,24 +669,17 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			`
 			args = []interface{}{campaign.ListID.String}
 		}
-	} else {
-		// Resolve from mailing_campaign_lists join table (used by PMTA wizard campaigns)
+	} else if len(campaign.ListIDs) > 0 {
+		// Resolve from list_ids JSONB (PMTA wizard multi-list path)
 		if len(suppressionListIDs) > 0 {
 			query = `
 				SELECT DISTINCT s.id, s.email
 				FROM mailing_subscribers s
-				JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
-				WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
+				WHERE s.list_id = ANY($1)
 				AND s.status = 'confirmed'
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppressions sup
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
-				)
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_subscribers es
-					JOIN mailing_campaign_lists el ON el.list_id = es.list_id
-					WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
-					  AND es.email = s.email
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppression_entries se
@@ -665,28 +688,24 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 				)
 				ORDER BY s.id
 			`
-			args = []interface{}{campaign.ID, pq.Array(suppressionListIDs)}
+			args = []interface{}{pq.Array(campaign.ListIDs), pq.Array(suppressionListIDs)}
 		} else {
 			query = `
 				SELECT DISTINCT s.id, s.email
 				FROM mailing_subscribers s
-				JOIN mailing_campaign_lists cl ON cl.list_id = s.list_id
-				WHERE cl.campaign_id = $1 AND cl.list_type = 'inclusion'
+				WHERE s.list_id = ANY($1)
 				AND s.status = 'confirmed'
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppressions sup
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
 				)
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_subscribers es
-					JOIN mailing_campaign_lists el ON el.list_id = es.list_id
-					WHERE el.campaign_id = $1 AND el.list_type = 'exclusion'
-					  AND es.email = s.email
-				)
 				ORDER BY s.id
 			`
-			args = []interface{}{campaign.ID}
+			args = []interface{}{pq.Array(campaign.ListIDs)}
 		}
+	} else {
+		log.Printf("[CampaignScheduler] Campaign %s has no audience source (no list_id, segment_id, or list_ids)", campaign.ID)
+		return 0, nil
 	}
 
 	// Apply limit if set
@@ -776,91 +795,132 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			campaign.ID, len(optimalTimes))
 	}
 
-	// Enqueue in batches
+	// Bulk enqueue using PostgreSQL COPY for high throughput.
+	// Collect AB assignments separately for bulk insert after the COPY.
+	type abAssignment struct {
+		VariantID    string
+		SubscriberID uuid.UUID
+	}
+	var abAssignments []abAssignment
+
+	now := time.Now()
+	txn, err := cs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin enqueue transaction: %w", err)
+	}
+	defer txn.Rollback()
+
+	stmt, err := txn.Prepare(pq.CopyIn(
+		"mailing_campaign_queue",
+		"id", "campaign_id", "subscriber_id",
+		"subject", "html_content", "plain_content",
+		"status", "priority", "scheduled_at", "created_at",
+	))
+	if err != nil {
+		return 0, fmt.Errorf("failed to prepare COPY: %w", err)
+	}
+
 	queued := 0
 	variantIdx := 0
 
-	for i := 0; i < len(subscribers); i += EnqueueBatchSize {
-		end := i + EnqueueBatchSize
-		if end > len(subscribers) {
-			end = len(subscribers)
-		}
-		batch := subscribers[i:end]
-
-		// Check if campaign was cancelled
-		var status string
-		cs.db.QueryRowContext(ctx, `SELECT status FROM mailing_campaigns WHERE id = $1`, campaign.ID).Scan(&status)
-		if status == "cancelled" || status == "paused" {
-			log.Printf("[CampaignScheduler] Campaign %s was %s, stopping enqueue", campaign.ID, status)
-			break
+	for i, sub := range subscribers {
+		// Check for cancel/pause every EnqueueBatchSize rows
+		if i > 0 && i%EnqueueBatchSize == 0 {
+			var status string
+			cs.db.QueryRowContext(ctx, `SELECT status FROM mailing_campaigns WHERE id = $1`, campaign.ID).Scan(&status)
+			if status == "cancelled" || status == "paused" {
+				log.Printf("[CampaignScheduler] Campaign %s was %s, stopping enqueue at %d/%d", campaign.ID, status, i, len(subscribers))
+				break
+			}
+			cs.db.ExecContext(ctx, `UPDATE mailing_campaigns SET queued_count = $1, updated_at = NOW() WHERE id = $2`, queued, campaign.ID)
 		}
 
-		// Insert batch into queue
-		for _, sub := range batch {
-			queueID := uuid.New()
-			
-			// Determine scheduled time - use optimal time if available, otherwise NOW()
-			var scheduledAt time.Time
-			if optTime, ok := optimalTimes[sub.ID]; ok && campaign.AISendTimeOptimization {
-				scheduledAt = optTime
-			} else {
-				scheduledAt = time.Now()
-			}
-
-			// Select subject/content — use A/B variant if available, otherwise campaign defaults
-			subject := campaign.Subject
-			htmlContent := campaign.HTMLContent
-			textContent := campaign.TextContent
-
-			if len(abVariants) > 0 {
-				v := abVariants[variantIdx%len(abVariants)]
-				if v.Subject != "" {
-					subject = v.Subject
-				}
-				if v.HTMLContent != "" {
-					htmlContent = v.HTMLContent
-				}
-				if v.TextContent != "" {
-					textContent = v.TextContent
-				}
-				variantIdx++
-
-				// Record the variant assignment for tracking
-				cs.db.ExecContext(ctx, `
-					INSERT INTO mailing_ab_assignments (id, test_id, variant_id, subscriber_id, assigned_at)
-					SELECT gen_random_uuid(), t.id, $1, $2, NOW()
-					FROM mailing_ab_tests t WHERE t.campaign_id = $3
-					ON CONFLICT DO NOTHING
-				`, v.ID, sub.ID, campaign.ID)
-			}
-			
-			_, err := cs.db.ExecContext(ctx, `
-				INSERT INTO mailing_campaign_queue (
-					id, campaign_id, subscriber_id, 
-					subject, html_content, plain_content,
-					status, priority, scheduled_at, created_at
-				) VALUES (
-					$1, $2, $3,
-					$4, $5, $6,
-					'queued', $7, $8, NOW()
-				)
-				ON CONFLICT DO NOTHING
-			`,
-				queueID, campaign.ID, sub.ID,
-				subject, htmlContent, textContent,
-				priority, scheduledAt,
-			)
-
-			if err == nil {
-				queued++
-			}
+		var scheduledAt time.Time
+		if optTime, ok := optimalTimes[sub.ID]; ok && campaign.AISendTimeOptimization {
+			scheduledAt = optTime
+		} else {
+			scheduledAt = now
 		}
 
-		// Update progress
-		cs.db.ExecContext(ctx, `
-			UPDATE mailing_campaigns SET queued_count = $1, updated_at = NOW() WHERE id = $2
-		`, queued, campaign.ID)
+		subject := campaign.Subject
+		htmlContent := campaign.HTMLContent
+		textContent := campaign.TextContent
+
+		if len(abVariants) > 0 {
+			v := abVariants[variantIdx%len(abVariants)]
+			if v.Subject != "" {
+				subject = v.Subject
+			}
+			if v.HTMLContent != "" {
+				htmlContent = v.HTMLContent
+			}
+			if v.TextContent != "" {
+				textContent = v.TextContent
+			}
+			abAssignments = append(abAssignments, abAssignment{VariantID: v.ID, SubscriberID: sub.ID})
+			variantIdx++
+		}
+
+		_, err := stmt.Exec(
+			uuid.New(), campaign.ID, sub.ID,
+			subject, htmlContent, textContent,
+			"queued", priority, scheduledAt, now,
+		)
+		if err != nil {
+			log.Printf("[CampaignScheduler] COPY row error for subscriber %s: %v", sub.ID, err)
+			continue
+		}
+		queued++
 	}
+
+	// Flush the COPY stream
+	if _, err := stmt.Exec(); err != nil {
+		return 0, fmt.Errorf("failed to flush COPY: %w", err)
+	}
+	if err := stmt.Close(); err != nil {
+		return 0, fmt.Errorf("failed to close COPY: %w", err)
+	}
+	if err := txn.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit enqueue: %w", err)
+	}
+
+	log.Printf("[CampaignScheduler] COPY complete: %d items enqueued for campaign %s", queued, campaign.ID)
+
+	// Bulk insert AB assignments if any
+	if len(abAssignments) > 0 {
+		abTxn, err := cs.db.BeginTx(ctx, nil)
+		if err == nil {
+			abStmt, err := abTxn.Prepare(pq.CopyIn(
+				"mailing_ab_assignments",
+				"id", "test_id", "variant_id", "subscriber_id", "assigned_at",
+			))
+			if err == nil {
+				// Resolve test_id once
+				var testID string
+				cs.db.QueryRowContext(ctx, `SELECT id::text FROM mailing_ab_tests WHERE campaign_id = $1 LIMIT 1`, campaign.ID).Scan(&testID)
+				if testID != "" {
+					for _, a := range abAssignments {
+						abStmt.Exec(uuid.New(), testID, a.VariantID, a.SubscriberID, now)
+					}
+					abStmt.Exec()
+					abStmt.Close()
+					if err := abTxn.Commit(); err != nil {
+						log.Printf("[CampaignScheduler] AB assignment bulk insert commit error: %v", err)
+					} else {
+						log.Printf("[CampaignScheduler] Bulk-inserted %d AB assignments for campaign %s", len(abAssignments), campaign.ID)
+					}
+				} else {
+					abStmt.Close()
+					abTxn.Rollback()
+				}
+			} else {
+				abTxn.Rollback()
+			}
+		}
+	}
+
+	// Final progress update
+	cs.db.ExecContext(ctx, `UPDATE mailing_campaigns SET queued_count = $1, updated_at = NOW() WHERE id = $2`, queued, campaign.ID)
 
 	return queued, nil
 }
