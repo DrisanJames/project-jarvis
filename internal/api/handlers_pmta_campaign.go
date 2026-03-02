@@ -395,7 +395,7 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	for _, listID := range req.ListIDs {
 		var count int
 		s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = $1 AND status = 'active'`,
+			`SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = $1 AND status IN ('active','confirmed')`,
 			listID).Scan(&count)
 		totalRecipients += count
 	}
