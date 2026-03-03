@@ -73,12 +73,12 @@ interface JarvisCampaign {
 }
 
 const levelColors: Record<string, string> = {
-  milestone: '#f59e0b',
-  action: '#3b82f6',
-  decision: '#8b5cf6',
-  info: '#64748b',
+  milestone: '#fdcb6e',
+  action: '#00e5ff',
+  decision: '#00b0ff',
+  info: 'rgba(180,210,240,0.65)',
   warning: '#f97316',
-  error: '#ef4444',
+  error: '#e94560',
 };
 
 const levelIcons: Record<string, string> = {
@@ -91,15 +91,15 @@ const levelIcons: Record<string, string> = {
 };
 
 const statusColors: Record<string, string> = {
-  pending: '#64748b',
-  sent: '#3b82f6',
-  delivered: '#22c55e',
-  opened: '#f59e0b',
-  clicked: '#8b5cf6',
-  converted: '#10b981',
-  bounced: '#ef4444',
-  failed: '#ef4444',
-  suppressed: '#6b7280',
+  pending: 'rgba(180,210,240,0.65)',
+  sent: '#00e5ff',
+  delivered: '#00b894',
+  opened: '#fdcb6e',
+  clicked: '#00b0ff',
+  converted: '#00b894',
+  bounced: '#e94560',
+  failed: '#e94560',
+  suppressed: 'rgba(180,210,240,0.65)',
 };
 
 export const JarvisDashboard: React.FC = () => {
@@ -145,8 +145,8 @@ export const JarvisDashboard: React.FC = () => {
         </div>
         <div style={styles.idleCard}>
           <p style={{ fontSize: 48, margin: 0 }}>🔋</p>
-          <h3 style={{ color: '#e2e8f0', margin: '10px 0' }}>Jarvis is Standing By</h3>
-          <p style={{ color: '#94a3b8', fontSize: 14 }}>
+          <h3 style={{ color: '#e0e6f0', margin: '10px 0' }}>Jarvis is Standing By</h3>
+          <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 14 }}>
             Launch an autonomous campaign via the API to start AI-driven sending.
           </p>
           <code style={styles.codeBlock}>
@@ -186,11 +186,11 @@ export const JarvisDashboard: React.FC = () => {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{
             ...styles.statusBadge,
-            background: campaign.status === 'running' ? '#22c55e' : campaign.status === 'completed' ? '#3b82f6' : '#f59e0b',
+            background: campaign.status === 'running' ? '#00b894' : campaign.status === 'completed' ? '#00e5ff' : '#fdcb6e',
           }}>
             {campaign.status === 'running' ? '● LIVE' : campaign.status.toUpperCase()}
           </span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#94a3b8', fontSize: 12, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'rgba(180,210,240,0.65)', fontSize: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
             Auto-refresh
           </label>
@@ -199,35 +199,35 @@ export const JarvisDashboard: React.FC = () => {
 
       {/* Metrics Bar */}
       <div style={styles.metricsBar}>
-        <MetricCard label="Total Sent" value={campaign.metrics.total_sent} color="#3b82f6" />
-        <MetricCard label="Delivered" value={campaign.metrics.total_delivered} sub={campaign.metrics.total_sent > 0 ? `${((campaign.metrics.total_delivered / campaign.metrics.total_sent) * 100).toFixed(1)}%` : '–'} color="#06b6d4" />
-        <MetricCard label="Opens" value={campaign.metrics.total_opens} sub={`${campaign.metrics.open_rate.toFixed(1)}%`} color="#f59e0b" />
-        <MetricCard label="Clicks" value={campaign.metrics.total_clicks} sub={`${campaign.metrics.click_rate.toFixed(1)}%`} color="#8b5cf6" />
-        <MetricCard label="Conversions" value={campaign.metrics.total_conversions} sub={`${campaign.metrics.conversion_rate.toFixed(1)}%`} color="#10b981" />
+        <MetricCard label="Total Sent" value={campaign.metrics.total_sent} color="#00e5ff" />
+        <MetricCard label="Delivered" value={campaign.metrics.total_delivered} sub={campaign.metrics.total_sent > 0 ? `${((campaign.metrics.total_delivered / campaign.metrics.total_sent) * 100).toFixed(1)}%` : '–'} color="#00e5ff" />
+        <MetricCard label="Opens" value={campaign.metrics.total_opens} sub={`${campaign.metrics.open_rate.toFixed(1)}%`} color="#fdcb6e" />
+        <MetricCard label="Clicks" value={campaign.metrics.total_clicks} sub={`${campaign.metrics.click_rate.toFixed(1)}%`} color="#00b0ff" />
+        <MetricCard label="Conversions" value={campaign.metrics.total_conversions} sub={`${campaign.metrics.conversion_rate.toFixed(1)}%`} color="#00b894" />
         {campaign.metrics.total_revenue !== undefined && campaign.metrics.total_revenue > 0 && (
-          <MetricCard label="Revenue" value={`$${campaign.metrics.total_revenue.toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send || 0).toFixed(4)}/send`} color="#22c55e" />
+          <MetricCard label="Revenue" value={`$${campaign.metrics.total_revenue.toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send || 0).toFixed(4)}/send`} color="#00b894" />
         )}
-        <MetricCard label="Elapsed" value={`${elapsed}m`} sub={`${remaining}m left`} color="#94a3b8" />
+        <MetricCard label="Elapsed" value={`${elapsed}m`} sub={`${remaining}m left`} color="rgba(180,210,240,0.65)" />
       </div>
 
       {/* Funnel Visualization */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: '#0f172a', borderRadius: 10, overflow: 'hidden', border: '1px solid #1e293b' }}>
+      <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: '#0a0f1a', borderRadius: 10, overflow: 'hidden', border: '1px solid #0d1526' }}>
         {[
-          { label: 'SENT', val: campaign.metrics.total_sent, color: '#3b82f6' },
-          { label: 'DELIVERED', val: campaign.metrics.total_delivered, color: '#06b6d4' },
-          { label: 'OPENED', val: campaign.metrics.total_opens, color: '#f59e0b' },
-          { label: 'CLICKED', val: campaign.metrics.total_clicks, color: '#8b5cf6' },
-          { label: 'CONVERTED', val: campaign.metrics.total_conversions, color: '#10b981' },
+          { label: 'SENT', val: campaign.metrics.total_sent, color: '#00e5ff' },
+          { label: 'DELIVERED', val: campaign.metrics.total_delivered, color: '#00e5ff' },
+          { label: 'OPENED', val: campaign.metrics.total_opens, color: '#fdcb6e' },
+          { label: 'CLICKED', val: campaign.metrics.total_clicks, color: '#00b0ff' },
+          { label: 'CONVERTED', val: campaign.metrics.total_conversions, color: '#00b894' },
         ].map((step, idx, arr) => {
           const prevVal = idx > 0 ? arr[idx - 1].val : step.val;
           const rate = prevVal > 0 ? (step.val / prevVal) * 100 : 0;
           const widthPct = campaign.metrics.total_sent > 0 ? Math.max(8, (step.val / campaign.metrics.total_sent) * 100) : 20;
           return (
-            <div key={step.label} style={{ flex: `0 0 ${widthPct}%`, minWidth: 60, padding: '8px 10px', borderRight: '1px solid #1e293b22', transition: 'flex 0.5s ease' }}>
+            <div key={step.label} style={{ flex: `0 0 ${widthPct}%`, minWidth: 60, padding: '8px 10px', borderRight: '1px solid #0d152622', transition: 'flex 0.5s ease' }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: step.color, opacity: 0.8 }}>{step.label}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#e2e8f0', fontFamily: 'monospace' }}>{step.val}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#e0e6f0', fontFamily: 'monospace' }}>{step.val}</div>
               {idx > 0 && (
-                <div style={{ fontSize: 9, color: rate >= 50 ? '#22c55e' : rate >= 20 ? '#f59e0b' : '#ef4444', fontFamily: 'monospace', fontWeight: 600 }}>
+                <div style={{ fontSize: 9, color: rate >= 50 ? '#00b894' : rate >= 20 ? '#fdcb6e' : '#e94560', fontFamily: 'monospace', fontWeight: 600 }}>
                   {rate.toFixed(1)}% {rate >= 50 ? '▲' : rate >= 20 ? '●' : '▼'}
                 </div>
               )}
@@ -235,10 +235,10 @@ export const JarvisDashboard: React.FC = () => {
           );
         })}
         {campaign.metrics.total_bounces > 0 && (
-          <div style={{ flex: '0 0 auto', minWidth: 60, padding: '8px 10px', borderLeft: '2px solid #ef444444' }}>
-            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#ef4444', opacity: 0.8 }}>BOUNCED</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#ef4444', fontFamily: 'monospace' }}>{campaign.metrics.total_bounces}</div>
-            <div style={{ fontSize: 9, color: '#ef4444', fontFamily: 'monospace', fontWeight: 600 }}>
+          <div style={{ flex: '0 0 auto', minWidth: 60, padding: '8px 10px', borderLeft: '2px solid #e9456044' }}>
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#e94560', opacity: 0.8 }}>BOUNCED</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#e94560', fontFamily: 'monospace' }}>{campaign.metrics.total_bounces}</div>
+            <div style={{ fontSize: 9, color: '#e94560', fontFamily: 'monospace', fontWeight: 600 }}>
               {campaign.metrics.total_sent > 0 ? ((campaign.metrics.total_bounces / campaign.metrics.total_sent) * 100).toFixed(1) : 0}%
             </div>
           </div>
@@ -254,13 +254,13 @@ export const JarvisDashboard: React.FC = () => {
       {/* Controls */}
       <div style={styles.controls}>
         {campaign.status === 'running' && (
-          <button style={{ ...styles.btn, background: '#f59e0b' }} onClick={() => handleAction('pause')}>⏸ Pause</button>
+          <button style={{ ...styles.btn, background: '#fdcb6e' }} onClick={() => handleAction('pause')}>⏸ Pause</button>
         )}
         {campaign.status === 'paused' && (
-          <button style={{ ...styles.btn, background: '#22c55e' }} onClick={() => handleAction('resume')}>▶ Resume</button>
+          <button style={{ ...styles.btn, background: '#00b894' }} onClick={() => handleAction('resume')}>▶ Resume</button>
         )}
-        <button style={{ ...styles.btn, background: '#ef4444' }} onClick={() => handleAction('stop')}>⏹ Stop Campaign</button>
-        <button style={{ ...styles.btn, background: '#1e293b' }} onClick={fetchStatus}>🔄 Refresh</button>
+        <button style={{ ...styles.btn, background: '#e94560' }} onClick={() => handleAction('stop')}>⏹ Stop Campaign</button>
+        <button style={{ ...styles.btn, background: '#0d1526' }} onClick={fetchStatus}>🔄 Refresh</button>
       </div>
 
       {/* Recipients Grid */}
@@ -270,20 +270,20 @@ export const JarvisDashboard: React.FC = () => {
           {campaign.recipients.map(r => (
             <div key={r.email} style={styles.recipientCard}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{r.email}</span>
+                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 13 }}>{r.email}</span>
                 <span style={{
                   ...styles.recipientStatus,
-                  background: (statusColors[r.status] || '#64748b') + '22',
-                  color: statusColors[r.status] || '#64748b',
+                  background: (statusColors[r.status] || 'rgba(180,210,240,0.65)') + '22',
+                  color: statusColors[r.status] || 'rgba(180,210,240,0.65)',
                 }}>{r.status.toUpperCase()}</span>
               </div>
-              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: '#94a3b8' }}>
+              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
                 <span>ISP: <strong>{r.isp}</strong></span>
                 <span>ESP: <strong>{r.esp || '—'}</strong></span>
                 <span>Sends: <strong>{r.send_count}</strong></span>
               </div>
               {r.subject && (
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, fontStyle: 'italic' }}>
+                <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4, fontStyle: 'italic' }}>
                   Subject: &quot;{r.subject}&quot;
                 </div>
               )}
@@ -298,8 +298,8 @@ export const JarvisDashboard: React.FC = () => {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {campaign.creatives.map(c => (
             <div key={c.id} style={styles.creativeCard}>
-              <div style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
-              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+              <div style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
                 ID: {c.id} | Sends: {c.sends} | Opens: {c.opens} | Clicks: {c.clicks}
               </div>
             </div>
@@ -317,8 +317,8 @@ export const JarvisDashboard: React.FC = () => {
                 key={f}
                 style={{
                   ...styles.filterBtn,
-                  background: logFilter === f ? '#334155' : 'transparent',
-                  color: logFilter === f ? '#e2e8f0' : '#64748b',
+                  background: logFilter === f ? 'rgba(0,200,255,0.08)' : 'transparent',
+                  color: logFilter === f ? '#e0e6f0' : 'rgba(180,210,240,0.65)',
                 }}
                 onClick={() => setLogFilter(f)}
               >
@@ -333,7 +333,7 @@ export const JarvisDashboard: React.FC = () => {
               <span style={styles.logTime}>
                 {new Date(entry.timestamp).toLocaleTimeString()}
               </span>
-              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || '#64748b' }}>
+              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || 'rgba(180,210,240,0.65)' }}>
                 {levelIcons[entry.level] || '●'} {entry.level}
               </span>
               <span style={styles.logComponent}>[{entry.component}]</span>
@@ -355,8 +355,8 @@ const MetricCard: React.FC<{
 }> = ({ label, value, sub, color }) => (
   <div style={styles.metricCard}>
     <div style={{ color, fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{value}</div>
-    <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 4 }}>{label}</div>
-    {sub && <div style={{ color: '#64748b', fontSize: 10 }}>{sub}</div>}
+    <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{label}</div>
+    {sub && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 10 }}>{sub}</div>}
   </div>
 );
 
@@ -375,13 +375,13 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 20,
   },
   title: {
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 20,
     fontWeight: 700,
     margin: 0,
   },
   subtitle: {
-    color: '#94a3b8',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 13,
     margin: '4px 0 0',
   },
@@ -399,14 +399,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   metricCard: {
     flex: 1,
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 10,
     padding: '14px 16px',
     textAlign: 'center' as const,
   },
   progressContainer: {
     height: 24,
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 12,
     position: 'relative' as const,
     overflow: 'hidden',
@@ -414,7 +414,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   progressBar: {
     height: '100%',
-    background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)',
+    background: 'linear-gradient(90deg, #00e5ff, #00b0ff)',
     borderRadius: 12,
     transition: 'width 0.5s ease',
   },
@@ -423,7 +423,7 @@ const styles: Record<string, React.CSSProperties> = {
     top: '50%',
     left: '50%',
     transform: 'translate(-50%, -50%)',
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 11,
     fontWeight: 600,
   },
@@ -445,7 +445,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 24,
   },
   sectionTitle: {
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 15,
     fontWeight: 600,
     margin: '0 0 12px',
@@ -456,10 +456,10 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
   },
   recipientCard: {
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 10,
     padding: '12px 16px',
-    border: '1px solid #334155',
+    border: '1px solid rgba(0,200,255,0.08)',
   },
   recipientStatus: {
     padding: '2px 8px',
@@ -468,19 +468,19 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
   },
   creativeCard: {
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 8,
     padding: '10px 14px',
-    border: '1px solid #334155',
+    border: '1px solid rgba(0,200,255,0.08)',
     minWidth: 200,
   },
   logContainer: {
-    background: '#0f172a',
+    background: '#0a0f1a',
     borderRadius: 10,
     padding: 12,
     maxHeight: 400,
     overflowY: 'auto' as const,
-    border: '1px solid #1e293b',
+    border: '1px solid #0d1526',
     fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   },
   logEntry: {
@@ -489,10 +489,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'baseline',
     padding: '3px 0',
     fontSize: 11,
-    borderBottom: '1px solid #1e293b22',
+    borderBottom: '1px solid #0d152622',
   },
   logTime: {
-    color: '#475569',
+    color: 'rgba(180,210,240,0.45)',
     minWidth: 70,
     flexShrink: 0,
   },
@@ -502,23 +502,23 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   logComponent: {
-    color: '#64748b',
+    color: 'rgba(180,210,240,0.65)',
     minWidth: 100,
     flexShrink: 0,
   },
   logMessage: {
-    color: '#cbd5e1',
+    color: '#e0e6f0',
     wordBreak: 'break-word' as const,
   },
   filterBtn: {
     padding: '3px 10px',
     borderRadius: 6,
-    border: '1px solid #334155',
+    border: '1px solid rgba(0,200,255,0.08)',
     fontSize: 11,
     cursor: 'pointer',
   },
   idleCard: {
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 12,
     padding: 40,
     textAlign: 'center' as const,
@@ -526,10 +526,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   codeBlock: {
     display: 'inline-block',
-    background: '#0f172a',
+    background: '#0a0f1a',
     padding: '8px 16px',
     borderRadius: 8,
-    color: '#22c55e',
+    color: '#00b894',
     fontSize: 13,
     marginTop: 12,
     fontFamily: '"JetBrains Mono", monospace',

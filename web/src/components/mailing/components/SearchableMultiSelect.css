@@ -14,20 +14,20 @@
   gap: 8px;
   font-size: 0.9rem;
   font-weight: 600;
-  color: #2d3748;
+  color: #e0e6f0;
   margin-bottom: 8px;
 }
 
 .sms-label-icon {
-  color: #667eea;
+  color: #00e5ff;
   font-size: 0.85rem;
 }
 
 .sms-create-btn {
   margin-left: auto;
   background: none;
-  border: 1px solid #667eea;
-  color: #667eea;
+  border: 1px solid #00e5ff;
+  color: #00e5ff;
   padding: 4px 12px;
   border-radius: 6px;
   font-size: 0.75rem;
@@ -37,7 +37,7 @@
 }
 
 .sms-create-btn:hover {
-  background: #667eea;
+  background: #00e5ff;
   color: #fff;
 }
 
@@ -47,7 +47,7 @@
   align-items: center;
   gap: 10px;
   padding: 16px;
-  background: #fffaf0;
+  background: rgba(253,203,110,0.06);
   border: 1px solid #fbd38d;
   border-radius: 10px;
   color: #c05621;
@@ -65,16 +65,16 @@
   gap: 8px;
   margin-top: 10px;
   padding: 10px 14px;
-  background: linear-gradient(135deg, #667eea10, #764ba210);
-  border: 1px solid #667eea30;
+  background: linear-gradient(135deg, #00e5ff10, #00b0ff10);
+  border: 1px solid #00e5ff30;
   border-radius: 8px;
   font-size: 0.85rem;
-  color: #553c9a;
+  color: #00e5ff;
   font-weight: 500;
 }
 
 .sms-estimate svg {
-  color: #667eea;
+  color: #00e5ff;
 }
 
 /* Option Styling */
@@ -130,7 +130,7 @@
 
 .sms-option-count {
   font-size: 0.8rem;
-  color: #718096;
+  color: rgba(180,210,240,0.65);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -154,7 +154,7 @@
 
 .sms-tag-count {
   font-size: 0.75rem;
-  color: #718096;
+  color: rgba(180,210,240,0.65);
   margin-left: 2px;
 }
 
@@ -169,7 +169,7 @@
   gap: 6px;
   padding: 12px 12px 6px;
   margin-top: 8px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid rgba(0,200,255,0.08);
 }
 
 .searchable-multi-select [class*="-group"]:first-of-type [class*="-groupHeading"] {

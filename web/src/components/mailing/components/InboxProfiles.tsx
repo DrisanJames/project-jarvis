@@ -389,7 +389,7 @@ export const InboxProfiles: React.FC = () => {
       {/* ─── Stats Bar ──────────────────────────────────────────────────── */}
       <div className="ii-stats-bar">
         <div className="ii-stat-card">
-          <div className="ii-stat-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+          <div className="ii-stat-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
             <FontAwesomeIcon icon={faFingerprint} />
           </div>
           <div className="ii-stat-body">
@@ -416,7 +416,7 @@ export const InboxProfiles: React.FC = () => {
           </div>
         </div>
         <div className="ii-stat-card">
-          <div className="ii-stat-icon" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+          <div className="ii-stat-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
             <FontAwesomeIcon icon={faEye} />
           </div>
           <div className="ii-stat-body">

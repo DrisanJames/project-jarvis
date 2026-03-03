@@ -351,9 +351,9 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
       case 'warning':
         return '#f97316';
       case 'success':
-        return '#22c55e';
+        return '#00b894';
       case 'info':
-        return '#3b82f6';
+        return '#00e5ff';
     }
   };
 
@@ -598,9 +598,9 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .insights-tabs .tab.active {
-          color: #3b82f6;
+          color: #00e5ff;
           background: rgba(59, 130, 246, 0.1);
-          border-bottom: 2px solid #3b82f6;
+          border-bottom: 2px solid #00e5ff;
         }
         
         .insights-content {
@@ -691,7 +691,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           gap: 6px;
           font-size: 0.75rem;
-          color: #3b82f6;
+          color: #00e5ff;
           margin-bottom: 10px;
         }
         
@@ -743,7 +743,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .quick-prompt-btn:hover {
           background: #2a2a3e;
-          border-color: #3b82f6;
+          border-color: #00e5ff;
         }
         
         .quick-prompt-btn span {
@@ -755,7 +755,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .quick-prompt-btn .copied-icon {
-          color: #22c55e;
+          color: #00b894;
         }
         
         .custom-prompt-section {
@@ -789,7 +789,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .custom-prompt-section textarea:focus {
           outline: none;
-          border-color: #3b82f6;
+          border-color: #00e5ff;
         }
         
         .generate-btn {
@@ -799,7 +799,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           gap: 8px;
           width: 100%;
           padding: 10px;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
           border: none;
           border-radius: 6px;
           color: #fff;
@@ -810,7 +810,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .generate-btn:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, #00b0ff 0%, #1d4ed8 100%);
         }
         
         .generate-btn:disabled {
@@ -917,7 +917,7 @@ export const ABTestInsightsButton: React.FC<InsightsButtonProps> = ({ onClick, i
           right: -4px;
           min-width: 20px;
           height: 20px;
-          background: #ef4444;
+          background: #e94560;
           color: #fff;
           border-radius: 10px;
           font-size: 0.6875rem;

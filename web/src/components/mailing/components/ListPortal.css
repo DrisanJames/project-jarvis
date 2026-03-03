@@ -1,10 +1,10 @@
 /* ============================================================================
-   LIST PORTAL - Main Styles
+   LIST PORTAL - Main Styles (Dark Theme)
    ============================================================================ */
 
 .list-portal {
   min-height: 100vh;
-  background: #f3f4f6;
+  background: #0a0f1a;
 }
 
 /* Loading Container */
@@ -15,14 +15,14 @@
   justify-content: center;
   min-height: 400px;
   gap: 16px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .loading-spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid #e5e7eb;
-  border-top-color: #3b82f6;
+  border: 3px solid rgba(0,200,255,0.08);
+  border-top-color: #00e5ff;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -40,8 +40,8 @@
   align-items: center;
   gap: 8px;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid #e5e7eb;
+  background: #0a1628;
+  border-bottom: 1px solid rgba(0,200,255,0.08);
 }
 
 .list-portal .portal-breadcrumb button {
@@ -52,20 +52,20 @@
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-portal .portal-breadcrumb button:hover {
-  background: #f3f4f6;
-  color: #111827;
+  background: rgba(0,200,255,0.08);
+  color: #e0e6f0;
 }
 
 .list-portal .portal-breadcrumb button.active {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: rgba(0,229,255,0.1);
+  color: #00e5ff;
   font-weight: 500;
 }
 
@@ -74,12 +74,12 @@
 }
 
 .list-portal .breadcrumb-separator {
-  color: #d1d5db;
+  color: rgba(0,200,255,0.08);
   font-size: 18px;
 }
 
 .list-portal .breadcrumb-current {
-  color: #111827;
+  color: #e0e6f0;
   font-weight: 500;
   font-size: 14px;
 }
@@ -146,27 +146,27 @@
 }
 
 .list-portal .hero-stat-card {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
   display: flex;
   gap: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
   transition: transform 0.2s, box-shadow 0.2s;
 }
 
 .list-portal .hero-stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 12px rgba(0, 200, 255, 0.08);
 }
 
 .list-portal .hero-stat-card.primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
   color: white;
 }
 
 .list-portal .hero-stat-card.engagement {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, #00b894 0%, #00a080 100%);
   color: white;
 }
 
@@ -176,10 +176,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(0,229,255,0.1);
   border-radius: 12px;
   font-size: 20px;
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .hero-stat-card.primary .hero-stat-icon,
@@ -197,6 +197,12 @@
   font-weight: 700;
   line-height: 1;
   margin-bottom: 4px;
+  color: #e0e6f0;
+}
+
+.list-portal .hero-stat-card.primary .hero-stat-value,
+.list-portal .hero-stat-card.engagement .hero-stat-value {
+  color: white;
 }
 
 .list-portal .hero-stat-label {
@@ -214,7 +220,7 @@
 }
 
 .list-portal .hero-stat-trend.positive {
-  color: #10b981;
+  color: #00b894;
 }
 
 .list-portal .hero-stat-card.primary .hero-stat-trend.positive,
@@ -224,24 +230,24 @@
 
 /* Dashboard Sections */
 .list-portal .dashboard-section {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
 }
 
 .list-portal .dashboard-section h3 {
   margin: 0 0 16px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .list-portal .dashboard-section h3 svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 /* Quick Actions */
@@ -256,28 +262,29 @@
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: #0a1020;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s;
   text-align: left;
+  color: #e0e6f0;
 }
 
 .list-portal .quick-action-btn:hover {
-  background: #f3f4f6;
-  border-color: #d1d5db;
+  background: rgba(0,200,255,0.08);
+  border-color: rgba(0,200,255,0.15);
   transform: translateX(4px);
 }
 
 .list-portal .quick-action-btn.primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
   border-color: transparent;
   color: white;
 }
 
 .list-portal .quick-action-btn.segment {
-  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  background: linear-gradient(135deg, #00b0ff 0%, #0080cc 100%);
   border-color: transparent;
   color: white;
 }
@@ -288,10 +295,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(0,229,255,0.1);
   border-radius: 10px;
   font-size: 16px;
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .quick-action-btn.primary .qa-icon,
@@ -327,10 +334,10 @@
 }
 
 .list-portal .dashboard-card {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
 }
 
 .list-portal .card-header {
@@ -344,20 +351,20 @@
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .list-portal .card-header h3 svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .view-all-btn {
   background: none;
   border: none;
-  color: #3b82f6;
+  color: #00e5ff;
   font-size: 13px;
   cursor: pointer;
   display: flex;
@@ -381,14 +388,14 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #f9fafb;
+  background: #0a1020;
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-portal .top-list-item:hover {
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
 }
 
 .list-portal .list-rank {
@@ -397,15 +404,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.08);
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .top-list-item:first-child .list-rank {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  background: linear-gradient(135deg, #fdcb6e 0%, #e6b800 100%);
   color: white;
 }
 
@@ -415,7 +422,7 @@
 
 .list-portal .list-name {
   font-weight: 500;
-  color: #111827;
+  color: #e0e6f0;
   margin-bottom: 2px;
 }
 
@@ -423,7 +430,7 @@
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .list-meta svg {
@@ -431,7 +438,7 @@
 }
 
 .list-portal .list-arrow {
-  color: #d1d5db;
+  color: rgba(0,200,255,0.08);
 }
 
 /* Segments Overview */
@@ -446,14 +453,14 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #f9fafb;
+  background: #0a1020;
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-portal .segment-item:hover {
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
 }
 
 .list-portal .segment-type-badge {
@@ -467,13 +474,13 @@
 }
 
 .list-portal .segment-type-badge.dynamic {
-  background: rgba(139, 92, 246, 0.1);
-  color: #8b5cf6;
+  background: rgba(0,176,255,0.1);
+  color: #00b0ff;
 }
 
 .list-portal .segment-type-badge.static {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: rgba(0,229,255,0.1);
+  color: #00e5ff;
 }
 
 .list-portal .segment-info {
@@ -482,7 +489,7 @@
 
 .list-portal .segment-name {
   font-weight: 500;
-  color: #111827;
+  color: #e0e6f0;
   margin-bottom: 2px;
 }
 
@@ -490,7 +497,7 @@
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .segment-status {
@@ -504,7 +511,7 @@
 .list-portal .empty-state {
   text-align: center;
   padding: 32px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .empty-state svg {
@@ -518,52 +525,53 @@
 }
 
 .list-portal .empty-state button {
-  background: #3b82f6;
-  color: white;
+  background: #00e5ff;
+  color: #0a0f1a;
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 600;
 }
 
 .list-portal .empty-state-large {
   text-align: center;
   padding: 64px 32px;
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   grid-column: 1 / -1;
 }
 
 .list-portal .empty-state-large svg {
   font-size: 48px;
-  color: #d1d5db;
+  color: rgba(0,200,255,0.08);
   margin-bottom: 16px;
 }
 
 .list-portal .empty-state-large h3 {
   margin: 0 0 8px 0;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .list-portal .empty-state-large p {
   margin: 0 0 24px 0;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 /* How It Works */
 .list-portal .how-it-works {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
 }
 
 .list-portal .how-it-works h3 {
   margin: 0 0 20px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .how-it-works-grid {
@@ -582,8 +590,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-  color: white;
+  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
+  color: #0a0f1a;
   border-radius: 50%;
   font-weight: 700;
   margin: 0 auto 12px;
@@ -592,13 +600,13 @@
 .list-portal .how-step h4 {
   margin: 0 0 8px 0;
   font-size: 14px;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .how-step p {
   margin: 0;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   line-height: 1.5;
 }
 
@@ -622,19 +630,19 @@
 .list-portal .header-left h2 {
   margin: 0 0 4px 0;
   font-size: 1.5rem;
-  color: #111827;
+  color: #e0e6f0;
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
 .list-portal .header-left h2 svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .header-left p {
   margin: 0;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
 }
 
@@ -661,30 +669,32 @@
   left: 12px;
   top: 50%;
   transform: translateY(-50%);
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .search-box input {
   width: 100%;
   padding: 10px 12px 10px 38px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 8px;
   font-size: 14px;
-  background: white;
+  background: #0a1020;
+  color: #e0e6f0;
 }
 
 .list-portal .search-box input:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.1);
 }
 
 .list-portal .filter-group select {
   padding: 10px 32px 10px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 8px;
   font-size: 14px;
-  background: white;
+  background: #0a1020;
+  color: #e0e6f0;
   cursor: pointer;
 }
 
@@ -698,17 +708,17 @@
 
 .list-portal .list-card,
 .list-portal .segment-card {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
   transition: transform 0.2s, box-shadow 0.2s;
 }
 
 .list-portal .list-card:hover,
 .list-portal .segment-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 200, 255, 0.08);
 }
 
 .list-portal .list-card-header {
@@ -722,13 +732,13 @@
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .list-description {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   line-height: 1.5;
 }
 
@@ -736,8 +746,8 @@
   display: flex;
   gap: 24px;
   padding: 16px 0;
-  border-top: 1px solid #f3f4f6;
-  border-bottom: 1px solid #f3f4f6;
+  border-top: 1px solid rgba(0,200,255,0.08);
+  border-bottom: 1px solid rgba(0,200,255,0.08);
   margin-bottom: 16px;
 }
 
@@ -749,12 +759,12 @@
   display: block;
   font-size: 1.25rem;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .list-stats .stat-label {
   font-size: 11px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -767,7 +777,7 @@
 
 .list-portal .list-date {
   font-size: 12px;
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .list-date svg {
@@ -785,22 +795,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
   border: none;
   border-radius: 6px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-portal .action-btn:hover {
-  background: #e5e7eb;
-  color: #111827;
+  background: rgba(0,200,255,0.12);
+  color: #e0e6f0;
 }
 
 .list-portal .action-btn.danger:hover {
-  background: #fef2f2;
-  color: #ef4444;
+  background: rgba(233,69,96,0.1);
+  color: #e94560;
 }
 
 /* Segment Card */
@@ -822,13 +832,13 @@
 }
 
 .list-portal .segment-type-icon.dynamic {
-  background: rgba(139, 92, 246, 0.1);
-  color: #8b5cf6;
+  background: rgba(0,176,255,0.1);
+  color: #00b0ff;
 }
 
 .list-portal .segment-type-icon.static {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: rgba(0,229,255,0.1);
+  color: #00e5ff;
 }
 
 .list-portal .segment-title {
@@ -839,7 +849,7 @@
   margin: 0 0 4px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .segment-card .segment-type-badge {
@@ -854,14 +864,14 @@
 .list-portal .segment-description {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .segment-stats {
   display: flex;
   gap: 20px;
   padding: 12px 0;
-  border-top: 1px solid #f3f4f6;
+  border-top: 1px solid rgba(0,200,255,0.08);
   margin-bottom: 12px;
 }
 
@@ -870,15 +880,15 @@
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .segment-stats .stat svg {
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .segment-stats .stat span {
-  color: #111827;
+  color: #e0e6f0;
   font-weight: 500;
 }
 
@@ -904,19 +914,19 @@
 }
 
 .list-portal .status-badge.status-active {
-  background: #dcfce7;
-  color: #16a34a;
+  background: rgba(0,184,148,0.15);
+  color: #00b894;
 }
 
 .list-portal .status-badge.status-paused {
-  background: #fef3c7;
-  color: #d97706;
+  background: rgba(253,203,110,0.15);
+  color: #fdcb6e;
 }
 
 .list-portal .status-badge.status-archived,
 .list-portal .status-badge.status-draft {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: rgba(180,210,240,0.1);
+  color: rgba(180,210,240,0.65);
 }
 
 /* ============================================================================
@@ -935,33 +945,33 @@
 .list-portal .form-header h2 {
   margin: 0 0 8px 0;
   font-size: 1.5rem;
-  color: #111827;
+  color: #e0e6f0;
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
 .list-portal .form-header h2 svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .form-header p {
   margin: 0;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .create-form,
 .list-portal .import-form {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
 }
 
 .list-portal .form-section {
   margin-bottom: 24px;
   padding-bottom: 24px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid rgba(0,200,255,0.08);
 }
 
 .list-portal .form-section:last-of-type {
@@ -974,7 +984,7 @@
   margin: 0 0 16px 0;
   font-size: 14px;
   font-weight: 600;
-  color: #374151;
+  color: #e0e6f0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -993,7 +1003,7 @@
 .list-portal .section-hint {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .form-group {
@@ -1009,7 +1019,7 @@
   margin-bottom: 6px;
   font-size: 13px;
   font-weight: 500;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .list-portal .form-group input,
@@ -1017,9 +1027,11 @@
 .list-portal .form-group select {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 8px;
   font-size: 14px;
+  background: #0a1020;
+  color: #e0e6f0;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -1027,8 +1039,8 @@
 .list-portal .form-group textarea:focus,
 .list-portal .form-group select:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.1);
 }
 
 .list-portal .form-group textarea {
@@ -1058,7 +1070,7 @@
   align-items: flex-start;
   gap: 12px;
   padding: 16px;
-  background: #f9fafb;
+  background: #0a1020;
   border: 2px solid transparent;
   border-radius: 12px;
   cursor: pointer;
@@ -1066,12 +1078,12 @@
 }
 
 .list-portal .radio-option:hover {
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
 }
 
 .list-portal .radio-option:has(input:checked) {
-  background: #eff6ff;
-  border-color: #3b82f6;
+  background: rgba(0,229,255,0.1);
+  border-color: #00e5ff;
 }
 
 .list-portal .radio-option input {
@@ -1085,22 +1097,22 @@
 }
 
 .list-portal .radio-content svg {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   margin-top: 2px;
 }
 
 .list-portal .radio-option:has(input:checked) .radio-content svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .radio-content strong {
   display: block;
   margin-bottom: 2px;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .radio-content small {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 12px;
 }
 
@@ -1121,9 +1133,11 @@
 .list-portal .condition-row input {
   flex: 1;
   padding: 10px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 8px;
   font-size: 14px;
+  background: #0a1020;
+  color: #e0e6f0;
 }
 
 .list-portal .condition-remove {
@@ -1132,10 +1146,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fef2f2;
+  background: rgba(233,69,96,0.1);
   border: none;
   border-radius: 8px;
-  color: #ef4444;
+  color: #e94560;
   cursor: pointer;
 }
 
@@ -1148,21 +1162,21 @@
 
 .list-portal .info-item {
   padding: 16px;
-  background: #f9fafb;
+  background: #0a1020;
   border-radius: 10px;
 }
 
 .list-portal .info-item label {
   display: block;
   font-size: 11px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   text-transform: uppercase;
   margin-bottom: 4px;
 }
 
 .list-portal .info-item span {
   font-weight: 500;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 /* Form Actions */
@@ -1172,7 +1186,7 @@
   gap: 12px;
   margin-top: 24px;
   padding-top: 24px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid rgba(0,200,255,0.08);
 }
 
 /* Buttons */
@@ -1195,22 +1209,23 @@
 }
 
 .list-portal .btn-primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-  color: white;
+  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
+  color: #0a0f1a;
+  font-weight: 600;
 }
 
 .list-portal .btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.3);
 }
 
 .list-portal .btn-secondary {
-  background: #f3f4f6;
-  color: #374151;
+  background: rgba(0,200,255,0.08);
+  color: #e0e6f0;
 }
 
 .list-portal .btn-secondary:hover:not(:disabled) {
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.12);
 }
 
 .list-portal .btn-small {
@@ -1239,17 +1254,17 @@
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
   border: none;
   border-radius: 8px;
-  color: #374151;
+  color: #e0e6f0;
   cursor: pointer;
   font-size: 14px;
   transition: all 0.2s;
 }
 
 .list-portal .back-btn:hover {
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.12);
 }
 
 .list-portal .subscribers-header .list-info {
@@ -1259,12 +1274,12 @@
 .list-portal .subscribers-header .list-info h2 {
   margin: 0 0 4px 0;
   font-size: 1.5rem;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .list-portal .subscribers-header .list-info p {
   margin: 0;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
 }
 
@@ -1276,10 +1291,10 @@
 /* Subscribers Table */
 .list-portal .subscribers-table {
   width: 100%;
-  background: white;
+  background: #0d1526;
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 200, 255, 0.05);
 }
 
 .list-portal .subscribers-table th,
@@ -1289,18 +1304,18 @@
 }
 
 .list-portal .subscribers-table th {
-  background: #f9fafb;
+  background: #0a1628;
   font-size: 11px;
   font-weight: 600;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .list-portal .subscribers-table td {
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid rgba(0,200,255,0.08);
   font-size: 14px;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .list-portal .subscribers-table tr:last-child td {
@@ -1323,7 +1338,7 @@
 .list-portal .engagement-bar {
   width: 60px;
   height: 6px;
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.08);
   border-radius: 3px;
   overflow: hidden;
   display: inline-block;
@@ -1333,13 +1348,13 @@
 
 .list-portal .engagement-fill {
   height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #10b981);
+  background: linear-gradient(90deg, #00e5ff, #00b894);
   border-radius: 3px;
 }
 
 .list-portal .engagement-score {
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 /* Pagination */
@@ -1353,16 +1368,17 @@
 
 .list-portal .pagination button {
   padding: 8px 16px;
-  background: white;
-  border: 1px solid #e5e7eb;
+  background: #0d1526;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+  color: #e0e6f0;
   transition: all 0.2s;
 }
 
 .list-portal .pagination button:hover:not(:disabled) {
-  background: #f3f4f6;
+  background: rgba(0,200,255,0.08);
 }
 
 .list-portal .pagination button:disabled {
@@ -1371,7 +1387,7 @@
 }
 
 .list-portal .pagination span {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
 }
 
@@ -1385,7 +1401,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1399,7 +1415,7 @@
 }
 
 .list-portal .modal-content {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
   width: 90%;
@@ -1407,6 +1423,7 @@
   max-height: 90vh;
   overflow-y: auto;
   animation: scaleIn 0.2s ease-out;
+  border: 1px solid rgba(0,200,255,0.08);
 }
 
 .list-portal .modal-header {
@@ -1419,27 +1436,27 @@
 .list-portal .modal-header h3 {
   margin: 0;
   font-size: 18px;
-  color: #111827;
+  color: #e0e6f0;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .list-portal .modal-header h3 svg {
-  color: #3b82f6;
+  color: #00e5ff;
 }
 
 .list-portal .modal-close {
   background: none;
   border: none;
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
   cursor: pointer;
   padding: 4px;
   font-size: 18px;
 }
 
 .list-portal .modal-close:hover {
-  color: #6b7280;
+  color: #e0e6f0;
 }
 
 .list-portal .modal-actions {
@@ -1468,30 +1485,30 @@
   justify-content: center;
   gap: 12px;
   padding: 40px;
-  background: #f9fafb;
-  border: 2px dashed #d1d5db;
+  background: #0a1020;
+  border: 2px dashed rgba(0,200,255,0.15);
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-portal .file-upload-label:hover {
-  background: #f3f4f6;
-  border-color: #3b82f6;
+  background: rgba(0,200,255,0.08);
+  border-color: #00e5ff;
 }
 
 .list-portal .file-upload-label svg {
   font-size: 32px;
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-portal .file-upload-label span {
   font-weight: 500;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .list-portal .file-upload-label small {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 12px;
 }
 
@@ -1505,47 +1522,48 @@
 }
 
 .list-portal .import-result.success {
-  background: #dcfce7;
+  background: rgba(0,184,148,0.15);
 }
 
 .list-portal .import-result.success svg {
-  color: #16a34a;
+  color: #00b894;
   font-size: 20px;
 }
 
 .list-portal .import-result.error {
-  background: #fef2f2;
+  background: rgba(233,69,96,0.1);
 }
 
 .list-portal .import-result.error svg {
-  color: #ef4444;
+  color: #e94560;
   font-size: 20px;
 }
 
 .list-portal .import-result strong {
   display: block;
   margin-bottom: 4px;
+  color: #e0e6f0;
 }
 
 .list-portal .import-result p {
   margin: 0;
   font-size: 14px;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .list-portal .error-list {
   margin: 8px 0 0 0;
   padding-left: 16px;
   font-size: 13px;
-  color: #ef4444;
+  color: #e94560;
 }
 
 /* Large File Option */
 .list-portal .large-file-option {
   margin-top: 16px;
   padding: 16px;
-  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-  border: 1px solid #bae6fd;
+  background: linear-gradient(135deg, rgba(0,229,255,0.05) 0%, rgba(0,229,255,0.08) 100%);
+  border: 1px solid rgba(0,229,255,0.15);
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -1562,7 +1580,7 @@
 }
 
 .list-portal .large-file-info svg {
-  color: #0284c7;
+  color: #00e5ff;
   font-size: 24px;
   flex-shrink: 0;
   margin-top: 2px;
@@ -1570,22 +1588,22 @@
 
 .list-portal .large-file-info strong {
   display: block;
-  color: #0c4a6e;
+  color: #e0e6f0;
   font-size: 14px;
   margin-bottom: 2px;
 }
 
 .list-portal .large-file-info small {
   display: block;
-  color: #0369a1;
+  color: rgba(180,210,240,0.65);
   font-size: 12px;
   line-height: 1.4;
 }
 
 .list-portal .btn-outline {
-  background: white;
-  border: 1px solid #0284c7;
-  color: #0284c7;
+  background: transparent;
+  border: 1px solid #00e5ff;
+  color: #00e5ff;
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 13px;
@@ -1596,8 +1614,8 @@
 }
 
 .list-portal .btn-outline:hover:not(:disabled) {
-  background: #0284c7;
-  color: white;
+  background: #00e5ff;
+  color: #0a0f1a;
 }
 
 .list-portal .btn-outline:disabled {
@@ -1609,7 +1627,7 @@
   display: block;
   width: 100%;
   font-size: 11px;
-  color: #64748b;
+  color: rgba(180,210,240,0.65);
   margin-top: 8px;
   text-align: right;
 }

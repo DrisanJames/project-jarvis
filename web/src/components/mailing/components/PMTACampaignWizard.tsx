@@ -588,10 +588,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const renderStep1 = () => (
     <div className="wiz-step-content">
       <h3 style={{ margin: '0 0 4px' }}>Select Target ISPs</h3>
-      <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
+      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose which ISP ecosystems to target. Cards show live health from the governance engine.
       </p>
-      {loading && <div style={{ textAlign: 'center', padding: 40, color: '#8b8fa3' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading readiness data...</div>}
+      {loading && <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading readiness data...</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
         {(ispReadiness.length > 0 ? ispReadiness : ALL_ISPS.map(isp => ({ isp, display_name: ISP_META[isp]?.label || isp, health_score: 0, status: 'unknown', active_agents: 0, total_agents: 6, bounce_rate: 0, deferral_rate: 0, complaint_rate: 0, warmup_ips: 0, active_ips: 0, quarantined_ips: 0, max_daily_capacity: 0, max_hourly_rate: 0, pool_name: '', has_emergency: false, warnings: [] }))).map((r: any) => {
           const meta = ISP_META[r.isp] || { label: r.display_name, color: '#64748b', emoji: '🌐' };
@@ -606,8 +606,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               onClick={() => toggleISP(r.isp)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleISP(r.isp); } }}
               style={{
-                background: selected ? `${meta.color}15` : '#1e1f2e',
-                border: `2px solid ${selected ? meta.color : '#2d2e3e'}`,
+                background: selected ? `${meta.color}15` : '#0d1526',
+                border: `2px solid ${selected ? meta.color : 'rgba(0,200,255,0.08)'}`,
                 borderRadius: 10, padding: 14, cursor: 'pointer',
                 transition: 'all 0.2s',
               }}
@@ -616,13 +616,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 <span style={{ fontSize: 18 }}>{meta.emoji} <strong style={{ color: meta.color }}>{meta.label}</strong></span>
                 {statusBadge(r.status)}
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 12, color: '#8b8fa3' }}>
-                <span>Health: <strong style={{ color: '#e2e4ed' }}>{r.health_score.toFixed(0)}%</strong></span>
-                <span>Agents: <strong style={{ color: '#e2e4ed' }}>{r.active_agents}/{r.total_agents}</strong></span>
-                <span>Active IPs: <strong style={{ color: '#e2e4ed' }}>{r.active_ips}</strong></span>
-                <span>Warmup IPs: <strong style={{ color: '#e2e4ed' }}>{r.warmup_ips}</strong></span>
-                <span>Capacity: <strong style={{ color: '#e2e4ed' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
-                <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e2e4ed' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
+                <span>Health: <strong style={{ color: '#e0e6f0' }}>{r.health_score.toFixed(0)}%</strong></span>
+                <span>Agents: <strong style={{ color: '#e0e6f0' }}>{r.active_agents}/{r.total_agents}</strong></span>
+                <span>Active IPs: <strong style={{ color: '#e0e6f0' }}>{r.active_ips}</strong></span>
+                <span>Warmup IPs: <strong style={{ color: '#e0e6f0' }}>{r.warmup_ips}</strong></span>
+                <span>Capacity: <strong style={{ color: '#e0e6f0' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
+                <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e0e6f0' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
               </div>
               {/* Per-IP status breakdown */}
               {r.ip_details && r.ip_details.length > 0 && (
@@ -667,19 +667,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const renderStep2 = () => (
     <div className="wiz-step-content">
       <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain</h3>
-      <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
+      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
       </p>
       {domainError && (
         <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 12 }}>
           <p style={{ margin: '0 0 8px' }}>{domainError}</p>
-          <button onClick={fetchDomains} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 16px', fontSize: 13, cursor: 'pointer' }}>
+          <button onClick={fetchDomains} style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 16px', fontSize: 13, cursor: 'pointer' }}>
             Retry
           </button>
         </div>
       )}
       {!domainError && sendingDomains.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 40, color: '#8b8fa3' }}>
+        <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>
           No sending domains configured. Add domains in Domain Center first.
         </div>
       )}
@@ -696,14 +696,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             onClick={() => setSelectedDomain(d.domain)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedDomain(d.domain); } }}
             style={{
-              background: domainSelected ? '#6366f115' : '#1e1f2e',
-              border: `2px solid ${domainSelected ? '#6366f1' : '#2d2e3e'}`,
+              background: domainSelected ? 'rgba(0,200,255,0.08)' : '#0d1526',
+              border: `2px solid ${domainSelected ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
               borderRadius: 10, padding: 14, cursor: 'pointer',
               transition: 'all 0.2s',
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ fontSize: 15, fontWeight: 600, color: '#e2e4ed' }}>{d.domain}</span>
+              <span style={{ fontSize: 15, fontWeight: 600, color: '#e0e6f0' }}>{d.domain}</span>
               {statusBadge(d.status)}
             </div>
             <div style={{ display: 'flex', gap: 12, fontSize: 12, flexWrap: 'wrap' }}>
@@ -716,9 +716,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <FontAwesomeIcon icon={d.dmarc_configured ? faCheckCircle : faTimesCircle} style={{ color: d.dmarc_configured ? '#10b981' : '#ef4444' }} /> DMARC
               </span>
-              <span style={{ color: '#8b8fa3' }}>Pool: {d.pool_name}</span>
-              <span style={{ color: '#8b8fa3' }}>IPs: {d.active_ips} active / {d.warmup_ips} warmup</span>
-              <span style={{ color: '#8b8fa3' }}>Rep: {d.reputation_score.toFixed(0)}%</span>
+              <span style={{ color: 'rgba(180,210,240,0.65)' }}>Pool: {d.pool_name}</span>
+              <span style={{ color: 'rgba(180,210,240,0.65)' }}>IPs: {d.active_ips} active / {d.warmup_ips} warmup</span>
+              <span style={{ color: 'rgba(180,210,240,0.65)' }}>Rep: {d.reputation_score.toFixed(0)}%</span>
             </div>
           </div>
           );
@@ -745,13 +745,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   ];
 
   const renderAIGenerator = () => (
-    <div style={{ background: '#1a1033', border: '1px solid #7c3aed', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+    <div style={{ background: '#1a1033', border: '1px solid #00e5ff', borderRadius: 12, padding: 20, marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <h4 style={{ margin: 0, color: '#c4b5fd', fontSize: 15 }}><FontAwesomeIcon icon={faMagic} /> AI Template Generator</h4>
-          <p style={{ margin: '4px 0 0', color: '#8b8fa3', fontSize: 12 }}>Select a campaign type. AI will analyze <strong style={{ color: '#a78bfa' }}>{selectedDomain}</strong> for branding and generate 5 production-ready variations.</p>
+          <h4 style={{ margin: 0, color: 'rgba(0,200,255,0.7)', fontSize: 15 }}><FontAwesomeIcon icon={faMagic} /> AI Template Generator</h4>
+          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>Select a campaign type. AI will analyze <strong style={{ color: '#00b0ff' }}>{selectedDomain}</strong> for branding and generate 5 production-ready variations.</p>
         </div>
-        <button onClick={() => setShowAIGenerator(false)} style={{ background: 'none', border: 'none', color: '#8b8fa3', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
+        <button onClick={() => setShowAIGenerator(false)} style={{ background: 'none', border: 'none', color: 'rgba(180,210,240,0.65)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
       </div>
 
       {/* Campaign type selector */}
@@ -765,13 +765,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             onClick={() => setAICampaignType(ct.id)}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAICampaignType(ct.id); } }}
             style={{
-              background: aiCampaignType === ct.id ? '#7c3aed20' : '#14151f',
-              border: `2px solid ${aiCampaignType === ct.id ? '#7c3aed' : '#2d2e3e'}`,
+              background: aiCampaignType === ct.id ? 'rgba(0,200,255,0.12)' : '#0a0f1a',
+              border: `2px solid ${aiCampaignType === ct.id ? '#00e5ff' : 'rgba(0,200,255,0.08)'}`,
               borderRadius: 8, padding: '10px 12px', cursor: 'pointer', transition: 'all 0.2s',
             }}
           >
-            <div style={{ fontSize: 13, fontWeight: 600, color: aiCampaignType === ct.id ? '#c4b5fd' : '#e2e4ed' }}>{ct.label}</div>
-            <div style={{ fontSize: 11, color: '#8b8fa3', marginTop: 2 }}>{ct.desc}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: aiCampaignType === ct.id ? 'rgba(0,200,255,0.7)' : '#e0e6f0' }}>{ct.label}</div>
+            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 2 }}>{ct.desc}</div>
           </div>
         ))}
       </div>
@@ -781,7 +781,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         onClick={handleAIGenerate}
         disabled={!aiCampaignType || aiGenerating}
         style={{
-          display: 'flex', alignItems: 'center', gap: 8, background: aiCampaignType && !aiGenerating ? '#7c3aed' : '#4b5563',
+          display: 'flex', alignItems: 'center', gap: 8, background: aiCampaignType && !aiGenerating ? '#00e5ff' : '#4b5563',
           color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 600,
           cursor: aiCampaignType && !aiGenerating ? 'pointer' : 'not-allowed', width: '100%', justifyContent: 'center',
         }}
@@ -799,19 +799,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       {aiVariations.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ color: '#c4b5fd', fontSize: 13, fontWeight: 600 }}>Select variations to use ({aiSelectedIdxs.length} selected)</span>
+            <span style={{ color: 'rgba(0,200,255,0.7)', fontSize: 13, fontWeight: 600 }}>Select variations to use ({aiSelectedIdxs.length} selected)</span>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 onClick={handleAISaveToLibrary}
                 disabled={aiSelectedIdxs.length === 0 || aiSaving}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 && !aiSaving ? '#1e1f2e' : 'transparent', color: aiSelectedIdxs.length > 0 ? '#10b981' : '#4b5563', border: '1px solid #2d2e3e', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 && !aiSaving ? '#0d1526' : 'transparent', color: aiSelectedIdxs.length > 0 ? '#10b981' : '#4b5563', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
               >
                 <FontAwesomeIcon icon={aiSaving ? faSpinner : faSave} spin={aiSaving} /> Save to Library
               </button>
               <button
                 onClick={handleAIUseSelected}
                 disabled={aiSelectedIdxs.length === 0}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 ? '#7c3aed' : '#4b5563', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 ? '#00e5ff' : '#4b5563', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
               >
                 <FontAwesomeIcon icon={faCheck} /> Use Selected
               </button>
@@ -826,23 +826,23 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   key={idx}
                   onClick={() => setAISelectedIdxs(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx])}
                   style={{
-                    background: isSelected ? '#7c3aed15' : '#14151f',
-                    border: `2px solid ${isSelected ? '#7c3aed' : '#2d2e3e'}`,
+                    background: isSelected ? 'rgba(0,200,255,0.08)' : '#0a0f1a',
+                    border: `2px solid ${isSelected ? '#00e5ff' : 'rgba(0,200,255,0.08)'}`,
                     borderRadius: 10, padding: 14, cursor: 'pointer', transition: 'all 0.2s', position: 'relative',
                   }}
                 >
                   {isSelected && (
-                    <div style={{ position: 'absolute', top: 8, right: 8, background: '#7c3aed', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ position: 'absolute', top: 8, right: 8, background: '#00e5ff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <FontAwesomeIcon icon={faCheck} style={{ color: '#fff', fontSize: 11 }} />
                     </div>
                   )}
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#c4b5fd', marginBottom: 8 }}>Variant {v.variant_name}</div>
-                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 4 }}>From: <span style={{ color: '#e2e4ed' }}>{v.from_name}</span></div>
-                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 10 }}>Subject: <span style={{ color: '#e2e4ed' }}>{v.subject}</span></div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'rgba(0,200,255,0.7)', marginBottom: 8 }}>Variant {v.variant_name}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 4 }}>From: <span style={{ color: '#e0e6f0' }}>{v.from_name}</span></div>
+                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 10 }}>Subject: <span style={{ color: '#e0e6f0' }}>{v.subject}</span></div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button
                       onClick={(e) => { e.stopPropagation(); setAIPreviewIdx(aiPreviewIdx === idx ? null : idx); }}
-                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 6, padding: '6px 0', fontSize: 11, cursor: 'pointer' }}
+                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: '#0d1526', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '6px 0', fontSize: 11, cursor: 'pointer' }}
                     >
                       <FontAwesomeIcon icon={faEye} /> Preview
                     </button>
@@ -871,17 +871,17 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
           <h3 style={{ margin: 0 }}>Content + A/B Split Testing</h3>
-          <p style={{ margin: '4px 0 0', color: '#8b8fa3', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
+          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #7c3aed, #6366f1)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          <button onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #00e5ff, #00b0ff)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
             <FontAwesomeIcon icon={faMagic} /> Generate
           </button>
-          <button onClick={() => { setShowTemplatePicker(!showTemplatePicker); setShowAIGenerator(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#1e1f2e', color: '#a78bfa', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+          <button onClick={() => { setShowTemplatePicker(!showTemplatePicker); setShowAIGenerator(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#0d1526', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
             <FontAwesomeIcon icon={faPenFancy} /> Load Template
           </button>
           {variants.length < 4 && (
-            <button onClick={addVariant} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
+            <button onClick={addVariant} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
               <FontAwesomeIcon icon={faPlus} /> Add Variant
             </button>
           )}
@@ -889,22 +889,22 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       </div>
 
       {showTemplatePicker && (
-        <div style={{ background: '#1e1f2e', border: '1px solid #6366f1', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-          <h4 style={{ margin: '0 0 12px', color: '#a78bfa', fontSize: 14 }}>Content Library — Select a Template</h4>
+        <div style={{ background: '#0d1526', border: '1px solid #00b0ff', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 12px', color: '#00b0ff', fontSize: 14 }}>Content Library — Select a Template</h4>
           {templates.length === 0 ? (
-            <p style={{ color: '#8b8fa3', fontSize: 13 }}>No templates saved yet. Create templates in the Content Library tab.</p>
+            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No templates saved yet. Create templates in the Content Library tab.</p>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
               {templates.map((tpl: any) => (
-                <div key={tpl.id} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, padding: 12, cursor: 'pointer', transition: 'border-color 0.2s' }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#6366f1')}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = '#2d2e3e')}>
-                  <strong style={{ color: '#e2e4ed', fontSize: 13, display: 'block', marginBottom: 4 }}>{tpl.name}</strong>
-                  <span style={{ color: '#8b8fa3', fontSize: 12 }}>{tpl.subject || tpl.description || 'No subject'}</span>
+                <div key={tpl.id} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 12, cursor: 'pointer', transition: 'border-color 0.2s' }}
+                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#00b0ff')}
+                  onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(0,200,255,0.08)')}>
+                  <strong style={{ color: '#e0e6f0', fontSize: 13, display: 'block', marginBottom: 4 }}>{tpl.name}</strong>
+                  <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{tpl.subject || tpl.description || 'No subject'}</span>
                   <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
                     {variants.map((v, idx) => (
                       <button key={idx} onClick={() => loadTemplate(tpl, idx)}
-                        style={{ fontSize: 11, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer' }}>
+                        style={{ fontSize: 11, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer' }}>
                         {String.fromCodePoint(0x2192)} Variant {v.variant_name}
                       </button>
                     ))}
@@ -919,16 +919,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       {showAIGenerator && renderAIGenerator()}
 
       {variants.map((v, idx) => (
-        <div key={idx} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
+        <div key={idx} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#a78bfa' }}>Variant {v.variant_name}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#00b0ff' }}>Variant {v.variant_name}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label style={{ fontSize: 12, color: '#8b8fa3', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 Split:
                 <input
                   type="number" min={1} max={100} value={v.split_percent}
                   onChange={e => updateVariant(idx, 'split_percent', Number(e.target.value))}
-                  style={{ width: 50, background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '4px 6px', fontSize: 12, textAlign: 'center' }}
+                  style={{ width: 50, background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '4px 6px', fontSize: 12, textAlign: 'center' }}
                 />%
               </label>
               {variants.length > 1 && (
@@ -940,19 +940,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             <div>
-              <label style={{ fontSize: 11, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>From Name</label>
+              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>From Name</label>
               <input
                 value={v.from_name} placeholder="e.g. Jarvis Team"
                 onChange={e => updateVariant(idx, 'from_name', e.target.value)}
-                style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
+                style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
               />
             </div>
             <div>
-              <label style={{ fontSize: 11, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>Subject Line <span style={{ color: '#64748b' }}>({v.subject.length} chars)</span></label>
+              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Subject Line <span style={{ color: '#64748b' }}>({v.subject.length} chars)</span></label>
               <input
                 value={v.subject} placeholder="e.g. Don't miss this deal"
                 onChange={e => updateVariant(idx, 'subject', e.target.value)}
-                style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
+                style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
               />
             </div>
           </div>
@@ -960,10 +960,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           {/* HTML Content with merge tag toolbar, upload, and preview */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 11, color: '#8b8fa3' }}>HTML Content</label>
+              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>HTML Content</label>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 {/* Upload HTML file */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: '#8b8fa3', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: 'rgba(180,210,240,0.65)', cursor: 'pointer' }}>
                   <FontAwesomeIcon icon={faUpload} />
                   Upload HTML
                   <input
@@ -974,7 +974,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 {/* Preview toggle */}
                 <button
                   onClick={() => toggleVariantPreview(idx)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 4, background: variantPreviews[idx] ? '#6366f120' : '#14151f', color: variantPreviews[idx] ? '#a78bfa' : '#8b8fa3', border: `1px solid ${variantPreviews[idx] ? '#6366f1' : '#2d2e3e'}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, background: variantPreviews[idx] ? 'rgba(0,200,255,0.12)' : '#0a0f1a', color: variantPreviews[idx] ? '#00b0ff' : 'rgba(180,210,240,0.65)', border: `1px solid ${variantPreviews[idx] ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}
                 >
                   <FontAwesomeIcon icon={faEye} /> {variantPreviews[idx] ? 'Hide Preview' : 'Preview'}
                 </button>
@@ -997,9 +997,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   key={tag.label}
                   onClick={() => insertTagAtCursor(idx, tag.syntax)}
                   title={tag.syntax}
-                  style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500, background: '#2d2e3e', color: '#c4b5fd', border: '1px solid #3d3e4e', cursor: 'pointer', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#6366f130'; e.currentTarget.style.borderColor = '#6366f1'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = '#2d2e3e'; e.currentTarget.style.borderColor = '#3d3e4e'; }}
+                  style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500, background: 'rgba(0,200,255,0.08)', color: 'rgba(0,200,255,0.7)', border: '1px solid #3d3e4e', cursor: 'pointer', transition: 'all 0.15s' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,200,255,0.19)'; e.currentTarget.style.borderColor = '#00b0ff'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,200,255,0.08)'; e.currentTarget.style.borderColor = '#3d3e4e'; }}
                 >
                   {tag.label}
                 </button>
@@ -1010,7 +1010,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               ref={el => { textareaRefs.current[idx] = el; }}
               value={v.html_content} rows={12} placeholder="Paste or type HTML content here, or upload an .html file above..."
               onChange={e => updateVariant(idx, 'html_content', e.target.value)}
-              style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150 }}
+              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150 }}
             />
 
             {/* Show detected liquid tags */}
@@ -1025,8 +1025,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
             {/* Inline preview */}
             {variantPreviews[idx] && v.html_content.trim() && (
-              <div style={{ marginTop: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid #2d2e3e' }}>
-                <div style={{ background: '#2d2e3e', padding: '6px 10px', fontSize: 11, color: '#8b8fa3', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ marginTop: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,200,255,0.08)' }}>
+                <div style={{ background: 'rgba(0,200,255,0.08)', padding: '6px 10px', fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span>HTML Preview</span>
                   <span style={{ fontSize: 10, color: '#64748b' }}>Liquid tags shown as raw text (resolved at send time)</span>
                 </div>
@@ -1062,13 +1062,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const renderStep4 = () => (
     <div className="wiz-step-content">
       <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression</h3>
-      <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
+      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Select inclusion lists/segments and exclusion suppression lists.
       </p>
       {audienceError && (
         <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> {audienceError}
-          <button onClick={fetchAudienceData} style={{ marginLeft: 'auto', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>
+          <button onClick={fetchAudienceData} style={{ marginLeft: 'auto', background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>
             Retry
           </button>
         </div>
@@ -1080,22 +1080,22 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#10b981' }}>
             <FontAwesomeIcon icon={faCheckCircle} /> Inclusion
           </h4>
-          <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
+          <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
             {lists.length === 0 && segments.length === 0 && (
               <div style={{ color: '#64748b', fontSize: 12, padding: 10 }}>No lists or segments available.</div>
             )}
             {lists.map(l => (
-              <label key={`list-${l.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e2e4ed', borderBottom: '1px solid #1a1b2e' }}>
+              <label key={`list-${l.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e0e6f0', borderBottom: '1px solid #0a1628' }}>
                 <input type="checkbox" checked={selectedLists.includes(l.id)} onChange={() => toggleList(l.id)} />
                 <span style={{ flex: 1 }}>{l.name}</span>
-                <span style={{ color: '#8b8fa3' }}>{(l.subscriber_count || 0).toLocaleString()}</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(l.subscriber_count || 0).toLocaleString()}</span>
               </label>
             ))}
             {segments.map(s => (
-              <label key={`seg-${s.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#a78bfa', borderBottom: '1px solid #1a1b2e' }}>
+              <label key={`seg-${s.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#00b0ff', borderBottom: '1px solid #0a1628' }}>
                 <input type="checkbox" checked={selectedSegments.includes(s.id)} onChange={() => toggleSegment(s.id)} />
                 <span style={{ flex: 1 }}>{s.name}</span>
-                <span style={{ color: '#8b8fa3' }}>{(s.cached_count || 0).toLocaleString()}</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(s.cached_count || 0).toLocaleString()}</span>
               </label>
             ))}
           </div>
@@ -1106,15 +1106,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#ef4444' }}>
             <FontAwesomeIcon icon={faTimesCircle} /> Suppression
           </h4>
-          <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
+          <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
             {suppressionLists.length === 0 && (
               <div style={{ color: '#64748b', fontSize: 12, padding: 10 }}>No suppression lists available.</div>
             )}
             {suppressionLists.map(sl => (
-              <label key={`supp-${sl.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e2e4ed', borderBottom: '1px solid #1a1b2e' }}>
+              <label key={`supp-${sl.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e0e6f0', borderBottom: '1px solid #0a1628' }}>
                 <input type="checkbox" checked={selectedSuppLists.includes(sl.id)} onChange={() => toggleSuppList(sl.id)} />
                 <span style={{ flex: 1 }}>{sl.name}</span>
-                <span style={{ color: '#8b8fa3' }}>{(sl.entry_count || 0).toLocaleString()}</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(sl.entry_count || 0).toLocaleString()}</span>
               </label>
             ))}
           </div>
@@ -1123,21 +1123,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
       {/* Audience estimate */}
       {audienceEstimate && (
-        <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 14 }}>
-          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e2e4ed' }}>
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>
             <FontAwesomeIcon icon={faChartBar} /> Audience Estimate
           </h4>
           <div style={{ display: 'flex', gap: 20, fontSize: 13, marginBottom: 12, flexWrap: 'wrap' }}>
-            <span style={{ color: '#8b8fa3' }}>Total: <strong style={{ color: '#e2e4ed' }}>{audienceEstimate.total_recipients.toLocaleString()}</strong></span>
-            <span style={{ color: '#8b8fa3' }}>Suppressed: <strong style={{ color: '#ef4444' }}>-{audienceEstimate.suppressed_count.toLocaleString()}</strong></span>
-            <span style={{ color: '#8b8fa3' }}>Net: <strong style={{ color: '#10b981' }}>{audienceEstimate.after_suppressions.toLocaleString()}</strong></span>
+            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Total: <strong style={{ color: '#e0e6f0' }}>{audienceEstimate.total_recipients.toLocaleString()}</strong></span>
+            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Suppressed: <strong style={{ color: '#ef4444' }}>-{audienceEstimate.suppressed_count.toLocaleString()}</strong></span>
+            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Net: <strong style={{ color: '#10b981' }}>{audienceEstimate.after_suppressions.toLocaleString()}</strong></span>
           </div>
           {audienceEstimate.isp_breakdown && Object.keys(audienceEstimate.isp_breakdown).length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {Object.entries(audienceEstimate.isp_breakdown).map(([isp, count]) => {
                 const meta = ISP_META[isp];
                 return (
-                  <span key={isp} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, fontSize: 11, background: (meta?.color || '#64748b') + '15', color: meta?.color || '#8b8fa3', border: `1px solid ${(meta?.color || '#64748b')}33` }}>
+                  <span key={isp} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, fontSize: 11, background: (meta?.color || '#64748b') + '15', color: meta?.color || 'rgba(180,210,240,0.65)', border: `1px solid ${(meta?.color || '#64748b')}33` }}>
                     {meta?.emoji || '🌐'} {meta?.label || isp}: {(count as number).toLocaleString()}
                   </span>
                 );
@@ -1152,15 +1152,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const renderStep5 = () => (
     <div className="wiz-step-content">
       <h3 style={{ margin: '0 0 4px' }}>Infrastructure Intelligence</h3>
-      <p style={{ margin: '0 0 16px', color: '#8b8fa3', fontSize: 13 }}>
+      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
       </p>
-      {loading && <div style={{ textAlign: 'center', padding: 40, color: '#8b8fa3' }}><FontAwesomeIcon icon={faSpinner} spin /> Querying governance engine...</div>}
+      {loading && <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin /> Querying governance engine...</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {ispIntel.map(intel => {
           const meta = ISP_META[intel.isp] || { label: intel.display_name, color: '#64748b', emoji: '🌐' };
           return (
-            <div key={intel.isp} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16 }}>
+            <div key={intel.isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <span style={{ fontSize: 15, fontWeight: 600, color: meta.color }}>{meta.emoji} {meta.label}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1171,9 +1171,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
                 {/* Throughput */}
-                <div style={{ background: '#14151f', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 6 }}>Throughput</div>
-                  <div style={{ fontSize: 12, color: '#e2e4ed', lineHeight: 1.8 }}>
+                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
+                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>Throughput</div>
+                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
                     <div>Active IPs: <strong>{intel.throughput.active_ips}</strong></div>
                     <div>Max/day: <strong>{(intel.throughput.max_daily_capacity / 1000).toFixed(0)}k</strong></div>
                     <div>Max/hour: <strong>{(intel.throughput.max_hourly_rate).toLocaleString()}</strong></div>
@@ -1187,9 +1187,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
 
                 {/* Warmup */}
-                <div style={{ background: '#14151f', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 6 }}>Warmup</div>
-                  <div style={{ fontSize: 12, color: '#e2e4ed', lineHeight: 1.8 }}>
+                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
+                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>Warmup</div>
+                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
                     <div>Total: <strong>{intel.warmup_summary.total_ips}</strong></div>
                     <div>Warmed: <strong style={{ color: '#10b981' }}>{intel.warmup_summary.warmed_ips}</strong></div>
                     <div>Warming: <strong style={{ color: '#f59e0b' }}>{intel.warmup_summary.warming_ips}</strong></div>
@@ -1199,11 +1199,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
 
                 {/* Conviction */}
-                <div style={{ background: '#14151f', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 6 }}>
+                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
+                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>
                     <FontAwesomeIcon icon={faBrain} /> Conviction Memory
                   </div>
-                  <div style={{ fontSize: 12, color: '#e2e4ed', lineHeight: 1.8 }}>
+                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
                     <div>Verdict: <strong style={{ color: intel.conviction_summary.dominant_verdict === 'will' ? '#10b981' : '#ef4444' }}>
                       {intel.conviction_summary.dominant_verdict.toUpperCase()}
                     </strong></div>
@@ -1237,7 +1237,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               )}
 
               {/* Strategy */}
-              <div style={{ padding: '8px 12px', background: '#6366f110', borderRadius: 8, fontSize: 12, color: '#a78bfa', borderLeft: '3px solid #6366f1' }}>
+              <div style={{ padding: '8px 12px', background: 'rgba(0,200,255,0.06)', borderRadius: 8, fontSize: 12, color: '#00b0ff', borderLeft: '3px solid #00b0ff' }}>
                 <FontAwesomeIcon icon={faShieldAlt} /> <strong>Strategy:</strong> {intel.strategy}
               </div>
             </div>
@@ -1260,11 +1260,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <p>{deployResult.error}</p>
               <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 16 }}>
                 <button onClick={handleDeploy} disabled={deploying}
-                  style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                  style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
                   {deploying ? 'Retrying…' : 'Retry Deploy'}
                 </button>
                 <button onClick={() => setDeployResult(null)}
-                  style={{ background: 'transparent', color: '#e2e4ed', border: '1px solid #2d2e3e', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                  style={{ background: 'transparent', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
                   Edit Campaign
                 </button>
               </div>
@@ -1275,7 +1275,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <h3>Campaign Created</h3>
               <p>ID: {deployResult.campaign_id}</p>
               <p>{deployResult.variant_count} variant{deployResult.variant_count > 1 ? 's' : ''} targeting {deployResult.target_isps?.length} ISP{deployResult.target_isps?.length > 1 ? 's' : ''}</p>
-              <button onClick={onClose} style={{ marginTop: 16, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+              <button onClick={onClose} style={{ marginTop: 16, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
                 Done
               </button>
             </div>
@@ -1285,11 +1285,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         <>
           {/* Campaign name */}
           <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>Campaign Name</label>
+            <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Campaign Name</label>
             <input
               value={campaignName} placeholder="e.g. Q1 Gmail Warmup Blast"
               onChange={e => setCampaignName(e.target.value)}
-              style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, color: '#e2e4ed', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
+              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
             />
           </div>
 
@@ -1302,9 +1302,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 style={{
                   flex: 1, padding: '10px 0', borderRadius: 8, fontSize: 13, fontWeight: 600,
                   cursor: 'pointer', transition: 'all 0.2s',
-                  background: sendMode === mode ? (mode === 'immediate' ? '#6366f120' : '#f59e0b20') : '#1e1f2e',
-                  color: sendMode === mode ? (mode === 'immediate' ? '#a78bfa' : '#f59e0b') : '#8b8fa3',
-                  border: `2px solid ${sendMode === mode ? (mode === 'immediate' ? '#6366f1' : '#f59e0b') : '#2d2e3e'}`,
+                  background: sendMode === mode ? (mode === 'immediate' ? 'rgba(0,200,255,0.12)' : '#f59e0b20') : '#0d1526',
+                  color: sendMode === mode ? (mode === 'immediate' ? '#00b0ff' : '#f59e0b') : 'rgba(180,210,240,0.65)',
+                  border: `2px solid ${sendMode === mode ? (mode === 'immediate' ? '#00b0ff' : '#f59e0b') : 'rgba(0,200,255,0.08)'}`,
                 }}
               >
                 {mode === 'immediate' ? 'Send Now' : 'Schedule for Later'}
@@ -1318,25 +1318,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               {recsLoading && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
                   {[1, 2, 3].map(i => (
-                    <div key={i} style={{ height: 48, background: 'linear-gradient(90deg, #1e1f2e 25%, #2d2e3e 50%, #1e1f2e 75%)', borderRadius: 8, animation: 'shimmer 1.5s infinite' }} />
+                    <div key={i} style={{ height: 48, background: 'linear-gradient(90deg, #0d1526 25%, rgba(0,200,255,0.08) 50%, #0d1526 75%)', borderRadius: 8, animation: 'shimmer 1.5s infinite' }} />
                   ))}
                 </div>
               )}
               {!recsLoading && recommendations.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
-                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#e2e4ed' }}>Recommended Send Windows</h4>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#e0e6f0' }}>Recommended Send Windows</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {recommendations.map((rec: any) => {
                       const meta = ISP_META[rec.isp];
                       return (
-                        <div key={rec.isp} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 8, padding: 10 }}>
+                        <div key={rec.isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                             <span>{meta?.emoji || '🌐'}</span>
-                            <strong style={{ color: meta?.color || '#e2e4ed', fontSize: 13 }}>{rec.display_name}</strong>
+                            <strong style={{ color: meta?.color || '#e0e6f0', fontSize: 13 }}>{rec.display_name}</strong>
                             <span style={{
                               fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 600,
                               background: rec.data_quality?.has_historical ? '#10b98120' : '#64748b20',
-                              color: rec.data_quality?.has_historical ? '#10b981' : '#8b8fa3',
+                              color: rec.data_quality?.has_historical ? '#10b981' : 'rgba(180,210,240,0.65)',
                               border: `1px solid ${rec.data_quality?.has_historical ? '#10b98140' : '#64748b40'}`,
                             }}>
                               {rec.data_quality?.has_historical
@@ -1363,9 +1363,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                                 }}
                                 style={{
                                   padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                                  background: w.source === 'historical' ? '#6366f115' : '#1a1b2e',
-                                  color: w.source === 'historical' ? '#a78bfa' : '#8b8fa3',
-                                  border: `1px solid ${w.source === 'historical' ? '#6366f140' : '#2d2e3e'}`,
+                                  background: w.source === 'historical' ? 'rgba(0,200,255,0.08)' : '#0a1628',
+                                  color: w.source === 'historical' ? '#00b0ff' : 'rgba(180,210,240,0.65)',
+                                  border: `1px solid ${w.source === 'historical' ? 'rgba(0,200,255,0.25)' : 'rgba(0,200,255,0.08)'}`,
                                 }}
                               >
                                 {w.day_of_week} {w.start_hour}:00–{w.end_hour}:00 UTC
@@ -1374,7 +1374,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                             ))}
                           </div>
                           {rec.data_quality?.has_historical && (
-                            <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#2d2e3e', overflow: 'hidden' }}>
+                            <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: 'rgba(0,200,255,0.08)', overflow: 'hidden' }}>
                               <div style={{ height: '100%', width: `${Math.min((rec.data_quality.total_sends / 1000) * 100, 100)}%`, background: '#10b981', borderRadius: 2 }} />
                             </div>
                           )}
@@ -1385,13 +1385,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
               )}
               <div>
-                <label style={{ fontSize: 12, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>Send Date & Time</label>
+                <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Send Date & Time</label>
                 <input
                   type="datetime-local"
                   value={scheduledAt}
                   onChange={e => setScheduledAt(e.target.value)}
                   min={new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16)}
-                  style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, color: '#e2e4ed', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
+                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
                 />
               </div>
             </div>
@@ -1413,7 +1413,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               width: '100%', padding: '14px 0',
-              background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#6366f1'),
+              background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
               color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
               cursor: (deploying || (sendMode === 'scheduled' && !scheduledAt)) ? 'not-allowed' : 'pointer',
             }}
@@ -1431,31 +1431,31 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const SummaryCard: React.FC<{ title: string; value: string }> = ({ title, value }) => (
-    <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 8, padding: 12 }}>
-      <div style={{ fontSize: 11, color: '#8b8fa3', marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 13, color: '#e2e4ed', wordBreak: 'break-word' }}>{value || '—'}</div>
+    <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 12 }}>
+      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 13, color: '#e0e6f0', wordBreak: 'break-word' }}>{value || '—'}</div>
     </div>
   );
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#14151f', color: '#e2e4ed' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#0a0f1a', color: '#e0e6f0' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid #2d2e3e', background: '#1a1b2e' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid rgba(0,200,255,0.08)', background: '#0a1628' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {onClose && (
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#8b8fa3', cursor: 'pointer', fontSize: 14 }}>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'rgba(180,210,240,0.65)', cursor: 'pointer', fontSize: 14 }}>
               <FontAwesomeIcon icon={faArrowLeft} />
             </button>
           )}
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>PMTA Campaign Wizard</h2>
         </div>
-        <div style={{ fontSize: 12, color: '#8b8fa3' }}>Step {step} of {STEPS.length}</div>
+        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Step {step} of {STEPS.length}</div>
       </div>
 
       {/* Step indicator */}
-      <div style={{ display: 'flex', padding: '12px 20px', gap: 4, borderBottom: '1px solid #2d2e3e', background: '#1a1b2e', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', padding: '12px 20px', gap: 4, borderBottom: '1px solid rgba(0,200,255,0.08)', background: '#0a1628', overflowX: 'auto' }}>
         {STEPS.map((s) => {
           const isActive = s.id === step;
           const isComplete = s.id < step;
@@ -1466,8 +1466,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '6px 12px', borderRadius: 6, border: 'none',
-                background: isActive ? '#6366f120' : 'transparent',
-                color: isActive ? '#a78bfa' : isComplete ? '#10b981' : '#64748b',
+                background: isActive ? 'rgba(0,200,255,0.12)' : 'transparent',
+                color: isActive ? '#00b0ff' : isComplete ? '#10b981' : '#64748b',
                 fontSize: 12, cursor: s.id < step ? 'pointer' : 'default',
                 whiteSpace: 'nowrap', fontWeight: isActive ? 600 : 400,
               }}
@@ -1491,14 +1491,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
       {/* Footer nav */}
       {!deployResult && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid #2d2e3e', background: '#1a1b2e' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid rgba(0,200,255,0.08)', background: '#0a1628' }}>
           <button
             onClick={() => setStep(Math.max(1, step - 1))}
             disabled={step === 1}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 18px', borderRadius: 8, border: '1px solid #2d2e3e',
-              background: 'transparent', color: step === 1 ? '#4b5563' : '#e2e4ed',
+              padding: '8px 18px', borderRadius: 8, border: '1px solid rgba(0,200,255,0.08)',
+              background: 'transparent', color: step === 1 ? '#4b5563' : '#e0e6f0',
               fontSize: 13, cursor: step === 1 ? 'default' : 'pointer',
             }}
           >
@@ -1511,7 +1511,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '8px 18px', borderRadius: 8, border: 'none',
-                background: canProceed() ? '#6366f1' : '#4b5563',
+                background: canProceed() ? '#00b0ff' : '#4b5563',
                 color: '#fff', fontSize: 13,
                 cursor: canProceed() ? 'pointer' : 'not-allowed',
               }}

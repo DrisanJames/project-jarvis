@@ -350,7 +350,7 @@ const CampaignDashboard: React.FC<{
           : 0;
         const engagementScore = Math.min(100, (efficiency * 2) + (clickToOpen * 1.5) + (deliveryHealth * 0.3));
         const grade = engagementScore >= 80 ? 'A' : engagementScore >= 60 ? 'B' : engagementScore >= 40 ? 'C' : engagementScore >= 20 ? 'D' : 'F';
-        const gradeColor = engagementScore >= 80 ? '#22c55e' : engagementScore >= 60 ? '#3b82f6' : engagementScore >= 40 ? '#f59e0b' : '#ef4444';
+        const gradeColor = engagementScore >= 80 ? '#00b894' : engagementScore >= 60 ? '#00b0ff' : engagementScore >= 40 ? '#fdcb6e' : '#e94560';
 
         return (
           <div className="perf-intel-bar">
@@ -369,7 +369,7 @@ const CampaignDashboard: React.FC<{
               </div>
               <div className="perf-intel-metric">
                 <span className="pim-label">DELIVERY HEALTH</span>
-                <span className="pim-value" style={{ color: deliveryHealth >= 90 ? '#22c55e' : deliveryHealth >= 70 ? '#f59e0b' : '#ef4444' }}>{deliveryHealth.toFixed(0)}%</span>
+                <span className="pim-value" style={{ color: deliveryHealth >= 90 ? '#00b894' : deliveryHealth >= 70 ? '#fdcb6e' : '#e94560' }}>{deliveryHealth.toFixed(0)}%</span>
               </div>
               <div className="perf-intel-metric">
                 <span className="pim-label">CAMPAIGNS</span>
@@ -1380,8 +1380,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                 onClick={() => setUseAgentWizard(true)}
                 className={`cb-mode-btn ${useAgentWizard ? 'active' : ''}`}
                 style={{
-                  padding: '6px 14px', borderRadius: 8, border: useAgentWizard ? '1px solid #8b5cf6' : '1px solid #333',
-                  background: useAgentWizard ? 'rgba(139,92,246,0.15)' : 'transparent', color: useAgentWizard ? '#a78bfa' : '#888',
+                  padding: '6px 14px', borderRadius: 8, border: useAgentWizard ? '1px solid #00e5ff' : '1px solid #333',
+                  background: useAgentWizard ? 'rgba(0,229,255,0.15)' : 'transparent', color: useAgentWizard ? '#00e5ff' : '#888',
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
@@ -1391,8 +1391,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                 onClick={() => setUseAgentWizard(false)}
                 className={`cb-mode-btn ${!useAgentWizard ? 'active' : ''}`}
                 style={{
-                  padding: '6px 14px', borderRadius: 8, border: !useAgentWizard ? '1px solid #3b82f6' : '1px solid #333',
-                  background: !useAgentWizard ? 'rgba(59,130,246,0.15)' : 'transparent', color: !useAgentWizard ? '#60a5fa' : '#888',
+                  padding: '6px 14px', borderRadius: 8, border: !useAgentWizard ? '1px solid #00b0ff' : '1px solid #333',
+                  background: !useAgentWizard ? 'rgba(0,176,255,0.15)' : 'transparent', color: !useAgentWizard ? '#33ccff' : '#888',
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
@@ -1616,15 +1616,15 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
               {creativeMode ? (
                 <div className="cb-creative-content">
                   <style>{`
-                    .cb-creative-content { border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; overflow: hidden; background: #1a1a2e; }
-                    .cb-creative-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); }
-                    .cb-creative-toolbar .cb-ct-badge { background: #27ae60; color: white; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
-                    .cb-creative-toolbar .cb-ct-label { color: rgba(255,255,255,0.5); font-size: 12px; flex: 1; }
-                    .cb-creative-toolbar button { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-                    .cb-creative-toolbar button:hover { background: rgba(255,255,255,0.12); }
-                    .cb-creative-toolbar button.active { background: #6c5ce7; border-color: #6c5ce7; color: white; }
-                    .cb-creative-toolbar .cb-ct-switch { background: rgba(231,76,60,0.15); border-color: rgba(231,76,60,0.3); color: #e74c3c; }
-                    .cb-creative-toolbar .cb-ct-switch:hover { background: rgba(231,76,60,0.25); }
+                    .cb-creative-content { border: 1px solid rgba(0,200,255,0.08); border-radius: 10px; overflow: hidden; background: #0d1526; }
+                    .cb-creative-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid rgba(0,200,255,0.08); background: rgba(0,200,255,0.03); }
+                    .cb-creative-toolbar .cb-ct-badge { background: #00b894; color: white; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+                    .cb-creative-toolbar .cb-ct-label { color: rgba(180,210,240,0.5); font-size: 12px; flex: 1; }
+                    .cb-creative-toolbar button { background: rgba(0,200,255,0.08); border: 1px solid rgba(0,200,255,0.15); color: #e0e6f0; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+                    .cb-creative-toolbar button:hover { background: rgba(0,200,255,0.12); }
+                    .cb-creative-toolbar button.active { background: #00b0ff; border-color: #00b0ff; color: white; }
+                    .cb-creative-toolbar .cb-ct-switch { background: rgba(233,69,96,0.15); border-color: rgba(233,69,96,0.3); color: #e94560; }
+                    .cb-creative-toolbar .cb-ct-switch:hover { background: rgba(233,69,96,0.25); }
                     .cb-creative-preview iframe { width: 100%; height: 600px; border: none; background: white; }
                     .cb-creative-code textarea { width: 100%; height: 500px; background: #0d1117; color: #c9d1d9; border: none; padding: 14px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; resize: vertical; outline: none; }
                   `}</style>

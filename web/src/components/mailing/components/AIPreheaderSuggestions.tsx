@@ -44,12 +44,12 @@ interface AIPreheaderSuggestionsProps {
 // ============================================
 
 const CATEGORY_CONFIG: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: '#ef4444' },
-  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: '#8b5cf6' },
-  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: '#10b981' },
-  personalized: { icon: <FontAwesomeIcon icon={faMagic} />, label: 'Personal', color: '#3b82f6' },
-  call_to_action: { icon: <FontAwesomeIcon icon={faArrowRight} />, label: 'CTA', color: '#f59e0b' },
-  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: '#6366f1' },
+  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: '#e94560' },
+  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: '#00b0ff' },
+  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: '#00b894' },
+  personalized: { icon: <FontAwesomeIcon icon={faMagic} />, label: 'Personal', color: '#00e5ff' },
+  call_to_action: { icon: <FontAwesomeIcon icon={faArrowRight} />, label: 'CTA', color: '#fdcb6e' },
+  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: '#00b0ff' },
 };
 
 // ============================================

@@ -51,14 +51,14 @@ interface SSEEvent {
 }
 
 const REASON_COLORS: Record<string, string> = {
-  hard_bounce: '#ef4444',
+  hard_bounce: '#e94560',
   soft_bounce: '#f97316',
-  spam_complaint: '#dc2626',
-  unsubscribe: '#8b5cf6',
-  inactive: '#6b7280',
-  fbl_complaint: '#dc2626',
-  manual: '#3b82f6',
-  repeated_transient: '#f59e0b',
+  spam_complaint: '#e94560',
+  unsubscribe: '#00b0ff',
+  inactive: 'rgba(180,210,240,0.65)',
+  fbl_complaint: '#e94560',
+  manual: '#00e5ff',
+  repeated_transient: '#fdcb6e',
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -186,16 +186,16 @@ export const GlobalSuppressionDashboard: React.FC = () => {
   };
 
   const reasonLabel = (reason: string) => REASON_LABELS[reason] || reason;
-  const reasonColor = (reason: string) => REASON_COLORS[reason] || '#6b7280';
+  const reasonColor = (reason: string) => REASON_COLORS[reason] || 'rgba(180,210,240,0.65)';
 
   const s: React.CSSProperties = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    color: '#e0e0e0',
+    color: '#e0e6f0',
     padding: 24,
   };
   const card: React.CSSProperties = {
-    background: 'linear-gradient(135deg, rgba(30,30,40,0.9), rgba(20,20,30,0.95))',
-    border: '1px solid rgba(255,255,255,0.08)',
+    background: '#0d1526',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 12,
     padding: 20,
     marginBottom: 16,
@@ -213,18 +213,18 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#ef4444' }} />
+            <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#e94560' }} />
             Global Suppression Hub
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#8b8fa3' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
             Single source of truth — all negative signals converge here. MD5-hashed for instant comparison.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleExportMD5} style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)', color: '#60a5fa', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={handleExportMD5} style={{ background: 'rgba(0,229,255,0.15)', border: '1px solid rgba(0,229,255,0.3)', color: '#00e5ff', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faFileExport} /> Export MD5
           </button>
-          <button onClick={() => { fetchStats(); fetchEntries(searchQuery); }} style={{ background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', color: '#4ade80', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => { fetchStats(); fetchEntries(searchQuery); }} style={{ background: 'rgba(0,184,148,0.15)', border: '1px solid rgba(0,184,148,0.3)', color: '#00b894', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faSync} /> Refresh
           </button>
         </div>
@@ -237,9 +237,9 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             key={view}
             onClick={() => setActiveView(view)}
             style={{
-              background: activeView === view ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${activeView === view ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.08)'}`,
-              color: activeView === view ? '#a5b4fc' : '#8b8fa3',
+              background: activeView === view ? 'rgba(0,229,255,0.25)' : 'rgba(0,200,255,0.04)',
+              border: `1px solid ${activeView === view ? 'rgba(0,229,255,0.5)' : 'rgba(0,200,255,0.08)'}`,
+              color: activeView === view ? '#00e5ff' : 'rgba(180,210,240,0.65)',
               padding: '8px 16px',
               borderRadius: 8,
               cursor: 'pointer',
@@ -262,24 +262,24 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           {/* Top Stats */}
           <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#ef4444' }}>{(stats.total_suppressed || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: '#8b8fa3', marginTop: 4 }}>Total Suppressed</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#e94560' }}>{(stats.total_suppressed || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Total Suppressed</div>
             </div>
             <div style={statCard}>
               <div style={{ fontSize: 28, fontWeight: 700, color: '#f97316' }}>{(stats.today_added || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: '#8b8fa3', marginTop: 4 }}>Added Today</div>
+              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Added Today</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#eab308' }}>{(stats.last_24h_added || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: '#8b8fa3', marginTop: 4 }}>Last 24h</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#fdcb6e' }}>{(stats.last_24h_added || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Last 24h</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#a78bfa' }}>{(stats.last_1h_added || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: '#8b8fa3', marginTop: 4 }}>Last Hour</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#00b0ff' }}>{(stats.last_1h_added || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Last Hour</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#60a5fa' }}>{(stats.velocity_per_min || 0).toFixed(1)}</div>
-              <div style={{ fontSize: 12, color: '#8b8fa3', marginTop: 4 }}>Suppressions/min</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#00e5ff' }}>{(stats.velocity_per_min || 0).toFixed(1)}</div>
+              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Suppressions/min</div>
             </div>
           </div>
 
@@ -287,53 +287,53 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
             {/* By Reason */}
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />By Reason
               </h3>
               {Object.entries(stats.by_reason || {}).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
-                <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
                   <span style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: reasonColor(reason), display: 'inline-block' }} />
                     {reasonLabel(reason)}
                   </span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e0e0' }}>{count.toLocaleString()}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{count.toLocaleString()}</span>
                 </div>
               ))}
-              {Object.keys(stats.by_reason || {}).length === 0 && <div style={{ color: '#6b7280', fontSize: 13 }}>No data yet</div>}
+              {Object.keys(stats.by_reason || {}).length === 0 && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</div>}
             </div>
 
             {/* By Source */}
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
                 <FontAwesomeIcon icon={faGlobe} style={{ marginRight: 6 }} />By Source
               </h3>
               {Object.entries(stats.by_source || {}).sort((a, b) => b[1] - a[1]).map(([source, count]) => (
-                <div key={source} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  <span style={{ fontSize: 13, color: '#d1d5db' }}>{source}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e0e0' }}>{count.toLocaleString()}</span>
+                <div key={source} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                  <span style={{ fontSize: 13, color: '#e0e6f0' }}>{source}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{count.toLocaleString()}</span>
                 </div>
               ))}
-              {Object.keys(stats.by_source || {}).length === 0 && <div style={{ color: '#6b7280', fontSize: 13 }}>No data yet</div>}
+              {Object.keys(stats.by_source || {}).length === 0 && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</div>}
             </div>
 
             {/* By ISP */}
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
                 <FontAwesomeIcon icon={faEnvelope} style={{ marginRight: 6 }} />By ISP
               </h3>
               {Object.entries(stats.by_isp || {}).sort((a, b) => b[1] - a[1]).map(([isp, count]) => (
-                <div key={isp} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  <span style={{ fontSize: 13, color: '#d1d5db' }}>{isp}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e0e0' }}>{count.toLocaleString()}</span>
+                <div key={isp} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                  <span style={{ fontSize: 13, color: '#e0e6f0' }}>{isp}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{count.toLocaleString()}</span>
                 </div>
               ))}
-              {Object.keys(stats.by_isp || {}).length === 0 && <div style={{ color: '#6b7280', fontSize: 13 }}>No data yet</div>}
+              {Object.keys(stats.by_isp || {}).length === 0 && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</div>}
             </div>
           </div>
 
           {/* Add Suppression */}
           <div style={{ ...card, marginTop: 16 }}>
-            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
               <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} />Manual Suppress
             </h3>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -342,12 +342,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 placeholder="email@example.com"
                 value={suppressEmail}
                 onChange={e => setSuppressEmail(e.target.value)}
-                style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px', color: '#e0e0e0', fontSize: 13 }}
+                style={{ flex: 1, background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '8px 12px', color: '#e0e6f0', fontSize: 13 }}
               />
               <select
                 value={suppressReason}
                 onChange={e => setSuppressReason(e.target.value)}
-                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px', color: '#e0e0e0', fontSize: 13 }}
+                style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '8px 12px', color: '#e0e6f0', fontSize: 13 }}
               >
                 <option value="manual">Manual</option>
                 <option value="hard_bounce">Hard Bounce</option>
@@ -355,7 +355,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 <option value="unsubscribe">Unsubscribe</option>
                 <option value="inactive">Inactive</option>
               </select>
-              <button onClick={handleSuppress} style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+              <button onClick={handleSuppress} style={{ background: 'rgba(233,69,96,0.2)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
                 <FontAwesomeIcon icon={faBan} /> Suppress
               </button>
             </div>
@@ -373,52 +373,52 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e0e0', fontSize: 14 }}
+              style={{ flex: 1, background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 14 }}
             />
-            <button onClick={handleSearch} style={{ background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)', color: '#a5b4fc', padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+            <button onClick={handleSearch} style={{ background: 'rgba(0,229,255,0.2)', border: '1px solid rgba(0,229,255,0.4)', color: '#00e5ff', padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
               <FontAwesomeIcon icon={faSearch} /> Search
             </button>
           </div>
 
-          <div style={{ fontSize: 13, color: '#8b8fa3', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)', marginBottom: 8 }}>
             {totalEntries.toLocaleString()} results {searchQuery && `for "${searchQuery}"`}
           </div>
 
           <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>Email</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>MD5</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>Reason</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>Source</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>ISP</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: '#8b8fa3', fontWeight: 500 }}>Date</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'center', color: '#8b8fa3', fontWeight: 500 }}>Action</th>
+                <tr style={{ background: 'rgba(0,200,255,0.03)' }}>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Email</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>MD5</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Reason</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Source</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>ISP</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Date</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'center', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {entries.map(entry => (
-                  <tr key={entry.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                    <td style={{ padding: '8px 14px', color: '#e0e0e0' }}>{entry.email || '(hash-only)'}</td>
-                    <td style={{ padding: '8px 14px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
+                  <tr key={entry.id} style={{ borderTop: '1px solid rgba(0,200,255,0.04)' }}>
+                    <td style={{ padding: '8px 14px', color: '#e0e6f0' }}>{entry.email || '(hash-only)'}</td>
+                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
                     <td style={{ padding: '8px 14px' }}>
                       <span style={{ background: `${reasonColor(entry.reason)}22`, color: reasonColor(entry.reason), padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
                         {reasonLabel(entry.reason)}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px', color: '#9ca3af', fontSize: 12 }}>{entry.source}</td>
-                    <td style={{ padding: '8px 14px', color: '#9ca3af', fontSize: 12 }}>{entry.isp || '-'}</td>
-                    <td style={{ padding: '8px 14px', color: '#6b7280', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
+                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{entry.source}</td>
+                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{entry.isp || '-'}</td>
+                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
                     <td style={{ padding: '8px 14px', textAlign: 'center' }}>
-                      <button onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 13 }}>
+                      <button onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: '#e94560', cursor: 'pointer', fontSize: 13 }}>
                         <FontAwesomeIcon icon={faTrash} />
                       </button>
                     </td>
                   </tr>
                 ))}
                 {entries.length === 0 && !loading && (
-                  <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: '#6b7280' }}>No entries found</td></tr>
+                  <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: 'rgba(180,210,240,0.65)' }}>No entries found</td></tr>
                 )}
               </tbody>
             </table>
@@ -430,10 +430,10 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       {activeView === 'scrub' && (
         <div>
           <div style={card}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#a5b4fc' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#00e5ff' }}>
               <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 6 }} />Pre-Send List Scrub
             </h3>
-            <p style={{ margin: '0 0 12px', fontSize: 13, color: '#8b8fa3' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
               Paste emails or MD5 hashes (one per line) to check against the global suppression hub. This is the same check that runs before every campaign send.
             </p>
             <textarea
@@ -441,13 +441,13 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               value={scrubInput}
               onChange={e => setScrubInput(e.target.value)}
               rows={10}
-              style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e0e0', fontSize: 13, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
+              style={{ width: '100%', background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button onClick={handleScrub} disabled={scrubbing} style={{ background: 'rgba(34,197,94,0.2)', border: '1px solid rgba(34,197,94,0.4)', color: '#4ade80', padding: '10px 20px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+              <button onClick={handleScrub} disabled={scrubbing} style={{ background: 'rgba(0,184,148,0.2)', border: '1px solid rgba(0,184,148,0.4)', color: '#00b894', padding: '10px 20px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                 {scrubbing ? 'Scrubbing...' : 'Scrub Against Global Suppression'}
               </button>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>
+              <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
                 {scrubInput.split('\n').filter(l => l.trim()).length} entries ready
               </span>
             </div>
@@ -455,25 +455,25 @@ export const GlobalSuppressionDashboard: React.FC = () => {
 
           {scrubResult && (
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc' }}>
-                <FontAwesomeIcon icon={faCheckCircle} style={{ marginRight: 6, color: '#4ade80' }} />Scrub Results
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+                <FontAwesomeIcon icon={faCheckCircle} style={{ marginRight: 6, color: '#00b894' }} />Scrub Results
               </h3>
               <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(34,197,94,0.1)', borderRadius: 8, border: '1px solid rgba(34,197,94,0.2)' }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#4ade80' }}>{scrubResult.deliverable_count.toLocaleString()}</div>
-                  <div style={{ fontSize: 12, color: '#4ade80' }}>Deliverable</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(0,184,148,0.1)', borderRadius: 8, border: '1px solid rgba(0,184,148,0.2)' }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#00b894' }}>{scrubResult.deliverable_count.toLocaleString()}</div>
+                  <div style={{ fontSize: 12, color: '#00b894' }}>Deliverable</div>
                 </div>
-                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(239,68,68,0.1)', borderRadius: 8, border: '1px solid rgba(239,68,68,0.2)' }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#ef4444' }}>{scrubResult.suppressed_count.toLocaleString()}</div>
-                  <div style={{ fontSize: 12, color: '#ef4444' }}>Suppressed</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(233,69,96,0.1)', borderRadius: 8, border: '1px solid rgba(233,69,96,0.2)' }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#e94560' }}>{scrubResult.suppressed_count.toLocaleString()}</div>
+                  <div style={{ fontSize: 12, color: '#e94560' }}>Suppressed</div>
                 </div>
-                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(99,102,241,0.1)', borderRadius: 8, border: '1px solid rgba(99,102,241,0.2)' }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#a5b4fc' }}>{scrubResult.suppression_rate.toFixed(1)}%</div>
-                  <div style={{ fontSize: 12, color: '#a5b4fc' }}>Suppression Rate</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(0,229,255,0.1)', borderRadius: 8, border: '1px solid rgba(0,229,255,0.2)' }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#00e5ff' }}>{scrubResult.suppression_rate.toFixed(1)}%</div>
+                  <div style={{ fontSize: 12, color: '#00e5ff' }}>Suppression Rate</div>
                 </div>
-                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)' }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#d1d5db' }}>{scrubResult.processing_ms}ms</div>
-                  <div style={{ fontSize: 12, color: '#6b7280' }}>Processing Time</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 16, background: 'rgba(0,200,255,0.04)', borderRadius: 8, border: '1px solid rgba(0,200,255,0.08)' }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#e0e6f0' }}>{scrubResult.processing_ms}ms</div>
+                  <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Processing Time</div>
                 </div>
               </div>
             </div>
@@ -484,26 +484,26 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       {/* ===== LIVE FEED ===== */}
       {activeView === 'live' && (
         <div style={card}>
-          <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff', display: 'flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={faClock} />
             Live Suppression Feed
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ade80', animation: 'pulse 2s infinite' }} />
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#00b894', animation: 'pulse 2s infinite' }} />
           </h3>
           <div style={{ maxHeight: 500, overflowY: 'auto' }}>
             {liveEvents.map((event, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <FontAwesomeIcon icon={event.action === 'suppressed' ? faBan : faCheckCircle} style={{ color: event.action === 'suppressed' ? '#ef4444' : '#4ade80' }} />
-                <span style={{ color: '#e0e0e0', fontSize: 13, minWidth: 200 }}>{event.email}</span>
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                <FontAwesomeIcon icon={event.action === 'suppressed' ? faBan : faCheckCircle} style={{ color: event.action === 'suppressed' ? '#e94560' : '#00b894' }} />
+                <span style={{ color: '#e0e6f0', fontSize: 13, minWidth: 200 }}>{event.email}</span>
                 <span style={{ background: `${reasonColor(event.reason)}22`, color: reasonColor(event.reason), padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
                   {reasonLabel(event.reason)}
                 </span>
-                <span style={{ color: '#6b7280', fontSize: 12 }}>{event.source}</span>
-                <span style={{ color: '#6b7280', fontSize: 11, fontFamily: 'monospace' }}>{event.md5_hash?.substring(0, 12)}</span>
-                <span style={{ marginLeft: 'auto', color: '#6b7280', fontSize: 11 }}>{new Date(event.timestamp).toLocaleTimeString()}</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{event.source}</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, fontFamily: 'monospace' }}>{event.md5_hash?.substring(0, 12)}</span>
+                <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{new Date(event.timestamp).toLocaleTimeString()}</span>
               </div>
             ))}
             {liveEvents.length === 0 && (
-              <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>
+              <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>
                 <FontAwesomeIcon icon={faHashtag} style={{ fontSize: 24, marginBottom: 8 }} /><br />
                 Waiting for suppression events...
               </div>

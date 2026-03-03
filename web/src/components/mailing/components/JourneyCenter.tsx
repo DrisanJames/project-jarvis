@@ -253,12 +253,12 @@ const FunnelNode: React.FC<{
   };
 
   const nodeTypeColors: Record<string, string> = {
-    trigger: '#10b981',
-    email: '#3b82f6',
-    delay: '#f59e0b',
-    condition: '#8b5cf6',
-    split: '#ec4899',
-    goal: '#14b8a6',
+    trigger: '#00b894',
+    email: '#00e5ff',
+    delay: '#fdcb6e',
+    condition: '#00b0ff',
+    split: '#00b0ff',
+    goal: '#00b894',
   };
 
   const widthPercentage = maxEntered > 0 ? (node.entered / maxEntered) * 100 : 100;

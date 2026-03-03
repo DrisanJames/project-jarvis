@@ -1072,18 +1072,18 @@ export const ABTestList: React.FC<ABTestListProps> = ({ onCreateNew, onViewResul
 
   const getStatusColor = (status: string) => {
     const colors: Record<string, string> = {
-      draft: '#6b7280',
-      scheduled: '#f59e0b',
-      testing: '#3b82f6',
-      waiting: '#8b5cf6',
-      analyzing: '#ec4899',
-      winner_selected: '#10b981',
-      sending_winner: '#06b6d4',
-      completed: '#22c55e',
-      cancelled: '#ef4444',
-      failed: '#dc2626',
+      draft: 'rgba(180,210,240,0.65)',
+      scheduled: '#fdcb6e',
+      testing: '#00e5ff',
+      waiting: '#00b0ff',
+      analyzing: '#00b0ff',
+      winner_selected: '#00b894',
+      sending_winner: '#00e5ff',
+      completed: '#00b894',
+      cancelled: '#e94560',
+      failed: '#e94560',
     };
-    return colors[status] || '#6b7280';
+    return colors[status] || 'rgba(180,210,240,0.65)';
   };
 
   if (loading) {

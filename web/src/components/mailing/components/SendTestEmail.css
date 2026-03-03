@@ -12,21 +12,21 @@
 .send-header h1 {
   margin: 0 0 8px 0;
   font-size: 28px;
-  color: #1f2937;
+  color: #e0e6f0;
 }
 
 .send-header .subtitle {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   margin: 0;
 }
 
 .throttle-display {
   display: flex;
   gap: 24px;
-  background: white;
+  background: #0d1526;
   padding: 12px 20px;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 .throttle-item {
@@ -37,14 +37,14 @@
 
 .throttle-label {
   font-size: 11px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   text-transform: uppercase;
 }
 
 .throttle-value {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: #e0e6f0;
 }
 
 .send-content {
@@ -53,10 +53,10 @@
 }
 
 .send-form {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 .form-row {
@@ -78,24 +78,26 @@
 .form-group label {
   font-size: 13px;
   font-weight: 600;
-  color: #374151;
+  color: #e0e6f0;
   margin-bottom: 6px;
 }
 
 .form-group input,
 .form-group textarea {
   padding: 12px 14px;
-  border: 1px solid #d1d5db;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 10px;
   font-size: 14px;
   transition: all 0.2s;
+  background: #0a1020;
+  color: #e0e6f0;
 }
 
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.15);
 }
 
 .form-group textarea {
@@ -106,8 +108,8 @@
 .send-button {
   width: 100%;
   padding: 14px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
+  color: #0a0f1a;
   border: none;
   border-radius: 12px;
   font-size: 16px;
@@ -119,7 +121,7 @@
 
 .send-button:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 6px 20px rgba(0, 229, 255, 0.4);
 }
 
 .send-button:disabled {
@@ -148,13 +150,13 @@
 }
 
 .result-card.success {
-  background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-  border: 1px solid #6ee7b7;
+  background: linear-gradient(135deg, rgba(0,184,148,0.2) 0%, rgba(0,184,148,0.12) 100%);
+  border: 1px solid rgba(0,184,148,0.4);
 }
 
 .result-card.error {
-  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
-  border: 1px solid #fca5a5;
+  background: linear-gradient(135deg, rgba(233,69,96,0.2) 0%, rgba(233,69,96,0.12) 100%);
+  border: 1px solid rgba(233,69,96,0.3);
 }
 
 .result-icon {
@@ -163,32 +165,33 @@
 
 .result-content h3 {
   margin: 0 0 8px 0;
-  color: #1f2937;
+  color: #e0e6f0;
 }
 
 .result-content p {
   margin: 4px 0;
-  color: #4b5563;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
 }
 
 .result-content code {
-  background: rgba(0,0,0,0.1);
+  background: rgba(0,200,255,0.12);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 12px;
+  color: #e0e6f0;
 }
 
 .send-history {
-  background: white;
+  background: #0d1526;
   border-radius: 16px;
   padding: 20px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 .send-history h3 {
   margin: 0 0 16px 0;
-  color: #1f2937;
+  color: #e0e6f0;
   font-size: 16px;
 }
 
@@ -203,7 +206,7 @@
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  background: #f9fafb;
+  background: #0f1a2e;
   border-radius: 8px;
 }
 
@@ -215,45 +218,46 @@
   flex: 1;
   font-family: monospace;
   font-size: 13px;
-  color: #1f2937;
+  color: #e0e6f0;
 }
 
 .history-time {
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 /* Profile Selector */
 .profile-selector {
   margin-bottom: 20px;
   padding-bottom: 20px;
-  border-bottom: 2px solid #e5e7eb;
+  border-bottom: 2px solid rgba(0,200,255,0.08);
 }
 
 .profile-select {
   padding: 12px 14px;
-  border: 2px solid #667eea;
+  border: 2px solid #00e5ff;
   border-radius: 10px;
   font-size: 14px;
-  background: white;
+  background: #0a1020;
+  color: #e0e6f0;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .profile-select:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.2);
 }
 
 .profile-info {
   margin-top: 8px;
   padding: 8px 12px;
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.1) 0%, rgba(0, 176, 255, 0.1) 100%);
   border-radius: 8px;
   font-size: 13px;
-  color: #4b5563;
+  color: rgba(180,210,240,0.65);
 }
 
 .profile-info strong {
-  color: #667eea;
+  color: #00e5ff;
 }
