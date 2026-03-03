@@ -264,7 +264,11 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		case "pmta":
 			// Try HTTP bridge first (bypasses AWS SMTP port blocking), fall back to SMTP
 			if profile.APIEndpoint.Valid && profile.APIEndpoint.String != "" {
-				result, sendErr = cb.mailingSvc.sendViaPMTAAPI(ctx, profile.APIEndpoint.String, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText)
+				pmtaHeaders := map[string]string{"X-Job": id}
+				for k, v := range unsubHeaders {
+					pmtaHeaders[k] = v
+				}
+				result, sendErr = cb.mailingSvc.sendViaPMTAAPI(ctx, profile.APIEndpoint.String, sub.Email, campaign.FromEmail, campaign.FromName, "", personalizedSubject, trackedHTML, personalizedText, pmtaHeaders)
 			}
 			if result == nil || sendErr != nil {
 				smtpHost := ""

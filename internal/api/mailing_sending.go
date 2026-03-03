@@ -664,7 +664,8 @@ func (a *smtpPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 // sendViaPMTAAPI sends email through PMTA's HTTP injection API (port 19000).
 // This avoids SMTP port blocking issues between AWS and OVH.
 // Endpoint: POST {api_endpoint}/api/inject/v1
-func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
+// Optional extraHeaders inject additional RFC822 headers (e.g. X-Job for campaign tracking).
+func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string, extraHeaders ...map[string]string) (map[string]interface{}, error) {
 	if apiEndpoint == "" {
 		return nil, fmt.Errorf("PMTA API endpoint not configured")
 	}
@@ -683,6 +684,11 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 	rfc822.WriteString("MIME-Version: 1.0\r\n")
 	if replyEmail != "" {
 		rfc822.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
+	}
+	for _, hdrs := range extraHeaders {
+		for k, v := range hdrs {
+			rfc822.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
 	}
 	rfc822.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
 	rfc822.WriteString("\r\n")

@@ -590,6 +590,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				PMTAPassword: pmtaMgmtPass,
 			}
 			ingestor := engine.NewIngestor(registry, signalProcessor, ingestorCfg)
+			ingestor.SetDB(db)
 
 			decisionStore := &engine.DBDecisionStore{DB: db}
 			orchestrator := engine.NewOrchestrator(
