@@ -52,6 +52,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
+		cr.Get("/diag", s.HandlePMTADiag)
 	})
 }
 
@@ -850,4 +851,88 @@ func domainToISPLookup(domain string) string {
 		return isp
 	}
 	return "other"
+}
+
+// HandlePMTADiag returns diagnostic info about campaigns, queue, and PMTA bridge.
+func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := s.orgID
+
+	type queueStat struct {
+		CampaignID string `json:"campaign_id"`
+		Status     string `json:"status"`
+		Count      int    `json:"count"`
+		Error      string `json:"error,omitempty"`
+	}
+	type campaignInfo struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		Sent      int    `json:"sent_count"`
+		Recip     int    `json:"total_recipients"`
+		ProfileID string `json:"profile_id"`
+		FromEmail string `json:"from_email"`
+		ListIDs   string `json:"list_ids"`
+	}
+
+	var campaigns []campaignInfo
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, name, status, COALESCE(sent_count,0), COALESCE(total_recipients,0),
+		       COALESCE(sending_profile_id::text,''), COALESCE(from_email,''),
+		       COALESCE(list_ids::text,'[]')
+		FROM mailing_campaigns
+		WHERE organization_id = $1 AND status IN ('scheduled','preparing','sending')
+		ORDER BY created_at DESC LIMIT 10
+	`, orgID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c campaignInfo
+			rows.Scan(&c.ID, &c.Name, &c.Status, &c.Sent, &c.Recip, &c.ProfileID, &c.FromEmail, &c.ListIDs)
+			campaigns = append(campaigns, c)
+		}
+	}
+
+	var queueStats []queueStat
+	qrows, err := s.db.QueryContext(ctx, `
+		SELECT campaign_id::text, status, COUNT(*), COALESCE(MAX(error_message),'')
+		FROM mailing_campaign_queue
+		WHERE campaign_id IN (
+			SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND created_at > NOW() - INTERVAL '6 hours'
+		)
+		GROUP BY campaign_id, status
+		ORDER BY campaign_id, status
+	`, orgID)
+	if err == nil {
+		defer qrows.Close()
+		for qrows.Next() {
+			var qs queueStat
+			qrows.Scan(&qs.CampaignID, &qs.Status, &qs.Count, &qs.Error)
+			queueStats = append(queueStats, qs)
+		}
+	}
+
+	// Check PMTA bridge health
+	bridgeHealth := "unknown"
+	var bridgeEndpoint string
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(api_endpoint,'') FROM mailing_sending_profiles
+		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active' LIMIT 1
+	`, orgID).Scan(&bridgeEndpoint)
+	if bridgeEndpoint != "" {
+		hc, _ := http.NewRequestWithContext(ctx, "GET", bridgeEndpoint+"/health", nil)
+		if resp, err := http.DefaultClient.Do(hc); err != nil {
+			bridgeHealth = "error: " + err.Error()
+		} else {
+			resp.Body.Close()
+			bridgeHealth = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+	}
+
+	respondJSON(w, 200, map[string]interface{}{
+		"campaigns":       campaigns,
+		"queue_stats":     queueStats,
+		"bridge_endpoint": bridgeEndpoint,
+		"bridge_health":   bridgeHealth,
+	})
 }
