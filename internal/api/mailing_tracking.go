@@ -474,7 +474,7 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'sent'", campaignID).Scan(&sentCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'opened'", campaignID).Scan(&openCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'clicked'", campaignID).Scan(&clickCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'bounced'", campaignID).Scan(&bounceCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type IN ('hard_bounce', 'soft_bounce', 'bounced')", campaignID).Scan(&bounceCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'complained'", campaignID).Scan(&complaintCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'unsubscribed'", campaignID).Scan(&unsubCount)
 	
