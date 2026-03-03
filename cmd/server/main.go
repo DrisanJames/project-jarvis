@@ -949,9 +949,21 @@ func runStartupMigrations(db *sql.DB) {
 		sql  string
 	}{
 		{"widen_status_column", `ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE VARCHAR(30)`},
-		{"drop_status_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
-		{"drop_campaign_type_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
-		{"add_status_check", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+		{"drop_all_campaign_checks", `DO $$
+		DECLARE r RECORD;
+		BEGIN
+			FOR r IN
+				SELECT con.conname
+				FROM pg_constraint con
+				JOIN pg_class rel ON rel.oid = con.conrelid
+				JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+				WHERE rel.relname = 'mailing_campaigns'
+				  AND con.contype = 'c'
+			LOOP
+				EXECUTE 'ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname);
+			END LOOP;
+		END$$`},
+		{"add_status_check_v2", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
 		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
 		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
