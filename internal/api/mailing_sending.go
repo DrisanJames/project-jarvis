@@ -961,16 +961,20 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 	return query, args
 }
 
-// injectTracking adds tracking pixel and click tracking to HTML.
-// URLs use the public /track/ routes (not /api/mailing/track/) so they
-// work without authentication and match the SendWorkerPool format.
+// injectTracking adds tracking pixel and click tracking using the global TRACKING_URL.
 func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscriberID, emailID uuid.UUID) string {
+	return svc.injectTrackingWithURL(html, orgID, campaignID, subscriberID, emailID, svc.trackingURL)
+}
+
+// injectTrackingWithURL adds tracking pixel and click tracking using a specific base URL.
+// This allows per-campaign tracking domains so links match the sending domain.
+func (svc *MailingService) injectTrackingWithURL(html string, orgID, campaignID, subscriberID, emailID uuid.UUID, baseURL string) string {
 	trackingData := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(trackingData))
 	sig := signData(encoded, svc.signingKey)[:16]
 
 	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`,
-		svc.trackingURL, encoded, sig)
+		baseURL, encoded, sig)
 	if strings.Contains(html, "</body>") {
 		html = strings.Replace(html, "</body>", pixel+"</body>", 1)
 	} else {
@@ -991,7 +995,7 @@ func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscr
 		linkData := fmt.Sprintf("%s|%s", trackingData, originalURL)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
 		linkSig := signData(linkEncoded, svc.signingKey)[:16]
-		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, svc.trackingURL, linkEncoded, linkSig)
+		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, baseURL, linkEncoded, linkSig)
 	})
 
 	return html

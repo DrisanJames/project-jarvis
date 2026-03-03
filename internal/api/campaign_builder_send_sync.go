@@ -70,24 +70,25 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 
 	// Get sending profile details
 	var profile struct {
-		ID          string
-		VendorType  string
-		APIKey      sql.NullString
-		SMTPHost    sql.NullString
-		SMTPPort    sql.NullInt64
-		SMTPUser    sql.NullString
-		SMTPPass    sql.NullString
-		APIEndpoint sql.NullString
+		ID             string
+		VendorType     string
+		APIKey         sql.NullString
+		SMTPHost       sql.NullString
+		SMTPPort       sql.NullInt64
+		SMTPUser       sql.NullString
+		SMTPPass       sql.NullString
+		APIEndpoint    sql.NullString
+		TrackingDomain sql.NullString
 	}
 	
 	if campaign.ProfileID.Valid {
 		cb.db.QueryRowContext(ctx, `
 			SELECT id, vendor_type, api_key, smtp_host, smtp_port, smtp_username, smtp_password,
-			       api_endpoint
+			       api_endpoint, COALESCE(tracking_domain, '')
 			FROM mailing_sending_profiles WHERE id = $1
 		`, campaign.ProfileID.String).Scan(&profile.ID, &profile.VendorType, &profile.APIKey,
 			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			&profile.APIEndpoint)
+			&profile.APIEndpoint, &profile.TrackingDomain)
 	}
 	
 	// Update status to sending
@@ -120,12 +121,22 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	}
 	campUUID, _ := uuid.Parse(id)
 	
+	// Resolve the tracking base URL: prefer the sending profile's tracking domain
+	// over the global TRACKING_URL so that links match the sending domain.
+	campaignTrackingURL := cb.mailingSvc.trackingURL
+	if profile.TrackingDomain.Valid && profile.TrackingDomain.String != "" {
+		td := profile.TrackingDomain.String
+		if !strings.HasPrefix(td, "http") {
+			td = "https://" + td
+		}
+		campaignTrackingURL = strings.TrimRight(td, "/")
+	}
+
 	// ============================================
 	// PERSONALIZATION ENGINE SETUP
 	// ============================================
-	// Initialize template service (with caching) and context builder
 	templateSvc := mailing.NewTemplateService()
-	contextBuilder := mailing.NewContextBuilder(cb.db, cb.mailingSvc.trackingURL, cb.mailingSvc.signingKey)
+	contextBuilder := mailing.NewContextBuilder(cb.db, campaignTrackingURL, cb.mailingSvc.signingKey)
 	
 	// Pre-validate template syntax ONCE before the loop
 	// This prevents sending malformed templates to subscribers
@@ -220,14 +231,14 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			personalizedText, _ = templateSvc.Render(textCacheKey, campaign.TextContent, renderCtx)
 		}
 		
-		// Inject tracking (AFTER personalization)
+		// Inject tracking (AFTER personalization) using the per-campaign tracking URL
 		emailID := uuid.New()
-		trackedHTML := cb.mailingSvc.injectTracking(personalizedHTML, orgID, campUUID, sub.ID, emailID)
+		trackedHTML := cb.mailingSvc.injectTrackingWithURL(personalizedHTML, orgID, campUUID, sub.ID, emailID, campaignTrackingURL)
 
 		// Generate unsub URL and inject into body + headers
 		unsubData := fmt.Sprintf("%s|%s|%s", orgID, campUUID.String(), sub.ID.String())
 		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-		unsubURL := fmt.Sprintf("%s/track/unsubscribe/%s", cb.mailingSvc.trackingURL, unsubEncoded)
+		unsubURL := fmt.Sprintf("%s/track/unsubscribe/%s", campaignTrackingURL, unsubEncoded)
 		trackedHTML = strings.ReplaceAll(trackedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		trackedHTML = strings.ReplaceAll(trackedHTML, "{{system.unsubscribe_url}}", unsubURL)
 
