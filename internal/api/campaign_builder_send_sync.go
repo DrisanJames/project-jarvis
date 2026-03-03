@@ -360,7 +360,8 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
-	_, updateErr := cb.db.ExecContext(bgCtx, `
+	var dbDiag string
+	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
 		SET status = $1, sent_count = $2, completed_at = NOW(), updated_at = NOW()
 		WHERE id = $3
@@ -368,8 +369,15 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
+		dbDiag = fmt.Sprintf("err: %v", updateErr)
 	} else {
-		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s", id, sent, failed, finalStatus)
+		rowsAffected, _ := updateResult.RowsAffected()
+		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows=%d", id, sent, failed, finalStatus, rowsAffected)
+		if rowsAffected == 0 {
+			dbDiag = fmt.Sprintf("0 rows affected for id=%s, status=%s", id, finalStatus)
+		} else {
+			dbDiag = fmt.Sprintf("ok: %d rows", rowsAffected)
+		}
 	}
 	
 	// Update profile usage
@@ -382,14 +390,15 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaign_id":   id,
-		"status":        finalStatus,
-		"sent":          sent,
-		"failed":        failed,
-		"suppressed":    suppressed,
+		"campaign_id":    id,
+		"status":         finalStatus,
+		"sent":           sent,
+		"failed":         failed,
+		"suppressed":     suppressed,
 		"total_targeted": len(subscribers),
-		"vendor":        profile.VendorType,
+		"vendor":         profile.VendorType,
 		"throttle_speed": campaign.ThrottleSpeed,
+		"_db_diag":       dbDiag,
 	})
 }
 
