@@ -62,6 +62,9 @@ type SendWorkerPool struct {
 	trackingURL     string // Base URL for open/click/unsubscribe tracking
 	trackingSecret  string // HMAC signing key for tracking tokens
 	orgID           string // Organization ID for tracking data
+
+	profileTrackingDomainCache map[string]string // profileID -> resolved tracking base URL
+	ptdMu                     sync.RWMutex
 }
 
 // ESPSender interface for sending via different ESPs
@@ -198,6 +201,38 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 	p.trackingURL = trackingURL
 	p.trackingSecret = trackingSecret
 	p.orgID = orgID
+	p.profileTrackingDomainCache = make(map[string]string)
+}
+
+// resolveTrackingURL returns the per-profile tracking base URL if one is
+// configured, falling back to the global trackingURL.
+func (p *SendWorkerPool) resolveTrackingURL(ctx context.Context, profileID string) string {
+	if profileID == "" {
+		return p.trackingURL
+	}
+	p.ptdMu.RLock()
+	if cached, ok := p.profileTrackingDomainCache[profileID]; ok {
+		p.ptdMu.RUnlock()
+		return cached
+	}
+	p.ptdMu.RUnlock()
+
+	var td sql.NullString
+	p.db.QueryRowContext(ctx, `SELECT tracking_domain FROM mailing_sending_profiles WHERE id = $1`, profileID).Scan(&td)
+
+	resolved := p.trackingURL
+	if td.Valid && td.String != "" {
+		d := td.String
+		if !strings.HasPrefix(d, "http") {
+			d = "https://" + d
+		}
+		resolved = strings.TrimRight(d, "/")
+	}
+
+	p.ptdMu.Lock()
+	p.profileTrackingDomainCache[profileID] = resolved
+	p.ptdMu.Unlock()
+	return resolved
 }
 
 // Start begins the worker pool
@@ -446,12 +481,14 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
 	var unsubURL string
-	if p.trackingURL != "" {
+	trackBase := p.resolveTrackingURL(ctx, item.ProfileID)
+	if trackBase != "" {
 		htmlContent = p.injectTrackingPixelAndLinks(
 			htmlContent,
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
+			trackBase,
 		)
-		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String())
+		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), trackBase)
 		headers["List-Unsubscribe"] = fmt.Sprintf("<%s>", unsubURL)
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
@@ -721,13 +758,13 @@ func (p *SendWorkerPool) trackSign(data string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID string) string {
+func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
 	orgID := p.orgID
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	sig := p.trackSign(data)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
 
-	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`, p.trackingURL, encoded, sig)
+	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`, baseURL, encoded, sig)
 	if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx >= 0 {
 		html = html[:idx] + pixel + html[idx:]
 	} else {
@@ -746,17 +783,17 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 		linkData := fmt.Sprintf("%s|%s", data, origURL)
 		linkSig := p.trackSign(linkData)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
-		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, p.trackingURL, linkEncoded, linkSig)
+		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, baseURL, linkEncoded, linkSig)
 	})
 
 	return html
 }
 
-func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID string) string {
+func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseURL string) string {
 	data := fmt.Sprintf("%s|%s|%s", p.orgID, campaignID, subscriberID)
 	sig := p.trackSign(data)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
-	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", p.trackingURL, encoded, sig)
+	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", baseURL, encoded, sig)
 }
 
 // buildRenderContext constructs a full Liquid render context from a queue item,
@@ -804,9 +841,10 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem) mailing.RenderContex
 		"timestamp":       now.Unix(),
 	}
 	if p.trackingURL != "" {
-		system["unsubscribe_url"] = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String())
-		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", p.trackingURL, item.SubscriberID.String())
-		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", p.trackingURL, item.CampaignID.String(), item.SubscriberID.String())
+		tBase := p.trackingURL
+		system["unsubscribe_url"] = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), tBase)
+		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", tBase, item.SubscriberID.String())
+		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", tBase, item.CampaignID.String(), item.SubscriberID.String())
 	}
 	rc["system"] = system
 	rc["now"] = now
