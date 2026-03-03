@@ -2,11 +2,101 @@ package mailing
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestSanitizeAIJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{
+			name:    "already valid JSON",
+			input:   `[{"variant_name":"A","html_content":"<p>hello</p>"}]`,
+			wantErr: false,
+		},
+		{
+			name:    "literal newlines in string values",
+			input:   "[{\"variant_name\":\"A\",\"html_content\":\"<!DOCTYPE html>\n<html>\n<body>\n<p>Hello</p>\n</body>\n</html>\"}]",
+			wantErr: false,
+		},
+		{
+			name:    "literal tabs in string values",
+			input:   "[{\"variant_name\":\"A\",\"html_content\":\"<table>\t<tr>\t<td>hi</td>\t</tr>\t</table>\"}]",
+			wantErr: false,
+		},
+		{
+			name:    "mixed control characters",
+			input:   "[{\"subject\":\"Hello\\nWorld\",\"html_content\":\"line1\nline2\rline3\ttab\"}]",
+			wantErr: false,
+		},
+		{
+			name:    "already escaped sequences preserved",
+			input:   `[{"html_content":"line1\\nline2"}]`,
+			wantErr: false,
+		},
+		{
+			name:    "newlines outside strings are fine",
+			input:   "[\n  {\n    \"variant_name\": \"A\"\n  }\n]",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sanitized := sanitizeAIJSON(tt.input)
+
+			var result []map[string]interface{}
+			err := json.Unmarshal([]byte(sanitized), &result)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("json.Unmarshal after sanitize: err=%v, wantErr=%v\ninput:     %q\nsanitized: %q",
+					err, tt.wantErr, tt.input, sanitized)
+			}
+		})
+	}
+}
+
+func TestSanitizeAIJSON_HTMLTemplateScenario(t *testing.T) {
+	// Simulate the exact scenario: AI returns a JSON array of templates
+	// where html_content contains literal newlines (as the OpenAI content
+	// string would after Go unmarshals the outer API response).
+	aiOutput := "[{\"variant_name\":\"A\",\"from_name\":\"Team Brand\",\"subject\":\"Welcome!\",\"html_content\":\"<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome</title>\\n</head>\\n<body>\\n<table width=\\\"600\\\">\\n<tr><td>Hello</td></tr>\\n</table>\\n</body>\\n</html>\"}]"
+
+	// This is valid JSON (escaped newlines), should parse fine
+	var baseline []GeneratedVariation
+	if err := json.Unmarshal([]byte(aiOutput), &baseline); err != nil {
+		t.Fatalf("baseline should parse: %v", err)
+	}
+
+	// Now simulate the actual bug: the AI content has LITERAL newlines
+	// (what happens after Go extracts the content string from the OpenAI response)
+	buggyOutput := "[{\"variant_name\":\"A\",\"from_name\":\"Team Brand\",\"subject\":\"Welcome!\",\"html_content\":\"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome</title>\n</head>\n<body>\n<table width=\\\"600\\\">\n<tr><td>Hello</td></tr>\n</table>\n</body>\n</html>\"}]"
+
+	// Without sanitization, this MUST fail
+	var shouldFail []GeneratedVariation
+	if err := json.Unmarshal([]byte(buggyOutput), &shouldFail); err == nil {
+		t.Fatal("buggy output should fail json.Unmarshal without sanitization")
+	}
+
+	// With sanitization, it MUST succeed
+	sanitized := sanitizeAIJSON(buggyOutput)
+	var result []GeneratedVariation
+	if err := json.Unmarshal([]byte(sanitized), &result); err != nil {
+		t.Fatalf("sanitized output should parse: %v\nsanitized: %s", err, sanitized[:min(200, len(sanitized))])
+	}
+
+	if len(result) != 1 || result[0].VariantName != "A" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	if result[0].HTMLContent == "" {
+		t.Error("html_content should not be empty after sanitization")
+	}
+}
 
 func TestAIContentService_ExtractTextFromHTML(t *testing.T) {
 	svc := &AIContentService{}

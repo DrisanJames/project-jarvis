@@ -18,6 +18,15 @@ type AIContentHandlers struct {
 	db      *sql.DB
 }
 
+// writeAIError writes a properly JSON-encoded error response, avoiding
+// string concatenation that can produce invalid JSON when error messages
+// contain control characters or quotes.
+func writeAIError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
 // NewAIContentHandlers creates a new AIContentHandlers instance
 func NewAIContentHandlers(db *sql.DB) *AIContentHandlers {
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -85,7 +94,7 @@ func (h *AIContentHandlers) HandleGenerateSubjectLines(w http.ResponseWriter, r 
 
 	suggestions, err := h.service.GenerateSubjectLines(r.Context(), params)
 	if err != nil {
-		http.Error(w, `{"error":"failed to generate subject lines: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to generate subject lines: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -132,7 +141,7 @@ func (h *AIContentHandlers) HandleAnalyzeContent(w http.ResponseWriter, r *http.
 
 	analysis, err := h.service.AnalyzeContent(r.Context(), req.HTMLContent)
 	if err != nil {
-		http.Error(w, `{"error":"failed to analyze content: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to analyze content: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -229,7 +238,7 @@ func (h *AIContentHandlers) HandlePredictPerformance(w http.ResponseWriter, r *h
 
 	prediction, err := h.service.PredictPerformance(r.Context(), campaign)
 	if err != nil {
-		http.Error(w, `{"error":"failed to predict performance: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to predict performance: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -283,7 +292,7 @@ func (h *AIContentHandlers) HandleRecommendSegments(w http.ResponseWriter, r *ht
 
 	recommendations, err := h.service.RecommendSegments(r.Context(), orgID, goal)
 	if err != nil {
-		http.Error(w, `{"error":"failed to recommend segments: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to recommend segments: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -332,7 +341,7 @@ func (h *AIContentHandlers) HandleImproveContent(w http.ResponseWriter, r *http.
 
 	improvedContent, improvements, err := h.service.ImproveContent(r.Context(), req.HTMLContent, goal)
 	if err != nil {
-		http.Error(w, `{"error":"failed to improve content: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to improve content: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -380,7 +389,7 @@ func (h *AIContentHandlers) HandleGenerateCTAs(w http.ResponseWriter, r *http.Re
 
 	ctas, err := h.service.GenerateCTAs(r.Context(), req.ProductInfo, count)
 	if err != nil {
-		http.Error(w, `{"error":"failed to generate CTAs: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "failed to generate CTAs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -412,7 +421,7 @@ func (h *AIContentHandlers) HandleGenerateTemplates(w http.ResponseWriter, r *ht
 
 	result, err := h.service.GenerateEmailTemplates(r.Context(), req)
 	if err != nil {
-		http.Error(w, `{"error":"template generation failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		writeAIError(w, "template generation failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

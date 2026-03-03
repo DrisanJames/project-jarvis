@@ -424,6 +424,8 @@ func (s *AIContentService) callClaudeForTemplates(ctx context.Context, prompt st
 		raw = strings.TrimSpace(raw)
 	}
 
+	raw = sanitizeAIJSON(raw)
+
 	var variations []GeneratedVariation
 	if err := json.Unmarshal([]byte(raw), &variations); err != nil {
 		return nil, fmt.Errorf("failed to parse generated templates: %w (response length: %d)", err, len(raw))
@@ -497,6 +499,8 @@ func (s *AIContentService) callOpenAIForTemplates(ctx context.Context, prompt st
 		raw = strings.TrimSuffix(raw, "```")
 		raw = strings.TrimSpace(raw)
 	}
+
+	raw = sanitizeAIJSON(raw)
 
 	var variations []GeneratedVariation
 	if err := json.Unmarshal([]byte(raw), &variations); err != nil {

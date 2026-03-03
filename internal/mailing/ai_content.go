@@ -102,6 +102,61 @@ type SegmentRecommendation struct {
 	Reasoning      string   `json:"reasoning"`
 }
 
+// sanitizeAIJSON escapes literal control characters (0x00-0x1F) that appear
+// inside JSON string values. AI models return JSON where HTML content contains
+// literal newlines/tabs within string values — invalid per RFC 8259.
+// Characters outside string values (whitespace between tokens) are preserved.
+func sanitizeAIJSON(raw string) string {
+	var buf strings.Builder
+	buf.Grow(len(raw) + 512)
+	inString := false
+	prevBackslash := false
+
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+
+		if prevBackslash {
+			buf.WriteByte(b)
+			prevBackslash = false
+			continue
+		}
+
+		if b == '\\' && inString {
+			buf.WriteByte(b)
+			prevBackslash = true
+			continue
+		}
+
+		if b == '"' {
+			inString = !inString
+			buf.WriteByte(b)
+			continue
+		}
+
+		if inString && b < 0x20 {
+			switch b {
+			case '\n':
+				buf.WriteString("\\n")
+			case '\r':
+				buf.WriteString("\\r")
+			case '\t':
+				buf.WriteString("\\t")
+			case '\b':
+				buf.WriteString("\\b")
+			case '\f':
+				buf.WriteString("\\f")
+			default:
+				fmt.Fprintf(&buf, "\\u%04x", b)
+			}
+			continue
+		}
+
+		buf.WriteByte(b)
+	}
+
+	return buf.String()
+}
+
 // Common spam trigger words
 var spamTriggerWords = []string{
 	// Money/Finance
@@ -1100,6 +1155,8 @@ func (s *AIContentService) parseSubjectSuggestionsJSON(content string) ([]Subjec
 		content = strings.TrimSpace(content)
 	}
 
+	content = sanitizeAIJSON(content)
+
 	var suggestions []SubjectSuggestion
 	if err := json.Unmarshal([]byte(content), &suggestions); err != nil {
 		return nil, fmt.Errorf("failed to parse suggestions: %w", err)
@@ -1333,6 +1390,8 @@ Respond in JSON:
 		response = strings.TrimSuffix(response, "```")
 	}
 
+	response = sanitizeAIJSON(response)
+
 	var result struct {
 		ImprovedContent string   `json:"improved_content"`
 		Improvements    []string `json:"improvements"`
@@ -1369,6 +1428,8 @@ Respond with a JSON array of strings:
 		response = strings.TrimSuffix(response, "```")
 	}
 
+	response = sanitizeAIJSON(response)
+
 	var ctas []string
 	if err := json.Unmarshal([]byte(response), &ctas); err != nil {
 		return nil, err
@@ -1401,6 +1462,8 @@ Respond with a JSON array of strings:
 		response = strings.TrimPrefix(response, "```")
 		response = strings.TrimSuffix(response, "```")
 	}
+
+	response = sanitizeAIJSON(response)
 
 	var ctas []string
 	if err := json.Unmarshal([]byte(response), &ctas); err != nil {

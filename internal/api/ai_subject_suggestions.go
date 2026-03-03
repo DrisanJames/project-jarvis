@@ -511,6 +511,8 @@ func (s *AISubjectSuggestionService) parseSubjectSuggestions(completion string) 
 		completion = strings.TrimSpace(completion)
 	}
 
+	completion = sanitizeAIJSONString(completion)
+
 	var rawSuggestions []struct {
 		Subject           string  `json:"subject"`
 		Category          string  `json:"category"`
@@ -894,6 +896,53 @@ func (s *AISubjectSuggestionService) getFallbackPreheaderSuggestions(req *Prehea
 		return suggestions[:req.Count]
 	}
 	return suggestions
+}
+
+// sanitizeAIJSONString escapes literal control characters inside JSON string values.
+// AI models often produce JSON where HTML content contains raw newlines/tabs.
+func sanitizeAIJSONString(raw string) string {
+	var buf strings.Builder
+	buf.Grow(len(raw) + 512)
+	inStr := false
+	prevEsc := false
+
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if prevEsc {
+			buf.WriteByte(b)
+			prevEsc = false
+			continue
+		}
+		if b == '\\' && inStr {
+			buf.WriteByte(b)
+			prevEsc = true
+			continue
+		}
+		if b == '"' {
+			inStr = !inStr
+			buf.WriteByte(b)
+			continue
+		}
+		if inStr && b < 0x20 {
+			switch b {
+			case '\n':
+				buf.WriteString("\\n")
+			case '\r':
+				buf.WriteString("\\r")
+			case '\t':
+				buf.WriteString("\\t")
+			case '\b':
+				buf.WriteString("\\b")
+			case '\f':
+				buf.WriteString("\\f")
+			default:
+				fmt.Fprintf(&buf, "\\u%04x", b)
+			}
+			continue
+		}
+		buf.WriteByte(b)
+	}
+	return buf.String()
 }
 
 // Helper functions
