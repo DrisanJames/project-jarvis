@@ -79,16 +79,25 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		SMTPPass       sql.NullString
 		APIEndpoint    sql.NullString
 		TrackingDomain sql.NullString
+		SendingDomain  sql.NullString
 	}
 	
 	if campaign.ProfileID.Valid {
-		cb.db.QueryRowContext(ctx, `
+		profileErr := cb.db.QueryRowContext(ctx, `
 			SELECT id, vendor_type, api_key, smtp_host, smtp_port, smtp_username, smtp_password,
-			       api_endpoint, COALESCE(tracking_domain, '')
+			       api_endpoint,
+			       COALESCE(tracking_domain, ''),
+			       COALESCE(sending_domain, '')
 			FROM mailing_sending_profiles WHERE id = $1
 		`, campaign.ProfileID.String).Scan(&profile.ID, &profile.VendorType, &profile.APIKey,
 			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			&profile.APIEndpoint, &profile.TrackingDomain)
+			&profile.APIEndpoint, &profile.TrackingDomain, &profile.SendingDomain)
+		if profileErr != nil {
+			log.Printf("ERROR loading sending profile %s: %v", campaign.ProfileID.String, profileErr)
+		} else {
+			log.Printf("PROFILE loaded id=%s vendor=%s tracking_domain=%q sending_domain=%q",
+				profile.ID, profile.VendorType, profile.TrackingDomain.String, profile.SendingDomain.String)
+		}
 	}
 	
 	// Update status to sending
@@ -121,16 +130,24 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	}
 	campUUID, _ := uuid.Parse(id)
 	
-	// Resolve the tracking base URL: prefer the sending profile's tracking domain
-	// over the global TRACKING_URL so that links match the sending domain.
+	// Resolve the tracking base URL using strict priority:
+	//   1. Profile's explicit tracking_domain (e.g., "trk.em.discountblog.com")
+	//   2. Auto-derived from sending_domain: "trk.{sending_domain}"
+	//   3. Global TRACKING_URL (last resort)
 	campaignTrackingURL := cb.mailingSvc.trackingURL
+	trackingSource := "global_env"
+
 	if profile.TrackingDomain.Valid && profile.TrackingDomain.String != "" {
-		td := profile.TrackingDomain.String
-		if !strings.HasPrefix(td, "http") {
-			td = "https://" + td
-		}
-		campaignTrackingURL = strings.TrimRight(td, "/")
+		campaignTrackingURL = ensureHTTPS(profile.TrackingDomain.String)
+		trackingSource = "profile_tracking_domain"
+	} else if profile.SendingDomain.Valid && profile.SendingDomain.String != "" {
+		campaignTrackingURL = ensureHTTPS("trk." + profile.SendingDomain.String)
+		trackingSource = "derived_from_sending_domain"
 	}
+
+	log.Printf("TRACKING_RESOLVE: campaign=%s source=%s url=%s (profile=%s trackingDomain=%q sendingDomain=%q globalURL=%s)",
+		id, trackingSource, campaignTrackingURL, profile.ID,
+		profile.TrackingDomain.String, profile.SendingDomain.String, cb.mailingSvc.trackingURL)
 
 	// ============================================
 	// PERSONALIZATION ENGINE SETUP
@@ -408,4 +425,16 @@ func extractDomainFromEmail(email string) string {
 		return email[idx+1:]
 	}
 	return email
+}
+
+// ensureHTTPS normalises a domain or URL to an https:// base with no trailing slash.
+func ensureHTTPS(domainOrURL string) string {
+	d := strings.TrimSpace(domainOrURL)
+	if d == "" {
+		return ""
+	}
+	if !strings.HasPrefix(d, "http") {
+		d = "https://" + d
+	}
+	return strings.TrimRight(d, "/")
 }

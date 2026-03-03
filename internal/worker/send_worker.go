@@ -217,22 +217,41 @@ func (p *SendWorkerPool) resolveTrackingURL(ctx context.Context, profileID strin
 	}
 	p.ptdMu.RUnlock()
 
-	var td sql.NullString
-	p.db.QueryRowContext(ctx, `SELECT tracking_domain FROM mailing_sending_profiles WHERE id = $1`, profileID).Scan(&td)
+	var td, sd sql.NullString
+	err := p.db.QueryRowContext(ctx,
+		`SELECT COALESCE(tracking_domain,''), COALESCE(sending_domain,'') FROM mailing_sending_profiles WHERE id = $1`,
+		profileID).Scan(&td, &sd)
+	if err != nil {
+		log.Printf("resolveTrackingURL: error loading profile %s: %v", profileID, err)
+		return p.trackingURL
+	}
 
 	resolved := p.trackingURL
+	source := "global"
 	if td.Valid && td.String != "" {
-		d := td.String
-		if !strings.HasPrefix(d, "http") {
-			d = "https://" + d
-		}
-		resolved = strings.TrimRight(d, "/")
+		resolved = ensureHTTPSWorker(td.String)
+		source = "profile_tracking_domain"
+	} else if sd.Valid && sd.String != "" {
+		resolved = ensureHTTPSWorker("trk." + sd.String)
+		source = "derived_from_sending_domain"
 	}
+	log.Printf("resolveTrackingURL: profile=%s source=%s url=%s", profileID, source, resolved)
 
 	p.ptdMu.Lock()
 	p.profileTrackingDomainCache[profileID] = resolved
 	p.ptdMu.Unlock()
 	return resolved
+}
+
+func ensureHTTPSWorker(domainOrURL string) string {
+	d := strings.TrimSpace(domainOrURL)
+	if d == "" {
+		return ""
+	}
+	if !strings.HasPrefix(d, "http") {
+		d = "https://" + d
+	}
+	return strings.TrimRight(d, "/")
 }
 
 // Start begins the worker pool

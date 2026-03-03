@@ -82,7 +82,29 @@ func (cb *CampaignBuilder) ensureSchema() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cb.ensureCampaignColumns(ctx)
+	cb.autoPopulateTrackingDomains(ctx)
 	log.Println("CampaignBuilder: Schema initialized")
+}
+
+// autoPopulateTrackingDomains fills in tracking_domain for any profile
+// that has a sending_domain but no tracking_domain. This ensures the
+// per-profile tracking override is always present.
+func (cb *CampaignBuilder) autoPopulateTrackingDomains(ctx context.Context) {
+	res, err := cb.db.ExecContext(ctx, `
+		UPDATE mailing_sending_profiles
+		SET tracking_domain = 'trk.' || sending_domain,
+		    updated_at = NOW()
+		WHERE sending_domain IS NOT NULL
+		  AND sending_domain != ''
+		  AND (tracking_domain IS NULL OR tracking_domain = '')
+	`)
+	if err != nil {
+		log.Printf("autoPopulateTrackingDomains: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("autoPopulateTrackingDomains: auto-set tracking_domain on %d profiles", n)
+	}
 }
 
 // RegisterRoutes registers campaign builder routes
