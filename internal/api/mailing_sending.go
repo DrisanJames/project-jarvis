@@ -12,7 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
-	"os/exec"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -337,87 +337,20 @@ func (svc *MailingService) sendViaSparkPostWithKey(ctx context.Context, apiKey, 
 
 // sendViaSES sends email through AWS SES using the default AWS profile
 func (svc *MailingService) sendViaSES(ctx context.Context, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
-	// Build the from address
-	from := fromEmail
-	if fromName != "" {
-		from = fmt.Sprintf("%s <%s>", fromName, fromEmail)
+	sesUser := os.Getenv("SES_SMTP_USER")
+	sesSecret := os.Getenv("SES_SMTP_SECRET")
+	sesRegion := os.Getenv("SES_REGION")
+	if sesRegion == "" {
+		sesRegion = "us-east-1"
+	}
+	sesHost := fmt.Sprintf("email-smtp.%s.amazonaws.com", sesRegion)
+
+	if sesUser == "" || sesSecret == "" {
+		return nil, fmt.Errorf("SES SMTP credentials not configured (SES_SMTP_USER / SES_SMTP_SECRET)")
 	}
 
-	// Use AWS CLI to send (leverages default profile credentials)
-	// In production, you would use the AWS SDK directly
-	sesPayload := map[string]interface{}{
-		"Source": from,
-		"Destination": map[string]interface{}{
-			"ToAddresses": []string{to},
-		},
-		"Message": map[string]interface{}{
-			"Subject": map[string]string{
-				"Data":    subject,
-				"Charset": "UTF-8",
-			},
-			"Body": map[string]interface{}{
-				"Html": map[string]string{
-					"Data":    htmlContent,
-					"Charset": "UTF-8",
-				},
-				"Text": map[string]string{
-					"Data":    textContent,
-					"Charset": "UTF-8",
-				},
-			},
-		},
-	}
-
-	if replyEmail != "" {
-		sesPayload["ReplyToAddresses"] = []string{replyEmail}
-	}
-
-	// For now, use SparkPost as fallback but indicate it's for SES profile
-	// In production, you would use the AWS SDK directly
-	// For now, we use exec to call AWS CLI which uses the default profile
-	body, _ := json.Marshal(sesPayload)
-	log.Printf("SES: Sending to %s via AWS SES", to)
-
-	// Execute AWS CLI command
-	cmd := exec.CommandContext(ctx, "aws", "ses", "send-email",
-		"--from", from,
-		"--destination", fmt.Sprintf("ToAddresses=%s", to),
-		"--message", fmt.Sprintf("Subject={Data='%s',Charset=utf-8},Body={Html={Data='%s',Charset=utf-8},Text={Data='%s',Charset=utf-8}}",
-			subject, strings.ReplaceAll(htmlContent, "'", "\\'"), strings.ReplaceAll(textContent, "'", "\\'")),
-	)
-
-	output, err := cmd.Output()
-	if err != nil {
-		log.Printf("SES CLI error: %v, payload: %s", err, string(body)[:min(500, len(body))])
-		// Fall back to generating a local message ID
-		messageID := uuid.New().String()
-		return map[string]interface{}{
-			"success":    true,
-			"message_id": messageID,
-			"to":         to,
-			"sent_at":    time.Now().Format(time.RFC3339),
-			"note":       "SES send queued (CLI unavailable)",
-		}, nil
-	}
-
-	// Parse the message ID from AWS CLI output
-	var sesResponse struct {
-		MessageId string `json:"MessageId"`
-	}
-	json.Unmarshal(output, &sesResponse)
-	
-	messageID := sesResponse.MessageId
-	if messageID == "" {
-		messageID = uuid.New().String()
-	}
-
-	return map[string]interface{}{
-		"success":    true,
-		"message_id": messageID,
-		"to":         to,
-		"sent_at":    time.Now().Format(time.RFC3339),
-		"note":       "Sent via AWS SES",
-	}, nil
+	log.Printf("SES: Sending to %s via SMTP %s:587", to, sesHost)
+	return svc.sendViaSMTP(ctx, sesHost, 587, sesUser, sesSecret, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent)
 }
 
 // sendViaMailgun sends email through Mailgun API
