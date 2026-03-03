@@ -92,15 +92,18 @@ func (qr *QueueRecoveryWorker) recoverStuckItems(ctx context.Context) {
 
 	// ── V1 queue: mailing_campaign_queue ──────────────────────────────────
 
-	// 1a. Requeue stuck items (under retry limit)
+	// 1a. Requeue stuck items (under retry limit).
+	// SendWorkerPool sets locked_at (not claimed_at) when claiming items,
+	// so we check both columns to catch items stuck by either code path.
 	res, err := qr.db.ExecContext(queryCtx, `
 		UPDATE mailing_campaign_queue
 		SET status = 'queued',
 		    worker_id = NULL,
 		    claimed_at = NULL,
+		    locked_at = NULL,
 		    retry_count = retry_count + 1
 		WHERE status IN ('claimed', 'sending')
-		  AND claimed_at < NOW() - $1::interval
+		  AND COALESCE(locked_at, claimed_at) < NOW() - $1::interval
 		  AND retry_count < $2
 	`, qr.staleAge.String(), MaxRetryCount)
 	if err != nil {

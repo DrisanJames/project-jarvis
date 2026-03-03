@@ -606,23 +606,27 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	// A/B variants: always create a mailing_ab_tests record so the scheduler
 	// can discover variants via JOIN mailing_ab_tests -> mailing_ab_variants.
 	testID := uuid.New().String()
-	s.db.ExecContext(ctx, `
+	if _, abErr := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_ab_tests (
 			id, organization_id, campaign_id, name, test_type,
 			test_sample_percent, winner_metric, status,
 			created_at, updated_at
 		) VALUES ($1, $2, $3, $4, 'content', 100, 'open_rate', 'testing', NOW(), NOW())
-	`, testID, orgID, campaignID, input.Name+" A/B Test")
+	`, testID, orgID, campaignID, input.Name+" A/B Test"); abErr != nil {
+		log.Printf("[DeployCampaign] A/B test creation failed for campaign %s: %v", campaignID, abErr)
+	}
 
 	for _, v := range input.Variants {
-		s.db.ExecContext(ctx, `
+		if _, vErr := s.db.ExecContext(ctx, `
 			INSERT INTO mailing_ab_variants (
 				id, test_id, variant_name, from_name, subject, html_content,
 				split_percent, created_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		`, uuid.New().String(), testID, v.VariantName, v.FromName, v.Subject, v.HTMLContent,
 			v.SplitPercent,
-		)
+		); vErr != nil {
+			log.Printf("[DeployCampaign] A/B variant %q creation failed for campaign %s: %v", v.VariantName, campaignID, vErr)
+		}
 	}
 
 	// List/segment associations stored in list_ids and suppression_list_ids

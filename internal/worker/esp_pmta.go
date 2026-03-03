@@ -254,9 +254,13 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	s.ipPool.refresh(ctx, msg.ProfileID)
 	vmtaName := ""
 	ipID := ""
-	ip, err := s.ipPool.next()
-	if err != nil {
-		log.Printf("[PMTA] VMTA selection failed, sending without routing: %v", err)
+	ip, vmtaErr := s.ipPool.next()
+	if vmtaErr != nil {
+		if len(s.ipPool.ips) > 0 {
+			// IPs exist but all are exhausted — hard-fail to protect warmup
+			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
+		}
+		log.Printf("[PMTA] No IP pool configured, sending without VMTA routing")
 	} else {
 		vmtaName = ip.Hostname
 		ipID = ip.ID

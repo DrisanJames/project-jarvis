@@ -255,6 +255,19 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 				campaignID, finalStatus, sent, failed, skipped)
 		}
 	}
+
+	// Orphaned campaigns: stuck in 'sending' for >10 min with 0 queue items.
+	// This catches enqueue failures where the campaign was set to 'sending'
+	// but no items were ever inserted.
+	_, _ = cs.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns
+		SET status = 'failed', completed_at = NOW(), updated_at = NOW()
+		WHERE status = 'sending'
+		  AND started_at < NOW() - INTERVAL '10 minutes'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM mailing_campaign_queue WHERE campaign_id = mailing_campaigns.id
+		  )
+	`)
 }
 
 // markCampaignsAsPreparing moves scheduled campaigns to 'preparing' status
@@ -426,6 +439,7 @@ func (cs *CampaignScheduler) processCampaign(ctx context.Context, campaign Sched
 	if err != nil {
 		log.Printf("[CampaignScheduler] Error enqueuing subscribers for %s: %v", campaign.ID, err)
 		atomic.AddInt64(&cs.errors, 1)
+		cs.markCampaignFailed(ctx, campaign.ID, fmt.Sprintf("enqueue failed: %v", err))
 		return
 	}
 
