@@ -948,6 +948,17 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// Ensure tracking events table has all required columns
+		// Ensure partition exists for current month
+		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},
+		{"add_tracking_email_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT`},
+		{"add_tracking_event_time_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW()`},
+		{"add_tracking_metadata_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`},
+		{"add_tracking_is_unique_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`},
+		// Drop restrictive event_type constraint so hard_bounce, soft_bounce, delivered etc. can be stored
+		{"drop_tracking_evt_chk", `ALTER TABLE mailing_tracking_events DROP CONSTRAINT IF EXISTS mailing_tracking_events_event_type_check`},
+		// Ensure inbox profiles has email column
+		{"add_inbox_email_col", `ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS email TEXT`},
 		{"drop_status_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},
