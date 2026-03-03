@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -84,12 +85,11 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
-	// Persist to DB — uses columns guaranteed by migration 037
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent, device_type)
-		VALUES ($1, $2, $3, $4, $5, 'opened', NOW(), NOW(), $6, $7, $8)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type)
+		VALUES ($1, $2, $3, $4, 'opened', NOW(), $5::inet, $6, $7)
 		ON CONFLICT DO NOTHING
-	`, emailID, orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent())); err != nil {
+	`, emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent())); err != nil {
 		log.Printf("TRACK OPEN DB ERROR: %v", err)
 	}
 
@@ -158,9 +158,9 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	}
 
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent, device_type, link_url)
-		VALUES ($1, $2, $3, $4, $5, 'clicked', NOW(), NOW(), $6, $7, $8, $9)
-	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url)
+		VALUES ($1, $2, $3, $4, 'clicked', NOW(), $5::inet, $6, $7, $8)
+	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
 		log.Printf("TRACK CLICK DB ERROR: %v", err)
 	}
 
@@ -226,9 +226,9 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	}
 
 	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $5, 'unsubscribed', NOW(), NOW(), $6, $7)
-	`, uuid.New(), orgID, campaignID, subscriberID, email, r.RemoteAddr, r.UserAgent())
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4, 'unsubscribed', NOW(), $5::inet, $6)
+	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent())
 
 	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1`, subscriberID)
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET unsubscribe_count = COALESCE(unsubscribe_count, 0) + 1 WHERE id = $1`, campaignID)
@@ -430,8 +430,8 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	if limit == "" { limit = "100" }
 	
 	query := `
-		SELECT e.id, COALESCE(e.email, COALESCE(s.email, '')), e.event_type,
-		       COALESCE(e.event_time, e.event_at), e.ip_address, e.user_agent, e.device_type, e.link_url
+		SELECT e.id, COALESCE(s.email, ''), e.event_type,
+		       e.event_at, e.ip_address, e.user_agent, e.device_type, e.link_url
 		FROM mailing_tracking_events e
 		LEFT JOIN mailing_subscribers s ON e.subscriber_id = s.id
 		WHERE e.campaign_id = $1
@@ -448,7 +448,9 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	rows, err := svc.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("Error querying tracking events: %v", err)
-		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "database error", "_detail": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -498,4 +500,14 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 func calculateRate(count, total int) float64 {
 	if total == 0 { return 0 }
 	return float64(count) / float64(total) * 100
+}
+
+func extractIPFromRemoteAddr(addr string) *string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return &host
+	}
+	if addr != "" {
+		return &addr
+	}
+	return nil
 }

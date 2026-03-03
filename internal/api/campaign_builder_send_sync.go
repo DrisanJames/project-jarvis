@@ -289,9 +289,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			sent++
 
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_at, event_time, metadata)
-				VALUES ($1, $2, $3, $4, 'sent', NOW(), NOW(), $5)
-			`, emailID, campUUID, sub.ID, sub.Email, fmt.Sprintf(`{"message_id": "%v", "vendor": "%s"}`, result["message_id"], profile.VendorType))
+				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, event_type, event_at)
+				VALUES ($1, $2, $3, 'sent', NOW())
+			`, emailID, campUUID, sub.ID)
 
 			// Bootstrap inbox profile for this recipient
 			recipientDomain := ""
@@ -301,10 +301,10 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			isp := extractISP(sub.Email)
 			hash := emailHash(sub.Email)
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_sends, last_send_at, updated_at)
-				VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+				INSERT INTO mailing_inbox_profiles (id, email_hash, domain, isp, total_sends, last_send_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
 				ON CONFLICT (email_hash) DO UPDATE SET total_sends = mailing_inbox_profiles.total_sends + 1, last_send_at = NOW(), updated_at = NOW()
-			`, hash, sub.Email, recipientDomain, isp)
+			`, hash, recipientDomain, isp)
 
 			// Spawn/update ISP agent
 			cb.db.ExecContext(ctx, `
@@ -333,10 +333,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 
 			// Record bounce tracking event
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_at, event_time, metadata)
-				VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
-			`, uuid.New(), campUUID, sub.ID, sub.Email, eventType,
-				fmt.Sprintf(`{"bounce_type":"%s","error":"%s","isp":"%s"}`, bounceType, sendErr.Error(), ispGroup))
+				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
+				VALUES ($1, $2, $3, $4, $5, $6, NOW())
+			`, uuid.New(), campUUID, sub.ID, eventType, string(bounceType), sendErr.Error())
 
 			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
 				cb.mailingSvc.onTrackingEvent(campUUID.String(), eventType, sub.Email, ispGroup)

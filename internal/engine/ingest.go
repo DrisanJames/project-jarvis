@@ -265,16 +265,17 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		return
 	}
 
-	// Look up subscriber_id and organization_id from the original sent event
+	// Look up subscriber_id and organization_id from campaign + subscribers
+	recipientEmail := strings.ToLower(strings.TrimSpace(rec.Recipient))
 	var subscriberID, orgID sql.NullString
 	ing.db.QueryRowContext(ctx, `
-		SELECT subscriber_id::text, organization_id::text FROM mailing_tracking_events
-		WHERE campaign_id = $1 AND LOWER(email) = LOWER($2) AND event_type = 'sent'
+		SELECT e.subscriber_id::text, c.organization_id::text 
+		FROM mailing_tracking_events e
+		JOIN mailing_subscribers s ON s.id = e.subscriber_id
+		JOIN mailing_campaigns c ON c.id = e.campaign_id
+		WHERE e.campaign_id = $1 AND LOWER(s.email) = $2 AND e.event_type = 'sent'
 		LIMIT 1
-	`, campUUID, strings.TrimSpace(rec.Recipient)).Scan(&subscriberID, &orgID)
-
-	metadata := fmt.Sprintf(`{"source":"pmta","bounce_cat":"%s","dsn_status":"%s","dsn_diag":"%s","source_ip":"%s","isp":"%s","vmta":"%s","pool":"%s"}`,
-		rec.BounceCat, rec.DSNStatus, sanitizeJSON(rec.DSNDiag), rec.SourceIP, string(isp), rec.VMTA, rec.Pool)
+	`, campUUID, recipientEmail).Scan(&subscriberID, &orgID)
 
 	eventID := uuid.New()
 	var subIDPtr, orgIDPtr *uuid.UUID
@@ -290,10 +291,10 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	}
 
 	_, err = ing.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, event_time, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), $7)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT DO NOTHING
-	`, eventID, orgIDPtr, campUUID, subIDPtr, strings.ToLower(strings.TrimSpace(rec.Recipient)), eventType, metadata)
+	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus)
 	if err != nil {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
 	}
