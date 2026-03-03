@@ -62,6 +62,7 @@ func (a *EmergencyAgent) Evaluate(snap SignalSnapshot) []Decision {
 	}
 
 	criticalIPs := 0
+	totalIPs := len(snap.IPMetrics)
 	var criticalIPList []string
 	for ip, m := range snap.IPMetrics {
 		if m.Score < 50 {
@@ -69,7 +70,9 @@ func (a *EmergencyAgent) Evaluate(snap SignalSnapshot) []Decision {
 			criticalIPList = append(criticalIPList, fmt.Sprintf("%s(score=%.0f)", ip, m.Score))
 		}
 	}
-	if criticalIPs >= 3 {
+	// Only escalate to ISP-level emergency when the majority of IPs are critical.
+	// If only some IPs are affected, the reputation/pool agents handle them individually.
+	if criticalIPs >= 3 && (totalIPs == 0 || float64(criticalIPs)/float64(totalIPs) > 0.5) {
 		emergency = true
 		trigger = "coordinated_reputation_attack"
 	}

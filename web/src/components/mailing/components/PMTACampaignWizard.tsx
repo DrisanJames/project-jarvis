@@ -536,7 +536,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // ── Render helpers ───────────────────────────────────────────────────────
 
   const statusBadge = (status: string) => {
-    const colors: Record<string, string> = { ready: '#10b981', caution: '#f59e0b', blocked: '#ef4444', green: '#10b981', yellow: '#f59e0b', red: '#ef4444', established: '#10b981', ramping: '#f59e0b', early: '#f97316' };
+    const colors: Record<string, string> = { ready: '#10b981', caution: '#f59e0b', degraded: '#f97316', blocked: '#ef4444', green: '#10b981', yellow: '#f59e0b', red: '#ef4444', established: '#10b981', ramping: '#f59e0b', early: '#f97316', healthy: '#10b981', throttled: '#f59e0b' };
     const color = colors[status] || '#64748b';
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: color + '22', color, border: `1px solid ${color}44`, textTransform: 'uppercase' }}>
@@ -587,6 +587,29 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 <span>Capacity: <strong style={{ color: '#e2e4ed' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
                 <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e2e4ed' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
               </div>
+              {/* Per-IP status breakdown */}
+              {r.ip_details && r.ip_details.length > 0 && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {r.ip_details.map((ipd: any) => (
+                    <span key={ipd.ip} title={`${ipd.ip} — Score: ${ipd.score.toFixed(0)}, Bounce: ${ipd.bounce_rate.toFixed(1)}%, Deferral: ${ipd.deferral_rate.toFixed(1)}%`} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
+                      background: ipd.status === 'healthy' ? '#10b98118' : ipd.status === 'throttled' ? '#f59e0b18' : ipd.status === 'blocked' ? '#ef444418' : '#64748b18',
+                      color: ipd.status === 'healthy' ? '#10b981' : ipd.status === 'throttled' ? '#f59e0b' : ipd.status === 'blocked' ? '#ef4444' : '#8b8fa3',
+                      border: `1px solid ${ipd.status === 'healthy' ? '#10b98130' : ipd.status === 'throttled' ? '#f59e0b30' : ipd.status === 'blocked' ? '#ef444430' : '#64748b30'}`,
+                    }}>
+                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }} />
+                      {ipd.ip.split('.').slice(-1)[0]}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(r.blocked_ips > 0 || r.throttled_ips > 0) && (
+                <div style={{ marginTop: 4, fontSize: 11, color: '#8b8fa3' }}>
+                  {r.healthy_ips > 0 && <span style={{ color: '#10b981' }}>{r.healthy_ips} healthy</span>}
+                  {r.throttled_ips > 0 && <span style={{ color: '#f59e0b', marginLeft: 8 }}>{r.throttled_ips} throttled</span>}
+                  {r.blocked_ips > 0 && <span style={{ color: '#ef4444', marginLeft: 8 }}>{r.blocked_ips} blocked</span>}
+                </div>
+              )}
               {r.warnings && r.warnings.length > 0 && (
                 <div style={{ marginTop: 8, padding: '6px 8px', background: '#f59e0b15', borderRadius: 6, fontSize: 11, color: '#f59e0b' }}>
                   <FontAwesomeIcon icon={faExclamationTriangle} /> {r.warnings[0]}

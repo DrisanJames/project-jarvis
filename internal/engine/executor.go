@@ -51,6 +51,10 @@ func (e *Executor) Execute(ctx context.Context, d Decision) error {
 		return e.pauseQueues(ctx, d.ISP)
 	case "emergency_halt":
 		return e.emergencyHalt(ctx, d.ISP)
+	case "deprioritize_ip":
+		return e.deprioritizeIP(ctx, d.TargetValue, d.ISP)
+	case "reprioritize_ip":
+		return e.reprioritizeIP(ctx, d.TargetValue, d.ISP)
 	case "reduce_rate", "backoff_mode":
 		return e.setBackoffMode(ctx, d.ISP)
 	case "increase_rate":
@@ -142,6 +146,19 @@ func (e *Executor) sendCommand(ctx context.Context, command string) error {
 
 func (e *Executor) disableSource(ctx context.Context, ip string, domain string) error {
 	cmd := fmt.Sprintf("pmta disable source %s %s/*", ip, domain)
+	return e.sendCommand(ctx, cmd)
+}
+
+// deprioritizeIP puts a single IP into backoff mode for a specific ISP pool
+// instead of disabling it entirely. The IP is still usable at reduced throughput.
+func (e *Executor) deprioritizeIP(ctx context.Context, ip string, isp ISP) error {
+	cmd := fmt.Sprintf("pmta set queue --mode=backoff %s/%s-pool", ip, isp)
+	return e.sendCommand(ctx, cmd)
+}
+
+// reprioritizeIP restores normal sending for a single IP on an ISP pool.
+func (e *Executor) reprioritizeIP(ctx context.Context, ip string, isp ISP) error {
+	cmd := fmt.Sprintf("pmta set queue --mode=normal %s/%s-pool", ip, isp)
 	return e.sendCommand(ctx, cmd)
 }
 

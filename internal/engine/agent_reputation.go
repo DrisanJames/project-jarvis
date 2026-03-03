@@ -45,10 +45,17 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 
 	for ip, metrics := range snap.IPMetrics {
 		if metrics.BounceRate1h > a.Config.BounceActionPct {
+			// Use deprioritize (backoff) for moderate issues; only fully disable for
+			// extreme bounce rates (2x the action threshold) where the ISP is clearly
+			// hard-blocking this IP.
+			action := "deprioritize_ip"
+			if metrics.BounceRate1h > a.Config.BounceActionPct*2 {
+				action = "disable_source_ip"
+			}
 			decisions = append(decisions, Decision{
 				ISP:         a.ID.ISP,
 				AgentType:   AgentReputation,
-				ActionTaken: "disable_source_ip",
+				ActionTaken: action,
 				ActionParams: mustJSON(map[string]interface{}{
 					"bounce_rate": metrics.BounceRate1h,
 					"threshold":   a.Config.BounceActionPct,
@@ -190,6 +197,29 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 					CreatedAt: now,
 				})
 			}
+		}
+	}
+
+	// Recovery: if an IP that was previously deprioritized or disabled is now
+	// performing well (score ≥ 75, bounce below warn threshold), reprioritize it.
+	for ip, metrics := range snap.IPMetrics {
+		if metrics.Score >= 75 && metrics.Sent1h >= 10 &&
+			metrics.BounceRate1h < a.Config.BounceWarnPct &&
+			(metrics.Status == "blocked" || metrics.Status == "throttled" || metrics.Status == "degraded") {
+			decisions = append(decisions, Decision{
+				ISP:         a.ID.ISP,
+				AgentType:   AgentReputation,
+				ActionTaken: "reprioritize_ip",
+				ActionParams: mustJSON(map[string]interface{}{
+					"bounce_rate": metrics.BounceRate1h,
+					"score":       metrics.Score,
+					"reason":      "metrics recovered below warning thresholds",
+				}),
+				TargetType:  "ip",
+				TargetValue: ip,
+				Result:      "pending",
+				CreatedAt:   now,
+			})
 		}
 	}
 

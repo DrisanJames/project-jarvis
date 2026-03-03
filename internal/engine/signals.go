@@ -121,6 +121,11 @@ type IPMetric struct {
 	Sent1h        int     `json:"sent_1h"`
 	Score         float64 `json:"score"`
 
+	// Per-IP operational status derived from recent signals.
+	// healthy: no issues; throttled: high deferrals, still usable at reduced rate;
+	// blocked: ISP is actively rejecting from this IP; quarantined: agent pulled it.
+	Status string `json:"status"`
+
 	// Raw counts for micro-context
 	Bounced1h    int `json:"bounced_1h"`
 	Deferred5m   int `json:"deferred_5m"`
@@ -268,6 +273,30 @@ func safeRate(numerator, denominator int) float64 {
 	return float64(numerator) / float64(denominator) * 100
 }
 
+// deriveIPStatus determines the operational status of an IP based on its
+// recent metrics. An ISP block error (high bounce + specific DSN like 5xx)
+// affects only the individual IP, not the whole pool.
+//
+//   - "blocked":     bounce rate ≥ 15% with meaningful volume — ISP is rejecting this IP
+//   - "throttled":   deferral rate ≥ 20% — ISP is rate-limiting this IP
+//   - "degraded":    score < 60 but not clearly blocked/throttled
+//   - "healthy":     everything normal
+func deriveIPStatus(bounceRate, deferralRate, complaintRate, score float64, sent int) string {
+	if sent < 5 {
+		return "healthy" // not enough data
+	}
+	if bounceRate >= 15.0 {
+		return "blocked"
+	}
+	if deferralRate >= 20.0 {
+		return "throttled"
+	}
+	if score < 60 {
+		return "degraded"
+	}
+	return "healthy"
+}
+
 func (sp *SignalProcessor) computeSnapshots() {
 	now := time.Now()
 	sp.mu.RLock()
@@ -349,6 +378,8 @@ func (sp *SignalProcessor) computeSnapshots() {
 				score = 0
 			}
 
+			ipStatus := deriveIPStatus(br, dr, cr, score, ipSent1h)
+
 			snap.IPMetrics[ip] = IPMetric{
 				IP:            ip,
 				BounceRate1h:  br,
@@ -356,6 +387,7 @@ func (sp *SignalProcessor) computeSnapshots() {
 				DeferralRate:  dr,
 				Sent1h:        ipSent1h,
 				Score:         score,
+				Status:        ipStatus,
 				Bounced1h:     ipBounced1h,
 				Deferred5m:    ipDeferred5m,
 				Complaints24h: ipComplaints24h,

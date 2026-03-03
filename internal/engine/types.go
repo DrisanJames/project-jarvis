@@ -448,24 +448,38 @@ type ConvictionOutcome struct {
 // ---------------------------------------------------------------------------
 
 // ISPReadiness summarizes one ISP's readiness for a campaign deployment.
+// IPReadinessDetail shows the per-IP status within an ISP pool.
+type IPReadinessDetail struct {
+	IP           string  `json:"ip"`
+	Status       string  `json:"status"` // healthy, throttled, blocked, degraded, quarantined
+	Score        float64 `json:"score"`
+	BounceRate   float64 `json:"bounce_rate"`
+	DeferralRate float64 `json:"deferral_rate"`
+	Sent1h       int     `json:"sent_1h"`
+}
+
 type ISPReadiness struct {
-	ISP              ISP         `json:"isp"`
-	DisplayName      string      `json:"display_name"`
-	HealthScore      float64     `json:"health_score"`
-	Status           string      `json:"status"` // ready, caution, blocked
-	ActiveAgents     int         `json:"active_agents"`
-	TotalAgents      int         `json:"total_agents"`
-	BounceRate       float64     `json:"bounce_rate"`
-	DeferralRate     float64     `json:"deferral_rate"`
-	ComplaintRate    float64     `json:"complaint_rate"`
-	WarmupIPs        int         `json:"warmup_ips"`
-	ActiveIPs        int         `json:"active_ips"`
-	QuarantinedIPs   int         `json:"quarantined_ips"`
-	MaxDailyCapacity int         `json:"max_daily_capacity"`
-	MaxHourlyRate    int         `json:"max_hourly_rate"`
-	PoolName         string      `json:"pool_name"`
-	HasEmergency     bool        `json:"has_emergency"`
-	Warnings         []string    `json:"warnings"`
+	ISP              ISP                 `json:"isp"`
+	DisplayName      string              `json:"display_name"`
+	HealthScore      float64             `json:"health_score"`
+	Status           string              `json:"status"` // ready, caution, degraded, blocked
+	ActiveAgents     int                 `json:"active_agents"`
+	TotalAgents      int                 `json:"total_agents"`
+	BounceRate       float64             `json:"bounce_rate"`
+	DeferralRate     float64             `json:"deferral_rate"`
+	ComplaintRate    float64             `json:"complaint_rate"`
+	WarmupIPs        int                 `json:"warmup_ips"`
+	ActiveIPs        int                 `json:"active_ips"`
+	QuarantinedIPs   int                 `json:"quarantined_ips"`
+	BlockedIPs       int                 `json:"blocked_ips"`
+	ThrottledIPs     int                 `json:"throttled_ips"`
+	HealthyIPs       int                 `json:"healthy_ips"`
+	MaxDailyCapacity int                 `json:"max_daily_capacity"`
+	MaxHourlyRate    int                 `json:"max_hourly_rate"`
+	PoolName         string              `json:"pool_name"`
+	HasEmergency     bool                `json:"has_emergency"`
+	Warnings         []string            `json:"warnings"`
+	IPDetails        []IPReadinessDetail `json:"ip_details,omitempty"`
 }
 
 // CampaignReadinessResponse is returned by the campaign-readiness endpoint.

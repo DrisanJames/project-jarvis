@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -323,12 +324,54 @@ func (o *Orchestrator) GetCampaignReadiness(ctx context.Context) CampaignReadine
 
 		activeIPs, warmupIPs, quarantinedIPs, dailyCap, _ := o.decisions.QueryIPWarmupState(ctx, o.orgID, PoolNameForISP(isp))
 
+		// Build per-IP detail from the snapshot and classify each IP
+		var ipDetails []IPReadinessDetail
+		healthyCount, throttledCount, blockedCount := 0, 0, 0
+		for _, m := range snap.IPMetrics {
+			ipDetails = append(ipDetails, IPReadinessDetail{
+				IP:           m.IP,
+				Status:       m.Status,
+				Score:        m.Score,
+				BounceRate:   m.BounceRate1h,
+				DeferralRate: m.DeferralRate,
+				Sent1h:       m.Sent1h,
+			})
+			switch m.Status {
+			case "blocked":
+				blockedCount++
+			case "throttled":
+				throttledCount++
+			case "degraded":
+				throttledCount++ // treat degraded as throttled for capacity math
+			default:
+				healthyCount++
+			}
+		}
+
+		// Determine ISP-level status from per-IP health, not just emergency flag.
+		// Only "blocked" at ISP level when ALL sending IPs are blocked or quarantined.
+		totalSendingIPs := healthyCount + throttledCount + blockedCount
 		status := "ready"
 		var warnings []string
-		if hasEmergency {
+
+		if hasEmergency && totalSendingIPs > 0 && blockedCount >= totalSendingIPs {
 			status = "blocked"
 			overallBlocked = true
-			warnings = append(warnings, "Emergency halt active for this ISP")
+			warnings = append(warnings, "All IPs blocked or rejected by this ISP")
+		} else if hasEmergency {
+			// Emergency fired but some IPs are still usable
+			status = "degraded"
+			warnings = append(warnings, fmt.Sprintf("Emergency active — %d/%d IPs blocked, %d still sending", blockedCount, totalSendingIPs, healthyCount+throttledCount))
+		} else if blockedCount > 0 && blockedCount < totalSendingIPs {
+			status = "degraded"
+			warnings = append(warnings, fmt.Sprintf("%d IP(s) blocked by ISP — deprioritized; %d healthy IP(s) still active", blockedCount, healthyCount))
+		} else if blockedCount > 0 && blockedCount >= totalSendingIPs {
+			status = "blocked"
+			overallBlocked = true
+			warnings = append(warnings, "All IPs blocked by this ISP")
+		} else if throttledCount > 0 {
+			status = "caution"
+			warnings = append(warnings, fmt.Sprintf("%d IP(s) throttled — reduced throughput", throttledCount))
 		} else if health < 60 || warmupIPs > activeIPs {
 			status = "caution"
 			if health < 60 {
@@ -339,7 +382,6 @@ func (o *Orchestrator) GetCampaignReadiness(ctx context.Context) CampaignReadine
 			}
 		}
 
-		// Check recent emergency/quarantine decisions
 		for _, d := range decisions {
 			if d.ISP == isp && (d.ActionTaken == "emergency_halt" || d.ActionTaken == "quarantine_ip") {
 				warnings = append(warnings, "Recent "+d.ActionTaken+" decision detected")
@@ -364,11 +406,15 @@ func (o *Orchestrator) GetCampaignReadiness(ctx context.Context) CampaignReadine
 			WarmupIPs:        warmupIPs,
 			ActiveIPs:        activeIPs,
 			QuarantinedIPs:   quarantinedIPs,
+			BlockedIPs:       blockedCount,
+			ThrottledIPs:     throttledCount,
+			HealthyIPs:       healthyCount,
 			MaxDailyCapacity: dailyCap,
 			MaxHourlyRate:    hourlyRate,
 			PoolName:         PoolNameForISP(isp),
 			HasEmergency:     hasEmergency,
 			Warnings:         warnings,
+			IPDetails:        ipDetails,
 		})
 		totalCap += dailyCap
 	}
