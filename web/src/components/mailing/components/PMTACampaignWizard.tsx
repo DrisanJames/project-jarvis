@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faArrowLeft, faArrowRight, faCheck, faServer, faGlobe,
   faPenFancy, faUsers, faBrain, faRocket, faSpinner,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt,
-  faMagic, faSave, faFolderOpen, faEye,
+  faMagic, faSave, faEye, faUpload, faCode,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 
@@ -533,6 +533,43 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setVariants(prev => prev.map((v, i) => i === idx ? { ...v, [field]: value } : v));
   };
 
+  // Track which variants have preview open
+  const [variantPreviews, setVariantPreviews] = useState<Record<number, boolean>>({});
+  const toggleVariantPreview = (idx: number) => {
+    setVariantPreviews(prev => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
+  // Refs for textarea cursor tracking (one per variant)
+  const textareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({});
+
+  const insertTagAtCursor = (idx: number, syntax: string) => {
+    const textarea = textareaRefs.current[idx];
+    const v = variants[idx];
+    if (!v) return;
+    const pos = textarea?.selectionStart ?? v.html_content.length;
+    const before = v.html_content.slice(0, pos);
+    const after = v.html_content.slice(pos);
+    updateVariant(idx, 'html_content', before + syntax + after);
+    setTimeout(() => {
+      if (textarea) {
+        textarea.focus();
+        const newPos = pos + syntax.length;
+        textarea.setSelectionRange(newPos, newPos);
+      }
+    }, 30);
+  };
+
+  const handleHTMLFileUpload = (idx: number, file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result;
+      if (typeof content === 'string') {
+        updateVariant(idx, 'html_content', content);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // ── Render helpers ───────────────────────────────────────────────────────
 
   const statusBadge = (status: string) => {
@@ -896,13 +933,90 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               />
             </div>
           </div>
+
+          {/* HTML Content with merge tag toolbar, upload, and preview */}
           <div>
-            <label style={{ fontSize: 11, color: '#8b8fa3', display: 'block', marginBottom: 4 }}>HTML Content</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 11, color: '#8b8fa3' }}>HTML Content</label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {/* Upload HTML file */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: '#8b8fa3', cursor: 'pointer' }}>
+                  <FontAwesomeIcon icon={faUpload} />
+                  Upload HTML
+                  <input
+                    type="file" accept=".html,.htm" style={{ display: 'none' }}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleHTMLFileUpload(idx, f); e.target.value = ''; }}
+                  />
+                </label>
+                {/* Preview toggle */}
+                <button
+                  onClick={() => toggleVariantPreview(idx)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, background: variantPreviews[idx] ? '#6366f120' : '#14151f', color: variantPreviews[idx] ? '#a78bfa' : '#8b8fa3', border: `1px solid ${variantPreviews[idx] ? '#6366f1' : '#2d2e3e'}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}
+                >
+                  <FontAwesomeIcon icon={faEye} /> {variantPreviews[idx] ? 'Hide Preview' : 'Preview'}
+                </button>
+              </div>
+            </div>
+
+            {/* Merge tag quick-insert toolbar */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600, marginRight: 4 }}>
+                <FontAwesomeIcon icon={faCode} /> Insert Tag:
+              </span>
+              {[
+                { label: 'First Name', syntax: '{{ first_name | default: "there" }}' },
+                { label: 'Email', syntax: '{{ email }}' },
+                { label: 'Company', syntax: '{{ custom.company }}' },
+                { label: 'Unsubscribe', syntax: '{{ system.unsubscribe_url }}' },
+                { label: 'Preferences', syntax: '{{ system.preferences_url }}' },
+              ].map(tag => (
+                <button
+                  key={tag.label}
+                  onClick={() => insertTagAtCursor(idx, tag.syntax)}
+                  title={tag.syntax}
+                  style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500, background: '#2d2e3e', color: '#c4b5fd', border: '1px solid #3d3e4e', cursor: 'pointer', transition: 'all 0.15s' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#6366f130'; e.currentTarget.style.borderColor = '#6366f1'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = '#2d2e3e'; e.currentTarget.style.borderColor = '#3d3e4e'; }}
+                >
+                  {tag.label}
+                </button>
+              ))}
+            </div>
+
             <textarea
-              value={v.html_content} rows={5} placeholder="<html>..."
+              ref={el => { textareaRefs.current[idx] = el; }}
+              value={v.html_content} rows={12} placeholder="Paste or type HTML content here, or upload an .html file above..."
               onChange={e => updateVariant(idx, 'html_content', e.target.value)}
-              style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
+              style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150 }}
             />
+
+            {/* Show detected liquid tags */}
+            {v.html_content.match(/\{\{[^}]+\}\}/g) && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>Detected tags:</span>
+                {[...new Set(v.html_content.match(/\{\{[^}]+\}\}/g) || [])].slice(0, 10).map((tag, i) => (
+                  <code key={i} style={{ padding: '2px 6px', borderRadius: 4, fontSize: 10, background: '#10b98115', color: '#10b981', border: '1px solid #10b98130' }}>{tag}</code>
+                ))}
+              </div>
+            )}
+
+            {/* Inline preview */}
+            {variantPreviews[idx] && v.html_content.trim() && (
+              <div style={{ marginTop: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid #2d2e3e' }}>
+                <div style={{ background: '#2d2e3e', padding: '6px 10px', fontSize: 11, color: '#8b8fa3', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>HTML Preview</span>
+                  <span style={{ fontSize: 10, color: '#64748b' }}>Liquid tags shown as raw text (resolved at send time)</span>
+                </div>
+                <div style={{ background: '#fff' }}>
+                  <iframe
+                    srcDoc={v.html_content}
+                    title={`Preview Variant ${v.variant_name}`}
+                    style={{ width: '100%', height: 400, border: 'none' }}
+                    sandbox="allow-same-origin"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ))}
