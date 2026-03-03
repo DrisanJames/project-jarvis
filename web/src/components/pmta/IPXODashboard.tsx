@@ -360,7 +360,7 @@ const IPXODashboard: React.FC = () => {
               <div style={{ color: '#9ca3af', fontSize: '0.85rem' }}>
                 <p style={{ margin: '0 0 0.5rem 0' }}>{setupData?.rdns_note}</p>
                 <p style={{ margin: '0 0 0.5rem 0', color: '#d1d5db' }}>
-                  Each IP needs a PTR record pointing to its hostname (e.g., <code style={{ color: '#a78bfa' }}>144.225.178.1 → mta1.mail.projectjarvis.com</code>).
+                  Each IP needs a PTR record pointing to its hostname (e.g., <code style={{ color: '#a78bfa' }}>144.225.178.1 → mta1.mail.projectjarvis.io</code>).
                 </p>
                 <a href="https://www.ipxo.com/portal/lease/leased-subnets" target="_blank" rel="noopener noreferrer"
                   style={{ color: '#818cf8', textDecoration: 'underline' }}>
@@ -384,8 +384,8 @@ const IPXODashboard: React.FC = () => {
                 <p style={{ margin: '0 0 0.5rem 0' }}>{setupData?.forward_dns_note}</p>
                 <div style={{ background: '#111827', padding: '0.75rem', borderRadius: '0.375rem', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: 1.6 }}>
                   <div style={{ color: '#6ee7b7' }}>; A Records (one per IP/hostname)</div>
-                  <div>mta1.mail.projectjarvis.com  A  144.225.178.1</div>
-                  <div>mta2.mail.projectjarvis.com  A  144.225.178.2</div>
+                  <div>mta1.mail.projectjarvis.io  A  144.225.178.1</div>
+                  <div>mta2.mail.projectjarvis.io  A  144.225.178.2</div>
                   <div style={{ color: '#6b7280' }}>; ... up to 254</div>
                   <br/>
                   <div style={{ color: '#6ee7b7' }}>; SPF Record on sending domain</div>

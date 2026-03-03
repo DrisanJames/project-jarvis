@@ -147,7 +147,7 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 
 	hostname := cfg.Hostname
 	if hostname == "" {
-		hostname = "pmta1.mail.projectjarvis.com"
+		hostname = "pmta1.mail.projectjarvis.io"
 	}
 	mgmtPort := cfg.MgmtPort
 	if mgmtPort == 0 {
@@ -169,7 +169,7 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 	sb.WriteString("# --- SMTP Sources (one virtual-mta per IP) ---\n")
 	for i, ip := range cfg.IPs {
 		vmtaName := fmt.Sprintf("mta%d", i+1)
-		hostName := fmt.Sprintf("mta%d.mail.projectjarvis.com", i+1)
+		hostName := fmt.Sprintf("mta%d.mail.projectjarvis.io", i+1)
 		sb.WriteString(fmt.Sprintf("\nsmtp-source-host %s %s\n", ip, hostName))
 		sb.WriteString(fmt.Sprintf("<virtual-mta %s>\n", vmtaName))
 		sb.WriteString(fmt.Sprintf("  smtp-source-host %s %s\n", ip, hostName))

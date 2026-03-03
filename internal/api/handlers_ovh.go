@@ -286,7 +286,7 @@ func (s *OVHService) HandleGenerateSetupScript(w http.ResponseWriter, r *http.Re
 	}
 
 	if input.Hostname == "" {
-		input.Hostname = "pmta1.mail.projectjarvis.com"
+		input.Hostname = "pmta1.mail.projectjarvis.io"
 	}
 
 	cfg := ovh.ProvisionConfig{

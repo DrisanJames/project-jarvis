@@ -150,7 +150,7 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 
 	hostname := cfg.Hostname
 	if hostname == "" {
-		hostname = "pmta1.mail.projectjarvis.com"
+		hostname = "pmta1.mail.projectjarvis.io"
 	}
 	mgmtPort := cfg.MgmtPort
 	if mgmtPort == 0 {

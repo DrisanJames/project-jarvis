@@ -405,8 +405,8 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			
 			// === CUSTOM TRACKING DOMAINS ===
 			// Platform domain is where CNAME should point, default tracking URL is fallback
-			platformDomain := "tracking.projectjarvis.com"
-			defaultTrackingURL := "https://tracking.projectjarvis.com"
+			platformDomain := "tracking.projectjarvis.io"
+			defaultTrackingURL := "https://tracking.projectjarvis.io"
 			RegisterTrackingDomainRoutes(r, db, platformDomain, defaultTrackingURL)
 			
 			// === AWS INFRASTRUCTURE (for custom domain provisioning) ===

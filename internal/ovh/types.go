@@ -66,7 +66,7 @@ type ProvisionConfig struct {
 	ServerName  string
 	ServerIP    string   // Primary IP of the dedicated server
 	FailoverIPs []string // Failover IPs attached to this server
-	Hostname    string   // e.g. pmta1.mail.projectjarvis.com
+	Hostname    string   // e.g. pmta1.mail.projectjarvis.io
 	InstallPMTA bool
 	PMTARPMPath string
 	MgmtPort    int
