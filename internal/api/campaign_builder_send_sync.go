@@ -360,6 +360,18 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
+	// Diagnostic: list check constraints on the table
+	var constraints []string
+	rows, qErr := cb.db.QueryContext(bgCtx, `SELECT con.conname || ': ' || pg_get_constraintdef(con.oid) FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid WHERE rel.relname = 'mailing_campaigns' AND con.contype = 'c'`)
+	if qErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c string
+			rows.Scan(&c)
+			constraints = append(constraints, c)
+		}
+	}
+
 	var dbDiag string
 	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
@@ -369,14 +381,14 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
-		dbDiag = fmt.Sprintf("err: %v", updateErr)
+		dbDiag = fmt.Sprintf("err: %v | constraints: %v", updateErr, constraints)
 	} else {
 		rowsAffected, _ := updateResult.RowsAffected()
 		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows=%d", id, sent, failed, finalStatus, rowsAffected)
 		if rowsAffected == 0 {
-			dbDiag = fmt.Sprintf("0 rows affected for id=%s, status=%s", id, finalStatus)
+			dbDiag = fmt.Sprintf("0 rows affected for id=%s | constraints: %v", id, constraints)
 		} else {
-			dbDiag = fmt.Sprintf("ok: %d rows", rowsAffected)
+			dbDiag = fmt.Sprintf("ok: %d rows | constraints: %v", rowsAffected, constraints)
 		}
 	}
 	
