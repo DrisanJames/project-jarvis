@@ -948,8 +948,11 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
-		{"nuke_status_to_text", `ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT`},
-		{"drop_all_campaign_checks_v2", `DO $$ DECLARE r RECORD; BEGIN FOR r IN SELECT con.conname FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid WHERE rel.relname = 'mailing_campaigns' AND con.contype = 'c' LOOP EXECUTE format('ALTER TABLE mailing_campaigns DROP CONSTRAINT %I', r.conname); END LOOP; END; $$`},
+		{"drop_status_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
+		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
+		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},
+		{"widen_status_col", `ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT`},
+		{"readd_status_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
 		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
 		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
