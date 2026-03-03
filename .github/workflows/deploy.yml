@@ -111,7 +111,12 @@ jobs:
                   {"name": "ADMIN_API_KEY", "value": "a8314a1ea88b78bcb4540ed683c8234512f2f6666ba09be3ceefdb39dfd88b04"},
                   {"name": "SES_SMTP_USER", "value": "${{ secrets.SES_SMTP_USER }}"},
                   {"name": "SES_SMTP_SECRET", "value": "${{ secrets.SES_SMTP_SECRET }}"},
-                  {"name": "SES_REGION", "value": "us-west-1"}
+                  {"name": "SES_REGION", "value": "us-west-1"},
+                  {"name": "PMTA_MGMT_HOST", "value": "15.204.101.125"},
+                  {"name": "PMTA_MGMT_PASSWORD", "value": "xK9#mPtA2026!ovh"},
+                  {"name": "PMTA_SSH_HOST", "value": "15.204.101.125"},
+                  {"name": "PMTA_SSH_USER", "value": "rocky"},
+                  {"name": "ENGINE_S3_BUCKET", "value": "ignite-pmta-engine"}
                 ],
                 "logConfiguration": {
                   "logDriver": "awslogs",

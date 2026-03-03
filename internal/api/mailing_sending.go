@@ -966,8 +966,8 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 // work without authentication and match the SendWorkerPool format.
 func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscriberID, emailID uuid.UUID) string {
 	trackingData := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
-	sig := signData(trackingData, svc.signingKey)
 	encoded := base64.URLEncoding.EncodeToString([]byte(trackingData))
+	sig := signData(encoded, svc.signingKey)[:16]
 
 	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`,
 		svc.trackingURL, encoded, sig)
@@ -989,8 +989,8 @@ func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscr
 		}
 
 		linkData := fmt.Sprintf("%s|%s", trackingData, originalURL)
-		linkSig := signData(linkData, svc.signingKey)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
+		linkSig := signData(linkEncoded, svc.signingKey)[:16]
 		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, svc.trackingURL, linkEncoded, linkSig)
 	})
 

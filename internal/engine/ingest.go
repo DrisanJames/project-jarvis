@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -78,7 +79,12 @@ func NewIngestor(registry *ISPRegistry, processor *SignalProcessor, cfg Ingestor
 		pmtaUser:     cfg.PMTAUser,
 		pmtaPassword: cfg.PMTAPassword,
 		pollInterval: interval,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
 	}
 }
 
@@ -364,12 +370,12 @@ func (ing *Ingestor) StartPolling(ctx context.Context) {
 func (ing *Ingestor) pollPMTAStatus(ctx context.Context) {
 	endpoints := []string{"status", "queues", "vmtas", "domains"}
 	for _, ep := range endpoints {
-		url := fmt.Sprintf("http://%s:%d/%s?format=json", ing.pmtaHost, ing.pmtaPort, ep)
+		url := fmt.Sprintf("https://%s:%d/%s?format=json", ing.pmtaHost, ing.pmtaPort, ep)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			continue
 		}
-		if ing.pmtaUser != "" {
+		if ing.pmtaUser != "" || ing.pmtaPassword != "" {
 			req.SetBasicAuth(ing.pmtaUser, ing.pmtaPassword)
 		}
 		resp, err := ing.httpClient.Do(req)
