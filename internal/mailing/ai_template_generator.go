@@ -53,7 +53,7 @@ type BlogExcerpt struct {
 }
 
 // GenerateEmailTemplates produces 5 HTML email template variations using AI.
-// Tries Anthropic (Claude) first, falls back to OpenAI (GPT-5.3-Codex).
+// Tries Anthropic (Claude) first, falls back to OpenAI (GPT-5.2).
 func (s *AIContentService) GenerateEmailTemplates(ctx context.Context, req TemplateGenerationRequest) (*TemplateGenerationResult, error) {
 	if s.anthropicKey == "" && s.openaiKey == "" {
 		return nil, fmt.Errorf("no AI API key configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
@@ -66,14 +66,32 @@ func (s *AIContentService) GenerateEmailTemplates(ctx context.Context, req Templ
 	var err error
 
 	if s.anthropicKey != "" {
-		variations, err = s.callClaudeForTemplates(ctx, prompt)
-		if err != nil {
-			log.Printf("Claude template generation failed, falling back to OpenAI: %v", err)
+		for attempt := 0; attempt < 2; attempt++ {
+			variations, err = s.callClaudeForTemplates(ctx, prompt)
+			if err == nil && len(variations) > 0 {
+				break
+			}
+			if attempt == 0 {
+				log.Printf("Claude template generation attempt %d failed: %v — retrying", attempt+1, err)
+				time.Sleep(2 * time.Second)
+			}
+		}
+		if err != nil || len(variations) == 0 {
+			log.Printf("Claude template generation failed after retries, falling back to OpenAI: %v", err)
 		}
 	}
 
 	if len(variations) == 0 && s.openaiKey != "" {
-		variations, err = s.callOpenAIForTemplates(ctx, prompt)
+		for attempt := 0; attempt < 2; attempt++ {
+			variations, err = s.callOpenAIForTemplates(ctx, prompt)
+			if err == nil && len(variations) > 0 {
+				break
+			}
+			if attempt == 0 {
+				log.Printf("OpenAI template generation attempt %d failed: %v — retrying", attempt+1, err)
+				time.Sleep(2 * time.Second)
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("template generation failed: %w", err)
 		}
@@ -306,6 +324,16 @@ CRITICAL RULES:
 	}
 
 	sb.WriteString(`
+
+PERSONALIZATION (LIQUID MERGE TAGS):
+Every template MUST include these Liquid merge tags for dynamic personalization:
+- Use {{ first_name | default: "there" }} for greeting the subscriber by name
+- Use {{ email }} where the subscriber's email should appear
+- Use {{ system.unsubscribe_url }} for the mandatory unsubscribe link (CAN-SPAM required)
+- Use {{ system.preferences_url }} for a manage-preferences link (optional but recommended)
+- Use {% if custom.company %}{{ custom.company }}{% endif %} for conditional company name
+- The unsubscribe link MUST appear in every template footer, e.g.: <a href="{{ system.unsubscribe_url }}">Unsubscribe</a>
+- These tags MUST appear literally in the HTML — they get processed server-side at send time
 
 DESIGN PHILOSOPHY:
 - Take layout inspiration from award-winning email designs on reallygoodemails.com
