@@ -26,7 +26,7 @@
 }
 
 .add-button {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
   color: white;
   border: none;
   padding: 10px 20px;
@@ -39,7 +39,7 @@
 
 .add-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 200, 255, 0.35);
 }
 
 /* Profiles Grid */
@@ -64,9 +64,9 @@
 }
 
 .profile-card.default {
-  border-color: rgba(102,126,234,0.4);
+  border-color: rgba(0,200,255,0.4);
   border-width: 2px;
-  background: linear-gradient(135deg, rgba(102,126,234,0.08) 0%, rgba(118,75,162,0.06) 100%);
+  background: linear-gradient(135deg, rgba(0,200,255,0.08) 0%, rgba(0,176,255,0.06) 100%);
 }
 
 .profile-header {
@@ -114,7 +114,7 @@
 
 .default-badge {
   display: inline-block;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
   color: white;
   padding: 2px 8px;
   border-radius: 4px;
@@ -320,8 +320,8 @@
 .modal-content .form-group input:focus,
 .modal-content .form-group select:focus {
   outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.15);
 }
 
 .modal-content .form-group select option {
@@ -358,7 +358,7 @@
   padding: 9px 18px;
   border: none;
   border-radius: 8px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
   color: white;
   font-weight: 600;
   font-size: 13px;

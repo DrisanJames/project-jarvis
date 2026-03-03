@@ -86,10 +86,10 @@ interface SendingProfile {
 
 // Node type definitions
 const NODE_TYPES = {
-  trigger: { label: 'Trigger', icon: '⚡', color: '#10b981', description: 'Start the journey' },
-  email: { label: 'Send Email', icon: '✉️', color: '#3b82f6', description: 'Send an email' },
-  delay: { label: 'Wait', icon: '⏱️', color: '#f59e0b', description: 'Wait before next step' },
-  condition: { label: 'Condition', icon: '🔀', color: '#8b5cf6', description: 'Branch based on behavior' },
+  trigger: { label: 'Trigger', icon: '⚡', color: '#00b894', description: 'Start the journey' },
+  email: { label: 'Send Email', icon: '✉️', color: '#00e5ff', description: 'Send an email' },
+  delay: { label: 'Wait', icon: '⏱️', color: '#fdcb6e', description: 'Wait before next step' },
+  condition: { label: 'Condition', icon: '🔀', color: '#00b0ff', description: 'Branch based on behavior' },
   split: { label: 'A/B Split', icon: '📊', color: '#ec4899', description: 'Split traffic for testing' },
   goal: { label: 'Goal', icon: '🎯', color: '#14b8a6', description: 'Track conversions' },
 };
@@ -316,7 +316,7 @@ export const JourneyBuilder: React.FC = () => {
             cx={(x1 + x2) / 2} 
             cy={midY} 
             r="8" 
-            fill="#ef4444" 
+            fill="#e94560" 
             className="delete-connection"
             onClick={() => deleteConnection(conn.from, conn.to)}
           />

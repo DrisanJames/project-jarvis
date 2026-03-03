@@ -167,7 +167,7 @@ const getStatusColor = (status: string): string => {
   switch (status) {
     case 'active': return '#10b981';
     case 'idle': return '#f59e0b';
-    case 'sleeping': return '#6366f1';
+    case 'sleeping': return '#00e5ff';
     case 'dormant': return '#6b7280';
     default: return '#6b7280';
   }
@@ -185,10 +185,10 @@ const getStatusLabel = (status: string): string => {
 
 const getManagedStatusColor = (status: string): string => {
   switch (status) {
-    case 'spawned': return '#3b82f6';
+    case 'spawned': return '#00b0ff';
     case 'learning': return '#f59e0b';
     case 'sending': return '#10b981';
-    case 'adapting': return '#8b5cf6';
+    case 'adapting': return '#00e5ff';
     case 'complete': return '#6b7280';
     case 'dormant': return '#4b5563';
     default: return '#6b7280';
@@ -255,7 +255,7 @@ const getKnowledgeDepth = (agent: ISPAgent): { score: number; label: string; col
   let label = 'Novice';
   let color = '#6b7280';
   if (score >= 80) { label = 'Expert'; color = '#10b981'; }
-  else if (score >= 60) { label = 'Proficient'; color = '#3b82f6'; }
+  else if (score >= 60) { label = 'Proficient'; color = '#00b0ff'; }
   else if (score >= 40) { label = 'Learning'; color = '#f59e0b'; }
   else if (score >= 20) { label = 'Beginner'; color = '#ef4444'; }
 
@@ -410,7 +410,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       {summary && (
         <div className="ia-summary-bar">
           <div className="ia-summary-card">
-            <div className="ia-summary-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+            <div className="ia-summary-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
               <FontAwesomeIcon icon={faRobot} />
             </div>
             <div className="ia-summary-body">
@@ -437,7 +437,7 @@ export const ISPAgentIntelligence: React.FC = () => {
             </div>
           </div>
           <div className="ia-summary-card">
-            <div className="ia-summary-icon" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+            <div className="ia-summary-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
               <FontAwesomeIcon icon={faDatabase} />
             </div>
             <div className="ia-summary-body">
@@ -471,7 +471,7 @@ export const ISPAgentIntelligence: React.FC = () => {
         {managedSummary && (
           <div className="ia-managed-summary-bar">
             <div className="ia-managed-summary-card">
-              <div className="ia-managed-summary-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+              <div className="ia-managed-summary-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
                 <FontAwesomeIcon icon={faRobot} />
               </div>
               <div className="ia-managed-summary-body">
@@ -507,7 +507,7 @@ export const ISPAgentIntelligence: React.FC = () => {
               </div>
             </div>
             <div className="ia-managed-summary-card">
-              <div className="ia-managed-summary-icon" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+              <div className="ia-managed-summary-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </div>
               <div className="ia-managed-summary-body">
@@ -716,17 +716,17 @@ export const ISPAgentIntelligence: React.FC = () => {
                               {Object.entries(agentActivity.by_classification).map(([cls, count]) => {
                                 const total = agentActivity.total_decisions || 1;
                                 const pct = (count / total) * 100;
-                                const color = cls === 'send_now' ? '#10b981' : cls === 'send_later' ? '#3b82f6' : cls === 'defer' ? '#f59e0b' : '#ef4444';
+                                const color = cls === 'send_now' ? '#00b894' : cls === 'send_later' ? '#00b0ff' : cls === 'defer' ? '#fdcb6e' : '#e94560';
                                 return pct > 0 ? (
                                   <div key={cls} className="ia-feed-bar-seg" style={{ width: `${pct}%`, background: color }} title={`${cls}: ${count} (${pct.toFixed(1)}%)`} />
                                 ) : null;
                               })}
                             </div>
                             <div className="ia-feed-breakdown-legend">
-                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#10b981'}} /> Send Now: {agentActivity.by_classification.send_now || 0}</span>
-                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#3b82f6'}} /> Later: {agentActivity.by_classification.send_later || 0}</span>
-                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#f59e0b'}} /> Defer: {agentActivity.by_classification.defer || 0}</span>
-                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#ef4444'}} /> Suppress: {agentActivity.by_classification.suppress || 0}</span>
+                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#00b894'}} /> Send Now: {agentActivity.by_classification.send_now || 0}</span>
+                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#00b0ff'}} /> Later: {agentActivity.by_classification.send_later || 0}</span>
+                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#fdcb6e'}} /> Defer: {agentActivity.by_classification.defer || 0}</span>
+                              <span className="ia-feed-legend-item"><span className="ia-feed-legend-dot" style={{background:'#e94560'}} /> Suppress: {agentActivity.by_classification.suppress || 0}</span>
                             </div>
                           </div>
 
@@ -1060,7 +1060,7 @@ export const ISPAgentIntelligence: React.FC = () => {
             <h4><FontAwesomeIcon icon={faDatabase} /> Learning Sources</h4>
             <div className="ia-sources-breakdown">
               {[
-                { label: 'Email Sends', value: selectedAgent.learning_sources.sends, icon: faEnvelope, color: '#3b82f6' },
+                { label: 'Email Sends', value: selectedAgent.learning_sources.sends, icon: faEnvelope, color: '#00b0ff' },
                 { label: 'Opens Tracked', value: selectedAgent.learning_sources.opens, icon: faEye, color: '#10b981' },
                 { label: 'Clicks Tracked', value: selectedAgent.learning_sources.clicks, icon: faMousePointer, color: '#f59e0b' },
                 { label: 'Bounces Analyzed', value: selectedAgent.learning_sources.bounces, icon: faExclamationTriangle, color: '#ef4444' },

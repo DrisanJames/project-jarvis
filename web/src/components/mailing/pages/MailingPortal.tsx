@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { 
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
@@ -31,7 +31,7 @@ const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
-  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: '#8b8fa3', gap: 10, fontSize: 14 }}>
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'rgba(180,210,240,0.65)', gap: 10, fontSize: 14 }}>
     <FontAwesomeIcon icon={faSpinner} spin /> Loading…
   </div>
 );
@@ -896,20 +896,20 @@ const TemplatesManager: React.FC = () => {
   const selectedFolderObj = folders.find((f: any) => f.id === selectedFolder);
 
   return (
-    <div className="manager-page">
+    <div className="manager-page" style={{ background: '#0a0f1a' }}>
       <div className="page-explanation">
-        <h3>Content Library</h3>
-        <p>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the PMTA Campaign wizard are automatically filed here.</p>
+        <h3 style={{ color: '#e0e6f0' }}>Content Library</h3>
+        <p style={{ color: 'rgba(180,210,240,0.65)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the PMTA Campaign wizard are automatically filed here.</p>
       </div>
 
       {/* Folder sidebar + template list */}
       <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
         {/* Folders */}
-        <div style={{ background: '#1e1f2e', borderRadius: 10, padding: 12 }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: 13, color: '#8b8fa3' }}>Folders</h4>
+        <div style={{ background: '#0d1526', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.08)' }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>Folders</h4>
           <div
             onClick={() => setSelectedFolder(null)}
-            style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === null ? '#6366f115' : 'transparent', color: selectedFolder === null ? '#a78bfa' : '#e2e4ed', border: selectedFolder === null ? '1px solid #6366f1' : '1px solid transparent' }}
+            style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === null ? 'rgba(0,229,255,0.08)' : 'transparent', color: selectedFolder === null ? '#00e5ff' : '#e0e6f0', border: selectedFolder === null ? '1px solid #00e5ff' : '1px solid transparent' }}
           >
             All Templates
           </div>
@@ -917,64 +917,64 @@ const TemplatesManager: React.FC = () => {
             <div
               key={f.id}
               onClick={() => setSelectedFolder(f.id)}
-              style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === f.id ? '#6366f115' : 'transparent', color: selectedFolder === f.id ? '#a78bfa' : '#e2e4ed', border: selectedFolder === f.id ? '1px solid #6366f1' : '1px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}
+              style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === f.id ? 'rgba(0,229,255,0.08)' : 'transparent', color: selectedFolder === f.id ? '#00e5ff' : '#e0e6f0', border: selectedFolder === f.id ? '1px solid #00e5ff' : '1px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}
             >
               <span style={{ fontSize: 14 }}>📁</span> {f.name}
             </div>
           ))}
-          {folders.length === 0 && <p style={{ fontSize: 11, color: '#64748b', margin: '8px 0 0' }}>No folders yet. Save templates from the AI Generator to create domain folders automatically.</p>}
+          {folders.length === 0 && <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', margin: '8px 0 0' }}>No folders yet. Save templates from the AI Generator to create domain folders automatically.</p>}
         </div>
 
         {/* Templates */}
         <div>
           <div className="manager-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, color: '#e2e4ed' }}>
+            <span style={{ fontSize: 14, color: '#e0e6f0' }}>
               {selectedFolderObj ? `📁 ${selectedFolderObj.name}` : 'All Templates'} — {templates.length} template{templates.length !== 1 ? 's' : ''}
             </span>
-            <button className="btn-primary" onClick={() => setShowCreate(true)} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>+ Create Template</button>
+            <button className="btn-primary" onClick={() => setShowCreate(true)} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>+ Create Template</button>
           </div>
 
           {showCreate && (
-            <div style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 16, marginBottom: 12 }}>
-              <h4 style={{ margin: '0 0 12px', color: '#a78bfa', fontSize: 14 }}>Create Email Template</h4>
+            <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12 }}>
+              <h4 style={{ margin: '0 0 12px', color: '#00e5ff', fontSize: 14 }}>Create Email Template</h4>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-                <input placeholder="Template Name" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Template Name" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
               </div>
-              <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
+              <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={() => setShowCreate(false)} style={{ background: 'transparent', color: '#8b8fa3', border: '1px solid #2d2e3e', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-                <button onClick={createTemplate} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Create</button>
+                <button onClick={() => setShowCreate(false)} style={{ background: 'transparent', color: 'rgba(180,210,240,0.65)', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+                <button onClick={createTemplate} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>Create</button>
               </div>
             </div>
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {templates.map((t: any) => (
-              <div key={t.id} style={{ background: '#1e1f2e', border: '1px solid #2d2e3e', borderRadius: 10, padding: 14 }}>
+              <div key={t.id} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div>
-                    <strong style={{ color: '#e2e4ed', fontSize: 14 }}>{t.name}</strong>
-                    <span style={{ marginLeft: 8, fontSize: 11, color: '#8b8fa3' }}>{t.description}</span>
+                    <strong style={{ color: '#e0e6f0', fontSize: 14 }}>{t.name}</strong>
+                    <span style={{ marginLeft: 8, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>{t.description}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <span style={{ background: t.status === 'active' ? '#10b98120' : '#6366f120', color: t.status === 'active' ? '#10b981' : '#6366f1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
-                    <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ background: 'none', border: '1px solid #2d2e3e', color: '#a78bfa', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Preview</button>
-                    <button onClick={() => deleteTemplate(t.id)} style={{ background: 'none', border: '1px solid #2d2e3e', color: '#ef4444', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Delete</button>
+                    <span style={{ background: t.status === 'active' ? '#00b89420' : 'rgba(0,229,255,0.12)', color: t.status === 'active' ? '#00b894' : '#00e5ff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
+                    <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ background: 'none', border: '1px solid rgba(0,200,255,0.08)', color: '#00b0ff', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Preview</button>
+                    <button onClick={() => deleteTemplate(t.id)} style={{ background: 'none', border: '1px solid rgba(0,200,255,0.08)', color: '#e94560', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Delete</button>
                   </div>
                 </div>
-                {t.subject && <div style={{ fontSize: 12, color: '#8b8fa3' }}>Subject: <span style={{ color: '#c4b5fd' }}>{t.subject}</span></div>}
-                {t.from_name && <div style={{ fontSize: 12, color: '#8b8fa3' }}>From: <span style={{ color: '#c4b5fd' }}>{t.from_name}</span></div>}
+                {t.subject && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Subject: <span style={{ color: '#00b0ff' }}>{t.subject}</span></div>}
+                {t.from_name && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>From: <span style={{ color: '#00b0ff' }}>{t.from_name}</span></div>}
                 {previewId === t.id && t.html_content && (
-                  <div style={{ marginTop: 10, background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
+                  <div style={{ marginTop: 10, background: '#0a0f1a', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,200,255,0.08)' }}>
                     <iframe srcDoc={t.html_content} title={`Preview ${t.name}`} style={{ width: '100%', height: 400, border: 'none' }} sandbox="allow-same-origin" />
                   </div>
                 )}
               </div>
             ))}
-            {templates.length === 0 && <p style={{ textAlign: 'center', color: '#64748b', fontSize: 13, padding: 40 }}>No templates yet. Use the AI Generator in the PMTA Campaign wizard to create templates automatically.</p>}
+            {templates.length === 0 && <p style={{ textAlign: 'center', color: 'rgba(180,210,240,0.65)', fontSize: 13, padding: 40 }}>No templates yet. Use the AI Generator in the PMTA Campaign wizard to create templates automatically.</p>}
           </div>
         </div>
       </div>
@@ -1054,9 +1054,9 @@ const SiteTrafficDashboard: React.FC = () => {
     } catch {}
   };
 
-  const cardStyle: React.CSSProperties = { background: '#1e1f2e', borderRadius: 10, padding: '16px 20px', border: '1px solid #2d2e3e' };
-  const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e2e4ed', lineHeight: 1 };
-  const labelStyle: React.CSSProperties = { fontSize: 11, color: '#8b8fa3', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginTop: 4 };
+  const cardStyle: React.CSSProperties = { background: '#0d1526', borderRadius: 10, padding: '16px 20px', border: '1px solid rgba(0,200,255,0.08)' };
+  const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e0e6f0', lineHeight: 1 };
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginTop: 4 };
 
   return (
     <div className="manager-page">
@@ -1068,18 +1068,18 @@ const SiteTrafficDashboard: React.FC = () => {
       {/* Controls */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}
-          style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 8, color: '#e2e4ed', padding: '8px 12px', fontSize: 13 }}>
+          style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '8px 12px', fontSize: 13 }}>
           <option value="">All Domains</option>
           {domains.map((d: any) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
         </select>
         {['1h','24h','7d','30d'].map(r => (
           <button key={r} onClick={() => setTimeRange(r)}
-            style={{ background: timeRange === r ? '#6366f1' : '#14151f', color: '#e2e4ed', border: '1px solid #2d2e3e', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer' }}>
+            style={{ background: timeRange === r ? '#00b0ff' : '#0a0f1a', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer' }}>
             {r === '1h' ? '1 Hour' : r === '24h' ? '24 Hours' : r === '7d' ? '7 Days' : '30 Days'}
           </button>
         ))}
         <button onClick={() => { setShowSnippet(!showSnippet); if (!snippet) fetchSnippet(); }}
-          style={{ marginLeft: 'auto', background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          style={{ marginLeft: 'auto', background: '#00b894', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
           {showSnippet ? 'Hide Pixel Code' : 'Get Pixel Code'}
         </button>
       </div>
@@ -1088,20 +1088,20 @@ const SiteTrafficDashboard: React.FC = () => {
       {showSnippet && (
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'center' }}>
-            <label style={{ fontSize: 12, color: '#8b8fa3' }}>Domain:</label>
+            <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Domain:</label>
             <input value={snippetDomain} onChange={e => setSnippetDomain(e.target.value)}
-              style={{ background: '#14151f', border: '1px solid #2d2e3e', borderRadius: 6, color: '#e2e4ed', padding: '6px 10px', fontSize: 13, width: 200 }} />
-            <button onClick={fetchSnippet} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
+              style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '6px 10px', fontSize: 13, width: 200 }} />
+            <button onClick={fetchSnippet} style={{ background: '#00b0ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
               Generate
             </button>
           </div>
           {snippet && (
             <div>
-              <p style={{ fontSize: 12, color: '#8b8fa3', margin: '0 0 8px' }}>Paste this before the closing <code>&lt;/body&gt;</code> tag on every page of <strong>{snippetDomain}</strong>:</p>
-              <pre style={{ background: '#0d0e1a', borderRadius: 8, padding: 14, fontSize: 11, color: '#a5b4fc', overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid #2d2e3e' }}>
+              <p style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '0 0 8px' }}>Paste this before the closing <code>&lt;/body&gt;</code> tag on every page of <strong>{snippetDomain}</strong>:</p>
+              <pre style={{ background: '#0a0f1a', borderRadius: 8, padding: 14, fontSize: 11, color: '#00e5ff', overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid rgba(0,200,255,0.08)' }}>
                 {snippet}
               </pre>
-              <button onClick={() => navigator.clipboard.writeText(snippet)} style={{ marginTop: 8, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
+              <button onClick={() => navigator.clipboard.writeText(snippet)} style={{ marginTop: 8, background: '#00b0ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
                 Copy to Clipboard
               </button>
             </div>
@@ -1110,13 +1110,13 @@ const SiteTrafficDashboard: React.FC = () => {
       )}
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#8b8fa3' }}><FontAwesomeIcon icon={faSpinner} spin size="2x" /></div>
+        <div style={{ textAlign: 'center', padding: 60, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin size="2x" /></div>
       ) : (
         <>
           {/* Stats Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
-            <div style={{ ...cardStyle, borderLeft: '3px solid #10b981' }}>
-              <div style={{ ...statStyle, color: '#10b981' }}>{traffic?.active_visitors ?? 0}</div>
+            <div style={{ ...cardStyle, borderLeft: '3px solid #00b894' }}>
+              <div style={{ ...statStyle, color: '#00b894' }}>{traffic?.active_visitors ?? 0}</div>
               <div style={labelStyle}>Active Now</div>
             </div>
             <div style={cardStyle}>
@@ -1136,28 +1136,28 @@ const SiteTrafficDashboard: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             {/* Top Pages */}
             <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>Top Pages</h4>
+              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Top Pages</h4>
               {(traffic?.top_pages || []).length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No page view data yet. Install the pixel to start tracking.</p>}
               {(traffic?.top_pages || []).slice(0, 10).map((p: any, i: number) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #1a1b2e', fontSize: 12 }}>
-                  <span style={{ color: '#a5b4fc', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
-                  <span style={{ color: '#8b8fa3', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 12 }}>
+                  <span style={{ color: '#00e5ff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
+                  <span style={{ color: 'rgba(180,210,240,0.65)', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
                 </div>
               ))}
             </div>
 
             {/* Live Event Feed */}
             <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>
-                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#10b981', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
+              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>
+                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#00b894', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
                 Live Event Feed
               </h4>
               {liveEvents.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>Waiting for events... Install the pixel to see real-time traffic.</p>}
               <div style={{ maxHeight: 280, overflow: 'auto' }}>
                 {liveEvents.map((evt, i) => (
-                  <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid #1a1b2e', fontSize: 11 }}>
-                    <span style={{ color: '#6366f1', marginRight: 8 }}>{evt.event_type}</span>
-                    <span style={{ color: '#e2e4ed' }}>{evt.page_url || evt.page_title || '/'}</span>
+                  <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 11 }}>
+                    <span style={{ color: '#00b0ff', marginRight: 8 }}>{evt.event_type}</span>
+                    <span style={{ color: '#e0e6f0' }}>{evt.page_url || evt.page_title || '/'}</span>
                     <span style={{ color: '#4b5563', float: 'right' }}>{evt.domain}</span>
                   </div>
                 ))}
@@ -1167,24 +1167,24 @@ const SiteTrafficDashboard: React.FC = () => {
 
           {/* Tracked Domains Table */}
           <div style={cardStyle}>
-            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e2e4ed' }}>Tracked Domains (24h)</h4>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Tracked Domains (24h)</h4>
             {domains.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No domains reporting yet.</p>}
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #2d2e3e' }}>
-                  <th style={{ textAlign: 'left', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Domain</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Page Views</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Unique Visitors</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: '#8b8fa3', fontWeight: 500 }}>Last Seen</th>
+                <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+                  <th style={{ textAlign: 'left', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Domain</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Page Views</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Unique Visitors</th>
+                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Last Seen</th>
                 </tr>
               </thead>
               <tbody>
                 {domains.map((d: any, i: number) => (
-                  <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid #1a1b2e' }}>
-                    <td style={{ padding: 8, color: '#a5b4fc' }}>{d.domain}</td>
-                    <td style={{ padding: 8, color: '#e2e4ed', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
-                    <td style={{ padding: 8, color: '#e2e4ed', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
-                    <td style={{ padding: 8, color: '#8b8fa3', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
+                  <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+                    <td style={{ padding: 8, color: '#00e5ff' }}>{d.domain}</td>
+                    <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
+                    <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
+                    <td style={{ padding: 8, color: 'rgba(180,210,240,0.65)', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
                   </tr>
                 ))}
               </tbody>

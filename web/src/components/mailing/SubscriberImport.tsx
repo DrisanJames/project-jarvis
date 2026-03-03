@@ -636,8 +636,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-header h2 { margin: 0; font-size: 20px; }
-        .si-header p { margin: 4px 0 0; color: #6b7280; font-size: 14px; }
-        .si-close { background: none; border: none; cursor: pointer; color: #9ca3af; }
+        .si-header p { margin: 4px 0 0; color: rgba(180,210,240,0.65); font-size: 14px; }
+        .si-close { background: none; border: none; cursor: pointer; color: rgba(180,210,240,0.65); }
 
         .si-steps {
           display: flex;
@@ -651,12 +651,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           display: flex;
           align-items: center;
           gap: 8px;
-          color: #9ca3af;
+          color: rgba(180,210,240,0.65);
           font-size: 14px;
         }
 
-        .si-step.current { color: #3b82f6; font-weight: 500; }
-        .si-step.complete { color: #10b981; }
+        .si-step.current { color: #00e5ff; font-weight: 500; }
+        .si-step.complete { color: #00b894; }
 
         .si-step-indicator {
           width: 24px;
@@ -670,8 +670,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           font-weight: 600;
         }
 
-        .si-step.current .si-step-indicator { background: #3b82f6; color: white; }
-        .si-step.complete .si-step-indicator { background: #10b981; color: white; }
+        .si-step.current .si-step-indicator { background: #00e5ff; color: white; }
+        .si-step.complete .si-step-indicator { background: #00b894; color: white; }
 
         .si-error {
           display: flex;
@@ -680,7 +680,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           padding: 12px 24px;
           background: #fef2f2;
           border-bottom: 1px solid #fecaca;
-          color: #dc2626;
+          color: #e94560;
           font-size: 14px;
         }
 
@@ -689,7 +689,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           background: none;
           border: none;
           cursor: pointer;
-          color: #dc2626;
+          color: #e94560;
         }
 
         .si-section-header {
@@ -697,7 +697,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-section-header h3 { margin: 0 0 4px; font-size: 18px; }
-        .si-section-header p { margin: 0; color: #6b7280; }
+        .si-section-header p { margin: 0; color: rgba(180,210,240,0.65); }
 
         /* Templates */
         .si-templates { padding-bottom: 24px; }
@@ -722,15 +722,15 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-template-card:hover {
-          border-color: #3b82f6;
+          border-color: #00e5ff;
           background: #f0f9ff;
         }
 
-        .si-template-icon { color: #3b82f6; }
+        .si-template-icon { color: #00e5ff; }
         .si-template-info h4 { margin: 0 0 4px; font-size: 15px; }
-        .si-template-info p { margin: 0; font-size: 13px; color: #6b7280; }
-        .si-template-fields { font-size: 12px; color: #9ca3af; }
-        .si-download-icon { margin-left: auto; color: #9ca3af; }
+        .si-template-info p { margin: 0; font-size: 13px; color: rgba(180,210,240,0.65); }
+        .si-template-fields { font-size: 12px; color: rgba(180,210,240,0.65); }
+        .si-download-icon { margin-left: auto; color: rgba(180,210,240,0.65); }
 
         .si-tips {
           margin: 0 24px;
@@ -791,7 +791,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-category-header:hover { background: #f9fafb; }
         .si-category-name { font-weight: 500; }
-        .si-category-count { margin-left: auto; color: #9ca3af; font-size: 12px; }
+        .si-category-count { margin-left: auto; color: rgba(180,210,240,0.65); font-size: 12px; }
 
         .si-category-fields { padding: 8px 16px 16px 40px; }
 
@@ -813,12 +813,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-field-label { color: #374151; }
         .si-required-badge {
           background: #fee2e2;
-          color: #dc2626;
+          color: #e94560;
           padding: 2px 6px;
           border-radius: 4px;
           font-size: 11px;
         }
-        .si-field-example { color: #9ca3af; font-size: 12px; }
+        .si-field-example { color: rgba(180,210,240,0.65); font-size: 12px; }
 
         /* Upload */
         .si-upload { padding: 24px; }
@@ -839,20 +839,20 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-dropzone.loading { pointer-events: none; opacity: 0.7; }
 
         .si-dropzone h4 { margin: 16px 0 8px; }
-        .si-dropzone p { margin: 0 0 16px; color: #6b7280; }
+        .si-dropzone p { margin: 0 0 16px; color: rgba(180,210,240,0.65); }
 
         .si-file-input input { display: none; }
         .si-file-input span {
           display: inline-block;
           padding: 10px 20px;
-          background: #3b82f6;
+          background: #00e5ff;
           color: white;
           border-radius: 6px;
           cursor: pointer;
           font-weight: 500;
         }
 
-        .si-file-input span:hover { background: #2563eb; }
+        .si-file-input span:hover { background: #00b0ff; }
 
         /* Mapping */
         .si-mapping { padding: 0 24px 24px; }
@@ -868,12 +868,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           font-size: 14px;
         }
 
-        .si-file-size { color: #6b7280; }
+        .si-file-size { color: rgba(180,210,240,0.65); }
         .si-file-info button {
           margin-left: auto;
           background: none;
           border: none;
-          color: #3b82f6;
+          color: #00e5ff;
           cursor: pointer;
           font-size: 13px;
         }
@@ -901,7 +901,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           background: #f9fafb;
           font-size: 12px;
           font-weight: 600;
-          color: #6b7280;
+          color: rgba(180,210,240,0.65);
           text-transform: uppercase;
         }
 
@@ -915,14 +915,14 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-email-row { background: #f0fdf4; }
 
-        .si-confidence-high { color: #10b981; margin-left: 8px; }
+        .si-confidence-high { color: #00b894; margin-left: 8px; }
 
         .si-preview-cell {
           max-width: 150px;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: #6b7280;
+          color: rgba(180,210,240,0.65);
           font-size: 13px;
         }
 
@@ -960,7 +960,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-progress-container h3 { margin: 20px 0 8px; }
-        .si-progress-container p { color: #6b7280; margin: 0; }
+        .si-progress-container p { color: rgba(180,210,240,0.65); margin: 0; }
 
         .si-progress-bar-container {
           width: 100%;
@@ -974,11 +974,11 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-progress-bar {
           height: 100%;
-          background: #3b82f6;
+          background: #00e5ff;
           transition: width 0.3s;
         }
 
-        .si-progress-text { color: #6b7280; font-size: 14px; }
+        .si-progress-text { color: rgba(180,210,240,0.65); font-size: 14px; }
 
         .si-complete-icon {
           width: 80px;
@@ -989,7 +989,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #10b981;
+          color: #00b894;
         }
 
         .si-stats-grid {
@@ -1009,12 +1009,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-stat-value { display: block; font-size: 24px; font-weight: 700; }
-        .si-stat-label { font-size: 12px; color: #6b7280; }
-        .si-stat.success .si-stat-value { color: #10b981; }
-        .si-stat.warning .si-stat-value { color: #f59e0b; }
-        .si-stat.error .si-stat-value { color: #ef4444; }
+        .si-stat-label { font-size: 12px; color: rgba(180,210,240,0.65); }
+        .si-stat.success .si-stat-value { color: #00b894; }
+        .si-stat.warning .si-stat-value { color: #fdcb6e; }
+        .si-stat.error .si-stat-value { color: #e94560; }
 
-        .si-skip-note { color: #6b7280; font-size: 13px; }
+        .si-skip-note { color: rgba(180,210,240,0.65); font-size: 13px; }
 
         /* Actions */
         .si-actions {
@@ -1044,12 +1044,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .si-btn-primary {
-          background: #3b82f6;
-          border-color: #3b82f6;
+          background: #00e5ff;
+          border-color: #00e5ff;
           color: white;
         }
 
-        .si-btn-primary:hover { background: #2563eb; }
+        .si-btn-primary:hover { background: #00b0ff; }
 
         /* Loading */
         .si-loading { text-align: center; }
@@ -1058,7 +1058,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           width: 32px;
           height: 32px;
           border: 3px solid #e5e7eb;
-          border-top-color: #3b82f6;
+          border-top-color: #00e5ff;
           border-radius: 50%;
           animation: spin 0.8s linear infinite;
           margin: 0 auto;

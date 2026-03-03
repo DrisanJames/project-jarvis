@@ -132,28 +132,28 @@ export const SendTestEmail: React.FC = () => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
-  <div style="background: white; border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #080c14;">
+  <div style="background: #0d1526; border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
     <div style="text-align: center; margin-bottom: 32px;">
-      <h1 style="color: #667eea; margin: 0; font-size: 28px;">📬 JARVIS</h1>
-      <p style="color: #6b7280; margin: 8px 0 0;">Mailing Platform Test</p>
+      <h1 style="color: #00e5ff; margin: 0; font-size: 28px;">📬 JARVIS</h1>
+      <p style="color: rgba(180,210,240,0.65); margin: 8px 0 0;">Mailing Platform Test</p>
     </div>
     
-    <h2 style="color: #1f2937; margin-bottom: 16px;">${subject}</h2>
+    <h2 style="color: #e0e6f0; margin-bottom: 16px;">${subject}</h2>
     
-    <p style="color: #4b5563; line-height: 1.6;">
+    <p style="color: #c0c8d8; line-height: 1.6;">
       This is a test email sent from the Jarvis Mailing Platform.
     </p>
     
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin: 24px 0;">
+    <div style="background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%); color: white; padding: 20px; border-radius: 12px; margin: 24px 0;">
       <h3 style="margin: 0 0 12px 0;">✅ Delivery Confirmed</h3>
       <p style="margin: 0; opacity: 0.9; font-size: 14px;">
         Your email infrastructure is working correctly.
       </p>
     </div>
     
-    <div style="background: #f9fafb; border-radius: 8px; padding: 16px; margin-top: 24px;">
-      <p style="margin: 0; font-size: 13px; color: #6b7280;">
+    <div style="background: #0a0f1a; border-radius: 8px; padding: 16px; margin-top: 24px;">
+      <p style="margin: 0; font-size: 13px; color: rgba(180,210,240,0.65);">
         <strong>Sent via:</strong> SparkPost API<br>
         <strong>From:</strong> ${fromName} &lt;${fromEmail}&gt;<br>
         <strong>Timestamp:</strong> ${new Date().toISOString()}
@@ -161,7 +161,7 @@ export const SendTestEmail: React.FC = () => {
     </div>
   </div>
   
-  <p style="text-align: center; color: #9ca3af; font-size: 12px; margin-top: 24px;">
+  <p style="text-align: center; color: rgba(180,210,240,0.65); font-size: 12px; margin-top: 24px;">
     Powered by Jarvis Mailing Platform
   </p>
 </body>

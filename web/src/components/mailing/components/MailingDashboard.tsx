@@ -12,7 +12,7 @@ interface StatCardProps {
   color?: string;
 }
 
-const StatCard: React.FC<StatCardProps> = ({ title, value, subtitle, trend, color = '#3b82f6' }) => (
+const StatCard: React.FC<StatCardProps> = ({ title, value, subtitle, trend, color = '#00e5ff' }) => (
   <div className="stat-card" style={{ borderTopColor: color }}>
     <div className="stat-title">{title}</div>
     <div className="stat-value">{typeof value === 'number' ? value.toLocaleString() : value}</div>
@@ -33,7 +33,7 @@ interface CapacityBarProps {
 
 const CapacityBar: React.FC<CapacityBarProps> = ({ used, total, label }) => {
   const percentage = total > 0 ? (used / total) * 100 : 0;
-  const color = percentage > 90 ? '#ef4444' : percentage > 70 ? '#f59e0b' : '#22c55e';
+  const color = percentage > 90 ? '#e94560' : percentage > 70 ? '#fdcb6e' : '#00b894';
 
   return (
     <div className="capacity-bar-container">
@@ -111,17 +111,17 @@ export const MailingDashboard: React.FC = () => {
           <StatCard
             title="Total Subscribers"
             value={data.overview.total_subscribers}
-            color="#3b82f6"
+            color="#00e5ff"
           />
           <StatCard
             title="Total Lists"
             value={data.overview.total_lists}
-            color="#8b5cf6"
+            color="#00b0ff"
           />
           <StatCard
             title="Total Campaigns"
             value={data.overview.total_campaigns}
-            color="#10b981"
+            color="#00b894"
           />
         </div>
       </section>
@@ -141,24 +141,24 @@ export const MailingDashboard: React.FC = () => {
           <StatCard
             title="Total Sent"
             value={data.performance.total_sent}
-            color="#3b82f6"
+            color="#00e5ff"
           />
           <StatCard
             title="Total Opens"
             value={data.performance.total_opens}
             subtitle={`${data.performance.open_rate.toFixed(1)}% open rate`}
-            color="#22c55e"
+            color="#00b894"
           />
           <StatCard
             title="Total Clicks"
             value={data.performance.total_clicks}
             subtitle={`${data.performance.click_rate.toFixed(1)}% click rate`}
-            color="#f59e0b"
+            color="#fdcb6e"
           />
           <StatCard
             title="Total Revenue"
             value={`$${data.performance.total_revenue.toFixed(2)}`}
-            color="#10b981"
+            color="#00b894"
           />
         </div>
       </section>

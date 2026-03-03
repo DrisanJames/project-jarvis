@@ -481,8 +481,8 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
             <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
 
-          <button className="quick-action-btn" onClick={() => onNavigate('auto-refresh')} style={{ borderLeft: '3px solid #4fc3f7' }}>
-            <span className="qa-icon" style={{ background: 'rgba(79,195,247,0.15)', color: '#4fc3f7' }}><FontAwesomeIcon icon={faBolt} /></span>
+          <button className="quick-action-btn" onClick={() => onNavigate('auto-refresh')} style={{ borderLeft: '3px solid #00e5ff' }}>
+            <span className="qa-icon" style={{ background: 'rgba(0,229,255,0.12)', color: '#00e5ff' }}><FontAwesomeIcon icon={faBolt} /></span>
             <div className="qa-content">
               <strong>Auto-Refresh Manager</strong>
               <small>Daily advertiser suppression refresh (12PM-12AM MST)</small>
@@ -1836,20 +1836,20 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
       {/* Scheduled Campaign Safety Gate */}
       {showCampaignWarning && scheduledCampaigns.length > 0 && (
         <div className="form-error" style={{ 
-          background: '#fef3c7', border: '1px solid #f59e0b', color: '#92400e',
+          background: 'rgba(253,203,110,0.1)', border: '1px solid rgba(253,203,110,0.25)', color: '#fdcb6e',
           borderRadius: '8px', padding: '16px', marginBottom: '16px'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#f59e0b' }} />
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e' }} />
             <strong>{scheduledCampaigns.length} Campaign{scheduledCampaigns.length > 1 ? 's' : ''} Currently Scheduled</strong>
           </div>
-          <p style={{ margin: '0 0 8px 0', fontSize: '13px' }}>
+          <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#fdcb6e' }}>
             Uploading a suppression list while campaigns are scheduled could affect sending. 
             It's recommended to cancel all scheduled campaigns before importing.
           </p>
           <div style={{ fontSize: '12px', marginBottom: '12px' }}>
             {scheduledCampaigns.map(c => (
-              <div key={c.id} style={{ padding: '4px 0', borderBottom: '1px solid #fde68a' }}>
+              <div key={c.id} style={{ padding: '4px 0', borderBottom: '1px solid rgba(253,203,110,0.2)', color: '#e0e6f0' }}>
                 <strong>{c.name}</strong> — {c.status}
                 {c.scheduled_at && <> (scheduled: {new Date(c.scheduled_at).toLocaleString()})</>}
               </div>
@@ -1882,11 +1882,11 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
       {/* Confirmation: No scheduled campaigns */}
       {!showCampaignWarning && scheduledCampaigns.length === 0 && phase === 'idle' && (
         <div style={{
-          background: '#ecfdf5', border: '1px solid #10b981', color: '#065f46',
+          background: 'rgba(0,184,148,0.1)', border: '1px solid rgba(0,184,148,0.25)', color: '#00b894',
           borderRadius: '8px', padding: '12px 16px', marginBottom: '16px',
           display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px'
         }}>
-          <FontAwesomeIcon icon={faCheckCircle} style={{ color: '#10b981' }} />
+          <FontAwesomeIcon icon={faCheckCircle} style={{ color: '#00b894' }} />
           <strong>No campaigns are scheduled.</strong> Safe to upload suppression list.
         </div>
       )}
@@ -1935,7 +1935,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
             </div>
             {file && file.size > DIRECT_UPLOAD_THRESHOLD && (
               <div style={{ marginTop: '8px', color: 'var(--text-muted)', fontSize: '12px' }}>
-                <FontAwesomeIcon icon={faBolt} style={{ color: '#f59e0b' }} /> Large file detected — will use parallel chunked upload ({Math.ceil(file.size / CHUNK_SIZE)} chunks, {PARALLEL_CHUNK_UPLOADS} concurrent)
+                <FontAwesomeIcon icon={faBolt} style={{ color: '#fdcb6e' }} /> Large file detected — will use parallel chunked upload ({Math.ceil(file.size / CHUNK_SIZE)} chunks, {PARALLEL_CHUNK_UPLOADS} concurrent)
               </div>
             )}
           </div>
@@ -1970,7 +1970,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
       {(phase === 'uploading' || phase === 'processing') && (
         <div className="upload-progress-panel" style={{ padding: '24px 0' }}>
           <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-            <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: '32px', color: '#3b82f6', marginBottom: '12px' }} />
+            <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: '32px', color: '#00e5ff', marginBottom: '12px' }} />
             <h3 style={{ margin: '0 0 4px 0' }}>
               {phase === 'uploading' ? 'Uploading File...' : 'Processing Suppressions...'}
             </h3>
@@ -1999,7 +1999,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
                 style={{
                   width: `${overallProgress}%`,
                   transition: 'width 0.5s ease',
-                  background: 'linear-gradient(90deg, #3b82f6, #10b981)',
+                  background: 'linear-gradient(90deg, #00e5ff, #00b894)',
                 }}
               />
             </div>
@@ -2123,7 +2123,7 @@ const DonutChart: React.FC<DonutChartProps> = ({ data }) => {
   }
 
   let cumulativePercent = 0;
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+  const colors = ['#00e5ff', '#00b894', '#fdcb6e', '#e94560', '#00b0ff'];
 
   const segments = data.map((item, i) => {
     const percent = (item.count / total) * 100;

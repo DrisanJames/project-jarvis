@@ -54,18 +54,18 @@ const customStyles: StylesConfig<any, true> = {
     ...base,
     minHeight: '44px',
     borderRadius: '10px',
-    borderColor: state.isFocused ? '#667eea' : '#e2e8f0',
-    boxShadow: state.isFocused ? '0 0 0 3px rgba(102, 126, 234, 0.15)' : 'none',
+    borderColor: state.isFocused ? '#00e5ff' : 'rgba(0,200,255,0.08)',
+    boxShadow: state.isFocused ? '0 0 0 3px rgba(0, 200, 255, 0.15)' : 'none',
     '&:hover': {
-      borderColor: '#667eea',
+      borderColor: '#00e5ff',
     },
-    backgroundColor: '#fff',
+    backgroundColor: '#0d1526',
   }),
   menu: (base) => ({
     ...base,
     borderRadius: '12px',
     boxShadow: '0 10px 40px rgba(0, 0, 0, 0.15)',
-    border: '1px solid #e2e8f0',
+    border: '1px solid rgba(0,200,255,0.08)',
     overflow: 'hidden',
     zIndex: 9999,
   }),
@@ -80,32 +80,32 @@ const customStyles: StylesConfig<any, true> = {
     padding: '10px 12px',
     marginBottom: '2px',
     backgroundColor: state.isSelected 
-      ? '#667eea' 
+      ? '#00e5ff' 
       : state.isFocused 
-        ? '#f0f4ff' 
+        ? 'rgba(0,200,255,0.08)' 
         : 'transparent',
-    color: state.isSelected ? '#fff' : '#2d3748',
+    color: state.isSelected ? '#fff' : '#e0e6f0',
     cursor: 'pointer',
     '&:active': {
-      backgroundColor: state.isSelected ? '#667eea' : '#e2e8f0',
+      backgroundColor: state.isSelected ? '#00e5ff' : 'rgba(0,200,255,0.08)',
     },
   }),
   multiValue: (base, state) => ({
     ...base,
-    backgroundColor: (state.data as any)?.isLocked ? '#fed7d7' : '#e2e8f0',
+    backgroundColor: (state.data as any)?.isLocked ? '#fed7d7' : 'rgba(0,200,255,0.08)',
     borderRadius: '6px',
     padding: '2px 4px',
   }),
   multiValueLabel: (base, state) => ({
     ...base,
-    color: (state.data as any)?.isLocked ? '#c53030' : '#2d3748',
+    color: (state.data as any)?.isLocked ? '#c53030' : '#e0e6f0',
     fontWeight: 500,
     fontSize: '13px',
   }),
   multiValueRemove: (base, state) => ({
     ...base,
     display: (state.data as any)?.isLocked ? 'none' : 'flex',
-    color: '#718096',
+    color: 'rgba(180,210,240,0.65)',
     '&:hover': {
       backgroundColor: '#c53030',
       color: '#fff',
@@ -113,18 +113,18 @@ const customStyles: StylesConfig<any, true> = {
   }),
   placeholder: (base) => ({
     ...base,
-    color: '#a0aec0',
+    color: 'rgba(180,210,240,0.65)',
   }),
   input: (base) => ({
     ...base,
-    color: '#2d3748',
+    color: '#e0e6f0',
   }),
   groupHeading: (base) => ({
     ...base,
     fontSize: '11px',
     fontWeight: 700,
     textTransform: 'uppercase',
-    color: '#718096',
+    color: 'rgba(180,210,240,0.65)',
     padding: '8px 12px 4px',
     letterSpacing: '0.05em',
   }),

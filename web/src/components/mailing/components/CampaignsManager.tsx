@@ -224,7 +224,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({ value, onChange, placeh
     const text = prompt('Button text:', 'Click Here');
     const url = prompt('Button URL:');
     if (text && url) {
-      const buttonHtml = `<a href="${url}" style="display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600;">${text}</a>`;
+      const buttonHtml = `<a href="${url}" style="display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600;">${text}</a>`;
       document.execCommand('insertHTML', false, buttonHtml);
       handleInput();
     }
@@ -1059,15 +1059,15 @@ const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
 const getStatusInfo = (status: string) => {
   const statusMap: Record<string, { color: string; label: string }> = {
-    draft: { color: '#6b7280', label: 'Draft' },
-    queued: { color: '#f59e0b', label: 'Queued' },
-    sending: { color: '#3b82f6', label: 'Sending' },
-    sent: { color: '#22c55e', label: 'Sent' },
-    completed: { color: '#22c55e', label: 'Completed' },
-    paused: { color: '#f59e0b', label: 'Paused' },
-    failed: { color: '#ef4444', label: 'Failed' },
+    draft: { color: 'rgba(180,210,240,0.65)', label: 'Draft' },
+    queued: { color: '#fdcb6e', label: 'Queued' },
+    sending: { color: '#00e5ff', label: 'Sending' },
+    sent: { color: '#00b894', label: 'Sent' },
+    completed: { color: '#00b894', label: 'Completed' },
+    paused: { color: '#fdcb6e', label: 'Paused' },
+    failed: { color: '#e94560', label: 'Failed' },
   };
-  return statusMap[status] || { color: '#6b7280', label: status };
+  return statusMap[status] || { color: 'rgba(180,210,240,0.65)', label: status };
 };
 
 // Campaign Details Modal

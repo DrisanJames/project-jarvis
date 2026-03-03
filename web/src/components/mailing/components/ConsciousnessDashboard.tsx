@@ -76,17 +76,17 @@ const moodEmoji: Record<string, string> = {
 };
 
 const sentimentColor: Record<string, string> = {
-  positive: '#10b981',
-  cautious: '#f59e0b',
-  neutral: '#6b7280',
-  negative: '#ef4444',
+  positive: '#00b894',
+  cautious: '#fdcb6e',
+  neutral: 'rgba(180,210,240,0.65)',
+  negative: '#e94560',
 };
 
 const severityColor: Record<string, string> = {
-  info: '#8b5cf6',
-  caution: '#f59e0b',
+  info: '#00b0ff',
+  caution: '#fdcb6e',
   warning: '#f97316',
-  critical: '#ef4444',
+  critical: '#e94560',
 };
 
 const thoughtTypeIcon: Record<string, any> = {
@@ -185,8 +185,8 @@ export const ConsciousnessDashboard: React.FC = () => {
   if (loading) {
     return (
       <div style={styles.loadingContainer}>
-        <FontAwesomeIcon icon={faBrain} spin style={{ fontSize: 48, color: '#8b5cf6' }} />
-        <p style={{ color: '#8b8fa3', marginTop: 16 }}>Initializing consciousness...</p>
+        <FontAwesomeIcon icon={faBrain} spin style={{ fontSize: 48, color: '#00b0ff' }} />
+        <p style={{ color: 'rgba(180,210,240,0.65)', marginTop: 16 }}>Initializing consciousness...</p>
       </div>
     );
   }
@@ -197,7 +197,7 @@ export const ConsciousnessDashboard: React.FC = () => {
       <div style={styles.header}>
         <div style={styles.headerLeft}>
           <div style={styles.consciousnessIcon}>
-            <FontAwesomeIcon icon={faBrain} style={{ fontSize: 28, color: '#8b5cf6' }} />
+            <FontAwesomeIcon icon={faBrain} style={{ fontSize: 28, color: '#00b0ff' }} />
             <div style={styles.iconPulse} />
           </div>
           <div>
@@ -281,28 +281,28 @@ function renderOverview(
       {/* Belief Distribution */}
       <div style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#8b5cf6' }} />
+          <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#00b0ff' }} />
           Belief Distribution
         </h3>
         <div style={styles.beliefBars}>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#10b981' }}>Positive</span>
+            <span style={{ color: '#00b894' }}>Positive</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${positivePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#10b981' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${positivePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#00b894' }} />
             </div>
             <span style={styles.beliefCount}>{positivePhils}</span>
           </div>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#f59e0b' }}>Cautious</span>
+            <span style={{ color: '#fdcb6e' }}>Cautious</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${cautiousPhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#f59e0b' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${cautiousPhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#fdcb6e' }} />
             </div>
             <span style={styles.beliefCount}>{cautiousPhils}</span>
           </div>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#ef4444' }}>Negative</span>
+            <span style={{ color: '#e94560' }}>Negative</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${negativePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#ef4444' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${negativePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#e94560' }} />
             </div>
             <span style={styles.beliefCount}>{negativePhils}</span>
           </div>
@@ -312,7 +312,7 @@ function renderOverview(
       {/* Strongest Beliefs */}
       <div style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#f59e0b' }} />
+          <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
           Strongest Beliefs
         </h3>
         <div style={styles.beliefsList}>
@@ -321,16 +321,16 @@ function renderOverview(
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%',
-                  background: sentimentColor[p.sentiment] || '#6b7280',
+                  background: sentimentColor[p.sentiment] || 'rgba(180,210,240,0.65)',
                 }} />
-                <span style={{ color: '#cbd5e1', fontWeight: 600, fontSize: 12, textTransform: 'uppercase' }}>
+                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12, textTransform: 'uppercase' }}>
                   {p.isp} / {p.domain}
                 </span>
-                <span style={{ marginLeft: 'auto', color: '#64748b', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>
                   {Math.round(p.strength * 100)}% strength
                 </span>
               </div>
-              <p style={{ color: '#94a3b8', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
+              <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
             </div>
           ))}
         </div>
@@ -339,21 +339,21 @@ function renderOverview(
       {/* Active Campaigns */}
       <div style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: '#06b6d4' }} />
+          <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: '#00e5ff' }} />
           Active Campaigns
         </h3>
         {campaigns.length === 0 ? (
-          <p style={{ color: '#64748b', fontSize: 13 }}>No active campaigns</p>
+          <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No active campaigns</p>
         ) : (
           <div style={styles.campaignMiniList}>
             {campaigns.slice(0, 4).map(c => (
               <div key={c.campaign_id} style={styles.campaignMiniItem}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{c.campaign_id}</span>
+                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 13 }}>{c.campaign_id}</span>
                 <div style={styles.miniStats}>
-                  <span style={{ color: '#10b981' }}>{c.delivered} dlvd</span>
-                  <span style={{ color: '#06b6d4' }}>{c.unique_opens} opens</span>
-                  <span style={{ color: '#f59e0b' }}>{c.unique_clicks} clicks</span>
-                  {c.complaints > 0 && <span style={{ color: '#ef4444' }}>{c.complaints} complaints</span>}
+                  <span style={{ color: '#00b894' }}>{c.delivered} dlvd</span>
+                  <span style={{ color: '#00e5ff' }}>{c.unique_opens} opens</span>
+                  <span style={{ color: '#fdcb6e' }}>{c.unique_clicks} clicks</span>
+                  {c.complaints > 0 && <span style={{ color: '#e94560' }}>{c.complaints} complaints</span>}
                 </div>
               </div>
             ))}
@@ -364,23 +364,23 @@ function renderOverview(
       {/* Live Thought Feed */}
       <div style={{ ...styles.card, gridColumn: '1 / -1' }}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#8b5cf6' }} />
+          <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
           Live Thought Stream
           <span style={styles.liveDot} />
         </h3>
         <div style={styles.thoughtFeed}>
           {recentThoughts.length === 0 ? (
-            <p style={{ color: '#64748b', fontSize: 13 }}>Awaiting observations...</p>
+            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>Awaiting observations...</p>
           ) : (
             recentThoughts.map(t => (
               <div key={t.id} style={styles.thoughtItem}>
                 <FontAwesomeIcon
                   icon={thoughtTypeIcon[t.type] || faCommentDots}
-                  style={{ color: severityColor[t.severity || 'info'] || '#8b5cf6', flexShrink: 0, marginTop: 2 }}
+                  style={{ color: severityColor[t.severity || 'info'] || '#00b0ff', flexShrink: 0, marginTop: 2 }}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ color: '#e2e8f0', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
-                  <span style={{ color: '#475569', fontSize: 11 }}>
+                  <p style={{ color: '#e0e6f0', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
+                  <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
                     {new Date(t.timestamp).toLocaleTimeString()}
                     {t.isp && ` · ${t.isp}`}
                     {t.agent_type && ` · ${t.agent_type}`}
@@ -424,8 +424,8 @@ function renderPhilosophies(
       <div style={styles.philosophyGrid}>
         {philosophies.length === 0 ? (
           <div style={styles.emptyState}>
-            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: '#374151', marginBottom: 16 }} />
-            <p style={{ color: '#64748b' }}>No philosophies formed yet. The system needs more observations.</p>
+            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
+            <p style={{ color: 'rgba(180,210,240,0.65)' }}>No philosophies formed yet. The system needs more observations.</p>
           </div>
         ) : (
           philosophies.map(p => (
@@ -438,9 +438,9 @@ function renderPhilosophies(
                     background: sentimentColor[p.sentiment] + '22',
                     color: sentimentColor[p.sentiment],
                   }}>{p.sentiment}</span>
-                  <span style={{ color: '#8b8fa3', fontSize: 12 }}>{p.isp} / {p.domain}</span>
+                  <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{p.isp} / {p.domain}</span>
                 </div>
-                <span style={{ color: '#64748b', fontSize: 11 }}>{p.evidence_count} observations</span>
+                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{p.evidence_count} observations</span>
               </div>
 
               <p style={styles.philosophyBelief}>{p.belief}</p>
@@ -450,7 +450,7 @@ function renderPhilosophies(
                 <div style={styles.strengthBar}>
                   <div style={{ ...styles.strengthFill, width: `${p.strength * 100}%` }} />
                 </div>
-                <span style={{ color: '#64748b', fontSize: 11 }}>
+                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>
                   {Math.round(p.confidence * 100)}% confidence · {Math.round(p.strength * 100)}% strength
                   {p.challenges > 0 && ` · ${p.challenges} challenges`}
                 </span>
@@ -476,38 +476,38 @@ function renderThoughts(thoughts: Thought[], endRef: React.RefObject<HTMLDivElem
     <div style={styles.thoughtsContainer}>
       {thoughts.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: '#374151', marginBottom: 16 }} />
-          <p style={{ color: '#64748b' }}>No thoughts yet. The system is still forming its initial observations.</p>
+          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
+          <p style={{ color: 'rgba(180,210,240,0.65)' }}>No thoughts yet. The system is still forming its initial observations.</p>
         </div>
       ) : (
         <>
           {thoughts.map(t => (
             <div key={t.id} style={{
               ...styles.thoughtCard,
-              borderLeft: `3px solid ${severityColor[t.severity || 'info'] || '#8b5cf6'}`,
+              borderLeft: `3px solid ${severityColor[t.severity || 'info'] || '#00b0ff'}`,
             }}>
               <div style={styles.thoughtCardHeader}>
                 <FontAwesomeIcon
                   icon={thoughtTypeIcon[t.type] || faCommentDots}
                   style={{ color: severityColor[t.severity || 'info'], marginRight: 8 }}
                 />
-                <span style={{ color: '#94a3b8', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
+                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
                   {t.type}
                 </span>
                 {t.isp && <span style={styles.thoughtTag}>{t.isp}</span>}
                 {t.agent_type && <span style={styles.thoughtTag}>{t.agent_type}</span>}
-                <span style={{ marginLeft: 'auto', color: '#475569', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
                   {new Date(t.timestamp).toLocaleString()}
                 </span>
               </div>
-              <p style={{ color: '#e2e8f0', fontSize: 14, margin: '8px 0', lineHeight: 1.5 }}>{t.content}</p>
+              <p style={{ color: '#e0e6f0', fontSize: 14, margin: '8px 0', lineHeight: 1.5 }}>{t.content}</p>
               {t.reasoning && (
-                <p style={{ color: '#64748b', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
+                <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
                   Reasoning: {t.reasoning}
                 </p>
               )}
               {t.confidence != null && t.confidence > 0 && (
-                <span style={{ color: '#475569', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
+                <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
               )}
             </div>
           ))}
@@ -533,24 +533,24 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
       {/* PMTA Throughput Summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
-          { label: 'Total Sent', value: totals.sent, color: '#8b5cf6' },
-          { label: 'Delivered', value: totals.delivered, color: '#10b981' },
-          { label: 'Opens', value: totals.opens, color: '#06b6d4' },
-          { label: 'Clicks', value: totals.clicks, color: '#3b82f6' },
-          { label: 'Bounces', value: totals.bounces, color: '#f59e0b' },
-          { label: 'Complaints', value: totals.complaints, color: '#ef4444' },
+          { label: 'Total Sent', value: totals.sent, color: '#00b0ff' },
+          { label: 'Delivered', value: totals.delivered, color: '#00b894' },
+          { label: 'Opens', value: totals.opens, color: '#00e5ff' },
+          { label: 'Clicks', value: totals.clicks, color: '#00e5ff' },
+          { label: 'Bounces', value: totals.bounces, color: '#fdcb6e' },
+          { label: 'Complaints', value: totals.complaints, color: '#e94560' },
         ].map(m => (
-          <div key={m.label} style={{ background: '#1e1f2e', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid #2d2e3e' }}>
+          <div key={m.label} style={{ background: '#0d1526', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid rgba(0,200,255,0.08)' }}>
             <div style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }}>{m.value.toLocaleString()}</div>
-            <div style={{ color: '#8b8fa3', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+            <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
       </div>
 
       {campaigns.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: '#374151', marginBottom: 16 }} />
-          <p style={{ color: '#64748b' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
+          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
+          <p style={{ color: 'rgba(180,210,240,0.65)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
         </div>
       ) : (
         <div style={styles.campaignGrid}>
@@ -562,43 +562,43 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
             return (
               <div key={c.campaign_id} style={styles.campaignCard}>
                 <div style={styles.campaignCardHeader}>
-                  <h3 style={{ color: '#e2e8f0', fontSize: 16, margin: 0, fontWeight: 700 }}>
+                  <h3 style={{ color: '#e0e6f0', fontSize: 16, margin: 0, fontWeight: 700 }}>
                     {c.campaign_id}
                   </h3>
-                  <span style={{ color: '#475569', fontSize: 11 }}>
+                  <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
                     Started {new Date(c.started_at).toLocaleDateString()}
                   </span>
                 </div>
 
                 <div style={styles.metricsGrid}>
-                  <MetricBox label="Sent" value={c.sent} color="#8b5cf6" />
-                  <MetricBox label="Delivered" value={c.delivered} color="#10b981" sub={`${deliveryRate.toFixed(1)}%`} />
-                  <MetricBox label="Opens" value={c.opens} color="#06b6d4" sub={`${c.unique_opens} unique`} />
-                  <MetricBox label="Clicks" value={c.clicks} color="#3b82f6" sub={`${c.unique_clicks} unique`} />
-                  <MetricBox label="Soft Bounce" value={c.soft_bounce} color="#f59e0b" />
-                  <MetricBox label="Hard Bounce" value={c.hard_bounce} color="#ef4444" />
-                  <MetricBox label="Complaints" value={c.complaints} color="#dc2626" />
+                  <MetricBox label="Sent" value={c.sent} color="#00b0ff" />
+                  <MetricBox label="Delivered" value={c.delivered} color="#00b894" sub={`${deliveryRate.toFixed(1)}%`} />
+                  <MetricBox label="Opens" value={c.opens} color="#00e5ff" sub={`${c.unique_opens} unique`} />
+                  <MetricBox label="Clicks" value={c.clicks} color="#00e5ff" sub={`${c.unique_clicks} unique`} />
+                  <MetricBox label="Soft Bounce" value={c.soft_bounce} color="#fdcb6e" />
+                  <MetricBox label="Hard Bounce" value={c.hard_bounce} color="#e94560" />
+                  <MetricBox label="Complaints" value={c.complaints} color="#e94560" />
                   <MetricBox label="Unsubscribes" value={c.unsubscribes} color="#f97316" />
-                  <MetricBox label="Inactive" value={c.inactive} color="#6b7280" sub="4+ sends, 0 engagement" />
+                  <MetricBox label="Inactive" value={c.inactive} color="rgba(180,210,240,0.65)" sub="4+ sends, 0 engagement" />
                 </div>
 
                 <div style={styles.rateRow}>
-                  <RateBar label="Delivery" value={deliveryRate} color="#10b981" />
-                  <RateBar label="Open Rate" value={openRate} color="#06b6d4" />
-                  <RateBar label="Click Rate" value={clickRate} color="#3b82f6" />
+                  <RateBar label="Delivery" value={deliveryRate} color="#00b894" />
+                  <RateBar label="Open Rate" value={openRate} color="#00e5ff" />
+                  <RateBar label="Click Rate" value={clickRate} color="#00e5ff" />
                 </div>
 
                 {c.isp_metrics && Object.keys(c.isp_metrics).length > 0 && (
                   <div style={styles.ispBreakdown}>
-                    <h4 style={{ color: '#94a3b8', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
+                    <h4 style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
                     {Object.entries(c.isp_metrics).map(([isp, m]: [string, any]) => (
                       <div key={isp} style={styles.ispRow}>
-                        <span style={{ color: '#cbd5e1', fontWeight: 600, fontSize: 12, width: 80 }}>{isp}</span>
-                        <span style={{ color: '#10b981', fontSize: 11 }}>{m.delivered} dlvd</span>
-                        <span style={{ color: '#06b6d4', fontSize: 11 }}>{m.unique_opens} opens</span>
-                        <span style={{ color: '#3b82f6', fontSize: 11 }}>{m.unique_clicks} clicks</span>
+                        <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12, width: 80 }}>{isp}</span>
+                        <span style={{ color: '#00b894', fontSize: 11 }}>{m.delivered} dlvd</span>
+                        <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_opens} opens</span>
+                        <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_clicks} clicks</span>
                         {(m.hard_bounce > 0 || m.soft_bounce > 0) && (
-                          <span style={{ color: '#ef4444', fontSize: 11 }}>{m.hard_bounce + m.soft_bounce} bounces</span>
+                          <span style={{ color: '#e94560', fontSize: 11 }}>{m.hard_bounce + m.soft_bounce} bounces</span>
                         )}
                       </div>
                     ))}
@@ -618,18 +618,18 @@ const MetricBox: React.FC<{ label: string; value: number; color: string; sub?: s
     <span style={{ color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>
       {value.toLocaleString()}
     </span>
-    <span style={{ color: '#94a3b8', fontSize: 11 }}>{label}</span>
-    {sub && <span style={{ color: '#475569', fontSize: 10 }}>{sub}</span>}
+    <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{label}</span>
+    {sub && <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10 }}>{sub}</span>}
   </div>
 );
 
 const RateBar: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
   <div style={{ flex: 1 }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-      <span style={{ color: '#94a3b8', fontSize: 11 }}>{label}</span>
+      <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{label}</span>
       <span style={{ color, fontSize: 11, fontWeight: 600 }}>{value.toFixed(1)}%</span>
     </div>
-    <div style={{ height: 4, background: '#1e293b', borderRadius: 2 }}>
+    <div style={{ height: 4, background: '#0d1526', borderRadius: 2 }}>
       <div style={{ height: 4, borderRadius: 2, background: color, width: `${Math.min(value, 100)}%`, transition: 'width 0.5s ease' }} />
     </div>
   </div>
@@ -668,26 +668,26 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(59,130,246,0.15))',
+    background: 'linear-gradient(135deg, rgba(0,229,255,0.15), rgba(0,229,255,0.15))',
     borderRadius: 16,
-    border: '1px solid rgba(139,92,246,0.3)',
+    border: '1px solid rgba(0,229,255,0.3)',
   },
   iconPulse: {
     position: 'absolute',
     inset: -4,
     borderRadius: 20,
-    border: '1px solid rgba(139,92,246,0.2)',
+    border: '1px solid rgba(0,229,255,0.2)',
     animation: 'pulse 2s ease-in-out infinite',
   },
   title: {
-    color: '#f1f5f9',
+    color: '#e0e6f0',
     fontSize: 28,
     fontWeight: 800,
     margin: 0,
     letterSpacing: -0.5,
   },
   subtitle: {
-    color: '#64748b',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 14,
     margin: '4px 0 0',
   },
@@ -701,12 +701,12 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     padding: '8px 16px',
-    background: 'rgba(30,41,59,0.8)',
+    background: 'rgba(0,200,255,0.08)',
     borderRadius: 12,
-    border: '1px solid rgba(51,65,85,0.5)',
+    border: '1px solid rgba(0,200,255,0.08)',
   },
   moodLabel: {
-    color: '#cbd5e1',
+    color: '#e0e6f0',
     fontSize: 13,
     fontWeight: 600,
     textTransform: 'capitalize' as const,
@@ -716,18 +716,18 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '6px 14px',
-    background: 'rgba(30,41,59,0.8)',
+    background: 'rgba(0,200,255,0.08)',
     borderRadius: 12,
-    border: '1px solid rgba(51,65,85,0.5)',
+    border: '1px solid rgba(0,200,255,0.08)',
   },
   healthValue: {
-    color: '#10b981',
+    color: '#00b894',
     fontSize: 20,
     fontWeight: 800,
     fontFamily: 'monospace',
   },
   healthLabel: {
-    color: '#475569',
+    color: 'rgba(180,210,240,0.45)',
     fontSize: 10,
     textTransform: 'uppercase' as const,
   },
@@ -736,25 +736,25 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '6px 14px',
-    background: 'rgba(30,41,59,0.8)',
+    background: 'rgba(0,200,255,0.08)',
     borderRadius: 12,
-    border: '1px solid rgba(51,65,85,0.5)',
+    border: '1px solid rgba(0,200,255,0.08)',
   },
   statValue: {
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 18,
     fontWeight: 700,
     fontFamily: 'monospace',
   },
   statLabel: {
-    color: '#475569',
+    color: 'rgba(180,210,240,0.45)',
     fontSize: 10,
     textTransform: 'uppercase' as const,
   },
   refreshBtn: {
     background: 'none',
-    border: '1px solid rgba(51,65,85,0.5)',
-    color: '#64748b',
+    border: '1px solid rgba(0,200,255,0.08)',
+    color: 'rgba(180,210,240,0.65)',
     padding: '8px 12px',
     borderRadius: 8,
     cursor: 'pointer',
@@ -764,17 +764,17 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 4,
     marginBottom: 24,
-    background: 'rgba(15,23,42,0.5)',
+    background: 'rgba(13,21,38,0.5)',
     padding: 4,
     borderRadius: 12,
-    border: '1px solid rgba(30,41,59,0.5)',
+    border: '1px solid rgba(0,200,255,0.06)',
   },
   sectionTab: {
     flex: 1,
     padding: '10px 16px',
     background: 'transparent',
     border: 'none',
-    color: '#64748b',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
@@ -786,15 +786,15 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative' as const,
   },
   sectionTabActive: {
-    background: 'rgba(139,92,246,0.15)',
-    color: '#c4b5fd',
-    border: '1px solid rgba(139,92,246,0.3)',
+    background: 'rgba(0,229,255,0.15)',
+    color: '#00b0ff',
+    border: '1px solid rgba(0,229,255,0.3)',
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: '#10b981',
+    background: '#00b894',
     marginLeft: 6,
     animation: 'pulse 1.5s ease-in-out infinite',
   },
@@ -805,13 +805,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 16,
   },
   card: {
-    background: 'rgba(15,23,42,0.6)',
-    border: '1px solid rgba(30,41,59,0.8)',
+    background: 'rgba(13,21,38,0.6)',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 12,
     padding: 20,
   },
   cardTitle: {
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 14,
     fontWeight: 700,
     margin: '0 0 16px',
@@ -832,7 +832,7 @@ const styles: Record<string, React.CSSProperties> = {
   beliefBarTrack: {
     flex: 1,
     height: 6,
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 3,
     overflow: 'hidden' as const,
   },
@@ -842,7 +842,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'width 0.5s ease',
   },
   beliefCount: {
-    color: '#94a3b8',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 13,
     fontWeight: 600,
     width: 20,
@@ -855,7 +855,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   miniPhilosophy: {
     padding: '10px 12px',
-    background: 'rgba(30,41,59,0.4)',
+    background: 'rgba(0,200,255,0.05)',
     borderRadius: 8,
   },
   campaignMiniList: {
@@ -865,7 +865,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   campaignMiniItem: {
     padding: '8px 12px',
-    background: 'rgba(30,41,59,0.4)',
+    background: 'rgba(0,200,255,0.05)',
     borderRadius: 8,
   },
   miniStats: {
@@ -885,7 +885,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 10,
     padding: '8px 12px',
-    background: 'rgba(30,41,59,0.3)',
+    background: 'rgba(0,200,255,0.04)',
     borderRadius: 8,
   },
   ispFilter: {
@@ -896,9 +896,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   ispFilterBtn: {
     padding: '6px 14px',
-    background: 'rgba(30,41,59,0.6)',
-    border: '1px solid rgba(51,65,85,0.5)',
-    color: '#94a3b8',
+    background: 'rgba(0,200,255,0.07)',
+    border: '1px solid rgba(0,200,255,0.08)',
+    color: 'rgba(180,210,240,0.65)',
     borderRadius: 8,
     fontSize: 12,
     fontWeight: 600,
@@ -906,9 +906,9 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.2s',
   },
   ispFilterBtnActive: {
-    background: 'rgba(139,92,246,0.2)',
-    borderColor: 'rgba(139,92,246,0.5)',
-    color: '#c4b5fd',
+    background: 'rgba(0,229,255,0.2)',
+    borderColor: 'rgba(0,229,255,0.5)',
+    color: '#00b0ff',
   },
   philosophyGrid: {
     display: 'grid',
@@ -921,8 +921,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 60,
   },
   philosophyCard: {
-    background: 'rgba(15,23,42,0.6)',
-    border: '1px solid rgba(30,41,59,0.8)',
+    background: 'rgba(13,21,38,0.6)',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 12,
     padding: 20,
   },
@@ -933,14 +933,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 12,
   },
   philosophyBelief: {
-    color: '#e2e8f0',
+    color: '#e0e6f0',
     fontSize: 15,
     lineHeight: 1.5,
     margin: '0 0 8px',
     fontWeight: 500,
   },
   philosophyExplanation: {
-    color: '#64748b',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 13,
     lineHeight: 1.5,
     margin: '0 0 12px',
@@ -952,13 +952,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   strengthBar: {
     height: 4,
-    background: '#1e293b',
+    background: '#0d1526',
     borderRadius: 2,
     overflow: 'hidden' as const,
   },
   strengthFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #8b5cf6, #06b6d4)',
+    background: 'linear-gradient(90deg, #00b0ff, #00e5ff)',
     borderRadius: 2,
     transition: 'width 0.5s ease',
   },
@@ -969,10 +969,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tag: {
     padding: '2px 8px',
-    background: 'rgba(30,41,59,0.6)',
-    border: '1px solid rgba(51,65,85,0.5)',
+    background: 'rgba(0,200,255,0.07)',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 4,
-    color: '#94a3b8',
+    color: 'rgba(180,210,240,0.65)',
     fontSize: 11,
   },
   thoughtsContainer: {
@@ -983,8 +983,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   thoughtCard: {
-    background: 'rgba(15,23,42,0.6)',
-    border: '1px solid rgba(30,41,59,0.8)',
+    background: 'rgba(13,21,38,0.6)',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 8,
     padding: 16,
   },
@@ -997,9 +997,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   thoughtTag: {
     padding: '1px 6px',
-    background: 'rgba(139,92,246,0.15)',
+    background: 'rgba(0,229,255,0.15)',
     borderRadius: 4,
-    color: '#c4b5fd',
+    color: '#00b0ff',
     fontSize: 10,
     fontWeight: 600,
   },
@@ -1009,8 +1009,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 16,
   },
   campaignCard: {
-    background: 'rgba(15,23,42,0.6)',
-    border: '1px solid rgba(30,41,59,0.8)',
+    background: 'rgba(13,21,38,0.6)',
+    border: '1px solid rgba(0,200,255,0.08)',
     borderRadius: 12,
     padding: 20,
   },
@@ -1031,7 +1031,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '12px 8px',
-    background: 'rgba(30,41,59,0.4)',
+    background: 'rgba(0,200,255,0.05)',
     borderRadius: 8,
     gap: 2,
   },
@@ -1039,14 +1039,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 20,
     padding: '12px 0',
-    borderTop: '1px solid rgba(30,41,59,0.8)',
+    borderTop: '1px solid rgba(0,200,255,0.08)',
   },
   ispBreakdown: {},
   ispRow: {
     display: 'flex',
     gap: 16,
     padding: '6px 0',
-    borderBottom: '1px solid rgba(30,41,59,0.4)',
+    borderBottom: '1px solid rgba(0,200,255,0.05)',
     alignItems: 'center',
   },
 };

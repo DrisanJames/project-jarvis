@@ -1154,13 +1154,13 @@ const SubscribersView: React.FC<SubscribersViewProps> = ({ list, onBack, orgFetc
 
   const getStatusColor = (status: string) => {
     const colors: Record<string, string> = {
-      confirmed: '#22c55e',
-      unconfirmed: '#f59e0b',
-      unsubscribed: '#6b7280',
-      bounced: '#ef4444',
-      complained: '#dc2626',
+      confirmed: '#00b894',
+      unconfirmed: '#fdcb6e',
+      unsubscribed: 'rgba(180,210,240,0.65)',
+      bounced: '#e94560',
+      complained: '#e94560',
     };
-    return colors[status] || '#6b7280';
+    return colors[status] || 'rgba(180,210,240,0.65)';
   };
 
   return (
@@ -1707,7 +1707,7 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
                       onChange={e => updateCondition(idx, 'value', e.target.value)}
                       placeholder={getPlaceholder(condition.operator)}
                       disabled={noValueNeeded}
-                      style={noValueNeeded ? { opacity: 0.5, backgroundColor: '#f5f5f5' } : undefined}
+                      style={noValueNeeded ? { opacity: 0.5, backgroundColor: '#0a1020' } : undefined}
                     />
                     {conditions.length > 1 && (
                       <button 
@@ -2330,7 +2330,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         {step === 'analyze' && analysis && (
           <>
             <div className="form-section analysis-section">
-              <h3><FontAwesomeIcon icon={faCheckCircle} style={{color: '#10b981'}} /> File Analyzed</h3>
+              <h3><FontAwesomeIcon icon={faCheckCircle} style={{color: '#00b894'}} /> File Analyzed</h3>
               
               <div className="analysis-stats">
                 <div className="stat-card">
@@ -2401,7 +2401,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
             {/* Invalid Records */}
             {analysis.invalidRecords.length > 0 && (
               <div className="form-section warning-section">
-                <h4><FontAwesomeIcon icon={faTimesCircle} style={{color: '#f59e0b'}} /> Invalid Records (showing first 10)</h4>
+                <h4><FontAwesomeIcon icon={faTimesCircle} style={{color: '#fdcb6e'}} /> Invalid Records (showing first 10)</h4>
                 <div className="preview-table-wrapper">
                   <table className="preview-table">
                     <thead>
@@ -2544,95 +2544,95 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
       </div>
       
       <style>{`
-        .template-section { background: #f8fafc; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .section-desc { color: #64748b; font-size: 14px; margin-bottom: 16px; }
+        .template-section { background: #0a1020; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .section-desc { color: rgba(180,210,240,0.65); font-size: 14px; margin-bottom: 16px; }
         .template-buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-        .template-btn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: white; border: 1px solid #e2e8f0; border-radius: 8px; text-decoration: none; color: inherit; transition: all 0.2s; flex: 1; min-width: 200px; }
-        .template-btn:hover { border-color: #3b82f6; background: #eff6ff; }
-        .template-btn > svg:first-child { color: #3b82f6; font-size: 24px; }
+        .template-btn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; text-decoration: none; color: #e0e6f0; transition: all 0.2s; flex: 1; min-width: 200px; }
+        .template-btn:hover { border-color: #00e5ff; background: rgba(0,229,255,0.1); }
+        .template-btn > svg:first-child { color: #00e5ff; font-size: 24px; }
         .template-info { flex: 1; }
         .template-info strong { display: block; font-size: 14px; margin-bottom: 2px; }
-        .template-info small { color: #64748b; font-size: 12px; }
-        .download-icon { color: #94a3b8; }
-        .template-btn:hover .download-icon { color: #3b82f6; }
-        .fields-toggle { background: none; border: none; color: #3b82f6; cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
-        .fields-reference { margin-top: 16px; background: white; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+        .template-info small { color: rgba(180,210,240,0.65); font-size: 12px; }
+        .download-icon { color: rgba(180,210,240,0.65); }
+        .template-btn:hover .download-icon { color: #00e5ff; }
+        .fields-toggle { background: none; border: none; color: #00e5ff; cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
+        .fields-reference { margin-top: 16px; background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; overflow: hidden; }
         .fields-reference table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .fields-reference th, .fields-reference td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-        .fields-reference th { background: #f8fafc; font-weight: 600; color: #475569; font-size: 12px; text-transform: uppercase; }
-        .fields-reference code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-        .required-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; background: #fee2e2; color: #dc2626; border-radius: 4px; font-size: 10px; font-weight: 600; }
-        .example-cell { color: #64748b; font-family: monospace; font-size: 12px; }
-        .fields-note { padding: 12px; background: #fffbeb; color: #92400e; font-size: 13px; margin: 0; }
+        .fields-reference th, .fields-reference td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(0,200,255,0.08); color: #e0e6f0; }
+        .fields-reference th { background: #0a1628; font-weight: 600; color: rgba(180,210,240,0.65); font-size: 12px; text-transform: uppercase; }
+        .fields-reference code { background: rgba(0,200,255,0.08); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #00e5ff; }
+        .required-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; background: rgba(233,69,96,0.15); color: #e94560; border-radius: 4px; font-size: 10px; font-weight: 600; }
+        .example-cell { color: rgba(180,210,240,0.65); font-family: monospace; font-size: 12px; }
+        .fields-note { padding: 12px; background: rgba(253,203,110,0.1); color: #fdcb6e; font-size: 13px; margin: 0; }
 
         /* Analysis */
-        .analysis-section { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 20px; }
+        .analysis-section { background: rgba(0,184,148,0.08); border: 1px solid rgba(0,184,148,0.2); border-radius: 8px; padding: 20px; }
         .analysis-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
-        .stat-card { background: white; padding: 16px; border-radius: 8px; text-align: center; border: 1px solid #e2e8f0; }
-        .stat-card.success { border-color: #86efac; background: #f0fdf4; }
-        .stat-card.warning { border-color: #fcd34d; background: #fffbeb; }
-        .stat-card.info { border-color: #93c5fd; background: #eff6ff; }
-        .stat-value { display: block; font-size: 24px; font-weight: 700; color: #1e293b; }
-        .stat-card.success .stat-value { color: #16a34a; }
-        .stat-card.warning .stat-value { color: #d97706; }
-        .stat-card.info .stat-value { color: #2563eb; }
-        .stat-label { font-size: 12px; color: #64748b; }
+        .stat-card { background: #0d1526; padding: 16px; border-radius: 8px; text-align: center; border: 1px solid rgba(0,200,255,0.08); }
+        .stat-card.success { border-color: rgba(0,184,148,0.3); background: rgba(0,184,148,0.08); }
+        .stat-card.warning { border-color: rgba(253,203,110,0.3); background: rgba(253,203,110,0.08); }
+        .stat-card.info { border-color: rgba(0,229,255,0.3); background: rgba(0,229,255,0.08); }
+        .stat-value { display: block; font-size: 24px; font-weight: 700; color: #e0e6f0; }
+        .stat-card.success .stat-value { color: #00b894; }
+        .stat-card.warning .stat-value { color: #fdcb6e; }
+        .stat-card.info .stat-value { color: #00e5ff; }
+        .stat-label { font-size: 12px; color: rgba(180,210,240,0.65); }
 
-        .file-info { display: flex; align-items: center; gap: 8px; padding: 12px; background: white; border-radius: 6px; font-size: 14px; }
-        .file-info svg { color: #3b82f6; }
-        .file-size { color: #94a3b8; }
-        .file-info button { margin-left: auto; background: none; border: none; color: #3b82f6; cursor: pointer; font-size: 13px; }
+        .file-info { display: flex; align-items: center; gap: 8px; padding: 12px; background: #0d1526; border-radius: 6px; font-size: 14px; color: #e0e6f0; }
+        .file-info svg { color: #00e5ff; }
+        .file-size { color: rgba(180,210,240,0.65); }
+        .file-info button { margin-left: auto; background: none; border: none; color: #00e5ff; cursor: pointer; font-size: 13px; }
 
         .detected-columns { display: flex; flex-wrap: wrap; gap: 8px; }
-        .column-tag { padding: 4px 10px; background: #e0e7ff; color: #4338ca; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .column-tag { padding: 4px 10px; background: rgba(0,229,255,0.12); color: #00e5ff; border-radius: 4px; font-size: 12px; font-weight: 500; }
 
-        .preview-table-wrapper { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
-        .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .preview-table th, .preview-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-        .preview-table th { background: #f8fafc; font-weight: 600; }
+        .preview-table-wrapper { overflow-x: auto; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; }
+        .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; color: #e0e6f0; }
+        .preview-table th, .preview-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(0,200,255,0.08); }
+        .preview-table th { background: #0a1628; font-weight: 600; color: rgba(180,210,240,0.65); }
 
-        .warning-section { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; }
-        .warning-note { margin: 12px 0 0; font-size: 13px; color: #92400e; }
-        .error-text { color: #dc2626; }
+        .warning-section { background: rgba(253,203,110,0.08); border: 1px solid rgba(253,203,110,0.2); border-radius: 8px; padding: 16px; }
+        .warning-note { margin: 12px 0 0; font-size: 13px; color: #fdcb6e; }
+        .error-text { color: #e94560; }
 
-        .options-section { background: #f8fafc; border-radius: 8px; padding: 16px; }
+        .options-section { background: #0a1020; border-radius: 8px; padding: 16px; }
         .checkbox-option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
         .checkbox-option input { margin-top: 4px; width: 18px; height: 18px; }
-        .checkbox-option span strong { display: block; margin-bottom: 2px; }
-        .checkbox-option span small { color: #64748b; font-size: 13px; }
+        .checkbox-option span strong { display: block; margin-bottom: 2px; color: #e0e6f0; }
+        .checkbox-option span small { color: rgba(180,210,240,0.65); font-size: 13px; }
 
-        .target-list-reminder { padding: 12px; background: #eff6ff; border-radius: 6px; font-size: 14px; }
+        .target-list-reminder { padding: 12px; background: rgba(0,229,255,0.08); border-radius: 6px; font-size: 14px; color: #e0e6f0; }
 
         /* Importing */
         .importing-section { padding: 48px 24px; text-align: center; }
         .progress-container { max-width: 400px; margin: 0 auto; }
-        .progress-icon { color: #3b82f6; margin-bottom: 20px; }
-        .progress-message { color: #64748b; margin: 8px 0 24px; }
-        .progress-bar-container { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
-        .progress-bar { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); transition: width 0.3s; }
-        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: #64748b; }
+        .progress-icon { color: #00e5ff; margin-bottom: 20px; }
+        .progress-message { color: rgba(180,210,240,0.65); margin: 8px 0 24px; }
+        .progress-bar-container { height: 8px; background: rgba(0,200,255,0.08); border-radius: 4px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #00e5ff, #00b0ff); transition: width 0.3s; }
+        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: rgba(180,210,240,0.65); }
 
         /* Complete */
         .complete-section { padding: 32px 24px; text-align: center; }
         .complete-icon { margin-bottom: 16px; }
-        .complete-icon.success { color: #10b981; }
-        .complete-icon.error { color: #ef4444; }
+        .complete-icon.success { color: #00b894; }
+        .complete-icon.error { color: #e94560; }
         .result-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 24px 0; }
-        .result-stat { padding: 16px 8px; background: #f8fafc; border-radius: 8px; }
-        .result-stat.success { background: #f0fdf4; }
-        .result-stat.info { background: #eff6ff; }
-        .result-stat.warning { background: #fffbeb; }
-        .result-stat.error { background: #fef2f2; }
-        .result-value { display: block; font-size: 20px; font-weight: 700; }
-        .result-stat.success .result-value { color: #16a34a; }
-        .result-stat.info .result-value { color: #2563eb; }
-        .result-stat.warning .result-value { color: #d97706; }
-        .result-stat.error .result-value { color: #dc2626; }
-        .result-label { font-size: 11px; color: #64748b; text-transform: uppercase; }
-        .skip-note { color: #64748b; font-size: 13px; margin-top: 16px; }
-        .error-list-container { text-align: left; background: #fef2f2; border-radius: 8px; padding: 16px; margin-top: 16px; }
-        .error-list-container h4 { margin: 0 0 8px; color: #dc2626; }
-        .error-list { margin: 0; padding-left: 20px; color: #b91c1c; font-size: 13px; }
+        .result-stat { padding: 16px 8px; background: #0a1020; border-radius: 8px; }
+        .result-stat.success { background: rgba(0,184,148,0.08); }
+        .result-stat.info { background: rgba(0,229,255,0.08); }
+        .result-stat.warning { background: rgba(253,203,110,0.08); }
+        .result-stat.error { background: rgba(233,69,96,0.08); }
+        .result-value { display: block; font-size: 20px; font-weight: 700; color: #e0e6f0; }
+        .result-stat.success .result-value { color: #00b894; }
+        .result-stat.info .result-value { color: #00e5ff; }
+        .result-stat.warning .result-value { color: #fdcb6e; }
+        .result-stat.error .result-value { color: #e94560; }
+        .result-label { font-size: 11px; color: rgba(180,210,240,0.65); text-transform: uppercase; }
+        .skip-note { color: rgba(180,210,240,0.65); font-size: 13px; margin-top: 16px; }
+        .error-list-container { text-align: left; background: rgba(233,69,96,0.08); border-radius: 8px; padding: 16px; margin-top: 16px; }
+        .error-list-container h4 { margin: 0 0 8px; color: #e94560; }
+        .error-list { margin: 0; padding-left: 20px; color: #e94560; font-size: 13px; }
       `}</style>
     </div>
   );

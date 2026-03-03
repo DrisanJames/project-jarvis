@@ -16,19 +16,19 @@
 .lists-header h1 {
   font-size: 28px;
   font-weight: 700;
-  color: #111827;
+  color: #e0e6f0;
   margin: 0;
 }
 
 .lists-header p {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   margin: 4px 0 0 0;
 }
 
 .create-btn,
 .add-btn {
   padding: 10px 20px;
-  background: #3b82f6;
+  background: #00e5ff;
   color: white;
   border: none;
   border-radius: 8px;
@@ -40,7 +40,7 @@
 
 .create-btn:hover,
 .add-btn:hover {
-  background: #2563eb;
+  background: #00b0ff;
 }
 
 .lists-grid {
@@ -50,28 +50,28 @@
 }
 
 .list-card {
-  background: white;
+  background: #0d1526;
   border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .list-card:hover {
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
   transform: translateY(-2px);
 }
 
 .list-card h3 {
   font-size: 18px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
   margin: 0 0 8px 0;
 }
 
 .list-description {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   font-size: 14px;
   margin: 0 0 16px 0;
   line-height: 1.5;
@@ -82,7 +82,7 @@
   gap: 24px;
   margin-bottom: 16px;
   padding: 16px;
-  background: #f9fafb;
+  background: #0a0f1a;
   border-radius: 8px;
 }
 
@@ -94,12 +94,12 @@
 .stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .stat-label {
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .list-meta {
@@ -117,25 +117,25 @@
 }
 
 .status-active {
-  background: #dcfce7;
-  color: #166534;
+  background: rgba(0,184,148,0.15);
+  color: #00b894;
 }
 
 .status-inactive {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: #0a0f1a;
+  color: rgba(180,210,240,0.65);
 }
 
 .created-date {
   font-size: 12px;
-  color: #9ca3af;
+  color: rgba(180,210,240,0.65);
 }
 
 /* Subscribers View */
 .back-btn {
   padding: 8px 16px;
-  background: #f3f4f6;
-  color: #374151;
+  background: #0a0f1a;
+  color: #e0e6f0;
   border: none;
   border-radius: 6px;
   font-size: 14px;
@@ -144,26 +144,26 @@
 }
 
 .back-btn:hover {
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.08);
 }
 
 .list-info h2 {
   font-size: 24px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
   margin: 0;
 }
 
 .list-info p {
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   margin: 4px 0 0 0;
 }
 
 .subscribers-table {
   width: 100%;
-  background: white;
+  background: #0d1526;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   border-collapse: collapse;
   overflow: hidden;
 }
@@ -172,25 +172,25 @@
 .subscribers-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid rgba(0,200,255,0.08);
 }
 
 .subscribers-table th {
-  background: #f9fafb;
+  background: #0a0f1a;
   font-size: 12px;
   font-weight: 600;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
   text-transform: uppercase;
 }
 
 .subscribers-table td {
   font-size: 14px;
-  color: #374151;
+  color: #e0e6f0;
 }
 
 .email-cell {
   font-weight: 500;
-  color: #111827;
+  color: #e0e6f0;
 }
 
 .status-dot {
@@ -204,7 +204,7 @@
 .engagement-bar {
   width: 60px;
   height: 6px;
-  background: #e5e7eb;
+  background: rgba(0,200,255,0.08);
   border-radius: 3px;
   display: inline-block;
   margin-right: 8px;
@@ -212,13 +212,13 @@
 
 .engagement-fill {
   height: 100%;
-  background: linear-gradient(90deg, #ef4444, #f59e0b, #22c55e);
+  background: linear-gradient(90deg, #e94560, #fdcb6e, #00b894);
   border-radius: 3px;
 }
 
 .engagement-score {
   font-size: 12px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .pagination {
@@ -231,8 +231,8 @@
 
 .pagination button {
   padding: 8px 16px;
-  background: white;
-  border: 1px solid #d1d5db;
+  background: #0d1526;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 6px;
   font-size: 14px;
   cursor: pointer;
@@ -240,8 +240,8 @@
 }
 
 .pagination button:hover:not(:disabled) {
-  background: #f9fafb;
-  border-color: #9ca3af;
+  background: #0a0f1a;
+  border-color: rgba(180,210,240,0.65);
 }
 
 .pagination button:disabled {
@@ -264,7 +264,7 @@
 }
 
 .modal-content {
-  background: white;
+  background: #0d1526;
   border-radius: 12px;
   padding: 32px;
   width: 100%;
@@ -281,7 +281,7 @@
 .modal-content h3 {
   font-size: 20px;
   font-weight: 600;
-  color: #111827;
+  color: #e0e6f0;
   margin: 0 0 24px 0;
 }
 
@@ -293,7 +293,7 @@
   display: block;
   font-size: 14px;
   font-weight: 500;
-  color: #374151;
+  color: #e0e6f0;
   margin-bottom: 6px;
 }
 
@@ -302,9 +302,11 @@
 .form-group select {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #d1d5db;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 6px;
   font-size: 14px;
+  background: #0a0f1a;
+  color: #e0e6f0;
   transition: border-color 0.2s;
 }
 
@@ -312,8 +314,8 @@
 .form-group textarea:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.1);
 }
 
 .form-group textarea {
@@ -336,9 +338,9 @@
 
 .cancel-btn {
   padding: 10px 20px;
-  background: white;
-  color: #374151;
-  border: 1px solid #d1d5db;
+  background: #0a0f1a;
+  color: #e0e6f0;
+  border: 1px solid rgba(0,200,255,0.08);
   border-radius: 6px;
   font-size: 14px;
   cursor: pointer;
@@ -346,7 +348,7 @@
 
 .submit-btn {
   padding: 10px 20px;
-  background: #3b82f6;
+  background: #00e5ff;
   color: white;
   border: none;
   border-radius: 6px;
@@ -356,7 +358,7 @@
 }
 
 .submit-btn:disabled {
-  background: #9ca3af;
+  background: rgba(180,210,240,0.15);
   cursor: not-allowed;
 }
 
@@ -364,13 +366,13 @@
 .loading {
   text-align: center;
   padding: 48px;
-  color: #6b7280;
+  color: rgba(180,210,240,0.65);
 }
 
 .error-message {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #991b1b;
+  background: rgba(233,69,96,0.1);
+  border: 1px solid rgba(233,69,96,0.3);
+  color: #e94560;
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 24px;
