@@ -231,13 +231,12 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		}
 		
 		// Determine final status
+		// Use 'sent'/'cancelled' to match DB CHECK constraint
 		var finalStatus string
-		if failed > 0 && sent > 0 {
-			finalStatus = "completed_with_errors"
-		} else if failed == total {
-			finalStatus = "failed"
+		if failed == total {
+			finalStatus = "cancelled"
 		} else {
-			finalStatus = "completed"
+			finalStatus = "sent"
 		}
 		
 		// Update campaign
@@ -1206,9 +1205,9 @@ func CanEditCampaign(status string, scheduledAt *time.Time) (bool, string) {
 		return true, ""
 	}
 
-	// Cannot edit if already sending, completed, cancelled, or failed
-	if status == "sending" || status == "completed" || status == "cancelled" || 
-	   status == "failed" || status == "completed_with_errors" || status == "preparing" {
+	// Cannot edit if already sending, sent, cancelled, or preparing
+	if status == "sending" || status == "sent" || status == "cancelled" || 
+	   status == "completed" || status == "failed" || status == "completed_with_errors" || status == "preparing" {
 		return false, fmt.Sprintf("cannot edit campaign in '%s' status", status)
 	}
 
@@ -1231,7 +1230,7 @@ func CanEditCampaign(status string, scheduledAt *time.Time) (bool, string) {
 // Campaigns can ALWAYS be cancelled except when completed or already cancelled
 func CanCancelCampaign(status string) (bool, string) {
 	switch status {
-	case "completed", "completed_with_errors", "cancelled", "failed":
+	case "sent", "completed", "completed_with_errors", "cancelled", "failed":
 		return false, fmt.Sprintf("cannot cancel campaign in '%s' status", status)
 	default:
 		return true, ""

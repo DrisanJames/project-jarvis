@@ -350,17 +350,29 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	}
 	
 	// Update campaign completion
-	finalStatus := "completed"
+	// Use 'sent' / 'cancelled' to match the DB CHECK constraint
+	// (the inline constraint from migration 001 only allows: draft, scheduled, sending, paused, sent, cancelled)
+	finalStatus := "sent"
 	if failed > 0 && sent == 0 {
-		finalStatus = "failed"
-	} else if failed > 0 {
-		finalStatus = "completed_with_errors"
+		finalStatus = "cancelled"
 	}
 	
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
-	var updateError string
+	// Diagnostic: list check constraints on the table
+	var constraints []string
+	rows, qErr := cb.db.QueryContext(bgCtx, `SELECT con.conname || ': ' || pg_get_constraintdef(con.oid) FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid WHERE rel.relname = 'mailing_campaigns' AND con.contype = 'c'`)
+	if qErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c string
+			rows.Scan(&c)
+			constraints = append(constraints, c)
+		}
+	}
+
+	var dbDiag string
 	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
 		SET status = $1, sent_count = $2, completed_at = NOW(), updated_at = NOW()
@@ -369,12 +381,14 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
-		updateError = updateErr.Error()
+		dbDiag = fmt.Sprintf("err: %v | constraints: %v", updateErr, constraints)
 	} else {
 		rowsAffected, _ := updateResult.RowsAffected()
-		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows_affected=%d", id, sent, failed, finalStatus, rowsAffected)
+		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows=%d", id, sent, failed, finalStatus, rowsAffected)
 		if rowsAffected == 0 {
-			updateError = fmt.Sprintf("0 rows affected for id=%s", id)
+			dbDiag = fmt.Sprintf("0 rows affected for id=%s | constraints: %v", id, constraints)
+		} else {
+			dbDiag = fmt.Sprintf("ok: %d rows | constraints: %v", rowsAffected, constraints)
 		}
 	}
 	
@@ -386,22 +400,18 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		`, uuid.New(), profile.ID, id, sent)
 	}
 	
-	response := map[string]interface{}{
-		"campaign_id":   id,
-		"status":        finalStatus,
-		"sent":          sent,
-		"failed":        failed,
-		"suppressed":    suppressed,
-		"total_targeted": len(subscribers),
-		"vendor":        profile.VendorType,
-		"throttle_speed": campaign.ThrottleSpeed,
-	}
-	if updateError != "" {
-		response["_db_update_error"] = updateError
-	}
-	
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"campaign_id":    id,
+		"status":         finalStatus,
+		"sent":           sent,
+		"failed":         failed,
+		"suppressed":     suppressed,
+		"total_targeted": len(subscribers),
+		"vendor":         profile.VendorType,
+		"throttle_speed": campaign.ThrottleSpeed,
+		"_db_diag":       dbDiag,
+	})
 }
 
 func extractDomainFromEmail(email string) string {

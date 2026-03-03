@@ -252,7 +252,7 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 		} else {
 			phase = "full_send"
 		}
-	case "completed", "completed_with_errors":
+	case "sent", "completed", "completed_with_errors":
 		phase = "completed"
 	case "paused":
 		phase = "paused"

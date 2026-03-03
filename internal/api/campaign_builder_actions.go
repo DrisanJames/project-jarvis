@@ -145,8 +145,8 @@ func (cb *CampaignBuilder) HandleCancelCampaign(w http.ResponseWriter, r *http.R
 		return
 	}
 	
-	// Cannot cancel already completed or cancelled campaigns
-	notAllowed := map[string]bool{"completed": true, "completed_with_errors": true, "cancelled": true, "failed": true}
+	// Cannot cancel already sent or cancelled campaigns
+	notAllowed := map[string]bool{"sent": true, "completed": true, "completed_with_errors": true, "cancelled": true, "failed": true}
 	if notAllowed[currentStatus] {
 		http.Error(w, fmt.Sprintf(`{"error":"cannot cancel campaign in '%s' status"}`, currentStatus), http.StatusBadRequest)
 		return
@@ -156,7 +156,7 @@ func (cb *CampaignBuilder) HandleCancelCampaign(w http.ResponseWriter, r *http.R
 	result, err := cb.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns 
 		SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND status NOT IN ('completed', 'completed_with_errors', 'cancelled', 'failed')
+		WHERE id = $1 AND status NOT IN ('sent', 'completed', 'completed_with_errors', 'cancelled', 'failed')
 	`, id)
 	
 	if err != nil {
