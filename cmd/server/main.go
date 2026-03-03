@@ -948,6 +948,7 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		{"widen_status_column", `ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE VARCHAR(30)`},
 		{"drop_status_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 		{"drop_campaign_type_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"add_status_check", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
