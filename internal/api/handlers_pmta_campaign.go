@@ -54,6 +54,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/deploy", s.HandleDeployCampaign)
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 		cr.Get("/diag", s.HandlePMTADiag)
+		cr.Get("/trigger-send", s.HandleTriggerSend)
 	})
 }
 
@@ -852,6 +853,99 @@ func domainToISPLookup(domain string) string {
 		return isp
 	}
 	return "other"
+}
+
+// HandleTriggerSend manually enqueues and processes a scheduled campaign,
+// bypassing the scheduler goroutine (useful when the scheduler is not running).
+func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := s.orgID
+	campaignID := r.URL.Query().Get("campaign_id")
+
+	if campaignID == "" {
+		// Find the oldest scheduled campaign
+		s.db.QueryRowContext(ctx, `
+			SELECT id::text FROM mailing_campaigns
+			WHERE organization_id = $1 AND status = 'scheduled'
+			  AND COALESCE(scheduled_at, send_at) <= NOW()
+			ORDER BY COALESCE(scheduled_at, send_at) ASC LIMIT 1
+		`, orgID).Scan(&campaignID)
+		if campaignID == "" {
+			respondJSON(w, 200, map[string]string{"message": "no scheduled campaigns ready"})
+			return
+		}
+	}
+
+	// Move to sending
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns SET status = 'sending', started_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status IN ('scheduled','preparing')
+	`, campaignID)
+	if err != nil {
+		respondJSON(w, 500, map[string]string{"error": "update status: " + err.Error()})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		respondJSON(w, 200, map[string]string{"message": "campaign not found or already processed", "id": campaignID})
+		return
+	}
+
+	// Load campaign metadata
+	var fromName, fromEmail, replyTo, subject, htmlContent, profileID string
+	var listIDsJSON string
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(from_name,''), COALESCE(from_email,''), COALESCE(reply_to,''),
+		       subject, COALESCE(html_content,''), COALESCE(sending_profile_id::text,''),
+		       COALESCE(list_ids::text,'[]')
+		FROM mailing_campaigns WHERE id = $1
+	`, campaignID).Scan(&fromName, &fromEmail, &replyTo, &subject, &htmlContent, &profileID, &listIDsJSON)
+
+	var listIDs []string
+	json.Unmarshal([]byte(listIDsJSON), &listIDs)
+	if len(listIDs) == 0 {
+		respondJSON(w, 200, map[string]string{"error": "no list_ids", "id": campaignID})
+		return
+	}
+
+	// Enqueue subscribers
+	enqueued := 0
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.email FROM mailing_subscribers s
+		WHERE s.list_id = ANY($1) AND s.status = 'confirmed'
+		  AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue WHERE campaign_id = $2 AND subscriber_id = s.id)
+		  AND NOT EXISTS (SELECT 1 FROM mailing_suppressions WHERE LOWER(email) = LOWER(s.email) AND active = true)
+	`, pq.Array(listIDs), campaignID)
+	if err != nil {
+		respondJSON(w, 500, map[string]string{"error": "query subs: " + err.Error()})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var subID, email string
+		rows.Scan(&subID, &email)
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO mailing_campaign_queue
+				(id, campaign_id, subscriber_id, email, subject, html_content, from_name, from_email, reply_to, sending_profile_id, esp_type, status, priority, created_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'pmta', 'pending', 0, NOW())
+		`, campaignID, subID, email, subject, htmlContent, fromName, fromEmail, replyTo, profileID)
+		if err != nil {
+			log.Printf("[TriggerSend] enqueue error for %s: %v", email, err)
+		} else {
+			enqueued++
+		}
+	}
+
+	// Update total_recipients
+	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients = $1 WHERE id = $2`, enqueued, campaignID)
+
+	respondJSON(w, 200, map[string]interface{}{
+		"campaign_id":     campaignID,
+		"enqueued":        enqueued,
+		"profile_id":      profileID,
+		"list_ids":        listIDs,
+		"status":          "sending",
+		"message":         "Campaign manually enqueued — send worker will pick up pending items",
+	})
 }
 
 // HandlePMTADiag returns diagnostic info about campaigns, queue, and PMTA bridge.
