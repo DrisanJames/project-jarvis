@@ -305,7 +305,7 @@ func TestChatWithMockOpenAI(t *testing.T) {
 	
 	// Set up a mock OpenAI agent (will fail without real API key, but tests the path)
 	// In real tests, you'd use a mock HTTP server
-	mockOpenAI := agent.NewOpenAIAgent("test-key", "gpt-5.2", ag, nil)
+	mockOpenAI := agent.NewOpenAIAgent("test-key", "gpt-5.3-codex", ag, nil)
 	handlers.SetOpenAIAgent(mockOpenAI)
 	
 	router, _ := SetupRoutes(handlers, nil)

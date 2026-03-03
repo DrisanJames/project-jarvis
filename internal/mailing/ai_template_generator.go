@@ -52,19 +52,35 @@ type BlogExcerpt struct {
 	URL     string `json:"url"`
 }
 
-// GenerateEmailTemplates produces 5 HTML email template variations using Claude.
+// GenerateEmailTemplates produces 5 HTML email template variations using AI.
+// Tries Anthropic (Claude) first, falls back to OpenAI (GPT-5.3-Codex).
 func (s *AIContentService) GenerateEmailTemplates(ctx context.Context, req TemplateGenerationRequest) (*TemplateGenerationResult, error) {
-	if s.anthropicKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not configured")
+	if s.anthropicKey == "" && s.openaiKey == "" {
+		return nil, fmt.Errorf("no AI API key configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
 	}
 
 	brand := s.scrapeBrandIntelligence(ctx, req.SendingDomain)
-
 	prompt := buildTemplateGenerationPrompt(req.CampaignType, brand)
 
-	variations, err := s.callClaudeForTemplates(ctx, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("claude generation failed: %w", err)
+	var variations []GeneratedVariation
+	var err error
+
+	if s.anthropicKey != "" {
+		variations, err = s.callClaudeForTemplates(ctx, prompt)
+		if err != nil {
+			log.Printf("Claude template generation failed, falling back to OpenAI: %v", err)
+		}
+	}
+
+	if len(variations) == 0 && s.openaiKey != "" {
+		variations, err = s.callOpenAIForTemplates(ctx, prompt)
+		if err != nil {
+			return nil, fmt.Errorf("template generation failed: %w", err)
+		}
+	}
+
+	if len(variations) == 0 {
+		return nil, fmt.Errorf("template generation produced no variations")
 	}
 
 	return &TemplateGenerationResult{
@@ -398,6 +414,80 @@ func (s *AIContentService) callClaudeForTemplates(ctx context.Context, prompt st
 	}
 
 	raw := strings.TrimSpace(anthropicResp.Content[0].Text)
+	if strings.HasPrefix(raw, "```json") {
+		raw = strings.TrimPrefix(raw, "```json")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	} else if strings.HasPrefix(raw, "```") {
+		raw = strings.TrimPrefix(raw, "```")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	}
+
+	var variations []GeneratedVariation
+	if err := json.Unmarshal([]byte(raw), &variations); err != nil {
+		return nil, fmt.Errorf("failed to parse generated templates: %w (response length: %d)", err, len(raw))
+	}
+
+	return variations, nil
+}
+
+// callOpenAIForTemplates generates email template variations via the OpenAI chat completions API.
+func (s *AIContentService) callOpenAIForTemplates(ctx context.Context, prompt string) ([]GeneratedVariation, error) {
+	reqBody := map[string]interface{}{
+		"model": "gpt-5.3-codex",
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You are an expert email designer and copywriter. Always respond with valid JSON only — no markdown, no code fences, no explanation.",
+			},
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"temperature": 0.7,
+		"max_tokens":  16000,
+	}
+
+	body, _ := json.Marshal(reqBody)
+
+	genCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(genCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.openaiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("openai error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var openAIResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &openAIResp); err != nil {
+		return nil, fmt.Errorf("failed to parse openai response: %w", err)
+	}
+	if len(openAIResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in openai response")
+	}
+
+	raw := strings.TrimSpace(openAIResp.Choices[0].Message.Content)
 	if strings.HasPrefix(raw, "```json") {
 		raw = strings.TrimPrefix(raw, "```json")
 		raw = strings.TrimSuffix(raw, "```")

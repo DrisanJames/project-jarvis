@@ -32,7 +32,7 @@ type AIContentService struct {
 func NewAIContentService(db *sql.DB, anthropicKey, openaiKey string) *AIContentService {
 	model := "claude-opus-4-6"
 	if anthropicKey == "" && openaiKey != "" {
-		model = "gpt-5.2"
+		model = "gpt-5.3-codex"
 	}
 	return &AIContentService{
 		db:           db,
@@ -1031,7 +1031,7 @@ func (s *AIContentService) callAnthropicForSubjects(ctx context.Context, prompt 
 
 func (s *AIContentService) callOpenAIForSubjects(ctx context.Context, prompt string, count int) ([]SubjectSuggestion, error) {
 	reqBody := map[string]interface{}{
-		"model": "gpt-5.2",
+		"model": "gpt-5.3-codex",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
@@ -1243,7 +1243,7 @@ func (s *AIContentService) callAnthropicSimple(ctx context.Context, prompt strin
 
 func (s *AIContentService) callOpenAISimple(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model": "gpt-5.2",
+		"model": "gpt-5.3-codex",
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

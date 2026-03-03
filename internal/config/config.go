@@ -410,7 +410,7 @@ func Load(path string) (*Config, error) {
 		cfg.Everflow.LookbackDays = 30
 	}
 	if cfg.OpenAI.Model == "" {
-		cfg.OpenAI.Model = "gpt-5.2"
+		cfg.OpenAI.Model = "gpt-5.3-codex"
 	}
 	// Azure Table Storage defaults
 	if cfg.Azure.TableName == "" {
