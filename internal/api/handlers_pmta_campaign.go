@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -920,12 +921,14 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active' LIMIT 1
 	`, orgID).Scan(&bridgeEndpoint)
 	if bridgeEndpoint != "" {
+		client := &http.Client{Timeout: 5 * time.Second}
 		hc, _ := http.NewRequestWithContext(ctx, "GET", bridgeEndpoint+"/health", nil)
-		if resp, err := http.DefaultClient.Do(hc); err != nil {
+		if resp, err := client.Do(hc); err != nil {
 			bridgeHealth = "error: " + err.Error()
 		} else {
+			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			bridgeHealth = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			bridgeHealth = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)[:min(200, len(bodyBytes))])
 		}
 	}
 
