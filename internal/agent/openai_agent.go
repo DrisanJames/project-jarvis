@@ -87,7 +87,7 @@ type OpenAIResponse struct {
 // NewOpenAIAgent creates a new OpenAI-powered conversational agent
 func NewOpenAIAgent(apiKey, model string, agent *Agent, knowledgeBase *KnowledgeBase) *OpenAIAgent {
 	if model == "" {
-		model = "gpt-5.3-codex"
+		model = "gpt-5.2"
 	}
 	return &OpenAIAgent{
 		apiKey:        apiKey,

@@ -52,7 +52,7 @@ type OfferPerformance struct {
 func NewAISubjectSuggestionService(db *sql.DB, openAICfg config.OpenAIConfig) *AISubjectSuggestionService {
 	model := openAICfg.Model
 	if model == "" {
-		model = "gpt-5.3-codex"
+		model = "gpt-5.2"
 	}
 	return &AISubjectSuggestionService{
 		db:        db,
@@ -452,8 +452,8 @@ func (s *AISubjectSuggestionService) callOpenAI(ctx context.Context, prompt stri
 				"content": prompt,
 			},
 		},
-		"temperature": 0.8,
-		"max_tokens":  2000,
+		"temperature":          0.8,
+		"max_completion_tokens": 2000,
 	}
 
 	body, _ := json.Marshal(reqBody)
