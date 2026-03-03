@@ -360,6 +360,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
+	var updateError string
 	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
 		SET status = $1, sent_count = $2, completed_at = NOW(), updated_at = NOW()
@@ -368,11 +369,12 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
+		updateError = updateErr.Error()
 	} else {
 		rowsAffected, _ := updateResult.RowsAffected()
 		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows_affected=%d", id, sent, failed, finalStatus, rowsAffected)
 		if rowsAffected == 0 {
-			log.Printf("WARNING: campaign %s update affected 0 rows — verify id exists in mailing_campaigns", id)
+			updateError = fmt.Sprintf("0 rows affected for id=%s", id)
 		}
 	}
 	
@@ -384,8 +386,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		`, uuid.New(), profile.ID, id, sent)
 	}
 	
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]interface{}{
 		"campaign_id":   id,
 		"status":        finalStatus,
 		"sent":          sent,
@@ -394,7 +395,13 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		"total_targeted": len(subscribers),
 		"vendor":        profile.VendorType,
 		"throttle_speed": campaign.ThrottleSpeed,
-	})
+	}
+	if updateError != "" {
+		response["_db_update_error"] = updateError
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func extractDomainFromEmail(email string) string {
