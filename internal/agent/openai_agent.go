@@ -61,7 +61,7 @@ type OpenAIRequest struct {
 	Messages          []OpenAIChatMessage `json:"messages"`
 	Tools             []Tool              `json:"tools,omitempty"`
 	Temperature       float64             `json:"temperature"`
-	MaxTokens         int                 `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
 	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
 }
 
@@ -121,7 +121,7 @@ func (o *OpenAIAgent) Chat(ctx context.Context, userMessage string, conversation
 		Messages:          messages,
 		Tools:             o.GetTools(),
 		Temperature:       0.7,
-		MaxTokens:         4000,
+		MaxCompletionTokens: 4000,
 		ParallelToolCalls: &parallelTools,
 	}
 
