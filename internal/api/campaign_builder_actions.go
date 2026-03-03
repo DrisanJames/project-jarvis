@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -39,11 +40,12 @@ func (cb *CampaignBuilder) HandleScheduleCampaign(w http.ResponseWriter, r *http
 	
 	_, err := cb.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns 
-		SET status = 'scheduled', scheduled_at = $1, send_type = 'scheduled', updated_at = NOW()
+		SET status = 'scheduled', scheduled_at = $1, updated_at = NOW()
 		WHERE id = $2 AND status IN ('draft', 'scheduled')
 	`, input.ScheduledAt, id)
 	
 	if err != nil {
+		log.Printf("Schedule campaign %s error: %v", id, err)
 		http.Error(w, `{"error":"failed to schedule campaign"}`, http.StatusInternalServerError)
 		return
 	}
