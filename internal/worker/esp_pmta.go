@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -299,13 +300,21 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		bodyBuf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		bodyBuf.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 		bodyBuf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		bodyBuf.WriteString(msg.TextContent)
+		var qpText bytes.Buffer
+		qpWriter := quotedprintable.NewWriter(&qpText)
+		qpWriter.Write([]byte(msg.TextContent))
+		qpWriter.Close()
+		bodyBuf.Write(qpText.Bytes())
 		bodyBuf.WriteString("\r\n")
 	}
 	bodyBuf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	bodyBuf.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	bodyBuf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	bodyBuf.WriteString(msg.HTMLContent)
+	var qpHTML bytes.Buffer
+	qpWriter := quotedprintable.NewWriter(&qpHTML)
+	qpWriter.Write([]byte(msg.HTMLContent))
+	qpWriter.Close()
+	bodyBuf.Write(qpHTML.Bytes())
 	bodyBuf.WriteString("\r\n")
 	bodyBuf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 

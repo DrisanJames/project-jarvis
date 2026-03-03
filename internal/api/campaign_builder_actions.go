@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -37,14 +38,23 @@ func (cb *CampaignBuilder) HandleScheduleCampaign(w http.ResponseWriter, r *http
 	// Calculate edit lock time (when the campaign can no longer be edited)
 	editLockTime := input.ScheduledAt.Add(-time.Duration(MinPreparationMinutes) * time.Minute)
 	
-	_, err := cb.db.ExecContext(ctx, `
+	log.Printf("SCHEDULE: campaign=%s scheduled_at=%v (%s)", id, input.ScheduledAt, input.ScheduledAt.Format(time.RFC3339))
+
+	result, err := cb.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns 
-		SET status = 'scheduled', scheduled_at = $1, send_type = 'scheduled', updated_at = NOW()
+		SET status = 'scheduled', scheduled_at = $1, updated_at = NOW()
 		WHERE id = $2 AND status IN ('draft', 'scheduled')
 	`, input.ScheduledAt, id)
 	
 	if err != nil {
-		http.Error(w, `{"error":"failed to schedule campaign"}`, http.StatusInternalServerError)
+		log.Printf("SCHEDULE ERROR: campaign=%s pgErr=%v", id, err)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to schedule campaign","detail":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	log.Printf("SCHEDULE OK: campaign=%s rows_affected=%d", id, rows)
+	if rows == 0 {
+		http.Error(w, `{"error":"campaign not found or not in draft/scheduled status"}`, http.StatusBadRequest)
 		return
 	}
 	

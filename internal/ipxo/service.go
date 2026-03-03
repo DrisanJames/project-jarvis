@@ -54,7 +54,7 @@ func (s *Service) SyncPrefixesToDB(ctx context.Context, orgID string, expandIPs 
 			prefix3 := strings.Join(octets[:3], ".")
 			for i := 1; i <= 254; i++ {
 				ip := fmt.Sprintf("%s.%d", prefix3, i)
-				hostname := fmt.Sprintf("mta%d.mail.ignitemailing.com", i)
+				hostname := fmt.Sprintf("mta%d.mail.projectjarvis.io", i)
 				imported, err := s.upsertIP(ctx, orgID, ip, hostname, p)
 				if err != nil {
 					result.Errors = append(result.Errors, fmt.Sprintf("IP %s: %v", ip, err))

@@ -118,7 +118,7 @@ func (s *AdvancedMailingService) HandleScheduleCampaign(w http.ResponseWriter, r
 	// Update using scheduled_at column (consistent with campaign_builder.go)
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns 
-		SET status = 'scheduled', scheduled_at = $2, send_type = 'scheduled', timezone = $3, updated_at = NOW()
+		SET status = 'scheduled', scheduled_at = $2, timezone = $3, updated_at = NOW()
 		WHERE id = $1 AND status IN ('draft', 'scheduled')
 	`, campaignID, scheduledAt, input.Timezone)
 	

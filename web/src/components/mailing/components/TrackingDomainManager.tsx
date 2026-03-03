@@ -220,7 +220,7 @@ export const TrackingDomainManager: React.FC = () => {
         // Step 2: Trigger AWS provisioning
         const provRes = await orgFetch(`${API_BASE}/aws/tracking-domains/${domainId}/provision`, orgId, {
           method: 'POST',
-          body: JSON.stringify({ origin_server: 'api.ignitemailing.com' }),
+          body: JSON.stringify({ origin_server: 'projectjarvis.io' }),
         });
 
         if (!provRes.ok) {

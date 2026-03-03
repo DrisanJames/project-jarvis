@@ -58,7 +58,7 @@ const VultrServers: React.FC = () => {
   const [view, setView] = useState<View>('servers');
   const [provisionForm, setProvisionForm] = useState({
     region: 'ewr', plan: '', label: 'pmta-node-1',
-    hostname: 'pmta1.mail.ignitemailing.com',
+    hostname: 'pmta1.mail.projectjarvis.io',
     subnet_block: '144.225.178.0/24', install_pmta: true,
   });
   const [provisioning, setProvisioning] = useState(false);

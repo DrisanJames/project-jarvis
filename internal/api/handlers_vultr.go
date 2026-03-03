@@ -140,7 +140,7 @@ func (s *VultrService) HandleProvisionServer(w http.ResponseWriter, r *http.Requ
 		input.Label = "pmta-node-1"
 	}
 	if input.Hostname == "" {
-		input.Hostname = "pmta1.mail.ignitemailing.com"
+		input.Hostname = "pmta1.mail.projectjarvis.io"
 	}
 
 	// Generate cloud-init with PMTA setup

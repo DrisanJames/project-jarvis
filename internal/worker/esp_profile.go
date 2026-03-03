@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ProfileBasedSender resolves a sending profile from the database and
@@ -134,16 +135,29 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 }
 
 // pmtaComboSender tries the PMTA HTTP injection API first, then falls back
-// to SMTP. This ensures delivery works even when AWS blocks port 25 or the
-// PMTA HTTP API isn't available on the target host.
+// to SMTP. After a transient API failure, it retries the API after a cooldown
+// period rather than permanently switching to SMTP.
 type pmtaComboSender struct {
-	apiSender  ESPSender
-	smtpSender ESPSender
-	useAPI     int32 // 1 = API works, -1 = API failed/skip, 0 = unknown
+	apiSender    ESPSender
+	smtpSender   ESPSender
+	useAPI       int32 // 1 = API works, -1 = API failed/cooldown, 0 = unknown
+	apiFailedAt  int64 // unix timestamp of last API failure
 }
 
+const apiRetryCooldown = 60 // seconds before retrying API after failure
+
 func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	if atomic.LoadInt32(&c.useAPI) >= 0 {
+	state := atomic.LoadInt32(&c.useAPI)
+
+	if state == -1 {
+		failedAt := atomic.LoadInt64(&c.apiFailedAt)
+		if time.Now().Unix()-failedAt > apiRetryCooldown {
+			atomic.StoreInt32(&c.useAPI, 0)
+			state = 0
+		}
+	}
+
+	if state >= 0 {
 		result, err := c.apiSender.Send(ctx, msg)
 		if err == nil {
 			atomic.StoreInt32(&c.useAPI, 1)
@@ -151,6 +165,7 @@ func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendRes
 		}
 		log.Printf("[PMTA-Combo] HTTP API failed (%v), falling back to SMTP", err)
 		atomic.StoreInt32(&c.useAPI, -1)
+		atomic.StoreInt64(&c.apiFailedAt, time.Now().Unix())
 	}
 	return c.smtpSender.Send(ctx, msg)
 }

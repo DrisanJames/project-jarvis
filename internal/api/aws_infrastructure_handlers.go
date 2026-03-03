@@ -89,7 +89,7 @@ func (h *AWSInfrastructureHandlers) ProvisionTrackingDomain(w http.ResponseWrite
 	var req ProvisionTrackingDomainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// Use default origin server if not provided
-		req.OriginServer = "api.ignitemailing.com"
+		req.OriginServer = "projectjarvis.io"
 	}
 
 	orgID := getOrgIDString(r)
