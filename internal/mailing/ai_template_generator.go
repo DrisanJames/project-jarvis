@@ -437,7 +437,7 @@ func (s *AIContentService) callClaudeForTemplates(ctx context.Context, prompt st
 // callOpenAIForTemplates generates email template variations via the OpenAI chat completions API.
 func (s *AIContentService) callOpenAIForTemplates(ctx context.Context, prompt string) ([]GeneratedVariation, error) {
 	reqBody := map[string]interface{}{
-		"model": "gpt-5.3-codex",
+		"model": "gpt-5.2",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
@@ -448,8 +448,8 @@ func (s *AIContentService) callOpenAIForTemplates(ctx context.Context, prompt st
 				"content": prompt,
 			},
 		},
-		"temperature": 0.7,
-		"max_tokens":  16000,
+		"temperature":          0.7,
+		"max_completion_tokens": 16000,
 	}
 
 	body, _ := json.Marshal(reqBody)
