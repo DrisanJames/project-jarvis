@@ -1186,7 +1186,7 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 <h2>SES-PMTA Relay Test</h2>
 <p>This message was sent from <strong>%s</strong> through PMTA relaying to AWS SES.</p>
 <p>Sent at: %s</p>
-<p>If you received this, the relay chain is working: <code>IGNITE → PMTA Bridge → PMTA → SES SMTP → Gmail</code></p>
+<p>If you received this, the relay chain is working: <code>IGNITE -&gt; PMTA Bridge -&gt; PMTA -&gt; SES SMTP -&gt; Gmail</code></p>
 </body></html>`, input.Domain, now))
 
 	// Look up PMTA bridge endpoint
