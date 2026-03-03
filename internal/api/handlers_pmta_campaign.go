@@ -1014,6 +1014,7 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 		SELECT COALESCE(api_endpoint,'') FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active' LIMIT 1
 	`, orgID).Scan(&bridgeEndpoint)
+	bridgeInject := "not_tested"
 	if bridgeEndpoint != "" {
 		client := &http.Client{Timeout: 5 * time.Second}
 		hc, _ := http.NewRequestWithContext(ctx, "GET", bridgeEndpoint+"/health", nil)
@@ -1024,6 +1025,18 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 			resp.Body.Close()
 			bridgeHealth = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)[:min(200, len(bodyBytes))])
 		}
+
+		// Test inject endpoint with a probe message
+		testPayload := `{"envelope_sender":"probe@em.discountblog.com","recipients":[{"email":"drisanjames@gmail.com"}],"content":"From: Probe <probe@em.discountblog.com>\r\nTo: drisanjames@gmail.com\r\nSubject: PMTA Bridge Probe\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nThis is a probe from Jarvis diagnostics."}`
+		injectReq, _ := http.NewRequestWithContext(ctx, "POST", bridgeEndpoint+"/api/inject/v1", strings.NewReader(testPayload))
+		injectReq.Header.Set("Content-Type", "application/json")
+		if resp, err := client.Do(injectReq); err != nil {
+			bridgeInject = "error: " + err.Error()
+		} else {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			bridgeInject = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)[:min(300, len(bodyBytes))])
+		}
 	}
 
 	respondJSON(w, 200, map[string]interface{}{
@@ -1031,5 +1044,6 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 		"queue_stats":     queueStats,
 		"bridge_endpoint": bridgeEndpoint,
 		"bridge_health":   bridgeHealth,
+		"bridge_inject":   bridgeInject,
 	})
 }
