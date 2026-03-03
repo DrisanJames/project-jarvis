@@ -664,7 +664,8 @@ func (a *smtpPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 // sendViaPMTAAPI sends email through PMTA's HTTP injection API (port 19000).
 // This avoids SMTP port blocking issues between AWS and OVH.
 // Endpoint: POST {api_endpoint}/api/inject/v1
-func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string) (map[string]interface{}, error) {
+// Optional extraHeaders inject additional RFC822 headers (e.g. X-Job for campaign tracking).
+func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, fromEmail, fromName, replyEmail, subject, htmlContent, textContent string, extraHeaders ...map[string]string) (map[string]interface{}, error) {
 	if apiEndpoint == "" {
 		return nil, fmt.Errorf("PMTA API endpoint not configured")
 	}
@@ -683,6 +684,11 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 	rfc822.WriteString("MIME-Version: 1.0\r\n")
 	if replyEmail != "" {
 		rfc822.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
+	}
+	for _, hdrs := range extraHeaders {
+		for k, v := range hdrs {
+			rfc822.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
 	}
 	rfc822.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
 	rfc822.WriteString("\r\n")
@@ -960,8 +966,8 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 // work without authentication and match the SendWorkerPool format.
 func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscriberID, emailID uuid.UUID) string {
 	trackingData := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
-	sig := signData(trackingData, svc.signingKey)
 	encoded := base64.URLEncoding.EncodeToString([]byte(trackingData))
+	sig := signData(encoded, svc.signingKey)[:16]
 
 	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`,
 		svc.trackingURL, encoded, sig)
@@ -983,8 +989,8 @@ func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscr
 		}
 
 		linkData := fmt.Sprintf("%s|%s", trackingData, originalURL)
-		linkSig := signData(linkData, svc.signingKey)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
+		linkSig := signData(linkEncoded, svc.signingKey)[:16]
 		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, svc.trackingURL, linkEncoded, linkSig)
 	})
 

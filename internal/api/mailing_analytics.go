@@ -20,7 +20,7 @@ func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r
 		SELECT DATE_TRUNC('hour', event_time) as hour,
 			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			   SUM(CASE WHEN event_type = 'bounced' THEN 1 ELSE 0 END) as bounces
+			   SUM(CASE WHEN event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces
 		FROM mailing_tracking_events
 		WHERE campaign_id = $1
 		GROUP BY DATE_TRUNC('hour', event_time)
@@ -136,7 +136,7 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 			   SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			   SUM(CASE WHEN event_type = 'bounced' THEN 1 ELSE 0 END) as bounces
+			   SUM(CASE WHEN event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces
 		FROM mailing_tracking_events
 		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY DATE(event_at)
@@ -453,7 +453,7 @@ func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWrite
 	rows, _ := s.db.QueryContext(ctx, `
 		SELECT COALESCE(bounce_type, 'unknown') as type, COUNT(*) as count
 		FROM mailing_tracking_events
-		WHERE event_type = 'bounced'
+		WHERE event_type IN ('hard_bounce', 'soft_bounce', 'bounced')
 		GROUP BY bounce_type
 		ORDER BY count DESC
 	`)
@@ -704,8 +704,8 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	// Hour-of-day performance
 	hourRows, _ := s.db.QueryContext(ctx, `
 		SELECT EXTRACT(HOUR FROM event_at) as hour,
-			   COUNT(*) FILTER (WHERE event_type = 'open') as opens,
-			   COUNT(*) FILTER (WHERE event_type = 'click') as clicks
+			   COUNT(*) FILTER (WHERE event_type = 'opened') as opens,
+			   COUNT(*) FILTER (WHERE event_type = 'clicked') as clicks
 		FROM mailing_tracking_events
 		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY EXTRACT(HOUR FROM event_at)
@@ -727,8 +727,8 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	// Day-of-week performance
 	dowRows, _ := s.db.QueryContext(ctx, `
 		SELECT EXTRACT(DOW FROM event_at) as dow,
-			   COUNT(*) FILTER (WHERE event_type = 'open') as opens,
-			   COUNT(*) FILTER (WHERE event_type = 'click') as clicks
+			   COUNT(*) FILTER (WHERE event_type = 'opened') as opens,
+			   COUNT(*) FILTER (WHERE event_type = 'clicked') as clicks
 		FROM mailing_tracking_events
 		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY EXTRACT(DOW FROM event_at)
@@ -833,7 +833,7 @@ func (s *AdvancedMailingService) HandleGetLLMLearningData(w http.ResponseWriter,
 	var bestDay string
 	s.db.QueryRowContext(ctx, `
 		SELECT EXTRACT(HOUR FROM event_at)::int as hour
-		FROM mailing_tracking_events WHERE event_type = 'open'
+		FROM mailing_tracking_events WHERE event_type = 'opened'
 		GROUP BY EXTRACT(HOUR FROM event_at)
 		ORDER BY COUNT(*) DESC LIMIT 1
 	`).Scan(&bestHour)
@@ -843,7 +843,7 @@ func (s *AdvancedMailingService) HandleGetLLMLearningData(w http.ResponseWriter,
 			WHEN 0 THEN 'Sunday' WHEN 1 THEN 'Monday' WHEN 2 THEN 'Tuesday'
 			WHEN 3 THEN 'Wednesday' WHEN 4 THEN 'Thursday' WHEN 5 THEN 'Friday'
 			WHEN 6 THEN 'Saturday' END
-		FROM mailing_tracking_events WHERE event_type = 'open'
+		FROM mailing_tracking_events WHERE event_type = 'opened'
 		GROUP BY EXTRACT(DOW FROM event_at)
 		ORDER BY COUNT(*) DESC LIMIT 1
 	`).Scan(&bestDay)
