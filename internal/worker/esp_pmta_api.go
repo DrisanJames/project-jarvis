@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/quotedprintable"
 	"net/http"
 	"strings"
 	"time"
@@ -81,14 +82,16 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	if msg.TextContent != "" {
 		rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		rfc822.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-		rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-		rfc822.WriteString(msg.TextContent)
+		rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		qpText := quotedprintableEncode(msg.TextContent)
+		rfc822.WriteString(qpText)
 		rfc822.WriteString("\r\n")
 	}
 	rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	rfc822.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-	rfc822.WriteString(msg.HTMLContent)
+	rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	qpHTML := quotedprintableEncode(msg.HTMLContent)
+	rfc822.WriteString(qpHTML)
 	rfc822.WriteString("\r\n")
 	rfc822.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
@@ -98,12 +101,18 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		"content":         rfc822.String(),
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
+	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
+		payload["vmta"] = vmta
+	}
+
+	var body bytes.Buffer
+	enc := json.NewEncoder(&body)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
 		return nil, fmt.Errorf("marshal PMTA payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", injectURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", injectURL, &body)
 	if err != nil {
 		return nil, fmt.Errorf("create PMTA request: %w", err)
 	}
@@ -122,4 +131,12 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 
 	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", msg.Email, injectURL, messageID, resp.StatusCode)
 	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now()}, nil
+}
+
+func quotedprintableEncode(s string) string {
+	var buf bytes.Buffer
+	w := quotedprintable.NewWriter(&buf)
+	w.Write([]byte(s))
+	w.Close()
+	return buf.String()
 }

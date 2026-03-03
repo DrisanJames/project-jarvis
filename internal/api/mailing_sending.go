@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -497,14 +498,14 @@ func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port in
 	if textContent != "" {
 		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-		msg.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-		msg.WriteString(textContent)
+		msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		msg.WriteString(qpEncode(textContent))
 		msg.WriteString("\r\n")
 	}
 	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	msg.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-	msg.WriteString(htmlContent)
+	msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	msg.WriteString(qpEncode(htmlContent))
 	msg.WriteString("\r\n")
 	msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
@@ -629,14 +630,14 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 	if textContent != "" {
 		rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		rfc822.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-		rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-		rfc822.WriteString(textContent)
+		rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		rfc822.WriteString(qpEncode(textContent))
 		rfc822.WriteString("\r\n")
 	}
 	rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	rfc822.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	rfc822.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-	rfc822.WriteString(htmlContent)
+	rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	rfc822.WriteString(qpEncode(htmlContent))
 	rfc822.WriteString("\r\n")
 	rfc822.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
@@ -647,12 +648,22 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 		"content":         rfc822.String(),
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
+	// Pass vmta in the JSON payload so PMTA routes to the correct pool
+	for _, hdrs := range extraHeaders {
+		if vmta, ok := hdrs["X-Virtual-MTA"]; ok && vmta != "" {
+			payload["vmta"] = vmta
+			break
+		}
+	}
+
+	var body bytes.Buffer
+	enc := json.NewEncoder(&body)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
 		return nil, fmt.Errorf("marshal PMTA payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", injectURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", injectURL, &body)
 	if err != nil {
 		return nil, fmt.Errorf("create PMTA request: %w", err)
 	}
@@ -954,4 +965,12 @@ func (svc *MailingService) HandleThrottleConfig(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(svc.throttler.GetStatus())
+}
+
+func qpEncode(s string) string {
+	var buf bytes.Buffer
+	w := quotedprintable.NewWriter(&buf)
+	w.Write([]byte(s))
+	w.Close()
+	return buf.String()
 }
