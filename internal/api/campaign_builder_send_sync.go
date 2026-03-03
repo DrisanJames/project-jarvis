@@ -360,7 +360,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
-	_, updateErr := cb.db.ExecContext(bgCtx, `
+	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
 		SET status = $1, sent_count = $2, completed_at = NOW(), updated_at = NOW()
 		WHERE id = $3
@@ -369,7 +369,11 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
 	} else {
-		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s", id, sent, failed, finalStatus)
+		rowsAffected, _ := updateResult.RowsAffected()
+		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows_affected=%d", id, sent, failed, finalStatus, rowsAffected)
+		if rowsAffected == 0 {
+			log.Printf("WARNING: campaign %s update affected 0 rows — verify id exists in mailing_campaigns", id)
+		}
 	}
 	
 	// Update profile usage
