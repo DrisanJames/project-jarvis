@@ -448,9 +448,7 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	rows, err := svc.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("Error querying tracking events: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": "database error", "_detail": err.Error()})
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()

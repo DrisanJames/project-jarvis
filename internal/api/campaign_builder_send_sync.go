@@ -289,9 +289,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			sent++
 
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, event_type, event_at)
-				VALUES ($1, $2, $3, 'sent', NOW())
-			`, emailID, campUUID, sub.ID)
+				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at)
+				VALUES ($1, $2, $3, $4, 'sent', NOW())
+			`, emailID, orgID, campUUID, sub.ID)
 
 			// Bootstrap inbox profile for this recipient
 			recipientDomain := ""
@@ -333,9 +333,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 
 			// Record bounce tracking event
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
-				VALUES ($1, $2, $3, $4, $5, $6, NOW())
-			`, uuid.New(), campUUID, sub.ID, eventType, string(bounceType), sendErr.Error())
+				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			`, uuid.New(), orgID, campUUID, sub.ID, eventType, string(bounceType), sendErr.Error())
 
 			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
 				cb.mailingSvc.onTrackingEvent(campUUID.String(), eventType, sub.Email, ispGroup)
@@ -359,20 +359,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Use background context for final update to avoid cancellation issues
 	bgCtx := context.Background()
 	
-	// Diagnostic: list check constraints on the table
-	var constraints []string
-	rows, qErr := cb.db.QueryContext(bgCtx, `SELECT con.conname || ': ' || pg_get_constraintdef(con.oid) FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid WHERE rel.relname = 'mailing_campaigns' AND con.contype = 'c'`)
-	if qErr == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var c string
-			rows.Scan(&c)
-			constraints = append(constraints, c)
-		}
-	}
-
-	var dbDiag string
-	updateResult, updateErr := cb.db.ExecContext(bgCtx, `
+	_, updateErr := cb.db.ExecContext(bgCtx, `
 		UPDATE mailing_campaigns 
 		SET status = $1, sent_count = $2, completed_at = NOW(), updated_at = NOW()
 		WHERE id = $3
@@ -380,15 +367,8 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	
 	if updateErr != nil {
 		log.Printf("ERROR updating campaign %s to status %s: %v", id, finalStatus, updateErr)
-		dbDiag = fmt.Sprintf("err: %v | constraints: %v", updateErr, constraints)
 	} else {
-		rowsAffected, _ := updateResult.RowsAffected()
-		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s, rows=%d", id, sent, failed, finalStatus, rowsAffected)
-		if rowsAffected == 0 {
-			dbDiag = fmt.Sprintf("0 rows affected for id=%s | constraints: %v", id, constraints)
-		} else {
-			dbDiag = fmt.Sprintf("ok: %d rows | constraints: %v", rowsAffected, constraints)
-		}
+		log.Printf("Campaign %s completed: sent=%d, failed=%d, final_status=%s", id, sent, failed, finalStatus)
 	}
 	
 	// Update profile usage
@@ -409,7 +389,6 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		"total_targeted": len(subscribers),
 		"vendor":         profile.VendorType,
 		"throttle_speed": campaign.ThrottleSpeed,
-		"_db_diag":       dbDiag,
 	})
 }
 
