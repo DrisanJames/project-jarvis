@@ -53,7 +53,7 @@ interface Campaign {
   id: string;
   name: string;
   subject: string;
-  status: 'draft' | 'scheduled' | 'preparing' | 'sending' | 'paused' | 'completed' | 'completed_with_errors' | 'cancelled' | 'failed';
+  status: 'draft' | 'scheduled' | 'preparing' | 'sending' | 'paused' | 'sent' | 'completed' | 'completed_with_errors' | 'cancelled' | 'failed';
   total_recipients: number;
   sent_count: number;
   open_count: number;
@@ -86,7 +86,7 @@ const canEditCampaign = (campaign: Campaign): boolean => {
   if (campaign.status === 'draft') return true;
   
   // Cannot edit preparing, sending, completed, cancelled, failed
-  if (['preparing', 'sending', 'completed', 'completed_with_errors', 'cancelled', 'failed', 'paused'].includes(campaign.status)) {
+  if (['preparing', 'sending', 'sent', 'completed', 'completed_with_errors', 'cancelled', 'failed', 'paused'].includes(campaign.status)) {
     return false;
   }
   
@@ -212,6 +212,7 @@ const StatusBadge: React.FC<{ status: Campaign['status'] }> = ({ status }) => {
     preparing: { icon: faClock, label: 'Preparing', className: 'status-preparing' },
     sending: { icon: faSpinner, label: 'Sending', className: 'status-sending' },
     paused: { icon: faPause, label: 'Paused', className: 'status-paused' },
+    sent: { icon: faCheckCircle, label: 'Sent', className: 'status-completed' },
     completed: { icon: faCheckCircle, label: 'Completed', className: 'status-completed' },
     completed_with_errors: { icon: faExclamationTriangle, label: 'Completed w/ Errors', className: 'status-warning' },
     cancelled: { icon: faTimesCircle, label: 'Cancelled', className: 'status-cancelled' },
@@ -2158,7 +2159,7 @@ export const CampaignPortal: React.FC<{
         draft_count: allCampaigns.filter(c => c.status === 'draft').length,
         scheduled_count: allCampaigns.filter(c => c.status === 'scheduled').length,
         sending_count: allCampaigns.filter(c => c.status === 'sending').length,
-        completed_count: allCampaigns.filter(c => c.status === 'completed' || c.status === 'completed_with_errors').length,
+        completed_count: allCampaigns.filter(c => c.status === 'sent' || c.status === 'completed' || c.status === 'completed_with_errors').length,
         total_sent: allCampaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0),
         total_opens: allCampaigns.reduce((sum, c) => sum + (c.open_count || 0), 0),
         total_clicks: allCampaigns.reduce((sum, c) => sum + (c.click_count || 0), 0),

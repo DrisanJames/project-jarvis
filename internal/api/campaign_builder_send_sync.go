@@ -350,11 +350,11 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	}
 	
 	// Update campaign completion
-	finalStatus := "completed"
+	// Use 'sent' / 'cancelled' to match the DB CHECK constraint
+	// (the inline constraint from migration 001 only allows: draft, scheduled, sending, paused, sent, cancelled)
+	finalStatus := "sent"
 	if failed > 0 && sent == 0 {
-		finalStatus = "failed"
-	} else if failed > 0 {
-		finalStatus = "completed_with_errors"
+		finalStatus = "cancelled"
 	}
 	
 	// Use background context for final update to avoid cancellation issues
