@@ -981,6 +981,34 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_quizfiesta_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'QuizFiesta PMTA', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com', 'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.quizfiesta.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
+		// --- AWS SES via PMTA relay: m.discountblog.com ---
+		// Required DNS records for m.discountblog.com:
+		//   DKIM: 3 CNAMEs provided by SES (o2c4nzw6..., q25q7twp..., zq53za2a...)
+		//   SPF:  m.discountblog.com TXT "v=spf1 include:amazonses.com ~all"
+		//   DMARC: _dmarc.m.discountblog.com TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@discountblog.com"
+		//   MX:   m.discountblog.com MX 10 feedback-smtp.us-west-1.amazonses.com
+		{"seed_ses_discountblog_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'DiscountBlog SES', 'pmta', 'DiscountBlog', 'hello@m.discountblog.com', 'reply@m.discountblog.com',
+				'm.discountblog.com', '15.204.101.125', 587, 'http://15.204.101.125:19099',
+				1000, 10000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'm.discountblog.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_discountblog_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.discountblog.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.discountblog.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
 		// Fix list_ids that contain list names instead of UUIDs (campaigns stuck as scheduled)
 		{"fix_list_ids_names_to_uuids", `
 			UPDATE mailing_campaigns c

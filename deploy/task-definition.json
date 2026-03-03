@@ -28,7 +28,10 @@
                 {"name": "IGNITE_S3_PREFIX", "value": "ignite/knowledge/"},
                 {"name": "TRACKING_URL", "value": "http://ignite-upside-down-alb-349670800.us-east-1.elb.amazonaws.com"},
                 {"name": "TRACKING_SECRET", "value": "ignite-tracking-prod-2026"},
-                {"name": "DEV_MODE", "value": "false"}
+                {"name": "DEV_MODE", "value": "false"},
+                {"name": "SES_SMTP_USER", "value": "${SES_SMTP_USER}"},
+                {"name": "SES_SMTP_SECRET", "value": "${SES_SMTP_SECRET}"},
+                {"name": "SES_REGION", "value": "us-west-1"}
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",

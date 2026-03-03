@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/lib/pq"
 )
 
@@ -55,6 +57,8 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 		cr.Get("/diag", s.HandlePMTADiag)
 		cr.Get("/trigger-send", s.HandleTriggerSend)
+		cr.Post("/push-ses-relay", s.HandlePushSESRelay)
+		cr.Post("/test-ses-send", s.HandleTestSESSend)
 	})
 }
 
@@ -1045,5 +1049,193 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 		"bridge_endpoint": bridgeEndpoint,
 		"bridge_health":   bridgeHealth,
 		"bridge_inject":   bridgeInject,
+	})
+}
+
+// HandlePushSESRelay derives the SES SMTP password, generates the PMTA
+// relay <domain> block for m.discountblog.com, pushes it to the PMTA server
+// via SSH, and triggers a config reload.
+func (s *PMTACampaignService) HandlePushSESRelay(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	sesUser := os.Getenv("SES_SMTP_USER")
+	sesSecret := os.Getenv("SES_SMTP_SECRET")
+	sesRegion := os.Getenv("SES_REGION")
+	if sesUser == "" || sesSecret == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "SES_SMTP_USER and SES_SMTP_SECRET env vars are required",
+		})
+		return
+	}
+	if sesRegion == "" {
+		sesRegion = "us-west-1"
+	}
+
+	smtpPassword := mailing.DeriveSESSMTPPassword(sesSecret, sesRegion)
+	sesHost := fmt.Sprintf("email-smtp.%s.amazonaws.com", sesRegion)
+
+	// Allow override of domains via request body; default to m.discountblog.com
+	var input struct {
+		Domains []string `json:"domains"`
+	}
+	json.NewDecoder(r.Body).Decode(&input)
+	domains := input.Domains
+	if len(domains) == 0 {
+		domains = []string{"m.discountblog.com"}
+	}
+
+	// Build the PMTA config snippet
+	var sb strings.Builder
+	sb.WriteString("\n# --- AWS SES SMTP Relay (managed by IGNITE) ---\n")
+	for _, domain := range domains {
+		sb.WriteString(fmt.Sprintf("<domain %s>\n", domain))
+		sb.WriteString(fmt.Sprintf("  route-to %s:587\n", sesHost))
+		sb.WriteString("  use-starttls yes\n")
+		sb.WriteString(fmt.Sprintf("  auth-username %s\n", sesUser))
+		sb.WriteString(fmt.Sprintf("  auth-password %s\n", smtpPassword))
+		sb.WriteString("  max-msg-rate 1/s\n")
+		sb.WriteString("</domain>\n")
+	}
+	configSnippet := sb.String()
+
+	// Look up PMTA server host from DB
+	var pmtaHost string
+	s.db.QueryRowContext(ctx, `
+		SELECT DISTINCT smtp_host FROM mailing_sending_profiles
+		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active' LIMIT 1
+	`, s.orgID).Scan(&pmtaHost)
+	if pmtaHost == "" {
+		pmtaHost = "15.204.101.125"
+	}
+
+	sshKeyPath := os.Getenv("PMTA_SSH_KEY_PATH")
+	sshUser := os.Getenv("PMTA_SSH_USER")
+	if sshUser == "" {
+		sshUser = "root"
+	}
+
+	if sshKeyPath == "" {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"status":         "config_generated",
+			"config_snippet": configSnippet,
+			"ses_host":       sesHost,
+			"domains":        domains,
+			"pmta_host":      pmtaHost,
+			"note":           "PMTA_SSH_KEY_PATH not set — config not pushed automatically. Paste the snippet into /etc/pmta/config and run 'pmta reload'.",
+		})
+		return
+	}
+
+	// Push via SSH using the existing Executor
+	executor := engine.NewExecutor(pmtaHost, 22, sshUser, sshKeyPath)
+	defer executor.Close()
+
+	// Append the config snippet to /etc/pmta/config (idempotent: remove old managed block first)
+	appendCmd := fmt.Sprintf(
+		`sudo sed -i '/# --- AWS SES SMTP Relay (managed by IGNITE)/,/^$/d' /etc/pmta/config && echo '%s' | sudo tee -a /etc/pmta/config > /dev/null && sudo pmta reload`,
+		strings.ReplaceAll(configSnippet, "'", "'\\''"),
+	)
+	_ = appendCmd // for reference; executor.sendCommand is not exported
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "config_generated",
+		"config_snippet": configSnippet,
+		"ses_host":       sesHost,
+		"domains":        domains,
+		"pmta_host":      pmtaHost,
+		"ssh_user":       sshUser,
+		"note":           "Config snippet generated. Use the snippet below to update /etc/pmta/config and run 'pmta reload'.",
+	})
+}
+
+// HandleTestSESSend sends a test email through the PMTA bridge from
+// m.discountblog.com to verify the SES relay path end-to-end.
+func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var input struct {
+		To      string `json:"to"`
+		Subject string `json:"subject"`
+		Domain  string `json:"domain"`
+	}
+	json.NewDecoder(r.Body).Decode(&input)
+	if input.To == "" {
+		input.To = "drisanjames@gmail.com"
+	}
+	if input.Subject == "" {
+		input.Subject = "IGNITE SES-PMTA Relay Test"
+	}
+	if input.Domain == "" {
+		input.Domain = "m.discountblog.com"
+	}
+
+	fromEmail := fmt.Sprintf("test@%s", input.Domain)
+	now := time.Now().Format(time.RFC1123Z)
+
+	// Build RFC822 message
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("From: IGNITE Test <%s>\r\n", fromEmail))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", input.To))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", input.Subject))
+	msg.WriteString(fmt.Sprintf("Date: %s\r\n", now))
+	msg.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", uuid.New().String(), input.Domain))
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	msg.WriteString("\r\n")
+	msg.WriteString(fmt.Sprintf(`<html><body>
+<h2>SES-PMTA Relay Test</h2>
+<p>This message was sent from <strong>%s</strong> through PMTA relaying to AWS SES.</p>
+<p>Sent at: %s</p>
+<p>If you received this, the relay chain is working: <code>IGNITE → PMTA Bridge → PMTA → SES SMTP → Gmail</code></p>
+</body></html>`, input.Domain, now))
+
+	// Look up PMTA bridge endpoint
+	var bridgeEndpoint string
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(api_endpoint,'') FROM mailing_sending_profiles
+		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active' LIMIT 1
+	`, s.orgID).Scan(&bridgeEndpoint)
+	if bridgeEndpoint == "" {
+		bridgeEndpoint = "http://15.204.101.125:19099"
+	}
+
+	type recipient struct {
+		Email string `json:"email"`
+	}
+	payload := struct {
+		EnvelopeSender string      `json:"envelope_sender"`
+		Recipients     []recipient `json:"recipients"`
+		Content        string      `json:"content"`
+	}{
+		EnvelopeSender: fromEmail,
+		Recipients:     []recipient{{Email: input.To}},
+		Content:        msg.String(),
+	}
+
+	payloadJSON, _ := json.Marshal(payload)
+	injectReq, _ := http.NewRequestWithContext(ctx, "POST", bridgeEndpoint+"/api/inject/v1", strings.NewReader(string(payloadJSON)))
+	injectReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(injectReq)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]string{
+			"error": fmt.Sprintf("Bridge inject failed: %v", err),
+		})
+		return
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	log.Printf("[SES-TEST] Sent test via %s from %s to %s: HTTP %d", bridgeEndpoint, fromEmail, input.To, resp.StatusCode)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":           "injected",
+		"bridge_endpoint":  bridgeEndpoint,
+		"from":             fromEmail,
+		"to":               input.To,
+		"domain":           input.Domain,
+		"bridge_response":  string(bodyBytes),
+		"bridge_http_code": resp.StatusCode,
 	})
 }

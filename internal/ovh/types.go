@@ -72,6 +72,14 @@ type ProvisionConfig struct {
 	MgmtPort    int
 	MgmtAPIKey  string
 	Interface   string // Network interface for failover IPs (default: eth0)
+
+	// SES relay: when set, PMTA routes mail for SESRelayDomains through
+	// the SES SMTP endpoint instead of delivering directly.
+	SESRelayHost     string   // e.g. "email-smtp.us-west-1.amazonaws.com"
+	SESRelayPort     int      // 587 (STARTTLS)
+	SESRelayUser     string   // IAM access key ID
+	SESRelayPassword string   // Derived SES SMTP password
+	SESRelayDomains  []string // Envelope-sender domains routed through SES
 }
 
 // ProvisionResult tracks setup status.

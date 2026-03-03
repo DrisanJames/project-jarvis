@@ -231,6 +231,24 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 		sb.WriteString("</virtual-mta-pool>\n")
 	}
 
+	// SES relay: route specific sender domains through Amazon SES SMTP
+	if cfg.SESRelayHost != "" && len(cfg.SESRelayDomains) > 0 {
+		port := cfg.SESRelayPort
+		if port == 0 {
+			port = 587
+		}
+		sb.WriteString("\n# --- AWS SES SMTP Relay ---\n")
+		for _, domain := range cfg.SESRelayDomains {
+			sb.WriteString(fmt.Sprintf("<domain %s>\n", domain))
+			sb.WriteString(fmt.Sprintf("  route-to %s:%d\n", cfg.SESRelayHost, port))
+			sb.WriteString("  use-starttls yes\n")
+			sb.WriteString(fmt.Sprintf("  auth-username %s\n", cfg.SESRelayUser))
+			sb.WriteString(fmt.Sprintf("  auth-password %s\n", cfg.SESRelayPassword))
+			sb.WriteString("  max-msg-rate 1/s\n")
+			sb.WriteString(fmt.Sprintf("</%s>\n", "domain"))
+		}
+	}
+
 	// Accounting
 	sb.WriteString("\n# --- Accounting ---\n")
 	sb.WriteString("<acct-file /var/log/pmta/acct.csv>\n")

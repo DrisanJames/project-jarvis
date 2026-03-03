@@ -31,12 +31,30 @@ func signData(data, key string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// verifySig checks that the HMAC-SHA256 signature (truncated to 16 hex
+// chars, matching send_worker.trackSign) is valid for the given data.
+// Returns true when verification passes OR when no signing key is configured.
+func (svc *MailingService) verifySig(encoded, sig string) bool {
+	if svc.signingKey == "" || sig == "" {
+		return true
+	}
+	expected := signData(encoded, svc.signingKey)[:16]
+	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
 // ========== REAL-TIME TRACKING HANDLERS ==========
 
 // HandleTrackOpen records an email open event
 func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
+	sig := chi.URLParam(r, "sig")
+
+	if sig != "" && !svc.verifySig(encoded, sig) {
+		log.Printf("TRACK OPEN: invalid signature for data=%s", encoded[:min(32, len(encoded))])
+		svc.serveTrackingPixel(w)
+		return
+	}
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -102,6 +120,13 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
+	sig := chi.URLParam(r, "sig")
+
+	if sig != "" && !svc.verifySig(encoded, sig) {
+		log.Printf("TRACK CLICK: invalid signature for data=%s", encoded[:min(32, len(encoded))])
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -167,6 +192,13 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
+	sig := chi.URLParam(r, "sig")
+
+	if sig != "" && !svc.verifySig(encoded, sig) {
+		log.Printf("TRACK UNSUB: invalid signature for data=%s", encoded[:min(32, len(encoded))])
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
