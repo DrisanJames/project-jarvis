@@ -616,14 +616,12 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	}
 
 	espQuotas, _ := json.Marshal(map[string]interface{}{
-		"target_isps":       input.TargetISPs,
-		"sending_domain":    input.SendingDomain,
-		"throttle_strategy": input.ThrottleStrategy,
+		"target_isps":        input.TargetISPs,
+		"sending_domain":     input.SendingDomain,
+		"throttle_strategy":  input.ThrottleStrategy,
+		"isp_quotas":         input.ISPQuotas,
+		"randomize_audience": input.RandomizeAudience,
 	})
-	ispQuotasJSON, _ := json.Marshal(struct {
-		Quotas    []engine.ISPQuota `json:"quotas"`
-		Randomize bool              `json:"randomize"`
-	}{Quotas: input.ISPQuotas, Randomize: input.RandomizeAudience})
 	inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.InclusionLists)
 	exclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.ExclusionLists)
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
@@ -633,18 +631,18 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status, scheduled_at,
 			from_name, from_email, reply_to, subject, preview_text, html_content,
-			sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids,
+			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
 			send_type, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, 'scheduled', $4,
 			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15,
+			$11, $12, $13, $14,
 			'blast', NOW(), NOW()
 		)
 	`, campaignID, orgID, input.Name, scheduledAt,
 		resolvedFromName, resolvedFromEmail, replyTo,
 		input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-		profileID, espQuotas, ispQuotasJSON, inclusionListsJSON, suppressionListsJSON,
+		profileID, espQuotas, inclusionListsJSON, suppressionListsJSON,
 	)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

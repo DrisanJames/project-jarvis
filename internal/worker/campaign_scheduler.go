@@ -317,7 +317,7 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			max_recipients, COALESCE(ai_send_time_optimization, false),
 			COALESCE(list_ids::text, '[]'),
 			COALESCE(suppression_list_ids::text, '[]'),
-			COALESCE(isp_quotas::text, '{}')
+			COALESCE(esp_quotas::text, '{}')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
 		  AND COALESCE(scheduled_at, send_at) <= NOW()
@@ -847,18 +847,18 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		return 0, fmt.Errorf("failed to prepare COPY: %w", err)
 	}
 
-	// Parse ISP quotas and randomization from campaign JSONB
-	var qCfg ispQuotaConfig
+	// Parse ISP quotas and randomization from esp_quotas JSONB
+	var qCfg espQuotaConfig
 	if campaign.ISPQuotasJSON != "" && campaign.ISPQuotasJSON != "{}" {
 		json.Unmarshal([]byte(campaign.ISPQuotasJSON), &qCfg)
 	}
 	quotaMap := make(map[string]int)
-	for _, q := range qCfg.Quotas {
+	for _, q := range qCfg.ISPQuotas {
 		if q.Volume > 0 {
 			quotaMap[q.ISP] = q.Volume
 		}
 	}
-	if qCfg.Randomize && len(subscribers) > 1 {
+	if qCfg.RandomizeAudience && len(subscribers) > 1 {
 		rand.Shuffle(len(subscribers), func(i, j int) { subscribers[i], subscribers[j] = subscribers[j], subscribers[i] })
 		log.Printf("[CampaignScheduler] Shuffled %d subscribers for campaign %s (randomize=true)", len(subscribers), campaign.ID)
 	}
@@ -1299,13 +1299,14 @@ func (cs *CampaignScheduler) newContext() (context.Context, context.CancelFunc) 
 	return context.WithCancel(context.Background())
 }
 
-// ispQuotaConfig is the parsed form of the isp_quotas JSONB column.
-type ispQuotaConfig struct {
-	Quotas    []struct {
+// espQuotaConfig is the parsed form of the esp_quotas JSONB column,
+// which includes ISP quotas and randomization settings.
+type espQuotaConfig struct {
+	ISPQuotas []struct {
 		ISP    string `json:"isp"`
 		Volume int    `json:"volume"`
-	} `json:"quotas"`
-	Randomize bool `json:"randomize"`
+	} `json:"isp_quotas"`
+	RandomizeAudience bool `json:"randomize_audience"`
 }
 
 // schedulerISPMap maps common email domains to ISP identifiers for quota enforcement.
