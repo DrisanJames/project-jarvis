@@ -188,13 +188,13 @@
 }
 
 .hero-stat-card.primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  color: white;
+  background: rgba(0, 200, 255, 0.04);
+  border: 1px solid rgba(0, 200, 255, 0.1);
 }
 
 .hero-stat-card.optizmo {
-  background: linear-gradient(135deg, #00b0ff 0%, #0080cc 100%);
-  color: white;
+  background: rgba(0, 176, 255, 0.04);
+  border: 1px solid rgba(0, 176, 255, 0.1);
 }
 
 .hero-stat-icon {
@@ -204,9 +204,12 @@
   color: #00e5ff;
 }
 
-.hero-stat-card.primary .hero-stat-icon,
+.hero-stat-card.primary .hero-stat-icon {
+  color: rgba(0, 229, 255, 0.4);
+}
+
 .hero-stat-card.optizmo .hero-stat-icon {
-  color: white;
+  color: rgba(0, 176, 255, 0.4);
 }
 
 .hero-stat-content {
@@ -222,7 +225,7 @@
 
 .hero-stat-card.primary .hero-stat-value,
 .hero-stat-card.optizmo .hero-stat-value {
-  color: white;
+  color: #e0e6f0;
 }
 
 .hero-stat-label {
@@ -245,9 +248,12 @@
   opacity: 1;
 }
 
-.hero-stat-card.primary .hero-stat-trend.positive,
+.hero-stat-card.primary .hero-stat-trend.positive {
+  color: #00b894;
+}
+
 .hero-stat-card.optizmo .hero-stat-trend {
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(180, 210, 240, 0.65);
 }
 
 /* Dashboard Sections */
@@ -289,13 +295,15 @@
 }
 
 .quick-action-btn.primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  border: none;
-  color: white;
+  background: rgba(0, 229, 255, 0.08);
+  border: 1px solid rgba(0, 229, 255, 0.15);
+  color: #00e5ff;
 }
 
 .quick-action-btn.primary:hover {
-  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.4);
+  background: rgba(0, 229, 255, 0.12);
+  border-color: rgba(0, 229, 255, 0.25);
+  box-shadow: 0 4px 16px rgba(0, 229, 255, 0.08);
 }
 
 .quick-action-btn.optizmo {
@@ -304,9 +312,8 @@
 }
 
 .quick-action-btn.optizmo:hover {
-  background: linear-gradient(135deg, #00b0ff 0%, #0080cc 100%);
-  border-color: transparent;
-  color: white;
+  background: rgba(0, 176, 255, 0.08);
+  border-color: rgba(0, 176, 255, 0.2);
 }
 
 .qa-icon {
@@ -706,8 +713,8 @@
 .how-step-number {
   width: 28px;
   height: 28px;
-  background: linear-gradient(135deg, #00e5ff, #0091ea);
-  color: #0a0f1a;
+  background: rgba(0, 229, 255, 0.1);
+  color: #00e5ff;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1704,9 +1711,9 @@
 
 .btn-primary {
   padding: 12px 24px;
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  color: #0a0f1a;
-  border: none;
+  background: rgba(0, 229, 255, 0.08);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.15);
   border-radius: 8px;
   font-size: 14px;
   font-weight: 600;

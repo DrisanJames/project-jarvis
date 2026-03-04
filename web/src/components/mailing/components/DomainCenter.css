@@ -18,7 +18,7 @@
   gap: 8px;
   padding: 14px 24px;
   background: #0a1628;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(0, 200, 255, 0.08);
 }
 
 .domain-breadcrumb button {
@@ -96,8 +96,8 @@
 }
 
 .domain-hero-card {
-  background: #1a1a2e;
-  border: 1px solid rgba(255,255,255,0.06);
+  background: #0d1526;
+  border: 1px solid rgba(0, 200, 255, 0.08);
   border-radius: 12px;
   padding: 20px;
   display: flex;
@@ -108,9 +108,9 @@
 }
 
 .domain-hero-card:hover {
-  border-color: rgba(116,185,255,0.2);
+  border-color: rgba(0, 200, 255, 0.15);
   transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  box-shadow: 0 4px 20px rgba(0, 200, 255, 0.06);
 }
 
 .domain-hero-card.primary {
@@ -224,8 +224,8 @@
 }
 
 .domain-action-card {
-  background: #1a1a2e;
-  border: 1px solid rgba(255,255,255,0.06);
+  background: #0d1526;
+  border: 1px solid rgba(0, 200, 255, 0.08);
   border-radius: 12px;
   padding: 20px;
   cursor: pointer;
@@ -330,8 +330,8 @@
 .domain-search-input {
   width: 100%;
   padding: 11px 38px 11px 40px;
-  background: #1a1a2e;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0d1526;
+  border: 1px solid rgba(0, 200, 255, 0.08);
   border-radius: 10px;
   color: #e0e0e0;
   font-size: 14px;
@@ -543,15 +543,15 @@
 }
 
 .domain-summary-item {
-  background: #1a1a2e;
-  border: 1px solid rgba(255,255,255,0.06);
+  background: #0d1526;
+  border: 1px solid rgba(0, 200, 255, 0.08);
   border-radius: 10px;
   padding: 16px;
   transition: all 0.2s;
 }
 
 .domain-summary-item:hover {
-  border-color: rgba(255,255,255,0.12);
+  border-color: rgba(0, 200, 255, 0.15);
 }
 
 .domain-summary-name {
