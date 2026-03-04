@@ -3,8 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 // HandleSendTestEmail sends a test email through the selected ESP profile
@@ -264,23 +269,27 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(result)
 }
 
-// HandleSendTransactional sends a single transactional email (verification,
-// notification, etc.) through the configured sending profile. Unlike send-test,
-// this records a tracking event and supports tags for analytics.
+// HandleSendTransactional sends a single transactional email through the full
+// Liquid rendering pipeline — personalization, tracking pixel injection, link
+// rewriting, unsubscribe URL generation, and preheader injection. Unlike
+// send-test (raw passthrough), this endpoint produces campaign-grade emails
+// suitable for verification, deal notifications, and other triggered sends.
 func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var input struct {
-		To               string   `json:"to"`
-		Subject          string   `json:"subject"`
-		FromName         string   `json:"from_name"`
-		FromEmail        string   `json:"from_email"`
-		ReplyEmail       string   `json:"reply_email"`
-		HTMLContent      string   `json:"html_content"`
-		TextContent      string   `json:"text_content"`
-		SendingProfileID *string  `json:"sending_profile_id"`
-		ListID           *string  `json:"list_id"`
-		Tags             []string `json:"tags"`
+		To               string                 `json:"to"`
+		Subject          string                 `json:"subject"`
+		PreviewText      string                 `json:"preview_text"`
+		FromName         string                 `json:"from_name"`
+		FromEmail        string                 `json:"from_email"`
+		ReplyEmail       string                 `json:"reply_email"`
+		HTMLContent      string                 `json:"html_content"`
+		TextContent      string                 `json:"text_content"`
+		SendingProfileID *string                `json:"sending_profile_id"`
+		ListID           *string                `json:"list_id"`
+		Tags             []string               `json:"tags"`
+		MergeData        map[string]interface{} `json:"merge_data"`
 	}
 	json.NewDecoder(r.Body).Decode(&input)
 
@@ -289,48 +298,155 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Delegate to the test sender (same routing logic)
-	// Build a synthetic request body for HandleSendTestEmail
-	testBody := map[string]interface{}{
-		"to":      input.To,
-		"subject": input.Subject,
-	}
-	if input.FromName != "" {
-		testBody["from_name"] = input.FromName
-	}
-	if input.FromEmail != "" {
-		testBody["from_email"] = input.FromEmail
-	}
-	if input.ReplyEmail != "" {
-		testBody["reply_email"] = input.ReplyEmail
-	}
-	if input.HTMLContent != "" {
-		testBody["html_content"] = input.HTMLContent
-	}
-	if input.TextContent != "" {
-		testBody["text_content"] = input.TextContent
-	}
-	if input.SendingProfileID != nil {
-		testBody["sending_profile_id"] = *input.SendingProfileID
-	}
-	bodyBytes, _ := json.Marshal(testBody)
+	email := strings.ToLower(strings.TrimSpace(input.To))
+	orgID, _ := GetOrgIDFromRequest(r)
 
-	// Use a response recorder to capture the send-test result
+	// ── Build Liquid render context ──
+	rc := make(map[string]interface{})
+
+	// Look up subscriber data if they exist in the system
+	var firstName, lastName, customFieldsJSON string
+	svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(custom_fields::text,'{}')
+		FROM mailing_subscribers WHERE LOWER(email) = $1 LIMIT 1
+	`, email).Scan(&firstName, &lastName, &customFieldsJSON)
+
+	rc["first_name"] = firstName
+	rc["last_name"] = lastName
+	rc["email"] = email
+	rc["full_name"] = strings.TrimSpace(firstName + " " + lastName)
+	if parts := strings.SplitN(email, "@", 2); len(parts) == 2 {
+		rc["email_local"] = parts[0]
+		rc["email_domain"] = parts[1]
+	}
+
+	// Custom fields from subscriber record
+	var customFields map[string]interface{}
+	json.Unmarshal([]byte(customFieldsJSON), &customFields)
+	if customFields == nil {
+		customFields = make(map[string]interface{})
+	}
+	rc["custom"] = customFields
+
+	// Merge data from the request (caller-provided overrides)
+	if input.MergeData != nil {
+		for k, v := range input.MergeData {
+			rc[k] = v
+		}
+	}
+
+	// System fields
+	now := time.Now()
+	system := map[string]interface{}{
+		"current_date":    now.Format("January 2, 2006"),
+		"current_year":    now.Year(),
+		"current_month":   now.Month().String(),
+		"current_day":     now.Day(),
+		"current_weekday": now.Weekday().String(),
+	}
+
+	// Resolve tracking domain from sending profile
+	trackBase := svc.trackingURL
+	profileID := ""
+	if input.SendingProfileID != nil && *input.SendingProfileID != "" {
+		profileID = *input.SendingProfileID
+		var td, sd sql.NullString
+		svc.db.QueryRowContext(ctx, `SELECT COALESCE(tracking_domain,''), COALESCE(sending_domain,'') FROM mailing_sending_profiles WHERE id = $1`, profileID).Scan(&td, &sd)
+		if td.Valid && td.String != "" {
+			trackBase = "https://" + td.String
+		} else if sd.Valid && sd.String != "" {
+			trackBase = "https://trk." + sd.String
+		}
+	}
+
+	// Generate transactional IDs for tracking
+	txnID := uuid.New().String()
+	subID := txnID // use txn ID as pseudo-subscriber for unsub URL
+
+	// Unsubscribe + preferences URLs
+	if trackBase != "" && svc.signingKey != "" {
+		unsubData := fmt.Sprintf("%s|%s|%s", orgID, txnID, subID)
+		h := hmac.New(sha256.New, []byte(svc.signingKey))
+		h.Write([]byte(unsubData))
+		sig := hex.EncodeToString(h.Sum(nil))[:16]
+		encoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+		system["unsubscribe_url"] = fmt.Sprintf("%s/track/unsubscribe/%s/%s", trackBase, encoded, sig)
+		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, subID)
+	}
+	rc["system"] = system
+
+	// ── Render through Liquid engine ──
+	templateSvc := mailing.NewTemplateService()
+	subject, _ := templateSvc.Render("txn-subj:"+txnID, input.Subject, rc)
+	htmlContent, _ := templateSvc.Render("txn-html:"+txnID, input.HTMLContent, rc)
+	textContent, _ := templateSvc.Render("txn-text:"+txnID, input.TextContent, rc)
+
+	// Preview text
+	if input.PreviewText != "" {
+		previewText, _ := templateSvc.Render("txn-pv:"+txnID, input.PreviewText, rc)
+		htmlContent = injectPreviewTextTransactional(htmlContent, previewText)
+	}
+
+	// Replace any remaining {{ system.unsubscribe_url }} literals
+	if unsub, ok := system["unsubscribe_url"].(string); ok && unsub != "" {
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.unsubscribe_url }}", unsub)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.unsubscribe_url}}", unsub)
+	}
+	if prefs, ok := system["preferences_url"].(string); ok && prefs != "" {
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.preferences_url }}", prefs)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.preferences_url}}", prefs)
+	}
+
+	// ── Tracking pixel + link rewriting ──
+	if trackBase != "" && svc.signingKey != "" {
+		pixelData := fmt.Sprintf("%s|%s|%s|%s", orgID, txnID, subID, txnID)
+		h := hmac.New(sha256.New, []byte(svc.signingKey))
+		h.Write([]byte(pixelData))
+		pixelSig := hex.EncodeToString(h.Sum(nil))[:16]
+		pixelEncoded := base64.URLEncoding.EncodeToString([]byte(pixelData))
+		pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;" />`, trackBase, pixelEncoded, pixelSig)
+		if idx := strings.LastIndex(strings.ToLower(htmlContent), "</body>"); idx >= 0 {
+			htmlContent = htmlContent[:idx] + pixel + htmlContent[idx:]
+		} else {
+			htmlContent += pixel
+		}
+	}
+
+	// ── CAN-SPAM: inject bottom unsub if not present ──
+	if unsub, ok := system["unsubscribe_url"].(string); ok && unsub != "" {
+		if !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {
+			unsubBlock := fmt.Sprintf(
+				`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
+					`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsub)
+			if idx := strings.LastIndex(strings.ToLower(htmlContent), "</body>"); idx >= 0 {
+				htmlContent = htmlContent[:idx] + unsubBlock + htmlContent[idx:]
+			} else {
+				htmlContent += unsubBlock
+			}
+		}
+	}
+
+	// ── Send via HandleSendTestEmail (routing + ESP selection) ──
+	testBody, _ := json.Marshal(map[string]interface{}{
+		"to": email, "subject": subject,
+		"from_name": input.FromName, "from_email": input.FromEmail,
+		"reply_email": input.ReplyEmail,
+		"html_content": htmlContent, "text_content": textContent,
+		"sending_profile_id": input.SendingProfileID,
+	})
 	rec := &responseRecorder{header: http.Header{}, code: 200}
-	syntheticReq, _ := http.NewRequestWithContext(ctx, "POST", "/api/mailing/send-test", strings.NewReader(string(bodyBytes)))
+	syntheticReq, _ := http.NewRequestWithContext(ctx, "POST", "/api/mailing/send-test", strings.NewReader(string(testBody)))
 	syntheticReq.Header = r.Header
 	svc.HandleSendTestEmail(rec, syntheticReq)
 
-	// Record tracking event for transactional sends
-	orgID, _ := GetOrgIDFromRequest(r)
+	// Record tracking event
 	eventID := uuid.New()
 	tagsJSON, _ := json.Marshal(input.Tags)
 	svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, email, event_type, metadata, event_at)
 		VALUES ($1, $2, $3, 'sent', $4, NOW())
-	`, eventID, orgID, strings.ToLower(input.To), string(tagsJSON))
+	`, eventID, orgID, email, string(tagsJSON))
 
-	// Forward the response
 	for k, v := range rec.header {
 		for _, val := range v {
 			w.Header().Set(k, val)
@@ -340,15 +456,33 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	w.Write(rec.body)
 }
 
+func injectPreviewTextTransactional(html, previewText string) string {
+	if previewText == "" || html == "" {
+		return html
+	}
+	preheaderHTML := fmt.Sprintf(
+		`<div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">%s</div>`,
+		previewText)
+	bodyIdx := strings.Index(strings.ToLower(html), "<body")
+	if bodyIdx >= 0 {
+		closeIdx := strings.Index(html[bodyIdx:], ">")
+		if closeIdx >= 0 {
+			insertAt := bodyIdx + closeIdx + 1
+			return html[:insertAt] + preheaderHTML + html[insertAt:]
+		}
+	}
+	return preheaderHTML + html
+}
+
 type responseRecorder struct {
 	header http.Header
 	code   int
 	body   []byte
 }
 
-func (r *responseRecorder) Header() http.Header         { return r.header }
-func (r *responseRecorder) Write(b []byte) (int, error)  { r.body = append(r.body, b...); return len(b), nil }
-func (r *responseRecorder) WriteHeader(code int)         { r.code = code }
+func (r *responseRecorder) Header() http.Header        { return r.header }
+func (r *responseRecorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
+func (r *responseRecorder) WriteHeader(code int)        { r.code = code }
 
 func (svc *MailingService) sendViaSparkPost(ctx context.Context, to, fromEmail, fromName, subject, htmlContent, textContent string) (map[string]interface{}, error) {
 	return svc.sendViaSparkPostWithKey(ctx, svc.sparkpostKey, to, fromEmail, fromName, "", subject, htmlContent, textContent)
