@@ -23,6 +23,7 @@ type PMTAAPISender struct {
 	apiEndpoint string
 	db          *sql.DB
 	client      *http.Client
+	ipPool      *vmtaPool
 }
 
 // NewPMTAAPISender creates a PMTA API sender.
@@ -36,6 +37,7 @@ func NewPMTAAPISender(apiEndpoint string, db *sql.DB) *PMTAAPISender {
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		},
+		ipPool: newVMTAPool(db),
 	}
 }
 
@@ -101,6 +103,15 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		"content":         rfc822.String(),
 	}
 
+	// Resolve VMTA from IP pool (same rotation as SMTP sender)
+	if s.ipPool != nil && msg.ProfileID != "" {
+		s.ipPool.refresh(ctx, msg.ProfileID)
+		if ip, err := s.ipPool.next(); err == nil {
+			payload["vmta"] = ip.Hostname
+			log.Printf("[PMTA-API] Routing %s via VMTA %s", msg.Email, ip.Hostname)
+		}
+	}
+	// Header override takes precedence if explicitly set
 	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
 		payload["vmta"] = vmta
 	}
