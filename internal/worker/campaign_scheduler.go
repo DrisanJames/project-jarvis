@@ -257,9 +257,43 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		}
 	}
 
+	// Pre-enqueued campaigns: queue items may have been fully processed before the
+	// scheduler transitioned the campaign to 'sending'. Catch campaigns in 'draft'
+	// or 'scheduled' that have queue items all done (no pending items remain).
+	preRows, _ := cs.db.QueryContext(ctx, `
+		SELECT c.id,
+		       COALESCE(SUM(CASE WHEN q.status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
+		       COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter') THEN 1 ELSE 0 END), 0) as failed,
+		       COUNT(q.id) as total
+		FROM mailing_campaigns c
+		JOIN mailing_campaign_queue q ON q.campaign_id = c.id
+		WHERE c.status IN ('draft', 'scheduled')
+		GROUP BY c.id
+		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
+		   AND COUNT(q.id) > 0
+	`)
+	if preRows != nil {
+		for preRows.Next() {
+			var cid uuid.UUID
+			var sent, failed, total int
+			if preRows.Scan(&cid, &sent, &failed, &total) == nil && total > 0 {
+				finalStatus := "sent"
+				if failed == total {
+					finalStatus = "cancelled"
+				}
+				cs.db.ExecContext(ctx, `
+					UPDATE mailing_campaigns
+					SET status = $2, sent_count = $3, total_recipients = GREATEST(total_recipients, $4),
+					    started_at = COALESCE(started_at, NOW()), completed_at = NOW(), updated_at = NOW()
+					WHERE id = $1
+				`, cid, finalStatus, sent, total)
+				log.Printf("[CampaignScheduler] Pre-enqueued campaign %s completed: status=%s sent=%d failed=%d", cid, finalStatus, sent, failed)
+			}
+		}
+		preRows.Close()
+	}
+
 	// Orphaned campaigns: stuck in 'sending' for >10 min with 0 queue items.
-	// This catches enqueue failures where the campaign was set to 'sending'
-	// but no items were ever inserted.
 	_, _ = cs.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns
 		SET status = 'failed', completed_at = NOW(), updated_at = NOW()

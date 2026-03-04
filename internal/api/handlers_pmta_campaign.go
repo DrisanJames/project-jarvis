@@ -855,8 +855,14 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// 8. Update campaign with actual audience counts and move to 'scheduled'
-	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, status='scheduled', updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
+	// 8. Update campaign with actual audience counts and move to 'scheduled'.
+	// Use background context — the request ctx may time out during large pre-computations.
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer bgCancel()
+	_, updErr := s.db.ExecContext(bgCtx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, status='scheduled', updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
+	if updErr != nil {
+		log.Printf("[DeployCampaign] CRITICAL: failed to move campaign %s to scheduled: %v", campaignID, updErr)
+	}
 	log.Printf("[DeployCampaign] Campaign %s: pre-enqueued %d subscribers (from %d qualified, %d total)", campaignID, queuedCount, len(qualified), len(seenEmails))
 
 	respondJSON(w, http.StatusCreated, engine.PMTACampaignResult{
