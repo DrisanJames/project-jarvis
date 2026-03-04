@@ -581,26 +581,16 @@ func (s *AdvancedMailingService) HandleEnrollSubscriberInJourney(w http.Response
 	var firstStepID uuid.UUID
 	s.db.QueryRowContext(ctx, "SELECT id FROM mailing_automation_steps WHERE workflow_id = $1 ORDER BY step_order LIMIT 1", workflowID).Scan(&firstStepID)
 	
-	// Enroll — check for existing enrollment first
+	// Enroll — use only columns guaranteed to exist
 	enrollID := uuid.New()
-	var existingID string
-	existErr := s.db.QueryRowContext(ctx, `SELECT id::text FROM mailing_automation_enrollments WHERE workflow_id = $1 AND subscriber_id = $2 LIMIT 1`,
-		workflowID, subscriberID).Scan(&existingID)
-	if existErr == nil && existingID != "" {
-		// Re-activate existing enrollment
-		s.db.ExecContext(ctx, `UPDATE mailing_automation_enrollments SET status = 'active', current_step_id = $1, enrolled_at = NOW() WHERE id = $2`,
-			firstStepID, existingID)
-		enrollID, _ = uuid.Parse(existingID)
-	} else {
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO mailing_automation_enrollments (id, workflow_id, subscriber_id, current_step_id, status, enrolled_at)
-			VALUES ($1, $2, $3, $4, 'active', NOW())
-		`, enrollID, workflowID, subscriberID, firstStepID)
-		if err != nil {
-			log.Printf("Error enrolling subscriber: %v", err)
-			http.Error(w, `{"error":"failed to enroll"}`, http.StatusInternalServerError)
-			return
-		}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO mailing_automation_enrollments (id, workflow_id, subscriber_id, email, current_step, status, enrolled_at)
+		VALUES ($1, $2, $3, $4, 1, 'active', NOW())
+	`, enrollID, workflowID, subscriberID, input.Email)
+	if err != nil {
+		log.Printf("[Automation] Enrollment insert error: %v", err)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to enroll: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
 	}
 	
 	// Update workflow stats
