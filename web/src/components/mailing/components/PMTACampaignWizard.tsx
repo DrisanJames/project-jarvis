@@ -78,6 +78,7 @@ interface ContentVariant {
   variant_name: string;
   from_name: string;
   subject: string;
+  preview_text: string;
   html_content: string;
   split_percent: number;
 }
@@ -121,6 +122,7 @@ interface AudienceEstimate {
   after_suppressions: number;
   suppressed_count: number;
   isp_breakdown: Record<string, number>;
+  suppression_sources?: Record<string, number>;
 }
 
 // ── Step navigation ──────────────────────────────────────────────────────────
@@ -152,6 +154,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // Step 1 state
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
   const [selectedISPs, setSelectedISPs] = useState<string[]>([]);
+  const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({});
 
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
@@ -159,7 +162,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 3 state
   const [variants, setVariants] = useState<ContentVariant[]>([
-    { variant_name: 'A', from_name: '', subject: '', html_content: '', split_percent: 100 },
+    { variant_name: 'A', from_name: '', subject: '', preview_text: '', html_content: '', split_percent: 100 },
   ]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
@@ -268,7 +271,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       const suppData = await suppRes.json();
       setLists(Array.isArray(listData) ? listData : listData.lists || []);
       setSegments(Array.isArray(segData) ? segData : segData.segments || []);
-      setSuppressionLists(Array.isArray(suppData) ? suppData : suppData.lists || []);
+      const parsedSupp = Array.isArray(suppData) ? suppData : suppData.lists || [];
+      setSuppressionLists(parsedSupp);
+      // Auto-select global suppression list if present
+      const globalList = parsedSupp.find((sl: any) => sl.id === 'global-suppression-list');
+      if (globalList && !selectedSuppLists.includes(globalList.id)) {
+        setSelectedSuppLists(prev => prev.includes(globalList.id) ? prev : [...prev, globalList.id]);
+      }
     } catch {
       setAudienceError('Failed to load audience data — network error. Click retry.');
     }
@@ -364,6 +373,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       variant_name: names[i] || String.fromCharCode(65 + i),
       from_name: v.from_name || '',
       subject: v.subject || '',
+      preview_text: v.preview_text || '',
       html_content: v.html_content || '',
       split_percent: Math.floor(100 / picked.length),
     }));
@@ -460,11 +470,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setDeploying(true);
     setDeployResult(null);
     try {
+      const quotaArray = Object.entries(ispQuotas)
+        .filter(([, v]) => v > 0)
+        .map(([isp, volume]) => ({ isp, volume }));
       const payload: Record<string, any> = {
         name: campaignName,
         target_isps: selectedISPs,
         sending_domain: selectedDomain,
         variants,
+        isp_quotas: quotaArray,
         inclusion_segments: selectedSegments,
         inclusion_lists: selectedLists,
         exclusion_lists: selectedSuppLists,
@@ -498,7 +512,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // ── Toggle helpers ───────────────────────────────────────────────────────
 
   const toggleISP = (isp: string) => {
-    setSelectedISPs(prev => prev.includes(isp) ? prev.filter(i => i !== isp) : [...prev, isp]);
+    setSelectedISPs(prev => {
+      if (prev.includes(isp)) {
+        setISPQuotas(q => { const n = { ...q }; delete n[isp]; return n; });
+        return prev.filter(i => i !== isp);
+      }
+      return [...prev, isp];
+    });
   };
   const toggleList = (id: string) => {
     setSelectedLists(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -519,7 +539,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     const updated = variants.map(v => ({ ...v, split_percent: newPercent }));
     updated.push({
       variant_name: names[variants.length],
-      from_name: '', subject: '', html_content: '',
+      from_name: '', subject: '', preview_text: '', html_content: '',
       split_percent: 100 - (newPercent * variants.length),
     });
     setVariants(updated);
@@ -669,6 +689,33 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           <FontAwesomeIcon icon={faCheckCircle} /> {selectedISPs.length} ISP{selectedISPs.length > 1 ? 's' : ''} selected: {selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')}
         </div>
       )}
+
+      {selectedISPs.length > 0 && (
+        <div style={{ marginTop: 16, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+          <h4 style={{ margin: '0 0 8px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+            <FontAwesomeIcon icon={faShieldAlt} /> Volume Quotas <span style={{ fontWeight: 400 }}>(optional)</span>
+          </h4>
+          <p style={{ margin: '0 0 12px', fontSize: 11, color: '#64748b' }}>
+            Set maximum sends per ISP. Leave at 0 for unlimited.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+            {selectedISPs.map(isp => {
+              const meta = ISP_META[isp] || { label: isp, color: '#64748b', emoji: '🌐' };
+              return (
+                <div key={isp} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#0a0f1a', borderRadius: 6, border: '1px solid rgba(0,200,255,0.06)' }}>
+                  <span style={{ fontSize: 12, color: meta.color, minWidth: 80 }}>{meta.emoji} {meta.label}</span>
+                  <input
+                    type="number" min={0} step={1000}
+                    value={ispQuotas[isp] || 0}
+                    onChange={e => setISPQuotas(prev => ({ ...prev, [isp]: Number(e.target.value) }))}
+                    style={{ flex: 1, width: 80, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 4, color: '#e0e6f0', padding: '4px 8px', fontSize: 12, textAlign: 'right' }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -740,6 +787,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     updateVariant(variantIdx, 'subject', tpl.subject || '');
     updateVariant(variantIdx, 'html_content', tpl.html_content || '');
     if (tpl.from_name) updateVariant(variantIdx, 'from_name', tpl.from_name);
+    if (tpl.preview_text) updateVariant(variantIdx, 'preview_text', tpl.preview_text);
     setShowTemplatePicker(false);
   };
 
@@ -963,7 +1011,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 onChange={e => updateVariant(idx, 'subject', e.target.value)}
                 style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
               />
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid: {'{{ first_name }}'}, {'{{ last_name }}'}, {'{{ email }}'}</div>
             </div>
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Pre-header <span style={{ color: '#64748b' }}>({v.preview_text.length}/150 chars)</span></label>
+            <input
+              value={v.preview_text} placeholder="Preview text shown in inbox before opening"
+              onChange={e => updateVariant(idx, 'preview_text', e.target.value)}
+              maxLength={150}
+              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
+            />
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid tags. Shown as email preview text in inbox.</div>
           </div>
 
           {/* HTML Content with merge tag toolbar, upload, and preview */}
@@ -1141,6 +1200,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             <span style={{ color: 'rgba(180,210,240,0.65)' }}>Suppressed: <strong style={{ color: '#ef4444' }}>-{audienceEstimate.suppressed_count.toLocaleString()}</strong></span>
             <span style={{ color: 'rgba(180,210,240,0.65)' }}>Net: <strong style={{ color: '#10b981' }}>{audienceEstimate.after_suppressions.toLocaleString()}</strong></span>
           </div>
+          {audienceEstimate.suppression_sources && Object.keys(audienceEstimate.suppression_sources).length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 11, color: '#64748b', alignSelf: 'center' }}>Sources:</span>
+              {Object.entries(audienceEstimate.suppression_sources).map(([source, count]) => (
+                <span key={source} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4, fontSize: 11, background: '#ef444415', color: '#ef4444', border: '1px solid #ef444430' }}>
+                  {source}: {(count as number).toLocaleString()}
+                </span>
+              ))}
+            </div>
+          )}
           {audienceEstimate.isp_breakdown && Object.keys(audienceEstimate.isp_breakdown).length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {Object.entries(audienceEstimate.isp_breakdown).map(([isp, count]) => {

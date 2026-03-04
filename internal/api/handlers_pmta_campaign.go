@@ -397,6 +397,19 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
+	// Resolve suppression list names for source breakdown display
+	suppListNames := make(map[string]string)
+	if len(req.SuppressionListIDs) > 0 {
+		for _, slID := range req.SuppressionListIDs {
+			var name string
+			if s.db.QueryRowContext(ctx, `SELECT name FROM mailing_suppression_lists WHERE id = $1`, slID).Scan(&name) == nil {
+				suppListNames[slID] = name
+			} else {
+				suppListNames[slID] = slID
+			}
+		}
+	}
+
 	// Load suppression lists into bloom filter for O(1) lookup
 	if len(req.SuppressionListIDs) > 0 {
 		for _, slID := range req.SuppressionListIDs {
@@ -423,6 +436,7 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	totalRecipients := 0
 	suppressedCount := 0
 	ispBreakdown := make(map[string]int)
+	suppressionSources := make(map[string]int)
 	seenEmails := make(map[string]bool)
 
 	if len(req.ListIDs) > 0 {
@@ -446,10 +460,19 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 				totalRecipients++
 
 				suppressed := false
-				if len(req.SuppressionListIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, req.SuppressionListIDs) {
-					suppressed = true
+				// Check each named suppression list individually to track source
+				if len(req.SuppressionListIDs) > 0 {
+					for _, slID := range req.SuppressionListIDs {
+						if s.suppMatcher.IsSuppressed(emailLower, []string{slID}) {
+							name := suppListNames[slID]
+							suppressionSources[name]++
+							suppressed = true
+							break
+						}
+					}
 				}
 				if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressed(emailLower) {
+					suppressionSources["Global Suppression"]++
 					suppressed = true
 				}
 
@@ -493,10 +516,11 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	}
 
 	respondJSON(w, http.StatusOK, engine.AudienceEstimateResponse{
-		TotalRecipients:   totalRecipients,
-		AfterSuppressions: afterSuppressions,
-		SuppressedCount:   suppressedCount,
-		ISPBreakdown:      ispBreakdown,
+		TotalRecipients:    totalRecipients,
+		AfterSuppressions:  afterSuppressions,
+		SuppressedCount:    suppressedCount,
+		ISPBreakdown:       ispBreakdown,
+		SuppressionSources: suppressionSources,
 	})
 }
 
@@ -578,10 +602,13 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		ORDER BY created_at DESC LIMIT 1
 	`, orgID, input.SendingDomain).Scan(&profileID, &fromEmail, &fromName, &replyTo)
 
-	// Use variant from_name if profile doesn't have one
-	resolvedFromName := input.Variants[0].FromName
+	// Profile from_name is the default; variant from_name wins if set
+	resolvedFromName := ""
 	if fromName.Valid && fromName.String != "" {
 		resolvedFromName = fromName.String
+	}
+	if input.Variants[0].FromName != "" {
+		resolvedFromName = input.Variants[0].FromName
 	}
 	resolvedFromEmail := ""
 	if fromEmail.Valid {
@@ -593,6 +620,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		"sending_domain":    input.SendingDomain,
 		"throttle_strategy": input.ThrottleStrategy,
 	})
+	ispQuotasJSON, _ := json.Marshal(input.ISPQuotas)
 	inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.InclusionLists)
 	exclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.ExclusionLists)
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
@@ -601,19 +629,19 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status, scheduled_at,
-			from_name, from_email, reply_to, subject, html_content,
-			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
+			from_name, from_email, reply_to, subject, preview_text, html_content,
+			sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids,
 			send_type, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, 'scheduled', $4,
-			$5, $6, $7, $8, $9,
-			$10, $11, $12, $13,
+			$5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15,
 			'blast', NOW(), NOW()
 		)
 	`, campaignID, orgID, input.Name, scheduledAt,
 		resolvedFromName, resolvedFromEmail, replyTo,
-		input.Variants[0].Subject, input.Variants[0].HTMLContent,
-		profileID, espQuotas, inclusionListsJSON, suppressionListsJSON,
+		input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+		profileID, espQuotas, ispQuotasJSON, inclusionListsJSON, suppressionListsJSON,
 	)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

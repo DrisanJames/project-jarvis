@@ -28,7 +28,20 @@ func (s *SuppressionService) HandleGetSuppressionLists(w http.ResponseWriter, r 
 		}
 	}
 	
-	// Use cached entry_count (snapshot) — no expensive per-list COUNT(*) subquery
+	// Ensure global suppression list row exists and has current count
+	s.db.Exec(`
+		INSERT INTO mailing_suppression_lists (id, organization_id, name, description, source, entry_count, created_at, updated_at)
+		SELECT 'global-suppression-list', $1, 'Global Suppression', 'System-managed global suppression list (hard bounces + complaints)', 'system',
+		       COALESCE((SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1), 0), NOW(), NOW()
+		WHERE NOT EXISTS (SELECT 1 FROM mailing_suppression_lists WHERE id = 'global-suppression-list' AND organization_id = $1)
+	`, orgID)
+	s.db.Exec(`
+		UPDATE mailing_suppression_lists
+		SET entry_count = COALESCE((SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1), 0),
+		    updated_at = NOW()
+		WHERE id = 'global-suppression-list' AND organization_id = $1
+	`, orgID)
+
 	rows, err := s.db.Query(`
 		SELECT id, name, description, source, optizmo_list_id, 
 		       COALESCE(entry_count, 0) as entry_count, created_at, updated_at

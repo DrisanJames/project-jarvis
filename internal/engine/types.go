@@ -576,8 +576,15 @@ type PMTACampaignInput struct {
 	SendHour          int              `json:"send_hour"`
 	Timezone          string           `json:"timezone"`
 	ThrottleStrategy  string           `json:"throttle_strategy"`
+	ISPQuotas         []ISPQuota       `json:"isp_quotas"`
 	SendMode          string           `json:"send_mode"`     // "immediate" or "scheduled"
 	ScheduledAt       *time.Time       `json:"scheduled_at"`  // required when send_mode="scheduled"
+}
+
+// ISPQuota defines a volume cap for a single ISP within a campaign.
+type ISPQuota struct {
+	ISP    string `json:"isp"`
+	Volume int    `json:"volume"`
 }
 
 // ContentVariant represents one A/B variant of campaign content.
@@ -585,6 +592,7 @@ type ContentVariant struct {
 	VariantName  string  `json:"variant_name"` // A, B, C, D
 	FromName     string  `json:"from_name"`
 	Subject      string  `json:"subject"`
+	PreviewText  string  `json:"preview_text"`
 	HTMLContent  string  `json:"html_content"`
 	SplitPercent float64 `json:"split_percent"`
 }
@@ -617,6 +625,7 @@ type AudienceEstimateResponse struct {
 	AfterSuppressions  int            `json:"after_suppressions"`
 	SuppressedCount    int            `json:"suppressed_count"`
 	ISPBreakdown       map[string]int `json:"isp_breakdown"`
+	SuppressionSources map[string]int `json:"suppression_sources"`
 }
 
 // WarmupDay defines one tier of the warmup schedule.
