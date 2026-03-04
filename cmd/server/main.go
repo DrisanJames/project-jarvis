@@ -995,13 +995,18 @@ func runStartupMigrations(db *sql.DB) {
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			workflow_id UUID NOT NULL REFERENCES mailing_automation_workflows(id) ON DELETE CASCADE,
 			subscriber_id UUID,
-			email TEXT NOT NULL,
+			email TEXT,
+			current_step_id UUID,
 			current_step INTEGER DEFAULT 0,
 			status TEXT DEFAULT 'active',
 			enrolled_at TIMESTAMPTZ DEFAULT NOW(),
 			next_step_at TIMESTAMPTZ,
-			completed_at TIMESTAMPTZ
+			completed_at TIMESTAMPTZ,
+			UNIQUE(workflow_id, subscriber_id)
 		)`},
+		{"add_automation_total_enrolled", `ALTER TABLE mailing_automation_workflows ADD COLUMN IF NOT EXISTS total_enrolled INTEGER DEFAULT 0`},
+		{"add_enrollment_step_id", `ALTER TABLE mailing_automation_enrollments ADD COLUMN IF NOT EXISTS current_step_id UUID`},
+		{"add_enrollment_unique", `CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_workflow_sub ON mailing_automation_enrollments(workflow_id, subscriber_id)`},
 		{"add_queue_locked_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
 		{"add_queue_worker_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
 		{"create_suppressions_table", `CREATE TABLE IF NOT EXISTS mailing_suppressions (
