@@ -644,6 +644,8 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		maxRecipientsParam = maxRecipients
 	}
 
+	// Create campaign as 'preparing' — it moves to 'scheduled' after the queue is pre-populated.
+	// This prevents the scheduler from picking it up during pre-computation.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status, scheduled_at,
@@ -651,7 +653,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
 			max_recipients, send_type, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, 'scheduled', $4,
+			$1, $2, $3, 'preparing', $4,
 			$5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14,
 			$15, 'blast', NOW(), NOW()
@@ -853,8 +855,8 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// 8. Update campaign with actual audience counts
-	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
+	// 8. Update campaign with actual audience counts and move to 'scheduled'
+	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, status='scheduled', updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
 	log.Printf("[DeployCampaign] Campaign %s: pre-enqueued %d subscribers (from %d qualified, %d total)", campaignID, queuedCount, len(qualified), len(seenEmails))
 
 	respondJSON(w, http.StatusCreated, engine.PMTACampaignResult{
