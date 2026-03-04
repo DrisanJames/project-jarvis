@@ -28,27 +28,25 @@ func (s *SuppressionService) HandleGetSuppressionLists(w http.ResponseWriter, r 
 		}
 	}
 	
-	// Ensure global suppression list row exists and has current count
+	// Ensure global suppression list row exists
 	s.db.Exec(`
-		INSERT INTO mailing_suppression_lists (id, organization_id, name, description, source, entry_count, created_at, updated_at)
-		SELECT 'global-suppression-list', $1, 'Global Suppression', 'System-managed global suppression list (hard bounces + complaints)', 'system',
-		       COALESCE((SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1), 0), NOW(), NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM mailing_suppression_lists WHERE id = 'global-suppression-list' AND organization_id = $1)
-	`, orgID)
-	s.db.Exec(`
-		UPDATE mailing_suppression_lists
-		SET entry_count = COALESCE((SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1), 0),
-		    updated_at = NOW()
-		WHERE id = 'global-suppression-list' AND organization_id = $1
-	`, orgID)
+		INSERT INTO mailing_suppression_lists (id, name, description, source, entry_count, created_at, updated_at)
+		VALUES ('global-suppression-list', 'Global Suppression', 'Hard bounces, complaints, and manual suppressions', 'system', 0, NOW(), NOW())
+		ON CONFLICT (id) DO NOTHING
+	`)
+	// Sync global suppression entry count
+	var globalCount int
+	if s.db.QueryRow(`SELECT COUNT(*) FROM mailing_global_suppressions`).Scan(&globalCount) == nil {
+		s.db.Exec(`UPDATE mailing_suppression_lists SET entry_count = $1, updated_at = NOW() WHERE id = 'global-suppression-list'`, globalCount)
+	}
 
+	// Return all suppression lists (with or without org filter)
 	rows, err := s.db.Query(`
 		SELECT id, name, description, source, optizmo_list_id, 
 		       COALESCE(entry_count, 0) as entry_count, created_at, updated_at
 		FROM mailing_suppression_lists
-		WHERE organization_id = $1
 		ORDER BY created_at DESC
-	`, orgID)
+	`)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"lists": []interface{}{}})
