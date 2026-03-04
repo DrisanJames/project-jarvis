@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,6 +89,7 @@ type ScheduledCampaign struct {
 	AISendTimeOptimization bool
 	ListIDs                []string // from list_ids JSONB (PMTA wizard multi-list path)
 	SuppressionListIDs     []string // from suppression_list_ids JSONB
+	ISPQuotasJSON          string   // raw JSONB from isp_quotas column
 }
 
 // NewCampaignScheduler creates a new campaign scheduler
@@ -314,7 +316,8 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			COALESCE(scheduled_at, send_at), COALESCE(throttle_speed, 'gentle'),
 			max_recipients, COALESCE(ai_send_time_optimization, false),
 			COALESCE(list_ids::text, '[]'),
-			COALESCE(suppression_list_ids::text, '[]')
+			COALESCE(suppression_list_ids::text, '[]'),
+			COALESCE(isp_quotas::text, '{}')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
 		  AND COALESCE(scheduled_at, send_at) <= NOW()
@@ -341,6 +344,7 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			&c.ScheduledAt, &c.ThrottleSpeed,
 			&c.MaxRecipients, &c.AISendTimeOptimization,
 			&listIDsJSON, &suppListIDsJSON,
+			&c.ISPQuotasJSON,
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] Error scanning campaign: %v", err)
@@ -843,6 +847,23 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		return 0, fmt.Errorf("failed to prepare COPY: %w", err)
 	}
 
+	// Parse ISP quotas and randomization from campaign JSONB
+	var qCfg ispQuotaConfig
+	if campaign.ISPQuotasJSON != "" && campaign.ISPQuotasJSON != "{}" {
+		json.Unmarshal([]byte(campaign.ISPQuotasJSON), &qCfg)
+	}
+	quotaMap := make(map[string]int)
+	for _, q := range qCfg.Quotas {
+		if q.Volume > 0 {
+			quotaMap[q.ISP] = q.Volume
+		}
+	}
+	if qCfg.Randomize && len(subscribers) > 1 {
+		rand.Shuffle(len(subscribers), func(i, j int) { subscribers[i], subscribers[j] = subscribers[j], subscribers[i] })
+		log.Printf("[CampaignScheduler] Shuffled %d subscribers for campaign %s (randomize=true)", len(subscribers), campaign.ID)
+	}
+	ispCounts := make(map[string]int)
+
 	queued := 0
 	variantIdx := 0
 	seenEmails := make(map[string]bool, len(subscribers))
@@ -853,6 +874,21 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			continue
 		}
 		seenEmails[emailKey] = true
+
+		// Enforce per-ISP quota caps
+		if len(quotaMap) > 0 {
+			atIdx := strings.LastIndex(emailKey, "@")
+			if atIdx >= 0 {
+				domain := emailKey[atIdx+1:]
+				isp := classifyEmailISP(domain)
+				if maxVol, hasQuota := quotaMap[isp]; hasQuota {
+					if ispCounts[isp] >= maxVol {
+						continue
+					}
+				}
+				ispCounts[isp]++
+			}
+		}
 		// Check for cancel/pause every EnqueueBatchSize rows
 		if i > 0 && i%EnqueueBatchSize == 0 {
 			var status string
@@ -914,6 +950,9 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 	}
 
 	log.Printf("[CampaignScheduler] COPY complete: %d items enqueued for campaign %s", queued, campaign.ID)
+	if len(quotaMap) > 0 {
+		log.Printf("[CampaignScheduler] ISP quota enforcement for %s: %v (limits: %v)", campaign.ID, ispCounts, quotaMap)
+	}
 
 	// Bulk insert AB assignments if any
 	if len(abAssignments) > 0 {
@@ -1258,4 +1297,33 @@ func CanPauseCampaign(status string) (bool, string) {
 // newContext creates a new context for the scheduler (exposed for testing)
 func (cs *CampaignScheduler) newContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
+}
+
+// ispQuotaConfig is the parsed form of the isp_quotas JSONB column.
+type ispQuotaConfig struct {
+	Quotas    []struct {
+		ISP    string `json:"isp"`
+		Volume int    `json:"volume"`
+	} `json:"quotas"`
+	Randomize bool `json:"randomize"`
+}
+
+// schedulerISPMap maps common email domains to ISP identifiers for quota enforcement.
+var schedulerISPMap = map[string]string{
+	"gmail.com": "gmail", "googlemail.com": "gmail",
+	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
+	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo", "yahoo.co.uk": "yahoo", "aol.com": "yahoo",
+	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
+	"comcast.net": "comcast", "xfinity.com": "comcast",
+	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
+	"cox.net": "cox",
+	"charter.net": "charter", "spectrum.net": "charter",
+	"verizon.net": "verizon",
+}
+
+func classifyEmailISP(domain string) string {
+	if isp, ok := schedulerISPMap[strings.ToLower(domain)]; ok {
+		return isp
+	}
+	return "other"
 }

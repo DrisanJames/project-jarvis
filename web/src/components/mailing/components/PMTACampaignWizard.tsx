@@ -155,6 +155,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
   const [selectedISPs, setSelectedISPs] = useState<string[]>([]);
   const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({});
+  const [randomizeAudience, setRandomizeAudience] = useState(false);
 
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
@@ -479,6 +480,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         sending_domain: selectedDomain,
         variants,
         isp_quotas: quotaArray,
+        randomize_audience: randomizeAudience,
         inclusion_segments: selectedSegments,
         inclusion_lists: selectedLists,
         exclusion_lists: selectedSuppLists,
@@ -1483,7 +1485,42 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             <SummaryCard title="Audience" value={audienceEstimate ? `${audienceEstimate.after_suppressions.toLocaleString()} recipients` : 'Not estimated'} />
             <SummaryCard title="From Names" value={variants.map(v => v.from_name).filter(Boolean).join(' / ') || '—'} />
             <SummaryCard title="Subject Lines" value={variants.map(v => v.subject).filter(Boolean).join(' / ') || '—'} />
+            <SummaryCard title="Pre-header" value={variants[0]?.preview_text || '(none)'} />
+            <SummaryCard title="ISP Quotas" value={
+              Object.entries(ispQuotas).filter(([, v]) => v > 0).length > 0
+                ? Object.entries(ispQuotas).filter(([, v]) => v > 0).map(([isp, vol]) => `${ISP_META[isp]?.label || isp}: ${vol.toLocaleString()}`).join(' / ')
+                : 'Unlimited (no quotas)'
+            } />
           </div>
+
+          {/* Randomization toggle — only when quotas are active */}
+          {Object.values(ispQuotas).some(v => v > 0) && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 6 }}>Audience Selection</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {([false, true] as const).map(isRandom => (
+                  <button
+                    key={String(isRandom)}
+                    onClick={() => setRandomizeAudience(isRandom)}
+                    style={{
+                      flex: 1, padding: '10px 0', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                      cursor: 'pointer', transition: 'all 0.2s',
+                      background: randomizeAudience === isRandom ? (isRandom ? '#8b5cf620' : 'rgba(0,200,255,0.12)') : '#0d1526',
+                      color: randomizeAudience === isRandom ? (isRandom ? '#8b5cf6' : '#00b0ff') : 'rgba(180,210,240,0.65)',
+                      border: `2px solid ${randomizeAudience === isRandom ? (isRandom ? '#8b5cf6' : '#00b0ff') : 'rgba(0,200,255,0.08)'}`,
+                    }}
+                  >
+                    {isRandom ? 'Randomize' : 'Sequential'}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+                {randomizeAudience
+                  ? 'Audience will be shuffled randomly before applying ISP quotas.'
+                  : 'Subscribers selected in list order until each ISP quota is reached.'}
+              </div>
+            </div>
+          )}
 
           <button
             className="ig-btn-glow ig-ripple"

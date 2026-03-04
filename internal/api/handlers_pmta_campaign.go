@@ -620,7 +620,10 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		"sending_domain":    input.SendingDomain,
 		"throttle_strategy": input.ThrottleStrategy,
 	})
-	ispQuotasJSON, _ := json.Marshal(input.ISPQuotas)
+	ispQuotasJSON, _ := json.Marshal(struct {
+		Quotas    []engine.ISPQuota `json:"quotas"`
+		Randomize bool              `json:"randomize"`
+	}{Quotas: input.ISPQuotas, Randomize: input.RandomizeAudience})
 	inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.InclusionLists)
 	exclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.ExclusionLists)
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)

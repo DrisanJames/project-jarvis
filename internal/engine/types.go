@@ -577,6 +577,7 @@ type PMTACampaignInput struct {
 	Timezone          string           `json:"timezone"`
 	ThrottleStrategy  string           `json:"throttle_strategy"`
 	ISPQuotas         []ISPQuota       `json:"isp_quotas"`
+	RandomizeAudience bool             `json:"randomize_audience"`
 	SendMode          string           `json:"send_mode"`     // "immediate" or "scheduled"
 	ScheduledAt       *time.Time       `json:"scheduled_at"`  // required when send_mode="scheduled"
 }
