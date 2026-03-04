@@ -62,6 +62,8 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
   const [filters, setFilters] = useState<FilterInfo[]>([]);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [isLoadingTags, setIsLoadingTags] = useState(false);
+  const [isLoadingFilters, setIsLoadingFilters] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -86,6 +88,7 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
   }, [isOpen]);
 
   const loadMergeTags = async () => {
+    setIsLoadingTags(true);
     try {
       const [tagsRes, customRes] = await Promise.all([
         fetch('/api/mailing/personalization/merge-tags'),
@@ -103,10 +106,13 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
       }
     } catch (error) {
       console.error('Failed to load merge tags:', error);
+    } finally {
+      setIsLoadingTags(false);
     }
   };
 
   const loadFilters = async () => {
+    setIsLoadingFilters(true);
     try {
       const res = await fetch('/api/mailing/personalization/filters');
       if (res.ok) {
@@ -115,6 +121,8 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
       }
     } catch (error) {
       console.error('Failed to load filters:', error);
+    } finally {
+      setIsLoadingFilters(false);
     }
   };
 
@@ -278,6 +286,17 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
                 ))}
               </div>
 
+              {isLoadingTags ? (
+                <div className="tags-list" style={{ padding: '16px 12px' }}>
+                  {[1, 2, 3, 4, 5].map(i => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                      <div style={{ height: 14, flex: 1, maxWidth: 120, background: 'rgba(0,200,255,0.08)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.1}s` }} />
+                      <div style={{ height: 12, flex: 2, maxWidth: 180, background: 'rgba(0,200,255,0.05)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+                    </div>
+                  ))}
+                  <style>{`@keyframes igShimmer { 0% { opacity: 0.4; } 50% { opacity: 0.7; } 100% { opacity: 0.4; } }`}</style>
+                </div>
+              ) : (
               <div className="tags-list">
                 {Object.entries(groupedTags).map(([category, categoryTags]) => (
                   <div key={category} className="tag-group">
@@ -324,6 +343,7 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
                   </div>
                 )}
               </div>
+              )}
             </div>
           )}
 
@@ -334,6 +354,16 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
                 <code>{'{{ variable | filter }}'}</code>
               </div>
 
+              {isLoadingFilters && filters.length === 0 ? (
+                <div className="filters-list" style={{ padding: '12px' }}>
+                  {[1, 2, 3, 4].map(i => (
+                    <div key={i} style={{ padding: '10px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                      <div style={{ height: 13, width: 80, background: 'rgba(0,200,255,0.08)', borderRadius: 4, marginBottom: 6, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.1}s` }} />
+                      <div style={{ height: 11, width: '70%', background: 'rgba(0,200,255,0.04)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
               <div className="filters-list">
                 {filters.map((filter) => (
                   <div key={filter.name} className="filter-item">
@@ -356,6 +386,7 @@ export const MergeTagPicker: React.FC<MergeTagPickerProps> = ({
                   </div>
                 ))}
               </div>
+              )}
             </div>
           )}
 

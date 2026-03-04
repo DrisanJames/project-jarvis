@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faSpinner } from '@fortawesome/free-solid-svg-icons';
 import './SendTestEmail.css';
 
 interface ThrottleStatus {
@@ -44,13 +46,12 @@ export const SendTestEmail: React.FC = () => {
   const [throttle, setThrottle] = useState<ThrottleStatus | null>(null);
   const [history, setHistory] = useState<SendResult[]>([]);
   
-  // Sending Profiles
   const [profiles, setProfiles] = useState<SendingProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>('');
+  const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {
-    fetchThrottle();
-    fetchProfiles();
+    Promise.all([fetchThrottle(), fetchProfiles()]).finally(() => setInitialLoading(false));
     const interval = setInterval(fetchThrottle, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -167,6 +168,25 @@ export const SendTestEmail: React.FC = () => {
 </body>
 </html>`;
 
+  if (initialLoading) {
+    return (
+      <div className="send-test-email">
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', gap: 16 }}>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#00e5ff', fontSize: 28 }} />
+          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading sending profiles...</span>
+          <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+            {[1, 2, 3].map(i => (
+              <div key={i} style={{ height: 8, width: 48, background: 'rgba(0,200,255,0.08)', borderRadius: 4 }}>
+                <div style={{ height: '100%', borderRadius: 4, background: 'rgba(0,229,255,0.2)', animation: `igSendLoad 1.2s ease infinite`, animationDelay: `${i * 0.2}s` }} />
+              </div>
+            ))}
+          </div>
+          <style>{`@keyframes igSendLoad { 0%,100% { width: 20%; opacity: 0.4; } 50% { width: 100%; opacity: 1; } }`}</style>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="send-test-email">
       <div className="send-header">
@@ -191,7 +211,6 @@ export const SendTestEmail: React.FC = () => {
 
       <div className="send-content">
         <form onSubmit={handleSend} className="send-form">
-          {/* Sending Profile Selector */}
           {profiles.length > 0 && (
             <div className="form-group full-width profile-selector">
               <label>🚀 Sending Profile (ESP)</label>

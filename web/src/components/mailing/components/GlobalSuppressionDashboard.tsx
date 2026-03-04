@@ -257,6 +257,29 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       </div>
 
       {/* ===== OVERVIEW ===== */}
+      {activeView === 'overview' && !stats && (
+        <div>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} style={{ ...statCard, flex: 1, minWidth: 160 }}>
+                <div style={{ height: 28, width: '40%', background: 'rgba(0,200,255,0.06)', borderRadius: 6, marginBottom: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.12}s` }} />
+                <div style={{ height: 12, width: '60%', background: 'rgba(0,200,255,0.04)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+            {[1, 2, 3].map(i => (
+              <div key={i} style={{ ...card, height: 180 }}>
+                <div style={{ height: 14, width: '50%', background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 16, animation: 'igShimmer 1.5s ease infinite' }} />
+                {[1, 2, 3].map(j => (
+                  <div key={j} style={{ height: 10, width: `${70 - j * 10}%`, background: 'rgba(0,200,255,0.04)', borderRadius: 3, marginBottom: 10, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${j * 0.1}s` }} />
+                ))}
+              </div>
+            ))}
+          </div>
+          <style>{`@keyframes igShimmer { 0% { opacity: 0.4; } 50% { opacity: 0.7; } 100% { opacity: 0.4; } }`}</style>
+        </div>
+      )}
       {activeView === 'overview' && stats && (
         <>
           {/* Top Stats */}
@@ -398,6 +421,20 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
+                {loading && entries.length === 0 && (
+                  <>
+                    {[1, 2, 3, 4, 5].map(i => (
+                      <tr key={`skel-${i}`} style={{ borderTop: '1px solid rgba(0,200,255,0.04)' }}>
+                        {[1, 2, 3, 4, 5, 6, 7].map(j => (
+                          <td key={j} style={{ padding: '10px 14px' }}>
+                            <div style={{ height: 12, width: `${60 + Math.random() * 30}%`, background: 'rgba(0,200,255,0.06)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${(i + j) * 0.08}s` }} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                    <style>{`@keyframes igShimmer { 0% { opacity: 0.4; } 50% { opacity: 0.7; } 100% { opacity: 0.4; } }`}</style>
+                  </>
+                )}
                 {entries.map(entry => (
                   <tr key={entry.id} style={{ borderTop: '1px solid rgba(0,200,255,0.04)' }}>
                     <td style={{ padding: '8px 14px', color: '#e0e6f0' }}>{entry.email || '(hash-only)'}</td>

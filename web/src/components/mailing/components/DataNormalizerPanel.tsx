@@ -80,6 +80,7 @@ export const DataNormalizerPanel: React.FC = () => {
   const [domainData, setDomainData] = useState<DomainBreakdown[]>([]);
   const [subscriberCount, setSubscriberCount] = useState(0);
   const [avgRowBytes, setAvgRowBytes] = useState(100);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -120,9 +121,7 @@ export const DataNormalizerPanel: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    fetchStatus();
-    fetchLogs();
-    fetchQuality();
+    Promise.all([fetchStatus(), fetchLogs(), fetchQuality()]).finally(() => setInitialLoading(false));
     const interval = setInterval(() => {
       fetchStatus();
       fetchLogs();
@@ -173,9 +172,33 @@ export const DataNormalizerPanel: React.FC = () => {
 
   const maxDomain = Math.max(...domainData.map(d => d.count), 1);
 
+  if (initialLoading) {
+    return (
+      <div style={{ padding: '24px', color: '#e0e6f0', maxWidth: 1200 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#00e5ff', fontSize: 18 }} />
+          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading normalizer data...</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} style={{ background: '#0d1526', borderRadius: 12, padding: '16px 18px', border: '1px solid rgba(0,200,255,0.08)', height: 70 }}>
+              <div style={{ height: 12, width: '50%', background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 10, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.1}s` }} />
+              <div style={{ height: 20, width: '60%', background: 'rgba(0,200,255,0.04)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          {[1, 2].map(i => (
+            <div key={i} style={{ background: '#0d1526', borderRadius: 12, padding: 20, border: '1px solid rgba(0,200,255,0.08)', height: 150, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.2}s` }} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: '24px', color: '#e0e6f0', maxWidth: 1200 }}>
-      <style>{`@keyframes pulse-count { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
+      <style>{`@keyframes pulse-count { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } } @keyframes igShimmer { 0% { opacity: 0.4; } 50% { opacity: 0.7; } 100% { opacity: 0.4; } }`}</style>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
