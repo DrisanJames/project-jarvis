@@ -204,6 +204,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<any>(null);
   const [domainError, setDomainError] = useState('');
+
+  // ── Validation state ─────────────────────────────────────────────────────
+  const [stepAttempted, setStepAttempted] = useState<Record<number, boolean>>({});
+
   // Reset deploy result when navigating away from step 6
   useEffect(() => {
     if (step !== 6 && deployResult) setDeployResult(null);
@@ -459,17 +463,65 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // ── Step validation ──────────────────────────────────────────────────────
 
-  const canProceed = (): boolean => {
-    switch (step) {
-      case 1: return selectedISPs.length > 0;
-      case 2: return selectedDomain !== '';
-      case 3: return variants.every(v => v.from_name && v.subject && v.html_content.trim().length > 0) &&
-                     Math.abs(variants.reduce((s, v) => s + v.split_percent, 0) - 100) < 1;
-      case 4: return selectedLists.length > 0 || selectedSegments.length > 0;
-      case 5: return true;
-      case 6: return campaignName.trim() !== '' && (sendMode === 'immediate' || !!scheduledAt);
-      default: return false;
+  const getStepErrors = (s: number): string[] => {
+    const errors: string[] = [];
+    switch (s) {
+      case 1:
+        if (selectedISPs.length === 0) errors.push('Select at least one target ISP');
+        break;
+      case 2:
+        if (!selectedDomain) errors.push('Select a sending domain');
+        break;
+      case 3:
+        variants.forEach(v => {
+          if (!v.from_name.trim()) errors.push(`Variant ${v.variant_name}: From Name is required`);
+          if (!v.subject.trim()) errors.push(`Variant ${v.variant_name}: Subject Line is required`);
+          if (!v.html_content.trim()) errors.push(`Variant ${v.variant_name}: HTML Content is required`);
+        });
+        if (Math.abs(variants.reduce((sum, v) => sum + v.split_percent, 0) - 100) >= 1) {
+          errors.push('Split percentages must sum to 100%');
+        }
+        break;
+      case 4:
+        if (selectedLists.length === 0 && selectedSegments.length === 0) errors.push('Select at least one list or segment');
+        break;
+      case 6:
+        if (!campaignName.trim()) errors.push('Campaign name is required');
+        if (sendMode === 'scheduled' && !scheduledAt) errors.push('Scheduled date and time is required');
+        break;
     }
+    return errors;
+  };
+
+  const canProceed = (): boolean => getStepErrors(step).length === 0;
+
+  const showErr = (s: number) => !!stepAttempted[s];
+
+  const fieldBorder = (isInvalid: boolean) =>
+    isInvalid && showErr(step)
+      ? '1px solid #ef4444'
+      : '1px solid rgba(0,200,255,0.08)';
+
+  const RequiredDot: React.FC = () => (
+    <span style={{ color: '#ef4444', marginLeft: 2, fontSize: 10 }}>*</span>
+  );
+
+  const StepErrorBanner: React.FC<{ stepNum: number }> = ({ stepNum }) => {
+    const errors = getStepErrors(stepNum);
+    if (!showErr(stepNum) || errors.length === 0) return null;
+    return (
+      <div style={{
+        background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
+        borderRadius: 8, padding: '10px 14px', marginBottom: 16,
+        animation: 'igFadeSlide 0.3s ease both',
+      }}>
+        {errors.map((e, i) => (
+          <div key={i} style={{ fontSize: 12, color: '#ef4444', padding: '2px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} /> {e}
+          </div>
+        ))}
+      </div>
+    );
   };
 
   // ── Deploy ───────────────────────────────────────────────────────────────
@@ -623,10 +675,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const renderStep1 = () => (
     <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Select Target ISPs</h3>
+      <h3 style={{ margin: '0 0 4px' }}>Select Target ISPs<RequiredDot /></h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose which ISP ecosystems to target. Cards show live health from the governance engine.
       </p>
+      <StepErrorBanner stepNum={1} />
 
       {/* Skeleton loading */}
       {readinessLoading && ispReadiness.length === 0 && (
@@ -779,10 +832,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const renderStep2 = () => (
     <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain</h3>
+      <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain<RequiredDot /></h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
       </p>
+      <StepErrorBanner stepNum={2} />
       {domainError && (
         <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 12 }}>
           <p style={{ margin: '0 0 8px' }}>{domainError}</p>
@@ -1002,6 +1056,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           )}
         </div>
       </div>
+      <StepErrorBanner stepNum={3} />
 
       {showTemplatePicker && (
         <div style={{ background: '#0d1526', border: '1px solid #00b0ff', borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -1055,21 +1110,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             <div>
-              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>From Name</label>
+              <label style={{ fontSize: 11, color: showErr(3) && !v.from_name.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>From Name<RequiredDot /></label>
               <input
                 value={v.from_name} placeholder="e.g. Jarvis Team"
                 onChange={e => updateVariant(idx, 'from_name', e.target.value)}
-                style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
+                style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.from_name.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
               />
+              {showErr(3) && !v.from_name.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Required</div>}
             </div>
             <div>
-              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Subject Line <span style={{ color: '#64748b' }}>({v.subject.length} chars)</span></label>
+              <label style={{ fontSize: 11, color: showErr(3) && !v.subject.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Subject Line<RequiredDot /> <span style={{ color: '#64748b' }}>({v.subject.length} chars)</span></label>
               <input
                 value={v.subject} placeholder="e.g. Don't miss this deal"
                 onChange={e => updateVariant(idx, 'subject', e.target.value)}
-                style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
+                style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.subject.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
               />
-              <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid: {'{{ first_name }}'}, {'{{ last_name }}'}, {'{{ email }}'}</div>
+              {showErr(3) && !v.subject.trim()
+                ? <div style={{ fontSize: 10, color: '#ef4444', marginTop: 2 }}>Required</div>
+                : <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid: {'{{ first_name }}'}, {'{{ last_name }}'}, {'{{ email }}'}</div>
+              }
             </div>
           </div>
           <div style={{ marginBottom: 10 }}>
@@ -1086,7 +1145,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           {/* HTML Content with merge tag toolbar, upload, and preview */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>HTML Content</label>
+              <label style={{ fontSize: 11, color: showErr(3) && !v.html_content.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)' }}>HTML Content<RequiredDot /></label>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 {/* Upload HTML file */}
                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: 'rgba(180,210,240,0.65)', cursor: 'pointer' }}>
@@ -1136,8 +1195,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               ref={el => { textareaRefs.current[idx] = el; }}
               value={v.html_content} rows={12} placeholder="Paste or type HTML content here, or upload an .html file above..."
               onChange={e => updateVariant(idx, 'html_content', e.target.value)}
-              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150 }}
+              style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.html_content.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150, transition: 'border-color 0.2s' }}
             />
+            {showErr(3) && !v.html_content.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>HTML content is required</div>}
 
             {/* Show detected liquid tags */}
             {v.html_content.match(/\{\{[^}]+\}\}/g) && (
@@ -1236,10 +1296,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
     return (
       <div className="wiz-step-content ig-fade-in">
-        <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression</h3>
+        <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression<RequiredDot /></h3>
         <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
           Build your target audience and apply suppression filters.
         </p>
+        <StepErrorBanner stepNum={4} />
 
         {audienceError && (
           <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1717,6 +1778,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const renderStep6 = () => (
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
+      <StepErrorBanner stepNum={6} />
 
       {deployResult ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
@@ -1752,12 +1814,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         <>
           {/* Campaign name */}
           <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Campaign Name</label>
+            <label style={{ fontSize: 12, color: showErr(6) && !campaignName.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Campaign Name<RequiredDot /></label>
             <input
               value={campaignName} placeholder="e.g. Q1 Gmail Warmup Blast"
               onChange={e => setCampaignName(e.target.value)}
-              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
+              style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!campaignName.trim()), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
             />
+            {showErr(6) && !campaignName.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Campaign name is required</div>}
           </div>
 
           {/* Send mode toggle */}
@@ -1852,14 +1915,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
               )}
               <div>
-                <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Send Date & Time</label>
+                <label style={{ fontSize: 12, color: showErr(6) && !scheduledAt ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Send Date & Time<RequiredDot /></label>
                 <input
                   type="datetime-local"
                   value={scheduledAt}
                   onChange={e => setScheduledAt(e.target.value)}
                   min={new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16)}
-                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box' }}
+                  style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!scheduledAt), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
                 />
+                {showErr(6) && !scheduledAt && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Scheduled date and time is required</div>}
               </div>
             </div>
           )}
@@ -1911,14 +1975,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
           <button
             className="ig-btn-glow ig-ripple"
-            onClick={handleDeploy}
-            disabled={deploying || !campaignName.trim() || (sendMode === 'scheduled' && !scheduledAt)}
+            onClick={() => {
+              const errors = getStepErrors(6);
+              if (errors.length > 0) {
+                setStepAttempted(prev => ({ ...prev, 6: true }));
+                return;
+              }
+              handleDeploy();
+            }}
+            disabled={deploying}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               width: '100%', padding: '14px 0',
               background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
               color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
-              cursor: (deploying || (sendMode === 'scheduled' && !scheduledAt)) ? 'not-allowed' : 'pointer',
+              cursor: deploying ? 'not-allowed' : 'pointer',
             }}
           >
             {deploying
@@ -1962,22 +2033,30 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         {STEPS.map((s) => {
           const isActive = s.id === step;
           const isComplete = s.id < step;
+          const hasErrors = stepAttempted[s.id] && getStepErrors(s.id).length > 0;
           return (
             <button
               key={s.id}
               className={isActive ? 'ig-pulse-cyan' : undefined}
               onClick={() => { if (s.id < step) setStep(s.id); }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6,
+                display: 'flex', alignItems: 'center', gap: 6, position: 'relative',
                 padding: '6px 12px', borderRadius: 6, border: 'none',
-                background: isActive ? 'rgba(0,200,255,0.12)' : 'transparent',
-                color: isActive ? '#00b0ff' : isComplete ? '#10b981' : '#64748b',
+                background: isActive ? 'rgba(0,200,255,0.12)' : hasErrors ? 'rgba(239,68,68,0.08)' : 'transparent',
+                color: hasErrors ? '#ef4444' : isActive ? '#00b0ff' : isComplete ? '#10b981' : '#64748b',
                 fontSize: 12, cursor: s.id < step ? 'pointer' : 'default',
                 whiteSpace: 'nowrap', fontWeight: isActive ? 600 : 400,
+                transition: 'all 0.2s',
               }}
             >
-              <FontAwesomeIcon icon={isComplete ? faCheck : s.icon} />
+              <FontAwesomeIcon icon={hasErrors ? faExclamationTriangle : isComplete ? faCheck : s.icon} />
               {s.label}
+              {hasErrors && (
+                <span style={{
+                  position: 'absolute', top: 2, right: 4, width: 6, height: 6,
+                  borderRadius: '50%', background: '#ef4444',
+                }} />
+              )}
             </button>
           );
         })}
@@ -2011,14 +2090,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           {step < 6 && (
             <button
               className="ig-btn-glow ig-ripple"
-              onClick={() => setStep(Math.min(6, step + 1))}
-              disabled={!canProceed()}
+              onClick={() => {
+                if (canProceed()) {
+                  setStepAttempted(prev => ({ ...prev, [step]: false }));
+                  setStep(Math.min(6, step + 1));
+                } else {
+                  setStepAttempted(prev => ({ ...prev, [step]: true }));
+                }
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '8px 18px', borderRadius: 8, border: 'none',
-                background: canProceed() ? '#00b0ff' : '#4b5563',
+                background: '#00b0ff',
                 color: '#fff', fontSize: 13,
-                cursor: canProceed() ? 'pointer' : 'not-allowed',
+                cursor: 'pointer',
               }}
             >
               Next <FontAwesomeIcon icon={faArrowRight} />
