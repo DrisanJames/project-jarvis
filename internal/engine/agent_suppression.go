@@ -28,20 +28,13 @@ type SuppressionAgent struct {
 }
 
 // suppressionTriggerCategories are bounce categories that cause instant suppression.
+// Only permanent/hard failures belong here. Transient issues (quota, throttling,
+// deferrals, policy blocks) should NOT trigger permanent suppression — they are
+// temporary conditions tied to IP reputation or volume, not the recipient.
 var suppressionTriggerCategories = map[string]bool{
-	"bad-mailbox":          true,
-	"bad-domain":           true,
-	"inactive-mailbox":     true,
-	"no-answer-from-host":  true,
-	"routing-errors":       true,
-	"quota-issues":         true,
-	"message-too-large":    true,
-	"content-related":      true,
-	"too-many-connections": true,
-	"policy-related":       true,
-	"spam-related":         true,
-	"protocol-errors":      true,
-	"relaying-issues":      true,
+	"bad-mailbox":      true,
+	"bad-domain":       true,
+	"inactive-mailbox": true,
 }
 
 // NewSuppressionAgent creates a new ISP-scoped suppression agent.

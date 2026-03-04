@@ -42,6 +42,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	query := `
 		SELECT c.id, c.name, COALESCE(c.subject,''), c.status,
 			   COALESCE(c.total_recipients,0), COALESCE(c.sent_count,0),
+			   COALESCE(c.delivered_count,0),
 			   COALESCE(c.open_count,0), COALESCE(c.click_count,0),
 			   COALESCE(c.bounce_count,0), COALESCE(c.complaint_count,0),
 			   COALESCE(c.unsubscribe_count,0), COALESCE(c.revenue,0),
@@ -50,7 +51,9 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			   c.created_at, c.scheduled_at, c.started_at, c.completed_at,
 			   COALESCE(p.name, '') as profile_name,
 			   COALESCE(p.vendor_type, '') as vendor_type,
-			   COALESCE(l.name, '') as list_name
+			   COALESCE(l.name, '') as list_name,
+			   COALESCE(c.list_ids::text, '[]'),
+			   LEFT(COALESCE(c.html_content,''), 500)
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles p ON c.sending_profile_id = p.id
 		LEFT JOIN mailing_lists l ON c.list_id = l.id
@@ -71,23 +74,42 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	campaigns := []map[string]interface{}{}
 	for rows.Next() {
 		var id, name, subject, status string
-		var totalRecipients, sentCount, openCount, clickCount int
+		var totalRecipients, sentCount, deliveredCount, openCount, clickCount int
 		var bounceCount, complaintCount, unsubscribeCount int
 		var revenue float64
 		var fromName, fromEmail, throttleSpeed string
 		var profileName, vendorType, listName string
+		var listIDsJSON, htmlPreview string
 		var createdAt time.Time
 		var scheduledAt, startedAt, completedAt sql.NullTime
 
 		rows.Scan(&id, &name, &subject, &status,
-			&totalRecipients, &sentCount,
+			&totalRecipients, &sentCount, &deliveredCount,
 			&openCount, &clickCount,
 			&bounceCount, &complaintCount,
 			&unsubscribeCount, &revenue,
 			&fromName, &fromEmail,
 			&throttleSpeed,
 			&createdAt, &scheduledAt, &startedAt, &completedAt,
-			&profileName, &vendorType, &listName)
+			&profileName, &vendorType, &listName,
+			&listIDsJSON, &htmlPreview)
+
+		// Resolve list names from list_ids JSONB for multi-list campaigns
+		var listNames []string
+		if listName != "" {
+			listNames = append(listNames, listName)
+		}
+		if listIDsJSON != "" && listIDsJSON != "[]" && listIDsJSON != "null" {
+			var listIDs []string
+			if err := json.Unmarshal([]byte(listIDsJSON), &listIDs); err == nil && len(listIDs) > 0 {
+				for _, lid := range listIDs {
+					var ln string
+					if err := cb.db.QueryRowContext(ctx, `SELECT name FROM mailing_lists WHERE id = $1`, lid).Scan(&ln); err == nil && ln != "" {
+						listNames = append(listNames, ln)
+					}
+				}
+			}
+		}
 
 		campaign := map[string]interface{}{
 			"id":                id,
@@ -96,6 +118,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			"status":            status,
 			"total_recipients":  totalRecipients,
 			"sent_count":        sentCount,
+			"delivered_count":   deliveredCount,
 			"open_count":        openCount,
 			"click_count":       clickCount,
 			"bounce_count":      bounceCount,
@@ -105,12 +128,14 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			"from_name":         fromName,
 			"from_email":        fromEmail,
 			"throttle_speed":    throttleSpeed,
-			"open_rate":         calcRate(openCount, sentCount),
-			"click_rate":        calcRate(clickCount, sentCount),
+			"open_rate":         calcRate(openCount, maxInt(deliveredCount, sentCount)),
+			"click_rate":        calcRate(clickCount, maxInt(deliveredCount, sentCount)),
 			"created_at":        createdAt,
 			"profile_name":      profileName,
 			"vendor":            vendorType,
 			"list_name":         listName,
+			"list_names":        listNames,
+			"html_preview":      htmlPreview,
 		}
 
 		if scheduledAt.Valid {

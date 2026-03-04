@@ -573,8 +573,9 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		}
 		
 		// Build base query — check BOTH global suppressions AND named suppression lists
+		// DISTINCT ON (LOWER(s.email)) ensures one row per email even across lists
 		query = `
-			SELECT DISTINCT s.id, s.email
+			SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
 			FROM mailing_subscribers s
 			WHERE s.status = 'confirmed'
 			AND NOT EXISTS (
@@ -656,7 +657,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			}
 		}
 		
-		query += " ORDER BY s.id"
+		query += " ORDER BY LOWER(s.email), s.id"
 	} else if campaign.ListID.Valid {
 		// Build list-based query with both global + named suppression checks
 		if len(suppressionListIDs) > 0 {
@@ -695,7 +696,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		// Resolve from list_ids JSONB (PMTA wizard multi-list path)
 		if len(suppressionListIDs) > 0 {
 			query = `
-				SELECT DISTINCT s.id, s.email
+				SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
 				FROM mailing_subscribers s
 				WHERE s.list_id = ANY($1)
 				AND s.status = 'confirmed'
@@ -708,12 +709,12 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 					WHERE se.md5_hash = MD5(LOWER(TRIM(s.email)))
 					  AND se.list_id = ANY($2)
 				)
-				ORDER BY s.id
+				ORDER BY LOWER(s.email), s.id
 			`
 			args = []interface{}{pq.Array(campaign.ListIDs), pq.Array(suppressionListIDs)}
 		} else {
 			query = `
-				SELECT DISTINCT s.id, s.email
+				SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
 				FROM mailing_subscribers s
 				WHERE s.list_id = ANY($1)
 				AND s.status = 'confirmed'
@@ -721,7 +722,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 					SELECT 1 FROM mailing_suppressions sup
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
 				)
-				ORDER BY s.id
+				ORDER BY LOWER(s.email), s.id
 			`
 			args = []interface{}{pq.Array(campaign.ListIDs)}
 		}
@@ -844,8 +845,14 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 
 	queued := 0
 	variantIdx := 0
+	seenEmails := make(map[string]bool, len(subscribers))
 
 	for i, sub := range subscribers {
+		emailKey := strings.ToLower(strings.TrimSpace(sub.Email))
+		if seenEmails[emailKey] {
+			continue
+		}
+		seenEmails[emailKey] = true
 		// Check for cancel/pause every EnqueueBatchSize rows
 		if i > 0 && i%EnqueueBatchSize == 0 {
 			var status string

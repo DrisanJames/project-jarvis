@@ -70,6 +70,9 @@ export interface Campaign {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  list_name?: string;
+  list_names?: string[];
+  html_preview?: string;
 }
 
 export interface CampaignStats {

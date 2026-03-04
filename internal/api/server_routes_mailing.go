@@ -634,6 +634,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				s.mailingSvc.SetGlobalSuppressionHub(globalHub)
 			}
 			campaignBuilder.SetGlobalSuppressionHub(globalHub)
+			pmtaCampaignAPI.SetGlobalSuppressionHub(globalHub)
 
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)

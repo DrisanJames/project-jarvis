@@ -40,7 +40,7 @@ func NewConsciousnessService(
 
 // RegisterRoutes mounts all consciousness and campaign event routes.
 func (s *ConsciousnessService) RegisterRoutes(r chi.Router) {
-	r.Route("/api/mailing/consciousness", func(r chi.Router) {
+	r.Route("/consciousness", func(r chi.Router) {
 		r.Get("/state", s.HandleGetState)
 		r.Get("/philosophies", s.HandleGetPhilosophies)
 		r.Get("/philosophies/{isp}", s.HandleGetISPPhilosophies)
@@ -48,7 +48,7 @@ func (s *ConsciousnessService) RegisterRoutes(r chi.Router) {
 		r.Get("/thoughts/stream", s.HandleThoughtStream)
 	})
 
-	r.Route("/api/mailing/campaign-events", func(r chi.Router) {
+	r.Route("/campaign-events", func(r chi.Router) {
 		r.Get("/campaigns", s.HandleGetCampaigns)
 		r.Get("/campaigns/{campaignId}/metrics", s.HandleGetCampaignMetrics)
 		r.Get("/campaigns/{campaignId}/report", s.HandleGetCampaignReport)

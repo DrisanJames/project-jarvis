@@ -1128,6 +1128,12 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
                 <span>{campaign.preview_text}</span>
               </div>
             )}
+            {((campaign.list_names && campaign.list_names.length > 0) || campaign.list_name) && (
+              <div className="details-row">
+                <span className="label">Target Lists:</span>
+                <span>{(campaign.list_names && campaign.list_names.length > 0 ? campaign.list_names : [campaign.list_name]).filter(Boolean).join(', ')}</span>
+              </div>
+            )}
             <div className="details-row">
               <span className="label">Created:</span>
               <span>{new Date(campaign.created_at).toLocaleString()}</span>
@@ -1155,6 +1161,10 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
                 <div className="stat-box">
                   <span className="stat-number">{(campaign.sent_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Sent</span>
+                </div>
+                <div className="stat-box">
+                  <span className="stat-number" style={{ color: '#00b894' }}>{(campaign.delivered_count || 0).toLocaleString()}</span>
+                  <span className="stat-label">Delivered</span>
                 </div>
                 <div className="stat-box">
                   <span className="stat-number">{(campaign.open_count || 0).toLocaleString()}</span>
@@ -1185,12 +1195,12 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
           </div>
         </div>
 
-        {campaign.html_content && (
+        {(campaign.html_content || campaign.html_preview) && (
           <div className="details-section">
-            <h4>👁️ Email Preview</h4>
+            <h4>Email Preview</h4>
             <div className="email-preview">
               <iframe 
-                srcDoc={campaign.html_content}
+                srcDoc={campaign.html_content || campaign.html_preview}
                 title="Email Preview"
                 sandbox="allow-same-origin"
               />
@@ -1342,17 +1352,26 @@ export const CampaignsManager: React.FC = () => {
                       </div>
                     </div>
 
+                    {((campaign.list_names && campaign.list_names.length > 0) || campaign.list_name) && (
+                      <div className="campaign-lists" style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.5rem' }}>
+                        Lists: {(campaign.list_names && campaign.list_names.length > 0 ? campaign.list_names : [campaign.list_name]).filter(Boolean).join(', ')}
+                      </div>
+                    )}
                     <div className="campaign-stats">
                       <div className="stat-item">
                         <span className="stat-label">Sent</span>
                         <span className="stat-value">{(campaign.sent_count || 0).toLocaleString()}</span>
                       </div>
                       <div className="stat-item">
+                        <span className="stat-label">Delivered</span>
+                        <span className="stat-value" style={{ color: '#00b894' }}>{(campaign.delivered_count || 0).toLocaleString()}</span>
+                      </div>
+                      <div className="stat-item">
                         <span className="stat-label">Opens</span>
                         <span className="stat-value">
                           {(campaign.open_count || 0).toLocaleString()}
                           <span className="stat-rate">
-                            ({calculateRate(campaign.open_count || 0, campaign.sent_count || 0)}%)
+                            ({calculateRate(campaign.open_count || 0, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%)
                           </span>
                         </span>
                       </div>
@@ -1361,7 +1380,7 @@ export const CampaignsManager: React.FC = () => {
                         <span className="stat-value">
                           {(campaign.click_count || 0).toLocaleString()}
                           <span className="stat-rate">
-                            ({calculateRate(campaign.click_count || 0, campaign.sent_count || 0)}%)
+                            ({calculateRate(campaign.click_count || 0, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%)
                           </span>
                         </span>
                       </div>
@@ -1400,18 +1419,18 @@ export const CampaignsManager: React.FC = () => {
                     </div>
                   </div>
 
-                  {campaign.sent_count > 0 && (
+                  {(campaign.sent_count > 0 || campaign.delivered_count > 0) && (
                     <div className="campaign-progress">
                       <div className="progress-bar">
                         <div
                           className="progress-fill open"
-                          style={{ width: `${calculateRate(campaign.open_count, campaign.sent_count)}%` }}
+                          style={{ width: `${calculateRate(campaign.open_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%` }}
                         />
                       </div>
                       <div className="progress-labels">
-                        <span>Open Rate: {calculateRate(campaign.open_count, campaign.sent_count)}%</span>
-                        <span>Click Rate: {calculateRate(campaign.click_count, campaign.sent_count)}%</span>
-                        <span>Bounce Rate: {calculateRate(campaign.bounce_count, campaign.sent_count)}%</span>
+                        <span>Open Rate: {calculateRate(campaign.open_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
+                        <span>Click Rate: {calculateRate(campaign.click_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
+                        <span>Bounce Rate: {calculateRate(campaign.bounce_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
                       </div>
                     </div>
                   )}

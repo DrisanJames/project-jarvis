@@ -191,9 +191,10 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	})
 }
 
-// routeToGlobalSuppression sends any negative signal to the global hub.
-// Hard bounces, complaints, and repeated transients all result in immediate
-// global suppression — ISP-agnostic, zero tolerance.
+// routeToGlobalSuppression suppresses only permanent failures: hard bounces
+// (bad-mailbox, bad-domain, inactive-mailbox) and FBL complaints. Transient
+// issues like quota, throttling, and deferrals are NOT suppressed — they are
+// temporary and the recipient should be retried on future campaigns.
 func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	if rec.Recipient == "" {
 		return
@@ -202,11 +203,13 @@ func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	var reason, source string
 	switch rec.Type {
 	case "b": // bounce
-		reason = "hard_bounce"
-		if rec.BounceCat == "quota-issues" || rec.BounceCat == "no-answer-from-host" {
-			reason = "soft_bounce"
+		switch rec.BounceCat {
+		case "bad-mailbox", "bad-domain", "inactive-mailbox":
+			reason = "hard_bounce"
+			source = "pmta_bounce"
+		default:
+			return
 		}
-		source = "pmta_bounce"
 	case "f": // FBL complaint
 		reason = "spam_complaint"
 		source = "pmta_fbl"

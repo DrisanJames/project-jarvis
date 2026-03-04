@@ -27,6 +27,8 @@ type PMTACampaignService struct {
 	convictions  *engine.ConvictionStore
 	processor    *engine.SignalProcessor
 	orgID        string
+	suppMatcher  *SuppressionMatcher
+	globalHub    *engine.GlobalSuppressionHub
 }
 
 // NewPMTACampaignService creates the service.
@@ -43,7 +45,12 @@ func NewPMTACampaignService(
 		convictions:  convictions,
 		processor:    processor,
 		orgID:        orgID,
+		suppMatcher:  NewSuppressionMatcher(),
 	}
+}
+
+func (s *PMTACampaignService) SetGlobalSuppressionHub(hub *engine.GlobalSuppressionHub) {
+	s.globalHub = hub
 }
 
 // RegisterRoutes mounts all PMTA campaign wizard routes.
@@ -378,7 +385,8 @@ func buildISPStrategy(isp engine.ISP, tp engine.ThroughputInfo, ws engine.Warmup
 		ws.WarmedIPs, ws.DailyLimit/1000, strings.ToUpper(string(ci.DominantVerdict)), ci.Confidence*100)
 }
 
-// HandleEstimateAudience returns audience size with per-ISP breakdown.
+// HandleEstimateAudience returns audience size with per-ISP breakdown using
+// bloom-filter-powered suppression checks for accurate counts.
 func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *http.Request) {
 	var req engine.AudienceEstimateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -389,18 +397,78 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
-	totalRecipients := 0
-
-	// Count from lists
-	for _, listID := range req.ListIDs {
-		var count int
-		s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = $1 AND status IN ('active','confirmed')`,
-			listID).Scan(&count)
-		totalRecipients += count
+	// Load suppression lists into bloom filter for O(1) lookup
+	if len(req.SuppressionListIDs) > 0 {
+		for _, slID := range req.SuppressionListIDs {
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT md5_hash FROM mailing_suppression_entries WHERE list_id = $1`, slID)
+			if err == nil {
+				var hashes []string
+				for rows.Next() {
+					var h string
+					if rows.Scan(&h) == nil {
+						hashes = append(hashes, h)
+					}
+				}
+				rows.Close()
+				if len(hashes) > 0 {
+					s.suppMatcher.LoadList(slID, hashes)
+				}
+			}
+		}
 	}
 
-	// Count from segments (estimate)
+	// Stream subscriber emails from selected lists, check suppression per-email,
+	// and build exact ISP breakdown in one pass.
+	totalRecipients := 0
+	suppressedCount := 0
+	ispBreakdown := make(map[string]int)
+	seenEmails := make(map[string]bool)
+
+	if len(req.ListIDs) > 0 {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT s.email
+			FROM mailing_subscribers s
+			WHERE s.list_id = ANY($1) AND s.status IN ('active','confirmed')
+		`, pq.Array(req.ListIDs))
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var email string
+				if rows.Scan(&email) != nil {
+					continue
+				}
+				emailLower := strings.ToLower(strings.TrimSpace(email))
+				if seenEmails[emailLower] {
+					continue
+				}
+				seenEmails[emailLower] = true
+				totalRecipients++
+
+				suppressed := false
+				if len(req.SuppressionListIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, req.SuppressionListIDs) {
+					suppressed = true
+				}
+				if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressed(emailLower) {
+					suppressed = true
+				}
+
+				if suppressed {
+					suppressedCount++
+					continue
+				}
+
+				domain := emailLower
+				if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
+					domain = emailLower[idx+1:]
+				}
+				isp := domainToISPLookup(domain)
+				ispBreakdown[isp]++
+			}
+		}
+	}
+
+	// Segment-based counts (less precise — use cached_count with proportional estimation)
 	for _, segID := range req.SegmentIDs {
 		var count int
 		s.db.QueryRowContext(ctx,
@@ -409,58 +477,7 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		totalRecipients += count
 	}
 
-	// Count suppressions to remove
-	suppressedCount := 0
-	for _, slID := range req.SuppressionListIDs {
-		var count int
-		s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM mailing_suppression_entries WHERE list_id = $1`,
-			slID).Scan(&count)
-		suppressedCount += count
-	}
-
 	afterSuppressions := totalRecipients - suppressedCount
-	if afterSuppressions < 0 {
-		afterSuppressions = 0
-	}
-
-	// Real ISP breakdown from subscriber email domains
-	ispBreakdown := make(map[string]int)
-	if len(req.ListIDs) > 0 {
-		domainRows, dErr := s.db.QueryContext(ctx, `
-			SELECT LOWER(SUBSTRING(s.email FROM POSITION('@' IN s.email) + 1)) AS domain,
-			       COUNT(*) AS cnt
-			FROM mailing_subscribers s
-			WHERE s.list_id = ANY($1) AND s.status = 'active'
-			GROUP BY domain
-			ORDER BY cnt DESC
-		`, pq.Array(req.ListIDs))
-		if dErr == nil {
-			defer domainRows.Close()
-			for domainRows.Next() {
-				var domain string
-				var cnt int
-				if domainRows.Scan(&domain, &cnt) == nil {
-					isp := domainToISPLookup(domain)
-					ispBreakdown[isp] += cnt
-				}
-			}
-		}
-	}
-
-	// Subtract suppressions proportionally
-	if suppressedCount > 0 && len(ispBreakdown) > 0 {
-		total := 0
-		for _, c := range ispBreakdown {
-			total += c
-		}
-		if total > 0 {
-			ratio := float64(afterSuppressions) / float64(total)
-			for isp, c := range ispBreakdown {
-				ispBreakdown[isp] = int(float64(c) * ratio)
-			}
-		}
-	}
 
 	// Filter to only targeted ISPs if specified
 	if len(req.TargetISPs) > 0 {
