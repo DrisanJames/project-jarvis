@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -78,6 +80,41 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Get("/track/click/{data}/{sig}", svc.HandleTrackClick)
 		s.router.Get("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
 		s.router.Get("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)
+		// RFC 8058: mail clients POST to the List-Unsubscribe URL with List-Unsubscribe=One-Click
+		s.router.Post("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
+		s.router.Post("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)
+
+		// Public preferences page — redirects to frontend or serves minimal page
+		s.router.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
+			sid := r.URL.Query().Get("sid")
+			token := r.URL.Query().Get("token")
+			if sid == "" && token == "" {
+				http.Error(w, "Missing subscriber ID", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Email Preferences</title>
+<style>body{font-family:Arial,sans-serif;max-width:500px;margin:60px auto;padding:20px;color:#333;text-align:center}
+h1{font-size:22px}p{color:#666;line-height:1.6}.btn{display:inline-block;padding:12px 24px;background:#667eea;color:#fff;
+text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
+<h1>Email Preferences</h1><p>To manage your email preferences, please use the link provided in the email you received.</p>
+<p>If you'd like to unsubscribe from all emails, <a href="/track/unsubscribe/` + sid + `">click here</a>.</p>
+</body></html>`))
+		})
+
+		// Public unsubscribe page with query params (context_builder format)
+		s.router.Get("/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
+			sid := r.URL.Query().Get("sid")
+			cid := r.URL.Query().Get("cid")
+			token := r.URL.Query().Get("token")
+			if sid == "" {
+				http.Error(w, "Missing parameters", http.StatusBadRequest)
+				return
+			}
+			_ = token
+			data := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", cid, sid)))
+			http.Redirect(w, r, "/track/unsubscribe/"+data, http.StatusFound)
+		})
 
 		// One-click unsubscribe — public (RFC 8058, email clients POST directly)
 		var oneClickHandler http.HandlerFunc
@@ -103,6 +140,8 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			r.Post("/lists", svc.HandleCreateList)
 			r.Get("/lists/{listId}/subscribers", svc.HandleGetSubscribers)
 			r.Post("/lists/{listId}/subscribers", svc.HandleAddSubscriber)
+			r.Patch("/lists/{listId}/subscribers/{email}", svc.HandlePatchSubscriber)
+			r.Delete("/lists/{listId}/subscribers/{email}", svc.HandleDeleteSubscriber)
 			r.Get("/lists/{listId}/recommendations", svc.HandleListRecommendations)
 
 			// Suppressions
@@ -195,6 +234,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			r.Get("/journeys/{workflowId}/analytics", advSvc.HandleGetJourneyAnalytics)
 			r.Get("/journeys/subscriber/{email}", advSvc.HandleGetSubscriberJourney)
 			r.Post("/journeys/{workflowId}/enroll", advSvc.HandleEnrollSubscriberInJourney)
+			r.Post("/journey-center/journeys/{workflowId}/enrollments", advSvc.HandleEnrollSubscriberInJourney)
 			
 			// Templates
 			r.Get("/templates", advSvc.HandleGetTemplates)

@@ -323,3 +323,73 @@ func (svc *MailingService) HandleRemoveSuppression(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"removed": email})
 }
+
+// HandlePatchSubscriber updates a subscriber's custom fields by email.
+func (svc *MailingService) HandlePatchSubscriber(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	listID := chi.URLParam(r, "listId")
+	emailParam := chi.URLParam(r, "email")
+	email := strings.ToLower(strings.TrimSpace(emailParam))
+
+	var input struct {
+		Name         string                 `json:"name"`
+		FirstName    string                 `json:"first_name"`
+		LastName     string                 `json:"last_name"`
+		Status       string                 `json:"status"`
+		CustomFields map[string]interface{} `json:"custom_fields"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	if input.FirstName == "" && input.Name != "" {
+		parts := strings.SplitN(input.Name, " ", 2)
+		input.FirstName = parts[0]
+		if len(parts) > 1 {
+			input.LastName = parts[1]
+		}
+	}
+
+	if input.FirstName != "" {
+		svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET first_name = $1, updated_at = NOW() WHERE list_id = $2 AND LOWER(email) = $3`,
+			input.FirstName, listID, email)
+	}
+	if input.LastName != "" {
+		svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET last_name = $1, updated_at = NOW() WHERE list_id = $2 AND LOWER(email) = $3`,
+			input.LastName, listID, email)
+	}
+	if input.Status != "" {
+		svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = $1, updated_at = NOW() WHERE list_id = $2 AND LOWER(email) = $3`,
+			input.Status, listID, email)
+	}
+	if len(input.CustomFields) > 0 {
+		cfJSON, _ := json.Marshal(input.CustomFields)
+		svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET custom_fields = COALESCE(custom_fields, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE list_id = $2 AND LOWER(email) = $3`,
+			string(cfJSON), listID, email)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "email": email})
+}
+
+// HandleDeleteSubscriber removes a subscriber by email from a list.
+func (svc *MailingService) HandleDeleteSubscriber(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	listID := chi.URLParam(r, "listId")
+	emailParam := chi.URLParam(r, "email")
+	email := strings.ToLower(strings.TrimSpace(emailParam))
+
+	result, err := svc.db.ExecContext(ctx, `DELETE FROM mailing_subscribers WHERE list_id = $1 AND LOWER(email) = $2`, listID, email)
+	if err != nil {
+		http.Error(w, `{"error":"failed to delete subscriber"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows > 0 {
+		svc.db.ExecContext(ctx, "UPDATE mailing_lists SET subscriber_count = GREATEST(subscriber_count - 1, 0) WHERE id = $1", listID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "email": email, "deleted": rows > 0})
+}
