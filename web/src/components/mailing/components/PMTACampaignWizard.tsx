@@ -149,7 +149,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const [step, setStep] = useState(1);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  const [audienceDataLoading, setAudienceDataLoading] = useState(false);
+  const [estimating, setEstimating] = useState(false);
+  const [intelLoading, setIntelLoading] = useState(false);
 
   // Step 1 state
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
@@ -230,7 +233,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   }, [orgId]);
 
   const fetchReadiness = useCallback(async () => {
-    setLoading(true);
+    setReadinessLoading(true);
     try {
       const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/readiness`);
       const data = await res.json();
@@ -238,7 +241,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     } catch (err) {
       console.warn('[Wizard] readiness fetch failed:', err);
     }
-    setLoading(false);
+    setReadinessLoading(false);
   }, [fetchWithRetry]);
 
   const fetchDomains = useCallback(async () => {
@@ -258,6 +261,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const fetchAudienceData = useCallback(async () => {
     setAudienceError('');
+    setAudienceDataLoading(true);
     try {
       const [listRes, segRes, suppRes] = await Promise.all([
         fetchWithRetry(`${API_BASE}/lists`),
@@ -282,6 +286,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     } catch {
       setAudienceError('Failed to load audience data — network error. Click retry.');
     }
+    setAudienceDataLoading(false);
   }, [fetchWithRetry]);
 
   const fetchAudienceEstimate = useCallback(async () => {
@@ -289,6 +294,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setAudienceEstimate(null);
       return;
     }
+    setEstimating(true);
     try {
       const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/estimate-audience`, {
         method: 'POST',
@@ -304,10 +310,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     } catch (err) {
       console.warn('[Wizard] audience estimate failed:', err);
     }
+    setEstimating(false);
   }, [fetchWithRetry, selectedLists, selectedSegments, selectedSuppLists, selectedISPs]);
 
   const fetchIntel = useCallback(async () => {
-    setLoading(true);
+    setIntelLoading(true);
     try {
       const audiencePerISP: Record<string, number> = {};
       if (audienceEstimate?.isp_breakdown) {
@@ -329,7 +336,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     } catch (err) {
       console.warn('[Wizard] intel fetch failed:', err);
     }
-    setLoading(false);
+    setIntelLoading(false);
   }, [fetchWithRetry, orgId, selectedISPs, audienceEstimate]);
 
   const fetchTemplates = useCallback(async () => {
@@ -620,80 +627,124 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose which ISP ecosystems to target. Cards show live health from the governance engine.
       </p>
-      {loading && <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading readiness data...</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-        {(ispReadiness.length > 0 ? ispReadiness : ALL_ISPS.map(isp => ({ isp, display_name: ISP_META[isp]?.label || isp, health_score: 0, status: 'unknown', active_agents: 0, total_agents: 6, bounce_rate: 0, deferral_rate: 0, complaint_rate: 0, warmup_ips: 0, active_ips: 0, quarantined_ips: 0, max_daily_capacity: 0, max_hourly_rate: 0, pool_name: '', has_emergency: false, warnings: [] }))).map((r: any) => {
-          const meta = ISP_META[r.isp] || { label: r.display_name, color: '#64748b', emoji: '🌐' };
-          const selected = selectedISPs.includes(r.isp);
-          return (
-            <div
-              role="button"
-              tabIndex={0}
-              aria-pressed={selected}
-              aria-label={`Select ${meta.label} ISP`}
-              key={r.isp}
-              className="ig-card-hover"
-              onClick={() => toggleISP(r.isp)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleISP(r.isp); } }}
-              style={{
-                background: selected ? `${meta.color}15` : '#0d1526',
-                border: `2px solid ${selected ? meta.color : 'rgba(0,200,255,0.08)'}`,
-                borderRadius: 10, padding: 14, cursor: 'pointer',
-                transition: 'all 0.2s',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <span style={{ fontSize: 18 }}>{meta.emoji} <strong style={{ color: meta.color }}>{meta.label}</strong></span>
-                {statusBadge(r.status)}
+
+      {/* Skeleton loading */}
+      {readinessLoading && ispReadiness.length === 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.06)', borderRadius: 10, padding: 14, height: 130 }}>
+              <div style={{ height: 18, width: '60%', background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 12, animation: 'igShimmer 1.5s ease infinite' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {[1, 2, 3, 4].map(j => (
+                  <div key={j} style={{ height: 14, background: 'rgba(0,200,255,0.04)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${j * 0.1}s` }} />
+                ))}
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
-                <span>Health: <strong style={{ color: '#e0e6f0' }}>{r.health_score.toFixed(0)}%</strong></span>
-                <span>Agents: <strong style={{ color: '#e0e6f0' }}>{r.active_agents}/{r.total_agents}</strong></span>
-                <span>Active IPs: <strong style={{ color: '#e0e6f0' }}>{r.active_ips}</strong></span>
-                <span>Warmup IPs: <strong style={{ color: '#e0e6f0' }}>{r.warmup_ips}</strong></span>
-                <span>Capacity: <strong style={{ color: '#e0e6f0' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
-                <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e0e6f0' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
-              </div>
-              {/* Per-IP status breakdown */}
-              {r.ip_details && r.ip_details.length > 0 && (
-                <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                  {r.ip_details.map((ipd: any) => (
-                    <span key={ipd.ip} title={`${ipd.ip} — Score: ${ipd.score.toFixed(0)}, Bounce: ${ipd.bounce_rate.toFixed(1)}%, Deferral: ${ipd.deferral_rate.toFixed(1)}%`} style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
-                      background: ipd.status === 'healthy' ? '#10b98118' : ipd.status === 'throttled' ? '#f59e0b18' : ipd.status === 'blocked' ? '#ef444418' : '#64748b18',
-                      color: ipd.status === 'healthy' ? '#10b981' : ipd.status === 'throttled' ? '#f59e0b' : ipd.status === 'blocked' ? '#ef4444' : '#8b8fa3',
-                      border: `1px solid ${ipd.status === 'healthy' ? '#10b98130' : ipd.status === 'throttled' ? '#f59e0b30' : ipd.status === 'blocked' ? '#ef444430' : '#64748b30'}`,
-                    }}>
-                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }} />
-                      {ipd.ip.split('.').slice(-1)[0]}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {(r.blocked_ips > 0 || r.throttled_ips > 0) && (
-                <div style={{ marginTop: 4, fontSize: 11, color: '#8b8fa3' }}>
-                  {r.healthy_ips > 0 && <span style={{ color: '#10b981' }}>{r.healthy_ips} healthy</span>}
-                  {r.throttled_ips > 0 && <span style={{ color: '#f59e0b', marginLeft: 8 }}>{r.throttled_ips} throttled</span>}
-                  {r.blocked_ips > 0 && <span style={{ color: '#ef4444', marginLeft: 8 }}>{r.blocked_ips} blocked</span>}
-                </div>
-              )}
-              {r.warnings && r.warnings.length > 0 && (
-                <div style={{ marginTop: 8, padding: '6px 8px', background: '#f59e0b15', borderRadius: 6, fontSize: 11, color: '#f59e0b' }}>
-                  <FontAwesomeIcon icon={faExclamationTriangle} /> {r.warnings[0]}
-                </div>
-              )}
             </div>
-          );
-        })}
-      </div>
-      {selectedISPs.length > 0 && (
-        <div style={{ marginTop: 12, padding: '8px 12px', background: '#10b98115', borderRadius: 8, fontSize: 13, color: '#10b981' }}>
-          <FontAwesomeIcon icon={faCheckCircle} /> {selectedISPs.length} ISP{selectedISPs.length > 1 ? 's' : ''} selected: {selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')}
+          ))}
         </div>
       )}
 
-      {selectedISPs.length > 0 && (
-        <div style={{ marginTop: 16, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+      {(!readinessLoading || ispReadiness.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {(ispReadiness.length > 0 ? ispReadiness : ALL_ISPS.map(isp => ({ isp, display_name: ISP_META[isp]?.label || isp, health_score: 0, status: 'unknown', active_agents: 0, total_agents: 6, bounce_rate: 0, deferral_rate: 0, complaint_rate: 0, warmup_ips: 0, active_ips: 0, quarantined_ips: 0, max_daily_capacity: 0, max_hourly_rate: 0, pool_name: '', has_emergency: false, warnings: [] }))).map((r: any) => {
+            const meta = ISP_META[r.isp] || { label: r.display_name, color: '#64748b', emoji: '🌐' };
+            const selected = selectedISPs.includes(r.isp);
+            return (
+              <div
+                role="button"
+                tabIndex={0}
+                aria-pressed={selected}
+                aria-label={`Select ${meta.label} ISP`}
+                key={r.isp}
+                className="ig-card-hover"
+                onClick={() => toggleISP(r.isp)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleISP(r.isp); } }}
+                style={{
+                  background: selected ? `${meta.color}15` : '#0d1526',
+                  border: `2px solid ${selected ? meta.color : 'rgba(0,200,255,0.08)'}`,
+                  borderRadius: 10, padding: 14, cursor: 'pointer',
+                  transition: 'all 0.25s ease',
+                  transform: selected ? 'scale(1.01)' : 'scale(1)',
+                  boxShadow: selected ? `0 0 20px ${meta.color}15` : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 18 }}>{meta.emoji} <strong style={{ color: meta.color }}>{meta.label}</strong></span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {statusBadge(r.status)}
+                    {selected && (
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 20, height: 20, borderRadius: '50%', background: meta.color, color: '#fff', fontSize: 10,
+                      }}>
+                        <FontAwesomeIcon icon={faCheck} />
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
+                  <span>Health: <strong style={{ color: '#e0e6f0' }}>{r.health_score.toFixed(0)}%</strong></span>
+                  <span>Agents: <strong style={{ color: '#e0e6f0' }}>{r.active_agents}/{r.total_agents}</strong></span>
+                  <span>Active IPs: <strong style={{ color: '#e0e6f0' }}>{r.active_ips}</strong></span>
+                  <span>Warmup IPs: <strong style={{ color: '#e0e6f0' }}>{r.warmup_ips}</strong></span>
+                  <span>Capacity: <strong style={{ color: '#e0e6f0' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
+                  <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e0e6f0' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
+                </div>
+                {r.ip_details && r.ip_details.length > 0 && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {r.ip_details.map((ipd: any) => (
+                      <span key={ipd.ip} title={`${ipd.ip} — Score: ${ipd.score.toFixed(0)}, Bounce: ${ipd.bounce_rate.toFixed(1)}%, Deferral: ${ipd.deferral_rate.toFixed(1)}%`} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
+                        background: ipd.status === 'healthy' ? '#10b98118' : ipd.status === 'throttled' ? '#f59e0b18' : ipd.status === 'blocked' ? '#ef444418' : '#64748b18',
+                        color: ipd.status === 'healthy' ? '#10b981' : ipd.status === 'throttled' ? '#f59e0b' : ipd.status === 'blocked' ? '#ef4444' : '#8b8fa3',
+                        border: `1px solid ${ipd.status === 'healthy' ? '#10b98130' : ipd.status === 'throttled' ? '#f59e0b30' : ipd.status === 'blocked' ? '#ef444430' : '#64748b30'}`,
+                      }}>
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }} />
+                        {ipd.ip.split('.').slice(-1)[0]}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(r.blocked_ips > 0 || r.throttled_ips > 0) && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: '#8b8fa3' }}>
+                    {r.healthy_ips > 0 && <span style={{ color: '#10b981' }}>{r.healthy_ips} healthy</span>}
+                    {r.throttled_ips > 0 && <span style={{ color: '#f59e0b', marginLeft: 8 }}>{r.throttled_ips} throttled</span>}
+                    {r.blocked_ips > 0 && <span style={{ color: '#ef4444', marginLeft: 8 }}>{r.blocked_ips} blocked</span>}
+                  </div>
+                )}
+                {r.warnings && r.warnings.length > 0 && (
+                  <div style={{ marginTop: 8, padding: '6px 8px', background: '#f59e0b15', borderRadius: 6, fontSize: 11, color: '#f59e0b' }}>
+                    <FontAwesomeIcon icon={faExclamationTriangle} /> {r.warnings[0]}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Selected ISPs summary - smooth reveal */}
+      <div style={{
+        maxHeight: selectedISPs.length > 0 ? 60 : 0,
+        opacity: selectedISPs.length > 0 ? 1 : 0,
+        overflow: 'hidden',
+        transition: 'max-height 0.35s ease, opacity 0.3s ease, margin 0.3s ease',
+        marginTop: selectedISPs.length > 0 ? 12 : 0,
+      }}>
+        <div style={{ padding: '8px 12px', background: '#10b98115', borderRadius: 8, fontSize: 13, color: '#10b981' }}>
+          <FontAwesomeIcon icon={faCheckCircle} /> {selectedISPs.length} ISP{selectedISPs.length > 1 ? 's' : ''} selected: {selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')}
+        </div>
+      </div>
+
+      {/* Volume Quotas - smooth slide-in */}
+      <div style={{
+        maxHeight: selectedISPs.length > 0 ? 400 : 0,
+        opacity: selectedISPs.length > 0 ? 1 : 0,
+        overflow: 'hidden',
+        transition: 'max-height 0.4s ease, opacity 0.35s ease, margin 0.3s ease',
+        marginTop: selectedISPs.length > 0 ? 16 : 0,
+      }}>
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
           <h4 style={{ margin: '0 0 8px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
             <FontAwesomeIcon icon={faShieldAlt} /> Volume Quotas <span style={{ fontWeight: 400 }}>(optional)</span>
           </h4>
@@ -704,8 +755,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             {selectedISPs.map(isp => {
               const meta = ISP_META[isp] || { label: isp, color: '#64748b', emoji: '🌐' };
               return (
-                <div key={isp} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#0a0f1a', borderRadius: 6, border: '1px solid rgba(0,200,255,0.06)' }}>
-                  <span style={{ fontSize: 12, color: meta.color, minWidth: 80 }}>{meta.emoji} {meta.label}</span>
+                <div key={isp} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '8px 12px', background: '#0a0f1a', borderRadius: 8,
+                  border: `1px solid ${meta.color}25`,
+                  transition: 'border-color 0.2s, box-shadow 0.2s',
+                }}>
+                  <span style={{ fontSize: 12, color: meta.color, minWidth: 80, fontWeight: 500 }}>{meta.emoji} {meta.label}</span>
                   <input
                     type="number" min={0} step={1000}
                     value={ispQuotas[isp] || 0}
@@ -717,7 +773,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             })}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 
@@ -1129,203 +1185,534 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     </div>
   );
 
-  const renderStep4 = () => (
-    <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression</h3>
-      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-        Select inclusion lists/segments and exclusion suppression lists.
-      </p>
-      {audienceError && (
-        <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <FontAwesomeIcon icon={faExclamationTriangle} /> {audienceError}
-          <button onClick={fetchAudienceData} style={{ marginLeft: 'auto', background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>
-            Retry
-          </button>
-        </div>
-      )}
+  const renderStep4 = () => {
+    const totalSelected = selectedLists.length + selectedSegments.length;
+    const totalSuppSelected = selectedSuppLists.length;
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        {/* Inclusion */}
-        <div>
-          <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#10b981' }}>
-            <FontAwesomeIcon icon={faCheckCircle} /> Inclusion
-          </h4>
-          <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
-            {lists.length === 0 && segments.length === 0 && (
-              <div style={{ color: '#64748b', fontSize: 12, padding: 10 }}>No lists or segments available.</div>
-            )}
-            {lists.map(l => (
-              <label key={`list-${l.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e0e6f0', borderBottom: '1px solid #0a1628' }}>
-                <input type="checkbox" checked={selectedLists.includes(l.id)} onChange={() => toggleList(l.id)} />
-                <span style={{ flex: 1 }}>{l.name}</span>
-                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(l.subscriber_count || 0).toLocaleString()}</span>
-              </label>
-            ))}
-            {segments.map(s => (
-              <label key={`seg-${s.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#00b0ff', borderBottom: '1px solid #0a1628' }}>
-                <input type="checkbox" checked={selectedSegments.includes(s.id)} onChange={() => toggleSegment(s.id)} />
-                <span style={{ flex: 1 }}>{s.name}</span>
-                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(s.cached_count || 0).toLocaleString()}</span>
-              </label>
-            ))}
+    const AudienceCard: React.FC<{
+      name: string; count: number; selected: boolean; type: 'list' | 'segment' | 'suppression';
+      onToggle: () => void;
+    }> = ({ name, count, selected, type, onToggle }) => {
+      const colors = { list: '#00b0ff', segment: '#8b5cf6', suppression: '#ef4444' };
+      const icons = { list: faUsers, segment: faChartBar, suppression: faShieldAlt };
+      const c = colors[type];
+      return (
+        <div
+          role="button" tabIndex={0} onClick={onToggle}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+            background: selected ? `${c}12` : '#0a0f1a',
+            border: `1.5px solid ${selected ? c : 'rgba(0,200,255,0.06)'}`,
+            borderRadius: 8, cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            transform: selected ? 'scale(1.01)' : 'scale(1)',
+          }}
+        >
+          <div style={{
+            width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: selected ? `${c}20` : 'rgba(0,200,255,0.04)',
+            color: selected ? c : 'rgba(180,210,240,0.4)',
+            transition: 'all 0.2s ease', fontSize: 13,
+          }}>
+            <FontAwesomeIcon icon={icons[type]} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
+            <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 1 }}>{count.toLocaleString()} {type === 'suppression' ? 'entries' : 'subscribers'}</div>
+          </div>
+          <div style={{
+            width: 20, height: 20, borderRadius: 5,
+            border: `2px solid ${selected ? c : 'rgba(180,210,240,0.2)'}`,
+            background: selected ? c : 'transparent',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s ease', flexShrink: 0,
+          }}>
+            {selected && <FontAwesomeIcon icon={faCheck} style={{ color: '#fff', fontSize: 9 }} />}
           </div>
         </div>
+      );
+    };
 
-        {/* Exclusion */}
-        <div>
-          <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#ef4444' }}>
-            <FontAwesomeIcon icon={faTimesCircle} /> Suppression
-          </h4>
-          <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
-            {suppressionLists.length === 0 && (
-              <div style={{ color: '#64748b', fontSize: 12, padding: 10 }}>No suppression lists available.</div>
-            )}
-            {suppressionLists.map(sl => (
-              <label key={`supp-${sl.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', cursor: 'pointer', fontSize: 12, color: '#e0e6f0', borderBottom: '1px solid #0a1628' }}>
-                <input type="checkbox" checked={selectedSuppLists.includes(sl.id)} onChange={() => toggleSuppList(sl.id)} />
-                <span style={{ flex: 1 }}>{sl.name}</span>
-                <span style={{ color: 'rgba(180,210,240,0.65)' }}>{(sl.entry_count || 0).toLocaleString()}</span>
-              </label>
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression</h3>
+        <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+          Build your target audience and apply suppression filters.
+        </p>
+
+        {audienceError && (
+          <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} /> {audienceError}
+            <button onClick={fetchAudienceData} className="ig-btn-glow" style={{ marginLeft: 'auto', background: 'rgba(0,176,255,0.1)', color: '#00b0ff', border: '1px solid rgba(0,176,255,0.2)', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Skeleton while loading audience data */}
+        {audienceDataLoading && lists.length === 0 && segments.length === 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            {[0, 1].map(col => (
+              <div key={col}>
+                <div style={{ height: 16, width: '40%', background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 12, animation: 'igShimmer 1.5s ease infinite' }} />
+                {[1, 2, 3].map(j => (
+                  <div key={j} style={{ height: 48, background: '#0d1526', border: '1px solid rgba(0,200,255,0.04)', borderRadius: 8, marginBottom: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${j * 0.15}s` }} />
+                ))}
+              </div>
             ))}
           </div>
-        </div>
-      </div>
+        )}
 
-      {/* Audience estimate */}
-      {audienceEstimate && (
-        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
-          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>
-            <FontAwesomeIcon icon={faChartBar} /> Audience Estimate
-          </h4>
-          <div style={{ display: 'flex', gap: 20, fontSize: 13, marginBottom: 12, flexWrap: 'wrap' }}>
-            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Total: <strong style={{ color: '#e0e6f0' }}>{audienceEstimate.total_recipients.toLocaleString()}</strong></span>
-            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Suppressed: <strong style={{ color: '#ef4444' }}>-{audienceEstimate.suppressed_count.toLocaleString()}</strong></span>
-            <span style={{ color: 'rgba(180,210,240,0.65)' }}>Net: <strong style={{ color: '#10b981' }}>{audienceEstimate.after_suppressions.toLocaleString()}</strong></span>
-          </div>
-          {audienceEstimate.suppression_sources && Object.keys(audienceEstimate.suppression_sources).length > 0 && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-              <span style={{ fontSize: 11, color: '#64748b', alignSelf: 'center' }}>Sources:</span>
-              {Object.entries(audienceEstimate.suppression_sources).map(([source, count]) => (
-                <span key={source} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4, fontSize: 11, background: '#ef444415', color: '#ef4444', border: '1px solid #ef444430' }}>
-                  {source}: {(count as number).toLocaleString()}
-                </span>
+        {(!audienceDataLoading || lists.length > 0 || segments.length > 0 || suppressionLists.length > 0) && (
+          <>
+            {/* Top stat bar */}
+            <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+              {[
+                { label: 'Lists Selected', value: selectedLists.length, total: lists.length, color: '#00b0ff' },
+                { label: 'Segments Selected', value: selectedSegments.length, total: segments.length, color: '#8b5cf6' },
+                { label: 'Suppression Active', value: totalSuppSelected, total: suppressionLists.length, color: '#ef4444' },
+              ].map(stat => (
+                <div key={stat.label} style={{
+                  flex: 1, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: '12px 14px',
+                  position: 'relative', overflow: 'hidden',
+                }}>
+                  <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>{stat.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: stat.value > 0 ? stat.color : '#64748b', transition: 'color 0.3s' }}>
+                    {stat.value}<span style={{ fontSize: 12, fontWeight: 400, color: 'rgba(180,210,240,0.4)' }}>/{stat.total}</span>
+                  </div>
+                  {/* Progress line at bottom */}
+                  <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, background: 'rgba(0,200,255,0.04)' }}>
+                    <div style={{
+                      height: '100%', background: stat.color, borderRadius: 2,
+                      width: stat.total > 0 ? `${(stat.value / stat.total) * 100}%` : '0%',
+                      transition: 'width 0.4s ease',
+                    }} />
+                  </div>
+                </div>
               ))}
             </div>
-          )}
-          {audienceEstimate.isp_breakdown && Object.keys(audienceEstimate.isp_breakdown).length > 0 && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {Object.entries(audienceEstimate.isp_breakdown).map(([isp, count]) => {
-                const meta = ISP_META[isp];
-                return (
-                  <span key={isp} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, fontSize: 11, background: (meta?.color || '#64748b') + '15', color: meta?.color || 'rgba(180,210,240,0.65)', border: `1px solid ${(meta?.color || '#64748b')}33` }}>
-                    {meta?.emoji || '🌐'} {meta?.label || isp}: {(count as number).toLocaleString()}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+              {/* Inclusion panel */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: '#10b981' }} />
+                  <h4 style={{ margin: 0, fontSize: 13, color: '#10b981', fontWeight: 600 }}>Inclusion</h4>
+                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>{totalSelected} selected</span>
+                </div>
+
+                {lists.length === 0 && segments.length === 0 && !audienceDataLoading && (
+                  <div style={{ background: '#0d1526', border: '1px dashed rgba(0,200,255,0.1)', borderRadius: 10, padding: 24, textAlign: 'center' }}>
+                    <FontAwesomeIcon icon={faUsers} style={{ fontSize: 24, color: 'rgba(180,210,240,0.15)', marginBottom: 8 }} />
+                    <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.4)' }}>No lists or segments available</div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
+                  {lists.map(l => (
+                    <AudienceCard key={`list-${l.id}`} name={l.name} count={l.subscriber_count || 0}
+                      selected={selectedLists.includes(l.id)} type="list" onToggle={() => toggleList(l.id)} />
+                  ))}
+                  {segments.map(s => (
+                    <AudienceCard key={`seg-${s.id}`} name={s.name} count={s.cached_count || 0}
+                      selected={selectedSegments.includes(s.id)} type="segment" onToggle={() => toggleSegment(s.id)} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Suppression panel */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: '#ef4444' }} />
+                  <h4 style={{ margin: 0, fontSize: 13, color: '#ef4444', fontWeight: 600 }}>Suppression</h4>
+                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>{totalSuppSelected} active</span>
+                </div>
+
+                {suppressionLists.length === 0 && !audienceDataLoading && (
+                  <div style={{ background: '#0d1526', border: '1px dashed rgba(0,200,255,0.1)', borderRadius: 10, padding: 24, textAlign: 'center' }}>
+                    <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 24, color: 'rgba(180,210,240,0.15)', marginBottom: 8 }} />
+                    <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.4)' }}>No suppression lists available</div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
+                  {suppressionLists.map(sl => (
+                    <AudienceCard key={`supp-${sl.id}`} name={sl.name} count={sl.entry_count || 0}
+                      selected={selectedSuppLists.includes(sl.id)} type="suppression" onToggle={() => toggleSuppList(sl.id)} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Audience funnel estimate */}
+            <div style={{
+              background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16,
+              position: 'relative', overflow: 'hidden',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <FontAwesomeIcon icon={faChartBar} style={{ color: 'rgba(0,229,255,0.5)' }} /> Audience Pipeline
+                </h4>
+                {estimating && (
+                  <span style={{ fontSize: 11, color: 'rgba(0,200,255,0.6)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <FontAwesomeIcon icon={faSpinner} spin /> Computing...
                   </span>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  const renderStep5 = () => (
-    <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Infrastructure Intelligence</h3>
-      <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-        Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
-      </p>
-      {loading && <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin /> Querying governance engine...</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {ispIntel.map(intel => {
-          const meta = ISP_META[intel.isp] || { label: intel.display_name, color: '#64748b', emoji: '🌐' };
-          return (
-            <div key={intel.isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <span style={{ fontSize: 15, fontWeight: 600, color: meta.color }}>{meta.emoji} {meta.label}</span>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {statusBadge(intel.throughput.status)}
-                  {statusBadge(intel.warmup_summary.status)}
-                </div>
+                )}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-                {/* Throughput */}
-                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>Throughput</div>
-                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
-                    <div>Active IPs: <strong>{intel.throughput.active_ips}</strong></div>
-                    <div>Max/day: <strong>{(intel.throughput.max_daily_capacity / 1000).toFixed(0)}k</strong></div>
-                    <div>Max/hour: <strong>{(intel.throughput.max_hourly_rate).toLocaleString()}</strong></div>
-                    <div>Audience: <strong>{(intel.throughput.audience_size).toLocaleString()}</strong></div>
+              {!audienceEstimate && !estimating && (
+                <div style={{ textAlign: 'center', padding: '20px 0', color: 'rgba(180,210,240,0.3)', fontSize: 12 }}>
+                  Select lists or segments to see audience estimates
+                </div>
+              )}
+
+              {!audienceEstimate && estimating && (
+                <div style={{ display: 'flex', gap: 12 }}>
+                  {[1, 2, 3].map(i => (
+                    <div key={i} style={{ flex: 1, height: 72, background: 'rgba(0,200,255,0.04)', borderRadius: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.2}s` }} />
+                  ))}
+                </div>
+              )}
+
+              {audienceEstimate && (
+                <>
+                  {/* Funnel visualization */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 16 }}>
+                    {/* Total */}
+                    <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: '#00b0ff' }}>
+                        <AnimatedCounter value={audienceEstimate.total_recipients} />
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}>Total Recipients</div>
+                      <div style={{ position: 'absolute', bottom: -8, left: '10%', right: '10%', height: 3, borderRadius: 2, background: 'rgba(0,176,255,0.15)' }}>
+                        <div style={{ height: '100%', width: '100%', borderRadius: 2, background: '#00b0ff' }} />
+                      </div>
+                    </div>
+                    {/* Arrow */}
+                    <div style={{ padding: '0 8px', color: 'rgba(180,210,240,0.2)', fontSize: 16 }}>→</div>
+                    {/* Suppressed */}
+                    <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: '#ef4444' }}>
+                        -<AnimatedCounter value={audienceEstimate.suppressed_count} />
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}>Suppressed</div>
+                      <div style={{ position: 'absolute', bottom: -8, left: '10%', right: '10%', height: 3, borderRadius: 2, background: 'rgba(239,68,68,0.15)' }}>
+                        <div style={{
+                          height: '100%', borderRadius: 2, background: '#ef4444',
+                          width: audienceEstimate.total_recipients > 0 ? `${(audienceEstimate.suppressed_count / audienceEstimate.total_recipients) * 100}%` : '0%',
+                          transition: 'width 0.5s ease',
+                        }} />
+                      </div>
+                    </div>
+                    {/* Arrow */}
+                    <div style={{ padding: '0 8px', color: 'rgba(180,210,240,0.2)', fontSize: 16 }}>→</div>
+                    {/* Net */}
+                    <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: '#10b981' }}>
+                        <AnimatedCounter value={audienceEstimate.after_suppressions} />
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}>Net Deliverable</div>
+                      <div style={{ position: 'absolute', bottom: -8, left: '10%', right: '10%', height: 3, borderRadius: 2, background: 'rgba(16,185,129,0.15)' }}>
+                        <div style={{ height: '100%', width: '100%', borderRadius: 2, background: '#10b981' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Suppression sources */}
+                  {audienceEstimate.suppression_sources && Object.keys(audienceEstimate.suppression_sources).length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                      <span style={{ fontSize: 10, color: '#64748b', alignSelf: 'center', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sources:</span>
+                      {Object.entries(audienceEstimate.suppression_sources).map(([source, count]) => (
+                        <span key={source} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4, fontSize: 10, background: '#ef444412', color: '#ef4444', border: '1px solid #ef444425' }}>
+                          {source}: {(count as number).toLocaleString()}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* ISP breakdown bars */}
+                  {audienceEstimate.isp_breakdown && Object.keys(audienceEstimate.isp_breakdown).length > 0 && (
                     <div>
-                      {intel.throughput.can_send_in_one_pass
-                        ? <span style={{ color: '#10b981' }}>Can send in 1 pass</span>
-                        : <span style={{ color: '#ef4444' }}>~{intel.throughput.estimated_hours}h needed</span>}
+                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>ISP Distribution</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {Object.entries(audienceEstimate.isp_breakdown)
+                          .sort((a, b) => (b[1] as number) - (a[1] as number))
+                          .map(([isp, count]) => {
+                          const meta = ISP_META[isp];
+                          const pct = audienceEstimate!.after_suppressions > 0 ? ((count as number) / audienceEstimate!.after_suppressions) * 100 : 0;
+                          return (
+                            <div key={isp} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 11, color: meta?.color || 'rgba(180,210,240,0.65)', minWidth: 80, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                {meta?.emoji || '🌐'} {meta?.label || isp}
+                              </span>
+                              <div style={{ flex: 1, height: 6, background: 'rgba(0,200,255,0.04)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{
+                                  height: '100%', borderRadius: 3,
+                                  background: `linear-gradient(90deg, ${meta?.color || '#64748b'}, ${meta?.color || '#64748b'}88)`,
+                                  width: `${Math.min(pct, 100)}%`,
+                                  transition: 'width 0.5s ease',
+                                }} />
+                              </div>
+                              <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', minWidth: 55, textAlign: 'right' }}>
+                                {(count as number).toLocaleString()} <span style={{ color: 'rgba(180,210,240,0.3)' }}>({pct.toFixed(0)}%)</span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* Warmup */}
-                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>Warmup</div>
-                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
-                    <div>Total: <strong>{intel.warmup_summary.total_ips}</strong></div>
-                    <div>Warmed: <strong style={{ color: '#10b981' }}>{intel.warmup_summary.warmed_ips}</strong></div>
-                    <div>Warming: <strong style={{ color: '#f59e0b' }}>{intel.warmup_summary.warming_ips}</strong></div>
-                    <div>Paused: <strong>{intel.warmup_summary.paused_ips}</strong></div>
-                    <div>Daily limit: <strong>{(intel.warmup_summary.daily_limit / 1000).toFixed(0)}k</strong></div>
-                  </div>
-                </div>
-
-                {/* Conviction */}
-                <div style={{ background: '#0a0f1a', borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>
-                    <FontAwesomeIcon icon={faBrain} /> Conviction Memory
-                  </div>
-                  <div style={{ fontSize: 12, color: '#e0e6f0', lineHeight: 1.8 }}>
-                    <div>Verdict: <strong style={{ color: intel.conviction_summary.dominant_verdict === 'will' ? '#10b981' : '#ef4444' }}>
-                      {intel.conviction_summary.dominant_verdict.toUpperCase()}
-                    </strong></div>
-                    <div>Confidence: <strong>{(intel.conviction_summary.confidence * 100).toFixed(0)}%</strong></div>
-                    <div style={{ color: '#10b981' }}>WILL: {intel.conviction_summary.will_count}</div>
-                    <div style={{ color: '#ef4444' }}>WONT: {intel.conviction_summary.wont_count}</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Risk factors */}
-              {intel.conviction_summary.risk_factors && intel.conviction_summary.risk_factors.length > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  {intel.conviction_summary.risk_factors.map((rf, i) => (
-                    <div key={i} style={{ fontSize: 11, color: '#f59e0b', padding: '2px 0' }}>
-                      <FontAwesomeIcon icon={faExclamationTriangle} /> {rf}
-                    </div>
-                  ))}
-                </div>
+                  )}
+                </>
               )}
-
-              {/* Active warnings */}
-              {intel.active_warnings && intel.active_warnings.length > 0 && (
-                <div style={{ padding: '8px 10px', background: '#ef444415', borderRadius: 6, marginBottom: 8 }}>
-                  {intel.active_warnings.map((w, i) => (
-                    <div key={i} style={{ fontSize: 11, color: '#ef4444' }}>
-                      <FontAwesomeIcon icon={faExclamationTriangle} /> {w}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Strategy */}
-              <div style={{ padding: '8px 12px', background: 'rgba(0,200,255,0.06)', borderRadius: 8, fontSize: 12, color: '#00b0ff', borderLeft: '3px solid #00b0ff' }}>
-                <FontAwesomeIcon icon={faShieldAlt} /> <strong>Strategy:</strong> {intel.strategy}
-              </div>
             </div>
-          );
-        })}
+          </>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
+
+  const renderStep5 = () => {
+    const MiniGauge: React.FC<{ value: number; max: number; color: string; label: string; size?: number }> = ({ value, max, color, label, size = 44 }) => {
+      const pct = max > 0 ? Math.min(value / max, 1) : 0;
+      const r = (size - 6) / 2;
+      const c = 2 * Math.PI * r;
+      const offset = c * (1 - pct);
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+          <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(0,200,255,0.06)" strokeWidth={4} />
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={4}
+              strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
+              style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+          </svg>
+          <div style={{ fontSize: 11, fontWeight: 600, color, marginTop: -size / 2 - 6, lineHeight: `${size}px`, textAlign: 'center' }}>{value}</div>
+          <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', marginTop: 2, textAlign: 'center' }}>{label}</div>
+        </div>
+      );
+    };
+
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <h3 style={{ margin: '0 0 4px' }}>Infrastructure Intelligence</h3>
+        <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+          Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
+        </p>
+
+        {/* Skeleton loading */}
+        {intelLoading && ispIntel.length === 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {selectedISPs.slice(0, 3).map((_, i) => (
+              <div key={i} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.06)', borderRadius: 10, padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(0,200,255,0.06)', animation: 'igShimmer 1.5s ease infinite' }} />
+                  <div>
+                    <div style={{ height: 16, width: 100, background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 6, animation: 'igShimmer 1.5s ease infinite' }} />
+                    <div style={{ height: 10, width: 60, background: 'rgba(0,200,255,0.04)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                  {[1, 2, 3].map(j => (
+                    <div key={j} style={{ height: 100, background: 'rgba(0,200,255,0.03)', borderRadius: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${j * 0.2}s` }} />
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div style={{ textAlign: 'center', padding: 10, color: 'rgba(0,200,255,0.4)', fontSize: 12 }}>
+              <FontAwesomeIcon icon={faSpinner} spin /> Querying governance engine...
+            </div>
+          </div>
+        )}
+
+        {(!intelLoading || ispIntel.length > 0) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {ispIntel.map((intel, idx) => {
+              const meta = ISP_META[intel.isp] || { label: intel.display_name, color: '#64748b', emoji: '🌐' };
+              const warmupPct = intel.warmup_summary.total_ips > 0
+                ? (intel.warmup_summary.warmed_ips / intel.warmup_summary.total_ips) * 100 : 0;
+              const confidencePct = (intel.conviction_summary.confidence * 100);
+              const isPositive = intel.conviction_summary.dominant_verdict === 'will';
+              const totalVotes = intel.conviction_summary.will_count + intel.conviction_summary.wont_count;
+              const willPct = totalVotes > 0 ? (intel.conviction_summary.will_count / totalVotes) * 100 : 50;
+
+              return (
+                <div key={intel.isp} style={{
+                  background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 12, padding: 0,
+                  overflow: 'hidden', animation: `igFadeSlide 0.4s ease ${idx * 0.1}s both`,
+                }}>
+                  {/* ISP header bar */}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '12px 16px', borderBottom: '1px solid rgba(0,200,255,0.06)',
+                    background: `linear-gradient(90deg, ${meta.color}08, transparent)`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{
+                        width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: `${meta.color}15`, fontSize: 18,
+                      }}>{meta.emoji}</div>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: meta.color }}>{meta.label}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)' }}>
+                          {intel.throughput.active_ips} active IPs · {(intel.throughput.max_daily_capacity / 1000).toFixed(0)}k/day capacity
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {statusBadge(intel.throughput.status)}
+                      {statusBadge(intel.warmup_summary.status)}
+                    </div>
+                  </div>
+
+                  <div style={{ padding: 16 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+                      {/* Throughput panel */}
+                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                          <FontAwesomeIcon icon={faServer} /> Throughput
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 10 }}>
+                          <MiniGauge value={intel.throughput.active_ips} max={Math.max(intel.throughput.active_ips, 4)} color="#00b0ff" label="IPs" />
+                          <MiniGauge value={Math.round(intel.throughput.max_hourly_rate / 1000)} max={Math.max(Math.round(intel.throughput.max_daily_capacity / 1000 / 24), 1)} color="#10b981" label="k/hr" />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#e0e6f0', lineHeight: 1.8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <span style={{ color: 'rgba(180,210,240,0.5)' }}>Audience</span>
+                            <strong>{intel.throughput.audience_size.toLocaleString()}</strong>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ color: 'rgba(180,210,240,0.5)' }}>Status</span>
+                            {intel.throughput.can_send_in_one_pass
+                              ? <span style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>1-PASS ✓</span>
+                              : <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 600 }}>~{intel.throughput.estimated_hours}h</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Warmup panel */}
+                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                          <FontAwesomeIcon icon={faChartBar} /> Warmup
+                        </div>
+                        {/* Warmup progress bar */}
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 4 }}>
+                            <span style={{ color: 'rgba(180,210,240,0.4)' }}>{warmupPct.toFixed(0)}% warmed</span>
+                            <span style={{ color: 'rgba(180,210,240,0.4)' }}>{intel.warmup_summary.warmed_ips}/{intel.warmup_summary.total_ips}</span>
+                          </div>
+                          <div style={{ height: 6, background: 'rgba(0,200,255,0.06)', borderRadius: 3, overflow: 'hidden' }}>
+                            <div style={{
+                              height: '100%', borderRadius: 3,
+                              background: warmupPct >= 80 ? '#10b981' : warmupPct >= 50 ? '#f59e0b' : '#ef4444',
+                              width: `${warmupPct}%`, transition: 'width 0.6s ease',
+                            }} />
+                          </div>
+                        </div>
+                        {/* IP breakdown */}
+                        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+                          {[
+                            { label: 'Warmed', count: intel.warmup_summary.warmed_ips, color: '#10b981' },
+                            { label: 'Warming', count: intel.warmup_summary.warming_ips, color: '#f59e0b' },
+                            { label: 'Paused', count: intel.warmup_summary.paused_ips, color: '#64748b' },
+                          ].filter(s => s.count > 0).map(s => (
+                            <span key={s.label} style={{
+                              display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 6px',
+                              borderRadius: 4, fontSize: 9, background: `${s.color}15`, color: s.color,
+                            }}>
+                              <span style={{ width: 4, height: 4, borderRadius: '50%', background: s.color }} />
+                              {s.count} {s.label.toLowerCase()}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', color: 'rgba(180,210,240,0.5)' }}>
+                          <span>Daily limit</span>
+                          <strong style={{ color: '#e0e6f0' }}>{(intel.warmup_summary.daily_limit / 1000).toFixed(0)}k</strong>
+                        </div>
+                      </div>
+
+                      {/* Conviction panel */}
+                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                          <FontAwesomeIcon icon={faBrain} /> Conviction
+                        </div>
+                        {/* Verdict display */}
+                        <div style={{ textAlign: 'center', marginBottom: 8 }}>
+                          <div style={{
+                            display: 'inline-block', padding: '4px 14px', borderRadius: 6,
+                            background: isPositive ? '#10b98118' : '#ef444418',
+                            border: `1px solid ${isPositive ? '#10b98130' : '#ef444430'}`,
+                            fontSize: 13, fontWeight: 700,
+                            color: isPositive ? '#10b981' : '#ef4444',
+                          }}>
+                            {intel.conviction_summary.dominant_verdict.toUpperCase()}
+                          </div>
+                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
+                            {confidencePct.toFixed(0)}% confidence
+                          </div>
+                        </div>
+                        {/* Will vs Wont bar */}
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: '#ef444425' }}>
+                            <div style={{
+                              height: '100%', background: '#10b981', borderRadius: '4px 0 0 4px',
+                              width: `${willPct}%`, transition: 'width 0.5s ease',
+                            }} />
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginTop: 3 }}>
+                            <span style={{ color: '#10b981' }}>WILL {intel.conviction_summary.will_count}</span>
+                            <span style={{ color: '#ef4444' }}>WONT {intel.conviction_summary.wont_count}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Risk factors */}
+                    {intel.conviction_summary.risk_factors && intel.conviction_summary.risk_factors.length > 0 && (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {intel.conviction_summary.risk_factors.map((rf, i) => (
+                          <span key={i} style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px',
+                            borderRadius: 6, fontSize: 10, background: '#f59e0b10', color: '#f59e0b',
+                            border: '1px solid #f59e0b20',
+                          }}>
+                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9 }} /> {rf}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Active warnings */}
+                    {intel.active_warnings && intel.active_warnings.length > 0 && (
+                      <div style={{ padding: '8px 10px', background: '#ef444410', borderRadius: 8, marginBottom: 8, border: '1px solid #ef444415' }}>
+                        {intel.active_warnings.map((w, i) => (
+                          <div key={i} style={{ fontSize: 11, color: '#ef4444', padding: '2px 0', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9 }} /> {w}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Strategy */}
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '10px 14px', background: 'rgba(0,200,255,0.04)', borderRadius: 8,
+                      borderLeft: `3px solid ${meta.color}`,
+                    }}>
+                      <FontAwesomeIcon icon={faShieldAlt} style={{ color: meta.color, fontSize: 12 }} />
+                      <div>
+                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 1 }}>Recommended Strategy</div>
+                        <div style={{ fontSize: 12, color: '#e0e6f0' }}>{intel.strategy}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderStep6 = () => (
     <div className="wiz-step-content ig-fade-in">

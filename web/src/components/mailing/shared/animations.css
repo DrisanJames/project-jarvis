@@ -575,7 +575,20 @@
   filter: drop-shadow(0 0 6px rgba(0, 229, 255, 0.3));
 }
 
-/* ── 16. GLOBAL SMOOTH TRANSITIONS ───────────────────────────────── */
+/* ── 16. SKELETON / SHIMMER / SLIDE ANIMATIONS ──────────────────── */
+
+@keyframes igShimmer {
+  0% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+  100% { opacity: 0.4; }
+}
+
+@keyframes igFadeSlide {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 17. GLOBAL SMOOTH TRANSITIONS ───────────────────────────────── */
 
 /* Apply to all buttons, inputs, and links inside mailing portal */
 .mailing-portal button,
