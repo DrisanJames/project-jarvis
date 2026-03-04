@@ -644,7 +644,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		maxRecipientsParam = maxRecipients
 	}
 
-	// Create campaign as 'preparing' — it moves to 'scheduled' after the queue is pre-populated.
+	// Create campaign as 'draft' — it moves to 'scheduled' after the queue is pre-populated.
 	// This prevents the scheduler from picking it up during pre-computation.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
@@ -653,7 +653,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
 			max_recipients, send_type, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, 'preparing', $4,
+			$1, $2, $3, 'draft', $4,
 			$5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14,
 			$15, 'blast', NOW(), NOW()
