@@ -10,6 +10,8 @@ import {
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
 import './MailingPortal.css';
+import '../shared/animations.css';
+import { ToastProvider } from '../shared/ToastSystem';
 
 // ── Lazy-loaded heavy components (code-split into separate chunks) ──────────
 const ListPortal = lazy(() => import('../components/ListPortal').then(m => ({ default: m.ListPortal })));
@@ -164,6 +166,7 @@ export const MailingPortal: React.FC = () => {
   const currentTab = tabs.find(t => t.id === activeTab);
 
   return (
+    <ToastProvider>
     <div className="mailing-portal">
       <aside className="mailing-sidebar">
         <div className="sidebar-header">
@@ -223,6 +226,7 @@ export const MailingPortal: React.FC = () => {
         </Suspense>
       </main>
     </div>
+    </ToastProvider>
   );
 };
 
@@ -246,10 +250,10 @@ const EnhancedDashboard: React.FC = () => {
   if (loading) return <div className="loading-state">Loading dashboard...</div>;
 
   return (
-    <div className="enhanced-dashboard">
+    <div className="enhanced-dashboard ig-fade-in">
       {/* System Overview Cards */}
-      <div className="system-overview">
-        <div className="system-card sending">
+      <div className="system-overview ig-stagger">
+        <div className="system-card sending ig-card-hover ig-scan-line">
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <h3>Email Sending</h3>
@@ -292,7 +296,7 @@ const EnhancedDashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="system-card intelligence">
+        <div className="system-card intelligence ig-card-hover ig-scan-line">
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBrain} /></span>
             <h3>Inbox Intelligence</h3>
@@ -314,7 +318,7 @@ const EnhancedDashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="system-card suppression">
+        <div className="system-card suppression ig-card-hover ig-scan-line">
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBan} /></span>
             <h3>Deliverability Protection</h3>
@@ -336,7 +340,7 @@ const EnhancedDashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="system-card automation">
+        <div className="system-card automation ig-card-hover ig-scan-line">
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBolt} /></span>
             <h3>Automation Engine</h3>

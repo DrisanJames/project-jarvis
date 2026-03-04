@@ -8,6 +8,9 @@ import {
   faMagic, faSave, faEye, faUpload, faCode,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { useToast } from '../shared/ToastSystem';
+import { JarvisCompleteModal } from '../shared/JarvisCompleteModal';
 
 const API_BASE = '/api/mailing';
 
@@ -140,8 +143,10 @@ interface PMTACampaignWizardProps {
 export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose }) => {
   const { organization } = useAuth();
   const orgId = organization?.id || '';
+  const { campaignComplete } = useToast();
 
   const [step, setStep] = useState(1);
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Step 1 state
@@ -481,6 +486,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
       } else {
         setDeployResult(data);
+        campaignComplete(campaignName || 'Campaign');
+        setShowCompleteModal(true);
       }
     } catch (err: any) {
       setDeployResult({ error: err?.message || 'Deploy failed — network error. Click Deploy to retry.' });
@@ -586,7 +593,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // ── Step renderers ───────────────────────────────────────────────────────
 
   const renderStep1 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Select Target ISPs</h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose which ISP ecosystems to target. Cards show live health from the governance engine.
@@ -603,6 +610,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               aria-pressed={selected}
               aria-label={`Select ${meta.label} ISP`}
               key={r.isp}
+              className="ig-card-hover"
               onClick={() => toggleISP(r.isp)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleISP(r.isp); } }}
               style={{
@@ -665,7 +673,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const renderStep2 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain</h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
@@ -693,6 +701,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             aria-pressed={domainSelected}
             aria-label={`Select ${d.domain} sending domain`}
             key={d.domain}
+            className={`ig-card-hover${domainSelected ? ' ig-breathe-border' : ''}`}
             onClick={() => setSelectedDomain(d.domain)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedDomain(d.domain); } }}
             style={{
@@ -818,7 +827,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
+          <div className="ig-scale-in" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
             {aiVariations.map((v: any, idx: number) => {
               const isSelected = aiSelectedIdxs.includes(idx);
               return (
@@ -867,14 +876,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const renderStep3 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
           <h3 style={{ margin: 0 }}>Content + A/B Split Testing</h3>
           <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #00e5ff, #00b0ff)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          <button className="ig-btn-cyber" onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #00e5ff, #00b0ff)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
             <FontAwesomeIcon icon={faMagic} /> Generate
           </button>
           <button onClick={() => { setShowTemplatePicker(!showTemplatePicker); setShowAIGenerator(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#0d1526', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
@@ -919,7 +928,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       {showAIGenerator && renderAIGenerator()}
 
       {variants.map((v, idx) => (
-        <div key={idx} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
+        <div key={idx} className="ig-card-hover" style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: '#00b0ff' }}>Variant {v.variant_name}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1060,7 +1069,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const renderStep4 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Audience + Suppression</h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Select inclusion lists/segments and exclusion suppression lists.
@@ -1150,7 +1159,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const renderStep5 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Infrastructure Intelligence</h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
@@ -1248,7 +1257,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   );
 
   const renderStep6 = () => (
-    <div className="wiz-step-content">
+    <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
 
       {deployResult ? (
@@ -1375,7 +1384,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                           </div>
                           {rec.data_quality?.has_historical && (
                             <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: 'rgba(0,200,255,0.08)', overflow: 'hidden' }}>
-                              <div style={{ height: '100%', width: `${Math.min((rec.data_quality.total_sends / 1000) * 100, 100)}%`, background: '#10b981', borderRadius: 2 }} />
+                              <div className="ig-progress-fill" style={{ height: '100%', width: `${Math.min((rec.data_quality.total_sends / 1000) * 100, 100)}%`, background: '#10b981', borderRadius: 2 }} />
                             </div>
                           )}
                         </div>
@@ -1408,6 +1417,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           </div>
 
           <button
+            className="ig-btn-glow ig-ripple"
             onClick={handleDeploy}
             disabled={deploying || !campaignName.trim() || (sendMode === 'scheduled' && !scheduledAt)}
             style={{
@@ -1455,13 +1465,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       </div>
 
       {/* Step indicator */}
-      <div style={{ display: 'flex', padding: '12px 20px', gap: 4, borderBottom: '1px solid rgba(0,200,255,0.08)', background: '#0a1628', overflowX: 'auto' }}>
+      <div className="ig-stagger" style={{ display: 'flex', padding: '12px 20px', gap: 4, borderBottom: '1px solid rgba(0,200,255,0.08)', background: '#0a1628', overflowX: 'auto' }}>
         {STEPS.map((s) => {
           const isActive = s.id === step;
           const isComplete = s.id < step;
           return (
             <button
               key={s.id}
+              className={isActive ? 'ig-pulse-cyan' : undefined}
               onClick={() => { if (s.id < step) setStep(s.id); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
@@ -1506,6 +1517,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           </button>
           {step < 6 && (
             <button
+              className="ig-btn-glow ig-ripple"
               onClick={() => setStep(Math.min(6, step + 1))}
               disabled={!canProceed()}
               style={{
@@ -1521,6 +1533,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           )}
         </div>
       )}
+
+      <JarvisCompleteModal
+        visible={showCompleteModal}
+        onClose={() => setShowCompleteModal(false)}
+        campaignName={campaignName || 'Campaign'}
+        stats={{ recipients: audienceEstimate?.after_suppressions || audienceEstimate?.total_recipients || 0, variants: variants.length }}
+      />
     </div>
   );
 };

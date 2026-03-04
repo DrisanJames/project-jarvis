@@ -130,7 +130,7 @@
   transition: all 0.15s;
 }
 .mc-panel-tab:hover { color: #fff; background: rgba(0,200,255,0.08); }
-.mc-panel-tab.active { color: #fff; background: #00e5ff; }
+.mc-panel-tab.active { color: #fff; background: #00e5ff; box-shadow: 0 0 12px rgba(0, 229, 255, 0.4), 0 0 24px rgba(0, 229, 255, 0.15); }
 
 .mc-panel { display: flex; flex-direction: column; gap: 12px; }
 
@@ -140,6 +140,11 @@
   border: 1px solid rgba(0,200,255,0.08);
   border-radius: 12px;
   padding: 16px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.mc-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 24px rgba(0, 229, 255, 0.06);
 }
 .mc-card-title {
   font-size: 13px;

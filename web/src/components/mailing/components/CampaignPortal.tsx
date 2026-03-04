@@ -43,6 +43,8 @@ import {
   faCode,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { useToast } from '../shared/ToastSystem';
 import './CampaignPortal.css';
 
 // ============================================================================
@@ -223,6 +225,7 @@ const StatusBadge: React.FC<{ status: Campaign['status'] }> = ({ status }) => {
 
   return (
     <span className={`campaign-status-badge ${config.className}`}>
+      {status === 'sending' && <span className="ig-pulse-dot" />}
       <FontAwesomeIcon icon={config.icon} spin={status === 'sending' || status === 'preparing'} />
       {config.label}
     </span>
@@ -243,7 +246,7 @@ const MetricCard: React.FC<{
     </div>
     <div className="metric-content">
       <div className="metric-value">
-        {typeof value === 'number' ? value.toLocaleString() : value}
+        {typeof value === 'number' ? <AnimatedCounter value={value} formatFn={(n) => Math.round(n).toLocaleString()} /> : value}
         {trend && (
           <span className={`metric-trend trend-${trend}`}>
             <FontAwesomeIcon icon={trend === 'up' ? faArrowUp : trend === 'down' ? faArrowDown : faArrowRight} />
@@ -260,7 +263,7 @@ const ProgressBar: React.FC<{ value: number; max: number; color?: string }> = ({
   const percentage = max > 0 ? (value / max) * 100 : 0;
   return (
     <div className="progress-bar-container">
-      <div className={`progress-bar-fill progress-${color}`} style={{ width: `${Math.min(percentage, 100)}%` }} />
+      <div className={`progress-bar-fill progress-${color} ig-progress-fill`} style={{ width: `${Math.min(percentage, 100)}%` }} />
     </div>
   );
 };
@@ -306,7 +309,7 @@ const CampaignDashboard: React.FC<{
   return (
     <div className="campaign-dashboard">
       {/* Hero Stats */}
-      <div className="hero-stats">
+      <div className="hero-stats ig-stagger">
         <MetricCard 
           icon={faEnvelope} 
           label="Total Campaigns" 
@@ -353,7 +356,7 @@ const CampaignDashboard: React.FC<{
         const gradeColor = engagementScore >= 80 ? '#00b894' : engagementScore >= 60 ? '#00b0ff' : engagementScore >= 40 ? '#fdcb6e' : '#e94560';
 
         return (
-          <div className="perf-intel-bar">
+          <div className="perf-intel-bar ig-data-stream">
             <div className="perf-intel-grade" style={{ borderColor: gradeColor }}>
               <span className="perf-intel-grade-letter" style={{ color: gradeColor }}>{grade}</span>
               <span className="perf-intel-grade-score">{engagementScore.toFixed(0)}</span>
@@ -389,21 +392,21 @@ const CampaignDashboard: React.FC<{
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faChartPie} /> Campaign Status</h3>
         </div>
-        <div className="status-grid">
+        <div className="status-grid ig-stagger">
           <div className="status-item status-draft" onClick={onViewAll}>
-            <div className="status-count">{stats.draft_count}</div>
+            <div className="status-count"><AnimatedCounter value={stats.draft_count} /></div>
             <div className="status-label">Drafts</div>
           </div>
           <div className="status-item status-scheduled" onClick={onViewScheduled}>
-            <div className="status-count">{stats.scheduled_count}</div>
+            <div className="status-count"><AnimatedCounter value={stats.scheduled_count} /></div>
             <div className="status-label">Scheduled</div>
           </div>
           <div className="status-item status-sending">
-            <div className="status-count">{stats.sending_count}</div>
-            <div className="status-label">Sending</div>
+            <div className="status-count"><AnimatedCounter value={stats.sending_count} /></div>
+            <div className="status-label"><span className="ig-pulse-dot" /> Sending</div>
           </div>
           <div className="status-item status-completed">
-            <div className="status-count">{stats.completed_count}</div>
+            <div className="status-count"><AnimatedCounter value={stats.completed_count} /></div>
             <div className="status-label">Completed</div>
           </div>
         </div>
@@ -414,7 +417,7 @@ const CampaignDashboard: React.FC<{
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faPercentage} /> Performance Rates</h3>
         </div>
-        <div className="rates-grid">
+        <div className="rates-grid ig-stagger">
           <RateDisplay rate={stats.avg_open_rate} label="Open Rate" icon={faEnvelopeOpen} color="green" />
           <RateDisplay rate={stats.avg_click_rate} label="Click Rate" icon={faMousePointer} color="blue" />
           <RateDisplay rate={stats.avg_bounce_rate} label="Bounce Rate" icon={faBan} color="orange" />
@@ -427,20 +430,20 @@ const CampaignDashboard: React.FC<{
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faTachometerAlt} /> Deliverability Health</h3>
         </div>
-        <div className="health-metrics">
+        <div className="health-metrics ig-stagger">
           <div className="health-item">
             <div className="health-label">Bounces</div>
-            <div className="health-value">{stats.total_bounces.toLocaleString()}</div>
+            <div className="health-value"><AnimatedCounter value={stats.total_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
             <ProgressBar value={stats.total_bounces} max={stats.total_sent} color={stats.avg_bounce_rate > 3 ? 'red' : 'green'} />
           </div>
           <div className="health-item">
             <div className="health-label">Complaints</div>
-            <div className="health-value">{stats.total_complaints.toLocaleString()}</div>
+            <div className="health-value"><AnimatedCounter value={stats.total_complaints} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
             <ProgressBar value={stats.total_complaints} max={stats.total_sent} color={stats.avg_complaint_rate > 0.1 ? 'red' : 'green'} />
           </div>
           <div className="health-item">
             <div className="health-label">Unsubscribes</div>
-            <div className="health-value">{stats.total_unsubscribes.toLocaleString()}</div>
+            <div className="health-value"><AnimatedCounter value={stats.total_unsubscribes} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
             <ProgressBar value={stats.total_unsubscribes} max={stats.total_sent} color="blue" />
           </div>
         </div>
@@ -654,7 +657,7 @@ const CampaignsList: React.FC<{
       ) : (
         <div className="campaigns-grid">
           {filteredCampaigns.map(campaign => (
-            <div key={campaign.id} className="campaign-card">
+            <div key={campaign.id} className={`campaign-card ig-card-hover${campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
                 <div className="card-header">
                 <StatusBadge status={campaign.status} />
                 <div className="card-actions">
@@ -705,17 +708,17 @@ const CampaignsList: React.FC<{
                 </div>
               </div>
 
-              <div className="card-stats">
+              <div className="card-stats ig-stagger">
                 <div className="stat">
-                  <span className="stat-value">{campaign.sent_count?.toLocaleString() || 0}</span>
+                  <span className="stat-value"><AnimatedCounter value={campaign.sent_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
                   <span className="stat-label">Sent</span>
                 </div>
                 <div className="stat">
-                  <span className="stat-value">{campaign.open_count?.toLocaleString() || 0}</span>
+                  <span className="stat-value"><AnimatedCounter value={campaign.open_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
                   <span className="stat-label">Opens</span>
                 </div>
                 <div className="stat">
-                  <span className="stat-value">{campaign.click_count?.toLocaleString() || 0}</span>
+                  <span className="stat-value"><AnimatedCounter value={campaign.click_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
                   <span className="stat-label">Clicks</span>
                 </div>
                 <div className="stat">
@@ -811,35 +814,35 @@ const CampaignDetailsModal: React.FC<{
               {stats && (
                 <div className="details-section">
                   <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics</h3>
-                  <div className="metrics-grid">
+                  <div className="metrics-grid ig-stagger">
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faPaperPlane} className="metric-icon blue" />
-                      <div className="metric-value">{stats.sent.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.sent} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Sent</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faEnvelopeOpen} className="metric-icon green" />
-                      <div className="metric-value">{stats.opens.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.opens} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Opens ({stats.open_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faMousePointer} className="metric-icon purple" />
-                      <div className="metric-value">{stats.clicks.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.clicks} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Clicks ({stats.click_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faBan} className="metric-icon orange" />
-                      <div className="metric-value">{stats.bounces.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Bounces ({stats.bounce_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon red" />
-                      <div className="metric-value">{stats.complaints.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.complaints} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Complaints ({stats.complaint_rate.toFixed(3)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faUserMinus} className="metric-icon gray" />
-                      <div className="metric-value">{stats.unsubscribes.toLocaleString()}</div>
+                      <div className="metric-value"><AnimatedCounter value={stats.unsubscribes} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Unsubscribes ({stats.unsubscribe_rate.toFixed(2)}%)</div>
                     </div>
                   </div>
@@ -863,7 +866,7 @@ const CampaignDetailsModal: React.FC<{
                 )}
                 {campaign.status === 'draft' && (
                   <>
-                    <button className="action-btn primary" onClick={() => onAction(campaign.id, 'send')}>
+                    <button className="action-btn primary ig-btn-glow ig-ripple" onClick={() => onAction(campaign.id, 'send')}>
                       <FontAwesomeIcon icon={faPaperPlane} /> Send Now
                     </button>
                     <button className="action-btn secondary" onClick={() => onAction(campaign.id, 'schedule')}>
@@ -878,7 +881,7 @@ const CampaignDetailsModal: React.FC<{
                 )}
                 {campaign.status === 'paused' && (
                   <>
-                    <button className="action-btn primary" onClick={() => onAction(campaign.id, 'resume')}>
+                    <button className="action-btn primary ig-btn-glow ig-ripple" onClick={() => onAction(campaign.id, 'resume')}>
                       <FontAwesomeIcon icon={faPlay} /> Resume
                     </button>
                   </>
@@ -1330,7 +1333,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
             <FontAwesomeIcon icon={sendingTest ? faSpinner : faPaperPlane} spin={sendingTest} />
             Send Test
           </button>
-          <button className="cb-btn cb-btn-primary" onClick={handleSubmit} disabled={saving}>
+          <button className="cb-btn cb-btn-primary ig-btn-glow ig-ripple" onClick={handleSubmit} disabled={saving}>
             <FontAwesomeIcon icon={saving ? faSpinner : faSave} spin={saving} />
             {saving ? 'Saving...' : 'Save Campaign'}
           </button>
@@ -1982,7 +1985,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
             Next <FontAwesomeIcon icon={faArrowRight} />
           </button>
         ) : (
-          <button className="cb-btn cb-btn-success" onClick={handleSubmit} disabled={saving} aria-label={formData.scheduled_at ? 'Schedule campaign' : 'Save draft'}>
+          <button className="cb-btn cb-btn-success ig-btn-glow ig-ripple" onClick={handleSubmit} disabled={saving} aria-label={formData.scheduled_at ? 'Schedule campaign' : 'Save draft'}>
             <FontAwesomeIcon icon={saving ? faSpinner : faCheckCircle} spin={saving} />
             {saving ? 'Saving...' : (formData.scheduled_at ? 'Schedule Campaign' : 'Save Draft')}
           </button>
@@ -2295,7 +2298,7 @@ export const CampaignPortal: React.FC<{
         </div>
         <div className="header-actions">
           <button 
-            className="create-campaign-btn" 
+            className="create-campaign-btn ig-btn-glow ig-ripple" 
             onClick={() => {
               setSelectedCampaign(null);
               setView('create');
@@ -2338,7 +2341,7 @@ export const CampaignPortal: React.FC<{
       </div>
 
       {/* Main Content */}
-      <div className="portal-content">
+      <div className="portal-content ig-fade-in">
         {view === 'dashboard' && (
           <CampaignDashboard
             stats={dashboardStats}

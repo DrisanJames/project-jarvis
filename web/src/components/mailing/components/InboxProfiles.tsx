@@ -10,6 +10,7 @@ import {
   faStar, faDatabase
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
 import './InboxProfiles.css';
 
 const orgFetch = async (url: string, orgId?: string, options?: RequestInit) => {
@@ -368,7 +369,7 @@ export const InboxProfiles: React.FC = () => {
 
   // ─── Render ──────────────────────────────────────────────────────────────
   return (
-    <div className="ii-container">
+    <div className="ii-container ig-scan-line">
       {/* ─── Header ─────────────────────────────────────────────────────── */}
       <div className="ii-header">
         <div className="ii-header-left">
@@ -381,55 +382,55 @@ export const InboxProfiles: React.FC = () => {
             <p>AI-powered inbox profiling &middot; Learning from every send, open &amp; click</p>
           </div>
         </div>
-        <button className="ii-refresh-btn" onClick={() => { fetchStats(); fetchProfiles(); }} disabled={loading}>
+        <button className="ii-refresh-btn ig-btn-glow ig-ripple" onClick={() => { fetchStats(); fetchProfiles(); }} disabled={loading}>
           <FontAwesomeIcon icon={faSyncAlt} spin={loading} /> Refresh
         </button>
       </div>
 
       {/* ─── Stats Bar ──────────────────────────────────────────────────── */}
-      <div className="ii-stats-bar">
-        <div className="ii-stat-card">
+      <div className="ii-stats-bar ig-stagger">
+        <div className="ii-stat-card ig-card-hover">
           <div className="ii-stat-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
             <FontAwesomeIcon icon={faFingerprint} />
           </div>
           <div className="ii-stat-body">
-            <span className="ii-stat-value">{formatNumber(stats?.total_profiles || 0)}</span>
+            <AnimatedCounter value={stats?.total_profiles || 0} formatFn={formatNumber} className="ii-stat-value" />
             <span className="ii-stat-label">Profiles Built</span>
           </div>
         </div>
-        <div className="ii-stat-card">
+        <div className="ii-stat-card ig-card-hover">
           <div className="ii-stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
             <FontAwesomeIcon icon={faFire} />
           </div>
           <div className="ii-stat-body">
-            <span className="ii-stat-value">{formatNumber(stats?.recently_active || 0)}</span>
+            <AnimatedCounter value={stats?.recently_active || 0} formatFn={formatNumber} className="ii-stat-value" />
             <span className="ii-stat-label">Active (30d)</span>
           </div>
         </div>
-        <div className="ii-stat-card">
+        <div className="ii-stat-card ig-card-hover">
           <div className="ii-stat-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
             <FontAwesomeIcon icon={faChartLine} />
           </div>
           <div className="ii-stat-body">
-            <span className="ii-stat-value">{(stats?.avg_engagement || 0).toFixed(1)}%</span>
+            <AnimatedCounter value={stats?.avg_engagement || 0} decimals={1} suffix="%" className="ii-stat-value" />
             <span className="ii-stat-label">Avg Engagement</span>
           </div>
         </div>
-        <div className="ii-stat-card">
+        <div className="ii-stat-card ig-card-hover">
           <div className="ii-stat-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
             <FontAwesomeIcon icon={faEye} />
           </div>
           <div className="ii-stat-body">
-            <span className="ii-stat-value">{(stats?.avg_open_rate || 0).toFixed(1)}%</span>
+            <AnimatedCounter value={stats?.avg_open_rate || 0} decimals={1} suffix="%" className="ii-stat-value" />
             <span className="ii-stat-label">Avg Open Rate</span>
           </div>
         </div>
-        <div className="ii-stat-card">
+        <div className="ii-stat-card ig-card-hover">
           <div className="ii-stat-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899' }}>
             <FontAwesomeIcon icon={faDatabase} />
           </div>
           <div className="ii-stat-body">
-            <span className="ii-stat-value">{formatNumber(stats?.new_this_week || 0)}</span>
+            <AnimatedCounter value={stats?.new_this_week || 0} formatFn={formatNumber} className="ii-stat-value" />
             <span className="ii-stat-label">New This Week</span>
           </div>
         </div>
@@ -437,7 +438,7 @@ export const InboxProfiles: React.FC = () => {
 
       {/* ─── Tier Distribution ──────────────────────────────────────────── */}
       {stats && (
-        <div className="ii-tier-bar">
+        <div className="ii-tier-bar ig-fade-in">
           <span className="ii-tier-label">AI Classification:</span>
           <div className="ii-tier-chips">
             <button
@@ -469,7 +470,7 @@ export const InboxProfiles: React.FC = () => {
       )}
 
       {/* ─── Filter Bar ─────────────────────────────────────────────────── */}
-      <div className="ii-filter-bar">
+      <div className="ii-filter-bar ig-fade-in">
         <div className="ii-search-wrap">
           <FontAwesomeIcon icon={faSearch} className="ii-search-icon" />
           <input
@@ -506,7 +507,7 @@ export const InboxProfiles: React.FC = () => {
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div className="ii-main">
         {/* ─── Profile Table ────────────────────────────────────────────── */}
-        <div className="ii-table-wrap">
+        <div className="ii-table-wrap ig-data-stream">
           {loading && profiles.length === 0 ? (
             <div className="ii-loading">
               <FontAwesomeIcon icon={faSpinner} spin size="2x" />

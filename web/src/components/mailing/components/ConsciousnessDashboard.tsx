@@ -6,6 +6,7 @@ import {
   faSyncAlt, faEye, faStream,
   faBolt,
 } from '@fortawesome/free-solid-svg-icons';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
 
 interface Philosophy {
   id: string;
@@ -192,7 +193,7 @@ export const ConsciousnessDashboard: React.FC = () => {
   }
 
   return (
-    <div style={styles.container}>
+    <div className="ig-scan-line" style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
         <div style={styles.headerLeft}>
@@ -208,20 +209,20 @@ export const ConsciousnessDashboard: React.FC = () => {
           </div>
         </div>
         <div style={styles.headerRight}>
-          <div style={styles.moodBadge}>
+          <div className="ig-pulse-cyan" style={styles.moodBadge}>
             <span style={{ fontSize: 20 }}>{moodEmoji[state?.mood || 'observing']}</span>
             <span style={styles.moodLabel}>{state?.mood || 'observing'}</span>
           </div>
-          <div style={styles.healthScore}>
-            <span style={styles.healthValue}>{Math.round(state?.health_score || 0)}</span>
+          <div className="ig-pulse-cyan" style={styles.healthScore}>
+            <AnimatedCounter value={Math.round(state?.health_score || 0)} style={styles.healthValue} />
             <span style={styles.healthLabel}>Health</span>
           </div>
           <div style={styles.statBadge}>
-            <span style={styles.statValue}>{state?.total_beliefs || 0}</span>
+            <AnimatedCounter value={state?.total_beliefs || 0} style={styles.statValue} />
             <span style={styles.statLabel}>Beliefs</span>
           </div>
           <div style={styles.statBadge}>
-            <span style={styles.statValue}>{state?.active_isps || 0}</span>
+            <AnimatedCounter value={state?.active_isps || 0} style={styles.statValue} />
             <span style={styles.statLabel}>ISPs</span>
           </div>
           <button onClick={fetchState} style={styles.refreshBtn}>
@@ -277,9 +278,9 @@ function renderOverview(
   const negativePhils = state?.philosophies?.filter(p => p.sentiment === 'negative').length || 0;
 
   return (
-    <div style={styles.overviewGrid}>
+    <div className="ig-stagger" style={styles.overviewGrid}>
       {/* Belief Distribution */}
-      <div style={styles.card}>
+      <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#00b0ff' }} />
           Belief Distribution
@@ -310,7 +311,7 @@ function renderOverview(
       </div>
 
       {/* Strongest Beliefs */}
-      <div style={styles.card}>
+      <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
           Strongest Beliefs
@@ -337,7 +338,7 @@ function renderOverview(
       </div>
 
       {/* Active Campaigns */}
-      <div style={styles.card}>
+      <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: '#00e5ff' }} />
           Active Campaigns
@@ -362,7 +363,7 @@ function renderOverview(
       </div>
 
       {/* Live Thought Feed */}
-      <div style={{ ...styles.card, gridColumn: '1 / -1' }}>
+      <div className="ig-data-stream ig-card-hover" style={{ ...styles.card, gridColumn: '1 / -1' }}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
           Live Thought Stream
@@ -473,7 +474,7 @@ function renderPhilosophies(
 
 function renderThoughts(thoughts: Thought[], endRef: React.RefObject<HTMLDivElement>) {
   return (
-    <div style={styles.thoughtsContainer}>
+    <div className="ig-data-stream" style={styles.thoughtsContainer}>
       {thoughts.length === 0 ? (
         <div style={styles.emptyState}>
           <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
@@ -531,7 +532,7 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
   return (
     <div>
       {/* PMTA Throughput Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 20 }}>
+      <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
           { label: 'Total Sent', value: totals.sent, color: '#00b0ff' },
           { label: 'Delivered', value: totals.delivered, color: '#00b894' },
@@ -540,8 +541,8 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
           { label: 'Bounces', value: totals.bounces, color: '#fdcb6e' },
           { label: 'Complaints', value: totals.complaints, color: '#e94560' },
         ].map(m => (
-          <div key={m.label} style={{ background: '#0d1526', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid rgba(0,200,255,0.08)' }}>
-            <div style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }}>{m.value.toLocaleString()}</div>
+          <div key={m.label} className="ig-card-hover" style={{ background: '#0d1526', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid rgba(0,200,255,0.08)' }}>
+            <AnimatedCounter value={m.value} style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }} />
             <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
@@ -553,14 +554,14 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
           <p style={{ color: 'rgba(180,210,240,0.65)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
         </div>
       ) : (
-        <div style={styles.campaignGrid}>
+        <div className="ig-stagger" style={styles.campaignGrid}>
           {campaigns.map(c => {
             const deliveryRate = c.sent > 0 ? (c.delivered / c.sent * 100) : 0;
             const openRate = c.delivered > 0 ? (c.unique_opens / c.delivered * 100) : 0;
             const clickRate = c.delivered > 0 ? (c.unique_clicks / c.delivered * 100) : 0;
 
             return (
-              <div key={c.campaign_id} style={styles.campaignCard}>
+              <div key={c.campaign_id} className="ig-card-hover" style={styles.campaignCard}>
                 <div style={styles.campaignCardHeader}>
                   <h3 style={{ color: '#e0e6f0', fontSize: 16, margin: 0, fontWeight: 700 }}>
                     {c.campaign_id}

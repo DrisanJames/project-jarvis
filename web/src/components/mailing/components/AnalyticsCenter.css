@@ -26,8 +26,8 @@
 
 /* ─── KPI Hero Cards ────────────────────────────────────────────────────── */
 .ac-kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 24px; }
-.ac-kpi { background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 14px; padding: 18px; display: flex; align-items: center; gap: 14px; transition: all 0.2s; }
-.ac-kpi:hover { border-color: rgba(0,200,255,0.15); transform: translateY(-1px); }
+.ac-kpi { background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 14px; padding: 18px; display: flex; align-items: center; gap: 14px; transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease; }
+.ac-kpi:hover { border-color: rgba(0,200,255,0.22); transform: translateY(-3px); box-shadow: 0 6px 24px rgba(0,200,255,0.08), 0 0 0 1px rgba(0,200,255,0.06); }
 .ac-kpi-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
 .ac-kpi.sent .ac-kpi-icon { background: rgba(0,200,255,0.12); color: #00b0ff; }
 .ac-kpi.opens .ac-kpi-icon { background: rgba(16, 185, 129, 0.12); color: #34d399; }
@@ -45,7 +45,7 @@
 .ac-col-left, .ac-col-right { display: flex; flex-direction: column; gap: 20px; }
 
 /* ─── Generic Card ──────────────────────────────────────────────────────── */
-.ac-card { background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 14px; padding: 20px; }
+.ac-card { background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 14px; padding: 20px; transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease; }
 .ac-card h3 { margin: 0 0 16px; font-size: 14px; font-weight: 600; color: #c0c4d0; display: flex; align-items: center; gap: 8px; }
 .ac-card h3 svg { color: #00e5ff; font-size: 14px; }
 .ac-empty-mini { text-align: center; padding: 24px; color: #4b5563; font-size: 13px; }

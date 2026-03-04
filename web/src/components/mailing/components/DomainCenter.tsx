@@ -320,8 +320,8 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
   return (
     <div className={`domain-dashboard ${animateIn ? 'animate-in' : ''}`}>
       {/* Hero Stats */}
-      <div className="domain-hero-stats">
-        <div className="domain-hero-card primary" style={{ animationDelay: '0ms' }}>
+      <div className="domain-hero-stats ig-stagger">
+        <div className="domain-hero-card primary ig-card-hover" style={{ animationDelay: '0ms' }}>
           <div className="domain-hero-icon"><FontAwesomeIcon icon={faGlobe} /></div>
           <div>
             <div className="domain-hero-value">{stats?.totalDomains || 0}</div>
@@ -332,7 +332,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
           </div>
         </div>
 
-        <div className="domain-hero-card success" style={{ animationDelay: '60ms' }}>
+        <div className="domain-hero-card success ig-card-hover" style={{ animationDelay: '60ms' }}>
           <div className="domain-hero-icon"><FontAwesomeIcon icon={faCheck} /></div>
           <div>
             <div className="domain-hero-value">{stats?.activeCount || 0}</div>
@@ -343,7 +343,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
           </div>
         </div>
 
-        <div className="domain-hero-card warning" style={{ animationDelay: '120ms' }}>
+        <div className="domain-hero-card warning ig-card-hover" style={{ animationDelay: '120ms' }}>
           <div className="domain-hero-icon"><FontAwesomeIcon icon={faClock} /></div>
           <div>
             <div className="domain-hero-value">{stats?.pendingCount || 0}</div>
@@ -356,7 +356,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
           </div>
         </div>
 
-        <div className="domain-hero-card purple" style={{ animationDelay: '180ms' }}>
+        <div className="domain-hero-card purple ig-card-hover" style={{ animationDelay: '180ms' }}>
           <div className="domain-hero-icon"><FontAwesomeIcon icon={faRocket} /></div>
           <div>
             <div className="domain-hero-value">{stats?.sendingProfiles || 0}</div>
@@ -369,10 +369,10 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
       </div>
 
       {/* Quick Actions */}
-      <div className="domain-section" style={{ animationDelay: '200ms' }}>
+      <div className="domain-section ig-fade-in" style={{ animationDelay: '200ms' }}>
         <h3><FontAwesomeIcon icon={faBolt} /> Manage Domains</h3>
         <div className="domain-actions-grid">
-          <button className="domain-action-card sending" onClick={() => onNavigate('sending')}>
+          <button className="domain-action-card sending ig-btn-glow ig-ripple" onClick={() => onNavigate('sending')}>
             <div className="domain-action-icon"><FontAwesomeIcon icon={faServer} /></div>
             <div className="domain-action-content">
               <strong>Sending Domains</strong>
@@ -381,7 +381,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
 
-          <button className="domain-action-card tracking" onClick={() => onNavigate('tracking')}>
+          <button className="domain-action-card tracking ig-btn-glow ig-ripple" onClick={() => onNavigate('tracking')}>
             <div className="domain-action-icon"><FontAwesomeIcon icon={faLink} /></div>
             <div className="domain-action-content">
               <strong>Tracking Domains</strong>
@@ -390,7 +390,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
 
-          <button className="domain-action-card image" onClick={() => onNavigate('image-cdn')}>
+          <button className="domain-action-card image ig-btn-glow ig-ripple" onClick={() => onNavigate('image-cdn')}>
             <div className="domain-action-icon"><FontAwesomeIcon icon={faImage} /></div>
             <div className="domain-action-content">
               <strong>Image CDN</strong>
@@ -402,7 +402,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
       </div>
 
       {/* Domain Inventory with Search */}
-      <div className="domain-section" style={{ animationDelay: '300ms' }}>
+      <div className="domain-section ig-fade-in" style={{ animationDelay: '300ms' }}>
         <h3><FontAwesomeIcon icon={faChartPie} /> Domain Inventory</h3>
 
         {/* Search & Filters */}
@@ -508,11 +508,11 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <button className="domain-clear-filters-btn" onClick={clearFilters}>Clear all filters</button>
           </div>
         ) : (
-          <div className="domain-summary-grid">
+          <div className="domain-summary-grid ig-stagger">
             {filteredDomains.map((item, idx) => (
               <div
                 key={`${item.type}-${item.domain}-${idx}`}
-                className="domain-summary-item"
+                className={`domain-summary-item ig-card-hover ${item.status === 'pending' || item.status === 'provisioning' ? 'ig-breathe-border' : ''}`}
                 onClick={() => {
                   if (item.type === 'sending') onNavigate('sending');
                   else if (item.type === 'tracking') onNavigate('tracking');

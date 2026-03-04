@@ -8,6 +8,8 @@ import {
   faHandPointer, faSpinner, faChartBar
 } from '@fortawesome/free-solid-svg-icons';
 import './MissionControl.css';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { useToast } from '../shared/ToastSystem';
 
 // ============================================================================
 // TYPES
@@ -274,19 +276,19 @@ export const MissionControl: React.FC = () => {
         <div className="mc-header-right">
           {!snapshot.is_running ? (
             <>
-              <button className="mc-btn mc-btn-green" onClick={startSim}>
+              <button className="mc-btn mc-btn-green ig-btn-glow ig-ripple" onClick={startSim}>
                 <FontAwesomeIcon icon={faPlay} /> Start Simulation
               </button>
-              <button className="mc-btn mc-btn-ghost" onClick={resetSim}>
+              <button className="mc-btn mc-btn-ghost ig-btn-glow ig-ripple" onClick={resetSim}>
                 <FontAwesomeIcon icon={faRotateRight} /> Reset
               </button>
             </>
           ) : (
-            <button className="mc-btn mc-btn-red" onClick={stopSim}>
+            <button className="mc-btn mc-btn-red ig-btn-glow ig-ripple" onClick={stopSim}>
               <FontAwesomeIcon icon={faStop} /> Stop
             </button>
           )}
-          <span className={`mc-phase mc-phase-${state.phase || 'idle'}`}>
+          <span className={`mc-phase mc-phase-${state.phase || 'idle'} ig-pulse-cyan`}>
             <FontAwesomeIcon icon={state.is_paused ? faPause : faClock} />
             {state.is_paused ? 'PAUSED' : (state.phase || 'idle').replace(/_/g, ' ').toUpperCase()}
           </span>
@@ -294,18 +296,18 @@ export const MissionControl: React.FC = () => {
       </div>
 
       {/* KPI Bar */}
-      <div className="mc-kpi-bar">
-        <KPI label="Sent" value={state.total_sent.toLocaleString()} icon={faPaperPlane} />
-        <KPI label="Opens" value={state.total_opens.toLocaleString()} icon={faEye} />
+      <div className="mc-kpi-bar ig-stagger">
+        <KPI label="Sent" value={<AnimatedCounter value={state.total_sent} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faPaperPlane} />
+        <KPI label="Opens" value={<AnimatedCounter value={state.total_opens} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faEye} />
         <KPI label="Open Rate" value={`${state.current_open_rate.toFixed(1)}%`} icon={faBullseye}
           className={state.current_open_rate >= 5 ? 'mc-kpi-green' : state.current_open_rate >= 3 ? 'mc-kpi-amber' : 'mc-kpi-red'} />
-        <KPI label="Clicks" value={state.total_clicks.toLocaleString()} icon={faHandPointer} />
+        <KPI label="Clicks" value={<AnimatedCounter value={state.total_clicks} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faHandPointer} />
         <KPI label="Bounce%" value={`${state.current_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
           className={state.current_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-red'} />
         <KPI label="Complaint%" value={`${state.complaint_rate.toFixed(3)}%`} icon={faTriangleExclamation}
           className={state.complaint_rate < 0.08 ? 'mc-kpi-green' : 'mc-kpi-red'} />
         <KPI label="Throttle" value={`${state.throttle_rate}/min`} icon={faGauge} />
-        <KPI label="Conv" value={funnel.total_converted.toLocaleString()} icon={faDollarSign} className="mc-kpi-green" />
+        <KPI label="Conv" value={<AnimatedCounter value={funnel.total_converted} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faDollarSign} className="mc-kpi-green" />
       </div>
 
       {/* Main Layout */}
@@ -329,11 +331,11 @@ export const MissionControl: React.FC = () => {
 
           {/* Overview Panel */}
           {activePanel === 'overview' && (
-            <div className="mc-panel">
+            <div className="mc-panel ig-fade-in">
               {/* Funnel */}
-              <div className="mc-card">
+              <div className="mc-card ig-card-hover ig-scan-line">
                 <h3 className="mc-card-title"><FontAwesomeIcon icon={faChartLine} /> Offer Funnel — {snapshot.campaign_name || config.campaign_name || 'Active Campaign'}</h3>
-                <div className="mc-funnel">
+                <div className="mc-funnel ig-data-stream">
                   {[
                     { label: 'Sent', value: funnel.total_sent, rate: '100%', cls: 'blue' },
                     { label: 'Delivered', value: funnel.total_delivered, rate: `${funnel.delivery_rate.toFixed(1)}%`, cls: 'cyan' },
@@ -361,7 +363,7 @@ export const MissionControl: React.FC = () => {
               </div>
 
               {/* Warmup Tiers */}
-              <div className="mc-card">
+              <div className="mc-card ig-card-hover ig-scan-line">
                 <h3 className="mc-card-title"><FontAwesomeIcon icon={faArrowTrendUp} /> Warmup Tier Progress</h3>
                 <div className="mc-tiers">
                   {(snapshot.warmup_tiers || []).map(tier => (
@@ -369,7 +371,7 @@ export const MissionControl: React.FC = () => {
                       <span className={`mc-tier-badge mc-tier-${tier.status}`}>T{tier.tier}</span>
                       <span className="mc-tier-name">{tier.name}</span>
                       <div className="mc-tier-bar-track">
-                        <div className={`mc-tier-bar-fill mc-tier-fill-${tier.status}`}
+                        <div className={`mc-tier-bar-fill mc-tier-fill-${tier.status} ig-progress-fill`}
                           style={{ width: tier.status === 'completed' ? '100%' : tier.status === 'sending' ? '50%' : '0%' }} />
                       </div>
                       <span className="mc-tier-volume">{tier.volume.toLocaleString()}</span>
@@ -382,8 +384,8 @@ export const MissionControl: React.FC = () => {
 
           {/* A/B Test Panel */}
           {activePanel === 'ab_test' && (
-            <div className="mc-panel">
-              <div className="mc-card">
+            <div className="mc-panel ig-fade-in">
+              <div className="mc-card ig-card-hover ig-scan-line">
                 <h3 className="mc-card-title">
                   <FontAwesomeIcon icon={faBullseye} /> A/B Split Test — {abStats.length} Variants
                   {abStats.some(v => v.is_winner) && <span className="mc-badge mc-badge-green">WINNER</span>}
@@ -426,7 +428,7 @@ export const MissionControl: React.FC = () => {
                 </div>
 
                 {/* Race Chart */}
-                <div className="mc-race-chart">
+                <div className="mc-race-chart ig-data-stream">
                   <h4>Open Rate Race</h4>
                   {abStats.slice(0, 8).map(v => {
                     const maxRate = abStats[0]?.open_rate || 1;
@@ -448,8 +450,8 @@ export const MissionControl: React.FC = () => {
 
           {/* Decisions Panel */}
           {activePanel === 'decisions' && (
-            <div className="mc-panel">
-              <div className="mc-card">
+            <div className="mc-panel ig-fade-in">
+              <div className="mc-card ig-card-hover ig-scan-line">
                 <h3 className="mc-card-title"><FontAwesomeIcon icon={faRobot} /> Agent Decision Log — {(snapshot.decisions || []).length} Decisions</h3>
                 {(snapshot.decisions || []).length === 0 ? (
                   <div className="mc-empty"><FontAwesomeIcon icon={faRobot} /><p>Start the simulation to see decisions</p></div>
@@ -481,11 +483,11 @@ export const MissionControl: React.FC = () => {
 
           {/* Live Events Panel */}
           {activePanel === 'events' && (
-            <div className="mc-panel">
-              <div className="mc-card">
+            <div className="mc-panel ig-fade-in">
+              <div className="mc-card ig-card-hover ig-scan-line">
                 <h3 className="mc-card-title">
                   <FontAwesomeIcon icon={faBolt} /> Live Event Stream
-                  {snapshot.is_running && <span className="mc-live-dot" />}
+                  {snapshot.is_running && <span className="mc-live-dot ig-live-pulse" />}
                 </h3>
                 <div ref={eventLogRef} className="mc-event-log">
                   {(snapshot.recent_events || []).length === 0 ? (
@@ -510,7 +512,7 @@ export const MissionControl: React.FC = () => {
         {/* Right Panel: Consultation */}
         <div className="mc-right">
           {/* Chat */}
-          <div className="mc-chat-card">
+          <div className="mc-chat-card ig-card-hover ig-scan-line">
             <div className="mc-chat-header">
               <FontAwesomeIcon icon={faComments} /> Agent Consultation
             </div>
@@ -538,7 +540,7 @@ export const MissionControl: React.FC = () => {
                 onKeyDown={(e) => e.key === 'Enter' && sendConsult()}
                 placeholder="Consult the agent..."
               />
-              <button onClick={sendConsult} disabled={!consultInput.trim()}>
+              <button className="ig-btn-cyber" onClick={sendConsult} disabled={!consultInput.trim()}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </button>
             </div>
@@ -596,7 +598,7 @@ export const MissionControl: React.FC = () => {
 };
 
 // KPI Sub-component
-function KPI({ label, value, icon, className }: { label: string; value: string; icon: any; className?: string }) {
+function KPI({ label, value, icon, className }: { label: string; value: React.ReactNode; icon: any; className?: string }) {
   return (
     <div className={`mc-kpi ${className || ''}`}>
       <FontAwesomeIcon icon={icon} className="mc-kpi-icon" />

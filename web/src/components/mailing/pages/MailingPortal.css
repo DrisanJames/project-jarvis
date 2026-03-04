@@ -137,15 +137,37 @@
   font-size: 13px;
   cursor: pointer;
   border-radius: 6px;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   text-align: left;
   width: 100%;
   position: relative;
+  overflow: hidden;
+}
+
+.nav-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.04), transparent);
+  transition: left 0.5s ease;
+}
+
+.nav-item:hover::before {
+  left: 100%;
 }
 
 .nav-item:hover {
   background: rgba(0, 200, 255, 0.06);
   color: rgba(200, 230, 255, 0.95);
+  transform: translateX(3px);
+}
+
+.nav-item:active {
+  transform: translateX(1px) scale(0.98);
+  transition-duration: 0.08s;
 }
 
 .nav-item.active {
@@ -157,6 +179,7 @@
 
 .nav-item.active .nav-icon {
   filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.4));
+  animation: iconFloat 3s ease-in-out infinite;
 }
 
 .nav-icon {
@@ -196,6 +219,13 @@
   padding: 12px;
   border-radius: 8px;
   text-align: center;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.quick-stat:hover {
+  border-color: rgba(0, 229, 255, 0.2);
+  background: rgba(0, 200, 255, 0.06);
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.06);
 }
 
 .quick-stat-value {
@@ -638,6 +668,19 @@
   background: #0a1628;
   padding: 20px 24px;
   border-bottom: 1px solid rgba(0, 200, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.content-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: -30%;
+  width: 30%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.4), transparent);
+  animation: ig-stream 4s ease-in-out infinite;
 }
 
 .content-header h2 {
@@ -712,6 +755,13 @@
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(0, 200, 255, 0.08);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.system-card:hover {
+  border-color: rgba(0, 229, 255, 0.2);
+  box-shadow: 0 4px 24px rgba(0, 229, 255, 0.06);
+  transform: translateY(-2px);
 }
 
 .system-header {
@@ -738,11 +788,13 @@
   border-radius: 10px;
   font-weight: 500;
   text-transform: uppercase;
+  transition: all 0.3s ease;
 }
 
 .status-badge.active {
-  background: #dcfce7;
-  color: #166534;
+  background: rgba(0, 184, 148, 0.15);
+  color: #00b894;
+  animation: ig-pulse-glow 2.5s ease-in-out infinite;
 }
 
 .status-badge.draft {
@@ -864,12 +916,25 @@
 .daily-cap-fill {
   height: 100%;
   border-radius: 5px;
-  transition: width 0.5s ease;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
 }
 
-.daily-cap-fill.healthy { background: linear-gradient(90deg, #22c55e, #16a34a); }
-.daily-cap-fill.warning { background: linear-gradient(90deg, #f59e0b, #d97706); }
-.daily-cap-fill.critical { background: linear-gradient(90deg, #ef4444, #dc2626); }
+.daily-cap-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+  animation: ig-progress-shine 2s ease-in-out infinite;
+}
+
+.daily-cap-fill.healthy { background: linear-gradient(90deg, #00b894, #00a080); }
+.daily-cap-fill.warning { background: linear-gradient(90deg, #fdcb6e, #e5b84e); }
+.daily-cap-fill.critical { background: linear-gradient(90deg, #e94560, #d63850); animation: ig-glow-error 1.5s ease-in-out infinite; }
 
 .daily-cap-details {
   display: flex;

@@ -10,6 +10,7 @@ import {
   faInfoCircle, faChevronDown
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
 import './ISPAgentIntelligence.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -401,51 +402,51 @@ export const ISPAgentIntelligence: React.FC = () => {
             <p>Specialized AI agents learning the behavior of every ISP</p>
           </div>
         </div>
-        <button className="ia-refresh-btn" onClick={() => { fetchAgents(); fetchManagedAgents(); }} disabled={loading || loadingManaged}>
+        <button className="ia-refresh-btn ig-btn-glow ig-ripple" onClick={() => { fetchAgents(); fetchManagedAgents(); }} disabled={loading || loadingManaged}>
           <FontAwesomeIcon icon={faSyncAlt} spin={loading || loadingManaged} /> Refresh
         </button>
       </div>
 
       {/* ─── Summary Stats ──────────────────────────────────────────────── */}
       {summary && (
-        <div className="ia-summary-bar">
-          <div className="ia-summary-card">
+        <div className="ia-summary-bar ig-stagger">
+          <div className="ia-summary-card ig-card-hover">
             <div className="ia-summary-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
               <FontAwesomeIcon icon={faRobot} />
             </div>
             <div className="ia-summary-body">
-              <span className="ia-summary-value">{summary.total_agents}</span>
+              <AnimatedCounter value={summary.total_agents} className="ia-summary-value" />
               <span className="ia-summary-label">Total Agents</span>
             </div>
           </div>
-          <div className="ia-summary-card">
+          <div className="ia-summary-card ig-card-hover">
             <div className="ia-summary-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
               <FontAwesomeIcon icon={faBolt} />
             </div>
             <div className="ia-summary-body">
-              <span className="ia-summary-value">{summary.active_agents}</span>
+              <AnimatedCounter value={summary.active_agents} className="ia-summary-value" />
               <span className="ia-summary-label">Active Agents</span>
             </div>
           </div>
-          <div className="ia-summary-card">
+          <div className="ia-summary-card ig-card-hover">
             <div className="ia-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
               <FontAwesomeIcon icon={faBrain} />
             </div>
             <div className="ia-summary-body">
-              <span className="ia-summary-value">{formatNumber(summary.total_profiles)}</span>
+              <AnimatedCounter value={summary.total_profiles} formatFn={formatNumber} className="ia-summary-value" />
               <span className="ia-summary-label">Profiles Built</span>
             </div>
           </div>
-          <div className="ia-summary-card">
+          <div className="ia-summary-card ig-card-hover">
             <div className="ia-summary-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
               <FontAwesomeIcon icon={faDatabase} />
             </div>
             <div className="ia-summary-body">
-              <span className="ia-summary-value">{formatNumber(summary.total_data_points)}</span>
+              <AnimatedCounter value={summary.total_data_points} formatFn={formatNumber} className="ia-summary-value" />
               <span className="ia-summary-label">Data Points</span>
             </div>
           </div>
-          <div className="ia-summary-card">
+          <div className="ia-summary-card ig-card-hover">
             <div className="ia-summary-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899' }}>
               <FontAwesomeIcon icon={faClock} />
             </div>
@@ -458,7 +459,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       )}
 
       {/* ═══ Managed / Spawned Agents Section ═══════════════════════════ */}
-      <div className="ia-managed-section">
+      <div className="ia-managed-section ig-fade-in">
         <div className="ia-managed-section-header">
           <div className="ia-managed-section-title">
             <FontAwesomeIcon icon={faNetworkWired} />
@@ -469,58 +470,58 @@ export const ISPAgentIntelligence: React.FC = () => {
 
         {/* Managed Summary Bar */}
         {managedSummary && (
-          <div className="ia-managed-summary-bar">
-            <div className="ia-managed-summary-card">
+          <div className="ia-managed-summary-bar ig-stagger">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
                 <FontAwesomeIcon icon={faRobot} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{managedSummary.total_agents}</span>
+                <AnimatedCounter value={managedSummary.total_agents} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Total Agents</span>
               </div>
             </div>
-            <div className="ia-managed-summary-card">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
                 <FontAwesomeIcon icon={faBolt} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{managedSummary.active_agents}</span>
+                <AnimatedCounter value={managedSummary.active_agents} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Active</span>
               </div>
             </div>
-            <div className="ia-managed-summary-card">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(107, 114, 128, 0.15)', color: '#6b7280' }}>
                 <FontAwesomeIcon icon={faPause} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{managedSummary.dormant_agents}</span>
+                <AnimatedCounter value={managedSummary.dormant_agents} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Dormant</span>
               </div>
             </div>
-            <div className="ia-managed-summary-card">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
                 <FontAwesomeIcon icon={faGraduationCap} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{managedSummary.learning_agents}</span>
+                <AnimatedCounter value={managedSummary.learning_agents} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Learning</span>
               </div>
             </div>
-            <div className="ia-managed-summary-card">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{formatNumber(managedSummary.total_sends)}</span>
+                <AnimatedCounter value={managedSummary.total_sends} formatFn={formatNumber} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Total Sends</span>
               </div>
             </div>
-            <div className="ia-managed-summary-card">
+            <div className="ia-managed-summary-card ig-card-hover">
               <div className="ia-managed-summary-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899' }}>
                 <FontAwesomeIcon icon={faChartLine} />
               </div>
               <div className="ia-managed-summary-body">
-                <span className="ia-managed-summary-value">{managedSummary.avg_engagement.toFixed(1)}</span>
+                <AnimatedCounter value={managedSummary.avg_engagement} decimals={1} className="ia-managed-summary-value" />
                 <span className="ia-managed-summary-label">Avg Engagement</span>
               </div>
             </div>
@@ -544,7 +545,7 @@ export const ISPAgentIntelligence: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="ia-managed-grid">
+          <div className="ia-managed-grid ig-stagger">
             {managedAgents.map(agent => {
               const knowledge = agent.knowledge || {};
               const optimalHours = knowledge.optimal_send_hours as number[] | undefined;
@@ -555,7 +556,7 @@ export const ISPAgentIntelligence: React.FC = () => {
               return (
                 <div
                   key={agent.id}
-                  className={`ia-managed-card ${expandedAgent === agent.id ? 'ia-managed-card-expanded' : ''}`}
+                  className={`ia-managed-card ig-card-hover ${expandedAgent === agent.id ? 'ia-managed-card-expanded' : ''}`}
                   onClick={() => {
                     if (expandedAgent === agent.id) {
                       setExpandedAgent(null);
@@ -582,7 +583,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                         className="ia-managed-status-badge"
                         style={{ background: statusColor + '22', color: statusColor, borderColor: statusColor + '44' }}
                       >
-                        <span className="ia-managed-status-dot" style={{ background: statusColor }} />
+                        <span className={`ia-managed-status-dot ${agent.status !== 'dormant' ? 'ig-pulse-cyan' : ''}`} style={{ background: statusColor }} />
                         {getManagedStatusLabel(agent.status)}
                       </span>
                       <span className={`ia-managed-expand-icon ${expandedAgent === agent.id ? 'ia-managed-expand-icon-open' : ''}`}>
@@ -623,7 +624,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                     </div>
                     <div className="ia-managed-engagement-bg">
                       <div
-                        className="ia-managed-engagement-fill"
+                        className="ia-managed-engagement-fill ig-progress-fill"
                         style={{
                           width: `${Math.min(agent.avg_engagement, 100)}%`,
                           background: agent.avg_engagement >= 60 ? '#10b981' : agent.avg_engagement >= 30 ? '#f59e0b' : '#ef4444'
@@ -670,7 +671,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                     </div>
                     <div className="ia-managed-card-actions">
                       <button
-                        className="ia-managed-btn ia-managed-btn-learn"
+                        className="ia-managed-btn ia-managed-btn-learn ig-btn-glow ig-ripple"
                         onClick={(e) => { e.stopPropagation(); triggerLearn(agent.id); }}
                         disabled={triggeringLearn === agent.id}
                         title="Trigger Learning Cycle"
@@ -683,7 +684,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                         Learn
                       </button>
                       <button
-                        className={`ia-managed-btn ${agent.status === 'dormant' ? 'ia-managed-btn-activate' : 'ia-managed-btn-dormant'}`}
+                        className={`ia-managed-btn ig-btn-glow ig-ripple ${agent.status === 'dormant' ? 'ia-managed-btn-activate' : 'ia-managed-btn-dormant'}`}
                         onClick={(e) => { e.stopPropagation(); toggleAgentStatus(agent.id, agent.status); }}
                         disabled={togglingStatus === agent.id}
                         title={agent.status === 'dormant' ? 'Activate Agent' : 'Set Dormant'}
@@ -840,7 +841,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       </div>
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
-      <div className="ia-main">
+      <div className="ia-main ig-fade-in">
         {loading && agents.length === 0 ? (
           <div className="ia-loading">
             <FontAwesomeIcon icon={faSpinner} spin size="2x" />
@@ -853,13 +854,13 @@ export const ISPAgentIntelligence: React.FC = () => {
             <p>AI agents are created as email data flows through the system. Send emails to start building ISP-specific intelligence.</p>
           </div>
         ) : (
-          <div className="ia-agents-grid">
+          <div className="ia-agents-grid ig-stagger">
             {sortedAgents.map(agent => {
               const kd = getKnowledgeDepth(agent);
               return (
                 <div
                   key={agent.domain}
-                  className={`ia-agent-card ${selectedAgent?.domain === agent.domain ? 'ia-agent-active' : ''}`}
+                  className={`ia-agent-card ig-card-hover ${selectedAgent?.domain === agent.domain ? 'ia-agent-active' : ''}`}
                   onClick={() => setSelectedAgent(selectedAgent?.domain === agent.domain ? null : agent)}
                 >
                   {/* Agent Header */}
@@ -872,7 +873,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                       </div>
                     </div>
                     <div className="ia-agent-status">
-                      <span className="ia-status-dot" style={{ background: getStatusColor(agent.status) }} />
+                      <span className={`ia-status-dot ${agent.status === 'active' ? 'ig-pulse-cyan' : ''}`} style={{ background: getStatusColor(agent.status) }} />
                       <span className="ia-status-text" style={{ color: getStatusColor(agent.status) }}>
                         {getStatusLabel(agent.status)}
                       </span>
@@ -889,7 +890,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                     </div>
                     <div className="ia-progress-bg">
                       <div
-                        className="ia-progress-fill"
+                        className="ia-progress-fill ig-progress-fill"
                         style={{ width: `${kd.score}%`, background: `linear-gradient(90deg, ${kd.color}88, ${kd.color})` }}
                       />
                     </div>

@@ -10,6 +10,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useDateFilter } from '../../../context/DateFilterContext';
+import { AnimatedCounter } from '../shared/AnimatedCounter';
 import './AnalyticsCenter.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -215,7 +216,7 @@ export const AnalyticsCenter: React.FC = () => {
   const avgKnowledge = agents.length > 0 ? Math.round(totalKnowledge / agents.length) : 0;
 
   return (
-    <div className="ac-container">
+    <div className="ac-container ig-scan-line">
       {/* ─── Header ─────────────────────────────────────────────────────── */}
       <div className="ac-header">
         <div className="ac-header-left">
@@ -233,7 +234,7 @@ export const AnalyticsCenter: React.FC = () => {
               </button>
             ))}
           </div>
-          <button className="ac-refresh-btn" onClick={fetchAll} disabled={loading}>
+          <button className="ac-refresh-btn ig-btn-glow ig-ripple" onClick={fetchAll} disabled={loading}>
             <FontAwesomeIcon icon={faSyncAlt} spin={loading} /> Refresh
           </button>
         </div>
@@ -247,50 +248,50 @@ export const AnalyticsCenter: React.FC = () => {
       ) : (
         <>
           {/* ─── KPI Hero Cards ─────────────────────────────────────────── */}
-          <div className="ac-kpi-grid">
-            <div className="ac-kpi sent">
+          <div className="ac-kpi-grid ig-stagger">
+            <div className="ac-kpi sent ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faEnvelope} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{fmt(totals.sent)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={totals.sent} formatFn={fmt} /></span>
                 <span className="ac-kpi-label">Emails Sent</span>
               </div>
             </div>
-            <div className="ac-kpi opens">
+            <div className="ac-kpi opens ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faEye} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{pct(rates.open_rate)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={rates.open_rate} decimals={1} suffix="%" /></span>
                 <span className="ac-kpi-label">Open Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.opens)} opens</span>
               </div>
             </div>
-            <div className="ac-kpi clicks">
+            <div className="ac-kpi clicks ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faMousePointer} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{pct(rates.click_rate)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={rates.click_rate} decimals={1} suffix="%" /></span>
                 <span className="ac-kpi-label">Click Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.clicks)} clicks</span>
               </div>
             </div>
-            <div className="ac-kpi revenue">
+            <div className="ac-kpi revenue ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faDollarSign} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{fmtCurrency(totals.revenue)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={totals.revenue} formatFn={fmtCurrency} /></span>
                 <span className="ac-kpi-label">Revenue</span>
                 <span className="ac-kpi-sub">{fmtCurrency(revenue?.revenue_per_email || 0)}/email</span>
               </div>
             </div>
-            <div className="ac-kpi bounces">
+            <div className="ac-kpi bounces ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{pct(rates.bounce_rate)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={rates.bounce_rate} decimals={1} suffix="%" /></span>
                 <span className="ac-kpi-label">Bounce Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.bounces)} bounced</span>
               </div>
             </div>
-            <div className="ac-kpi complaints">
+            <div className="ac-kpi complaints ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faBan} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value">{pct(rates.complaint_rate)}</span>
+                <span className="ac-kpi-value"><AnimatedCounter value={rates.complaint_rate} decimals={2} suffix="%" /></span>
                 <span className="ac-kpi-label">Complaint Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.complaints)} complaints</span>
               </div>
@@ -336,7 +337,7 @@ export const AnalyticsCenter: React.FC = () => {
             const volColor = sentCV > 50 ? '#ef4444' : sentCV > 25 ? '#f59e0b' : '#22c55e';
 
             return (
-              <div className="ac-intel-bar">
+              <div className="ac-intel-bar ig-data-stream">
                 <div className="ac-intel-item">
                   <span className="ac-intel-label">SEND MOMENTUM</span>
                   <span className="ac-intel-value" style={{ color: mSignal === 'bullish' ? '#22c55e' : mSignal === 'bearish' ? '#ef4444' : '#94a3b8' }}>
@@ -381,12 +382,12 @@ export const AnalyticsCenter: React.FC = () => {
           })()}
 
           {/* ─── Two-Column Layout ──────────────────────────────────────── */}
-          <div className="ac-two-col">
+          <div className="ac-two-col ig-fade-in">
             {/* LEFT COLUMN */}
             <div className="ac-col-left">
 
               {/* Daily Trend Chart */}
-              <div className="ac-card">
+              <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faChartBar} /> Daily Send Volume &amp; Engagement</h3>
                 {trend.length === 0 ? (
                   <div className="ac-empty-mini">No trend data available for this period.</div>
@@ -416,7 +417,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* Campaign Performance Table */}
-              <div className="ac-card">
+              <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faTrophy} /> Campaign Performance</h3>
                 {!campaigns?.campaigns?.length ? (
                   <div className="ac-empty-mini">No campaign data yet.</div>
@@ -454,7 +455,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* Deliverability Health */}
-              <div className="ac-card">
+              <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faShieldAlt} /> Deliverability Health</h3>
                 <div className="ac-deliver-grid">
                   <div className="ac-deliver-metric">
@@ -506,7 +507,7 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-col-right">
 
               {/* AI Intelligence Overview */}
-              <div className="ac-card ac-ai-card">
+              <div className="ac-card ac-ai-card ig-card-hover ig-fade-in">
                 <h3><FontAwesomeIcon icon={faBrain} /> AI Intelligence</h3>
                 <div className="ac-ai-hero">
                   <div className="ac-ai-ring" style={{ '--ai-pct': `${avgKnowledge}%`, '--ai-color': avgKnowledge >= 60 ? '#10b981' : avgKnowledge >= 30 ? '#f59e0b' : '#ef4444' } as React.CSSProperties}>
@@ -561,7 +562,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* Engagement Distribution */}
-              <div className="ac-card">
+              <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faUsers} /> Engagement Distribution</h3>
                 {(() => {
                   const dist = engagement?.distribution || profileStats?.tier_distribution || { high: 0, medium: 0, low: 0, none: 0 };
@@ -593,7 +594,7 @@ export const AnalyticsCenter: React.FC = () => {
                 })()}
               </div>
 
-              <div className="ac-card ac-cap-card">
+              <div className="ac-card ac-cap-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faEnvelope} /> PMTA Daily Cap</h3>
                 {(() => {
                   const cap = dashData?.daily_capacity || 0;
@@ -628,7 +629,7 @@ export const AnalyticsCenter: React.FC = () => {
                       </div>
                       <div className="ac-cap-bar-wrap">
                         <div className="ac-cap-bar">
-                          <div className={`ac-cap-fill ac-cap-${status}`} style={{ width: `${Math.min(util, 100)}%` }} />
+                          <div className={`ac-cap-fill ac-cap-${status} ig-progress-fill`} style={{ width: `${Math.min(util, 100)}%` }} />
                         </div>
                         <div className="ac-cap-labels">
                           <span>0</span>
@@ -651,7 +652,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* ISP Agent Performance */}
-              <div className="ac-card ac-agent-perf-card">
+              <div className="ac-card ac-agent-perf-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faRobot} /> ISP Agent Performance</h3>
                 <div className="ac-agent-perf-stats">
                   <div className="ac-agent-perf-stat">
@@ -681,7 +682,7 @@ export const AnalyticsCenter: React.FC = () => {
                           <span className="ac-agent-perf-bar-label">{a.isp}</span>
                           <div className="ac-agent-perf-bar-track">
                             <div
-                              className={`ac-agent-perf-bar-fill ac-st-${a.status}`}
+                              className={`ac-agent-perf-bar-fill ac-st-${a.status} ig-progress-fill`}
                               style={{ width: `${(a.data_points_total / maxPts) * 100}%` }}
                             />
                           </div>
@@ -697,7 +698,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* Optimal Send Time */}
-              <div className="ac-card ac-optimal-card">
+              <div className="ac-card ac-optimal-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faCalendarAlt} /> AI Optimal Send Time</h3>
                 {optimalSend ? (
                   <div className="ac-optimal">
@@ -708,7 +709,7 @@ export const AnalyticsCenter: React.FC = () => {
                     <div className="ac-optimal-conf">
                       <span>Confidence</span>
                       <div className="ac-conf-bar">
-                        <div style={{ width: `${(optimalSend.confidence || 0) * 100}%` }} />
+                        <div className="ig-progress-fill" style={{ width: `${(optimalSend.confidence || 0) * 100}%` }} />
                       </div>
                       <span className="ac-conf-pct">{((optimalSend.confidence || 0) * 100).toFixed(0)}%</span>
                     </div>
@@ -724,7 +725,7 @@ export const AnalyticsCenter: React.FC = () => {
               </div>
 
               {/* Revenue by Campaign */}
-              <div className="ac-card">
+              <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faDollarSign} /> Top Revenue Campaigns</h3>
                 {!revenue?.top_revenue_campaigns?.length ? (
                   <div className="ac-empty-mini">No revenue data yet.</div>
@@ -746,7 +747,7 @@ export const AnalyticsCenter: React.FC = () => {
 
               {/* ISP Distribution */}
               {profileStats?.isp_distribution && Object.keys(profileStats.isp_distribution).length > 0 && (
-                <div className="ac-card">
+                <div className="ac-card ig-card-hover">
                   <h3><FontAwesomeIcon icon={faChartPie} /> ISP Distribution</h3>
                   <div className="ac-isp-dist">
                     {Object.entries(profileStats.isp_distribution)
@@ -758,7 +759,7 @@ export const AnalyticsCenter: React.FC = () => {
                           <div key={domain} className="ac-isp-row">
                             <span className="ac-isp-name">{domain}</span>
                             <div className="ac-isp-bar-bg">
-                              <div className="ac-isp-bar-fill" style={{ width: `${((count as number) / maxCount) * 100}%` }} />
+                              <div className="ac-isp-bar-fill ig-progress-fill" style={{ width: `${((count as number) / maxCount) * 100}%` }} />
                             </div>
                             <span className="ac-isp-count">{count as number}</span>
                           </div>
@@ -769,7 +770,7 @@ export const AnalyticsCenter: React.FC = () => {
               )}
 
               {/* Industry Benchmarks */}
-              <div className="ac-card ac-bench-card">
+              <div className="ac-card ac-bench-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faChartLine} /> Your Performance vs Industry</h3>
                 <div className="ac-bench-grid">
                   {[
