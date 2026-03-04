@@ -615,6 +615,14 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		resolvedFromEmail = fromEmail.String
 	}
 
+	// Compute max_recipients from ISP quotas sum
+	var maxRecipients int
+	for _, q := range input.ISPQuotas {
+		if q.Volume > 0 {
+			maxRecipients += q.Volume
+		}
+	}
+
 	espQuotas, _ := json.Marshal(map[string]interface{}{
 		"target_isps":        input.TargetISPs,
 		"sending_domain":     input.SendingDomain,
@@ -627,22 +635,29 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
 	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
 
+	// max_recipients is NULL if no quotas set (unlimited), otherwise sum of quotas
+	var maxRecipientsParam interface{}
+	if maxRecipients > 0 {
+		maxRecipientsParam = maxRecipients
+	}
+
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status, scheduled_at,
 			from_name, from_email, reply_to, subject, preview_text, html_content,
 			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
-			send_type, created_at, updated_at
+			max_recipients, send_type, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, 'scheduled', $4,
 			$5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14,
-			'blast', NOW(), NOW()
+			$15, 'blast', NOW(), NOW()
 		)
 	`, campaignID, orgID, input.Name, scheduledAt,
 		resolvedFromName, resolvedFromEmail, replyTo,
 		input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
 		profileID, espQuotas, inclusionListsJSON, suppressionListsJSON,
+		maxRecipientsParam,
 	)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

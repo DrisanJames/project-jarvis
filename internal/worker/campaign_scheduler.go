@@ -576,7 +576,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			json.Unmarshal(conditionsJSON, &conditions)
 		}
 		
-		// Build base query — check BOTH global suppressions AND named suppression lists
+		// Build base query — check legacy suppressions, global suppressions, AND named lists
 		// DISTINCT ON (LOWER(s.email)) ensures one row per email even across lists
 		query = `
 			SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
@@ -585,6 +585,10 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			AND NOT EXISTS (
 				SELECT 1 FROM mailing_suppressions sup 
 				WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_global_suppressions gs
+				WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
 			)
 		`
 		args = []interface{}{}
@@ -663,7 +667,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		
 		query += " ORDER BY LOWER(s.email), s.id"
 	} else if campaign.ListID.Valid {
-		// Build list-based query with both global + named suppression checks
+		// Build list-based query with legacy + global + named suppression checks
 		if len(suppressionListIDs) > 0 {
 			query = `
 				SELECT s.id, s.email
@@ -673,6 +677,10 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppressions sup 
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_global_suppressions gs
+					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppression_entries se
@@ -692,6 +700,10 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 					SELECT 1 FROM mailing_suppressions sup 
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
 				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_global_suppressions gs
+					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
+				)
 				ORDER BY s.id
 			`
 			args = []interface{}{campaign.ListID.String}
@@ -707,6 +719,10 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppressions sup
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_global_suppressions gs
+					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppression_entries se
@@ -725,6 +741,10 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_suppressions sup
 					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_global_suppressions gs
+					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
 				)
 				ORDER BY LOWER(s.email), s.id
 			`
