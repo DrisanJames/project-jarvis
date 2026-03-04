@@ -32,6 +32,11 @@ type PMTACampaignService struct {
 	orgID        string
 	suppMatcher  *SuppressionMatcher
 	globalHub    *engine.GlobalSuppressionHub
+	executor     *engine.Executor
+}
+
+func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
+	s.executor = e
 }
 
 // NewPMTACampaignService creates the service.
@@ -69,6 +74,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/trigger-send", s.HandleTriggerSend)
 		cr.Post("/push-ses-relay", s.HandlePushSESRelay)
 		cr.Post("/test-ses-send", s.HandleTestSESSend)
+		cr.Post("/{campaignId}/emergency-stop", s.HandleEmergencyCampaignStop)
 	})
 }
 
@@ -805,6 +811,9 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 		ispCounts[q.ISP]++
 		capped = append(capped, q)
+		if maxRecipients > 0 && len(capped) >= maxRecipients {
+			break
+		}
 	}
 	if len(quotaMap) > 0 {
 		log.Printf("[DeployCampaign] ISP quota enforcement: %v (limits: %v, before: %d, after: %d)", ispCounts, quotaMap, len(qualified), len(capped))
@@ -844,6 +853,10 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 						continue
 					}
 					queuedCount++
+					if maxRecipients > 0 && queuedCount >= maxRecipients {
+						log.Printf("[DeployCampaign] max_recipients hard cap reached: %d", maxRecipients)
+						break
+					}
 				}
 				stmt.Exec()
 				stmt.Close()
@@ -875,6 +888,48 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		TotalAudience: queuedCount,
 		VariantCount:  len(input.Variants),
 		AgentIDs:      []string{},
+	})
+}
+
+// HandleEmergencyCampaignStop immediately cancels a campaign, kills all queue items
+// (including already-claimed ones), and pauses all PMTA queues via SSH.
+func (s *PMTACampaignService) HandleEmergencyCampaignStop(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	campaignID := chi.URLParam(r, "campaignId")
+	if campaignID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaignId required"})
+		return
+	}
+
+	// 1. Cancel campaign
+	s.db.ExecContext(ctx, "UPDATE mailing_campaigns SET status='cancelled', completed_at=NOW(), updated_at=NOW() WHERE id=$1", campaignID)
+
+	// 2. Cancel ALL queue items — including 'sending' and 'claimed' status
+	result, _ := s.db.ExecContext(ctx, `
+		UPDATE mailing_campaign_queue SET status='cancelled'
+		WHERE campaign_id=$1 AND status IN ('queued','sending','claimed','pending')
+	`, campaignID)
+	cancelled, _ := result.RowsAffected()
+
+	// 3. Pause all PMTA queues via SSH
+	pmtaPaused := false
+	if s.executor != nil {
+		if err := s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "gmail"}); err == nil {
+			pmtaPaused = true
+		}
+		s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "yahoo"})
+		s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "microsoft"})
+		s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "att"})
+		s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "apple"})
+		s.executor.Execute(ctx, engine.Decision{ActionTaken: "pause_isp_queues", ISP: "comcast"})
+	}
+
+	log.Printf("[EmergencyStop] Campaign %s: cancelled %d queue items, PMTA paused: %v", campaignID, cancelled, pmtaPaused)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"campaign_id":     campaignID,
+		"status":          "cancelled",
+		"items_cancelled": cancelled,
+		"pmta_paused":     pmtaPaused,
 	})
 }
 

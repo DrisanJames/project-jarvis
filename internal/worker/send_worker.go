@@ -358,7 +358,9 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 				locked_at = NOW()
 			WHERE id IN (
 				SELECT q.id FROM mailing_campaign_queue q
+				JOIN mailing_campaigns camp ON camp.id = q.campaign_id
 				WHERE q.status = 'queued'
+				  AND camp.status NOT IN ('cancelled', 'paused', 'failed')
 				  AND q.scheduled_at <= NOW()
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
 				ORDER BY q.priority DESC, q.scheduled_at ASC
@@ -459,6 +461,14 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 func (p *SendWorkerPool) processItem(item QueueItem) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
+
+	// Gate: skip if campaign was cancelled or paused after claim
+	var campStatus string
+	if p.db.QueryRowContext(ctx, "SELECT status FROM mailing_campaigns WHERE id=$1", item.CampaignID).Scan(&campStatus) == nil {
+		if campStatus == "cancelled" || campStatus == "paused" {
+			return p.markSkipped(ctx, item.ID, "campaign_"+campStatus)
+		}
+	}
 
 	// Load campaign's suppression list IDs and check suppression
 	suppressionListIDs, err := p.getCampaignSuppressionListIDs(ctx, item.CampaignID)

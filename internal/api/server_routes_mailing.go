@@ -676,6 +676,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			campaignBuilder.SetGlobalSuppressionHub(globalHub)
 			pmtaCampaignAPI.SetGlobalSuppressionHub(globalHub)
+			pmtaCampaignAPI.SetExecutor(executor)
 
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)
