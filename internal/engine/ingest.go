@@ -249,12 +249,22 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	// Resolve campaign_id: try jobId first (if it's a UUID), else look up by recipient
 	campaignID := rec.JobID
 	if !isUUID(campaignID) {
+		recipientLower := strings.ToLower(strings.TrimSpace(rec.Recipient))
 		var resolved sql.NullString
+		// Try tracking_events first (has email since the fix)
 		ing.db.QueryRowContext(ctx, `
 			SELECT campaign_id::text FROM mailing_tracking_events
-			WHERE LOWER(email) = LOWER($1) AND event_type = 'sent'
+			WHERE LOWER(email) = $1 AND event_type = 'sent'
 			ORDER BY event_at DESC LIMIT 1
-		`, strings.TrimSpace(rec.Recipient)).Scan(&resolved)
+		`, recipientLower).Scan(&resolved)
+		// Fallback to message_log (always has email)
+		if !resolved.Valid {
+			ing.db.QueryRowContext(ctx, `
+				SELECT campaign_id::text FROM mailing_message_log
+				WHERE LOWER(email) = $1
+				ORDER BY sent_at DESC LIMIT 1
+			`, recipientLower).Scan(&resolved)
+		}
 		if resolved.Valid {
 			campaignID = resolved.String
 		} else {
