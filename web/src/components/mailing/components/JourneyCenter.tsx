@@ -9,7 +9,8 @@ import {
   faArrowRight, faTimes,
   faUserPlus, faFileAlt, faChartBar, faChartPie,
   faEnvelopeOpen, faUserMinus, faInbox, faLayerGroup,
-  faSitemap, faCodeBranch, faStopwatch, faFlag
+  faSitemap, faCodeBranch, faStopwatch, faFlag,
+  faBolt, faRandom, faRocket, faSave
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { JourneyBuilder } from './JourneyBuilder';
@@ -244,11 +245,11 @@ const FunnelNode: React.FC<{
   maxEntered: number;
 }> = ({ node, isFirst, maxEntered }) => {
   const nodeTypeIcons: Record<string, any> = {
-    trigger: faFlag,
+    trigger: faBolt,
     email: faEnvelope,
-    delay: faStopwatch,
+    delay: faClock,
     condition: faCodeBranch,
-    split: faSitemap,
+    split: faRandom,
     goal: faBullseye,
   };
 
@@ -930,7 +931,7 @@ const JourneyDetail: React.FC<{
           </button>
           {journey.status === 'draft' && (
             <button className="jc-action-btn jc-btn-success" onClick={() => onAction(journey.id, 'activate')}>
-              <FontAwesomeIcon icon={faPlay} /> Activate
+              <FontAwesomeIcon icon={faRocket} /> Activate
             </button>
           )}
           {journey.status === 'active' && (
@@ -940,7 +941,7 @@ const JourneyDetail: React.FC<{
           )}
           {journey.status === 'paused' && (
             <button className="jc-action-btn jc-btn-success" onClick={() => onAction(journey.id, 'activate')}>
-              <FontAwesomeIcon icon={faPlay} /> Resume
+              <FontAwesomeIcon icon={faRocket} /> Resume
             </button>
           )}
         </div>

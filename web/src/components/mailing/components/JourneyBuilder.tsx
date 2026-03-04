@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faBolt, faEnvelope, faClock, faCodeBranch, faRandom, faBullseye, faSave, faRocket } from '@fortawesome/free-solid-svg-icons';
 import './JourneyBuilder.css';
 
 // Types
@@ -86,12 +88,12 @@ interface SendingProfile {
 
 // Node type definitions
 const NODE_TYPES = {
-  trigger: { label: 'Trigger', icon: '⚡', color: '#00b894', description: 'Start the journey' },
-  email: { label: 'Send Email', icon: '✉️', color: '#00e5ff', description: 'Send an email' },
-  delay: { label: 'Wait', icon: '⏱️', color: '#fdcb6e', description: 'Wait before next step' },
-  condition: { label: 'Condition', icon: '🔀', color: '#00b0ff', description: 'Branch based on behavior' },
-  split: { label: 'A/B Split', icon: '📊', color: '#ec4899', description: 'Split traffic for testing' },
-  goal: { label: 'Goal', icon: '🎯', color: '#14b8a6', description: 'Track conversions' },
+  trigger: { label: 'Trigger', icon: faBolt, color: '#00b894', description: 'Start the journey' },
+  email: { label: 'Send Email', icon: faEnvelope, color: '#00e5ff', description: 'Send an email' },
+  delay: { label: 'Wait', icon: faClock, color: '#fdcb6e', description: 'Wait before next step' },
+  condition: { label: 'Condition', icon: faCodeBranch, color: '#00b0ff', description: 'Branch based on behavior' },
+  split: { label: 'A/B Split', icon: faRandom, color: '#ec4899', description: 'Split traffic for testing' },
+  goal: { label: 'Goal', icon: faBullseye, color: '#14b8a6', description: 'Track conversions' },
 };
 
 // Main Component
@@ -351,7 +353,7 @@ export const JourneyBuilder: React.FC = () => {
         }}
       >
         <div className="node-header" style={{ background: nodeType.color }}>
-          <span className="node-icon">{nodeType.icon}</span>
+          <span className="node-icon"><FontAwesomeIcon icon={nodeType.icon} /></span>
           <span className="node-type">{nodeType.label}</span>
         </div>
         <div className="node-body">
@@ -421,7 +423,7 @@ export const JourneyBuilder: React.FC = () => {
       <div className="node-config-panel">
         <div className="config-header">
           <h3>
-            <span style={{ color: nodeType.color }}>{nodeType.icon}</span>
+            <span style={{ color: nodeType.color }}><FontAwesomeIcon icon={nodeType.icon} /></span>
             {' '}Configure {nodeType.label}
           </h3>
           <button onClick={() => setShowNodeConfig(false)}>×</button>
@@ -929,11 +931,11 @@ export const JourneyBuilder: React.FC = () => {
             <button onClick={() => setZoom(Math.min(2, zoom + 0.1))}>+</button>
           </div>
           <button className="save-btn" onClick={saveJourney}>
-            💾 Save
+            <FontAwesomeIcon icon={faSave} style={{ marginRight: 6 }} /> Save
           </button>
           {activeJourney?.status === 'draft' && (
             <button className="activate-btn" onClick={activateJourney}>
-              ▶️ Activate
+              <FontAwesomeIcon icon={faRocket} style={{ marginRight: 6 }} /> Activate
             </button>
           )}
         </div>
@@ -950,7 +952,7 @@ export const JourneyBuilder: React.FC = () => {
                 onClick={() => addNode(type as JourneyNode['type'])}
                 style={{ borderColor: info.color }}
               >
-                <span className="palette-icon">{info.icon}</span>
+                <span className="palette-icon"><FontAwesomeIcon icon={info.icon} /></span>
                 <div>
                   <strong>{info.label}</strong>
                   <small>{info.description}</small>

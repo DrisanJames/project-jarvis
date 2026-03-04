@@ -161,13 +161,13 @@
 }
 
 .list-portal .hero-stat-card.primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  color: white;
+  background: rgba(0, 200, 255, 0.04);
+  border: 1px solid rgba(0, 200, 255, 0.08);
 }
 
 .list-portal .hero-stat-card.engagement {
-  background: linear-gradient(135deg, #00b894 0%, #00a080 100%);
-  color: white;
+  background: rgba(0, 184, 148, 0.04);
+  border: 1px solid rgba(0, 184, 148, 0.08);
 }
 
 .list-portal .hero-stat-icon {
@@ -182,10 +182,14 @@
   color: #00e5ff;
 }
 
-.list-portal .hero-stat-card.primary .hero-stat-icon,
+.list-portal .hero-stat-card.primary .hero-stat-icon {
+  background: rgba(0, 229, 255, 0.08);
+  color: rgba(0, 229, 255, 0.4);
+}
+
 .list-portal .hero-stat-card.engagement .hero-stat-icon {
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
+  background: rgba(0, 184, 148, 0.08);
+  color: rgba(0, 184, 148, 0.4);
 }
 
 .list-portal .hero-stat-content {
@@ -202,7 +206,7 @@
 
 .list-portal .hero-stat-card.primary .hero-stat-value,
 .list-portal .hero-stat-card.engagement .hero-stat-value {
-  color: white;
+  color: #e0e6f0;
 }
 
 .list-portal .hero-stat-label {
@@ -223,9 +227,12 @@
   color: #00b894;
 }
 
-.list-portal .hero-stat-card.primary .hero-stat-trend.positive,
+.list-portal .hero-stat-card.primary .hero-stat-trend.positive {
+  color: #00b894;
+}
+
 .list-portal .hero-stat-card.engagement .hero-stat-trend {
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(180, 210, 240, 0.65);
 }
 
 /* Dashboard Sections */
@@ -278,15 +285,25 @@
 }
 
 .list-portal .quick-action-btn.primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  border-color: transparent;
-  color: white;
+  background: rgba(0, 229, 255, 0.08);
+  border-color: rgba(0, 229, 255, 0.15);
+  color: #00e5ff;
+}
+
+.list-portal .quick-action-btn.primary:hover {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: rgba(0, 229, 255, 0.25);
 }
 
 .list-portal .quick-action-btn.segment {
-  background: linear-gradient(135deg, #00b0ff 0%, #0080cc 100%);
-  border-color: transparent;
-  color: white;
+  background: rgba(0, 176, 255, 0.08);
+  border-color: rgba(0, 176, 255, 0.15);
+  color: #00b0ff;
+}
+
+.list-portal .quick-action-btn.segment:hover {
+  background: rgba(0, 176, 255, 0.12);
+  border-color: rgba(0, 176, 255, 0.25);
 }
 
 .list-portal .qa-icon {
@@ -301,10 +318,14 @@
   color: #00e5ff;
 }
 
-.list-portal .quick-action-btn.primary .qa-icon,
+.list-portal .quick-action-btn.primary .qa-icon {
+  background: rgba(0, 229, 255, 0.1);
+  color: #00e5ff;
+}
+
 .list-portal .quick-action-btn.segment .qa-icon {
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
+  background: rgba(0, 176, 255, 0.1);
+  color: #00b0ff;
 }
 
 .list-portal .qa-content {
@@ -525,14 +546,20 @@
 }
 
 .list-portal .empty-state button {
-  background: #00e5ff;
-  color: #0a0f1a;
-  border: none;
+  background: rgba(0, 229, 255, 0.08);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.15);
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  transition: all 0.2s;
+}
+
+.list-portal .empty-state button:hover {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: rgba(0, 229, 255, 0.25);
 }
 
 .list-portal .empty-state-large {
@@ -590,8 +617,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  color: #0a0f1a;
+  background: rgba(0, 229, 255, 0.08);
+  color: rgba(0, 229, 255, 0.6);
+  border: 1px solid rgba(0, 229, 255, 0.15);
   border-radius: 50%;
   font-weight: 700;
   margin: 0 auto 12px;
@@ -1209,14 +1237,17 @@
 }
 
 .list-portal .btn-primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #0091ea 100%);
-  color: #0a0f1a;
+  background: rgba(0, 229, 255, 0.08);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.15);
   font-weight: 600;
 }
 
 .list-portal .btn-primary:hover:not(:disabled) {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: rgba(0, 229, 255, 0.25);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.08);
 }
 
 .list-portal .btn-secondary {

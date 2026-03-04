@@ -300,7 +300,7 @@
 /* ── 7. SLIDE / FADE TRANSITIONS ─────────────────────────────────── */
 
 .ig-fade-in {
-  animation: ig-fade-in 0.4s var(--ig-transition) forwards;
+  animation: ig-fade-in 0.4s var(--ig-transition) both;
 }
 
 @keyframes ig-fade-in {
@@ -309,7 +309,7 @@
 }
 
 .ig-slide-in-right {
-  animation: ig-slide-right 0.35s var(--ig-transition) forwards;
+  animation: ig-slide-right 0.35s var(--ig-transition) both;
 }
 
 @keyframes ig-slide-right {
@@ -318,7 +318,7 @@
 }
 
 .ig-slide-in-left {
-  animation: ig-slide-left 0.35s var(--ig-transition) forwards;
+  animation: ig-slide-left 0.35s var(--ig-transition) both;
 }
 
 @keyframes ig-slide-left {
@@ -327,7 +327,7 @@
 }
 
 .ig-scale-in {
-  animation: ig-scale-in 0.3s var(--ig-bounce) forwards;
+  animation: ig-scale-in 0.3s var(--ig-bounce) both;
 }
 
 @keyframes ig-scale-in {
@@ -335,10 +335,14 @@
   to { opacity: 1; transform: scale(1); }
 }
 
-/* Staggered children animation */
+/* Staggered children entrance — plays once, never hides on re-render */
 .ig-stagger > * {
-  opacity: 0;
-  animation: ig-fade-in 0.4s var(--ig-transition) forwards;
+  animation: ig-stagger-in 0.4s var(--ig-transition) both;
+}
+
+@keyframes ig-stagger-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .ig-stagger > *:nth-child(1) { animation-delay: 0.05s; }

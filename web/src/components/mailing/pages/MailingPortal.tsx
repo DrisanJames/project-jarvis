@@ -54,7 +54,7 @@ const tabs: Tab[] = [
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns' },
   { id: 'journey-center', label: 'Journey Center', icon: faRoute, description: 'Monitor & manage automated journeys' },
   { id: 'lists', label: 'Lists & Segments', icon: faListUl, description: 'Manage lists, segments & subscribers' },
-  { id: 'automations', label: 'Automations', icon: faBolt, description: 'Drip campaigns & workflows' },
+  // Automations hidden — functionality handled via Journey Center
   { id: 'mission-control', label: 'Mission Control', icon: faFire, description: 'Live campaign monitoring & agent decisions' },
   // A/B Tests hidden — functionality lives within Campaign Center
   // { id: 'ab-tests', label: 'A/B Tests', icon: faFlask, description: 'Test subject lines & content' },

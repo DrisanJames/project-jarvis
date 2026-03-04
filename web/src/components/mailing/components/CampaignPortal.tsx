@@ -816,32 +816,32 @@ const CampaignDetailsModal: React.FC<{
                   <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics</h3>
                   <div className="metrics-grid ig-stagger">
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faPaperPlane} className="metric-icon blue" />
+                      <FontAwesomeIcon icon={faPaperPlane} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.sent} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Sent</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faEnvelopeOpen} className="metric-icon green" />
+                      <FontAwesomeIcon icon={faEnvelopeOpen} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.opens} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Opens ({stats.open_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faMousePointer} className="metric-icon purple" />
+                      <FontAwesomeIcon icon={faMousePointer} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.clicks} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Clicks ({stats.click_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faBan} className="metric-icon orange" />
+                      <FontAwesomeIcon icon={faBan} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Bounces ({stats.bounce_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon red" />
+                      <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.complaints} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Complaints ({stats.complaint_rate.toFixed(3)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faUserMinus} className="metric-icon gray" />
+                      <FontAwesomeIcon icon={faUserMinus} className="metric-icon" />
                       <div className="metric-value"><AnimatedCounter value={stats.unsubscribes} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Unsubscribes ({stats.unsubscribe_rate.toFixed(2)}%)</div>
                     </div>
