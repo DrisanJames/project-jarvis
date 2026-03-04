@@ -969,6 +969,39 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_segment_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_segment_ids JSONB DEFAULT '[]'`},
 		{"add_isp_quotas", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`},
+		{"create_automation_workflows", `CREATE TABLE IF NOT EXISTS mailing_automation_workflows (
+			id UUID PRIMARY KEY,
+			organization_id UUID NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			trigger_type TEXT DEFAULT 'enrollment',
+			trigger_config JSONB DEFAULT '{}',
+			list_id UUID,
+			status TEXT DEFAULT 'draft',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"create_automation_steps", `CREATE TABLE IF NOT EXISTS mailing_automation_steps (
+			id UUID PRIMARY KEY,
+			workflow_id UUID NOT NULL REFERENCES mailing_automation_workflows(id) ON DELETE CASCADE,
+			step_order INTEGER DEFAULT 0,
+			step_type TEXT NOT NULL,
+			template_id UUID,
+			wait_duration INTEGER DEFAULT 0,
+			config JSONB DEFAULT '{}',
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"create_automation_enrollments", `CREATE TABLE IF NOT EXISTS mailing_automation_enrollments (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			workflow_id UUID NOT NULL REFERENCES mailing_automation_workflows(id) ON DELETE CASCADE,
+			subscriber_id UUID,
+			email TEXT NOT NULL,
+			current_step INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			enrolled_at TIMESTAMPTZ DEFAULT NOW(),
+			next_step_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ
+		)`},
 		{"add_queue_locked_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
 		{"add_queue_worker_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
 		{"create_suppressions_table", `CREATE TABLE IF NOT EXISTS mailing_suppressions (
