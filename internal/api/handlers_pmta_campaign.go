@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -690,10 +693,169 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// List/segment associations stored in list_ids and suppression_list_ids
-	// JSONB columns on mailing_campaigns (set in the INSERT above).
-	// Segment associations stored via the campaign's segment_id column or
-	// resolved at scheduler time from the JSONB arrays.
+	// === PRE-COMPUTE AUDIENCE: bloom filter + global suppression at deploy time ===
+	// This avoids expensive SQL NOT EXISTS queries at scheduler time.
+
+	// 1. Load global suppression MD5 hashes into in-memory set
+	globalSuppSet := make(map[string]bool)
+	gsRows, gsErr := s.db.QueryContext(ctx, "SELECT md5_hash FROM mailing_global_suppressions")
+	if gsErr == nil {
+		for gsRows.Next() {
+			var h string
+			if gsRows.Scan(&h) == nil {
+				globalSuppSet[strings.ToLower(h)] = true
+			}
+		}
+		gsRows.Close()
+	}
+	log.Printf("[DeployCampaign] Loaded %d global suppression hashes", len(globalSuppSet))
+
+	// 2. Load named suppression lists into bloom filter
+	for _, slID := range exclusionIDs {
+		slRows, slErr := s.db.QueryContext(ctx, "SELECT md5_hash FROM mailing_suppression_entries WHERE list_id = $1", slID)
+		if slErr == nil {
+			var hashes []string
+			for slRows.Next() {
+				var h string
+				if slRows.Scan(&h) == nil {
+					hashes = append(hashes, h)
+				}
+			}
+			slRows.Close()
+			if len(hashes) > 0 {
+				s.suppMatcher.LoadList(slID, hashes)
+			}
+		}
+	}
+
+	// 3. Build ISP quota map
+	quotaMap := make(map[string]int)
+	for _, q := range input.ISPQuotas {
+		if q.Volume > 0 {
+			quotaMap[q.ISP] = q.Volume
+		}
+	}
+
+	// 4. Stream subscribers from selected lists, apply all filters
+	type qualifiedSub struct {
+		ID    string
+		Email string
+		ISP   string
+	}
+	var qualified []qualifiedSub
+	seenEmails := make(map[string]bool)
+
+	if len(inclusionIDs) > 0 {
+		subRows, subErr := s.db.QueryContext(ctx, `
+			SELECT s.id::text, s.email FROM mailing_subscribers s
+			WHERE s.list_id = ANY($1) AND s.status IN ('active','confirmed')
+		`, pq.Array(inclusionIDs))
+		if subErr == nil {
+			for subRows.Next() {
+				var subID, email string
+				if subRows.Scan(&subID, &email) != nil {
+					continue
+				}
+				emailLower := strings.ToLower(strings.TrimSpace(email))
+				if seenEmails[emailLower] {
+					continue
+				}
+				seenEmails[emailLower] = true
+
+				// Global suppression check (O(1) map lookup)
+				hash := md5.Sum([]byte(emailLower))
+				md5Hex := hex.EncodeToString(hash[:])
+				if globalSuppSet[md5Hex] {
+					continue
+				}
+
+				// Named suppression list check (bloom filter)
+				if len(exclusionIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
+					continue
+				}
+
+				// ISP classification
+				domain := emailLower
+				if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
+					domain = emailLower[idx+1:]
+				}
+				isp := domainToISPLookup(domain)
+
+				qualified = append(qualified, qualifiedSub{ID: subID, Email: emailLower, ISP: isp})
+			}
+			subRows.Close()
+		}
+	}
+
+	// 5. Randomize if requested (before quota enforcement)
+	if input.RandomizeAudience && len(qualified) > 1 {
+		rand.Shuffle(len(qualified), func(i, j int) { qualified[i], qualified[j] = qualified[j], qualified[i] })
+	}
+
+	// 6. Apply ISP quotas
+	var capped []qualifiedSub
+	ispCounts := make(map[string]int)
+	for _, q := range qualified {
+		if maxVol, hasQuota := quotaMap[q.ISP]; hasQuota {
+			if ispCounts[q.ISP] >= maxVol {
+				continue
+			}
+		}
+		ispCounts[q.ISP]++
+		capped = append(capped, q)
+	}
+	if len(quotaMap) > 0 {
+		log.Printf("[DeployCampaign] ISP quota enforcement: %v (limits: %v, before: %d, after: %d)", ispCounts, quotaMap, len(qualified), len(capped))
+	} else {
+		capped = qualified
+	}
+
+	// 7. COPY qualified subscribers into campaign queue
+	now := time.Now()
+	queuedCount := 0
+	if len(capped) > 0 {
+		txn, txErr := s.db.BeginTx(ctx, nil)
+		if txErr == nil {
+			stmt, cpErr := txn.Prepare(pq.CopyIn("mailing_campaign_queue",
+				"id", "campaign_id", "subscriber_id",
+				"subject", "html_content", "plain_content",
+				"status", "priority", "scheduled_at", "created_at",
+			))
+			if cpErr == nil {
+				variantIdx := 0
+				for _, sub := range capped {
+					subj := input.Variants[0].Subject
+					html := input.Variants[0].HTMLContent
+					text := ""
+					if len(input.Variants) > 1 {
+						v := input.Variants[variantIdx%len(input.Variants)]
+						subj = v.Subject
+						html = v.HTMLContent
+						variantIdx++
+					}
+
+					subUUID, _ := uuid.Parse(sub.ID)
+					campUUID, _ := uuid.Parse(campaignID)
+					_, execErr := stmt.Exec(uuid.New(), campUUID, subUUID, subj, html, text, "queued", 5, scheduledAt, now)
+					if execErr != nil {
+						log.Printf("[DeployCampaign] COPY row error for %s: %v", sub.ID, execErr)
+						continue
+					}
+					queuedCount++
+				}
+				stmt.Exec()
+				stmt.Close()
+				txn.Commit()
+			} else {
+				txn.Rollback()
+				log.Printf("[DeployCampaign] COPY prepare error: %v", cpErr)
+			}
+		}
+	}
+
+	// 8. Update campaign with actual audience counts
+	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
+	log.Printf("[DeployCampaign] Campaign %s: pre-enqueued %d subscribers (from %d qualified, %d total)", campaignID, queuedCount, len(qualified), len(seenEmails))
 
 	respondJSON(w, http.StatusCreated, engine.PMTACampaignResult{
 		CampaignID:    campaignID,
@@ -702,7 +864,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		SendMode:      sendMode,
 		SendsAt:       &scheduledAt,
 		TargetISPs:    input.TargetISPs,
-		TotalAudience: 0,
+		TotalAudience: queuedCount,
 		VariantCount:  len(input.Variants),
 		AgentIDs:      []string{},
 	})

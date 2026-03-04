@@ -437,13 +437,24 @@ func (cs *CampaignScheduler) processCampaign(ctx context.Context, campaign Sched
 		UPDATE mailing_campaigns SET total_recipients = $1, updated_at = NOW() WHERE id = $2
 	`, totalRecipients, campaign.ID)
 
-	// Enqueue subscribers in batches
-	queued, err := cs.enqueueSubscribers(ctx, campaign)
-	if err != nil {
-		log.Printf("[CampaignScheduler] Error enqueuing subscribers for %s: %v", campaign.ID, err)
-		atomic.AddInt64(&cs.errors, 1)
-		cs.markCampaignFailed(ctx, campaign.ID, fmt.Sprintf("enqueue failed: %v", err))
-		return
+	// Check if queue is already pre-populated (PMTA wizard pre-computes audience at deploy)
+	var preEnqueued int
+	cs.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaign_queue WHERE campaign_id = $1", campaign.ID).Scan(&preEnqueued)
+
+	var queued int
+	if preEnqueued > 0 {
+		log.Printf("[CampaignScheduler] Campaign %s: %d items pre-enqueued at deploy time, skipping enqueue", campaign.ID, preEnqueued)
+		queued = preEnqueued
+		cs.db.ExecContext(ctx, "UPDATE mailing_campaigns SET total_recipients = GREATEST(total_recipients, $1), queued_count = $1, updated_at = NOW() WHERE id = $2", preEnqueued, campaign.ID)
+	} else {
+		var enqueueErr error
+		queued, enqueueErr = cs.enqueueSubscribers(ctx, campaign)
+		if enqueueErr != nil {
+			log.Printf("[CampaignScheduler] Error enqueuing subscribers for %s: %v", campaign.ID, enqueueErr)
+			atomic.AddInt64(&cs.errors, 1)
+			cs.markCampaignFailed(ctx, campaign.ID, fmt.Sprintf("enqueue failed: %v", enqueueErr))
+			return
+		}
 	}
 
 	atomic.AddInt64(&cs.campaignsProcessed, 1)

@@ -156,6 +156,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Email Sending
 			r.Post("/send", svc.HandleSendEmail)
 			r.Post("/send-test", svc.HandleSendTestEmail)
+			r.Post("/send-transactional", svc.HandleSendTransactional)
 			
 			// Real-time Tracking (open, click, unsubscribe)
 			r.Get("/track/open/{data}", svc.HandleTrackOpen)

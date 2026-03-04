@@ -264,6 +264,92 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(result)
 }
 
+// HandleSendTransactional sends a single transactional email (verification,
+// notification, etc.) through the configured sending profile. Unlike send-test,
+// this records a tracking event and supports tags for analytics.
+func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var input struct {
+		To               string   `json:"to"`
+		Subject          string   `json:"subject"`
+		FromName         string   `json:"from_name"`
+		FromEmail        string   `json:"from_email"`
+		ReplyEmail       string   `json:"reply_email"`
+		HTMLContent      string   `json:"html_content"`
+		TextContent      string   `json:"text_content"`
+		SendingProfileID *string  `json:"sending_profile_id"`
+		ListID           *string  `json:"list_id"`
+		Tags             []string `json:"tags"`
+	}
+	json.NewDecoder(r.Body).Decode(&input)
+
+	if input.To == "" || input.Subject == "" {
+		http.Error(w, `{"error":"to and subject required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Delegate to the test sender (same routing logic)
+	// Build a synthetic request body for HandleSendTestEmail
+	testBody := map[string]interface{}{
+		"to":      input.To,
+		"subject": input.Subject,
+	}
+	if input.FromName != "" {
+		testBody["from_name"] = input.FromName
+	}
+	if input.FromEmail != "" {
+		testBody["from_email"] = input.FromEmail
+	}
+	if input.ReplyEmail != "" {
+		testBody["reply_email"] = input.ReplyEmail
+	}
+	if input.HTMLContent != "" {
+		testBody["html_content"] = input.HTMLContent
+	}
+	if input.TextContent != "" {
+		testBody["text_content"] = input.TextContent
+	}
+	if input.SendingProfileID != nil {
+		testBody["sending_profile_id"] = *input.SendingProfileID
+	}
+	bodyBytes, _ := json.Marshal(testBody)
+
+	// Use a response recorder to capture the send-test result
+	rec := &responseRecorder{header: http.Header{}, code: 200}
+	syntheticReq, _ := http.NewRequestWithContext(ctx, "POST", "/api/mailing/send-test", strings.NewReader(string(bodyBytes)))
+	syntheticReq.Header = r.Header
+	svc.HandleSendTestEmail(rec, syntheticReq)
+
+	// Record tracking event for transactional sends
+	orgID, _ := GetOrgIDFromRequest(r)
+	eventID := uuid.New()
+	tagsJSON, _ := json.Marshal(input.Tags)
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events (id, organization_id, email, event_type, metadata, event_at)
+		VALUES ($1, $2, $3, 'sent', $4, NOW())
+	`, eventID, orgID, strings.ToLower(input.To), string(tagsJSON))
+
+	// Forward the response
+	for k, v := range rec.header {
+		for _, val := range v {
+			w.Header().Set(k, val)
+		}
+	}
+	w.WriteHeader(rec.code)
+	w.Write(rec.body)
+}
+
+type responseRecorder struct {
+	header http.Header
+	code   int
+	body   []byte
+}
+
+func (r *responseRecorder) Header() http.Header         { return r.header }
+func (r *responseRecorder) Write(b []byte) (int, error)  { r.body = append(r.body, b...); return len(b), nil }
+func (r *responseRecorder) WriteHeader(code int)         { r.code = code }
+
 func (svc *MailingService) sendViaSparkPost(ctx context.Context, to, fromEmail, fromName, subject, htmlContent, textContent string) (map[string]interface{}, error) {
 	return svc.sendViaSparkPostWithKey(ctx, svc.sparkpostKey, to, fromEmail, fromName, "", subject, htmlContent, textContent)
 }
