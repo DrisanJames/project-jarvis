@@ -824,6 +824,26 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
               );
             })}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 12px', background: '#0a0f1a', borderRadius: 8,
+              border: '1px solid #64748b25',
+              gridColumn: '1 / -1',
+            }}>
+              <span style={{ fontSize: 12, color: '#94a3b8', minWidth: 80, fontWeight: 500 }}>🌐 Everything Else</span>
+              <input
+                type="number" min={0} step={100}
+                value={ispQuotas['other'] || 0}
+                onChange={e => setISPQuotas(prev => ({ ...prev, other: Number(e.target.value) }))}
+                style={{ flex: 1, width: 80, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 4, color: '#e0e6f0', padding: '4px 8px', fontSize: 12, textAlign: 'right' }}
+              />
+              <span style={{ fontSize: 10, color: '#64748b' }}>Domains not matching any ISP above</span>
+            </div>
+            {Object.values(ispQuotas).some(v => v > 0) && (
+              <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#10b981', padding: '4px 0', fontWeight: 600 }}>
+                Total quota: {Object.values(ispQuotas).filter(v => v > 0).reduce((a, b) => a + b, 0).toLocaleString()}
+              </div>
+            )}
           </div>
         </div>
       </div>
