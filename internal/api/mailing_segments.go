@@ -251,6 +251,98 @@ func mapOperatorForDB(op string) string {
 	return ""
 }
 
+// SegmentConditionInput is the input shape for segment conditions from JSON.
+type SegmentConditionInput struct {
+	Group    int    `json:"group"`
+	Field    string `json:"field"`
+	Operator string `json:"operator"`
+	Value    string `json:"value"`
+}
+
+// BuildSegmentWhereClause builds a SQL WHERE clause from segment conditions.
+// Returns the clause string (without "WHERE") and positional args.
+// Callers can prefix their own SELECT and append this.
+func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionInput) (string, []interface{}) {
+	whereClauses := []string{"status IN ('active','confirmed')"}
+	args := []interface{}{}
+	argNum := 1
+
+	if listID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("list_id = $%d", argNum))
+		args = append(args, listID)
+		argNum++
+	}
+
+	for _, c := range conditions {
+		dbField := mapFieldToColumn(c.Field)
+		var clause string
+		switch c.Operator {
+		case "equals", "is":
+			clause = fmt.Sprintf("%s = $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "not_equals", "is_not":
+			clause = fmt.Sprintf("%s != $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "contains":
+			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+		case "not_contains":
+			clause = fmt.Sprintf("%s NOT ILIKE $%d", dbField, argNum)
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+		case "starts_with":
+			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
+			args = append(args, c.Value+"%")
+			argNum++
+		case "ends_with":
+			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
+			args = append(args, "%"+c.Value)
+			argNum++
+		case "greater_than", "gt":
+			clause = fmt.Sprintf("%s > $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "less_than", "lt":
+			clause = fmt.Sprintf("%s < $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "greater_than_or_equal", "gte":
+			clause = fmt.Sprintf("%s >= $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "less_than_or_equal", "lte":
+			clause = fmt.Sprintf("%s <= $%d", dbField, argNum)
+			args = append(args, c.Value)
+			argNum++
+		case "is_empty", "is_null":
+			clause = fmt.Sprintf("(%s IS NULL OR %s = '')", dbField, dbField)
+		case "is_not_empty", "is_not_null":
+			clause = fmt.Sprintf("(%s IS NOT NULL AND %s != '')", dbField, dbField)
+		case "in_last_days":
+			clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, c.Value)
+		case "more_than_days_ago":
+			clause = fmt.Sprintf("%s < NOW() - INTERVAL '%s days'", dbField, c.Value)
+		default:
+			continue
+		}
+		if clause != "" {
+			whereClauses = append(whereClauses, clause)
+		}
+	}
+
+	return strings.Join(whereClauses, " AND "), args
+}
+
+// BuildSegmentSubscriberQuery returns a SELECT query for subscriber id+email
+// matching a segment's conditions. Used by deploy-time pre-computation.
+func BuildSegmentSubscriberQuery(listID interface{}, conditions []SegmentConditionInput) (string, []interface{}) {
+	where, args := BuildSegmentWhereClause(listID, conditions)
+	return fmt.Sprintf("SELECT id::text, email FROM mailing_subscribers WHERE %s", where), args
+}
+
 // calculateSegmentCount calculates the actual subscriber count for a segment based on its conditions
 func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segmentID uuid.UUID, listID interface{}, conditions []struct {
 	Group    int    `json:"group"`
@@ -258,96 +350,19 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 	Operator string `json:"operator"`
 	Value    string `json:"value"`
 }) int {
-	// Build WHERE clause from conditions
-	whereClauses := []string{"status = 'confirmed'"}
-	args := []interface{}{}
-	argNum := 1
-	
-	// Add list filter if specified
-	if listID != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("list_id = $%d", argNum))
-		args = append(args, listID)
-		argNum++
+	converted := make([]SegmentConditionInput, len(conditions))
+	for i, c := range conditions {
+		converted[i] = SegmentConditionInput{Group: c.Group, Field: c.Field, Operator: c.Operator, Value: c.Value}
 	}
-	
-	// Build condition clauses
-	for _, c := range conditions {
-		field := c.Field
-		value := c.Value
-		
-		// Map common field names to database columns
-		dbField := mapFieldToColumn(field)
-		
-		var clause string
-		switch c.Operator {
-		case "equals", "is":
-			clause = fmt.Sprintf("%s = $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "not_equals", "is_not":
-			clause = fmt.Sprintf("%s != $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "contains":
-			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
-			args = append(args, "%"+value+"%")
-			argNum++
-		case "not_contains":
-			clause = fmt.Sprintf("%s NOT ILIKE $%d", dbField, argNum)
-			args = append(args, "%"+value+"%")
-			argNum++
-		case "starts_with":
-			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
-			args = append(args, value+"%")
-			argNum++
-		case "ends_with":
-			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
-			args = append(args, "%"+value)
-			argNum++
-		case "greater_than", "gt":
-			clause = fmt.Sprintf("%s > $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "less_than", "lt":
-			clause = fmt.Sprintf("%s < $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "greater_than_or_equal", "gte":
-			clause = fmt.Sprintf("%s >= $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "less_than_or_equal", "lte":
-			clause = fmt.Sprintf("%s <= $%d", dbField, argNum)
-			args = append(args, value)
-			argNum++
-		case "is_empty", "is_null":
-			clause = fmt.Sprintf("(%s IS NULL OR %s = '')", dbField, dbField)
-		case "is_not_empty", "is_not_null":
-			clause = fmt.Sprintf("(%s IS NOT NULL AND %s != '')", dbField, dbField)
-		case "in_last_days":
-			// For date fields like last_open_at, subscribed_at
-			clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, value)
-		case "more_than_days_ago":
-			clause = fmt.Sprintf("%s < NOW() - INTERVAL '%s days'", dbField, value)
-		default:
-			continue
-		}
-		
-		if clause != "" {
-			whereClauses = append(whereClauses, clause)
-		}
-	}
-	
-	// Build final query
-	query := fmt.Sprintf("SELECT COUNT(*) FROM mailing_subscribers WHERE %s", strings.Join(whereClauses, " AND "))
-	
+	where, args := BuildSegmentWhereClause(listID, converted)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM mailing_subscribers WHERE %s", where)
+
 	var count int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	if err != nil {
 		log.Printf("Error calculating segment count: %v (query: %s)", err, query)
 		return 0
 	}
-	
 	return count
 }
 

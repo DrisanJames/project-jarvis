@@ -500,13 +500,70 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Segment-based counts (less precise — use cached_count with proportional estimation)
+	// Stream segment subscribers through the same pipeline for accurate counts
 	for _, segID := range req.SegmentIDs {
-		var count int
-		s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(cached_count, 0) FROM mailing_segments WHERE id = $1 AND organization_id = $2`,
-			segID, orgID).Scan(&count)
-		totalRecipients += count
+		var segListID *string
+		var conditionsRaw sql.NullString
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1 AND organization_id = $2`,
+			segID, orgID).Scan(&segListID, &conditionsRaw); err != nil {
+			log.Printf("[EstimateAudience] segment %s lookup failed: %v", segID, err)
+			continue
+		}
+		var listIDVal interface{}
+		if segListID != nil && *segListID != "" {
+			listIDVal = *segListID
+		}
+		var conditions []SegmentConditionInput
+		if conditionsRaw.Valid && conditionsRaw.String != "" && conditionsRaw.String != "[]" {
+			json.Unmarshal([]byte(conditionsRaw.String), &conditions)
+		}
+		query, args := BuildSegmentSubscriberQuery(listIDVal, conditions)
+		segRows, segErr := s.db.QueryContext(ctx, query, args...)
+		if segErr != nil {
+			log.Printf("[EstimateAudience] segment %s query failed: %v", segID, segErr)
+			continue
+		}
+		for segRows.Next() {
+			var subID, email string
+			if segRows.Scan(&subID, &email) != nil {
+				continue
+			}
+			emailLower := strings.ToLower(strings.TrimSpace(email))
+			if seenEmails[emailLower] {
+				continue
+			}
+			seenEmails[emailLower] = true
+			totalRecipients++
+
+			suppressed := false
+			if len(req.SuppressionListIDs) > 0 {
+				for _, slID := range req.SuppressionListIDs {
+					if s.suppMatcher.IsSuppressed(emailLower, []string{slID}) {
+						name := suppListNames[slID]
+						suppressionSources[name]++
+						suppressed = true
+						break
+					}
+				}
+			}
+			if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressed(emailLower) {
+				suppressionSources["Global Suppression"]++
+				suppressed = true
+			}
+			if suppressed {
+				suppressedCount++
+				continue
+			}
+
+			domain := emailLower
+			if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
+				domain = emailLower[idx+1:]
+			}
+			isp := domainToISPLookup(domain)
+			ispBreakdown[isp]++
+		}
+		segRows.Close()
 	}
 
 	afterSuppressions := totalRecipients - suppressedCount
@@ -834,6 +891,66 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 			}
 			subRows.Close()
 		}
+	}
+
+	// 5b. Stream subscribers from inclusion segments into the same qualified pool
+	for _, segID := range input.InclusionSegments {
+		var segListID *string
+		var conditionsRaw sql.NullString
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segID,
+		).Scan(&segListID, &conditionsRaw); err != nil {
+			log.Printf("[DeployCampaign] inclusion segment %s lookup failed: %v", segID, err)
+			continue
+		}
+		var listIDVal interface{}
+		if segListID != nil && *segListID != "" {
+			listIDVal = *segListID
+		}
+		var conditions []SegmentConditionInput
+		if conditionsRaw.Valid && conditionsRaw.String != "" && conditionsRaw.String != "[]" {
+			json.Unmarshal([]byte(conditionsRaw.String), &conditions)
+		}
+		query, args := BuildSegmentSubscriberQuery(listIDVal, conditions)
+		segRows, segErr := s.db.QueryContext(ctx, query, args...)
+		if segErr != nil {
+			log.Printf("[DeployCampaign] inclusion segment %s query failed: %v", segID, segErr)
+			continue
+		}
+		var segCount int
+		for segRows.Next() {
+			var subID, email string
+			if segRows.Scan(&subID, &email) != nil {
+				continue
+			}
+			emailLower := strings.ToLower(strings.TrimSpace(email))
+			if seenEmails[emailLower] {
+				continue
+			}
+			seenEmails[emailLower] = true
+
+			hash := md5.Sum([]byte(emailLower))
+			md5Hex := hex.EncodeToString(hash[:])
+			if globalSuppSet[md5Hex] {
+				continue
+			}
+			if len(exclusionIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
+				continue
+			}
+			if len(exclusionSegEmails) > 0 && exclusionSegEmails[emailLower] {
+				continue
+			}
+
+			domain := emailLower
+			if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
+				domain = emailLower[idx+1:]
+			}
+			isp := domainToISPLookup(domain)
+			qualified = append(qualified, qualifiedSub{ID: subID, Email: emailLower, ISP: isp})
+			segCount++
+		}
+		segRows.Close()
+		log.Printf("[DeployCampaign] Inclusion segment %s contributed %d qualified subscribers", segID, segCount)
 	}
 
 	// 6. Randomize if requested (before quota enforcement)

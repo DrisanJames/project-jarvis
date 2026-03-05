@@ -613,11 +613,12 @@ type PMTACampaignResult struct {
 
 // AudienceEstimateRequest is the input for audience estimation with ISP breakdown.
 type AudienceEstimateRequest struct {
-	SegmentIDs          []string `json:"segment_ids"`
-	ListIDs             []string `json:"list_ids"`
-	SuppressionListIDs  []string `json:"suppression_list_ids"`
-	SuppressionSegments []string `json:"suppression_segments"`
-	TargetISPs          []ISP    `json:"target_isps"`
+	SegmentIDs            []string `json:"segment_ids"`
+	ListIDs               []string `json:"list_ids"`
+	SuppressionListIDs    []string `json:"suppression_list_ids"`
+	SuppressionSegments   []string `json:"suppression_segments"`
+	ExclusionSegmentIDs   []string `json:"exclusion_segment_ids"`
+	TargetISPs            []ISP    `json:"target_isps"`
 }
 
 // AudienceEstimateResponse is the audience estimate with per-ISP breakdown.
