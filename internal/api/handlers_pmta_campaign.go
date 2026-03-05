@@ -736,7 +736,43 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// 3. Build ISP quota map
+	// 3. Load exclusion segment emails into a set
+	exclusionSegEmails := make(map[string]bool)
+	for _, segID := range input.ExclusionSegments {
+		var listID *string
+		var conditionsRaw sql.NullString
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segID,
+		).Scan(&listID, &conditionsRaw); err != nil {
+			log.Printf("[DeployCampaign] exclusion segment %s lookup failed: %v", segID, err)
+			continue
+		}
+		query := `SELECT LOWER(TRIM(email)) FROM mailing_subscribers WHERE status IN ('active','confirmed')`
+		var args []interface{}
+		argN := 1
+		if listID != nil && *listID != "" {
+			query += fmt.Sprintf(" AND list_id = $%d", argN)
+			args = append(args, *listID)
+			argN++
+		}
+		esRows, esErr := s.db.QueryContext(ctx, query, args...)
+		if esErr != nil {
+			log.Printf("[DeployCampaign] exclusion segment %s query failed: %v", segID, esErr)
+			continue
+		}
+		var cnt int
+		for esRows.Next() {
+			var em string
+			if esRows.Scan(&em) == nil {
+				exclusionSegEmails[em] = true
+				cnt++
+			}
+		}
+		esRows.Close()
+		log.Printf("[DeployCampaign] Exclusion segment %s loaded %d emails", segID, cnt)
+	}
+
+	// 4. Build ISP quota map
 	quotaMap := make(map[string]int)
 	for _, q := range input.ISPQuotas {
 		if q.Volume > 0 {
@@ -744,7 +780,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// 4. Stream subscribers from selected lists, apply all filters
+	// 5. Stream subscribers from selected lists, apply all filters
 	type qualifiedSub struct {
 		ID    string
 		Email string
@@ -782,6 +818,11 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 					continue
 				}
 
+				// Exclusion segment check
+				if len(exclusionSegEmails) > 0 && exclusionSegEmails[emailLower] {
+					continue
+				}
+
 				// ISP classification
 				domain := emailLower
 				if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
@@ -795,12 +836,12 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// 5. Randomize if requested (before quota enforcement)
+	// 6. Randomize if requested (before quota enforcement)
 	if input.RandomizeAudience && len(qualified) > 1 {
 		rand.Shuffle(len(qualified), func(i, j int) { qualified[i], qualified[j] = qualified[j], qualified[i] })
 	}
 
-	// 6. Apply ISP quotas — STRICT enforcement.
+	// 7. Apply ISP quotas — STRICT enforcement.
 	// When quotas are active: ONLY subscribers in ISPs with explicit quotas are included.
 	// Subscribers in non-quoted ISPs are excluded entirely.
 	// When no quotas: all qualified subscribers pass through (limited by max_recipients).

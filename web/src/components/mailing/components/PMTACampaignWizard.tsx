@@ -4,7 +4,7 @@ import {
   faArrowLeft, faArrowRight, faCheck, faServer, faGlobe,
   faPenFancy, faUsers, faBrain, faRocket, faSpinner,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
-  faPlus, faTimes, faChartBar, faShieldAlt,
+  faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faMagic, faSave, faEye, faUpload, faCode,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -183,11 +183,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
-  const [segments, setSegments] = useState<{ id: string; name: string; cached_count: number }[]>([]);
+  const [segments, setSegments] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
   const [suppressionLists, setSuppressionLists] = useState<{ id: string; name: string; entry_count: number }[]>([]);
   const [selectedLists, setSelectedLists] = useState<string[]>([]);
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
   const [selectedSuppLists, setSelectedSuppLists] = useState<string[]>([]);
+  const [selectedExclusionSegments, setSelectedExclusionSegments] = useState<string[]>([]);
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
   const [audienceError, setAudienceError] = useState('');
 
@@ -306,6 +307,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           list_ids: selectedLists,
           segment_ids: selectedSegments,
           suppression_list_ids: selectedSuppLists,
+          exclusion_segment_ids: selectedExclusionSegments,
           target_isps: selectedISPs,
         }),
       });
@@ -315,7 +317,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       console.warn('[Wizard] audience estimate failed:', err);
     }
     setEstimating(false);
-  }, [fetchWithRetry, selectedLists, selectedSegments, selectedSuppLists, selectedISPs]);
+  }, [fetchWithRetry, selectedLists, selectedSegments, selectedSuppLists, selectedExclusionSegments, selectedISPs]);
 
   const fetchIntel = useCallback(async () => {
     setIntelLoading(true);
@@ -441,7 +443,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // Re-estimate audience when selections change
   useEffect(() => {
     if (step === 4) fetchAudienceEstimate();
-  }, [step, selectedLists, selectedSegments, selectedSuppLists, fetchAudienceEstimate]);
+  }, [step, selectedLists, selectedSegments, selectedSuppLists, selectedExclusionSegments, fetchAudienceEstimate]);
 
   // Fetch send-time recommendations when user switches to scheduled mode
   useEffect(() => {
@@ -543,6 +545,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         inclusion_segments: selectedSegments,
         inclusion_lists: selectedLists,
         exclusion_lists: selectedSuppLists,
+        exclusion_segments: selectedExclusionSegments,
         send_days: [],
         send_hour: new Date().getUTCHours(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -589,6 +592,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   };
   const toggleSuppList = (id: string) => {
     setSelectedSuppLists(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  };
+  const toggleExclusionSegment = (id: string) => {
+    setSelectedExclusionSegments(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
   // ── Variant management ───────────────────────────────────────────────────
@@ -1267,14 +1273,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const renderStep4 = () => {
     const totalSelected = selectedLists.length + selectedSegments.length;
-    const totalSuppSelected = selectedSuppLists.length;
+    const totalSuppSelected = selectedSuppLists.length + selectedExclusionSegments.length;
 
     const AudienceCard: React.FC<{
-      name: string; count: number; selected: boolean; type: 'list' | 'segment' | 'suppression';
+      name: string; count: number; selected: boolean; type: 'list' | 'segment' | 'suppression' | 'exclusion-segment';
       onToggle: () => void;
     }> = ({ name, count, selected, type, onToggle }) => {
-      const colors = { list: '#00b0ff', segment: '#8b5cf6', suppression: '#ef4444' };
-      const icons = { list: faUsers, segment: faChartBar, suppression: faShieldAlt };
+      const colors: Record<string, string> = { list: '#00b0ff', segment: '#8b5cf6', suppression: '#ef4444', 'exclusion-segment': '#f59e0b' };
+      const icons: Record<string, any> = { list: faUsers, segment: faChartBar, suppression: faShieldAlt, 'exclusion-segment': faCrosshairs };
       const c = colors[type];
       return (
         <div
@@ -1396,7 +1402,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                       selected={selectedLists.includes(l.id)} type="list" onToggle={() => toggleList(l.id)} />
                   ))}
                   {segments.map(s => (
-                    <AudienceCard key={`seg-${s.id}`} name={s.name} count={s.cached_count || 0}
+                    <AudienceCard key={`seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
                       selected={selectedSegments.includes(s.id)} type="segment" onToggle={() => toggleSegment(s.id)} />
                   ))}
                 </div>
@@ -1417,12 +1423,29 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   </div>
                 )}
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', paddingRight: 4 }}>
                   {suppressionLists.map(sl => (
                     <AudienceCard key={`supp-${sl.id}`} name={sl.name} count={sl.entry_count || 0}
                       selected={selectedSuppLists.includes(sl.id)} type="suppression" onToggle={() => toggleSuppList(sl.id)} />
                   ))}
                 </div>
+
+                {segments.length > 0 && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14, marginBottom: 8 }}>
+                      <div style={{ width: 4, height: 16, borderRadius: 2, background: '#f59e0b' }} />
+                      <h4 style={{ margin: 0, fontSize: 13, color: '#f59e0b', fontWeight: 600 }}>Exclusion Segments</h4>
+                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>{selectedExclusionSegments.length} active</span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', paddingRight: 4 }}>
+                      {segments.map(s => (
+                        <AudienceCard key={`excl-seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
+                          selected={selectedExclusionSegments.includes(s.id)} type="exclusion-segment"
+                          onToggle={() => toggleExclusionSegment(s.id)} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
