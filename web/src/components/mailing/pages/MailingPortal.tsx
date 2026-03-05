@@ -839,31 +839,41 @@ const DeliveryServersManager: React.FC = () => {
 
 // Content Library — reusable email templates organized by sending domain folders
 const TemplatesManager: React.FC = () => {
-  const [folders, setFolders] = useState<any[]>([]);
+  const [folderTree, setFolderTree] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
-  const [newTemplate, setNewTemplate] = useState({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '' });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editData, setEditData] = useState<any>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [newTemplate, setNewTemplate] = useState({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '', preview_text: '' });
   const [loading, setLoading] = useState(true);
 
+  const inputStyle: React.CSSProperties = { background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 };
+  const btnGhost: React.CSSProperties = { background: 'none', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' };
+
   const fetchFolders = useCallback(() => {
-    fetch('/api/mailing/template-folders', { credentials: 'include' })
+    fetch('/api/mailing/template-folders/tree', { credentials: 'include' })
       .then(r => r.json())
-      .then(data => setFolders(data.folders || []))
+      .then(data => {
+        const tree = data.tree || data.folders || [];
+        setFolderTree(tree);
+        const expanded: Record<string, boolean> = {};
+        tree.forEach((f: any) => { expanded[f.id] = true; });
+        setExpandedFolders(prev => ({ ...expanded, ...prev }));
+      })
       .catch(() => {});
   }, []);
 
   const fetchTemplates = useCallback(() => {
     const url = selectedFolder
-      ? `/api/mailing/template-folders/${selectedFolder}/templates`
+      ? `/api/mailing/template-folders/${selectedFolder}/templates?recursive=true`
       : '/api/mailing/templates';
     fetch(url, { credentials: 'include' })
       .then(r => r.json())
-      .then(data => {
-        setTemplates(data.templates || []);
-        setLoading(false);
-      })
+      .then(data => { setTemplates(data.templates || []); setLoading(false); })
       .catch(() => setLoading(false));
   }, [selectedFolder]);
 
@@ -875,29 +885,116 @@ const TemplatesManager: React.FC = () => {
       const payload: any = { ...newTemplate };
       if (selectedFolder) payload.folder_id = selectedFolder;
       const res = await fetch('/api/mailing/templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify(payload),
       });
       if (res.ok) {
         fetchTemplates();
         setShowCreate(false);
-        setNewTemplate({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '' });
+        setNewTemplate({ name: '', description: '', subject: '', html_content: '', from_name: '', from_email: '', preview_text: '' });
       }
     } catch {}
   };
 
   const deleteTemplate = async (id: string) => {
+    if (!confirm('Delete this template?')) return;
     try {
       await fetch(`/api/mailing/templates/${id}`, { method: 'DELETE', credentials: 'include' });
       fetchTemplates();
     } catch {}
   };
 
+  const startEdit = async (t: any) => {
+    try {
+      const res = await fetch(`/api/mailing/templates/${t.id}`, { credentials: 'include' });
+      if (res.ok) {
+        const full = await res.json();
+        const tpl = full.template || full;
+        setEditData({
+          name: tpl.name || '', subject: tpl.subject || '', from_name: tpl.from_name || '',
+          preview_text: tpl.preview_text || '', html_content: tpl.html_content || '',
+        });
+        setEditingId(t.id);
+      }
+    } catch {
+      setEditData({ name: t.name || '', subject: t.subject || '', from_name: t.from_name || '', preview_text: t.preview_text || '', html_content: t.html_content || '' });
+      setEditingId(t.id);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!editingId || !editData) return;
+    setEditSaving(true);
+    try {
+      const res = await fetch(`/api/mailing/templates/${editingId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify(editData),
+      });
+      if (res.ok) {
+        setEditingId(null);
+        setEditData(null);
+        fetchTemplates();
+      } else {
+        alert('Failed to save template');
+      }
+    } catch { alert('Failed to save template'); }
+    setEditSaving(false);
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpandedFolders(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const folderItemStyle = (id: string | null): React.CSSProperties => ({
+    padding: '7px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 2,
+    background: selectedFolder === id ? 'rgba(0,229,255,0.08)' : 'transparent',
+    color: selectedFolder === id ? '#00e5ff' : '#e0e6f0',
+    border: selectedFolder === id ? '1px solid #00e5ff' : '1px solid transparent',
+    display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none',
+  });
+
+  const renderFolderTree = (folders: any[], depth: number = 0) => {
+    return folders.map((f: any) => {
+      const hasChildren = f.children && f.children.length > 0;
+      const isExpanded = expandedFolders[f.id];
+      return (
+        <div key={f.id}>
+          <div
+            style={{ ...folderItemStyle(f.id), paddingLeft: 10 + depth * 16 }}
+            onClick={() => setSelectedFolder(f.id)}
+          >
+            {hasChildren && (
+              <span onClick={e => { e.stopPropagation(); toggleExpand(f.id); }}
+                style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', cursor: 'pointer', width: 12, textAlign: 'center' }}>
+                {isExpanded ? '▾' : '▸'}
+              </span>
+            )}
+            {!hasChildren && <span style={{ width: 12 }} />}
+            <span style={{ fontSize: 13 }}>{depth === 0 ? '📁' : '📄'}</span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+            {f.template_count > 0 && (
+              <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.35)', marginLeft: 'auto' }}>{f.template_count}</span>
+            )}
+          </div>
+          {hasChildren && isExpanded && renderFolderTree(f.children, depth + 1)}
+        </div>
+      );
+    });
+  };
+
   if (loading) return <div className="loading-state">Loading templates...</div>;
 
-  const selectedFolderObj = folders.find((f: any) => f.id === selectedFolder);
+  const findFolderName = (id: string | null, folders: any[]): string => {
+    if (!id) return 'All Templates';
+    for (const f of folders) {
+      if (f.id === id) return f.path || f.name;
+      if (f.children) {
+        const found = findFolderName(id, f.children);
+        if (found !== 'All Templates') return found;
+      }
+    }
+    return 'All Templates';
+  };
 
   return (
     <div className="manager-page" style={{ background: '#0a0f1a' }}>
@@ -906,79 +1003,118 @@ const TemplatesManager: React.FC = () => {
         <p style={{ color: 'rgba(180,210,240,0.65)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the PMTA Campaign wizard are automatically filed here.</p>
       </div>
 
-      {/* Folder sidebar + template list */}
-      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
-        {/* Folders */}
-        <div style={{ background: '#0d1526', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.08)' }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>Folders</h4>
-          <div
-            onClick={() => setSelectedFolder(null)}
-            style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === null ? 'rgba(0,229,255,0.08)' : 'transparent', color: selectedFolder === null ? '#00e5ff' : '#e0e6f0', border: selectedFolder === null ? '1px solid #00e5ff' : '1px solid transparent' }}
-          >
-            All Templates
+      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>
+        {/* Folder tree sidebar */}
+        <div style={{ background: '#0d1526', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.08)', maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>Folders</h4>
+          <div style={{ ...folderItemStyle(null) }} onClick={() => setSelectedFolder(null)}>
+            <span style={{ width: 12 }} /><span style={{ fontSize: 13 }}>🗂️</span> All Templates
           </div>
-          {folders.map((f: any) => (
-            <div
-              key={f.id}
-              onClick={() => setSelectedFolder(f.id)}
-              style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13, marginBottom: 4, background: selectedFolder === f.id ? 'rgba(0,229,255,0.08)' : 'transparent', color: selectedFolder === f.id ? '#00e5ff' : '#e0e6f0', border: selectedFolder === f.id ? '1px solid #00e5ff' : '1px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}
-            >
-              <span style={{ fontSize: 14 }}>📁</span> {f.name}
-            </div>
-          ))}
-          {folders.length === 0 && <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', margin: '8px 0 0' }}>No folders yet. Save templates from the AI Generator to create domain folders automatically.</p>}
+          {renderFolderTree(folderTree)}
+          {folderTree.length === 0 && (
+            <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.4)', margin: '8px 0 0' }}>No folders yet.</p>
+          )}
         </div>
 
         {/* Templates */}
         <div>
-          <div className="manager-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <span style={{ fontSize: 14, color: '#e0e6f0' }}>
-              {selectedFolderObj ? `📁 ${selectedFolderObj.name}` : 'All Templates'} — {templates.length} template{templates.length !== 1 ? 's' : ''}
+              {selectedFolder ? `📁 ${findFolderName(selectedFolder, folderTree)}` : 'All Templates'} — {templates.length} template{templates.length !== 1 ? 's' : ''}
             </span>
-            <button className="btn-primary" onClick={() => setShowCreate(true)} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>+ Create Template</button>
+            <button onClick={() => setShowCreate(true)} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>+ Create Template</button>
           </div>
 
+          {/* Create form */}
           {showCreate && (
             <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12 }}>
               <h4 style={{ margin: '0 0 12px', color: '#00e5ff', fontSize: 14 }}>Create Email Template</h4>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-                <input placeholder="Template Name" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
-                <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13 }} />
+                <input placeholder="Template Name *" value={newTemplate.name} onChange={e => setNewTemplate(p => ({...p, name: e.target.value}))} style={inputStyle} />
+                <input placeholder="Description" value={newTemplate.description} onChange={e => setNewTemplate(p => ({...p, description: e.target.value}))} style={inputStyle} />
+                <input placeholder="Default Subject" value={newTemplate.subject} onChange={e => setNewTemplate(p => ({...p, subject: e.target.value}))} style={inputStyle} />
+                <input placeholder="From Name" value={newTemplate.from_name} onChange={e => setNewTemplate(p => ({...p, from_name: e.target.value}))} style={inputStyle} />
+                <input placeholder="Pre-header Text" value={newTemplate.preview_text} onChange={e => setNewTemplate(p => ({...p, preview_text: e.target.value}))} style={{ ...inputStyle, gridColumn: '1 / -1' }} />
               </div>
-              <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
+              <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', ...inputStyle, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={() => setShowCreate(false)} style={{ background: 'transparent', color: 'rgba(180,210,240,0.65)', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-                <button onClick={createTemplate} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>Create</button>
+                <button onClick={() => setShowCreate(false)} style={{ ...btnGhost, color: 'rgba(180,210,240,0.65)' }}>Cancel</button>
+                <button onClick={createTemplate} disabled={!newTemplate.name} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600, opacity: newTemplate.name ? 1 : 0.5 }}>Create</button>
               </div>
             </div>
           )}
 
+          {/* Template list */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {templates.map((t: any) => (
-              <div key={t.id} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <div>
-                    <strong style={{ color: '#e0e6f0', fontSize: 14 }}>{t.name}</strong>
-                    <span style={{ marginLeft: 8, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>{t.description}</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <span style={{ background: t.status === 'active' ? '#00b89420' : 'rgba(0,229,255,0.12)', color: t.status === 'active' ? '#00b894' : '#00e5ff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
-                    <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ background: 'none', border: '1px solid rgba(0,200,255,0.08)', color: '#00b0ff', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Preview</button>
-                    <button onClick={() => deleteTemplate(t.id)} style={{ background: 'none', border: '1px solid rgba(0,200,255,0.08)', color: '#e94560', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Delete</button>
-                  </div>
+            {templates.map((t: any) => {
+              const isEditing = editingId === t.id;
+              return (
+                <div key={t.id} style={{ background: '#0d1526', border: isEditing ? '1px solid #00e5ff' : '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+                  {isEditing && editData ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <h4 style={{ margin: 0, fontSize: 14, color: '#00e5ff' }}>Edit Template</h4>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button onClick={() => { setEditingId(null); setEditData(null); }} style={{ ...btnGhost, color: 'rgba(180,210,240,0.65)' }}>Cancel</button>
+                          <button onClick={saveEdit} disabled={editSaving || !editData.name} style={{ background: '#00e5ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '4px 14px', fontSize: 12, cursor: 'pointer', fontWeight: 600, opacity: editData.name ? 1 : 0.5 }}>
+                            {editSaving ? 'Saving...' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                        <div>
+                          <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>Template Name</label>
+                          <input value={editData.name} onChange={e => setEditData((p: any) => ({...p, name: e.target.value}))} style={inputStyle} />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>Subject Line</label>
+                          <input value={editData.subject} onChange={e => setEditData((p: any) => ({...p, subject: e.target.value}))} style={inputStyle} />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>From Name</label>
+                          <input value={editData.from_name} onChange={e => setEditData((p: any) => ({...p, from_name: e.target.value}))} style={inputStyle} />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>Pre-header</label>
+                          <input value={editData.preview_text} onChange={e => setEditData((p: any) => ({...p, preview_text: e.target.value}))} style={inputStyle} />
+                        </div>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>HTML Content</label>
+                        <textarea value={editData.html_content} onChange={e => setEditData((p: any) => ({...p, html_content: e.target.value}))} rows={12}
+                          style={{ width: '100%', ...inputStyle, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }} />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong style={{ color: '#e0e6f0', fontSize: 14 }}>{t.name}</strong>
+                          {t.description && <span style={{ marginLeft: 8, fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>{t.description}</span>}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                          <span style={{ background: t.status === 'active' ? '#00b89420' : 'rgba(0,229,255,0.12)', color: t.status === 'active' ? '#00b894' : '#00e5ff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
+                          <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ ...btnGhost, color: '#00b0ff' }}>Preview</button>
+                          <button onClick={() => startEdit(t)} style={{ ...btnGhost, color: '#f59e0b' }}>Edit</button>
+                          <button onClick={() => deleteTemplate(t.id)} style={{ ...btnGhost, color: '#e94560' }}>Delete</button>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                        {t.subject && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Subject: <span style={{ color: '#00b0ff' }}>{t.subject}</span></div>}
+                        {t.from_name && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>From: <span style={{ color: '#00b0ff' }}>{t.from_name}</span></div>}
+                        {t.preview_text && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Pre-header: <span style={{ color: '#8b5cf6' }}>{t.preview_text}</span></div>}
+                      </div>
+                      {previewId === t.id && t.html_content && (
+                        <div style={{ marginTop: 10, background: '#0a0f1a', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,200,255,0.08)' }}>
+                          <iframe srcDoc={t.html_content} title={`Preview ${t.name}`} style={{ width: '100%', height: 400, border: 'none' }} sandbox="allow-same-origin" />
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
-                {t.subject && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Subject: <span style={{ color: '#00b0ff' }}>{t.subject}</span></div>}
-                {t.from_name && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>From: <span style={{ color: '#00b0ff' }}>{t.from_name}</span></div>}
-                {previewId === t.id && t.html_content && (
-                  <div style={{ marginTop: 10, background: '#0a0f1a', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,200,255,0.08)' }}>
-                    <iframe srcDoc={t.html_content} title={`Preview ${t.name}`} style={{ width: '100%', height: 400, border: 'none' }} sandbox="allow-same-origin" />
-                  </div>
-                )}
-              </div>
-            ))}
-            {templates.length === 0 && <p style={{ textAlign: 'center', color: 'rgba(180,210,240,0.65)', fontSize: 13, padding: 40 }}>No templates yet. Use the AI Generator in the PMTA Campaign wizard to create templates automatically.</p>}
+              );
+            })}
+            {templates.length === 0 && <p style={{ textAlign: 'center', color: 'rgba(180,210,240,0.65)', fontSize: 13, padding: 40 }}>No templates in this folder.</p>}
           </div>
         </div>
       </div>
