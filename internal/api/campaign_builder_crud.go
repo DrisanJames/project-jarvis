@@ -44,7 +44,8 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			   COALESCE(c.total_recipients,0), COALESCE(c.sent_count,0),
 			   COALESCE(c.delivered_count,0),
 			   COALESCE(c.open_count,0), COALESCE(c.click_count,0),
-			   COALESCE(c.bounce_count,0), COALESCE(c.complaint_count,0),
+			   COALESCE(c.bounce_count,0), COALESCE(c.hard_bounce_count,0), COALESCE(c.soft_bounce_count,0),
+			   COALESCE(c.complaint_count,0),
 			   COALESCE(c.unsubscribe_count,0), COALESCE(c.revenue,0),
 			   COALESCE(c.from_name,''), COALESCE(c.from_email,''),
 			   COALESCE(c.throttle_speed,''),
@@ -75,7 +76,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		var id, name, subject, status string
 		var totalRecipients, sentCount, deliveredCount, openCount, clickCount int
-		var bounceCount, complaintCount, unsubscribeCount int
+		var bounceCount, hardBounceCount, softBounceCount, complaintCount, unsubscribeCount int
 		var revenue float64
 		var fromName, fromEmail, throttleSpeed string
 		var profileName, vendorType, listName string
@@ -86,7 +87,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		rows.Scan(&id, &name, &subject, &status,
 			&totalRecipients, &sentCount, &deliveredCount,
 			&openCount, &clickCount,
-			&bounceCount, &complaintCount,
+			&bounceCount, &hardBounceCount, &softBounceCount, &complaintCount,
 			&unsubscribeCount, &revenue,
 			&fromName, &fromEmail,
 			&throttleSpeed,
@@ -122,6 +123,8 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			"open_count":        openCount,
 			"click_count":       clickCount,
 			"bounce_count":      bounceCount,
+			"hard_bounce_count": hardBounceCount,
+			"soft_bounce_count": softBounceCount,
 			"complaint_count":   complaintCount,
 			"unsubscribe_count": unsubscribeCount,
 			"revenue":           revenue,

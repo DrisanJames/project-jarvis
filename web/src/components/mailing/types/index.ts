@@ -63,6 +63,8 @@ export interface Campaign {
   click_count: number;
   unique_click_count: number;
   bounce_count: number;
+  hard_bounce_count: number;
+  soft_bounce_count: number;
   complaint_count: number;
   unsubscribe_count: number;
   revenue: number;

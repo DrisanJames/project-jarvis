@@ -85,7 +85,7 @@ interface OptimalSend {
   confidence: number; reasoning: string[];
 }
 
-type TimeRange = '7' | '14' | '30' | '90';
+type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,10 +129,10 @@ export const AnalyticsCenter: React.FC = () => {
 
   // Map global date filter to closest local range option
   const rangeMap: Record<string, TimeRange> = {
-    last7: '7', last14: '14', mtd: '30', last30: '30',
+    today: 'today', last7: '7', last14: '14', mtd: '30', last30: '30',
     last60: '90', last90: '90', lastMonth: '30', ytd: '90', custom: '30',
   };
-  const globalRangeHint: TimeRange = rangeMap[dateRange.type] || '30';
+  const globalRangeHint: TimeRange = rangeMap[dateRange.type] || 'today';
   const [range, setRange] = useState<TimeRange>(globalRangeHint);
   const [loading, setLoading] = useState(true);
 
@@ -151,9 +151,30 @@ export const AnalyticsCenter: React.FC = () => {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const dateSuffix = `&start_date=${dateRange.startDate}&end_date=${dateRange.endDate}&range_type=${dateRange.type}`;
+      // Compute date range based on selected time range
+      const now = new Date();
+      let startDate = dateRange.startDate;
+      let endDate = dateRange.endDate;
+      let days: string = range;
+      if (range === 'today') {
+        const todayStr = now.toISOString().split('T')[0];
+        startDate = todayStr;
+        endDate = todayStr;
+        days = '1';
+      } else if (range === '24h') {
+        const h24ago = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        startDate = h24ago.toISOString();
+        endDate = now.toISOString();
+        days = '1';
+      } else if (range === '1h') {
+        const h1ago = new Date(now.getTime() - 60 * 60 * 1000);
+        startDate = h1ago.toISOString();
+        endDate = now.toISOString();
+        days = '1';
+      }
+      const dateSuffix = `&start_date=${startDate}&end_date=${endDate}&range_type=${range}`;
       const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes] = await Promise.all([
-        orgFetch(`/api/mailing/analytics/overview?days=${range}${dateSuffix}`, orgId),
+        orgFetch(`/api/mailing/analytics/overview?days=${days}${dateSuffix}`, orgId),
         orgFetch(`/api/mailing/reports/engagement?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`, orgId),
         orgFetch(`/api/mailing/reports/deliverability?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`, orgId),
         orgFetch(`/api/mailing/reports/revenue?days=${range}${dateSuffix}`, orgId),
@@ -228,9 +249,17 @@ export const AnalyticsCenter: React.FC = () => {
         </div>
         <div className="ac-header-right">
           <div className="ac-range-selector">
-            {(['7', '14', '30', '90'] as TimeRange[]).map(r => (
-              <button key={r} className={range === r ? 'active' : ''} onClick={() => setRange(r)}>
-                {r}d
+            {([
+              { key: '1h' as TimeRange, label: '1h' },
+              { key: '24h' as TimeRange, label: '24h' },
+              { key: 'today' as TimeRange, label: 'Today' },
+              { key: '7' as TimeRange, label: '7d' },
+              { key: '14' as TimeRange, label: '14d' },
+              { key: '30' as TimeRange, label: '30d' },
+              { key: '90' as TimeRange, label: '90d' },
+            ]).map(r => (
+              <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
+                {r.label}
               </button>
             ))}
           </div>

@@ -204,7 +204,7 @@ func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	switch rec.Type {
 	case "b": // bounce
 		switch rec.BounceCat {
-		case "bad-mailbox", "bad-domain", "inactive-mailbox":
+		case "bad-mailbox", "bad-domain", "inactive-mailbox", "quota-issues":
 			reason = "hard_bounce"
 			source = "pmta_bounce"
 		default:
@@ -313,21 +313,36 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	}
 
 	// Update campaign aggregate counters
-	var counterCol string
 	switch eventType {
 	case "delivered":
-		counterCol = "delivered_count"
+		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "hard_bounce":
-		counterCol = "bounce_count"
+		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "soft_bounce":
-		counterCol = "bounce_count"
+		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "complained":
-		counterCol = "complaint_count"
+		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	}
-	if counterCol != "" {
-		ing.db.ExecContext(ctx, fmt.Sprintf(`
-			UPDATE mailing_campaigns SET %s = COALESCE(%s, 0) + 1, updated_at = NOW() WHERE id = $1
-		`, counterCol, counterCol), campUUID)
+
+	// Enrich inbox profiles with delivery/bounce data from PMTA webhook
+	if eventType == "delivered" || eventType == "hard_bounce" || eventType == "soft_bounce" {
+		domain := ""
+		if parts := strings.SplitN(recipientEmail, "@", 2); len(parts) == 2 {
+			domain = parts[1]
+		}
+		if eventType == "delivered" {
+			ing.db.ExecContext(ctx, `
+				INSERT INTO mailing_inbox_profiles (id, email, domain, total_sent, last_sent_at, created_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, 1, NOW(), NOW(), NOW())
+				ON CONFLICT (email) DO UPDATE SET total_sent = mailing_inbox_profiles.total_sent + 1, last_sent_at = NOW(), updated_at = NOW()
+			`, recipientEmail, domain)
+		} else {
+			ing.db.ExecContext(ctx, `
+				INSERT INTO mailing_inbox_profiles (id, email, domain, total_bounces, last_bounce_at, created_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, 1, NOW(), NOW(), NOW())
+				ON CONFLICT (email) DO UPDATE SET total_bounces = COALESCE(mailing_inbox_profiles.total_bounces, 0) + 1, last_bounce_at = NOW(), updated_at = NOW()
+			`, recipientEmail, domain)
+		}
 	}
 }
 

@@ -1177,14 +1177,16 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
                   <span className="stat-rate">{stats?.click_rate?.toFixed(1) || 0}%</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number">{(campaign.bounce_count || 0).toLocaleString()}</span>
-                  <span className="stat-label">Bounces</span>
-                  <span className="stat-rate">{stats?.bounce_rate?.toFixed(1) || 0}%</span>
+                  <span className="stat-number" style={{ color: '#ef4444' }}>{(campaign.hard_bounce_count || 0).toLocaleString()}</span>
+                  <span className="stat-label">Hard Bounces</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number">{(campaign.complaint_count || 0).toLocaleString()}</span>
+                  <span className="stat-number" style={{ color: '#f59e0b' }}>{(campaign.soft_bounce_count || 0).toLocaleString()}</span>
+                  <span className="stat-label">Soft Bounces</span>
+                </div>
+                <div className="stat-box">
+                  <span className="stat-number" style={{ color: (campaign.complaint_count || 0) > 0 ? '#ef4444' : undefined }}>{(campaign.complaint_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Complaints</span>
-                  <span className="stat-rate">{stats?.complaint_rate?.toFixed(1) || 0}%</span>
                 </div>
                 <div className="stat-box">
                   <span className="stat-number">${(campaign.revenue || 0).toFixed(2)}</span>
@@ -1385,9 +1387,19 @@ export const CampaignsManager: React.FC = () => {
                         </span>
                       </div>
                       <div className="stat-item">
-                        <span className="stat-label">Revenue</span>
-                        <span className="stat-value revenue">${(campaign.revenue || 0).toFixed(2)}</span>
+                        <span className="stat-label" style={{ color: '#ef4444' }}>Hard Bounces</span>
+                        <span className="stat-value" style={{ color: '#ef4444' }}>{(campaign.hard_bounce_count || 0).toLocaleString()}</span>
                       </div>
+                      <div className="stat-item">
+                        <span className="stat-label" style={{ color: '#f59e0b' }}>Soft Bounces</span>
+                        <span className="stat-value" style={{ color: '#f59e0b' }}>{(campaign.soft_bounce_count || 0).toLocaleString()}</span>
+                      </div>
+                      {(campaign.complaint_count || 0) > 0 && (
+                        <div className="stat-item">
+                          <span className="stat-label" style={{ color: '#ef4444', fontWeight: 700 }}>Complaints</span>
+                          <span className="stat-value" style={{ color: '#ef4444', fontWeight: 700 }}>{(campaign.complaint_count || 0).toLocaleString()}</span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="campaign-actions">

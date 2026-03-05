@@ -322,6 +322,43 @@ func (j *JarvisOrchestrator) HandleStatus(w http.ResponseWriter, r *http.Request
 	defer j.mu.Unlock()
 
 	if j.campaign == nil {
+		// Check for any active campaign in the system (PMTA wizard, classic, etc.)
+		var cid, name, status, fromName, fromEmail, subject string
+		var sent, total, delivered, bounces, opens, clicks, complaints, unsubs int
+		var scheduledAt, startedAt sql.NullTime
+		err := j.db.QueryRow(`
+			SELECT id::text, name, status, COALESCE(from_name,''), COALESCE(from_email,''), COALESCE(subject,''),
+			       COALESCE(sent_count,0), COALESCE(total_recipients,0), COALESCE(delivered_count,0),
+			       COALESCE(bounce_count,0), COALESCE(open_count,0), COALESCE(click_count,0),
+			       COALESCE(complaint_count,0), COALESCE(unsubscribe_count,0),
+			       scheduled_at, started_at
+			FROM mailing_campaigns
+			WHERE status IN ('sending','scheduled','draft')
+			ORDER BY COALESCE(started_at, scheduled_at, created_at) DESC LIMIT 1
+		`).Scan(&cid, &name, &status, &fromName, &fromEmail, &subject,
+			&sent, &total, &delivered, &bounces, &opens, &clicks, &complaints, &unsubs,
+			&scheduledAt, &startedAt)
+		if err == nil && cid != "" {
+			activeCampaign := map[string]interface{}{
+				"id": cid, "status": status, "name": name,
+				"from_name": fromName, "from_email": fromEmail, "subject": subject,
+				"metrics": map[string]interface{}{
+					"sent": sent, "total_recipients": total, "delivered": delivered,
+					"bounces": bounces, "opens": opens, "clicks": clicks,
+					"complaints": complaints, "unsubscribes": unsubs,
+					"open_rate":  calcRate(opens, maxInt(delivered, sent)),
+					"click_rate": calcRate(clicks, maxInt(delivered, sent)),
+				},
+			}
+			if startedAt.Valid {
+				activeCampaign["started_at"] = startedAt.Time
+			}
+			if scheduledAt.Valid {
+				activeCampaign["scheduled_at"] = scheduledAt.Time
+			}
+			respondJSON(w, http.StatusOK, activeCampaign)
+			return
+		}
 		respondJSON(w, http.StatusOK, map[string]string{"status": "idle", "message": "No campaign running"})
 		return
 	}
