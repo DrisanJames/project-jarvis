@@ -355,20 +355,21 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 func mapFieldToColumn(field string) string {
 	// Direct column mappings
 	columnMap := map[string]string{
-		"email":              "email",
-		"first_name":         "first_name",
-		"last_name":          "last_name",
-		"status":             "status",
-		"engagement_score":   "engagement_score",
-		"total_opens":        "total_opens",
-		"total_clicks":       "total_clicks",
-		"last_open_at":       "last_open_at",
-		"last_click_at":      "last_click_at",
-		"last_email_at":      "last_email_at",
-		"subscribed_at":      "subscribed_at",
-		"created_at":         "created_at",
-		"source":             "source",
-		"timezone":           "timezone",
+		"email":                  "email",
+		"first_name":             "first_name",
+		"last_name":              "last_name",
+		"status":                 "status",
+		"engagement_score":       "engagement_score",
+		"total_emails_received":  "total_emails_received",
+		"total_opens":            "total_opens",
+		"total_clicks":           "total_clicks",
+		"last_email_at":          "last_email_at",
+		"last_open_at":           "last_open_at",
+		"last_click_at":          "last_click_at",
+		"subscribed_at":          "subscribed_at",
+		"created_at":             "created_at",
+		"source":                 "source",
+		"timezone":               "timezone",
 	}
 	
 	if col, ok := columnMap[field]; ok {

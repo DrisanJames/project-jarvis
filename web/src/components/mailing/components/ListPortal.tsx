@@ -1491,26 +1491,25 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
   const [saving, setSaving] = useState(false);
 
   const fieldOptions = [
-    // Contact Profile
-    { value: 'email', label: '👤 Email Address', group: 'Contact Profile' },
-    { value: 'first_name', label: '👤 First Name', group: 'Contact Profile' },
-    { value: 'last_name', label: '👤 Last Name', group: 'Contact Profile' },
-    { value: 'phone', label: '👤 Phone', group: 'Contact Profile' },
-    { value: 'city', label: '👤 City', group: 'Contact Profile' },
-    { value: 'country', label: '👤 Country', group: 'Contact Profile' },
-    { value: 'timezone', label: '👤 Timezone', group: 'Contact Profile' },
-    // Engagement
-    { value: 'engagement_score', label: '📊 Engagement Score', group: 'Engagement' },
-    { value: 'total_opens', label: '📊 Total Opens', group: 'Engagement' },
-    { value: 'total_clicks', label: '📊 Total Clicks', group: 'Engagement' },
-    { value: 'status', label: '📊 Status', group: 'Engagement' },
-    { value: 'subscribed_at', label: '📊 Subscribed Date', group: 'Engagement' },
-    { value: 'last_open_at', label: '📊 Last Open Date', group: 'Engagement' },
-    { value: 'last_click_at', label: '📊 Last Click Date', group: 'Engagement' },
+    { value: 'first_name', label: 'First Name', group: 'Contact' },
+    { value: 'last_name', label: 'Last Name', group: 'Contact' },
+    { value: 'email', label: 'Email Address', group: 'Contact' },
+    { value: 'phone', label: 'Phone', group: 'Contact' },
+    { value: 'city', label: 'City', group: 'Contact' },
+    { value: 'country', label: 'Country', group: 'Contact' },
+    { value: 'timezone', label: 'Timezone', group: 'Contact' },
+    { value: 'status', label: 'Subscription Status', group: 'Contact' },
+    { value: 'total_emails_received', label: 'Emails Sent', group: 'Activity' },
+    { value: 'total_opens', label: 'Total Opens', group: 'Activity' },
+    { value: 'total_clicks', label: 'Total Clicks', group: 'Activity' },
+    { value: 'engagement_score', label: 'Engagement Score', group: 'Activity' },
+    { value: 'last_email_at', label: 'Last Sent Date', group: 'Dates' },
+    { value: 'last_open_at', label: 'Last Open Date', group: 'Dates' },
+    { value: 'last_click_at', label: 'Last Click Date', group: 'Dates' },
+    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Dates' },
   ];
 
   const operatorOptions = [
-    // String operators
     { value: 'equals', label: 'Equals' },
     { value: 'not_equals', label: 'Does not equal' },
     { value: 'contains', label: 'Contains' },
@@ -1519,18 +1518,16 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
     { value: 'ends_with', label: 'Ends with' },
     { value: 'is_empty', label: 'Is empty' },
     { value: 'is_not_empty', label: 'Is not empty' },
-    // Numeric operators
     { value: 'greater_than', label: 'Greater than' },
     { value: 'less_than', label: 'Less than' },
     { value: 'greater_than_or_equal', label: 'Greater than or equal' },
     { value: 'less_than_or_equal', label: 'Less than or equal' },
-    // Date operators
     { value: 'in_last_days', label: 'In the last X days' },
     { value: 'more_than_days_ago', label: 'More than X days ago' },
   ];
 
   const addCondition = () => {
-    setConditions(prev => [...prev, { field: 'engagement_score', operator: 'greater_than', value: '' }]);
+    setConditions(prev => [...prev, { field: 'total_emails_received', operator: 'greater_than', value: '' }]);
   };
 
   const removeCondition = (index: number) => {
@@ -1764,20 +1761,22 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
   const [loading, setLoading] = useState(true);
 
   const fieldOptions = [
-    { value: 'email', label: 'Email Address', group: 'Contact Profile' },
-    { value: 'first_name', label: 'First Name', group: 'Contact Profile' },
-    { value: 'last_name', label: 'Last Name', group: 'Contact Profile' },
-    { value: 'phone', label: 'Phone', group: 'Contact Profile' },
-    { value: 'city', label: 'City', group: 'Contact Profile' },
-    { value: 'country', label: 'Country', group: 'Contact Profile' },
-    { value: 'timezone', label: 'Timezone', group: 'Contact Profile' },
-    { value: 'engagement_score', label: 'Engagement Score', group: 'Engagement' },
-    { value: 'total_opens', label: 'Total Opens', group: 'Engagement' },
-    { value: 'total_clicks', label: 'Total Clicks', group: 'Engagement' },
-    { value: 'status', label: 'Status', group: 'Engagement' },
-    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Engagement' },
-    { value: 'last_open_at', label: 'Last Open Date', group: 'Engagement' },
-    { value: 'last_click_at', label: 'Last Click Date', group: 'Engagement' },
+    { value: 'first_name', label: 'First Name', group: 'Contact' },
+    { value: 'last_name', label: 'Last Name', group: 'Contact' },
+    { value: 'email', label: 'Email Address', group: 'Contact' },
+    { value: 'phone', label: 'Phone', group: 'Contact' },
+    { value: 'city', label: 'City', group: 'Contact' },
+    { value: 'country', label: 'Country', group: 'Contact' },
+    { value: 'timezone', label: 'Timezone', group: 'Contact' },
+    { value: 'status', label: 'Subscription Status', group: 'Contact' },
+    { value: 'total_emails_received', label: 'Emails Sent', group: 'Activity' },
+    { value: 'total_opens', label: 'Total Opens', group: 'Activity' },
+    { value: 'total_clicks', label: 'Total Clicks', group: 'Activity' },
+    { value: 'engagement_score', label: 'Engagement Score', group: 'Activity' },
+    { value: 'last_email_at', label: 'Last Sent Date', group: 'Dates' },
+    { value: 'last_open_at', label: 'Last Open Date', group: 'Dates' },
+    { value: 'last_click_at', label: 'Last Click Date', group: 'Dates' },
+    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Dates' },
   ];
 
   const operatorOptions = [
