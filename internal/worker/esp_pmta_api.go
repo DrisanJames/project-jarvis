@@ -104,12 +104,18 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	}
 
 	// Resolve VMTA from IP pool (same rotation as SMTP sender)
+	vmtaResolved := false
 	if s.ipPool != nil && msg.ProfileID != "" {
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		if ip, err := s.ipPool.next(); err == nil {
 			payload["vmta"] = ip.Hostname
+			vmtaResolved = true
 			log.Printf("[PMTA-API] Routing %s via VMTA %s", msg.Email, ip.Hostname)
 		}
+	}
+	if !vmtaResolved {
+		payload["vmta"] = "default-pool"
+		log.Printf("[PMTA-API] Routing %s via default-pool (no IP pool data)", msg.Email)
 	}
 	// Header override takes precedence if explicitly set
 	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {

@@ -1079,6 +1079,7 @@ func runStartupMigrations(db *sql.DB) {
 			  AND jsonb_array_length(c.list_ids) > 0
 			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
 		`},
+		{"reset_emergency_agents", `UPDATE mailing_isp_agents SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
 	}
 
 	var ok, fail int
