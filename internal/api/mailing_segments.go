@@ -26,8 +26,11 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, segment_type, subscriber_count, status, created_at
-		FROM mailing_segments WHERE organization_id = $1 ORDER BY created_at DESC
+		SELECT s.id, s.name, s.description, s.segment_type, s.subscriber_count, s.status, s.created_at,
+		       s.list_id, COALESCE(l.name, ''), COALESCE(s.conditions::text, '[]')
+		FROM mailing_segments s
+		LEFT JOIN mailing_lists l ON l.id = s.list_id
+		WHERE s.organization_id = $1 ORDER BY s.created_at DESC
 	`, orgID)
 	if err != nil {
 		log.Printf("[HandleGetSegments] query error: %v", err)
@@ -40,14 +43,25 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 	var segments []map[string]interface{}
 	for rows.Next() {
 		var id uuid.UUID
-		var name, desc, segType, status string
+		var listID *uuid.UUID
+		var name, desc, segType, status, listName, conditionsRaw string
 		var subCount int
 		var createdAt time.Time
-		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt)
-		segments = append(segments, map[string]interface{}{
+		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt, &listID, &listName, &conditionsRaw)
+
+		seg := map[string]interface{}{
 			"id": id.String(), "name": name, "description": desc, "segment_type": segType,
 			"subscriber_count": subCount, "status": status, "created_at": createdAt,
-		})
+			"list_name": listName,
+		}
+		if listID != nil {
+			seg["list_id"] = listID.String()
+		}
+		var conditions []interface{}
+		if err := json.Unmarshal([]byte(conditionsRaw), &conditions); err == nil && len(conditions) > 0 {
+			seg["conditions"] = conditions
+		}
+		segments = append(segments, seg)
 	}
 	if segments == nil {
 		segments = []map[string]interface{}{}
@@ -384,51 +398,47 @@ func mapFieldToColumn(field string) string {
 func (s *AdvancedMailingService) HandleGetSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	segmentID := chi.URLParam(r, "segmentId")
-	
-	var id, listID uuid.UUID
-	var name, desc, segType, status string
+
+	var id uuid.UUID
+	var listID *uuid.UUID
+	var name, desc, segType, status, conditionsRaw string
 	var subCount int
-	
+
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, list_id, name, description, segment_type, subscriber_count, status
+		SELECT id, list_id, name, description, segment_type, subscriber_count, status,
+		       COALESCE(conditions::text, '[]')
 		FROM mailing_segments WHERE id = $1
-	`, segmentID).Scan(&id, &listID, &name, &desc, &segType, &subCount, &status)
-	
+	`, segmentID).Scan(&id, &listID, &name, &desc, &segType, &subCount, &status, &conditionsRaw)
+
 	if err != nil {
 		http.Error(w, `{"error":"segment not found"}`, http.StatusNotFound)
 		return
 	}
-	
-	// Get conditions
-	rows, _ := s.db.QueryContext(ctx, `
-		SELECT condition_group, field, operator, value FROM mailing_segment_conditions WHERE segment_id = $1 ORDER BY condition_group
-	`, segmentID)
-	defer rows.Close()
-	
-	var conditions []map[string]interface{}
-	for rows.Next() {
-		var group int
-		var field, operator, value string
-		rows.Scan(&group, &field, &operator, &value)
-		conditions = append(conditions, map[string]interface{}{
-			"group": group, "field": field, "operator": operator, "value": value,
-		})
-	}
-	
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": id.String(), "list_id": listID.String(), "name": name, "description": desc,
+
+	var conditions []interface{}
+	json.Unmarshal([]byte(conditionsRaw), &conditions)
+
+	resp := map[string]interface{}{
+		"id": id.String(), "name": name, "description": desc,
 		"segment_type": segType, "subscriber_count": subCount, "status": status, "conditions": conditions,
-	})
+	}
+	if listID != nil {
+		resp["list_id"] = listID.String()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *AdvancedMailingService) HandleUpdateSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	segmentID := chi.URLParam(r, "segmentId")
-	
+
 	var input struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		ListID      string `json:"list_id"`
+		Status      string `json:"status"`
 		Conditions  []struct {
 			Group    int    `json:"group"`
 			Field    string `json:"field"`
@@ -436,22 +446,59 @@ func (s *AdvancedMailingService) HandleUpdateSegment(w http.ResponseWriter, r *h
 			Value    string `json:"value"`
 		} `json:"conditions"`
 	}
-	json.NewDecoder(r.Body).Decode(&input)
-	
-	s.db.ExecContext(ctx, `UPDATE mailing_segments SET name = $2, description = $3, updated_at = NOW() WHERE id = $1`,
-		segmentID, input.Name, input.Description)
-	
-	// Replace conditions
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	var listID interface{}
+	if input.ListID != "" {
+		parsed, err := uuid.Parse(input.ListID)
+		if err != nil {
+			http.Error(w, `{"error":"invalid list_id"}`, http.StatusBadRequest)
+			return
+		}
+		listID = parsed
+	}
+
+	status := input.Status
+	if status == "" {
+		status = "active"
+	}
+
+	conditionsJSON := buildConditionsJSON(input.Conditions)
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_segments
+		SET name = $2, description = $3, list_id = $4, status = $5, conditions = $6, updated_at = NOW()
+		WHERE id = $1
+	`, segmentID, input.Name, input.Description, listID, status, conditionsJSON)
+	if err != nil {
+		log.Printf("[HandleUpdateSegment] update error: %v", err)
+		http.Error(w, `{"error":"failed to update segment"}`, http.StatusInternalServerError)
+		return
+	}
+
 	s.db.ExecContext(ctx, `DELETE FROM mailing_segment_conditions WHERE segment_id = $1`, segmentID)
-	for _, c := range input.Conditions {
+	for i, c := range input.Conditions {
+		operator := mapOperatorForDB(c.Operator)
+		if operator == "" {
+			continue
+		}
 		s.db.ExecContext(ctx, `
 			INSERT INTO mailing_segment_conditions (id, segment_id, condition_group, field, operator, value)
 			VALUES ($1, $2, $3, $4, $5, $6)
-		`, uuid.New(), segmentID, c.Group, c.Field, c.Operator, c.Value)
+		`, uuid.New(), segmentID, i, c.Field, operator, c.Value)
 	}
-	
+
+	segUUID, _ := uuid.Parse(segmentID)
+	subscriberCount := s.calculateSegmentCount(ctx, segUUID, listID, input.Conditions)
+	s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2 WHERE id = $1`, segmentID, subscriberCount)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"id": segmentID, "updated": true})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": segmentID, "updated": true, "subscriber_count": subscriberCount,
+	})
 }
 
 func (s *AdvancedMailingService) HandlePreviewSegment(w http.ResponseWriter, r *http.Request) {

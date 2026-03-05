@@ -1759,7 +1759,87 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
     list_id: segment.list_id || '',
     status: segment.status,
   });
+  const [conditions, setConditions] = useState<SegmentCondition[]>([]);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const fieldOptions = [
+    { value: 'email', label: 'Email Address', group: 'Contact Profile' },
+    { value: 'first_name', label: 'First Name', group: 'Contact Profile' },
+    { value: 'last_name', label: 'Last Name', group: 'Contact Profile' },
+    { value: 'phone', label: 'Phone', group: 'Contact Profile' },
+    { value: 'city', label: 'City', group: 'Contact Profile' },
+    { value: 'country', label: 'Country', group: 'Contact Profile' },
+    { value: 'timezone', label: 'Timezone', group: 'Contact Profile' },
+    { value: 'engagement_score', label: 'Engagement Score', group: 'Engagement' },
+    { value: 'total_opens', label: 'Total Opens', group: 'Engagement' },
+    { value: 'total_clicks', label: 'Total Clicks', group: 'Engagement' },
+    { value: 'status', label: 'Status', group: 'Engagement' },
+    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Engagement' },
+    { value: 'last_open_at', label: 'Last Open Date', group: 'Engagement' },
+    { value: 'last_click_at', label: 'Last Click Date', group: 'Engagement' },
+  ];
+
+  const operatorOptions = [
+    { value: 'equals', label: 'Equals' },
+    { value: 'not_equals', label: 'Does not equal' },
+    { value: 'contains', label: 'Contains' },
+    { value: 'not_contains', label: 'Does not contain' },
+    { value: 'starts_with', label: 'Starts with' },
+    { value: 'ends_with', label: 'Ends with' },
+    { value: 'is_empty', label: 'Is empty' },
+    { value: 'is_not_empty', label: 'Is not empty' },
+    { value: 'greater_than', label: 'Greater than' },
+    { value: 'less_than', label: 'Less than' },
+    { value: 'greater_than_or_equal', label: 'Greater than or equal' },
+    { value: 'less_than_or_equal', label: 'Less than or equal' },
+    { value: 'in_last_days', label: 'In the last X days' },
+    { value: 'more_than_days_ago', label: 'More than X days ago' },
+  ];
+
+  useEffect(() => {
+    const fetchSegment = async () => {
+      try {
+        const res = await orgFetch(`/api/mailing/segments/${segment.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setFormData({
+            name: data.name || segment.name,
+            description: data.description || '',
+            list_id: data.list_id || '',
+            status: data.status || 'active',
+          });
+          if (data.conditions && Array.isArray(data.conditions) && data.conditions.length > 0) {
+            setConditions(data.conditions.map((c: any) => ({
+              field: c.field || 'engagement_score',
+              operator: c.operator || 'greater_than',
+              value: c.value || '',
+            })));
+          }
+        }
+      } catch {
+        // Fall back to the segment data we already have from the list
+        if (segment.conditions && segment.conditions.length > 0) {
+          setConditions(segment.conditions);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSegment();
+  }, [segment.id]);
+
+  const addCondition = () => {
+    setConditions(prev => [...prev, { field: 'engagement_score', operator: 'greater_than', value: '' }]);
+  };
+
+  const removeCondition = (index: number) => {
+    setConditions(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const updateCondition = (index: number, field: keyof SegmentCondition, value: string) => {
+    setConditions(prev => prev.map((c, i) => i === index ? { ...c, [field]: value } : c));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1767,11 +1847,15 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
 
     setSaving(true);
     try {
+      const payload: any = {
+        ...formData,
+        conditions: segment.segment_type === 'dynamic' ? conditions.map((c, i) => ({ ...c, group: i })) : undefined,
+      };
       const res = await orgFetch(`/api/mailing/segments/${segment.id}`, {
         method: 'PUT',
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
-      
+
       if (res.ok) {
         onSuccess();
       } else {
@@ -1784,6 +1868,27 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
       setSaving(false);
     }
   };
+
+  const getPlaceholder = (op: string) => {
+    switch (op) {
+      case 'contains': case 'not_contains': return 'e.g., gmail.com';
+      case 'starts_with': return 'e.g., john';
+      case 'ends_with': return 'e.g., .com';
+      case 'is_empty': case 'is_not_empty': return '(no value needed)';
+      case 'in_last_days': case 'more_than_days_ago': return 'days (e.g., 30)';
+      default: return 'Value';
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className={`create-form-container ${animateIn ? 'animate-in' : ''}`}>
+        <div className="form-header">
+          <h2><FontAwesomeIcon icon={faSpinner} spin /> Loading Segment...</h2>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`create-form-container ${animateIn ? 'animate-in' : ''}`}>
@@ -1838,6 +1943,67 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
             </div>
           </div>
         </div>
+
+        {segment.segment_type === 'dynamic' && (
+          <div className="form-section">
+            <div className="section-header">
+              <h3>Conditions</h3>
+              <button type="button" className="btn btn-small" onClick={addCondition}>
+                <FontAwesomeIcon icon={faPlus} /> Add Condition
+              </button>
+            </div>
+            <p className="section-hint">Subscribers matching ALL conditions will be included</p>
+
+            {conditions.length === 0 && (
+              <p style={{ color: '#94a3b8', fontStyle: 'italic', padding: '12px 0' }}>
+                No conditions defined. Click "Add Condition" to define targeting rules.
+              </p>
+            )}
+
+            <div className="conditions-list">
+              {conditions.map((condition, idx) => {
+                const noValueNeeded = ['is_empty', 'is_not_empty'].includes(condition.operator);
+                return (
+                  <div key={idx} className="condition-row">
+                    <select
+                      value={condition.field}
+                      onChange={e => updateCondition(idx, 'field', e.target.value)}
+                    >
+                      {fieldOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={condition.operator}
+                      onChange={e => updateCondition(idx, 'operator', e.target.value)}
+                    >
+                      {operatorOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={noValueNeeded ? '' : condition.value}
+                      onChange={e => updateCondition(idx, 'value', e.target.value)}
+                      placeholder={getPlaceholder(condition.operator)}
+                      disabled={noValueNeeded}
+                      style={noValueNeeded ? { opacity: 0.5, backgroundColor: '#0a1020' } : undefined}
+                    />
+                    {conditions.length > 1 && (
+                      <button
+                        type="button"
+                        className="condition-remove"
+                        onClick={() => removeCondition(idx)}
+                      >
+                        <FontAwesomeIcon icon={faTimes} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="form-section">
           <h3>Segment Info</h3>
