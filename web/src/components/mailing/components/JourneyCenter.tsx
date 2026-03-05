@@ -9,8 +9,8 @@ import {
   faArrowRight, faTimes,
   faUserPlus, faFileAlt, faChartBar, faChartPie,
   faEnvelopeOpen, faUserMinus, faInbox, faLayerGroup,
-  faSitemap, faCodeBranch, faStopwatch, faFlag,
-  faBolt, faRandom, faRocket, faSave
+  faCodeBranch,
+  faBolt, faRandom, faRocket
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { JourneyBuilder } from './JourneyBuilder';

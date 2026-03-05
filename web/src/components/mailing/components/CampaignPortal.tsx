@@ -44,7 +44,6 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
-import { useToast } from '../shared/ToastSystem';
 import './CampaignPortal.css';
 
 // ============================================================================

@@ -249,6 +249,7 @@ func main() {
 			// Run critical schema migrations at startup (DB is inside VPC,
 			// so migrations must run from the server, not the CI runner).
 			runStartupMigrations(mailingDB)
+			runAdminMigrations()
 
 			// Start Backpressure Monitor
 			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
@@ -1080,6 +1081,10 @@ func runStartupMigrations(db *sql.DB) {
 			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
 		`},
 		{"reset_emergency_agents", `UPDATE mailing_isp_agents SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
+		{"add_tracking_sending_domain", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255)`},
+		{"add_tracking_sending_ip", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45)`},
+		{"idx_tracking_sending_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_domain ON mailing_tracking_events(sending_domain)`},
+		{"idx_tracking_sending_ip", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_ip ON mailing_tracking_events(sending_ip)`},
 	}
 
 	var ok, fail int
@@ -1092,4 +1097,98 @@ func runStartupMigrations(db *sql.DB) {
 		}
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors", ok, fail)
+}
+
+// runAdminMigrations connects with the RDS master user to run DDL that the
+// regular ignite user cannot (table ownership issues). Uses DB_ADMIN_URL env
+// var; skips silently if not set.
+func runAdminMigrations() {
+	adminURL := os.Getenv("DB_ADMIN_URL")
+	if adminURL == "" {
+		return
+	}
+
+	adminDB, err := sql.Open("postgres", adminURL)
+	if err != nil {
+		log.Printf("[AdminMigration] connect error: %v", err)
+		return
+	}
+	defer adminDB.Close()
+
+	adminDB.SetMaxOpenConns(2)
+	adminDB.SetConnMaxLifetime(30 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	if err := adminDB.PingContext(ctx); err != nil {
+		log.Printf("[AdminMigration] ping error: %v", err)
+		return
+	}
+
+	ddlStatements := []struct {
+		name string
+		sql  string
+	}{
+		{"add_sending_domain", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255)`},
+		{"add_sending_ip", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45)`},
+		{"idx_sending_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_domain ON mailing_tracking_events(sending_domain)`},
+		{"idx_sending_ip", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_ip ON mailing_tracking_events(sending_ip)`},
+		{"grant_tracking_to_ignite", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
+		{"grant_campaigns_to_ignite", `GRANT ALL ON TABLE mailing_campaigns TO ignite`},
+		{"backfill_sending_domain", `
+			UPDATE mailing_tracking_events t
+			SET sending_domain = LOWER(SPLIT_PART(c.from_email, '@', 2))
+			FROM mailing_campaigns c
+			WHERE t.campaign_id = c.id
+			  AND (t.sending_domain IS NULL OR t.sending_domain = '')
+			  AND c.from_email IS NOT NULL
+			  AND c.from_email LIKE '%@%'
+		`},
+		{"create_auto_fill_sending_domain_fn", `
+			CREATE OR REPLACE FUNCTION auto_fill_sending_domain()
+			RETURNS TRIGGER AS $$
+			BEGIN
+			  IF (NEW.sending_domain IS NULL OR NEW.sending_domain = '') AND NEW.campaign_id IS NOT NULL THEN
+			    SELECT LOWER(SPLIT_PART(c.from_email, '@', 2))
+			    INTO NEW.sending_domain
+			    FROM mailing_campaigns c
+			    WHERE c.id = NEW.campaign_id
+			      AND c.from_email IS NOT NULL AND c.from_email LIKE '%@%';
+			  END IF;
+			  RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql
+		`},
+		{"create_auto_fill_trigger", `
+			DO $$ BEGIN
+			  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_auto_fill_sending_domain') THEN
+			    CREATE TRIGGER trg_auto_fill_sending_domain
+			    BEFORE INSERT ON mailing_tracking_events
+			    FOR EACH ROW EXECUTE FUNCTION auto_fill_sending_domain();
+			  END IF;
+			END $$
+		`},
+		{"add_recipient_domain", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS recipient_domain VARCHAR(255)`},
+		{"idx_recipient_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_recipient_domain ON mailing_tracking_events(recipient_domain)`},
+		{"backfill_recipient_domain_from_subscribers", `
+			UPDATE mailing_tracking_events t
+			SET recipient_domain = LOWER(SPLIT_PART(s.email, '@', 2))
+			FROM mailing_subscribers s
+			WHERE t.subscriber_id = s.id
+			  AND (t.recipient_domain IS NULL OR t.recipient_domain = '')
+			  AND s.email LIKE '%@%'
+		`},
+		{"grant_tracking_events_all", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
+	}
+
+	var ok, fail int
+	for _, s := range ddlStatements {
+		if _, err := adminDB.ExecContext(ctx, s.sql); err != nil {
+			log.Printf("[AdminMigration] %s: ERROR %v", s.name, err)
+			fail++
+		} else {
+			ok++
+		}
+	}
+	log.Printf("[AdminMigration] Complete: %d OK, %d errors", ok, fail)
 }

@@ -666,12 +666,18 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		FROM mailing_campaigns camp WHERE camp.id = $2
 	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
 	
+	// Extract sending domain from the from_email address
+	sendingDomain := ""
+	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
+		sendingDomain = strings.ToLower(item.FromEmail[atIdx+1:])
+	}
+
 	// Record tracking event (email is needed for PMTA webhook delivery correlation)
 	p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at)
-		SELECT uuid_generate_v4(), camp.organization_id, $1, $2, $3, 'sent', NOW()
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, sending_domain)
+		SELECT uuid_generate_v4(), camp.organization_id, $1, $2, $3, 'sent', NOW(), $4
 		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, strings.ToLower(strings.TrimSpace(item.Email)))
+	`, item.CampaignID, item.SubscriberID, strings.ToLower(strings.TrimSpace(item.Email)), sendingDomain)
 	
 	return nil
 }

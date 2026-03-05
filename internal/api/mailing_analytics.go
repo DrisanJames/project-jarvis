@@ -1,16 +1,135 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
+
+// ─── API Version Constants ────────────────────────────────────────────────────
+// Bump the version for any handler you modify. The version is included in every
+// JSON response so the frontend can display it for deployment verification.
+const (
+	VersionAnalyticsOverview       = "1.1"
+	VersionCampaignComparison      = "1.0"
+	VersionTopPerformers           = "1.0"
+	VersionListPerformance         = "1.0"
+	VersionEngagementReport        = "1.0"
+	VersionDeliverabilityReport    = "1.0"
+	VersionInfrastructureBreakdown = "1.4"
+	VersionRevenueReport           = "1.0"
+	VersionHistoricalMetrics       = "1.0"
+)
+
+// ─── Pure Functions ───────────────────────────────────────────────────────────
+
+// InfraRates holds computed percentage rates for infrastructure metrics.
+type InfraRates struct {
+	OpenRate      float64
+	ClickRate     float64
+	BounceRate    float64
+	ComplaintRate float64
+	DeferralRate  float64
+}
+
+// ComputeInfraRates calculates engagement and deliverability rates.
+// Open/Click rates use delivered as the base (falls back to sent if delivered is 0).
+// Bounce/Complaint/Deferral rates always use sent as the base.
+func ComputeInfraRates(sent, delivered, opens, clicks, bounces, complaints, deferred int) InfraRates {
+	r := InfraRates{}
+	base := float64(delivered)
+	if base == 0 {
+		base = float64(sent)
+	}
+	if base > 0 {
+		r.OpenRate = math.Round(float64(opens)/base*1000) / 10
+		r.ClickRate = math.Round(float64(clicks)/base*1000) / 10
+	}
+	if sent > 0 {
+		s := float64(sent)
+		r.BounceRate = math.Round(float64(bounces) / s * 10000) / 100
+		r.ComplaintRate = math.Round(float64(complaints) / s * 100000) / 1000
+		r.DeferralRate = math.Round(float64(deferred) / s * 10000) / 100
+	}
+	return r
+}
+
+// parseAnalyticsRange extracts start/end times from query params with sub-day support.
+// Supports: start_date + end_date (ISO 8601 or YYYY-MM-DD), range_type (1h, 24h, today, 7, 14, 30, 90), days (legacy).
+func parseAnalyticsRange(r *http.Request) (start, end time.Time) {
+	now := time.Now().UTC()
+	q := r.URL.Query()
+
+	if sd := q.Get("start_date"); sd != "" {
+		if t, err := time.Parse(time.RFC3339, sd); err == nil {
+			start = t
+		} else if t, err := time.Parse("2006-01-02", sd); err == nil {
+			start = t
+		}
+	}
+	if ed := q.Get("end_date"); ed != "" {
+		if t, err := time.Parse(time.RFC3339, ed); err == nil {
+			end = t
+		} else if t, err := time.Parse("2006-01-02", ed); err == nil {
+			end = t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		}
+	}
+
+	if !start.IsZero() && !end.IsZero() {
+		return start, end
+	}
+
+	// If only start is provided, assume end is now
+	if !start.IsZero() && end.IsZero() {
+		return start, now
+	}
+
+	end = now
+	rt := q.Get("range_type")
+	if rt == "" {
+		rt = q.Get("days")
+	}
+
+	switch rt {
+	case "1h":
+		start = now.Add(-1 * time.Hour)
+	case "24h":
+		start = now.Add(-24 * time.Hour)
+	case "today":
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	case "7":
+		start = now.AddDate(0, 0, -7)
+	case "14":
+		start = now.AddDate(0, 0, -14)
+	case "90":
+		start = now.AddDate(0, 0, -90)
+	default:
+		d := 30
+		if ds := q.Get("days"); ds != "" {
+			if v, err := strconv.Atoi(ds); err == nil && v > 0 {
+				d = v
+			}
+		}
+		start = now.AddDate(0, 0, -d)
+	}
+	return start, end
+}
+
+func trendGranularity(start, end time.Time) string {
+	if end.Sub(start) <= 48*time.Hour {
+		return "hour"
+	}
+	return "day"
+}
 
 func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -46,30 +165,53 @@ func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r
 func (s *AdvancedMailingService) HandleCampaignByDomain(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	campaignID := chi.URLParam(r, "campaignId")
-	
-	rows, _ := s.db.QueryContext(ctx, `
-		SELECT SPLIT_PART(email, '@', 2) as domain,
-			   COUNT(*) as total,
-			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks
-		FROM mailing_tracking_events
-		WHERE campaign_id = $1
-		GROUP BY SPLIT_PART(email, '@', 2)
-		ORDER BY total DESC LIMIT 10
+
+	// JOIN with subscribers to get email domain (email column may not exist on tracking_events)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(SPLIT_PART(s.email, '@', 2), 'unknown') as domain,
+		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		       SUM(CASE WHEN t.event_type = 'hard_bounce' THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
+		FROM mailing_tracking_events t
+		JOIN mailing_subscribers s ON s.id = t.subscriber_id
+		WHERE t.campaign_id = $1 AND s.email IS NOT NULL AND s.email != ''
+		GROUP BY SPLIT_PART(s.email, '@', 2)
+		ORDER BY sent DESC
+		LIMIT 50
 	`, campaignID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	defer rows.Close()
-	
+
 	var domains []map[string]interface{}
 	for rows.Next() {
 		var domain string
-		var total, opens, clicks int
-		rows.Scan(&domain, &total, &opens, &clicks)
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
+		if err := rows.Scan(&domain, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints); err != nil {
+			continue
+		}
+		openRate, clickRate := 0.0, 0.0
+		if delivered > 0 {
+			openRate = float64(opens) / float64(delivered) * 100
+			clickRate = float64(clicks) / float64(delivered) * 100
+		}
 		domains = append(domains, map[string]interface{}{
-			"domain": domain, "total": total, "opens": opens, "clicks": clicks,
+			"domain": domain, "sent": sent, "delivered": delivered,
+			"opens": opens, "clicks": clicks,
+			"hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
+			"open_rate": math.Round(openRate*100) / 100, "click_rate": math.Round(clickRate*100) / 100,
 		})
 	}
-	if domains == nil { domains = []map[string]interface{}{} }
-	
+	if domains == nil {
+		domains = []map[string]interface{}{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"domains": domains})
 }
@@ -105,86 +247,141 @@ func (s *AdvancedMailingService) HandleCampaignByDevice(w http.ResponseWriter, r
 
 func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	days := r.URL.Query().Get("days")
-	if days == "" { days = "30" }
-	daysInt, _ := strconv.Atoi(days)
-	
-	var totalSent, totalOpens, totalClicks, totalBounces, totalComplaints int
+	start, end := parseAnalyticsRange(r)
+
+	// Aggregate from mailing_campaigns (only columns guaranteed to exist)
+	var totalSent, totalOpens, totalClicks, totalBounces, totalComplaints, totalDelivered int
 	var totalRevenue float64
-	
-	// Get totals from all campaigns (not just those with started_at)
 	s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(open_count),0), COALESCE(SUM(click_count),0),
-			   COALESCE(SUM(bounce_count),0), COALESCE(SUM(complaint_count),0), COALESCE(SUM(revenue),0)
-		FROM mailing_campaigns WHERE created_at >= NOW() - INTERVAL '1 day' * $1
-	`, daysInt).Scan(&totalSent, &totalOpens, &totalClicks, &totalBounces, &totalComplaints, &totalRevenue)
-	
-	openRate := 0.0
-	clickRate := 0.0
-	bounceRate := 0.0
-	complaintRate := 0.0
+		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(delivered_count),0),
+		       COALESCE(SUM(open_count),0), COALESCE(SUM(click_count),0),
+		       COALESCE(SUM(bounce_count),0),
+		       COALESCE(SUM(complaint_count),0), COALESCE(SUM(revenue),0)
+		FROM mailing_campaigns
+		WHERE COALESCE(started_at, created_at) >= $1
+		  AND COALESCE(started_at, created_at) <= $2
+	`, start, end).Scan(&totalSent, &totalDelivered, &totalOpens, &totalClicks,
+		&totalBounces, &totalComplaints, &totalRevenue)
+
+	// Hard/soft bounce split from tracking events (reliable regardless of schema)
+	var totalHardBounce, totalSoftBounce int
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END), 0)
+		FROM mailing_tracking_events
+		WHERE event_at >= $1 AND event_at <= $2
+	`, start, end).Scan(&totalHardBounce, &totalSoftBounce)
+
+	openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
 	if totalSent > 0 {
 		openRate = float64(totalOpens) / float64(totalSent) * 100
 		clickRate = float64(totalClicks) / float64(totalSent) * 100
 		bounceRate = float64(totalBounces) / float64(totalSent) * 100
 		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
 	}
-	
-	// Daily trend from tracking events (more accurate)
-	rows, _ := s.db.QueryContext(ctx, `
-		SELECT DATE(event_at) as day, 
-			   SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			   SUM(CASE WHEN event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces
+
+	gran := trendGranularity(start, end)
+	truncFn := "DATE(event_at)"
+	dateFmt := "2006-01-02"
+	if gran == "hour" {
+		truncFn = "DATE_TRUNC('hour', event_at)"
+		dateFmt = "2006-01-02T15:04"
+	}
+
+	trendArgs := []interface{}{start, end}
+	trendWhere := "event_at >= $1 AND event_at <= $2"
+	trendDomain := r.URL.Query().Get("trend_domain")
+	if trendDomain != "" {
+		trendWhere += " AND sending_domain = $3"
+		trendArgs = append(trendArgs, trendDomain)
+	}
+
+	rows, _ := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s as bucket,
+		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		       SUM(CASE WHEN event_type IN ('hard_bounce','soft_bounce','bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
+		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubscribes
 		FROM mailing_tracking_events
-		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
-		GROUP BY DATE(event_at)
-		ORDER BY day DESC
-	`, daysInt)
+		WHERE %s
+		GROUP BY %s ORDER BY bucket
+	`, truncFn, trendWhere, truncFn), trendArgs...)
 	defer rows.Close()
-	
-	var dailyTrend []map[string]interface{}
+
+	var trend []map[string]interface{}
 	for rows.Next() {
-		var day time.Time
-		var sent, opens, clicks, bounces int
-		rows.Scan(&day, &sent, &opens, &clicks, &bounces)
-		dailyTrend = append(dailyTrend, map[string]interface{}{
-			"date": day.Format("2006-01-02"), "sent": sent, "opens": opens, "clicks": clicks, "bounces": bounces,
+		var bucket time.Time
+		var sent, delivered, opens, clicks, bounces, complaints, deferred, unsubscribes int
+		rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &bounces, &complaints, &deferred, &unsubscribes)
+		trend = append(trend, map[string]interface{}{
+			"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
+			"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints,
+			"deferred": deferred, "unsubscribes": unsubscribes,
 		})
 	}
-	if dailyTrend == nil { dailyTrend = []map[string]interface{}{} }
-	
+	if trend == nil {
+		trend = []map[string]interface{}{}
+	}
+
+	// Available sending domains for chart filter
+	var domains []string
+	domRows, _ := s.db.QueryContext(ctx, `
+		SELECT DISTINCT COALESCE(NULLIF(LOWER(SPLIT_PART(from_email, '@', 2)), ''), 'unknown')
+		FROM mailing_campaigns
+		WHERE from_email IS NOT NULL AND from_email LIKE '%@%'
+		  AND COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
+		ORDER BY 1
+	`, start, end)
+	if domRows != nil {
+		for domRows.Next() {
+			var d string
+			domRows.Scan(&d)
+			domains = append(domains, d)
+		}
+		domRows.Close()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"period_days": daysInt,
+		"api_version": VersionAnalyticsOverview,
+		"range":       map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
+		"granularity": gran,
 		"totals": map[string]interface{}{
-			"sent": totalSent, "opens": totalOpens, "clicks": totalClicks,
-			"bounces": totalBounces, "complaints": totalComplaints, "revenue": totalRevenue,
+			"sent": totalSent, "delivered": totalDelivered,
+			"opens": totalOpens, "clicks": totalClicks,
+			"bounces": totalBounces, "hard_bounces": totalHardBounce, "soft_bounces": totalSoftBounce,
+			"complaints": totalComplaints, "revenue": totalRevenue,
 		},
 		"rates": map[string]interface{}{
-			"open_rate": openRate, "click_rate": clickRate,
-			"bounce_rate": bounceRate, "complaint_rate": complaintRate,
+			"open_rate": math.Round(openRate*100) / 100, "click_rate": math.Round(clickRate*100) / 100,
+			"bounce_rate": math.Round(bounceRate*100) / 100, "complaint_rate": math.Round(complaintRate*1000) / 1000,
 		},
-		"daily_trend": dailyTrend,
+		"daily_trend":     trend,
+		"sending_domains": domains,
 	})
 }
 
 // ================== CROSS-CAMPAIGN REPORTING ==================
 
-// HandleCampaignComparison compares multiple campaigns
+// HandleCampaignComparison compares multiple campaigns within a date range.
 func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
-	// Get all campaigns with metrics
+	start, end := parseAnalyticsRange(r)
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, status, sent_count, open_count, click_count, bounce_count, complaint_count, revenue,
 			   created_at, COALESCE(started_at, created_at), COALESCE(completed_at, created_at)
 		FROM mailing_campaigns
 		WHERE sent_count > 0
-		ORDER BY created_at DESC
+		  AND COALESCE(started_at, created_at) >= $1
+		  AND COALESCE(started_at, created_at) <= $2
+		ORDER BY COALESCE(started_at, created_at) DESC
 		LIMIT 50
-	`)
+	`, start, end)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
 		return
@@ -232,8 +429,9 @@ func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter,
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaigns": campaigns,
-		"total":     len(campaigns),
+		"api_version": VersionCampaignComparison,
+		"campaigns":   campaigns,
+		"total":       len(campaigns),
 	})
 }
 
@@ -300,8 +498,9 @@ func (s *AdvancedMailingService) HandleTopPerformers(w http.ResponseWriter, r *h
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"metric":    metric,
-		"campaigns": topCampaigns,
+		"api_version": VersionTopPerformers,
+		"metric":      metric,
+		"campaigns":   topCampaigns,
 	})
 }
 
@@ -354,20 +553,25 @@ func (s *AdvancedMailingService) HandleListPerformance(w http.ResponseWriter, r 
 	if lists == nil { lists = []map[string]interface{}{} }
 	
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"lists": lists})
+	json.NewEncoder(w).Encode(map[string]interface{}{"api_version": VersionListPerformance, "lists": lists})
 }
 
 // HandleEngagementReport returns subscriber engagement summary
 func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
-	// Engagement distribution
+	start, end := parseAnalyticsRange(r)
+
+	// Single query for engagement distribution (was 4 separate round-trips)
 	var highEngagement, medEngagement, lowEngagement, noEngagement int
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score >= 70").Scan(&highEngagement)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score >= 40 AND engagement_score < 70").Scan(&medEngagement)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score > 0 AND engagement_score < 40").Scan(&lowEngagement)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score = 0 OR engagement_score IS NULL").Scan(&noEngagement)
-	
+	s.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN engagement_score >= 70 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN engagement_score >= 40 AND engagement_score < 70 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN engagement_score > 0 AND engagement_score < 40 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN engagement_score = 0 OR engagement_score IS NULL THEN 1 ELSE 0 END), 0)
+		FROM mailing_subscribers
+	`).Scan(&highEngagement, &medEngagement, &lowEngagement, &noEngagement)
+
 	// Top engaged subscribers
 	rows, _ := s.db.QueryContext(ctx, `
 		SELECT email, engagement_score, total_opens, total_clicks, last_open_at
@@ -377,7 +581,7 @@ func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r
 		LIMIT 20
 	`)
 	defer rows.Close()
-	
+
 	var topSubscribers []map[string]interface{}
 	for rows.Next() {
 		var email string
@@ -386,25 +590,26 @@ func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r
 		var lastOpen *time.Time
 		rows.Scan(&email, &score, &opens, &clicks, &lastOpen)
 		topSubscribers = append(topSubscribers, map[string]interface{}{
-			"email":       email,
-			"score":       score,
-			"opens":       opens,
-			"clicks":      clicks,
-			"last_open":   lastOpen,
+			"email":     email,
+			"score":     score,
+			"opens":     opens,
+			"clicks":    clicks,
+			"last_open": lastOpen,
 		})
 	}
 	if topSubscribers == nil { topSubscribers = []map[string]interface{}{} }
-	
-	// Engagement over time
+
+	// Engagement over time — bounded by the selected time range
 	engagementTrend, _ := s.db.QueryContext(ctx, `
 		SELECT DATE(event_at) as day, COUNT(DISTINCT subscriber_id) as engaged_subscribers
 		FROM mailing_tracking_events
-		WHERE event_type IN ('opened', 'clicked') AND event_at >= NOW() - INTERVAL '30 days'
+		WHERE event_type IN ('opened', 'clicked')
+		  AND event_at >= $1 AND event_at <= $2
 		GROUP BY DATE(event_at)
 		ORDER BY day DESC
-	`)
+	`, start, end)
 	defer engagementTrend.Close()
-	
+
 	var trend []map[string]interface{}
 	for engagementTrend.Next() {
 		var day time.Time
@@ -415,9 +620,11 @@ func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r
 			"engaged": engaged,
 		})
 	}
-	
+	if trend == nil { trend = []map[string]interface{}{} }
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionEngagementReport,
 		"distribution": map[string]int{
 			"high":   highEngagement,
 			"medium": medEngagement,
@@ -429,36 +636,39 @@ func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r
 	})
 }
 
-// HandleDeliverabilityReport returns deliverability metrics
+// HandleDeliverabilityReport returns deliverability metrics filtered by date range.
 func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
-	// Overall deliverability
+	start, end := parseAnalyticsRange(r)
+
 	var totalSent, totalDelivered, totalBounced, totalComplaints int
-	s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(sent_count), 0) FROM mailing_campaigns").Scan(&totalSent)
-	s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(bounce_count), 0) FROM mailing_campaigns").Scan(&totalBounced)
-	s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(complaint_count), 0) FROM mailing_campaigns").Scan(&totalComplaints)
-	totalDelivered = totalSent - totalBounced
-	
-	deliveryRate := 0.0
-	bounceRate := 0.0
-	complaintRate := 0.0
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(delivered_count),0),
+		       COALESCE(SUM(bounce_count),0), COALESCE(SUM(complaint_count),0)
+		FROM mailing_campaigns
+		WHERE COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
+	`, start, end).Scan(&totalSent, &totalDelivered, &totalBounced, &totalComplaints)
+	if totalDelivered == 0 && totalSent > totalBounced {
+		totalDelivered = totalSent - totalBounced
+	}
+
+	deliveryRate, bounceRate, complaintRate := 0.0, 0.0, 0.0
 	if totalSent > 0 {
 		deliveryRate = float64(totalDelivered) / float64(totalSent) * 100
 		bounceRate = float64(totalBounced) / float64(totalSent) * 100
 		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
 	}
-	
-	// Bounce breakdown
+
 	rows, _ := s.db.QueryContext(ctx, `
-		SELECT COALESCE(bounce_type, 'unknown') as type, COUNT(*) as count
+		SELECT COALESCE(bounce_type, event_type) as type, COUNT(*) as count
 		FROM mailing_tracking_events
 		WHERE event_type IN ('hard_bounce', 'soft_bounce', 'bounced')
-		GROUP BY bounce_type
+		  AND event_at >= $1 AND event_at <= $2
+		GROUP BY COALESCE(bounce_type, event_type)
 		ORDER BY count DESC
-	`)
+	`, start, end)
 	defer rows.Close()
-	
+
 	var bounceBreakdown []map[string]interface{}
 	for rows.Next() {
 		var bounceType string
@@ -468,65 +678,402 @@ func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWrite
 			"type": bounceType, "count": count,
 		})
 	}
-	
-	// Suppressions
-	var suppressionCount, bounceSuppressions, complaintSuppressions int
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressionCount)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true AND source = 'bounce'").Scan(&bounceSuppressions)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true AND source IN ('complaint', 'spam_complaint')").Scan(&complaintSuppressions)
-	
+	if bounceBreakdown == nil {
+		bounceBreakdown = []map[string]interface{}{}
+	}
+
+	var suppressionCount int
+	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions").Scan(&suppressionCount)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionDeliverabilityReport,
+		"range":       map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
 		"totals": map[string]int{
-			"sent":       totalSent,
-			"delivered":  totalDelivered,
-			"bounced":    totalBounced,
-			"complaints": totalComplaints,
+			"sent": totalSent, "delivered": totalDelivered,
+			"bounced": totalBounced, "complaints": totalComplaints,
 		},
 		"rates": map[string]float64{
 			"delivery_rate":  math.Round(deliveryRate*100) / 100,
 			"bounce_rate":    math.Round(bounceRate*100) / 100,
 			"complaint_rate": math.Round(complaintRate*1000) / 1000,
 		},
-		"bounce_breakdown": bounceBreakdown,
-		"suppressions": map[string]int{
-			"total":      suppressionCount,
-			"bounces":    bounceSuppressions,
-			"complaints": complaintSuppressions,
-		},
+		"bounce_breakdown":    bounceBreakdown,
+		"global_suppressions": suppressionCount,
 	})
+}
+
+// HandleInfrastructureBreakdown returns performance aggregated by Domain, IP, or ISP.
+// Level 1 (no domain selected): uses mailing_campaigns for sent/delivered (reliable)
+// and mailing_tracking_events for opens/clicks/bounces/complaints/deferred.
+// Level 2 (domain selected, drilldown by IP or ISP): uses tracking_events only.
+func (s *AdvancedMailingService) HandleInfrastructureBreakdown(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start, end := parseAnalyticsRange(r)
+
+	selectedDomain := r.URL.Query().Get("domain")
+	drilldownType := r.URL.Query().Get("drilldown")
+	campaignID := r.URL.Query().Get("campaign_id")
+
+	var results []map[string]interface{}
+	var err error
+
+	if selectedDomain == "" {
+		results, err = s.infraLevel1(ctx, start, end, campaignID)
+	} else {
+		if drilldownType != "ip" && drilldownType != "isp" {
+			http.Error(w, `{"error":"invalid drilldown type, use ip or isp"}`, http.StatusBadRequest)
+			return
+		}
+		results, err = s.infraLevel2(ctx, start, end, selectedDomain, drilldownType, campaignID)
+	}
+
+	if err != nil {
+		log.Printf("[infrastructure] query error: %v", err)
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	if results == nil {
+		results = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version":    VersionInfrastructureBreakdown,
+		"level":          selectedDomain,
+		"drilldown_type": drilldownType,
+		"campaign_id":    campaignID,
+		"data":           results,
+	})
+}
+
+// infraLevel1 aggregates by sending domain using campaign-level sent/delivered
+// for accuracy and tracking events for engagement metrics.
+func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end time.Time, campaignID string) ([]map[string]interface{}, error) {
+	campArgs := []interface{}{start, end}
+	campWhere := "COALESCE(c.started_at, c.created_at) >= $1 AND COALESCE(c.started_at, c.created_at) <= $2"
+	evtArgs := []interface{}{start, end}
+	evtWhere := "t.event_at >= $1 AND t.event_at <= $2"
+	argIdx := 3
+
+	if campaignID != "" {
+		campWhere += fmt.Sprintf(" AND c.id = $%d", argIdx)
+		campArgs = append(campArgs, campaignID)
+		evtWhere += fmt.Sprintf(" AND t.campaign_id = $%d", argIdx)
+		evtArgs = append(evtArgs, campaignID)
+		argIdx++
+	}
+
+	campQuery := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown') as entity,
+		       COALESCE(SUM(c.sent_count), 0) as sent,
+		       COALESCE(SUM(c.delivered_count), 0) as delivered
+		FROM mailing_campaigns c
+		WHERE %s AND c.from_email IS NOT NULL AND c.from_email LIKE '%%@%%'
+		GROUP BY COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown')
+	`, campWhere)
+
+	evtQuery := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(t.sending_domain, ''), 'unknown') as entity,
+		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id END) as opens,
+		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id END) as clicks,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
+		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
+		FROM mailing_tracking_events t
+		WHERE %s
+		GROUP BY COALESCE(NULLIF(t.sending_domain, ''), 'unknown')
+	`, evtWhere)
+
+	campData := map[string][2]int{}
+	rows, err := s.db.QueryContext(ctx, campQuery, campArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var entity string
+		var sent, delivered int
+		if err := rows.Scan(&entity, &sent, &delivered); err != nil {
+			continue
+		}
+		campData[entity] = [2]int{sent, delivered}
+	}
+	rows.Close()
+
+	type evtRow struct {
+		opens, clicks, bounces, complaints, deferred int
+	}
+	evtData := map[string]evtRow{}
+	rows2, err := s.db.QueryContext(ctx, evtQuery, evtArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows2.Next() {
+		var entity string
+		var r evtRow
+		if err := rows2.Scan(&entity, &r.opens, &r.clicks, &r.bounces, &r.complaints, &r.deferred); err != nil {
+			continue
+		}
+		evtData[entity] = r
+	}
+	rows2.Close()
+
+	allEntities := map[string]bool{}
+	for k := range campData {
+		allEntities[k] = true
+	}
+	for k := range evtData {
+		allEntities[k] = true
+	}
+
+	var results []map[string]interface{}
+	for entity := range allEntities {
+		cd := campData[entity]
+		sent, delivered := cd[0], cd[1]
+		ed := evtData[entity]
+
+		rates := ComputeInfraRates(sent, delivered, ed.opens, ed.clicks, ed.bounces, ed.complaints, ed.deferred)
+		results = append(results, map[string]interface{}{
+			"entity": entity, "sent": sent, "delivered": delivered,
+			"opens": ed.opens, "clicks": ed.clicks, "bounces": ed.bounces,
+			"complaints": ed.complaints, "deferred": ed.deferred,
+			"open_rate": rates.OpenRate, "click_rate": rates.ClickRate,
+			"bounce_rate": rates.BounceRate, "complaint_rate": rates.ComplaintRate,
+			"deferral_rate": rates.DeferralRate,
+		})
+	}
+
+	// Sort by sent descending
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			si, _ := results[i]["sent"].(int)
+			sj, _ := results[j]["sent"].(int)
+			if sj > si {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+	if len(results) > 50 {
+		results = results[:50]
+	}
+
+	return results, nil
+}
+
+// infraLevel2 drills down into a specific domain by IP or ISP.
+// Uses a hybrid approach: campaign-level sent/delivered as the parent totals,
+// then tracking events for per-entity engagement/deliverability breakdown.
+// For ISP: proportionally allocates parent sent/delivered based on subscriber list composition.
+func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end time.Time, domain, drilldownType, campaignID string) ([]map[string]interface{}, error) {
+	// Step 1: Get parent domain's total sent/delivered from mailing_campaigns
+	campArgs := []interface{}{start, end}
+	campWhere := "COALESCE(c.started_at, c.created_at) >= $1 AND COALESCE(c.started_at, c.created_at) <= $2"
+	campArgIdx := 3
+
+	if campaignID != "" {
+		campWhere += fmt.Sprintf(" AND c.id = $%d", campArgIdx)
+		campArgs = append(campArgs, campaignID)
+		campArgIdx++
+	}
+
+	campWhere += fmt.Sprintf(" AND COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown') = $%d", campArgIdx)
+	campArgs = append(campArgs, domain)
+
+	var parentSent, parentDelivered int
+	s.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(SUM(c.sent_count), 0), COALESCE(SUM(c.delivered_count), 0)
+		FROM mailing_campaigns c
+		WHERE %s AND c.from_email IS NOT NULL AND c.from_email LIKE '%%@%%'
+	`, campWhere), campArgs...).Scan(&parentSent, &parentDelivered)
+
+	// Step 2: For ISP, get subscriber distribution to estimate per-ISP sent/delivered
+	ispDistribution := map[string]float64{}
+	if drilldownType == "isp" && parentSent > 0 {
+		distArgs := []interface{}{start, end}
+		distWhere := "COALESCE(c.started_at, c.created_at) >= $1 AND COALESCE(c.started_at, c.created_at) <= $2"
+		distIdx := 3
+		if campaignID != "" {
+			distWhere += fmt.Sprintf(" AND c.id = $%d", distIdx)
+			distArgs = append(distArgs, campaignID)
+			distIdx++
+		}
+		distWhere += fmt.Sprintf(" AND COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown') = $%d", distIdx)
+		distArgs = append(distArgs, domain)
+
+		distRows, distErr := s.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT LOWER(SPLIT_PART(sub.email, '@', 2)) as isp,
+			       COUNT(*) as cnt
+			FROM mailing_subscribers sub
+			JOIN mailing_campaigns c ON c.list_id = sub.list_id
+			WHERE %s
+			  AND c.from_email IS NOT NULL AND c.from_email LIKE '%%@%%'
+			  AND sub.email LIKE '%%@%%'
+			  AND sub.status = 'confirmed'
+			GROUP BY LOWER(SPLIT_PART(sub.email, '@', 2))
+			ORDER BY cnt DESC
+			LIMIT 100
+		`, distWhere), distArgs...)
+		if distErr == nil {
+			var totalSubs int64
+			type distRow struct {
+				isp string
+				cnt int64
+			}
+			var distData []distRow
+			for distRows.Next() {
+				var d distRow
+				if err := distRows.Scan(&d.isp, &d.cnt); err == nil {
+					distData = append(distData, d)
+					totalSubs += d.cnt
+				}
+			}
+			distRows.Close()
+			if totalSubs > 0 {
+				for _, d := range distData {
+					ispDistribution[d.isp] = float64(d.cnt) / float64(totalSubs)
+				}
+			}
+		}
+	}
+
+	// Step 3: Query tracking events grouped by entity
+	args := []interface{}{start, end}
+	argIdx := 3
+	whereClauses := []string{"t.event_at >= $1", "t.event_at <= $2"}
+
+	if campaignID != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("t.campaign_id = $%d", argIdx))
+		args = append(args, campaignID)
+		argIdx++
+	}
+
+	whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(NULLIF(t.sending_domain, ''), 'unknown') = $%d", argIdx))
+	args = append(args, domain)
+	argIdx++
+
+	var selectCol, groupByCol, fromTable string
+	if drilldownType == "ip" {
+		selectCol = "COALESCE(NULLIF(t.sending_ip, ''), 'unknown')"
+		groupByCol = selectCol
+		fromTable = "mailing_tracking_events t"
+	} else if drilldownType == "isp" {
+		selectCol = "COALESCE(NULLIF(LOWER(t.recipient_domain), ''), COALESCE(NULLIF(LOWER(SPLIT_PART(sub.email, '@', 2)), ''), 'unknown'))"
+		groupByCol = selectCol
+		fromTable = "mailing_tracking_events t LEFT JOIN mailing_subscribers sub ON t.subscriber_id = sub.id"
+	} else {
+		return nil, fmt.Errorf("invalid drilldown type: %s", drilldownType)
+	}
+
+	whereStr := strings.Join(whereClauses, " AND ")
+
+	query := fmt.Sprintf(`
+		SELECT %s as entity,
+		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id ELSE NULL END) as opens,
+		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id ELSE NULL END) as clicks,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
+		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
+		FROM %s
+		WHERE %s
+		GROUP BY %s
+		ORDER BY (SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) +
+		          COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id END)) DESC
+		LIMIT 50`, selectCol, fromTable, whereStr, groupByCol)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var entity string
+		var sent, delivered, opens, clicks, bounces, complaints, deferred int
+		if err := rows.Scan(&entity, &sent, &delivered, &opens, &clicks, &bounces, &complaints, &deferred); err != nil {
+			log.Printf("[infrastructure] scan error: %v", err)
+			continue
+		}
+
+		estSent := sent
+		estDelivered := delivered
+		if drilldownType == "isp" {
+			if pct, ok := ispDistribution[entity]; ok && pct > 0 {
+				estSent = int(math.Round(float64(parentSent) * pct))
+				estDelivered = int(math.Round(float64(parentDelivered) * pct))
+			}
+		}
+
+		rates := ComputeInfraRates(estSent, estDelivered, opens, clicks, bounces, complaints, deferred)
+		capRate := func(r float64) float64 {
+			if r > 100 {
+				return 100
+			}
+			return r
+		}
+		results = append(results, map[string]interface{}{
+			"entity": entity, "sent": estSent, "delivered": estDelivered,
+			"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints, "deferred": deferred,
+			"open_rate": capRate(rates.OpenRate), "click_rate": capRate(rates.ClickRate),
+			"bounce_rate": capRate(rates.BounceRate), "complaint_rate": capRate(rates.ComplaintRate),
+			"deferral_rate": capRate(rates.DeferralRate),
+			"parent_sent": parentSent, "parent_delivered": parentDelivered,
+		})
+	}
+
+	// Re-sort by estimated sent descending since we may have enriched values
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			si, _ := results[i]["sent"].(int)
+			sj, _ := results[j]["sent"].(int)
+			if sj > si {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+
+	return results, nil
 }
 
 // HandleRevenueReport returns revenue analytics
 func (s *AdvancedMailingService) HandleRevenueReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	days := r.URL.Query().Get("days")
-	if days == "" { days = "30" }
-	daysInt, _ := strconv.Atoi(days)
-	
-	// Total revenue
+	start, end := parseAnalyticsRange(r)
+	daysInt := int(end.Sub(start).Hours() / 24)
+	if daysInt == 0 { daysInt = 1 }
+
+	// Total revenue within range
 	var totalRevenue float64
 	var campaignsWithRevenue int
-	s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(revenue), 0), COUNT(*) FROM mailing_campaigns WHERE revenue > 0").Scan(&totalRevenue, &campaignsWithRevenue)
-	
-	// Revenue per email
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(revenue), 0), COUNT(*)
+		FROM mailing_campaigns
+		WHERE revenue > 0 AND COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
+	`, start, end).Scan(&totalRevenue, &campaignsWithRevenue)
+
+	// Revenue per email within range
 	var totalSent int
-	s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(sent_count), 0) FROM mailing_campaigns").Scan(&totalSent)
+	s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(sent_count), 0) FROM mailing_campaigns
+		WHERE COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
+	`, start, end).Scan(&totalSent)
 	revenuePerEmail := 0.0
 	if totalSent > 0 {
 		revenuePerEmail = totalRevenue / float64(totalSent)
 	}
-	
-	// Revenue by campaign
+
+	// Revenue by campaign within range
 	rows, _ := s.db.QueryContext(ctx, `
 		SELECT name, sent_count, revenue
 		FROM mailing_campaigns
-		WHERE revenue > 0
+		WHERE revenue > 0 AND COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
 		ORDER BY revenue DESC
 		LIMIT 10
-	`)
+	`, start, end)
 	defer rows.Close()
-	
+
 	var topRevenueCampaigns []map[string]interface{}
 	for rows.Next() {
 		var name string
@@ -545,17 +1092,18 @@ func (s *AdvancedMailingService) HandleRevenueReport(w http.ResponseWriter, r *h
 		})
 	}
 	if topRevenueCampaigns == nil { topRevenueCampaigns = []map[string]interface{}{} }
-	
-	// Daily revenue trend
+
+	// Daily revenue trend bounded by range
 	trendRows, _ := s.db.QueryContext(ctx, `
 		SELECT DATE(COALESCE(started_at, created_at)) as day, SUM(revenue) as daily_revenue
 		FROM mailing_campaigns
-		WHERE created_at >= NOW() - INTERVAL '1 day' * $1 AND revenue > 0
+		WHERE COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
+		  AND revenue > 0
 		GROUP BY DATE(COALESCE(started_at, created_at))
 		ORDER BY day DESC
-	`, daysInt)
+	`, start, end)
 	defer trendRows.Close()
-	
+
 	var revenueTrend []map[string]interface{}
 	for trendRows.Next() {
 		var day time.Time
@@ -565,16 +1113,18 @@ func (s *AdvancedMailingService) HandleRevenueReport(w http.ResponseWriter, r *h
 			"date": day.Format("2006-01-02"), "revenue": rev,
 		})
 	}
-	
+	if revenueTrend == nil { revenueTrend = []map[string]interface{}{} }
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"period_days":             daysInt,
-		"total_revenue":           totalRevenue,
-		"campaigns_with_revenue":  campaignsWithRevenue,
-		"total_sent":              totalSent,
-		"revenue_per_email":       math.Round(revenuePerEmail*10000) / 10000,
-		"top_revenue_campaigns":   topRevenueCampaigns,
-		"daily_trend":             revenueTrend,
+		"api_version":            VersionRevenueReport,
+		"period_days":            daysInt,
+		"total_revenue":          totalRevenue,
+		"campaigns_with_revenue": campaignsWithRevenue,
+		"total_sent":             totalSent,
+		"revenue_per_email":      math.Round(revenuePerEmail*10000) / 10000,
+		"top_revenue_campaigns":  topRevenueCampaigns,
+		"daily_trend":            revenueTrend,
 	})
 }
 
@@ -583,19 +1133,18 @@ func (s *AdvancedMailingService) HandleRevenueReport(w http.ResponseWriter, r *h
 // HandleGetHistoricalMetrics returns comprehensive historical metrics for analysis
 func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	days := r.URL.Query().Get("days")
-	if days == "" { days = "90" }
-	daysInt, _ := strconv.Atoi(days)
-	if daysInt <= 0 { daysInt = 90 }
-	
+	start, end := parseAnalyticsRange(r)
+	daysInt := int(end.Sub(start).Hours() / 24)
+	if daysInt == 0 { daysInt = 1 }
+
 	// Campaign performance over time
 	var totalCampaigns, totalSent, totalOpens, totalClicks, totalBounces, totalComplaints int
 	var totalRevenue float64
 	s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(sent_count),0), COALESCE(SUM(open_count),0), COALESCE(SUM(click_count),0),
 			   COALESCE(SUM(bounce_count),0), COALESCE(SUM(complaint_count),0), COALESCE(SUM(revenue),0)
-		FROM mailing_campaigns WHERE created_at >= NOW() - INTERVAL '1 day' * $1
-	`, daysInt).Scan(&totalCampaigns, &totalSent, &totalOpens, &totalClicks, &totalBounces, &totalComplaints, &totalRevenue)
+		FROM mailing_campaigns WHERE created_at >= $1 AND created_at <= $2
+	`, start, end).Scan(&totalCampaigns, &totalSent, &totalOpens, &totalClicks, &totalBounces, &totalComplaints, &totalRevenue)
 	
 	// Calculate rates
 	openRate := 0.0
@@ -610,7 +1159,7 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	}
 	
 	// Weekly trends
-	weeklyRows, _ := s.db.QueryContext(ctx, `
+	weeklyRows, weeklyErr := s.db.QueryContext(ctx, `
 		SELECT DATE_TRUNC('week', created_at) as week,
 			   COUNT(*) as campaigns,
 			   COALESCE(SUM(sent_count),0) as sent,
@@ -620,14 +1169,17 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 			   COALESCE(SUM(complaint_count),0) as complaints,
 			   COALESCE(SUM(revenue),0) as revenue
 		FROM mailing_campaigns
-		WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+		WHERE created_at >= $1 AND created_at <= $2
 		GROUP BY DATE_TRUNC('week', created_at)
 		ORDER BY week DESC
-	`, daysInt)
-	defer weeklyRows.Close()
+	`, start, end)
+	if weeklyErr != nil {
+		log.Printf("[historical-metrics] weekly trends query error: %v", weeklyErr)
+	}
+	if weeklyRows != nil { defer weeklyRows.Close() }
 	
 	var weeklyTrends []map[string]interface{}
-	for weeklyRows.Next() {
+	for weeklyRows != nil && weeklyRows.Next() {
 		var week time.Time
 		var campaigns, sent, opens, clicks, bounces, complaints int
 		var rev float64
@@ -647,17 +1199,20 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	if weeklyTrends == nil { weeklyTrends = []map[string]interface{}{} }
 	
 	// Best performing campaigns (for learning)
-	topRows, _ := s.db.QueryContext(ctx, `
+	topRows, topErr := s.db.QueryContext(ctx, `
 		SELECT id, name, subject, COALESCE(sent_count,0), COALESCE(open_count,0), COALESCE(click_count,0), 
 			   COALESCE(revenue,0), created_at
 		FROM mailing_campaigns
-		WHERE sent_count > 0 AND created_at >= NOW() - INTERVAL '1 day' * $1
+		WHERE sent_count > 0 AND created_at >= $1 AND created_at <= $2
 		ORDER BY (open_count::float / NULLIF(sent_count,0)) DESC LIMIT 10
-	`, daysInt)
-	defer topRows.Close()
+	`, start, end)
+	if topErr != nil {
+		log.Printf("[historical-metrics] top campaigns query error: %v", topErr)
+	}
+	if topRows != nil { defer topRows.Close() }
 	
 	var topCampaigns []map[string]interface{}
-	for topRows.Next() {
+	for topRows != nil && topRows.Next() {
 		var id uuid.UUID
 		var name, subject string
 		var sent, opens, clicks int
@@ -679,18 +1234,21 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	if topCampaigns == nil { topCampaigns = []map[string]interface{}{} }
 	
 	// Subject line analysis (what works)
-	subjectRows, _ := s.db.QueryContext(ctx, `
+	subjectRows, subjectErr := s.db.QueryContext(ctx, `
 		SELECT subject, AVG(open_count::float / NULLIF(sent_count,0)) as avg_open_rate,
 			   COUNT(*) as usage_count
 		FROM mailing_campaigns
-		WHERE sent_count > 100 AND created_at >= NOW() - INTERVAL '1 day' * $1
+		WHERE sent_count > 100 AND created_at >= $1 AND created_at <= $2
 		GROUP BY subject HAVING COUNT(*) >= 1
 		ORDER BY avg_open_rate DESC LIMIT 20
-	`, daysInt)
-	defer subjectRows.Close()
+	`, start, end)
+	if subjectErr != nil {
+		log.Printf("[historical-metrics] subject patterns query error: %v", subjectErr)
+	}
+	if subjectRows != nil { defer subjectRows.Close() }
 	
 	var subjectPatterns []map[string]interface{}
-	for subjectRows.Next() {
+	for subjectRows != nil && subjectRows.Next() {
 		var subject string
 		var avgOR float64
 		var usageCount int
@@ -702,19 +1260,22 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	if subjectPatterns == nil { subjectPatterns = []map[string]interface{}{} }
 	
 	// Hour-of-day performance
-	hourRows, _ := s.db.QueryContext(ctx, `
+	hourRows, hourErr := s.db.QueryContext(ctx, `
 		SELECT EXTRACT(HOUR FROM event_at) as hour,
 			   COUNT(*) FILTER (WHERE event_type = 'opened') as opens,
 			   COUNT(*) FILTER (WHERE event_type = 'clicked') as clicks
 		FROM mailing_tracking_events
-		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
+		WHERE event_at >= $1 AND event_at <= $2
 		GROUP BY EXTRACT(HOUR FROM event_at)
 		ORDER BY hour
-	`, daysInt)
-	defer hourRows.Close()
-	
+	`, start, end)
+	if hourErr != nil {
+		log.Printf("[historical-metrics] hourly performance query error: %v", hourErr)
+	}
+	if hourRows != nil { defer hourRows.Close() }
+
 	var hourlyPerformance []map[string]interface{}
-	for hourRows.Next() {
+	for hourRows != nil && hourRows.Next() {
 		var hour int
 		var opens, clicks int
 		hourRows.Scan(&hour, &opens, &clicks)
@@ -725,20 +1286,23 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	if hourlyPerformance == nil { hourlyPerformance = []map[string]interface{}{} }
 	
 	// Day-of-week performance
-	dowRows, _ := s.db.QueryContext(ctx, `
+	dowRows, dowErr := s.db.QueryContext(ctx, `
 		SELECT EXTRACT(DOW FROM event_at) as dow,
 			   COUNT(*) FILTER (WHERE event_type = 'opened') as opens,
 			   COUNT(*) FILTER (WHERE event_type = 'clicked') as clicks
 		FROM mailing_tracking_events
-		WHERE event_at >= NOW() - INTERVAL '1 day' * $1
+		WHERE event_at >= $1 AND event_at <= $2
 		GROUP BY EXTRACT(DOW FROM event_at)
 		ORDER BY dow
-	`, daysInt)
-	defer dowRows.Close()
-	
+	`, start, end)
+	if dowErr != nil {
+		log.Printf("[historical-metrics] dow performance query error: %v", dowErr)
+	}
+	if dowRows != nil { defer dowRows.Close() }
+
 	dayNames := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
 	var dailyPerformance []map[string]interface{}
-	for dowRows.Next() {
+	for dowRows != nil && dowRows.Next() {
 		var dow int
 		var opens, clicks int
 		dowRows.Scan(&dow, &opens, &clicks)
@@ -749,7 +1313,7 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	if dailyPerformance == nil { dailyPerformance = []map[string]interface{}{} }
 	
 	// Domain performance
-	domainRows, _ := s.db.QueryContext(ctx, `
+	domainRows, domainErr := s.db.QueryContext(ctx, `
 		SELECT domain,
 			   COALESCE(SUM(total_sent),0) as sent,
 			   COALESCE(SUM(total_opens),0) as opens,
@@ -759,10 +1323,13 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 		GROUP BY domain HAVING SUM(total_sent) > 0
 		ORDER BY SUM(total_sent) DESC LIMIT 20
 	`)
-	defer domainRows.Close()
-	
+	if domainErr != nil {
+		log.Printf("[historical-metrics] domain metrics query error: %v", domainErr)
+	}
+	if domainRows != nil { defer domainRows.Close() }
+
 	var domainMetrics []map[string]interface{}
-	for domainRows.Next() {
+	for domainRows != nil && domainRows.Next() {
 		var domain string
 		var sent, opens, clicks int
 		var avgEng float64
@@ -782,6 +1349,7 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionHistoricalMetrics,
 		"period_days": daysInt,
 		"summary": map[string]interface{}{
 			"total_campaigns":  totalCampaigns,

@@ -4,7 +4,7 @@ import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer,
-  faFileAlt, /* faArrowLeft, */ faFire, faGlobe,
+  /* faArrowLeft, */ faFire, faGlobe,
   faSpinner, faRocket, faShieldAlt, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
@@ -38,7 +38,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic';
 
 interface Tab {
   id: TabId;

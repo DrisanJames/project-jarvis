@@ -16,10 +16,17 @@ import './AnalyticsCenter.css';
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface OverviewData {
-  period_days: number;
-  totals: { sent: number; opens: number; clicks: number; bounces: number; complaints: number; revenue: number };
+  totals: {
+    sent: number; delivered: number; opens: number; clicks: number;
+    bounces: number; hard_bounces: number; soft_bounces: number;
+    complaints: number; revenue: number;
+  };
   rates: { open_rate: number; click_rate: number; bounce_rate: number; complaint_rate: number };
-  daily_trend: { date: string; sent: number; opens: number; clicks: number; bounces: number }[];
+  daily_trend: { date: string; sent: number; delivered: number; opens: number; clicks: number; bounces: number; complaints: number; deferred: number; unsubscribes: number }[];
+  granularity: string;
+  range: { start: string; end: string };
+  sending_domains?: string[];
+  api_version?: string;
 }
 
 interface EngagementData {
@@ -32,7 +39,8 @@ interface DeliverabilityData {
   totals: { sent: number; delivered: number; bounced: number; complaints: number };
   rates: { delivery_rate: number; bounce_rate: number; complaint_rate: number };
   bounce_breakdown: { type: string; count: number }[];
-  suppressions: { total: number; bounces: number; complaints: number };
+  global_suppressions: number;
+  api_version?: string;
 }
 
 interface RevenueData {
@@ -85,7 +93,55 @@ interface OptimalSend {
   confidence: number; reasoning: string[];
 }
 
+interface InfraRow {
+  entity: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  bounces: number;
+  complaints: number;
+  deferred: number;
+  open_rate: number;
+  click_rate: number;
+  bounce_rate: number;
+  complaint_rate: number;
+  deferral_rate: number;
+  parent_sent?: number;
+  parent_delivered?: number;
+}
+
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
+
+const PAGE_VERSION = '1.4';
+
+function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
+  const now = new Date();
+  const endDate = now.toISOString();
+  let start: Date;
+  switch (range) {
+    case '1h':
+      start = new Date(now.getTime() - 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    case '24h':
+      start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    case 'today':
+      start = new Date(); start.setHours(0, 0, 0, 0);
+      return { startDate: start.toISOString(), endDate };
+    case '7':
+    case '14':
+    case '30':
+    case '90': {
+      const days = Number(range);
+      start = new Date(); start.setDate(start.getDate() - days); start.setHours(0, 0, 0, 0);
+      return { startDate: start.toISOString(), endDate };
+    }
+    default:
+      start = new Date(); start.setDate(start.getDate() - 30); start.setHours(0, 0, 0, 0);
+      return { startDate: start.toISOString(), endDate };
+  }
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -136,6 +192,12 @@ export const AnalyticsCenter: React.FC = () => {
   const [range, setRange] = useState<TimeRange>(globalRangeHint);
   const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    if (rangeMap[dateRange.type]) {
+      setRange(rangeMap[dateRange.type]);
+    }
+  }, [dateRange.type]);
+
   // Data
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [engagement, setEngagement] = useState<EngagementData | null>(null);
@@ -148,41 +210,39 @@ export const AnalyticsCenter: React.FC = () => {
   const [optimalSend, setOptimalSend] = useState<OptimalSend | null>(null);
   const [dashData, setDashData] = useState<any>(null);
 
+  // Infrastructure Breakdown state
+  const [infraData, setInfraData] = useState<InfraRow[]>([]);
+  const [infraLoading, setInfraLoading] = useState(false);
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
+  const [drilldownType, setDrilldownType] = useState<'ip' | 'isp'>('ip');
+  const [selectedCampaign, setSelectedCampaign] = useState<{id: string, name: string} | null>(null);
+
+  // Chart domain filter (drives chart only, not entire UI)
+  const [chartDomain, setChartDomain] = useState<string>('');
+  const [chartTrend, setChartTrend] = useState<OverviewData['daily_trend']>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+
+  // Deployment verification: track API versions from responses
+  const [apiVersions, setApiVersions] = useState<Record<string, string>>({});
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      // Compute date range based on selected time range
-      const now = new Date();
-      let startDate = dateRange.startDate;
-      let endDate = dateRange.endDate;
-      let days: string = range;
-      if (range === 'today') {
-        const todayStr = now.toISOString().split('T')[0];
-        startDate = todayStr;
-        endDate = todayStr;
-        days = '1';
-      } else if (range === '24h') {
-        const h24ago = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        startDate = h24ago.toISOString();
-        endDate = now.toISOString();
-        days = '1';
-      } else if (range === '1h') {
-        const h1ago = new Date(now.getTime() - 60 * 60 * 1000);
-        startDate = h1ago.toISOString();
-        endDate = now.toISOString();
-        days = '1';
-      }
-      const dateSuffix = `&start_date=${startDate}&end_date=${endDate}&range_type=${range}`;
+      const { startDate, endDate } = computeDateRange(range);
+      const daysMap: Record<TimeRange, string> = {
+        '1h': '1', '24h': '1', 'today': '1', '7': '7', '14': '14', '30': '30', '90': '90',
+      };
+      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}`;
       const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes] = await Promise.all([
-        orgFetch(`/api/mailing/analytics/overview?days=${days}${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/reports/engagement?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`, orgId),
-        orgFetch(`/api/mailing/reports/deliverability?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`, orgId),
-        orgFetch(`/api/mailing/reports/revenue?days=${range}${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/reports/campaigns${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/profiles/stats${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/isp-agents${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/analytics/optimal-send${dateSuffix}`, orgId),
-        orgFetch(`/api/mailing/dashboard${dateSuffix}`, orgId),
+        orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
+        orgFetch(`/api/mailing/reports/engagement${qp}`, orgId),
+        orgFetch(`/api/mailing/reports/deliverability${qp}`, orgId),
+        orgFetch(`/api/mailing/reports/revenue${qp}`, orgId),
+        orgFetch(`/api/mailing/reports/campaigns${qp}`, orgId),
+        orgFetch(`/api/mailing/profiles/stats${qp}`, orgId),
+        orgFetch(`/api/mailing/isp-agents${qp}`, orgId),
+        orgFetch(`/api/mailing/analytics/optimal-send${qp}`, orgId),
+        orgFetch(`/api/mailing/dashboard${qp}`, orgId),
       ]);
       const [ov, eng, del, rev, camp, prof, ag, opt, dash] = await Promise.all([
         ovRes.json().catch(() => null),
@@ -205,6 +265,14 @@ export const AnalyticsCenter: React.FC = () => {
       setAgents(ag?.agents || []);
       setOptimalSend(opt);
       setDashData(dash);
+      setApiVersions(prev => ({
+        ...prev,
+        overview: ov?.api_version || '?',
+        engagement: eng?.api_version || '?',
+        deliverability: del?.api_version || '?',
+        revenue: rev?.api_version || '?',
+        campaigns: camp?.api_version || '?',
+      }));
     } catch (err) {
       console.error('Analytics load error:', err);
     } finally {
@@ -213,6 +281,55 @@ export const AnalyticsCenter: React.FC = () => {
   }, [range, orgId, dateRange.startDate, dateRange.endDate, dateRange.type]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const fetchInfrastructure = useCallback(async (domain: string | null, type: 'ip' | 'isp', campaignId?: string) => {
+    setInfraLoading(true);
+    try {
+      const { startDate, endDate } = computeDateRange(range);
+      let qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+      if (domain) qp += `&domain=${encodeURIComponent(domain)}&drilldown=${type}`;
+      if (campaignId) qp += `&campaign_id=${encodeURIComponent(campaignId)}`;
+
+      const res = await orgFetch(`/api/mailing/reports/infrastructure${qp}`, orgId);
+      const result = await res.json();
+      setInfraData(result.data || []);
+      setApiVersions(prev => ({ ...prev, infrastructure: result.api_version || '?' }));
+    } catch (err) {
+      console.error('Infra load error:', err);
+    } finally {
+      setInfraLoading(false);
+    }
+  }, [range, orgId]);
+
+  useEffect(() => {
+    fetchInfrastructure(selectedDomain, drilldownType, selectedCampaign?.id);
+  }, [fetchInfrastructure, selectedDomain, drilldownType, range, selectedCampaign?.id]);
+
+  // Fetch chart-specific trend when domain filter changes
+  useEffect(() => {
+    if (!chartDomain) {
+      setChartTrend(overview?.daily_trend || []);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setChartLoading(true);
+      try {
+        const { startDate, endDate } = computeDateRange(range);
+        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&trend_domain=${encodeURIComponent(chartDomain)}`;
+        const res = await orgFetch(`/api/mailing/analytics/overview${qp}`, orgId);
+        const data = await res.json();
+        if (!cancelled) setChartTrend(data.daily_trend || []);
+      } catch { /* noop */ }
+      finally { if (!cancelled) setChartLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [chartDomain, overview, range, orgId]);
+
+  // Sync chart trend from overview when no domain filter
+  useEffect(() => {
+    if (!chartDomain) setChartTrend(overview?.daily_trend || []);
+  }, [overview, chartDomain]);
 
   // ─── Derived Values ────────────────────────────────────────────────────────
   const totals = overview?.totals || { sent: 0, opens: 0, clicks: 0, bounces: 0, complaints: 0, revenue: 0 };
@@ -404,7 +521,7 @@ export const AnalyticsCenter: React.FC = () => {
                 <div className="ac-intel-item">
                   <span className="ac-intel-label">BEST DAY</span>
                   <span className="ac-intel-value">{fmt(Math.max(...sentArr))}</span>
-                  <span className="ac-intel-sub">{trend[sentArr.indexOf(Math.max(...sentArr))]?.date?.slice(5) || '–'}</span>
+                  <span className="ac-intel-sub">{(() => { const idx = sentArr.indexOf(Math.max(...sentArr)); return idx >= 0 && trend[idx] ? trend[idx].date.slice(5) : '–'; })()}</span>
                 </div>
               </div>
             );
@@ -461,6 +578,7 @@ export const AnalyticsCenter: React.FC = () => {
                           <th>Click %</th>
                           <th>Bounce %</th>
                           <th>Revenue</th>
+                          <th>Action</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -475,6 +593,19 @@ export const AnalyticsCenter: React.FC = () => {
                             <td className={c.click_rate > 3 ? 'ac-good' : c.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(c.click_rate)}</td>
                             <td className={c.bounce_rate < 2 ? 'ac-good' : c.bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(c.bounce_rate)}</td>
                             <td>{fmtCurrency(c.revenue)}</td>
+                            <td>
+                              <button
+                                className="ig-btn-glow"
+                                style={{ padding: '2px 8px', fontSize: '0.75em', cursor: 'pointer', background: 'transparent', border: '1px solid rgba(255,255,255,0.2)' }}
+                                onClick={() => {
+                                  setSelectedCampaign({ id: c.id, name: c.name });
+                                  setSelectedDomain(null);
+                                  document.getElementById('infra-breakdown-section')?.scrollIntoView({ behavior: 'smooth' });
+                                }}
+                              >
+                                View Infra
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -515,7 +646,7 @@ export const AnalyticsCenter: React.FC = () => {
                     </div>
                     <div className="ac-dd-row">
                       <span>Total Suppressed</span>
-                      <strong>{fmt(deliverability?.suppressions?.total || 0)}</strong>
+                      <strong>{fmt(deliverability?.global_suppressions || 0)}</strong>
                     </div>
                   </div>
                 </div>
@@ -527,6 +658,105 @@ export const AnalyticsCenter: React.FC = () => {
                         <span key={i} className="ac-bounce-tag">{b.type}: {b.count}</span>
                       ))}
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ─── Infrastructure Breakdown ──────────────────────────────────── */}
+              <div id="infra-breakdown-section" className="ac-card ig-card-hover">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
+                  <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <FontAwesomeIcon icon={faDatabase} /> Infrastructure Breakdown
+                    {selectedCampaign && (
+                      <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75em', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                        Campaign: {selectedCampaign.name}
+                      </span>
+                    )}
+                    {selectedDomain && (
+                      <span style={{ color: '#94a3b8', fontSize: '0.85em' }}>
+                        / Domain: {selectedDomain}
+                      </span>
+                    )}
+                  </h3>
+
+                  <div className="ac-range-selector">
+                    {selectedDomain && (
+                      <>
+                        <button className={drilldownType === 'ip' ? 'active' : ''} onClick={() => setDrilldownType('ip')}>By IP</button>
+                        <button className={drilldownType === 'isp' ? 'active' : ''} onClick={() => setDrilldownType('isp')}>By Target ISP</button>
+                        <button style={{ marginLeft: '10px', background: '#334155' }} onClick={() => { setSelectedDomain(null); setDrilldownType('ip'); }}>&larr; Back to Domains</button>
+                      </>
+                    )}
+                    {selectedCampaign && (
+                      <button
+                        style={{ marginLeft: selectedDomain ? '10px' : '0', background: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)' }}
+                        onClick={() => { setSelectedCampaign(null); setSelectedDomain(null); }}
+                      >
+                        Clear Campaign Filter &times;
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {infraLoading ? (
+                  <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading infrastructure data...</div>
+                ) : infraData.length === 0 ? (
+                  <div className="ac-empty-mini">No infrastructure data found for this period.</div>
+                ) : (
+                  <div className="ac-table-wrap">
+                    {selectedDomain && infraData[0]?.parent_sent != null && (
+                      <div style={{ display: 'flex', gap: '20px', padding: '8px 12px', marginBottom: '10px', background: 'rgba(99,102,241,0.1)', borderRadius: '8px', fontSize: '0.85em', color: '#a5b4fc' }}>
+                        <span>Domain Total Sent: <strong style={{ color: '#e0e7ff' }}>{fmt(infraData[0].parent_sent ?? 0)}</strong></span>
+                        <span>Domain Total Delivered: <strong style={{ color: '#e0e7ff' }}>{fmt(infraData[0].parent_delivered ?? 0)}</strong></span>
+                        <span style={{ color: '#94a3b8' }}>Rates below are calculated against domain totals</span>
+                      </div>
+                    )}
+                    <table className="ac-table">
+                      <thead>
+                        <tr>
+                          <th>{selectedDomain ? (drilldownType === 'ip' ? 'Sending IP' : 'Target ISP') : 'Sending Domain'}</th>
+                          <th>Sent</th>
+                          <th>Delivered</th>
+                          <th>Deferred</th>
+                          <th>Opens</th>
+                          <th>Clicks</th>
+                          <th>Open %</th>
+                          <th>Click %</th>
+                          <th>Bounce %</th>
+                          <th>Deferral %</th>
+                          <th>Complaint %</th>
+                          {!selectedDomain && <th>Action</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {infraData.map((row, i) => (
+                          <tr key={i}>
+                            <td style={{ fontWeight: 500 }}>{row.entity}</td>
+                            <td>{fmt(row.sent)}</td>
+                            <td>{fmt(row.delivered)}</td>
+                            <td>{fmt(row.deferred)}</td>
+                            <td>{fmt(row.opens)}</td>
+                            <td>{fmt(row.clicks)}</td>
+                            <td className={row.open_rate > 20 ? 'ac-good' : row.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(row.open_rate)}</td>
+                            <td className={row.click_rate > 3 ? 'ac-good' : row.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(row.click_rate)}</td>
+                            <td className={row.bounce_rate < 2 ? 'ac-good' : row.bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.bounce_rate)}</td>
+                            <td className={row.deferral_rate < 1 ? 'ac-good' : row.deferral_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.deferral_rate)}</td>
+                            <td className={row.complaint_rate < 0.1 ? 'ac-good' : 'ac-bad'}>{row.complaint_rate.toFixed(2)}%</td>
+                            {!selectedDomain && (
+                              <td>
+                                <button
+                                  className="ig-btn-glow"
+                                  style={{ padding: '4px 12px', fontSize: '0.85em', cursor: 'pointer', background: 'transparent', border: '1px solid #ffffff', color: '#ffffff' }}
+                                  onClick={() => setSelectedDomain(row.entity)}
+                                >
+                                  Drilldown
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
@@ -829,6 +1059,19 @@ export const AnalyticsCenter: React.FC = () => {
           </div>
         </>
       )}
+
+      {/* Deployment verification footer */}
+      <div style={{
+        marginTop: 32, padding: '8px 16px',
+        fontSize: '0.7em', color: '#475569',
+        borderTop: '1px solid rgba(255,255,255,0.05)',
+        display: 'flex', gap: 16, flexWrap: 'wrap',
+      }}>
+        <span>Page: Analytics Center v{PAGE_VERSION}</span>
+        {Object.entries(apiVersions).map(([api, ver]) => (
+          <span key={api}>{api}: v{ver}</span>
+        ))}
+      </div>
     </div>
   );
 };

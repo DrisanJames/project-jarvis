@@ -281,7 +281,32 @@
 
 /* Modal Large */
 .modal-content.large {
-  max-width: 700px;
+  max-width: 960px;
+}
+
+.isp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.isp-table th {
+  text-align: left;
+  padding: 8px 10px;
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #1e293b;
+  white-space: nowrap;
+}
+.isp-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #1e293b22;
+  white-space: nowrap;
+}
+.isp-table tbody tr:hover {
+  background: #1e293b44;
 }
 
 .ai-options {

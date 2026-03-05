@@ -262,6 +262,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/reports/lists", advSvc.HandleListPerformance)
 			r.Get("/reports/engagement", advSvc.HandleEngagementReport)
 			r.Get("/reports/deliverability", advSvc.HandleDeliverabilityReport)
+			r.Get("/reports/infrastructure", advSvc.HandleInfrastructureBreakdown)
 			r.Get("/reports/revenue", advSvc.HandleRevenueReport)
 			
 			// Historical Metrics & LLM Learning

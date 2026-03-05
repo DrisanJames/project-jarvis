@@ -1159,33 +1159,33 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
             ) : (
               <div className="stats-grid">
                 <div className="stat-box">
-                  <span className="stat-number">{(campaign.sent_count || 0).toLocaleString()}</span>
+                  <span className="stat-number">{(stats?.sent || campaign.sent_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Sent</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number" style={{ color: '#00b894' }}>{(campaign.delivered_count || 0).toLocaleString()}</span>
+                  <span className="stat-number" style={{ color: '#00b894' }}>{(stats?.delivered || campaign.delivered_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Delivered</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number">{(campaign.open_count || 0).toLocaleString()}</span>
+                  <span className="stat-number">{(stats?.opens || campaign.open_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Opens</span>
-                  <span className="stat-rate">{stats?.open_rate?.toFixed(1) || 0}%</span>
+                  <span className="stat-rate">{(stats?.open_rate || 0).toFixed(1)}%</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number">{(campaign.click_count || 0).toLocaleString()}</span>
+                  <span className="stat-number">{(stats?.clicks || campaign.click_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Clicks</span>
-                  <span className="stat-rate">{stats?.click_rate?.toFixed(1) || 0}%</span>
+                  <span className="stat-rate">{(stats?.click_rate || 0).toFixed(1)}%</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number" style={{ color: '#ef4444' }}>{(campaign.hard_bounce_count || 0).toLocaleString()}</span>
+                  <span className="stat-number" style={{ color: '#ef4444' }}>{(stats?.hard_bounces || campaign.hard_bounce_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Hard Bounces</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number" style={{ color: '#f59e0b' }}>{(campaign.soft_bounce_count || 0).toLocaleString()}</span>
+                  <span className="stat-number" style={{ color: '#f59e0b' }}>{(stats?.soft_bounces || campaign.soft_bounce_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Soft Bounces</span>
                 </div>
                 <div className="stat-box">
-                  <span className="stat-number" style={{ color: (campaign.complaint_count || 0) > 0 ? '#ef4444' : undefined }}>{(campaign.complaint_count || 0).toLocaleString()}</span>
+                  <span className="stat-number" style={{ color: (stats?.complaints || campaign.complaint_count || 0) > 0 ? '#ef4444' : undefined }}>{(stats?.complaints || campaign.complaint_count || 0).toLocaleString()}</span>
                   <span className="stat-label">Complaints</span>
                 </div>
                 <div className="stat-box">
@@ -1196,6 +1196,78 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
             )}
           </div>
         </div>
+
+        {stats?.domain_breakdown && stats.domain_breakdown.length > 0 && (
+          <div className="details-section">
+            <h4>🌐 ISP / Domain Breakdown</h4>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="isp-table">
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Sent</th>
+                    <th>Delivered</th>
+                    <th>Opens</th>
+                    <th>Clicks</th>
+                    <th>Hard Bounces</th>
+                    <th>Soft Bounces</th>
+                    <th>Complaints</th>
+                    <th>Open Rate</th>
+                    <th>Click Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.domain_breakdown.map((d: any, i: number) => (
+                    <tr key={i}>
+                      <td style={{ fontWeight: 600 }}>{d.domain}</td>
+                      <td>{(d.sent || 0).toLocaleString()}</td>
+                      <td style={{ color: '#00b894' }}>{(d.delivered || 0).toLocaleString()}</td>
+                      <td>{(d.opens || 0).toLocaleString()}</td>
+                      <td>{(d.clicks || 0).toLocaleString()}</td>
+                      <td style={{ color: d.hard_bounces > 0 ? '#ef4444' : undefined }}>{d.hard_bounces || 0}</td>
+                      <td style={{ color: d.soft_bounces > 0 ? '#f59e0b' : undefined }}>{d.soft_bounces || 0}</td>
+                      <td style={{ color: d.complaints > 0 ? '#ef4444' : undefined }}>{d.complaints || 0}</td>
+                      <td>{(d.open_rate || 0).toFixed(1)}%</td>
+                      <td>{(d.click_rate || 0).toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {stats?.hourly_timeline && stats.hourly_timeline.length > 0 && (
+          <div className="details-section">
+            <h4>📈 Hourly Timeline</h4>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="isp-table">
+                <thead>
+                  <tr>
+                    <th>Hour</th>
+                    <th>Sent</th>
+                    <th>Delivered</th>
+                    <th>Opens</th>
+                    <th>Clicks</th>
+                    <th>Bounces</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.hourly_timeline.map((t: any, i: number) => (
+                    <tr key={i}>
+                      <td>{new Date(t.hour).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                      <td>{(t.sent || 0).toLocaleString()}</td>
+                      <td style={{ color: '#00b894' }}>{(t.delivered || 0).toLocaleString()}</td>
+                      <td>{(t.opens || 0).toLocaleString()}</td>
+                      <td>{(t.clicks || 0).toLocaleString()}</td>
+                      <td style={{ color: t.bounces > 0 ? '#ef4444' : undefined }}>{t.bounces || 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {(campaign.html_content || campaign.html_preview) && (
           <div className="details-section">

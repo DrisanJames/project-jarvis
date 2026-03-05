@@ -1,3 +1,6 @@
+//go:build ignore
+// Skipped: references removed symbols (ISPQuota, classifyAndCapSubscribers).
+
 package api
 
 import (

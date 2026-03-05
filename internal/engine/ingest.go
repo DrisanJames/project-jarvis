@@ -235,7 +235,7 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	case "d":
 		eventType = "delivered"
 	case "b":
-		eventType = ClassifyBounce(rec.BounceCat)
+		eventType = "bounced"
 	case "f":
 		eventType = "complained"
 	default:
@@ -246,24 +246,15 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	defer cancel()
 
 	// Resolve campaign_id: try jobId first (if it's a UUID), else look up by recipient
+	recipientEmail := strings.ToLower(strings.TrimSpace(rec.Recipient))
 	campaignID := rec.JobID
 	if !isUUID(campaignID) {
-		recipientLower := strings.ToLower(strings.TrimSpace(rec.Recipient))
 		var resolved sql.NullString
-		// Try tracking_events first (has email since the fix)
 		ing.db.QueryRowContext(ctx, `
-			SELECT campaign_id::text FROM mailing_tracking_events
-			WHERE LOWER(email) = $1 AND event_type = 'sent'
-			ORDER BY event_at DESC LIMIT 1
-		`, recipientLower).Scan(&resolved)
-		// Fallback to message_log (always has email)
-		if !resolved.Valid {
-			ing.db.QueryRowContext(ctx, `
-				SELECT campaign_id::text FROM mailing_message_log
-				WHERE LOWER(email) = $1
-				ORDER BY sent_at DESC LIMIT 1
-			`, recipientLower).Scan(&resolved)
-		}
+			SELECT campaign_id::text FROM mailing_message_log
+			WHERE LOWER(email) = $1
+			ORDER BY sent_at DESC LIMIT 1
+		`, recipientEmail).Scan(&resolved)
 		if resolved.Valid {
 			campaignID = resolved.String
 		} else {
@@ -277,36 +268,60 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		return
 	}
 
-	// Look up subscriber_id and organization_id from campaign + subscribers
-	recipientEmail := strings.ToLower(strings.TrimSpace(rec.Recipient))
+	// Look up subscriber_id and organization_id from campaign list membership
 	var subscriberID, orgID sql.NullString
 	ing.db.QueryRowContext(ctx, `
-		SELECT e.subscriber_id::text, c.organization_id::text 
-		FROM mailing_tracking_events e
-		JOIN mailing_subscribers s ON s.id = e.subscriber_id
-		JOIN mailing_campaigns c ON c.id = e.campaign_id
-		WHERE e.campaign_id = $1 AND LOWER(s.email) = $2 AND e.event_type = 'sent'
+		SELECT s.id::text, c.organization_id::text
+		FROM mailing_subscribers s
+		JOIN mailing_campaigns c ON c.list_id = s.list_id AND c.id = $1
+		WHERE LOWER(s.email) = $2
 		LIMIT 1
 	`, campUUID, recipientEmail).Scan(&subscriberID, &orgID)
 
+	// If subscriber lookup didn't yield org_id, get it directly from the campaign
+	if !orgID.Valid {
+		ing.db.QueryRowContext(ctx, `
+			SELECT organization_id::text FROM mailing_campaigns WHERE id = $1
+		`, campUUID).Scan(&orgID)
+	}
+
+	if !orgID.Valid {
+		log.Printf("[ingest-db] no organization_id for campaign %s, skipping", campUUID)
+		return
+	}
+
 	eventID := uuid.New()
-	var subIDPtr, orgIDPtr *uuid.UUID
+	var subIDPtr *uuid.UUID
+	orgUUID, _ := uuid.Parse(orgID.String)
+	orgIDPtr := &orgUUID
+
 	if subscriberID.Valid {
 		if u, e := uuid.Parse(subscriberID.String); e == nil {
 			subIDPtr = &u
 		}
 	}
-	if orgID.Valid {
-		if u, e := uuid.Parse(orgID.String); e == nil {
-			orgIDPtr = &u
-		}
+
+	// Extract sending domain from the envelope-sender address
+	sendingDomain := ""
+	if atIdx := strings.LastIndex(rec.Sender, "@"); atIdx >= 0 {
+		sendingDomain = strings.ToLower(rec.Sender[atIdx+1:])
+	}
+
+	recipientDomain := ""
+	if parts := strings.SplitN(recipientEmail, "@", 2); len(parts) == 2 {
+		recipientDomain = strings.ToLower(parts[1])
+	}
+
+	sendingIP := rec.SourceIP
+	if sendingIP == "" && rec.VMTA != "" {
+		sendingIP = rec.VMTA
 	}
 
 	_, err = ing.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, sending_ip, recipient_domain)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)
 		ON CONFLICT DO NOTHING
-	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus)
+	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus, sendingDomain, sendingIP, recipientDomain)
 	if err != nil {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
 	}

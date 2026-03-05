@@ -316,10 +316,14 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		if sendErr == nil && result["success"] == true {
 			sent++
 
+			cbSendDomain := ""
+			if atIdx := strings.LastIndex(campaign.FromEmail, "@"); atIdx >= 0 {
+				cbSendDomain = strings.ToLower(campaign.FromEmail[atIdx+1:])
+			}
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at)
-				VALUES ($1, $2, $3, $4, 'sent', NOW())
-			`, emailID, orgID, campUUID, sub.ID)
+				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain)
+				VALUES ($1, $2, $3, $4, 'sent', NOW(), $5)
+			`, emailID, orgID, campUUID, sub.ID, cbSendDomain)
 
 			// Bootstrap inbox profile for this recipient
 			recipientDomain := ""
@@ -360,10 +364,14 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			}
 
 			// Record bounce tracking event
+			cbBounceDomain := ""
+			if atIdx := strings.LastIndex(campaign.FromEmail, "@"); atIdx >= 0 {
+				cbBounceDomain = strings.ToLower(campaign.FromEmail[atIdx+1:])
+			}
 			cb.db.ExecContext(ctx, `
-				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-			`, uuid.New(), orgID, campUUID, sub.ID, eventType, string(bounceType), sendErr.Error())
+				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+			`, uuid.New(), orgID, campUUID, sub.ID, eventType, string(bounceType), sendErr.Error(), cbBounceDomain)
 
 			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
 				cb.mailingSvc.onTrackingEvent(campUUID.String(), eventType, sub.Email, ispGroup)

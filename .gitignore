@@ -13,6 +13,7 @@ build/
 /ignite-server
 /worker
 /sparkpost-monitor
+server-linux-amd64
 /upside-down
 /tracking
 COMMIT_MSG.tmp

@@ -235,6 +235,8 @@ type TrackingEvent struct {
 	LinkURL        string     `json:"link_url" db:"link_url"`
 	BounceType     string     `json:"bounce_type" db:"bounce_type"`
 	BounceReason   string     `json:"bounce_reason" db:"bounce_reason"`
+	SendingDomain  string     `json:"sending_domain" db:"sending_domain"`
+	SendingIP      string     `json:"sending_ip" db:"sending_ip"`
 	EventAt        time.Time  `json:"event_at" db:"event_at"`
 	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
 }
