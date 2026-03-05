@@ -123,34 +123,33 @@ func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	processed := 0
 	for _, rec := range records {
 		isp := ing.classifyRecord(rec)
-		if isp == "" {
-			continue
-		}
 
-		// Feed signal processor
-		ing.processor.Ingest(isp, rec)
-
-		// Notify ISP-specific agent listeners
-		for _, ch := range ing.listeners[isp] {
-			select {
-			case ch <- rec:
-			default: // drop if channel full
-			}
-		}
-
-		// Feed campaign event tracker
-		if ing.tracker != nil && rec.JobID != "" {
-			ing.routeToCampaignTracker(rec, isp)
-		}
-
-		// Feed global suppression hub for ALL negative signals
+		// Global suppression and DB persistence fire for ALL records,
+		// even if the domain doesn't map to a known ISP.
 		if ing.globalHub != nil {
 			ing.routeToGlobalSuppression(rec, isp)
 		}
-
-		// Persist to mailing_tracking_events and update campaign counters
 		if ing.db != nil {
 			ing.persistToDB(rec, isp)
+		}
+
+		if isp == "" {
+			processed++
+			continue
+		}
+
+		// ISP-specific processing only for classified domains
+		ing.processor.Ingest(isp, rec)
+
+		for _, ch := range ing.listeners[isp] {
+			select {
+			case ch <- rec:
+			default:
+			}
+		}
+
+		if ing.tracker != nil && rec.JobID != "" {
+			ing.routeToCampaignTracker(rec, isp)
 		}
 
 		processed++
