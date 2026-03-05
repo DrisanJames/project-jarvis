@@ -800,25 +800,35 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		rand.Shuffle(len(qualified), func(i, j int) { qualified[i], qualified[j] = qualified[j], qualified[i] })
 	}
 
-	// 6. Apply ISP quotas
+	// 6. Apply ISP quotas — STRICT enforcement.
+	// When quotas are active: ONLY subscribers in ISPs with explicit quotas are included.
+	// Subscribers in non-quoted ISPs are excluded entirely.
+	// When no quotas: all qualified subscribers pass through (limited by max_recipients).
 	var capped []qualifiedSub
 	ispCounts := make(map[string]int)
-	for _, q := range qualified {
-		if maxVol, hasQuota := quotaMap[q.ISP]; hasQuota {
+	if len(quotaMap) > 0 {
+		for _, q := range qualified {
+			maxVol, hasQuota := quotaMap[q.ISP]
+			if !hasQuota {
+				continue // ISP not in quota list — exclude entirely
+			}
 			if ispCounts[q.ISP] >= maxVol {
-				continue
+				continue // ISP quota full
+			}
+			ispCounts[q.ISP]++
+			capped = append(capped, q)
+			if maxRecipients > 0 && len(capped) >= maxRecipients {
+				break
 			}
 		}
-		ispCounts[q.ISP]++
-		capped = append(capped, q)
-		if maxRecipients > 0 && len(capped) >= maxRecipients {
-			break
-		}
-	}
-	if len(quotaMap) > 0 {
-		log.Printf("[DeployCampaign] ISP quota enforcement: %v (limits: %v, before: %d, after: %d)", ispCounts, quotaMap, len(qualified), len(capped))
+		log.Printf("[DeployCampaign] ISP quota enforcement: %v (limits: %v, qualified: %d, capped: %d)", ispCounts, quotaMap, len(qualified), len(capped))
 	} else {
 		capped = qualified
+		// Still enforce max_recipients as absolute ceiling even without ISP quotas
+		if maxRecipients > 0 && len(capped) > maxRecipients {
+			capped = capped[:maxRecipients]
+			log.Printf("[DeployCampaign] max_recipients cap applied: %d (no ISP quotas)", maxRecipients)
+		}
 	}
 
 	// 7. COPY qualified subscribers into campaign queue
@@ -878,16 +888,21 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	}
 	log.Printf("[DeployCampaign] Campaign %s: pre-enqueued %d subscribers (from %d qualified, %d total)", campaignID, queuedCount, len(qualified), len(seenEmails))
 
-	respondJSON(w, http.StatusCreated, engine.PMTACampaignResult{
-		CampaignID:    campaignID,
-		Name:          input.Name,
-		Status:        "scheduled",
-		SendMode:      sendMode,
-		SendsAt:       &scheduledAt,
-		TargetISPs:    input.TargetISPs,
-		TotalAudience: queuedCount,
-		VariantCount:  len(input.Variants),
-		AgentIDs:      []string{},
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"campaign_id":      campaignID,
+		"name":             input.Name,
+		"status":           "scheduled",
+		"send_mode":        sendMode,
+		"sends_at":         scheduledAt,
+		"target_isps":      input.TargetISPs,
+		"total_audience":   queuedCount,
+		"variant_count":    len(input.Variants),
+		"max_recipients":   maxRecipients,
+		"total_on_list":    len(seenEmails),
+		"after_suppression": len(qualified),
+		"suppressed":       len(seenEmails) - len(qualified),
+		"per_isp_enqueued": ispCounts,
+		"quota_config":     quotaMap,
 	})
 }
 
