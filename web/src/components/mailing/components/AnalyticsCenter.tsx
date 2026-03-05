@@ -217,10 +217,10 @@ export const AnalyticsCenter: React.FC = () => {
   const [drilldownType, setDrilldownType] = useState<'ip' | 'isp'>('ip');
   const [selectedCampaign, setSelectedCampaign] = useState<{id: string, name: string} | null>(null);
 
-  // Chart domain filter (drives chart only, not entire UI)
-  const [chartDomain, setChartDomain] = useState<string>('');
-  const [chartTrend, setChartTrend] = useState<OverviewData['daily_trend']>([]);
-  const [chartLoading, setChartLoading] = useState(false);
+  // Chart domain filter — drives chart-specific trend data (UI selector TBD)
+  const [chartDomain, _setChartDomain] = useState<string>('');
+  const [_chartTrend, setChartTrend] = useState<OverviewData['daily_trend']>([]);
+  const [_chartLoading, setChartLoading] = useState(false);
 
   // Deployment verification: track API versions from responses
   const [apiVersions, setApiVersions] = useState<Record<string, string>>({});
