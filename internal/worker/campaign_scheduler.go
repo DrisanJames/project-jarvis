@@ -595,9 +595,13 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		log.Printf("[CampaignScheduler] Campaign %s: filtering against %d suppression lists at enqueue time", campaign.ID, len(suppressionListIDs))
 	}
 
-	// Build query to get subscribers
+	// Build query to get subscribers.
+	// Segment and single-list paths set query/args for shared execution.
+	// Multi-list path collects subscribers directly with per-list priority.
 	var query string
 	var args []interface{}
+	var subscribers []subscriberForScheduling
+	multiListDone := false
 
 	if campaign.SegmentID.Valid {
 		// Get segment conditions and build dynamic query
@@ -754,71 +758,109 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			args = []interface{}{campaign.ListID.String}
 		}
 	} else if len(campaign.ListIDs) > 0 {
-		// Resolve from list_ids JSONB (PMTA wizard multi-list path)
-		if len(suppressionListIDs) > 0 {
-			query = `
-				SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
-				FROM mailing_subscribers s
-				WHERE s.list_id = ANY($1)
-				AND s.status = 'confirmed'
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_suppressions sup
-					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
-				)
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_global_suppressions gs
-					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
-				)
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_suppression_entries se
-					WHERE se.md5_hash = MD5(LOWER(TRIM(s.email)))
-					  AND se.list_id = ANY($2)
-				)
-				ORDER BY LOWER(s.email), s.id
-			`
-			args = []interface{}{pq.Array(campaign.ListIDs), pq.Array(suppressionListIDs)}
-		} else {
-			query = `
-				SELECT DISTINCT ON (LOWER(s.email)) s.id, s.email
-				FROM mailing_subscribers s
-				WHERE s.list_id = ANY($1)
-				AND s.status = 'confirmed'
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_suppressions sup
-					WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
-				)
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_global_suppressions gs
-					WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
-				)
-				ORDER BY LOWER(s.email), s.id
-			`
-			args = []interface{}{pq.Array(campaign.ListIDs)}
+		// ── Per-list priority iteration ──────────────────────────────────
+		// Iterate lists in the order they appear in list_ids (which is the
+		// user-defined priority order from the wizard). Earlier lists get a
+		// higher priority value so the send worker picks them up first.
+		// This enables warmup: send to engaged openers/clickers before the
+		// broader audience. Dedup via seenEmails across lists.
+		perListDedup := make(map[string]bool)
+		maxPri := len(campaign.ListIDs) // list 0 → maxPri, list 1 → maxPri-1, ...
+		for listIdx, listID := range campaign.ListIDs {
+			var perListQuery string
+			var perListArgs []interface{}
+			if len(suppressionListIDs) > 0 {
+				perListQuery = `
+					SELECT s.id, s.email
+					FROM mailing_subscribers s
+					WHERE s.list_id = $1
+					AND s.status = 'confirmed'
+					AND NOT EXISTS (
+						SELECT 1 FROM mailing_suppressions sup
+						WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM mailing_global_suppressions gs
+						WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM mailing_suppression_entries se
+						WHERE se.md5_hash = MD5(LOWER(TRIM(s.email)))
+						  AND se.list_id = ANY($2)
+					)
+					ORDER BY s.id
+				`
+				perListArgs = []interface{}{listID, pq.Array(suppressionListIDs)}
+			} else {
+				perListQuery = `
+					SELECT s.id, s.email
+					FROM mailing_subscribers s
+					WHERE s.list_id = $1
+					AND s.status = 'confirmed'
+					AND NOT EXISTS (
+						SELECT 1 FROM mailing_suppressions sup
+						WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM mailing_global_suppressions gs
+						WHERE gs.md5_hash = MD5(LOWER(TRIM(s.email)))
+					)
+					ORDER BY s.id
+				`
+				perListArgs = []interface{}{listID}
+			}
+			listRows, listErr := cs.db.QueryContext(ctx, perListQuery, perListArgs...)
+			if listErr != nil {
+				log.Printf("[CampaignScheduler] Failed to query list %s for campaign %s: %v", listID, campaign.ID, listErr)
+				continue
+			}
+			pri := maxPri - listIdx
+			var listSubs []subscriberForScheduling
+			for listRows.Next() {
+				var s subscriberForScheduling
+				if err := listRows.Scan(&s.ID, &s.Email); err != nil {
+					continue
+				}
+				emailKey := strings.ToLower(strings.TrimSpace(s.Email))
+				if perListDedup[emailKey] {
+					continue
+				}
+				perListDedup[emailKey] = true
+				s.Priority = pri
+				listSubs = append(listSubs, s)
+			}
+			listRows.Close()
+			subscribers = append(subscribers, listSubs...)
+			log.Printf("[CampaignScheduler] Campaign %s list %d/%d (%s): %d unique subscribers at priority %d",
+				campaign.ID, listIdx+1, len(campaign.ListIDs), listID, len(listSubs), pri)
 		}
+		// Apply max recipients limit across all lists
+		if campaign.MaxRecipients.Valid && campaign.MaxRecipients.Int64 > 0 && int64(len(subscribers)) > campaign.MaxRecipients.Int64 {
+			subscribers = subscribers[:campaign.MaxRecipients.Int64]
+		}
+		multiListDone = true
 	} else {
 		log.Printf("[CampaignScheduler] Campaign %s has no audience source (no list_id, segment_id, or list_ids)", campaign.ID)
 		return 0, nil
 	}
 
-	// Apply limit if set
-	if campaign.MaxRecipients.Valid && campaign.MaxRecipients.Int64 > 0 {
-		query += fmt.Sprintf(" LIMIT %d", campaign.MaxRecipients.Int64)
-	}
-
-	rows, err := cs.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get subscribers: %w", err)
-	}
-	defer rows.Close()
-
-	// Collect subscribers
-	var subscribers []subscriberForScheduling
-	for rows.Next() {
-		var s subscriberForScheduling
-		if err := rows.Scan(&s.ID, &s.Email); err != nil {
-			continue
+	// Execute shared query for segment and single-list paths
+	if !multiListDone {
+		if campaign.MaxRecipients.Valid && campaign.MaxRecipients.Int64 > 0 {
+			query += fmt.Sprintf(" LIMIT %d", campaign.MaxRecipients.Int64)
 		}
-		subscribers = append(subscribers, s)
+		rows, err := cs.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get subscribers: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s subscriberForScheduling
+			if err := rows.Scan(&s.ID, &s.Email); err != nil {
+				continue
+			}
+			subscribers = append(subscribers, s)
+		}
 	}
 
 	if len(subscribers) == 0 {
@@ -924,8 +966,24 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		}
 	}
 	if qCfg.RandomizeAudience && len(subscribers) > 1 {
-		rand.Shuffle(len(subscribers), func(i, j int) { subscribers[i], subscribers[j] = subscribers[j], subscribers[i] })
-		log.Printf("[CampaignScheduler] Shuffled %d subscribers for campaign %s (randomize=true)", len(subscribers), campaign.ID)
+		if multiListDone {
+			// Shuffle within each priority band so list ordering is preserved
+			// but subscriber order within each list is randomized.
+			priGroups := make(map[int][]int) // priority → indices
+			for i, s := range subscribers {
+				priGroups[s.Priority] = append(priGroups[s.Priority], i)
+			}
+			for _, idxs := range priGroups {
+				rand.Shuffle(len(idxs), func(a, b int) {
+					subscribers[idxs[a]], subscribers[idxs[b]] = subscribers[idxs[b]], subscribers[idxs[a]]
+				})
+			}
+			log.Printf("[CampaignScheduler] Shuffled %d subscribers within %d priority bands for campaign %s (randomize=true, multi-list)",
+				len(subscribers), len(priGroups), campaign.ID)
+		} else {
+			rand.Shuffle(len(subscribers), func(i, j int) { subscribers[i], subscribers[j] = subscribers[j], subscribers[i] })
+			log.Printf("[CampaignScheduler] Shuffled %d subscribers for campaign %s (randomize=true)", len(subscribers), campaign.ID)
+		}
 	}
 	ispCounts := make(map[string]int)
 
@@ -991,10 +1049,11 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			variantIdx++
 		}
 
+		effectivePriority := priority + sub.Priority
 		_, err := stmt.Exec(
 			uuid.New(), campaign.ID, sub.ID,
 			subject, htmlContent, textContent,
-			"queued", priority, scheduledAt, now,
+			"queued", effectivePriority, scheduledAt, now,
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] COPY row error for subscriber %s: %v", sub.ID, err)
@@ -1060,8 +1119,9 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 
 // subscriberForScheduling represents a subscriber being scheduled for sending
 type subscriberForScheduling struct {
-	ID    uuid.UUID
-	Email string
+	ID       uuid.UUID
+	Email    string
+	Priority int // per-list priority offset (higher = sent first)
 }
 
 // getSubscriberOptimalTimes retrieves optimal send times for subscribers

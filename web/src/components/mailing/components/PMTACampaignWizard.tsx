@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faArrowLeft, faArrowRight, faCheck, faServer, faGlobe,
+  faArrowLeft, faArrowRight, faArrowUp, faArrowDown, faCheck, faServer, faGlobe,
   faPenFancy, faUsers, faBrain, faRocket, faSpinner,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
-  faMagic, faSave, faEye, faUpload, faCode,
+  faMagic, faSave, faEye, faUpload, faCode, faGripVertical,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -596,6 +596,23 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const toggleExclusionSegment = (id: string) => {
     setSelectedExclusionSegments(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
+  const moveListUp = (idx: number) => {
+    if (idx <= 0) return;
+    setSelectedLists(prev => {
+      const next = [...prev];
+      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+      return next;
+    });
+  };
+  const moveListDown = (idx: number) => {
+    setSelectedLists(prev => {
+      if (idx >= prev.length - 1) return prev;
+      const next = [...prev];
+      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+      return next;
+    });
+  };
+  const dragListRef = useRef<number | null>(null);
 
   // ── Variant management ───────────────────────────────────────────────────
 
@@ -1448,6 +1465,97 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 )}
               </div>
             </div>
+
+            {/* List Send Priority */}
+            {selectedLists.length > 1 && (
+              <div style={{
+                background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 16,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: '#f59e0b' }} />
+                  <h4 style={{ margin: 0, fontSize: 13, color: '#f59e0b', fontWeight: 600 }}>Send Priority</h4>
+                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Drag or use arrows to reorder — first list sends first</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {selectedLists.map((id, idx) => {
+                    const listInfo = lists.find(l => l.id === id);
+                    if (!listInfo) return null;
+                    return (
+                      <div
+                        key={id}
+                        draggable
+                        onDragStart={() => { dragListRef.current = idx; }}
+                        onDragOver={(e) => { e.preventDefault(); }}
+                        onDrop={() => {
+                          if (dragListRef.current === null || dragListRef.current === idx) return;
+                          setSelectedLists(prev => {
+                            const next = [...prev];
+                            const [moved] = next.splice(dragListRef.current!, 1);
+                            next.splice(idx, 0, moved);
+                            return next;
+                          });
+                          dragListRef.current = null;
+                        }}
+                        onDragEnd={() => { dragListRef.current = null; }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                          background: idx === 0 ? 'rgba(245,158,11,0.08)' : '#0a0f1a',
+                          border: `1.5px solid ${idx === 0 ? 'rgba(245,158,11,0.3)' : 'rgba(0,200,255,0.06)'}`,
+                          borderRadius: 8, cursor: 'grab', userSelect: 'none' as const,
+                          transition: 'all 0.2s ease',
+                        }}
+                      >
+                        <FontAwesomeIcon icon={faGripVertical} style={{ color: 'rgba(180,210,240,0.25)', fontSize: 12 }} />
+                        <div style={{
+                          width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: idx === 0 ? 'rgba(245,158,11,0.2)' : 'rgba(0,200,255,0.06)',
+                          color: idx === 0 ? '#f59e0b' : 'rgba(180,210,240,0.5)',
+                          fontSize: 12, fontWeight: 700,
+                        }}>
+                          {idx + 1}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {listInfo.name}
+                          </div>
+                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 1 }}>
+                            {(listInfo.subscriber_count || 0).toLocaleString()} subscribers
+                            {idx === 0 && ' — sends first for warmup'}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <button
+                            onClick={() => moveListUp(idx)}
+                            disabled={idx === 0}
+                            style={{
+                              width: 22, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              background: 'transparent', border: '1px solid rgba(180,210,240,0.15)', borderRadius: 4,
+                              color: idx === 0 ? 'rgba(180,210,240,0.1)' : 'rgba(180,210,240,0.5)', cursor: idx === 0 ? 'default' : 'pointer',
+                              fontSize: 9, padding: 0,
+                            }}
+                          >
+                            <FontAwesomeIcon icon={faArrowUp} />
+                          </button>
+                          <button
+                            onClick={() => moveListDown(idx)}
+                            disabled={idx === selectedLists.length - 1}
+                            style={{
+                              width: 22, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              background: 'transparent', border: '1px solid rgba(180,210,240,0.15)', borderRadius: 4,
+                              color: idx === selectedLists.length - 1 ? 'rgba(180,210,240,0.1)' : 'rgba(180,210,240,0.5)',
+                              cursor: idx === selectedLists.length - 1 ? 'default' : 'pointer',
+                              fontSize: 9, padding: 0,
+                            }}
+                          >
+                            <FontAwesomeIcon icon={faArrowDown} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Audience funnel estimate */}
             <div style={{

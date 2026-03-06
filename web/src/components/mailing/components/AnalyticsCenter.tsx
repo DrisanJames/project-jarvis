@@ -706,7 +706,6 @@ export const AnalyticsCenter: React.FC = () => {
                   <div className="ac-table-wrap">
                     {selectedDomain && infraData[0]?.parent_sent != null && (
                       <div style={{ display: 'flex', gap: '20px', padding: '8px 12px', marginBottom: '10px', background: 'rgba(99,102,241,0.1)', borderRadius: '8px', fontSize: '0.85em', color: '#a5b4fc' }}>
-                        <span>Domain Total Sent: <strong style={{ color: '#e0e7ff' }}>{fmt(infraData[0].parent_sent ?? 0)}</strong></span>
                         <span>Domain Total Delivered: <strong style={{ color: '#e0e7ff' }}>{fmt(infraData[0].parent_delivered ?? 0)}</strong></span>
                         <span style={{ color: '#94a3b8' }}>Rates below are calculated against domain totals</span>
                       </div>
@@ -715,7 +714,6 @@ export const AnalyticsCenter: React.FC = () => {
                       <thead>
                         <tr>
                           <th>{selectedDomain ? (drilldownType === 'ip' ? 'Sending IP' : 'Target ISP') : 'Sending Domain'}</th>
-                          <th>Sent</th>
                           <th>Delivered</th>
                           <th>Deferred</th>
                           <th>Opens</th>
@@ -732,7 +730,6 @@ export const AnalyticsCenter: React.FC = () => {
                         {infraData.map((row, i) => (
                           <tr key={i}>
                             <td style={{ fontWeight: 500 }}>{row.entity}</td>
-                            <td>{fmt(row.sent)}</td>
                             <td>{fmt(row.delivered)}</td>
                             <td>{fmt(row.deferred)}</td>
                             <td>{fmt(row.opens)}</td>

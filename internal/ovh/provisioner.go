@@ -157,81 +157,157 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 		mgmtPort = 19000
 	}
 
-	sb.WriteString(fmt.Sprintf("postmaster postmaster@%s\n\n", hostname))
+	sb.WriteString(fmt.Sprintf("postmaster postmaster@%s\n", hostname))
+	sb.WriteString(fmt.Sprintf("host-name %s\n\n", hostname))
 
-	// Management interface
-	sb.WriteString(fmt.Sprintf("http-mgmt-port %d\n", mgmtPort))
-	if cfg.MgmtAPIKey != "" {
-		sb.WriteString(fmt.Sprintf("http-access %s monitor\n", cfg.MgmtAPIKey))
-	}
-	sb.WriteString("http-access 127.0.0.1 monitor\n\n")
+	sb.WriteString(fmt.Sprintf("smtp-listener %s:25\n", cfg.ServerIP))
+	sb.WriteString("smtp-listener 127.0.0.1:25\n")
+	sb.WriteString(fmt.Sprintf("smtp-listener %s:587\n\n", cfg.ServerIP))
 
-	sb.WriteString("run-as-root no\n")
-	sb.WriteString("min-free-disk-space 512M\n\n")
+	sb.WriteString("<source 127.0.0.1>\n")
+	sb.WriteString("    always-allow-relaying yes\n")
+	sb.WriteString("    process-x-virtual-mta yes\n")
+	sb.WriteString("    max-message-size unlimited\n")
+	sb.WriteString("    smtp-service yes\n")
+	sb.WriteString("    suppress-local-dsn yes\n")
+	sb.WriteString("</source>\n\n")
 
-	// SMTP source on the primary server IP
-	sb.WriteString("# --- Primary IP SMTP Source ---\n")
+	sb.WriteString("<source ::1>\n")
+	sb.WriteString("    always-allow-relaying yes\n")
+	sb.WriteString("    process-x-virtual-mta yes\n")
+	sb.WriteString("    max-message-size unlimited\n")
+	sb.WriteString("    smtp-service yes\n")
+	sb.WriteString("    suppress-local-dsn yes\n")
+	sb.WriteString("</source>\n\n")
+
+	sb.WriteString("<source 0/0>\n")
+	sb.WriteString("    always-allow-relaying yes\n")
+	sb.WriteString("    process-x-virtual-mta yes\n")
+	sb.WriteString("    log-connections no\n")
+	sb.WriteString("    log-commands    no\n")
+	sb.WriteString("    log-data        no\n")
+	sb.WriteString("    suppress-local-dsn yes\n")
+	sb.WriteString("</source>\n\n")
+
+	sb.WriteString("<source {auth}>\n")
+	sb.WriteString("    always-allow-relaying yes\n")
+	sb.WriteString("    process-x-virtual-mta yes\n")
+	sb.WriteString("    max-message-size 50M\n")
+	sb.WriteString("    smtp-service yes\n")
+	sb.WriteString("    suppress-local-dsn yes\n")
+	sb.WriteString("</source>\n\n")
+
 	sb.WriteString(fmt.Sprintf("smtp-source-host %s %s\n\n", cfg.ServerIP, hostname))
 
-	// Virtual MTAs — one per failover IP
+	sb.WriteString("# --- SMTP Pattern Lists (ISP Error Handling) ---\n\n")
+	sb.WriteString("<smtp-pattern-list backoff-gmail>\n")
+	sb.WriteString("    reply /421.*4\\.7\\.28/ mode=backoff\n")
+	sb.WriteString("    reply /421.*try again later/ mode=backoff\n")
+	sb.WriteString("    reply /452.*too many recipients/ mode=backoff\n")
+	sb.WriteString("</smtp-pattern-list>\n\n")
+
+	sb.WriteString("<smtp-pattern-list backoff-microsoft>\n")
+	sb.WriteString("    reply /421.*RP-001/ mode=backoff\n")
+	sb.WriteString("    reply /421.*RP-002/ mode=backoff\n")
+	sb.WriteString("    reply /421.*RP-003/ mode=backoff\n")
+	sb.WriteString("</smtp-pattern-list>\n\n")
+
+	sb.WriteString("<smtp-pattern-list backoff-yahoo>\n")
+	sb.WriteString("    reply /421.*TS03/ mode=backoff\n")
+	sb.WriteString("    reply /421.*temporarily deferred/ mode=backoff\n")
+	sb.WriteString("    reply /421.*resource.*unavailable/ mode=backoff\n")
+	sb.WriteString("</smtp-pattern-list>\n\n")
+
+	writeISPDomain := func(domain, patternList string, sslReuse bool) {
+		sb.WriteString(fmt.Sprintf("    <domain %s>\n", domain))
+		sb.WriteString("        max-msg-rate 25/h\n")
+		sb.WriteString("        max-smtp-out 2\n")
+		sb.WriteString("        max-msg-per-connection 10\n")
+		sb.WriteString("        max-connect-rate 3/5m\n")
+		sb.WriteString("        bounce-after 2d\n")
+		sb.WriteString("        backoff-max-msg-rate 12/h\n")
+		sb.WriteString("        backoff-retry-after 30m\n")
+		sb.WriteString(fmt.Sprintf("        smtp-pattern-list %s\n", patternList))
+		if sslReuse {
+			sb.WriteString("        reuse-ssl-session yes\n")
+		}
+		sb.WriteString("    </domain>\n")
+	}
+
+	writeBasicDomain := func(domain string) {
+		sb.WriteString(fmt.Sprintf("    <domain %s>\n", domain))
+		sb.WriteString("        max-msg-rate 25/h\n")
+		sb.WriteString("        max-smtp-out 2\n")
+		sb.WriteString("        max-msg-per-connection 10\n")
+		sb.WriteString("        max-connect-rate 3/5m\n")
+		sb.WriteString("        bounce-after 2d\n")
+		sb.WriteString("    </domain>\n")
+	}
+
 	sb.WriteString("# --- Virtual MTAs (one per failover IP) ---\n")
 	for i, ip := range cfg.FailoverIPs {
 		vmtaName := fmt.Sprintf("mta%d", i+1)
 		mtaHostname := fmt.Sprintf("mta%d.%s", i+1, stripFirstLabel(hostname))
 
 		sb.WriteString(fmt.Sprintf("\n<virtual-mta %s>\n", vmtaName))
-		sb.WriteString(fmt.Sprintf("  smtp-source-host %s %s\n", ip, mtaHostname))
-		sb.WriteString("  <domain *>\n")
-		sb.WriteString("    use-starttls yes\n")
-		sb.WriteString("    max-msg-rate 200/h\n")
-		sb.WriteString("    max-rcpt-rate 200/h\n")
-		sb.WriteString("    retry-after           15m\n")
-		sb.WriteString("    max-retry-time         2d\n")
-		sb.WriteString("    bounce-after           3d\n")
-		sb.WriteString("  </domain>\n")
+		sb.WriteString(fmt.Sprintf("    smtp-source-host %s %s\n", ip, mtaHostname))
+		sb.WriteString("    <domain *>\n")
+		sb.WriteString("        use-starttls yes\n")
+		sb.WriteString("        max-msg-rate 200/h\n")
+		sb.WriteString("        max-smtp-out 10\n")
+		sb.WriteString("        bounce-after 2d\n")
+		sb.WriteString("        retry-after 15m\n")
+		sb.WriteString("        connection-idle-timeout 30s\n")
+		sb.WriteString("        dkim-sign yes\n")
+		sb.WriteString("    </domain>\n")
 
-		// Gmail throttling
-		sb.WriteString("  <domain gmail.com>\n")
-		sb.WriteString("    max-msg-rate 50/h\n")
-		sb.WriteString("    max-rcpt-rate 50/h\n")
-		sb.WriteString("  </domain>\n")
+		writeISPDomain("gmail.com", "backoff-gmail", true)
+		writeISPDomain("yahoo.com", "backoff-yahoo", false)
+		writeISPDomain("outlook.com", "backoff-microsoft", false)
+		writeISPDomain("hotmail.com", "backoff-microsoft", false)
 
-		// Yahoo/AOL throttling
-		sb.WriteString("  <domain yahoo.com>\n")
-		sb.WriteString("    max-msg-rate 50/h\n")
-		sb.WriteString("    max-rcpt-rate 50/h\n")
-		sb.WriteString("  </domain>\n")
-
-		// Microsoft throttling
-		sb.WriteString("  <domain outlook.com>\n")
-		sb.WriteString("    max-msg-rate 50/h\n")
-		sb.WriteString("    max-rcpt-rate 50/h\n")
-		sb.WriteString("  </domain>\n")
-		sb.WriteString("  <domain hotmail.com>\n")
-		sb.WriteString("    max-msg-rate 50/h\n")
-		sb.WriteString("    max-rcpt-rate 50/h\n")
-		sb.WriteString("  </domain>\n")
-
-		sb.WriteString(fmt.Sprintf("</virtual-mta>\n"))
+		sb.WriteString("</virtual-mta>\n")
 	}
 
-	// Default pool with all VMTAs
 	if len(cfg.FailoverIPs) > 0 {
 		sb.WriteString("\n# --- Default Pool (all VMTAs) ---\n")
 		sb.WriteString("<virtual-mta-pool default-pool>\n")
 		for i := range cfg.FailoverIPs {
-			sb.WriteString(fmt.Sprintf("  virtual-mta mta%d\n", i+1))
+			sb.WriteString(fmt.Sprintf("    virtual-mta mta%d\n", i+1))
 		}
+
+		writeISPDomain("gmail.com", "backoff-gmail", true)
+		writeISPDomain("googlemail.com", "backoff-gmail", true)
+		writeISPDomain("yahoo.com", "backoff-yahoo", false)
+		writeISPDomain("yahoo.co.uk", "backoff-yahoo", false)
+		writeISPDomain("ymail.com", "backoff-yahoo", false)
+		writeISPDomain("rocketmail.com", "backoff-yahoo", false)
+		writeISPDomain("aol.com", "backoff-yahoo", false)
+		writeISPDomain("outlook.com", "backoff-microsoft", false)
+		writeISPDomain("hotmail.com", "backoff-microsoft", false)
+		writeISPDomain("live.com", "backoff-microsoft", false)
+		writeISPDomain("msn.com", "backoff-microsoft", false)
+		writeBasicDomain("icloud.com")
+		writeBasicDomain("me.com")
+		writeBasicDomain("mac.com")
+		writeBasicDomain("comcast.net")
+		writeBasicDomain("xfinity.com")
+		writeBasicDomain("att.net")
+		writeBasicDomain("sbcglobal.net")
+		writeBasicDomain("bellsouth.net")
+		writeBasicDomain("cox.net")
+		writeBasicDomain("charter.net")
+		writeBasicDomain("spectrum.net")
+		writeBasicDomain("verizon.net")
+
 		sb.WriteString("</virtual-mta-pool>\n")
 
-		// Warmup pool (single IP for controlled warmup)
-		sb.WriteString("\n# --- Warmup Pool (first IP only for controlled warmup) ---\n")
+		sb.WriteString("\n# --- Warmup Pool ---\n")
 		sb.WriteString("<virtual-mta-pool warmup-pool>\n")
-		sb.WriteString("  virtual-mta mta1\n")
+		sb.WriteString("    virtual-mta mta1\n")
 		sb.WriteString("</virtual-mta-pool>\n")
 	}
 
-	// SES relay: route specific sender domains through Amazon SES SMTP
 	if cfg.SESRelayHost != "" && len(cfg.SESRelayDomains) > 0 {
 		port := cfg.SESRelayPort
 		if port == 0 {
@@ -240,32 +316,60 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 		sb.WriteString("\n# --- AWS SES SMTP Relay ---\n")
 		for _, domain := range cfg.SESRelayDomains {
 			sb.WriteString(fmt.Sprintf("<domain %s>\n", domain))
-			sb.WriteString(fmt.Sprintf("  route-to %s:%d\n", cfg.SESRelayHost, port))
-			sb.WriteString("  use-starttls yes\n")
-			sb.WriteString(fmt.Sprintf("  auth-username %s\n", cfg.SESRelayUser))
-			sb.WriteString(fmt.Sprintf("  auth-password %s\n", cfg.SESRelayPassword))
-			sb.WriteString("  max-msg-rate 1/s\n")
-			sb.WriteString(fmt.Sprintf("</%s>\n", "domain"))
+			sb.WriteString(fmt.Sprintf("    route-to %s:%d\n", cfg.SESRelayHost, port))
+			sb.WriteString("    use-starttls yes\n")
+			sb.WriteString(fmt.Sprintf("    auth-username %s\n", cfg.SESRelayUser))
+			sb.WriteString(fmt.Sprintf("    auth-password %s\n", cfg.SESRelayPassword))
+			sb.WriteString("    max-msg-rate 1/s\n")
+			sb.WriteString("</domain>\n")
 		}
 	}
 
-	// Accounting
+	sb.WriteString("\n# --- Global Domain Default ---\n")
+	sb.WriteString("<domain *>\n")
+	sb.WriteString("    max-smtp-out 20\n")
+	sb.WriteString("    bounce-after 2d\n")
+	sb.WriteString("    retry-after 15m\n")
+	sb.WriteString("    use-starttls yes\n")
+	sb.WriteString("    connection-idle-timeout 30s\n")
+	sb.WriteString("</domain>\n")
+
+	sb.WriteString(fmt.Sprintf("\nhttp-mgmt-port %d\n", mgmtPort))
+	if cfg.MgmtAPIKey != "" {
+		sb.WriteString(fmt.Sprintf("http-access %s monitor\n", cfg.MgmtAPIKey))
+	}
+	sb.WriteString("http-access 127.0.0.1 monitor\n")
+	sb.WriteString("http-access 0/0 admin\n\n")
+	sb.WriteString("run-as-root no\n")
+	sb.WriteString("log-file /var/log/pmta/pmta.log\n")
+
 	sb.WriteString("\n# --- Accounting ---\n")
 	sb.WriteString("<acct-file /var/log/pmta/acct.csv>\n")
-	sb.WriteString("  move-to /var/log/pmta/acct-archive\n")
-	sb.WriteString("  move-interval 1h\n")
-	sb.WriteString("  max-size 500M\n")
-	sb.WriteString("  records d b f\n")
+	sb.WriteString("    move-to /var/log/pmta/acct-archive\n")
+	sb.WriteString("    move-interval 1h\n")
+	sb.WriteString("    max-size 500M\n")
+	sb.WriteString("</acct-file>\n\n")
+
+	sb.WriteString("<acct-file /var/log/pmta/bounce.csv>\n")
+	sb.WriteString("    move-to /var/log/pmta/bounce-archive\n")
+	sb.WriteString("    move-interval 1h\n")
+	sb.WriteString("    max-size 500M\n")
+	sb.WriteString("    records b\n")
 	sb.WriteString("</acct-file>\n")
 
-	// Bounce processing
-	sb.WriteString("\n# --- Bounce Processing ---\n")
-	sb.WriteString("<acct-file /var/log/pmta/bounce.csv>\n")
-	sb.WriteString("  move-to /var/log/pmta/bounce-archive\n")
-	sb.WriteString("  move-interval 1h\n")
-	sb.WriteString("  max-size 500M\n")
-	sb.WriteString("  records b\n")
-	sb.WriteString("</acct-file>\n")
+	sb.WriteString("\n# --- Bounce/FBL Processors ---\n")
+	sb.WriteString("<bounce-processor>\n")
+	sb.WriteString("    deliver-unmatched-email no\n")
+	sb.WriteString("    deliver-matched-email no\n")
+	sb.WriteString("</bounce-processor>\n\n")
+	sb.WriteString("<feedback-loop-processor>\n")
+	sb.WriteString("    deliver-unmatched-email no\n")
+	sb.WriteString("    deliver-matched-email no\n")
+	sb.WriteString("</feedback-loop-processor>\n")
+
+	sb.WriteString("\n<spool /var/spool/pmta>\n")
+	sb.WriteString("    deliver-only no\n")
+	sb.WriteString("</spool>\n")
 
 	return sb.String()
 }
