@@ -36,6 +36,8 @@ type Server struct {
 	redisClient    *redis.Client
 	// Mailing service reference for wiring callbacks
 	mailingSvc     *MailingService
+	// Global suppression hub — exported so main.go can wire it to the send worker pool
+	GlobalHub      interface{ IsSuppressed(email string) bool }
 	// S3 data normalizer for operational API
 	dataNormHandler *DataNormHandler
 }

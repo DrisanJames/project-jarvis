@@ -679,6 +679,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			pmtaCampaignAPI.SetGlobalSuppressionHub(globalHub)
 			pmtaCampaignAPI.SetExecutor(executor)
 
+			// Export for main.go to wire to the send worker pool
+			s.GlobalHub = globalHub
+
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)
 			globalSuppAPI.RegisterRoutes(r)

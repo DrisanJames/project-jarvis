@@ -270,9 +270,7 @@ func main() {
 			}
 			
 			// Start Send Worker Pool (processes the queue and sends emails)
-			sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10) // 10 workers for testing
-			
-			// Create ESP senders using a profile-based sender that reads credentials from DB
+			sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10)
 			profileSender := worker.NewProfileBasedSender(mailingDB)
 			sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
 
@@ -298,6 +296,14 @@ func main() {
 					trackingConsumer.Start(ctx)
 					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
 				}
+			}
+
+			// Wire global suppression hub to send worker pool for bounce recording
+			if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
+				sendWorkerPool.SetGlobalSuppressionHub(hub)
+			}
+			if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
+				sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
 			}
 
 			sendWorkerPool.Start()

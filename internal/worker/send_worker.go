@@ -30,6 +30,12 @@ type GlobalSuppressionChecker interface {
 	IsSuppressed(email string) bool
 }
 
+// GlobalSuppressionSuppressor writes to the global suppression hub when
+// bounces or complaints are detected during sending.
+type GlobalSuppressionSuppressor interface {
+	Suppress(ctx context.Context, email, reason, source, isp, dsnCode, dsnDiag, sourceIP, campaign string) (bool, error)
+}
+
 type SendWorkerPool struct {
 	db              *sql.DB
 	workerID        string
@@ -57,6 +63,7 @@ type SendWorkerPool struct {
 
 	// Global suppression hub (single source of truth)
 	globalHub       GlobalSuppressionChecker
+	globalSuppressor GlobalSuppressionSuppressor
 
 	// Tracking infrastructure
 	trackingURL     string // Base URL for open/click/unsubscribe tracking
@@ -186,6 +193,12 @@ func NewSendWorkerPool(db *sql.DB, numWorkers int) *SendWorkerPool {
 // suppression single source of truth for pre-send checking.
 func (p *SendWorkerPool) SetGlobalSuppressionHub(hub GlobalSuppressionChecker) {
 	p.globalHub = hub
+}
+
+// SetGlobalSuppressionWriter connects the worker pool to the global
+// suppression hub for writing bounces/complaints during send failures.
+func (p *SendWorkerPool) SetGlobalSuppressionWriter(w GlobalSuppressionSuppressor) {
+	p.globalSuppressor = w
 }
 
 // SetESPSenders sets the ESP sender implementations
@@ -584,6 +597,8 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		if err != nil {
 			errMsg = err.Error()
 		}
+
+		p.recordBounce(ctx, item, errMsg)
 		return p.markFailed(ctx, item.ID, errMsg)
 	}
 	
@@ -709,6 +724,66 @@ func (p *SendWorkerPool) markFailed(ctx context.Context, itemID uuid.UUID, errMs
 		WHERE id = $1
 	`, itemID, errMsg)
 	return err
+}
+
+// recordBounce inserts a tracking event for the failed send and, for hard
+// bounces, adds the address to the global suppression hub so it is never
+// mailed again.
+func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMsg string) {
+	bounceType := classifySendError(errMsg)
+	sendingDomain := ""
+	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
+		sendingDomain = strings.ToLower(item.FromEmail[atIdx+1:])
+	}
+	recipientDomain := ""
+	if atIdx := strings.LastIndex(item.Email, "@"); atIdx >= 0 {
+		recipientDomain = strings.ToLower(item.Email[atIdx+1:])
+	}
+
+	_, dbErr := p.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, recipient_domain)
+		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7, $8)
+	`, uuid.New(), p.orgID, item.CampaignID, item.SubscriberID,
+		bounceType, errMsg, sendingDomain, recipientDomain)
+	if dbErr != nil {
+		log.Printf("[SendWorkerPool] bounce tracking insert error: %v", dbErr)
+	}
+
+	p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'bounce_count', 1)`, item.CampaignID)
+	if bounceType == "hard" {
+		p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'hard_bounce_count', 1)`, item.CampaignID)
+	} else {
+		p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'soft_bounce_count', 1)`, item.CampaignID)
+	}
+
+	if bounceType == "hard" && p.globalSuppressor != nil {
+		ispGroup := recipientDomain
+		if _, suppressErr := p.globalSuppressor.Suppress(
+			ctx, item.Email, "hard_bounce", "send_worker",
+			ispGroup, "", errMsg, "", item.CampaignID.String(),
+		); suppressErr != nil {
+			log.Printf("[SendWorkerPool] global suppress error for %s: %v",
+				logger.RedactEmail(item.Email), suppressErr)
+		}
+	}
+}
+
+// classifySendError determines hard vs soft bounce from SMTP error text.
+func classifySendError(errMsg string) string {
+	lower := strings.ToLower(errMsg)
+	hardIndicators := []string{
+		"550", "551", "552", "553", "554",
+		"user unknown", "mailbox not found", "does not exist",
+		"no such user", "invalid recipient", "rejected",
+		"permanently", "disabled", "deactivated",
+	}
+	for _, ind := range hardIndicators {
+		if strings.Contains(lower, ind) {
+			return "hard"
+		}
+	}
+	return "soft"
 }
 
 // markSkipped marks a queue item as skipped
