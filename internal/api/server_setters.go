@@ -6,9 +6,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/ignite/sparkpost-monitor/internal/agent"
-	"github.com/ignite/sparkpost-monitor/internal/datanorm"
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
+	"github.com/ignite/sparkpost-monitor/internal/datanorm"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
 	"github.com/ignite/sparkpost-monitor/internal/financial"
 	"github.com/ignite/sparkpost-monitor/internal/intelligence"
@@ -193,4 +193,5 @@ func (s *Server) RegisterHealthRoutes() {
 	s.router.Get("/health/ready", hc.HandleReadiness)
 	s.router.Get("/health/detailed", hc.HandleDetailed)
 	s.router.Get("/health/db-stats", hc.HandleDBStats)
+	s.router.Get("/version", hc.HandleVersion)
 }

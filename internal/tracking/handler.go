@@ -2,12 +2,14 @@ package tracking
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 )
 
 // 1x1 transparent GIF
@@ -32,6 +34,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/track/click/{data}/{sig}", h.HandleClick)
 	r.Get("/track/unsubscribe/{data}/{sig}", h.HandleUnsubscribe)
 	r.Get("/health", h.HandleHealth)
+	r.Get("/version", h.HandleVersion)
 	return r
 }
 
@@ -143,6 +146,11 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+func (h *Handler) HandleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(buildinfo.Current())
+}
+
 func (h *Handler) servePixel(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "image/gif")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -163,4 +171,3 @@ func realIP(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
-

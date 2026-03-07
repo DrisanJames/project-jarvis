@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -80,7 +82,7 @@ type CreateSegmentRequest struct {
 // ListSegments returns all segments for the organization
 func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	var listID *uuid.UUID
 	if listIDStr := r.URL.Query().Get("list_id"); listIDStr != "" {
@@ -95,13 +97,72 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if segments == nil {
+		segments = []*segmentation.Segment{}
+	}
+
+	// Background-refresh counts for segments that show 0
+	for _, seg := range segments {
+		if seg.SubscriberCount == 0 {
+			go func(s *segmentation.Segment) {
+				// System segments use a pre-built SQL query
+				if s.IsSystem && s.SystemQuery != "" {
+					var count int
+					if err := api.db.QueryRowContext(context.Background(), s.SystemQuery, s.OrganizationID).Scan(&count); err != nil {
+						log.Printf("[Segment] system query error for %s (%s): %v", s.Name, s.ID, err)
+						return
+					}
+					if err := api.engine.Store().UpdateSegmentCount(context.Background(), s.ID, count); err != nil {
+						log.Printf("[Segment] system count update error for %s (%s): %v", s.Name, s.ID, err)
+						return
+					}
+					log.Printf("[Segment] refreshed system segment %s (%s): %d subscribers", s.Name, s.ID, count)
+					return
+				}
+
+				conditions, err := api.engine.Store().GetSegmentConditions(context.Background(), s.ID)
+				if err != nil || conditions == nil {
+					log.Printf("[Segment] refresh count for %s (%s): failed to load conditions: %v", s.Name, s.ID, err)
+					return
+				}
+				qb := segmentation.NewQueryBuilder()
+				qb.SetOrganizationID(s.OrganizationID.String())
+				if s.ListID != nil {
+					qb.SetListID(s.ListID.String())
+				}
+				qb.SetIncludeSuppressed(s.IncludeSuppressed)
+
+				var ge []segmentation.ConditionBuilder
+				if len(s.GlobalExclusionRules) > 0 {
+					json.Unmarshal(s.GlobalExclusionRules, &ge)
+				}
+
+				cq, args, err := qb.BuildCountQuery(*conditions, ge)
+				if err != nil {
+					log.Printf("[Segment] refresh count for %s (%s): query build error: %v", s.Name, s.ID, err)
+					return
+				}
+				var count int
+				if err := api.db.QueryRowContext(context.Background(), cq, args...).Scan(&count); err != nil {
+					log.Printf("[Segment] refresh count for %s (%s): query exec error: %v", s.Name, s.ID, err)
+					return
+				}
+				if err := api.engine.Store().UpdateSegmentCount(context.Background(), s.ID, count); err != nil {
+					log.Printf("[Segment] refresh count for %s (%s): update error: %v", s.Name, s.ID, err)
+					return
+				}
+				log.Printf("[Segment] refreshed count for %s (%s): %d subscribers", s.Name, s.ID, count)
+			}(seg)
+		}
+	}
+
 	segmentRespondJSON(w, segments)
 }
 
 // CreateSegment creates a new segment
 func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 	userID := segmentGetUserIDFromContext(ctx)
 
 	var req CreateSegmentRequest
@@ -139,13 +200,46 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Synchronous count calculation with timeout
+	countCtx, countCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer countCancel()
+
+	qb := segmentation.NewQueryBuilder()
+	qb.SetOrganizationID(segment.OrganizationID.String())
+	if segment.ListID != nil {
+		qb.SetListID(segment.ListID.String())
+	}
+	qb.SetIncludeSuppressed(segment.IncludeSuppressed)
+
+	var ge []segmentation.ConditionBuilder
+	if len(exclusionsJSON) > 0 {
+		json.Unmarshal(exclusionsJSON, &ge)
+	}
+
+	cq, args, buildErr := qb.BuildCountQuery(req.RootGroup, ge)
+	if buildErr != nil {
+		log.Printf("[Segment] count query build error for %s (%s): %v", segment.Name, segment.ID, buildErr)
+	} else {
+		var count int
+		if err := api.db.QueryRowContext(countCtx, cq, args...).Scan(&count); err != nil {
+			log.Printf("[Segment] count query exec error for %s (%s): %v", segment.Name, segment.ID, err)
+		} else {
+			segment.SubscriberCount = count
+			if err := api.engine.Store().UpdateSegmentCount(countCtx, segment.ID, count); err != nil {
+				log.Printf("[Segment] count update error for %s (%s): %v", segment.Name, segment.ID, err)
+			} else {
+				log.Printf("[Segment] created %s (%s) with %d subscribers", segment.Name, segment.ID, count)
+			}
+		}
+	}
+
 	segmentRespondJSON(w, segment)
 }
 
 // GetSegment returns a segment by ID
 func (api *SegmentationAPI) GetSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
 
 	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
@@ -170,9 +264,16 @@ func (api *SegmentationAPI) GetSegment(w http.ResponseWriter, r *http.Request) {
 // UpdateSegment updates a segment
 func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 	userID := segmentGetUserIDFromContext(ctx)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
+
+	// Block edits on system segments
+	existing, _ := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if existing != nil && existing.IsSystem {
+		http.Error(w, "system segments cannot be edited", http.StatusForbidden)
+		return
+	}
 
 	var req CreateSegmentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -213,14 +314,53 @@ func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Synchronous count calculation with timeout
+	countCtx, countCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer countCancel()
+
+	uqb := segmentation.NewQueryBuilder()
+	uqb.SetOrganizationID(segment.OrganizationID.String())
+	if segment.ListID != nil {
+		uqb.SetListID(segment.ListID.String())
+	}
+	uqb.SetIncludeSuppressed(segment.IncludeSuppressed)
+
+	var uge []segmentation.ConditionBuilder
+	if len(exclusionsJSON) > 0 {
+		json.Unmarshal(exclusionsJSON, &uge)
+	}
+
+	ucq, uargs, uBuildErr := uqb.BuildCountQuery(req.RootGroup, uge)
+	if uBuildErr != nil {
+		log.Printf("[Segment] update count query build error for %s (%s): %v", segment.Name, segment.ID, uBuildErr)
+	} else {
+		var count int
+		if err := api.db.QueryRowContext(countCtx, ucq, uargs...).Scan(&count); err != nil {
+			log.Printf("[Segment] update count query exec error for %s (%s): %v", segment.Name, segment.ID, err)
+		} else {
+			segment.SubscriberCount = count
+			if err := api.engine.Store().UpdateSegmentCount(countCtx, segment.ID, count); err != nil {
+				log.Printf("[Segment] update count persist error for %s (%s): %v", segment.Name, segment.ID, err)
+			} else {
+				log.Printf("[Segment] updated %s (%s) with %d subscribers", segment.Name, segment.ID, count)
+			}
+		}
+	}
+
 	segmentRespondJSON(w, segment)
 }
 
 // DeleteSegment deletes a segment
 func (api *SegmentationAPI) DeleteSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
+
+	existing, _ := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if existing != nil && existing.IsSystem {
+		http.Error(w, "system segments cannot be deleted", http.StatusForbidden)
+		return
+	}
 
 	if err := api.engine.Store().DeleteSegment(ctx, orgID, segmentID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -233,7 +373,7 @@ func (api *SegmentationAPI) DeleteSegment(w http.ResponseWriter, r *http.Request
 // PreviewSegment previews a segment without saving
 func (api *SegmentationAPI) PreviewSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	var req struct {
 		ListID           *uuid.UUID                          `json:"list_id,omitempty"`
@@ -324,10 +464,9 @@ func (api *SegmentationAPI) GetSegmentSubscribers(w http.ResponseWriter, r *http
 // GetSegmentCount returns just the count for a segment (fast endpoint)
 func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
 
-	// Get segment
 	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -338,49 +477,54 @@ func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get conditions
-	conditions, err := api.engine.Store().GetSegmentConditions(ctx, segmentID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if conditions == nil {
-		conditions = &segmentation.ConditionGroupBuilder{LogicOperator: segmentation.LogicAnd}
-	}
-
-	// Parse global exclusions
-	var globalExclusions []segmentation.ConditionBuilder
-	if len(segment.GlobalExclusionRules) > 0 {
-		json.Unmarshal(segment.GlobalExclusionRules, &globalExclusions)
-	}
-
-	// Build count query
-	qb := segmentation.NewQueryBuilder()
-	qb.SetOrganizationID(segment.OrganizationID.String())
-	if segment.ListID != nil {
-		qb.SetListID(segment.ListID.String())
-	}
-	qb.SetIncludeSuppressed(segment.IncludeSuppressed)
-
-	countQuery, args, err := qb.BuildCountQuery(*conditions, globalExclusions)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	var count int
-	if err := api.db.QueryRowContext(ctx, countQuery, args...).Scan(&count); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+
+	if segment.IsSystem && segment.SystemQuery != "" {
+		if err := api.db.QueryRowContext(ctx, segment.SystemQuery, segment.OrganizationID).Scan(&count); err != nil {
+			log.Printf("[Segment] system count error for %s: %v", segment.Name, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		conditions, err := api.engine.Store().GetSegmentConditions(ctx, segmentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if conditions == nil {
+			conditions = &segmentation.ConditionGroupBuilder{LogicOperator: segmentation.LogicAnd}
+		}
+
+		var globalExclusions []segmentation.ConditionBuilder
+		if len(segment.GlobalExclusionRules) > 0 {
+			json.Unmarshal(segment.GlobalExclusionRules, &globalExclusions)
+		}
+
+		qb := segmentation.NewQueryBuilder()
+		qb.SetOrganizationID(segment.OrganizationID.String())
+		if segment.ListID != nil {
+			qb.SetListID(segment.ListID.String())
+		}
+		qb.SetIncludeSuppressed(segment.IncludeSuppressed)
+
+		countQuery, args, err := qb.BuildCountQuery(*conditions, globalExclusions)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := api.db.QueryRowContext(ctx, countQuery, args...).Scan(&count); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	// Update segment count in database
 	api.engine.Store().UpdateSegmentCount(ctx, segmentID, count)
 
 	segmentRespondJSON(w, map[string]interface{}{
-		"segment_id":       segmentID,
-		"count":            count,
-		"last_calculated":  segment.LastCalculatedAt,
+		"segment_id":      segmentID,
+		"count":           count,
+		"last_calculated": segment.LastCalculatedAt,
 	})
 }
 
@@ -454,7 +598,7 @@ func (api *SegmentationAPI) GetSnapshotSubscribers(w http.ResponseWriter, r *htt
 // TrackEvent tracks a custom event
 func (api *SegmentationAPI) TrackEvent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	var event segmentation.CustomEvent
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
@@ -480,7 +624,7 @@ func (api *SegmentationAPI) TrackEvent(w http.ResponseWriter, r *http.Request) {
 // ListContactFields returns all contact field definitions
 func (api *SegmentationAPI) ListContactFields(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	fields, err := api.engine.Store().GetContactFields(ctx, orgID)
 	if err != nil {
@@ -494,7 +638,7 @@ func (api *SegmentationAPI) ListContactFields(w http.ResponseWriter, r *http.Req
 // CreateContactField creates a new contact field definition
 func (api *SegmentationAPI) CreateContactField(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	var field segmentation.ContactField
 	if err := json.NewDecoder(r.Body).Decode(&field); err != nil {
@@ -534,7 +678,7 @@ func (api *SegmentationAPI) ListOperators(w http.ResponseWriter, r *http.Request
 // TrackEventsBatch tracks multiple events in a single request
 func (api *SegmentationAPI) TrackEventsBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgID := segmentGetOrgIDFromContext(ctx)
+	orgID := segmentGetOrgIDFromRequest(r)
 
 	var events []segmentation.CustomEvent
 	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
@@ -560,12 +704,12 @@ func (api *SegmentationAPI) TrackEventsBatch(w http.ResponseWriter, r *http.Requ
 // HELPERS
 // ==========================================
 
-func segmentGetOrgIDFromContext(ctx interface{}) uuid.UUID {
-	// Use the dynamic org context extraction
-	if c, ok := ctx.(context.Context); ok {
-		return GetOrgIDFromContext(c)
+func segmentGetOrgIDFromRequest(r *http.Request) uuid.UUID {
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		return uuid.Nil
 	}
-	return uuid.Nil
+	return orgID
 }
 
 func segmentGetUserIDFromContext(ctx interface{}) *uuid.UUID {

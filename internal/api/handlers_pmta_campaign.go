@@ -2,14 +2,11 @@ package api
 
 import (
 	"context"
-	"crypto/md5"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/lib/pq"
 )
 
@@ -514,11 +512,11 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		if segListID != nil && *segListID != "" {
 			listIDVal = *segListID
 		}
-		var conditions []SegmentConditionInput
-		if conditionsRaw.Valid && conditionsRaw.String != "" && conditionsRaw.String != "[]" {
-			json.Unmarshal([]byte(conditionsRaw.String), &conditions)
+		condStr := ""
+		if conditionsRaw.Valid {
+			condStr = conditionsRaw.String
 		}
-		query, args := BuildSegmentSubscriberQuery(listIDVal, conditions)
+		query, args := buildSegmentQuery(condStr, listIDVal)
 		segRows, segErr := s.db.QueryContext(ctx, query, args...)
 		if segErr != nil {
 			log.Printf("[EstimateAudience] segment %s query failed: %v", segID, segErr)
@@ -624,443 +622,62 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 	if len(input.TargetISPs) == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
-		return
-	}
-
-	// Validate send mode
-	sendMode := input.SendMode
-	if sendMode == "" {
-		sendMode = "immediate"
-	}
-	if sendMode != "immediate" && sendMode != "scheduled" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "send_mode must be 'immediate' or 'scheduled'"})
-		return
-	}
-
-	var scheduledAt time.Time
-	if sendMode == "scheduled" {
-		if input.ScheduledAt == nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "scheduled_at is required when send_mode is 'scheduled'"})
+		if len(input.ISPPlans) == 0 {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
 			return
 		}
-		scheduledAt = *input.ScheduledAt
-		if scheduledAt.Before(time.Now().Add(5 * time.Minute)) {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "scheduled_at must be at least 5 minutes in the future"})
-			return
-		}
-	} else {
-		scheduledAt = time.Now()
 	}
 
 	ctx := r.Context()
 	orgID := getOrgID(r)
-	campaignID := uuid.New().String()
 
-	// Resolve sending profile for the selected domain
-	var profileID, fromEmail, fromName, replyTo sql.NullString
-	s.db.QueryRowContext(ctx, `
-		SELECT id, from_email, from_name, reply_email
-		FROM mailing_sending_profiles
-		WHERE organization_id = $1 AND vendor_type = 'pmta'
-		  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
-		  AND status = 'active'
-		ORDER BY created_at DESC LIMIT 1
-	`, orgID, input.SendingDomain).Scan(&profileID, &fromEmail, &fromName, &replyTo)
-
-	// Profile from_name is the default; variant from_name wins if set
-	resolvedFromName := ""
-	if fromName.Valid && fromName.String != "" {
-		resolvedFromName = fromName.String
-	}
-	if input.Variants[0].FromName != "" {
-		resolvedFromName = input.Variants[0].FromName
-	}
-	resolvedFromEmail := ""
-	if fromEmail.Valid {
-		resolvedFromEmail = fromEmail.String
+	normalized, err := normalizePMTACampaignInput(input)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 
-	// Compute max_recipients from ISP quotas sum
-	var maxRecipients int
-	for _, q := range input.ISPQuotas {
-		if q.Volume > 0 {
-			maxRecipients += q.Volume
-		}
-	}
-
-	espQuotas, _ := json.Marshal(map[string]interface{}{
-		"target_isps":        input.TargetISPs,
-		"sending_domain":     input.SendingDomain,
-		"throttle_strategy":  input.ThrottleStrategy,
-		"isp_quotas":         input.ISPQuotas,
-		"randomize_audience": input.RandomizeAudience,
-	})
-	inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.InclusionLists)
-	exclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, input.ExclusionLists)
-	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
-	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
-
-	// max_recipients is NULL if no quotas set (unlimited), otherwise sum of quotas
-	var maxRecipientsParam interface{}
-	if maxRecipients > 0 {
-		maxRecipientsParam = maxRecipients
-	}
-
-	// Create campaign as 'draft' — it moves to 'scheduled' after the queue is pre-populated.
-	// This prevents the scheduler from picking it up during pre-computation.
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO mailing_campaigns (
-			id, organization_id, name, status, scheduled_at,
-			from_name, from_email, reply_to, subject, preview_text, html_content,
-			sending_profile_id, esp_quotas, list_ids, suppression_list_ids,
-			max_recipients, send_type, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, 'draft', $4,
-			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14,
-			$15, 'blast', NOW(), NOW()
-		)
-	`, campaignID, orgID, input.Name, scheduledAt,
-		resolvedFromName, resolvedFromEmail, replyTo,
-		input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-		profileID, espQuotas, inclusionListsJSON, suppressionListsJSON,
-		maxRecipientsParam,
-	)
+	audience, err := planPMTAAudience(ctx, s.db, orgID, input, normalized, s.suppMatcher)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	// A/B variants: always create a mailing_ab_tests record so the scheduler
-	// can discover variants via JOIN mailing_ab_tests -> mailing_ab_variants.
-	testID := uuid.New().String()
-	if _, abErr := s.db.ExecContext(ctx, `
-		INSERT INTO mailing_ab_tests (
-			id, organization_id, campaign_id, name, test_type,
-			test_sample_percent, winner_metric, status,
-			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 'content', 100, 'open_rate', 'testing', NOW(), NOW())
-	`, testID, orgID, campaignID, input.Name+" A/B Test"); abErr != nil {
-		log.Printf("[DeployCampaign] A/B test creation failed for campaign %s: %v", campaignID, abErr)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 
-	for _, v := range input.Variants {
-		if _, vErr := s.db.ExecContext(ctx, `
-			INSERT INTO mailing_ab_variants (
-				id, test_id, variant_name, from_name, subject, html_content,
-				split_percent, created_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-		`, uuid.New().String(), testID, v.VariantName, v.FromName, v.Subject, v.HTMLContent,
-			v.SplitPercent,
-		); vErr != nil {
-			log.Printf("[DeployCampaign] A/B variant %q creation failed for campaign %s: %v", v.VariantName, campaignID, vErr)
-		}
+	if err := tx.Commit(); err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
-
-	// === PRE-COMPUTE AUDIENCE: bloom filter + global suppression at deploy time ===
-	// This avoids expensive SQL NOT EXISTS queries at scheduler time.
-
-	// 1. Load global suppression MD5 hashes into in-memory set
-	globalSuppSet := make(map[string]bool)
-	gsRows, gsErr := s.db.QueryContext(ctx, "SELECT md5_hash FROM mailing_global_suppressions")
-	if gsErr == nil {
-		for gsRows.Next() {
-			var h string
-			if gsRows.Scan(&h) == nil {
-				globalSuppSet[strings.ToLower(h)] = true
-			}
-		}
-		gsRows.Close()
-	}
-	log.Printf("[DeployCampaign] Loaded %d global suppression hashes", len(globalSuppSet))
-
-	// 2. Load named suppression lists into bloom filter
-	for _, slID := range exclusionIDs {
-		slRows, slErr := s.db.QueryContext(ctx, "SELECT md5_hash FROM mailing_suppression_entries WHERE list_id = $1", slID)
-		if slErr == nil {
-			var hashes []string
-			for slRows.Next() {
-				var h string
-				if slRows.Scan(&h) == nil {
-					hashes = append(hashes, h)
-				}
-			}
-			slRows.Close()
-			if len(hashes) > 0 {
-				s.suppMatcher.LoadList(slID, hashes)
-			}
-		}
-	}
-
-	// 3. Load exclusion segment emails into a set
-	exclusionSegEmails := make(map[string]bool)
-	for _, segID := range input.ExclusionSegments {
-		var listID *string
-		var conditionsRaw sql.NullString
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segID,
-		).Scan(&listID, &conditionsRaw); err != nil {
-			log.Printf("[DeployCampaign] exclusion segment %s lookup failed: %v", segID, err)
-			continue
-		}
-		query := `SELECT LOWER(TRIM(email)) FROM mailing_subscribers WHERE status IN ('active','confirmed')`
-		var args []interface{}
-		argN := 1
-		if listID != nil && *listID != "" {
-			query += fmt.Sprintf(" AND list_id = $%d", argN)
-			args = append(args, *listID)
-			argN++
-		}
-		esRows, esErr := s.db.QueryContext(ctx, query, args...)
-		if esErr != nil {
-			log.Printf("[DeployCampaign] exclusion segment %s query failed: %v", segID, esErr)
-			continue
-		}
-		var cnt int
-		for esRows.Next() {
-			var em string
-			if esRows.Scan(&em) == nil {
-				exclusionSegEmails[em] = true
-				cnt++
-			}
-		}
-		esRows.Close()
-		log.Printf("[DeployCampaign] Exclusion segment %s loaded %d emails", segID, cnt)
-	}
-
-	// 4. Build ISP quota map
-	quotaMap := make(map[string]int)
-	for _, q := range input.ISPQuotas {
-		if q.Volume > 0 {
-			quotaMap[q.ISP] = q.Volume
-		}
-	}
-
-	// 5. Stream subscribers from selected lists, apply all filters
-	type qualifiedSub struct {
-		ID    string
-		Email string
-		ISP   string
-	}
-	var qualified []qualifiedSub
-	seenEmails := make(map[string]bool)
-
-	if len(inclusionIDs) > 0 {
-		subRows, subErr := s.db.QueryContext(ctx, `
-			SELECT s.id::text, s.email FROM mailing_subscribers s
-			WHERE s.list_id = ANY($1) AND s.status IN ('active','confirmed')
-		`, pq.Array(inclusionIDs))
-		if subErr == nil {
-			for subRows.Next() {
-				var subID, email string
-				if subRows.Scan(&subID, &email) != nil {
-					continue
-				}
-				emailLower := strings.ToLower(strings.TrimSpace(email))
-				if seenEmails[emailLower] {
-					continue
-				}
-				seenEmails[emailLower] = true
-
-				// Global suppression check (O(1) map lookup)
-				hash := md5.Sum([]byte(emailLower))
-				md5Hex := hex.EncodeToString(hash[:])
-				if globalSuppSet[md5Hex] {
-					continue
-				}
-
-				// Named suppression list check (bloom filter)
-				if len(exclusionIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
-					continue
-				}
-
-				// Exclusion segment check
-				if len(exclusionSegEmails) > 0 && exclusionSegEmails[emailLower] {
-					continue
-				}
-
-				// ISP classification
-				domain := emailLower
-				if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
-					domain = emailLower[idx+1:]
-				}
-				isp := domainToISPLookup(domain)
-
-				qualified = append(qualified, qualifiedSub{ID: subID, Email: emailLower, ISP: isp})
-			}
-			subRows.Close()
-		}
-	}
-
-	// 5b. Stream subscribers from inclusion segments into the same qualified pool
-	for _, segID := range input.InclusionSegments {
-		var segListID *string
-		var conditionsRaw sql.NullString
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segID,
-		).Scan(&segListID, &conditionsRaw); err != nil {
-			log.Printf("[DeployCampaign] inclusion segment %s lookup failed: %v", segID, err)
-			continue
-		}
-		var listIDVal interface{}
-		if segListID != nil && *segListID != "" {
-			listIDVal = *segListID
-		}
-		var conditions []SegmentConditionInput
-		if conditionsRaw.Valid && conditionsRaw.String != "" && conditionsRaw.String != "[]" {
-			json.Unmarshal([]byte(conditionsRaw.String), &conditions)
-		}
-		query, args := BuildSegmentSubscriberQuery(listIDVal, conditions)
-		segRows, segErr := s.db.QueryContext(ctx, query, args...)
-		if segErr != nil {
-			log.Printf("[DeployCampaign] inclusion segment %s query failed: %v", segID, segErr)
-			continue
-		}
-		var segCount int
-		for segRows.Next() {
-			var subID, email string
-			if segRows.Scan(&subID, &email) != nil {
-				continue
-			}
-			emailLower := strings.ToLower(strings.TrimSpace(email))
-			if seenEmails[emailLower] {
-				continue
-			}
-			seenEmails[emailLower] = true
-
-			hash := md5.Sum([]byte(emailLower))
-			md5Hex := hex.EncodeToString(hash[:])
-			if globalSuppSet[md5Hex] {
-				continue
-			}
-			if len(exclusionIDs) > 0 && s.suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
-				continue
-			}
-			if len(exclusionSegEmails) > 0 && exclusionSegEmails[emailLower] {
-				continue
-			}
-
-			domain := emailLower
-			if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
-				domain = emailLower[idx+1:]
-			}
-			isp := domainToISPLookup(domain)
-			qualified = append(qualified, qualifiedSub{ID: subID, Email: emailLower, ISP: isp})
-			segCount++
-		}
-		segRows.Close()
-		log.Printf("[DeployCampaign] Inclusion segment %s contributed %d qualified subscribers", segID, segCount)
-	}
-
-	// 6. Randomize if requested (before quota enforcement)
-	if input.RandomizeAudience && len(qualified) > 1 {
-		rand.Shuffle(len(qualified), func(i, j int) { qualified[i], qualified[j] = qualified[j], qualified[i] })
-	}
-
-	// 7. Apply ISP quotas — STRICT enforcement.
-	// When quotas are active: ONLY subscribers in ISPs with explicit quotas are included.
-	// Subscribers in non-quoted ISPs are excluded entirely.
-	// When no quotas: all qualified subscribers pass through (limited by max_recipients).
-	var capped []qualifiedSub
-	ispCounts := make(map[string]int)
-	if len(quotaMap) > 0 {
-		for _, q := range qualified {
-			maxVol, hasQuota := quotaMap[q.ISP]
-			if !hasQuota {
-				continue // ISP not in quota list — exclude entirely
-			}
-			if ispCounts[q.ISP] >= maxVol {
-				continue // ISP quota full
-			}
-			ispCounts[q.ISP]++
-			capped = append(capped, q)
-			if maxRecipients > 0 && len(capped) >= maxRecipients {
-				break
-			}
-		}
-		log.Printf("[DeployCampaign] ISP quota enforcement: %v (limits: %v, qualified: %d, capped: %d)", ispCounts, quotaMap, len(qualified), len(capped))
-	} else {
-		capped = qualified
-		// Still enforce max_recipients as absolute ceiling even without ISP quotas
-		if maxRecipients > 0 && len(capped) > maxRecipients {
-			capped = capped[:maxRecipients]
-			log.Printf("[DeployCampaign] max_recipients cap applied: %d (no ISP quotas)", maxRecipients)
-		}
-	}
-
-	// 7. COPY qualified subscribers into campaign queue
-	now := time.Now()
-	queuedCount := 0
-	if len(capped) > 0 {
-		txn, txErr := s.db.BeginTx(ctx, nil)
-		if txErr == nil {
-			stmt, cpErr := txn.Prepare(pq.CopyIn("mailing_campaign_queue",
-				"id", "campaign_id", "subscriber_id",
-				"subject", "html_content", "plain_content",
-				"status", "priority", "scheduled_at", "created_at",
-			))
-			if cpErr == nil {
-				variantIdx := 0
-				for _, sub := range capped {
-					subj := input.Variants[0].Subject
-					html := input.Variants[0].HTMLContent
-					text := ""
-					if len(input.Variants) > 1 {
-						v := input.Variants[variantIdx%len(input.Variants)]
-						subj = v.Subject
-						html = v.HTMLContent
-						variantIdx++
-					}
-
-					subUUID, _ := uuid.Parse(sub.ID)
-					campUUID, _ := uuid.Parse(campaignID)
-					_, execErr := stmt.Exec(uuid.New(), campUUID, subUUID, subj, html, text, "queued", 5, scheduledAt, now)
-					if execErr != nil {
-						log.Printf("[DeployCampaign] COPY row error for %s: %v", sub.ID, execErr)
-						continue
-					}
-					queuedCount++
-					if maxRecipients > 0 && queuedCount >= maxRecipients {
-						log.Printf("[DeployCampaign] max_recipients hard cap reached: %d", maxRecipients)
-						break
-					}
-				}
-				stmt.Exec()
-				stmt.Close()
-				txn.Commit()
-			} else {
-				txn.Rollback()
-				log.Printf("[DeployCampaign] COPY prepare error: %v", cpErr)
-			}
-		}
-	}
-
-	// 8. Update campaign with actual audience counts and move to 'scheduled'.
-	// Use background context — the request ctx may time out during large pre-computations.
-	bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer bgCancel()
-	_, updErr := s.db.ExecContext(bgCtx, `UPDATE mailing_campaigns SET total_recipients=$1, queued_count=$1, status='scheduled', updated_at=NOW() WHERE id=$2`, queuedCount, campaignID)
-	if updErr != nil {
-		log.Printf("[DeployCampaign] CRITICAL: failed to move campaign %s to scheduled: %v", campaignID, updErr)
-	}
-	log.Printf("[DeployCampaign] Campaign %s: pre-enqueued %d subscribers (from %d qualified, %d total)", campaignID, queuedCount, len(qualified), len(seenEmails))
 
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"campaign_id":      campaignID,
-		"name":             input.Name,
-		"status":           "scheduled",
-		"send_mode":        sendMode,
-		"sends_at":         scheduledAt,
-		"target_isps":      input.TargetISPs,
-		"total_audience":   queuedCount,
-		"variant_count":    len(input.Variants),
-		"max_recipients":   maxRecipients,
-		"total_on_list":    len(seenEmails),
-		"after_suppression": len(qualified),
-		"suppressed":       len(seenEmails) - len(qualified),
-		"per_isp_enqueued": ispCounts,
-		"quota_config":     quotaMap,
+		"campaign_id":       result.CampaignID,
+		"name":              result.Name,
+		"status":            result.Status,
+		"send_mode":         result.SendMode,
+		"sends_at":          result.SendsAt,
+		"target_isps":       result.TargetISPs,
+		"total_audience":    result.TotalAudience,
+		"variant_count":     result.VariantCount,
+		"isp_plans":         result.ISPPlans,
+		"initial_waves":     result.InitialWaves,
+		"assumptions":       result.Assumptions,
+		"legacy_input":      result.LegacyInput,
+		"queued_count":      0,
+		"after_suppression": audience.AfterSuppression,
+		"suppressed":        audience.TotalSeen - audience.AfterSuppression,
+		"per_isp_selected":  audience.CountsByISP,
 	})
 }
 
@@ -1303,13 +920,13 @@ var ispDomainMap = map[string]string{
 	"gmail.com": "gmail", "googlemail.com": "gmail",
 	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
 	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo", "yahoo.co.uk": "yahoo", "yahoo.co.jp": "yahoo", "yahoo.ca": "yahoo",
-	"aol.com": "yahoo",
+	"aol.com":    "yahoo",
 	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
 	"comcast.net": "comcast", "xfinity.com": "comcast",
 	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
-	"cox.net": "cox",
+	"cox.net":     "cox",
 	"charter.net": "charter", "spectrum.net": "charter",
-	"verizon.net": "verizon",
+	"verizon.net":    "verizon",
 	"protonmail.com": "protonmail", "proton.me": "protonmail",
 	"zoho.com": "zoho",
 }
@@ -1406,12 +1023,12 @@ func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.R
 	s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET total_recipients = $1 WHERE id = $2`, enqueued, campaignID)
 
 	respondJSON(w, 200, map[string]interface{}{
-		"campaign_id":     campaignID,
-		"enqueued":        enqueued,
-		"profile_id":      profileID,
-		"list_ids":        listIDs,
-		"status":          "sending",
-		"message":         "Campaign manually enqueued — send worker will pick up pending items",
+		"campaign_id": campaignID,
+		"enqueued":    enqueued,
+		"profile_id":  profileID,
+		"list_ids":    listIDs,
+		"status":      "sending",
+		"message":     "Campaign manually enqueued — send worker will pick up pending items",
 	})
 }
 
@@ -1701,4 +1318,36 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 		"bridge_response":  string(bodyBytes),
 		"bridge_http_code": resp.StatusCode,
 	})
+}
+
+// buildSegmentQuery detects whether conditionsRaw is a V2 ConditionGroupBuilder
+// (JSON object with logic_operator) or a legacy flat array, and builds the
+// appropriate SELECT id::text, email query.
+func buildSegmentQuery(conditionsRaw string, listIDVal interface{}) (string, []interface{}) {
+	raw := strings.TrimSpace(conditionsRaw)
+	if raw == "" || raw == "null" || raw == "[]" {
+		return BuildSegmentSubscriberQuery(listIDVal, nil)
+	}
+
+	if raw[0] == '{' {
+		var group segmentation.ConditionGroupBuilder
+		if err := json.Unmarshal([]byte(raw), &group); err == nil && group.LogicOperator != "" {
+			qb := segmentation.NewQueryBuilder()
+			if listIDVal != nil {
+				qb.SetListID(fmt.Sprintf("%v", listIDVal))
+			}
+			fullQuery, args, err := qb.BuildQuery(group, nil)
+			if err == nil {
+				// V2 BuildQuery returns a full SELECT with many columns; wrap it
+				// to extract only the id::text and email the caller needs.
+				query := fmt.Sprintf("SELECT sub.id::text, sub.email FROM (%s) sub", fullQuery)
+				return query, args
+			}
+			log.Printf("[buildSegmentQuery] V2 query build error, falling back to legacy: %v", err)
+		}
+	}
+
+	var conditions []SegmentConditionInput
+	json.Unmarshal([]byte(raw), &conditions)
+	return BuildSegmentSubscriberQuery(listIDVal, conditions)
 }

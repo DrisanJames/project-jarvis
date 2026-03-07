@@ -48,7 +48,11 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	}
 
 	injectURL := strings.TrimRight(s.apiEndpoint, "/") + "/api/inject/v1"
-	messageID := fmt.Sprintf("%s@pmta-api", uuid.New().String())
+	msgDomain := "mail.projectjarvis.io"
+	if parts := strings.SplitN(msg.FromEmail, "@", 2); len(parts) == 2 && parts[1] != "" {
+		msgDomain = parts[1]
+	}
+	messageID := fmt.Sprintf("%s@%s", uuid.New().String(), msgDomain)
 
 	// Build RFC822 message
 	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])

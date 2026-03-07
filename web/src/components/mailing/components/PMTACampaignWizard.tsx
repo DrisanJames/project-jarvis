@@ -125,6 +125,50 @@ interface AudienceEstimate {
   suppression_sources?: Record<string, number>;
 }
 
+interface SendTimeWindowRecommendation {
+  day_of_week: string;
+  start_hour: number;
+  end_hour: number;
+  open_rate: number;
+  click_rate: number;
+  source: 'historical' | 'industry';
+  sample_size: number;
+  confidence: number;
+}
+
+interface SendTimeDataQuality {
+  source: string;
+  total_sends: number;
+  historical_days: number;
+  has_historical: boolean;
+}
+
+interface ISPRecommendation {
+  isp: string;
+  display_name: string;
+  windows: SendTimeWindowRecommendation[];
+  data_quality: SendTimeDataQuality;
+}
+
+interface ISPTimeSpanFormState {
+  id: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  source: string;
+}
+
+interface ISPPlanFormState {
+  isp: string;
+  useCustomSchedule: boolean;
+  timezone: string;
+  cadenceMode: 'single' | 'interval';
+  everyMinutes: number;
+  batchSize: number;
+  throttleStrategy: string;
+  timeSpans: ISPTimeSpanFormState[];
+}
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 const STEPS = [
@@ -187,6 +231,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [suppressionLists, setSuppressionLists] = useState<{ id: string; name: string; entry_count: number }[]>([]);
   const [selectedLists, setSelectedLists] = useState<string[]>([]);
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
+  const [sendPriority, setSendPriority] = useState<{ id: string; type: 'list' | 'segment' }[]>([]);
   const [selectedSuppLists, setSelectedSuppLists] = useState<string[]>([]);
   const [selectedExclusionSegments, setSelectedExclusionSegments] = useState<string[]>([]);
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
@@ -198,8 +243,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
   const [sendMode, setSendMode] = useState<'immediate' | 'scheduled'>('immediate');
+  const [scheduleMode, setScheduleMode] = useState<'quick' | 'per-isp'>('quick');
   const [scheduledAt, setScheduledAt] = useState('');
-  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [recommendations, setRecommendations] = useState<ISPRecommendation[]>([]);
+  const [ispPlansByKey, setISPPlansByKey] = useState<Record<string, ISPPlanFormState>>({});
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
@@ -489,7 +536,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         break;
       case 6:
         if (!campaignName.trim()) errors.push('Campaign name is required');
-        if (sendMode === 'scheduled' && !scheduledAt) errors.push('Scheduled date and time is required');
+        if (sendMode === 'scheduled' && scheduleMode === 'quick' && !scheduledAt) {
+          errors.push('Scheduled date and time is required');
+        }
+        if (sendMode === 'scheduled' && scheduleMode === 'per-isp') {
+          selectedISPs.forEach(isp => {
+            const plan = ispPlansByKey[isp];
+            const validSpans = (plan?.timeSpans || []).filter(span => span.startAt && span.endAt);
+            if (validSpans.length === 0) {
+              errors.push(`${ISP_META[isp]?.label || isp}: add at least one time span`);
+            }
+          });
+        }
         break;
     }
     return errors;
@@ -526,6 +584,76 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     );
   };
 
+  const toDateTimeLocal = (date: Date) => {
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  const nextScheduleFromWindow = (window: SendTimeWindowRecommendation) => {
+    const now = new Date();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const targetDay = days.indexOf(window.day_of_week);
+    const currentDay = now.getDay();
+    let daysUntil = (targetDay - currentDay + 7) % 7;
+    if (daysUntil === 0 && now.getHours() >= window.start_hour) daysUntil = 7;
+    const start = new Date(now);
+    start.setDate(start.getDate() + daysUntil);
+    start.setHours(window.start_hour, 0, 0, 0);
+    const end = new Date(start);
+    end.setHours(window.end_hour, 0, 0, 0);
+    return { start, end };
+  };
+
+  const buildDefaultISPPlan = useCallback((isp: string, previous?: ISPPlanFormState): ISPPlanFormState => ({
+    isp,
+    useCustomSchedule: previous?.useCustomSchedule ?? false,
+    timezone: previous?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    cadenceMode: previous?.cadenceMode || 'single',
+    everyMinutes: previous?.everyMinutes || 15,
+    batchSize: previous?.batchSize || (ispQuotas[isp] || 500),
+    throttleStrategy: previous?.throttleStrategy || 'auto',
+    timeSpans: previous?.timeSpans || [],
+  }), [ispQuotas]);
+
+  const updateISPPlan = (isp: string, updater: (plan: ISPPlanFormState) => ISPPlanFormState) => {
+    setISPPlansByKey(prev => {
+      const current = prev[isp] || buildDefaultISPPlan(isp);
+      return { ...prev, [isp]: updater(current) };
+    });
+  };
+
+  const addTimeSpanToPlan = (isp: string, span?: Partial<ISPTimeSpanFormState>) => {
+    updateISPPlan(isp, plan => ({
+      ...plan,
+      useCustomSchedule: true,
+      timeSpans: [
+        ...plan.timeSpans,
+        {
+          id: `${isp}-${Date.now()}-${plan.timeSpans.length}`,
+          startAt: span?.startAt || scheduledAt,
+          endAt: span?.endAt || scheduledAt,
+          timezone: span?.timezone || plan.timezone,
+          source: span?.source || 'manual',
+        },
+      ],
+    }));
+  };
+
+  useEffect(() => {
+    setISPPlansByKey(prev => {
+      const next: Record<string, ISPPlanFormState> = {};
+      selectedISPs.forEach(isp => {
+        next[isp] = buildDefaultISPPlan(isp, prev[isp]);
+      });
+      return next;
+    });
+  }, [selectedISPs, buildDefaultISPPlan]);
+
+  useEffect(() => {
+    setRecsLoaded(false);
+    setRecommendations([]);
+  }, [selectedISPs.join(',')]);
+
   // ── Deploy ───────────────────────────────────────────────────────────────
 
   const handleDeploy = async () => {
@@ -535,15 +663,56 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       const quotaArray = Object.entries(ispQuotas)
         .filter(([, v]) => v > 0)
         .map(([isp, volume]) => ({ isp, volume }));
+      const globalScheduleISO = scheduledAt ? new Date(scheduledAt).toISOString() : '';
+      const ispPlans = selectedISPs.map(isp => {
+        const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
+        const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
+        const spans = sendMode === 'scheduled'
+          ? (useGlobalSchedule
+            ? (globalScheduleISO
+              ? [{
+                  type: 'absolute',
+                  start_at: globalScheduleISO,
+                  end_at: globalScheduleISO,
+                  timezone: plan.timezone,
+                  source: 'global-default',
+                }]
+              : [])
+            : plan.timeSpans
+                .filter(span => span.startAt && span.endAt)
+                .map(span => ({
+                  type: 'absolute',
+                  start_at: new Date(span.startAt).toISOString(),
+                  end_at: new Date(span.endAt).toISOString(),
+                  timezone: span.timezone || plan.timezone,
+                  source: span.source || 'manual',
+                })))
+          : [];
+        return {
+          isp,
+          quota: ispQuotas[isp] || 0,
+          randomize_audience: randomizeAudience,
+          throttle_strategy: plan.throttleStrategy || 'auto',
+          timezone: plan.timezone,
+          cadence: {
+            mode: useGlobalSchedule ? 'single' : plan.cadenceMode,
+            every_minutes: useGlobalSchedule ? 0 : plan.everyMinutes,
+            batch_size: useGlobalSchedule ? (ispQuotas[isp] || 0) : plan.batchSize,
+          },
+          time_spans: spans,
+        };
+      });
       const payload: Record<string, any> = {
         name: campaignName,
         target_isps: selectedISPs,
         sending_domain: selectedDomain,
         variants,
+        isp_plans: ispPlans,
         isp_quotas: quotaArray,
         randomize_audience: randomizeAudience,
-        inclusion_segments: selectedSegments,
-        inclusion_lists: selectedLists,
+        inclusion_segments: sendPriority.filter(p => p.type === 'segment').map(p => p.id),
+        inclusion_lists: sendPriority.filter(p => p.type === 'list').map(p => p.id),
+        send_priority: sendPriority,
         exclusion_lists: selectedSuppLists,
         exclusion_segments: selectedExclusionSegments,
         send_days: [],
@@ -585,10 +754,24 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     });
   };
   const toggleList = (id: string) => {
-    setSelectedLists(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    setSelectedLists(prev => {
+      if (prev.includes(id)) {
+        setSendPriority(p => p.filter(item => !(item.id === id && item.type === 'list')));
+        return prev.filter(i => i !== id);
+      }
+      setSendPriority(p => [...p, { id, type: 'list' }]);
+      return [...prev, id];
+    });
   };
   const toggleSegment = (id: string) => {
-    setSelectedSegments(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    setSelectedSegments(prev => {
+      if (prev.includes(id)) {
+        setSendPriority(p => p.filter(item => !(item.id === id && item.type === 'segment')));
+        return prev.filter(i => i !== id);
+      }
+      setSendPriority(p => [...p, { id, type: 'segment' }]);
+      return [...prev, id];
+    });
   };
   const toggleSuppList = (id: string) => {
     setSelectedSuppLists(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -596,23 +779,23 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const toggleExclusionSegment = (id: string) => {
     setSelectedExclusionSegments(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
-  const moveListUp = (idx: number) => {
+  const movePriorityUp = (idx: number) => {
     if (idx <= 0) return;
-    setSelectedLists(prev => {
+    setSendPriority(prev => {
       const next = [...prev];
       [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
       return next;
     });
   };
-  const moveListDown = (idx: number) => {
-    setSelectedLists(prev => {
+  const movePriorityDown = (idx: number) => {
+    setSendPriority(prev => {
       if (idx >= prev.length - 1) return prev;
       const next = [...prev];
       [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
       return next;
     });
   };
-  const dragListRef = useRef<number | null>(null);
+  const dragPriorityRef = useRef<number | null>(null);
 
   // ── Variant management ───────────────────────────────────────────────────
 
@@ -1466,41 +1649,45 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               </div>
             </div>
 
-            {/* List Send Priority */}
-            {selectedLists.length > 1 && (
+            {/* Unified Send Priority */}
+            {sendPriority.length > 1 && (
               <div style={{
                 background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 16,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                  <div style={{ width: 4, height: 16, borderRadius: 2, background: '#f59e0b' }} />
-                  <h4 style={{ margin: 0, fontSize: 13, color: '#f59e0b', fontWeight: 600 }}>Send Priority</h4>
-                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Drag or use arrows to reorder — first list sends first</span>
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: '#00e5ff' }} />
+                  <h4 style={{ margin: 0, fontSize: 13, color: '#00e5ff', fontWeight: 600 }}>Send Priority</h4>
+                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Drag or use arrows to reorder — #1 sends first</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {selectedLists.map((id, idx) => {
-                    const listInfo = lists.find(l => l.id === id);
-                    if (!listInfo) return null;
+                  {sendPriority.map((item, idx) => {
+                    const isListItem = item.type === 'list';
+                    const info = isListItem
+                      ? lists.find(l => l.id === item.id)
+                      : segments.find(s => s.id === item.id);
+                    if (!info) return null;
+                    const accent = isListItem ? '#f59e0b' : '#8b5cf6';
                     return (
                       <div
-                        key={id}
+                        key={`${item.type}-${item.id}`}
                         draggable
-                        onDragStart={() => { dragListRef.current = idx; }}
+                        onDragStart={() => { dragPriorityRef.current = idx; }}
                         onDragOver={(e) => { e.preventDefault(); }}
                         onDrop={() => {
-                          if (dragListRef.current === null || dragListRef.current === idx) return;
-                          setSelectedLists(prev => {
+                          if (dragPriorityRef.current === null || dragPriorityRef.current === idx) return;
+                          setSendPriority(prev => {
                             const next = [...prev];
-                            const [moved] = next.splice(dragListRef.current!, 1);
+                            const [moved] = next.splice(dragPriorityRef.current!, 1);
                             next.splice(idx, 0, moved);
                             return next;
                           });
-                          dragListRef.current = null;
+                          dragPriorityRef.current = null;
                         }}
-                        onDragEnd={() => { dragListRef.current = null; }}
+                        onDragEnd={() => { dragPriorityRef.current = null; }}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                          background: idx === 0 ? 'rgba(245,158,11,0.08)' : '#0a0f1a',
-                          border: `1.5px solid ${idx === 0 ? 'rgba(245,158,11,0.3)' : 'rgba(0,200,255,0.06)'}`,
+                          background: idx === 0 ? `${accent}11` : '#0a0f1a',
+                          border: `1.5px solid ${idx === 0 ? `${accent}4d` : 'rgba(0,200,255,0.06)'}`,
                           borderRadius: 8, cursor: 'grab', userSelect: 'none' as const,
                           transition: 'all 0.2s ease',
                         }}
@@ -1508,24 +1695,33 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                         <FontAwesomeIcon icon={faGripVertical} style={{ color: 'rgba(180,210,240,0.25)', fontSize: 12 }} />
                         <div style={{
                           width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          background: idx === 0 ? 'rgba(245,158,11,0.2)' : 'rgba(0,200,255,0.06)',
-                          color: idx === 0 ? '#f59e0b' : 'rgba(180,210,240,0.5)',
+                          background: idx === 0 ? `${accent}33` : 'rgba(0,200,255,0.06)',
+                          color: idx === 0 ? accent : 'rgba(180,210,240,0.5)',
                           fontSize: 12, fontWeight: 700,
                         }}>
                           {idx + 1}
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {listInfo.name}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {info.name}
+                            </span>
+                            <span style={{
+                              fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                              background: `${accent}22`, color: accent, textTransform: 'uppercase', letterSpacing: '0.5px',
+                              flexShrink: 0,
+                            }}>
+                              {isListItem ? 'List' : 'Segment'}
+                            </span>
                           </div>
                           <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 1 }}>
-                            {(listInfo.subscriber_count || 0).toLocaleString()} subscribers
+                            {((info as any).subscriber_count || 0).toLocaleString()} {isListItem ? 'subscribers' : 'contacts'}
                             {idx === 0 && ' — sends first for warmup'}
                           </div>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                           <button
-                            onClick={() => moveListUp(idx)}
+                            onClick={() => movePriorityUp(idx)}
                             disabled={idx === 0}
                             style={{
                               width: 22, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1537,13 +1733,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                             <FontAwesomeIcon icon={faArrowUp} />
                           </button>
                           <button
-                            onClick={() => moveListDown(idx)}
-                            disabled={idx === selectedLists.length - 1}
+                            onClick={() => movePriorityDown(idx)}
+                            disabled={idx === sendPriority.length - 1}
                             style={{
                               width: 22, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
                               background: 'transparent', border: '1px solid rgba(180,210,240,0.15)', borderRadius: 4,
-                              color: idx === selectedLists.length - 1 ? 'rgba(180,210,240,0.1)' : 'rgba(180,210,240,0.5)',
-                              cursor: idx === selectedLists.length - 1 ? 'default' : 'pointer',
+                              color: idx === sendPriority.length - 1 ? 'rgba(180,210,240,0.1)' : 'rgba(180,210,240,0.5)',
+                              cursor: idx === sendPriority.length - 1 ? 'default' : 'pointer',
                               fontSize: 9, padding: 0,
                             }}
                           >
@@ -1996,6 +2192,28 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           {/* Scheduled: recommendations + date picker */}
           {sendMode === 'scheduled' && (
             <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                {(['quick', 'per-isp'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    onClick={() => setScheduleMode(mode)}
+                    style={{
+                      flex: 1,
+                      padding: '10px 0',
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      background: scheduleMode === mode ? 'rgba(0,200,255,0.12)' : '#0d1526',
+                      color: scheduleMode === mode ? '#00b0ff' : 'rgba(180,210,240,0.65)',
+                      border: `2px solid ${scheduleMode === mode ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
+                    }}
+                  >
+                    {mode === 'quick' ? 'Quick Schedule' : 'Per-ISP Plans'}
+                  </button>
+                ))}
+              </div>
               {recsLoading && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
                   {[1, 2, 3].map(i => (
@@ -2007,7 +2225,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 <div style={{ marginBottom: 12 }}>
                   <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#e0e6f0' }}>Recommended Send Windows</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {recommendations.map((rec: any) => {
+                    {recommendations.map((rec) => {
                       const meta = ISP_META[rec.isp];
                       return (
                         <div key={rec.isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 10 }}>
@@ -2026,21 +2244,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                             </span>
                           </div>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {(rec.windows || []).slice(0, 3).map((w: any, i: number) => (
+                            {(rec.windows || []).slice(0, 3).map((w, i: number) => (
                               <button
                                 key={i}
                                 onClick={() => {
-                                  const now = new Date();
-                                  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-                                  const targetDay = days.indexOf(w.day_of_week);
-                                  const currentDay = now.getDay();
-                                  let daysUntil = (targetDay - currentDay + 7) % 7;
-                                  if (daysUntil === 0 && now.getHours() >= w.start_hour) daysUntil = 7;
-                                  const target = new Date(now);
-                                  target.setDate(target.getDate() + daysUntil);
-                                  target.setHours(w.start_hour, 0, 0, 0);
-                                  const pad = (n: number) => n.toString().padStart(2, '0');
-                                  setScheduledAt(`${target.getFullYear()}-${pad(target.getMonth()+1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}`);
+                                  const { start, end } = nextScheduleFromWindow(w);
+                                  if (scheduleMode === 'quick') {
+                                    setScheduledAt(toDateTimeLocal(start));
+                                  } else {
+                                    addTimeSpanToPlan(rec.isp, {
+                                      startAt: toDateTimeLocal(start),
+                                      endAt: toDateTimeLocal(end),
+                                      timezone: ispPlansByKey[rec.isp]?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                                      source: w.source,
+                                    });
+                                  }
                                 }}
                                 style={{
                                   padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
@@ -2065,17 +2283,164 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   </div>
                 </div>
               )}
-              <div>
-                <label style={{ fontSize: 12, color: showErr(6) && !scheduledAt ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Send Date & Time<RequiredDot /></label>
-                <input
-                  type="datetime-local"
-                  value={scheduledAt}
-                  onChange={e => setScheduledAt(e.target.value)}
-                  min={new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16)}
-                  style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!scheduledAt), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
-                />
-                {showErr(6) && !scheduledAt && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Scheduled date and time is required</div>}
-              </div>
+              {scheduleMode === 'quick' ? (
+                <div>
+                  <label style={{ fontSize: 12, color: showErr(6) && !scheduledAt ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Send Date & Time<RequiredDot /></label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledAt}
+                    onChange={e => setScheduledAt(e.target.value)}
+                    min={toDateTimeLocal(new Date(Date.now() + 5 * 60 * 1000))}
+                    style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!scheduledAt), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
+                  />
+                  {showErr(6) && !scheduledAt && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Scheduled date and time is required</div>}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {selectedISPs.map(isp => {
+                    const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
+                    const meta = ISP_META[isp];
+                    const rec = recommendations.find(r => r.isp === isp);
+                    return (
+                      <div key={isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: meta?.color || '#e0e6f0' }}>
+                            {meta?.emoji || '🌐'} {meta?.label || isp}
+                          </div>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
+                            <input
+                              type="checkbox"
+                              checked={plan.useCustomSchedule}
+                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, useCustomSchedule: e.target.checked }))}
+                            />
+                            Use custom schedule
+                          </label>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+                          <div>
+                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Timezone</label>
+                            <input
+                              value={plan.timezone}
+                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, timezone: e.target.value }))}
+                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Cadence</label>
+                            <select
+                              value={plan.cadenceMode}
+                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, cadenceMode: e.target.value as 'single' | 'interval' }))}
+                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
+                            >
+                              <option value="single">Single wave</option>
+                              <option value="interval">Interval waves</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Batch Size</label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={plan.batchSize}
+                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, batchSize: Number(e.target.value) || 0 }))}
+                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                            />
+                          </div>
+                        </div>
+                        {plan.cadenceMode === 'interval' && (
+                          <div style={{ marginBottom: 10 }}>
+                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Every Minutes</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={plan.everyMinutes}
+                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, everyMinutes: Number(e.target.value) || 1 }))}
+                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                            />
+                          </div>
+                        )}
+                        {rec && rec.windows.length > 0 && (
+                          <div style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginBottom: 6 }}>Recommended windows</div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {rec.windows.slice(0, 3).map((window, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => {
+                                    const { start, end } = nextScheduleFromWindow(window);
+                                    addTimeSpanToPlan(isp, {
+                                      startAt: toDateTimeLocal(start),
+                                      endAt: toDateTimeLocal(end),
+                                      timezone: plan.timezone,
+                                      source: window.source,
+                                    });
+                                  }}
+                                  style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', background: '#0a1628', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.2)' }}
+                                >
+                                  {window.day_of_week} {window.start_hour}:00–{window.end_hour}:00
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Time spans</div>
+                          <button
+                            onClick={() => addTimeSpanToPlan(isp)}
+                            style={{ background: 'transparent', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.18)', borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                          >
+                            Add Span
+                          </button>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {plan.timeSpans.length === 0 && (
+                            <div style={{ fontSize: 11, color: showErr(6) ? '#ef4444' : 'rgba(180,210,240,0.35)' }}>
+                              No custom time spans yet.
+                            </div>
+                          )}
+                          {plan.timeSpans.map((span) => (
+                            <div key={span.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                              <div>
+                                <label style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>Start</label>
+                                <input
+                                  type="datetime-local"
+                                  value={span.startAt}
+                                  onChange={e => updateISPPlan(isp, curr => ({
+                                    ...curr,
+                                    timeSpans: curr.timeSpans.map(item => item.id === span.id ? { ...item, startAt: e.target.value } : item),
+                                  }))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>End</label>
+                                <input
+                                  type="datetime-local"
+                                  value={span.endAt}
+                                  onChange={e => updateISPPlan(isp, curr => ({
+                                    ...curr,
+                                    timeSpans: curr.timeSpans.map(item => item.id === span.id ? { ...item, endAt: e.target.value } : item),
+                                  }))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                                />
+                              </div>
+                              <button
+                                onClick={() => updateISPPlan(isp, curr => ({
+                                  ...curr,
+                                  timeSpans: curr.timeSpans.filter(item => item.id !== span.id),
+                                }))}
+                                style={{ background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 6, padding: '8px 10px', fontSize: 11, cursor: 'pointer' }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -2085,6 +2450,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             <SummaryCard title="Sending Domain" value={selectedDomain} />
             <SummaryCard title="Variants" value={`${variants.length} variant${variants.length > 1 ? 's' : ''} (${variants.map(v => `${v.variant_name}: ${v.split_percent}%`).join(', ')})`} />
             <SummaryCard title="Audience" value={audienceEstimate ? `${audienceEstimate.after_suppressions.toLocaleString()} recipients` : 'Not estimated'} />
+            <SummaryCard title="Schedule Mode" value={sendMode === 'immediate' ? 'Immediate' : scheduleMode === 'quick' ? `Quick: ${scheduledAt || 'Not set'}` : 'Per-ISP custom plans'} />
+            <SummaryCard title="ISP Plan Summary" value={
+              sendMode === 'scheduled' && scheduleMode === 'per-isp'
+                ? selectedISPs.map(isp => {
+                    const plan = ispPlansByKey[isp];
+                    const spanCount = plan?.timeSpans?.length || 0;
+                    return `${ISP_META[isp]?.label || isp}: ${spanCount} span${spanCount === 1 ? '' : 's'} / ${plan?.cadenceMode || 'single'}`;
+                  }).join(' | ')
+                : 'Global schedule applies to all selected ISPs'
+            } />
             <SummaryCard title="From Names" value={variants.map(v => v.from_name).filter(Boolean).join(' / ') || '—'} />
             <SummaryCard title="Subject Lines" value={variants.map(v => v.subject).filter(Boolean).join(' / ') || '—'} />
             <SummaryCard title="Pre-header" value={variants[0]?.preview_text || '(none)'} />

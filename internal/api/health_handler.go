@@ -8,20 +8,22 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/redis/go-redis/v9"
 )
 
 // HealthStatus represents the overall health of the system.
 type HealthStatus struct {
-	Status  string                    `json:"status"`  // "healthy", "degraded", "unhealthy"
+	Status  string                    `json:"status"` // "healthy", "degraded", "unhealthy"
 	Version string                    `json:"version"`
 	Uptime  string                    `json:"uptime"`
+	Build   buildinfo.Info            `json:"build"`
 	Checks  map[string]ComponentCheck `json:"checks"`
 }
 
 // ComponentCheck represents the health of a single component.
 type ComponentCheck struct {
-	Status  string `json:"status"`            // "up", "down", "degraded"
+	Status  string `json:"status"` // "up", "down", "degraded"
 	Latency string `json:"latency,omitempty"`
 	Message string `json:"message,omitempty"`
 }
@@ -62,6 +64,7 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "healthy",
 		"version": healthVersion,
 		"uptime":  formatUptime(time.Since(hc.startTime)),
+		"build":   buildinfo.Current(),
 	})
 }
 
@@ -73,6 +76,7 @@ func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) 
 		Status:  overall,
 		Version: healthVersion,
 		Uptime:  formatUptime(time.Since(hc.startTime)),
+		Build:   buildinfo.Current(),
 		Checks:  checks,
 	})
 }
@@ -106,8 +110,14 @@ func (hc *HealthChecker) HandleReadiness(w http.ResponseWriter, r *http.Request)
 	respondJSON(w, httpStatus, map[string]interface{}{
 		"ready":  ready,
 		"status": overall,
+		"build":  buildinfo.Current(),
 		"checks": checks,
 	})
+}
+
+// HandleVersion returns immutable build metadata for deploy verification.
+func (hc *HealthChecker) HandleVersion(w http.ResponseWriter, r *http.Request) {
+	respondJSON(w, http.StatusOK, buildinfo.Current())
 }
 
 // ---------------------------------------------------------------------------

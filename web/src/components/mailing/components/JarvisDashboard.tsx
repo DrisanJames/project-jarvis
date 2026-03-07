@@ -52,6 +52,11 @@ interface JarvisMetrics {
   conversion_rate: number;
   total_revenue?: number;
   revenue_per_send?: number;
+  sent?: number;
+  delivered?: number;
+  opens?: number;
+  clicks?: number;
+  bounces?: number;
 }
 
 interface JarvisCampaign {
@@ -199,13 +204,13 @@ export const JarvisDashboard: React.FC = () => {
 
       {/* Metrics Bar */}
       <div style={styles.metricsBar}>
-        <MetricCard label="Total Sent" value={campaign.metrics.total_sent} color="#00e5ff" />
-        <MetricCard label="Delivered" value={campaign.metrics.total_delivered} sub={campaign.metrics.total_sent > 0 ? `${((campaign.metrics.total_delivered / campaign.metrics.total_sent) * 100).toFixed(1)}%` : '–'} color="#00e5ff" />
-        <MetricCard label="Opens" value={campaign.metrics.total_opens} sub={`${campaign.metrics.open_rate.toFixed(1)}%`} color="#fdcb6e" />
-        <MetricCard label="Clicks" value={campaign.metrics.total_clicks} sub={`${campaign.metrics.click_rate.toFixed(1)}%`} color="#00b0ff" />
-        <MetricCard label="Conversions" value={campaign.metrics.total_conversions} sub={`${campaign.metrics.conversion_rate.toFixed(1)}%`} color="#00b894" />
-        {campaign.metrics.total_revenue !== undefined && campaign.metrics.total_revenue > 0 && (
-          <MetricCard label="Revenue" value={`$${campaign.metrics.total_revenue.toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send || 0).toFixed(4)}/send`} color="#00b894" />
+        <MetricCard label="Total Sent" value={campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0} color="#00e5ff" />
+        <MetricCard label="Delivered" value={campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0} sub={(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? `${(((campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1)}%` : '–'} color="#00e5ff" />
+        <MetricCard label="Opens" value={campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0} sub={`${(campaign.metrics.open_rate ?? 0).toFixed(1)}%`} color="#fdcb6e" />
+        <MetricCard label="Clicks" value={campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0} sub={`${(campaign.metrics.click_rate ?? 0).toFixed(1)}%`} color="#00b0ff" />
+        <MetricCard label="Conversions" value={campaign.metrics.total_conversions ?? 0} sub={`${(campaign.metrics.conversion_rate ?? 0).toFixed(1)}%`} color="#00b894" />
+        {(campaign.metrics.total_revenue ?? 0) > 0 && (
+          <MetricCard label="Revenue" value={`$${(campaign.metrics.total_revenue ?? 0).toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send ?? 0).toFixed(4)}/send`} color="#00b894" />
         )}
         <MetricCard label="Elapsed" value={`${elapsed}m`} sub={`${remaining}m left`} color="rgba(180,210,240,0.65)" />
       </div>
@@ -213,15 +218,16 @@ export const JarvisDashboard: React.FC = () => {
       {/* Funnel Visualization */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: '#0a0f1a', borderRadius: 10, overflow: 'hidden', border: '1px solid #0d1526' }}>
         {[
-          { label: 'SENT', val: campaign.metrics.total_sent, color: '#00e5ff' },
-          { label: 'DELIVERED', val: campaign.metrics.total_delivered, color: '#00e5ff' },
-          { label: 'OPENED', val: campaign.metrics.total_opens, color: '#fdcb6e' },
-          { label: 'CLICKED', val: campaign.metrics.total_clicks, color: '#00b0ff' },
-          { label: 'CONVERTED', val: campaign.metrics.total_conversions, color: '#00b894' },
+          { label: 'SENT', val: campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0, color: '#00e5ff' },
+          { label: 'DELIVERED', val: campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0, color: '#00e5ff' },
+          { label: 'OPENED', val: campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0, color: '#fdcb6e' },
+          { label: 'CLICKED', val: campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0, color: '#00b0ff' },
+          { label: 'CONVERTED', val: campaign.metrics.total_conversions ?? 0, color: '#00b894' },
         ].map((step, idx, arr) => {
           const prevVal = idx > 0 ? arr[idx - 1].val : step.val;
           const rate = prevVal > 0 ? (step.val / prevVal) * 100 : 0;
-          const widthPct = campaign.metrics.total_sent > 0 ? Math.max(8, (step.val / campaign.metrics.total_sent) * 100) : 20;
+          const totalSent = campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0;
+          const widthPct = totalSent > 0 ? Math.max(8, (step.val / totalSent) * 100) : 20;
           return (
             <div key={step.label} style={{ flex: `0 0 ${widthPct}%`, minWidth: 60, padding: '8px 10px', borderRight: '1px solid #0d152622', transition: 'flex 0.5s ease' }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: step.color, opacity: 0.8 }}>{step.label}</div>
@@ -234,12 +240,12 @@ export const JarvisDashboard: React.FC = () => {
             </div>
           );
         })}
-        {campaign.metrics.total_bounces > 0 && (
+        {(campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0) > 0 && (
           <div style={{ flex: '0 0 auto', minWidth: 60, padding: '8px 10px', borderLeft: '2px solid #e9456044' }}>
             <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#e94560', opacity: 0.8 }}>BOUNCED</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#e94560', fontFamily: 'monospace' }}>{campaign.metrics.total_bounces}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#e94560', fontFamily: 'monospace' }}>{campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0}</div>
             <div style={{ fontSize: 9, color: '#e94560', fontFamily: 'monospace', fontWeight: 600 }}>
-              {campaign.metrics.total_sent > 0 ? ((campaign.metrics.total_bounces / campaign.metrics.total_sent) * 100).toFixed(1) : 0}%
+              {(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%
             </div>
           </div>
         )}

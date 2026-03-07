@@ -86,8 +86,10 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	}
 
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type)
-		VALUES ($1, $2, $3, $4, 'opened', NOW(), $5::inet, $6, $7)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain)
+		SELECT $1, $2, $3, $4, 'opened', NOW(), $5::inet, $6, $7,
+			LOWER(SPLIT_PART(c.from_email, '@', 2))
+		FROM mailing_campaigns c WHERE c.id = $3
 		ON CONFLICT DO NOTHING
 	`, emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent())); err != nil {
 		log.Printf("TRACK OPEN DB ERROR: %v", err)
@@ -158,8 +160,10 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	}
 
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url)
-		VALUES ($1, $2, $3, $4, 'clicked', NOW(), $5::inet, $6, $7, $8)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain)
+		SELECT $1, $2, $3, $4, 'clicked', NOW(), $5::inet, $6, $7, $8,
+			LOWER(SPLIT_PART(c.from_email, '@', 2))
+		FROM mailing_campaigns c WHERE c.id = $3
 	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
 		log.Printf("TRACK CLICK DB ERROR: %v", err)
 	}

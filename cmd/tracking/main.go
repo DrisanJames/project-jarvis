@@ -11,10 +11,14 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 )
 
 func main() {
+	bi := buildinfo.Current()
+	log.Printf("tracking build info: version=%s git_sha=%s image_digest=%s build_time=%s", bi.Version, bi.GitSHA, bi.ImageDigest, bi.BuildTime)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"

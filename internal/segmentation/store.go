@@ -130,12 +130,14 @@ func (s *Store) createConditionGroup(ctx context.Context, tx *sql.Tx, segmentID 
 // GetSegment retrieves a segment by ID
 func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Segment, error) {
 	query := `
-		SELECT id, organization_id, list_id, name, description, segment_type, conditions,
-			calculation_mode, refresh_interval_minutes, include_suppressed,
-			global_exclusion_rules, subscriber_count, last_calculated_at, status,
-			created_by, last_edited_by, last_edited_at, created_at, updated_at
-		FROM mailing_segments
-		WHERE id = $1 AND organization_id = $2
+		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type, ms.conditions,
+			ms.calculation_mode, ms.refresh_interval_minutes, ms.include_suppressed,
+			ms.global_exclusion_rules, ms.subscriber_count, ms.last_calculated_at, ms.status,
+			(ss.segment_id IS NOT NULL), COALESCE(ss.system_query, ''),
+			ms.created_by, ms.last_edited_by, ms.last_edited_at, ms.created_at, ms.updated_at
+		FROM mailing_segments ms
+		LEFT JOIN mailing_system_segments ss ON ss.segment_id = ms.id
+		WHERE ms.id = $1 AND ms.organization_id = $2
 	`
 
 	segment := &Segment{}
@@ -144,7 +146,8 @@ func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Se
 		&segment.ID, &segment.OrganizationID, &segment.ListID, &segment.Name, &segment.Description,
 		&segment.SegmentType, &conditions, &segment.CalculationMode, &segment.RefreshIntervalMin,
 		&segment.IncludeSuppressed, &segment.GlobalExclusionRules, &segment.SubscriberCount,
-		&segment.LastCalculatedAt, &segment.Status, &segment.CreatedBy, &segment.LastEditedBy,
+		&segment.LastCalculatedAt, &segment.Status, &segment.IsSystem, &segment.SystemQuery,
+		&segment.CreatedBy, &segment.LastEditedBy,
 		&segment.LastEditedAt, &segment.CreatedAt, &segment.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -301,19 +304,22 @@ func (s *Store) UpdateSegmentCount(ctx context.Context, segmentID uuid.UUID, cou
 // ListSegments lists all segments for an organization
 func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID) ([]*Segment, error) {
 	query := `
-		SELECT id, organization_id, list_id, name, description, segment_type,
-			subscriber_count, last_calculated_at, status, created_at, updated_at
-		FROM mailing_segments
-		WHERE organization_id = $1 AND status != 'deleted'
+		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type,
+			ms.subscriber_count, ms.last_calculated_at, ms.status,
+			(ss.segment_id IS NOT NULL), COALESCE(ss.system_query, ''),
+			ms.created_at, ms.updated_at
+		FROM mailing_segments ms
+		LEFT JOIN mailing_system_segments ss ON ss.segment_id = ms.id
+		WHERE ms.organization_id = $1 AND ms.status != 'deleted'
 	`
 	args := []interface{}{orgID}
 
 	if listID != nil {
-		query += " AND list_id = $2"
+		query += " AND ms.list_id = $2"
 		args = append(args, listID)
 	}
 
-	query += " ORDER BY name"
+	query += " ORDER BY (ss.segment_id IS NOT NULL) DESC, ms.name"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -326,7 +332,8 @@ func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.
 		seg := &Segment{}
 		err := rows.Scan(&seg.ID, &seg.OrganizationID, &seg.ListID, &seg.Name,
 			&seg.Description, &seg.SegmentType, &seg.SubscriberCount,
-			&seg.LastCalculatedAt, &seg.Status, &seg.CreatedAt, &seg.UpdatedAt)
+			&seg.LastCalculatedAt, &seg.Status, &seg.IsSystem, &seg.SystemQuery,
+			&seg.CreatedAt, &seg.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}

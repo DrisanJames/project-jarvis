@@ -16,6 +16,7 @@ env:
   ECS_CLUSTER: apex-cluster
   ECS_SERVICE: ignite-tracking-service
   TASK_FAMILY: ignite-tracking
+  CONTAINER_NAME: ignite-tracking
 
 permissions:
   id-token: write
@@ -28,17 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-
-      - name: Cross-compile tracking binary
-        run: |
-          mkdir -p build
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/tracking ./cmd/tracking/
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -50,54 +40,68 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to ECR
+      - name: Set build metadata
+        id: build-meta
+        run: |
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Build, push, and resolve immutable image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
+          BUILD_TIME: ${{ steps.build-meta.outputs.build_time }}
         run: |
-          docker build -f Dockerfile.tracking -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          IMAGE_TAG_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build \
+            -f Dockerfile.tracking \
+            --build-arg VERSION="$IMAGE_TAG" \
+            --build-arg GIT_SHA="$IMAGE_TAG" \
+            --build-arg BUILD_TIME="$BUILD_TIME" \
+            --build-arg IMAGE_URI="$IMAGE_TAG_URI" \
+            -t "$IMAGE_TAG_URI" .
+          docker push "$IMAGE_TAG_URI"
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY@$IMAGE_DIGEST"
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "image_digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Prepare task definition payload
+        env:
+          IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ steps.build-image.outputs.image_digest }}
+          IMAGE_TAG: ${{ steps.build-image.outputs.image_tag }}
+          BUILD_TIME: ${{ steps.build-meta.outputs.build_time }}
+        run: |
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text 2>/dev/null || true)
+          if [ -z "$CURRENT_TASK_DEF" ] || [ "$CURRENT_TASK_DEF" = "None" ]; then
+            CURRENT_TASK_DEF=$(aws ecs describe-task-definition \
+              --task-definition "$TASK_FAMILY" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)
+          fi
+          aws ecs describe-task-definition --task-definition "$CURRENT_TASK_DEF" > current-task-def.json
+          python3 deploy/prepare_task_definition.py \
+            current-task-def.json \
+            task-def.json \
+            "$CONTAINER_NAME" \
+            "$IMAGE_URI" \
+            "$IMAGE_TAG" \
+            "$BUILD_TIME" \
+            "$IMAGE_DIGEST"
 
       - name: Register new ECS task definition
         id: task-def
-        env:
-          IMAGE: ${{ steps.build-image.outputs.image }}
         run: |
-          cat > task-def.json << TASKEOF
-          {
-            "family": "${{ env.TASK_FAMILY }}",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "256",
-            "memory": "512",
-            "executionRoleArn": "arn:aws:iam::146361001621:role/apex-ecs-execution-role",
-            "taskRoleArn": "arn:aws:iam::146361001621:role/apex-ecs-task-role",
-            "containerDefinitions": [
-              {
-                "name": "ignite-tracking",
-                "image": "${IMAGE}",
-                "essential": true,
-                "portMappings": [{"containerPort": 8081, "protocol": "tcp"}],
-                "environment": [
-                  {"name": "PORT", "value": "8081"},
-                  {"name": "SQS_TRACKING_QUEUE_URL", "value": "https://sqs.us-west-2.amazonaws.com/146361001621/ignite-tracking-events"},
-                  {"name": "AWS_REGION", "value": "us-west-2"}
-                ],
-                "logConfiguration": {
-                  "logDriver": "awslogs",
-                  "options": {
-                    "awslogs-group": "/ecs/ignite-tracking",
-                    "awslogs-region": "us-west-2",
-                    "awslogs-stream-prefix": "ecs"
-                  }
-                }
-              }
-            ]
-          }
-          TASKEOF
           TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
@@ -128,4 +132,18 @@ jobs:
       - name: Wait for service stability
         run: |
           echo "Waiting for tracking service to stabilize..."
-          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE || echo "Timed out — check AWS console"
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
+
+      - name: Verify deployed revision
+        env:
+          EXPECTED_IMAGE_DIGEST: ${{ steps.build-image.outputs.image_digest }}
+          EXPECTED_GIT_SHA: ${{ steps.build-image.outputs.image_tag }}
+        run: |
+          chmod +x deploy/verify_ecs_deployment.sh
+          AWS_REGION="$AWS_REGION" \
+          ECS_CLUSTER="$ECS_CLUSTER" \
+          ECS_SERVICE="$ECS_SERVICE" \
+          CONTAINER_NAME="$CONTAINER_NAME" \
+          EXPECTED_IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST" \
+          EXPECTED_GIT_SHA="$EXPECTED_GIT_SHA" \
+          ./deploy/verify_ecs_deployment.sh

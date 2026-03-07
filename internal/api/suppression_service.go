@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
@@ -10,13 +11,19 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
-// SuppressionService handles all suppression-related operations
+// SuppressionService handles all suppression-related operations.
+// When globalHub is set, all global suppression operations delegate to it
+// (single source of truth backed by mailing_global_suppressions).
+// The mailing_suppression_entries table is retained only for per-list
+// suppression (Optizmo, imported lists) — NOT for global suppression.
 type SuppressionService struct {
 	db         *sql.DB
 	optizmoKey string
 	matcher    *SuppressionMatcher
+	globalHub  *engine.GlobalSuppressionHub
 }
 
 // NewSuppressionService creates a new suppression service
@@ -34,6 +41,17 @@ func NewSuppressionService(db *sql.DB, optizmoKey string) *SuppressionService {
 	go svc.loadSuppressionLists()
 
 	return svc
+}
+
+// SetGlobalSuppressionHub wires the centralized hub so all global
+// suppression operations use the single in-memory + DB system.
+func (s *SuppressionService) SetGlobalSuppressionHub(hub *engine.GlobalSuppressionHub) {
+	s.globalHub = hub
+	if hub != nil {
+		log.Printf("[SuppressionService] GlobalSuppressionHub wired (%d entries)", hub.Count())
+	} else {
+		log.Printf("[SuppressionService] WARNING: SetGlobalSuppressionHub called with nil hub")
+	}
 }
 
 // loadSuppressionLists loads all suppression entries into bloom filters
@@ -138,22 +156,27 @@ func (s *SuppressionService) ensureGlobalSuppressionList() {
 	}
 }
 
-// AddToGlobalSuppression adds an email to the global suppression list
+// AddToGlobalSuppression adds an email to the global suppression list.
+// Delegates to GlobalSuppressionHub when available (single source of truth).
 func (s *SuppressionService) AddToGlobalSuppression(email, category, source string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
 		return fmt.Errorf("email cannot be empty")
 	}
 
-	// Validate category
 	if _, ok := GlobalSuppressionCategories[category]; !ok {
 		category = "manual"
 	}
 
-	// Compute MD5 hash
+	if s.globalHub != nil {
+		reason := category
+		_, err := s.globalHub.Suppress(context.Background(), email, reason, source, "", "", "", "", "")
+		return err
+	}
+
+	// Fallback: direct DB write (should not happen once hub is wired)
 	hash := md5.Sum([]byte(email))
 	md5Hash := hex.EncodeToString(hash[:])
-
 	id := uuid.New().String()
 	_, err := s.db.Exec(`
 		INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source, category, is_global)
@@ -163,20 +186,7 @@ func (s *SuppressionService) AddToGlobalSuppression(email, category, source stri
 			source = EXCLUDED.source,
 			category = EXCLUDED.category
 	`, id, email, md5Hash, GlobalSuppressionCategories[category], source, category)
-
-	if err != nil {
-		return err
-	}
-
-	// Update entry count
-	s.db.Exec(`
-		UPDATE mailing_suppression_lists 
-		SET entry_count = (SELECT COUNT(*) FROM mailing_suppression_entries WHERE list_id = 'global-suppression-list'),
-		    updated_at = NOW()
-		WHERE id = 'global-suppression-list'
-	`)
-
-	return nil
+	return err
 }
 
 // IsRoleBasedEmail checks if an email is a role-based address

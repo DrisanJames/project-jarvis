@@ -203,7 +203,7 @@ func (cs *CampaignScheduler) preparationLoop() {
 func (cs *CampaignScheduler) checkCompletedCampaigns() {
 	ctx, cancel := context.WithTimeout(cs.ctx, 30*time.Second)
 	defer cancel()
-	
+
 	// Find campaigns in 'sending' status where all queue items are done.
 	// Queue statuses: queued → sending → sent/failed/skipped/dead_letter
 	rows, err := cs.db.QueryContext(ctx, `
@@ -218,20 +218,25 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		WHERE c.status = 'sending'
 		GROUP BY c.id
 		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
+		   AND NOT EXISTS (
+		       SELECT 1 FROM mailing_campaign_waves w
+		       WHERE w.campaign_id = c.id
+		         AND w.status NOT IN ('completed','cancelled','failed','dead_letter')
+		   )
 		   AND COUNT(q.id) > 0
 	`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var campaignID uuid.UUID
 		var sent, failed, skipped, pending, total int
 		if err := rows.Scan(&campaignID, &sent, &failed, &skipped, &pending, &total); err != nil {
 			continue
 		}
-		
+
 		// Determine final status
 		// Use 'sent'/'cancelled' to match DB CHECK constraint
 		var finalStatus string
@@ -240,7 +245,7 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		} else {
 			finalStatus = "sent"
 		}
-		
+
 		// Update campaign
 		_, err := cs.db.ExecContext(ctx, `
 			UPDATE mailing_campaigns 
@@ -250,9 +255,9 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 				updated_at = NOW()
 			WHERE id = $1
 		`, campaignID, finalStatus, sent)
-		
+
 		if err == nil {
-			log.Printf("[CampaignScheduler] Campaign %s marked as %s (sent: %d, failed: %d, skipped: %d)", 
+			log.Printf("[CampaignScheduler] Campaign %s marked as %s (sent: %d, failed: %d, skipped: %d)",
 				campaignID, finalStatus, sent, failed, skipped)
 		}
 	}
@@ -270,6 +275,11 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		WHERE c.status IN ('draft', 'scheduled')
 		GROUP BY c.id
 		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
+		   AND NOT EXISTS (
+		       SELECT 1 FROM mailing_campaign_waves w
+		       WHERE w.campaign_id = c.id
+		         AND w.status NOT IN ('completed','cancelled','failed','dead_letter')
+		   )
 		   AND COUNT(q.id) > 0
 	`)
 	if preRows != nil {
@@ -301,6 +311,11 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		  AND started_at < NOW() - INTERVAL '10 minutes'
 		  AND NOT EXISTS (
 		      SELECT 1 FROM mailing_campaign_queue WHERE campaign_id = mailing_campaigns.id
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM mailing_campaign_waves w
+		      WHERE w.campaign_id = mailing_campaigns.id
+		        AND w.status NOT IN ('completed','cancelled','failed','dead_letter')
 		  )
 	`)
 }
@@ -354,6 +369,7 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			COALESCE(esp_quotas::text, '{}')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
+		  AND COALESCE(execution_mode, 'standard') != 'pmta_isp_wave'
 		  AND COALESCE(scheduled_at, send_at) <= NOW()
 		ORDER BY COALESCE(scheduled_at, send_at) ASC
 		LIMIT 10
@@ -613,7 +629,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		if err != nil {
 			return 0, fmt.Errorf("failed to get segment conditions: %w", err)
 		}
-		
+
 		// Parse conditions
 		var conditions []struct {
 			Field    string `json:"field"`
@@ -624,7 +640,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		if len(conditionsJSON) > 0 {
 			json.Unmarshal(conditionsJSON, &conditions)
 		}
-		
+
 		// Build base query — check legacy suppressions, global suppressions, AND named lists
 		// DISTINCT ON (LOWER(s.email)) ensures one row per email even across lists
 		query = `
@@ -642,7 +658,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		`
 		args = []interface{}{}
 		argIdx := 1
-		
+
 		// Add named suppression list filter (Sam's Club, Optizmo, etc.)
 		if len(suppressionListIDs) > 0 {
 			query += fmt.Sprintf(`
@@ -655,14 +671,14 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			args = append(args, pq.Array(suppressionListIDs))
 			argIdx++
 		}
-		
+
 		// Add list_id filter if segment has one
 		if segmentListID.Valid && segmentListID.String != "" {
 			query += fmt.Sprintf(" AND s.list_id = $%d", argIdx)
 			args = append(args, segmentListID.String)
 			argIdx++
 		}
-		
+
 		// Add condition filters
 		for _, cond := range conditions {
 			col := cs.mapFieldToColumn(cond.Field)
@@ -713,7 +729,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 				argIdx++
 			}
 		}
-		
+
 		query += " ORDER BY LOWER(s.email), s.id"
 	} else if campaign.ListID.Valid {
 		// Build list-based query with legacy + global + named suppression checks
@@ -925,7 +941,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 	optimalTimes := make(map[uuid.UUID]time.Time)
 	if campaign.AISendTimeOptimization {
 		optimalTimes = cs.getSubscriberOptimalTimes(ctx, campaign, subscribers)
-		log.Printf("[CampaignScheduler] AI Send Time Optimization enabled for campaign %s, got %d optimal times", 
+		log.Printf("[CampaignScheduler] AI Send Time Optimization enabled for campaign %s, got %d optimal times",
 			campaign.ID, len(optimalTimes))
 	}
 
@@ -1127,17 +1143,17 @@ type subscriberForScheduling struct {
 // getSubscriberOptimalTimes retrieves optimal send times for subscribers
 func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, campaign ScheduledCampaign, subscribers []subscriberForScheduling) map[uuid.UUID]time.Time {
 	optimalTimes := make(map[uuid.UUID]time.Time)
-	
+
 	if len(subscribers) == 0 {
 		return optimalTimes
 	}
-	
+
 	// Build subscriber ID list
 	subIDs := make([]uuid.UUID, len(subscribers))
 	for i, s := range subscribers {
 		subIDs[i] = s.ID
 	}
-	
+
 	// Query optimal times from mailing_subscriber_optimal_times or mailing_campaign_scheduled_times
 	// First check if campaign has pre-scheduled times
 	preScheduledRows, err := cs.db.QueryContext(ctx, `
@@ -1145,7 +1161,7 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 		FROM mailing_campaign_scheduled_times
 		WHERE campaign_id = $1 AND status = 'pending'
 	`, campaign.ID)
-	
+
 	if err == nil {
 		defer preScheduledRows.Close()
 		for preScheduledRows.Next() {
@@ -1156,7 +1172,7 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 			}
 		}
 	}
-	
+
 	// For subscribers without pre-scheduled times, calculate from optimal_times table
 	missingSubIDs := make([]uuid.UUID, 0)
 	for _, subID := range subIDs {
@@ -1164,7 +1180,7 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 			missingSubIDs = append(missingSubIDs, subID)
 		}
 	}
-	
+
 	if len(missingSubIDs) > 0 {
 		// Get optimal hours for remaining subscribers
 		optHourRows, err := cs.db.QueryContext(ctx, `
@@ -1174,41 +1190,41 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 			WHERE sot.subscriber_id = ANY($1)
 			AND sot.confidence >= 0.5
 		`, missingSubIDs)
-		
+
 		if err == nil {
 			defer optHourRows.Close()
-			
+
 			// Base date is today or campaign scheduled date
 			baseDate := campaign.ScheduledAt
 			if baseDate.IsZero() || baseDate.Before(time.Now()) {
 				baseDate = time.Now()
 			}
-			
+
 			for optHourRows.Next() {
 				var subID uuid.UUID
 				var optimalHour int
 				var timezone string
-				
+
 				if err := optHourRows.Scan(&subID, &optimalHour, &timezone); err != nil {
 					continue
 				}
-				
+
 				// Calculate the optimal send time
 				scheduledTime := time.Date(
 					baseDate.Year(), baseDate.Month(), baseDate.Day(),
 					optimalHour, 0, 0, 0, time.UTC,
 				)
-				
+
 				// If the time has already passed today, schedule for tomorrow
 				if scheduledTime.Before(time.Now()) {
 					scheduledTime = scheduledTime.Add(24 * time.Hour)
 				}
-				
+
 				optimalTimes[subID] = scheduledTime
 			}
 		}
 	}
-	
+
 	// Get audience-level default for remaining subscribers without individual data
 	if len(optimalTimes) < len(subscribers) && campaign.ListID.Valid {
 		var audienceBestHour int
@@ -1217,16 +1233,16 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 			FROM mailing_audience_optimal_times
 			WHERE list_id = $1
 		`, campaign.ListID.String).Scan(&audienceBestHour)
-		
+
 		if err != nil {
 			audienceBestHour = 10 // Default to 10 AM
 		}
-		
+
 		baseDate := campaign.ScheduledAt
 		if baseDate.IsZero() || baseDate.Before(time.Now()) {
 			baseDate = time.Now()
 		}
-		
+
 		defaultTime := time.Date(
 			baseDate.Year(), baseDate.Month(), baseDate.Day(),
 			audienceBestHour, 0, 0, 0, time.UTC,
@@ -1234,14 +1250,14 @@ func (cs *CampaignScheduler) getSubscriberOptimalTimes(ctx context.Context, camp
 		if defaultTime.Before(time.Now()) {
 			defaultTime = defaultTime.Add(24 * time.Hour)
 		}
-		
+
 		for _, sub := range subscribers {
 			if _, exists := optimalTimes[sub.ID]; !exists {
 				optimalTimes[sub.ID] = defaultTime
 			}
 		}
 	}
-	
+
 	return optimalTimes
 }
 
@@ -1377,8 +1393,8 @@ func CanEditCampaign(status string, scheduledAt *time.Time) (bool, string) {
 	}
 
 	// Cannot edit if already sending, sent, cancelled, or preparing
-	if status == "sending" || status == "sent" || status == "cancelled" || 
-	   status == "completed" || status == "failed" || status == "completed_with_errors" || status == "preparing" {
+	if status == "sending" || status == "sent" || status == "cancelled" ||
+		status == "completed" || status == "failed" || status == "completed_with_errors" || status == "preparing" {
 		return false, fmt.Sprintf("cannot edit campaign in '%s' status", status)
 	}
 
@@ -1442,7 +1458,7 @@ var schedulerISPMap = map[string]string{
 	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
 	"comcast.net": "comcast", "xfinity.com": "comcast",
 	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
-	"cox.net": "cox",
+	"cox.net":     "cox",
 	"charter.net": "charter", "spectrum.net": "charter",
 	"verizon.net": "verizon",
 }

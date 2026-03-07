@@ -65,25 +65,25 @@ const (
 
 // ISPConfig holds per-ISP configuration thresholds and settings.
 type ISPConfig struct {
-	ID               string          `json:"id" db:"id"`
-	OrganizationID   string          `json:"organization_id" db:"organization_id"`
-	ISP              ISP             `json:"isp" db:"isp"`
-	DisplayName      string          `json:"display_name" db:"display_name"`
-	DomainPatterns   []string        `json:"domain_patterns"`
-	MXPatterns       []string        `json:"mx_patterns"`
-	BounceWarnPct    float64         `json:"bounce_warn_pct" db:"bounce_warn_pct"`
-	BounceActionPct  float64         `json:"bounce_action_pct" db:"bounce_action_pct"`
-	ComplaintWarnPct float64         `json:"complaint_warn_pct" db:"complaint_warn_pct"`
-	ComplaintActionPct float64       `json:"complaint_action_pct" db:"complaint_action_pct"`
-	MaxConnections   int             `json:"max_connections" db:"max_connections"`
-	MaxMsgRate       int             `json:"max_msg_rate" db:"max_msg_rate"`
-	DeferralCodes    []string        `json:"deferral_codes"`
-	KnownBehaviors   json.RawMessage `json:"known_behaviors" db:"known_behaviors"`
-	PoolName         string          `json:"pool_name" db:"pool_name"`
-	WarmupSchedule   json.RawMessage `json:"warmup_schedule" db:"warmup_schedule"`
-	Enabled          bool            `json:"enabled" db:"enabled"`
-	CreatedAt        time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at" db:"updated_at"`
+	ID                 string          `json:"id" db:"id"`
+	OrganizationID     string          `json:"organization_id" db:"organization_id"`
+	ISP                ISP             `json:"isp" db:"isp"`
+	DisplayName        string          `json:"display_name" db:"display_name"`
+	DomainPatterns     []string        `json:"domain_patterns"`
+	MXPatterns         []string        `json:"mx_patterns"`
+	BounceWarnPct      float64         `json:"bounce_warn_pct" db:"bounce_warn_pct"`
+	BounceActionPct    float64         `json:"bounce_action_pct" db:"bounce_action_pct"`
+	ComplaintWarnPct   float64         `json:"complaint_warn_pct" db:"complaint_warn_pct"`
+	ComplaintActionPct float64         `json:"complaint_action_pct" db:"complaint_action_pct"`
+	MaxConnections     int             `json:"max_connections" db:"max_connections"`
+	MaxMsgRate         int             `json:"max_msg_rate" db:"max_msg_rate"`
+	DeferralCodes      []string        `json:"deferral_codes"`
+	KnownBehaviors     json.RawMessage `json:"known_behaviors" db:"known_behaviors"`
+	PoolName           string          `json:"pool_name" db:"pool_name"`
+	WarmupSchedule     json.RawMessage `json:"warmup_schedule" db:"warmup_schedule"`
+	Enabled            bool            `json:"enabled" db:"enabled"`
+	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // Signal represents a computed metric value over a time window.
@@ -174,14 +174,14 @@ type Suppression struct {
 
 // SuppressionStats holds aggregated suppression statistics for one ISP.
 type SuppressionStats struct {
-	ISP            ISP                 `json:"isp"`
-	TotalCount     int64               `json:"total_count"`
-	TodayCount     int64               `json:"today_count"`
-	Last24hCount   int64               `json:"last_24h_count"`
-	Last1hCount    int64               `json:"last_1h_count"`
-	TopReasons     []ReasonCount       `json:"top_reasons"`
-	TopCampaigns   []CampaignCount     `json:"top_campaigns"`
-	VelocityPerMin float64             `json:"velocity_per_min"`
+	ISP            ISP             `json:"isp"`
+	TotalCount     int64           `json:"total_count"`
+	TodayCount     int64           `json:"today_count"`
+	Last24hCount   int64           `json:"last_24h_count"`
+	Last1hCount    int64           `json:"last_1h_count"`
+	TopReasons     []ReasonCount   `json:"top_reasons"`
+	TopCampaigns   []CampaignCount `json:"top_campaigns"`
+	VelocityPerMin float64         `json:"velocity_per_min"`
 }
 
 // ReasonCount is a reason + count pair for aggregation.
@@ -198,10 +198,10 @@ type CampaignCount struct {
 
 // SuppressionCheckResult is the response for a pre-send check.
 type SuppressionCheckResult struct {
-	Email       string     `json:"email"`
-	ISP         ISP        `json:"isp"`
-	Suppressed  bool       `json:"suppressed"`
-	Reason      string     `json:"reason,omitempty"`
+	Email        string     `json:"email"`
+	ISP          ISP        `json:"isp"`
+	Suppressed   bool       `json:"suppressed"`
+	Reason       string     `json:"reason,omitempty"`
 	SuppressedAt *time.Time `json:"suppressed_at,omitempty"`
 }
 
@@ -304,28 +304,28 @@ func (r *AccountingRecord) UnmarshalJSON(data []byte) error {
 
 // ISPHealthSummary is the overview for one ISP on the global dashboard.
 type ISPHealthSummary struct {
-	ISP              ISP           `json:"isp"`
-	DisplayName      string        `json:"display_name"`
-	HealthScore      float64       `json:"health_score"`
-	AgentStates      []AgentState  `json:"agent_states"`
-	ActiveAgents     int           `json:"active_agents"`
-	RecentDecisions  int           `json:"recent_decisions"`
-	BounceRate       float64       `json:"bounce_rate"`
-	DeferralRate     float64       `json:"deferral_rate"`
-	ComplaintRate    float64       `json:"complaint_rate"`
-	SuppressionCount int64         `json:"suppression_count"`
-	HasEmergency     bool          `json:"has_emergency"`
-	PoolName         string        `json:"pool_name"`
-	IPCount          int           `json:"ip_count"`
+	ISP              ISP          `json:"isp"`
+	DisplayName      string       `json:"display_name"`
+	HealthScore      float64      `json:"health_score"`
+	AgentStates      []AgentState `json:"agent_states"`
+	ActiveAgents     int          `json:"active_agents"`
+	RecentDecisions  int          `json:"recent_decisions"`
+	BounceRate       float64      `json:"bounce_rate"`
+	DeferralRate     float64      `json:"deferral_rate"`
+	ComplaintRate    float64      `json:"complaint_rate"`
+	SuppressionCount int64        `json:"suppression_count"`
+	HasEmergency     bool         `json:"has_emergency"`
+	PoolName         string       `json:"pool_name"`
+	IPCount          int          `json:"ip_count"`
 }
 
 // EngineOverview is the full global dashboard response.
 type EngineOverview struct {
-	ISPs             []ISPHealthSummary `json:"isps"`
-	TotalAgents      int                `json:"total_agents"`
-	ActiveAgents     int                `json:"active_agents"`
-	RecentDecisions  []Decision         `json:"recent_decisions"`
-	TotalSuppressions int64             `json:"total_suppressions"`
+	ISPs              []ISPHealthSummary `json:"isps"`
+	TotalAgents       int                `json:"total_agents"`
+	ActiveAgents      int                `json:"active_agents"`
+	RecentDecisions   []Decision         `json:"recent_decisions"`
+	TotalSuppressions int64              `json:"total_suppressions"`
 }
 
 // IncidentReport is a full emergency incident report.
@@ -361,17 +361,17 @@ const (
 // Agents don't generalize. They accumulate specific observations.
 // Pattern recognition happens at query time, not storage time.
 type Conviction struct {
-	ID         string       `json:"id"`
-	AgentType  AgentType    `json:"agent_type"`
-	ISP        ISP          `json:"isp"`
-	Verdict    Verdict      `json:"verdict"`
-	Statement  string       `json:"statement"`
-	Context    MicroContext `json:"context"`
-	Confidence float64      `json:"confidence"`
-	Corroborations int      `json:"corroborations"`
-	CreatedAt  time.Time    `json:"created_at"`
-	LastSeenAt time.Time    `json:"last_seen_at"`
-	Outcome    *ConvictionOutcome `json:"outcome,omitempty"`
+	ID             string             `json:"id"`
+	AgentType      AgentType          `json:"agent_type"`
+	ISP            ISP                `json:"isp"`
+	Verdict        Verdict            `json:"verdict"`
+	Statement      string             `json:"statement"`
+	Context        MicroContext       `json:"context"`
+	Confidence     float64            `json:"confidence"`
+	Corroborations int                `json:"corroborations"`
+	CreatedAt      time.Time          `json:"created_at"`
+	LastSeenAt     time.Time          `json:"last_seen_at"`
+	Outcome        *ConvictionOutcome `json:"outcome,omitempty"`
 }
 
 // MicroContext captures the exact circumstances of a conviction.
@@ -385,8 +385,8 @@ type MicroContext struct {
 	HolidayName string `json:"holiday_name,omitempty"`
 
 	// Infrastructure
-	IP   string `json:"ip,omitempty"`
-	VMTA string `json:"vmta,omitempty"`
+	IP     string `json:"ip,omitempty"`
+	VMTA   string `json:"vmta,omitempty"`
 	Domain string `json:"domain,omitempty"`
 	Pool   string `json:"pool,omitempty"`
 
@@ -417,19 +417,19 @@ type MicroContext struct {
 	Reason     string `json:"reason,omitempty"`
 
 	// Pool-specific
-	IPScore       float64 `json:"ip_score,omitempty"`
-	FromPool      string  `json:"from_pool,omitempty"`
-	ToPool        string  `json:"to_pool,omitempty"`
+	IPScore  float64 `json:"ip_score,omitempty"`
+	FromPool string  `json:"from_pool,omitempty"`
+	ToPool   string  `json:"to_pool,omitempty"`
 
 	// Warmup-specific
 	WarmupDay   int `json:"warmup_day,omitempty"`
 	DailyVolume int `json:"daily_volume,omitempty"`
 
 	// Throttle-specific
-	EffectiveRate  int     `json:"effective_rate,omitempty"`
-	BackoffStep    int     `json:"backoff_step,omitempty"`
+	EffectiveRate   int     `json:"effective_rate,omitempty"`
+	BackoffStep     int     `json:"backoff_step,omitempty"`
 	RecoveryTimeMin float64 `json:"recovery_time_min,omitempty"`
-	PriorRateAdj   float64 `json:"prior_rate_adj,omitempty"`
+	PriorRateAdj    float64 `json:"prior_rate_adj,omitempty"`
 }
 
 // ConvictionOutcome records what actually happened after the verdict was applied.
@@ -499,24 +499,24 @@ type CampaignIntelRequest struct {
 
 // ISPIntel is the intelligence report for one ISP in a campaign context.
 type ISPIntel struct {
-	ISP                ISP              `json:"isp"`
-	DisplayName        string           `json:"display_name"`
-	ThroughputCapacity ThroughputInfo   `json:"throughput"`
-	WarmupSummary      WarmupSummary    `json:"warmup_summary"`
-	ConvictionSummary  ConvictionIntel  `json:"conviction_summary"`
-	ActiveWarnings     []string         `json:"active_warnings"`
-	Strategy           string           `json:"strategy"`
+	ISP                ISP             `json:"isp"`
+	DisplayName        string          `json:"display_name"`
+	ThroughputCapacity ThroughputInfo  `json:"throughput"`
+	WarmupSummary      WarmupSummary   `json:"warmup_summary"`
+	ConvictionSummary  ConvictionIntel `json:"conviction_summary"`
+	ActiveWarnings     []string        `json:"active_warnings"`
+	Strategy           string          `json:"strategy"`
 }
 
 // ThroughputInfo describes sending capacity for an ISP.
 type ThroughputInfo struct {
-	MaxMsgRate       int  `json:"max_msg_rate"`
-	ActiveIPs        int  `json:"active_ips"`
-	MaxDailyCapacity int  `json:"max_daily_capacity"`
-	MaxHourlyRate    int  `json:"max_hourly_rate"`
-	AudienceSize     int  `json:"audience_size"`
-	CanSendInOnePass bool `json:"can_send_in_one_pass"`
-	EstimatedHours   int  `json:"estimated_hours"`
+	MaxMsgRate       int    `json:"max_msg_rate"`
+	ActiveIPs        int    `json:"active_ips"`
+	MaxDailyCapacity int    `json:"max_daily_capacity"`
+	MaxHourlyRate    int    `json:"max_hourly_rate"`
+	AudienceSize     int    `json:"audience_size"`
+	CanSendInOnePass bool   `json:"can_send_in_one_pass"`
+	EstimatedHours   int    `json:"estimated_hours"`
 	Status           string `json:"status"` // green, yellow, red
 }
 
@@ -543,8 +543,8 @@ type ConvictionIntel struct {
 
 // CampaignIntelResponse is returned by the campaign-intel endpoint.
 type CampaignIntelResponse struct {
-	ISPs           []ISPIntel `json:"isps"`
-	OverallStrategy string   `json:"overall_strategy"`
+	ISPs            []ISPIntel `json:"isps"`
+	OverallStrategy string     `json:"overall_strategy"`
 }
 
 // SendingDomainInfo describes a PMTA sending domain with its infrastructure.
@@ -562,24 +562,63 @@ type SendingDomainInfo struct {
 	Status          string   `json:"status"` // active, degraded, inactive
 }
 
+// PriorityItem represents a single list or segment in the unified send order.
+type PriorityItem struct {
+	ID   string `json:"id"`
+	Type string `json:"type"` // "list" or "segment"
+}
+
+// PMTATimeSpanInput describes a delivery window for a single ISP plan.
+// It can be expressed either as an absolute span or as a weekly window.
+type PMTATimeSpanInput struct {
+	Type      string     `json:"type"`                  // "absolute" or "weekly"
+	DayOfWeek string     `json:"day_of_week,omitempty"` // Sunday-Saturday when type="weekly"
+	StartHour *int       `json:"start_hour,omitempty"`  // 0-23 when type="weekly"
+	EndHour   *int       `json:"end_hour,omitempty"`    // 1-24 when type="weekly"
+	StartAt   *time.Time `json:"start_at,omitempty"`    // RFC3339 timestamp when type="absolute"
+	EndAt     *time.Time `json:"end_at,omitempty"`      // RFC3339 timestamp when type="absolute"
+	Timezone  string     `json:"timezone,omitempty"`
+	Source    string     `json:"source,omitempty"`
+}
+
+// PMTACadenceInput defines how an ISP plan is broken into execution waves.
+type PMTACadenceInput struct {
+	Mode         string `json:"mode"`                    // "single" or "interval"
+	EveryMinutes int    `json:"every_minutes,omitempty"` // required when mode="interval"
+	BatchSize    int    `json:"batch_size,omitempty"`    // 0 means use the entire remaining audience in a single wave
+}
+
+// PMTAISPScheduleInput captures the execution settings for a single ISP.
+type PMTAISPScheduleInput struct {
+	ISP               string              `json:"isp"`
+	Quota             int                 `json:"quota,omitempty"`
+	RandomizeAudience bool                `json:"randomize_audience,omitempty"`
+	ThrottleStrategy  string              `json:"throttle_strategy,omitempty"`
+	Timezone          string              `json:"timezone,omitempty"`
+	Cadence           PMTACadenceInput    `json:"cadence"`
+	TimeSpans         []PMTATimeSpanInput `json:"time_spans,omitempty"`
+}
+
 // PMTACampaignInput is the deploy payload for creating a PMTA-routed campaign.
 type PMTACampaignInput struct {
-	Name              string           `json:"name"`
-	TargetISPs        []ISP            `json:"target_isps"`
-	SendingDomain     string           `json:"sending_domain"`
-	Variants          []ContentVariant `json:"variants"`
-	InclusionSegments []string         `json:"inclusion_segments"`
-	InclusionLists    []string         `json:"inclusion_lists"`
-	ExclusionSegments []string         `json:"exclusion_segments"`
-	ExclusionLists    []string         `json:"exclusion_lists"`
-	SendDays          []string         `json:"send_days"`
-	SendHour          int              `json:"send_hour"`
-	Timezone          string           `json:"timezone"`
-	ThrottleStrategy  string           `json:"throttle_strategy"`
-	ISPQuotas         []ISPQuota       `json:"isp_quotas"`
-	RandomizeAudience bool             `json:"randomize_audience"`
-	SendMode          string           `json:"send_mode"`     // "immediate" or "scheduled"
-	ScheduledAt       *time.Time       `json:"scheduled_at"`  // required when send_mode="scheduled"
+	Name              string                 `json:"name"`
+	TargetISPs        []ISP                  `json:"target_isps"`
+	SendingDomain     string                 `json:"sending_domain"`
+	Variants          []ContentVariant       `json:"variants"`
+	ISPPlans          []PMTAISPScheduleInput `json:"isp_plans,omitempty"`
+	InclusionSegments []string               `json:"inclusion_segments"`
+	InclusionLists    []string               `json:"inclusion_lists"`
+	SendPriority      []PriorityItem         `json:"send_priority"`
+	ExclusionSegments []string               `json:"exclusion_segments"`
+	ExclusionLists    []string               `json:"exclusion_lists"`
+	SendDays          []string               `json:"send_days"`
+	SendHour          int                    `json:"send_hour"`
+	Timezone          string                 `json:"timezone"`
+	ThrottleStrategy  string                 `json:"throttle_strategy"`
+	ISPQuotas         []ISPQuota             `json:"isp_quotas"`
+	RandomizeAudience bool                   `json:"randomize_audience"`
+	SendMode          string                 `json:"send_mode"`    // "immediate" or "scheduled"
+	ScheduledAt       *time.Time             `json:"scheduled_at"` // required when send_mode="scheduled"
 }
 
 // ISPQuota defines a volume cap for a single ISP within a campaign.
@@ -611,14 +650,30 @@ type PMTACampaignResult struct {
 	AgentIDs      []string   `json:"agent_ids"`
 }
 
+// PMTAWavePlanResult summarizes the plans/waves created at deploy time.
+type PMTAWavePlanResult struct {
+	CampaignID    string           `json:"campaign_id"`
+	Name          string           `json:"name"`
+	Status        string           `json:"status"`
+	SendMode      string           `json:"send_mode"`
+	SendsAt       *time.Time       `json:"sends_at,omitempty"`
+	TargetISPs    []ISP            `json:"target_isps"`
+	TotalAudience int              `json:"total_audience"`
+	VariantCount  int              `json:"variant_count"`
+	ISPPlans      []map[string]any `json:"isp_plans,omitempty"`
+	InitialWaves  []map[string]any `json:"initial_waves,omitempty"`
+	Assumptions   []string         `json:"assumptions,omitempty"`
+	LegacyInput   bool             `json:"legacy_input"`
+}
+
 // AudienceEstimateRequest is the input for audience estimation with ISP breakdown.
 type AudienceEstimateRequest struct {
-	SegmentIDs            []string `json:"segment_ids"`
-	ListIDs               []string `json:"list_ids"`
-	SuppressionListIDs    []string `json:"suppression_list_ids"`
-	SuppressionSegments   []string `json:"suppression_segments"`
-	ExclusionSegmentIDs   []string `json:"exclusion_segment_ids"`
-	TargetISPs            []ISP    `json:"target_isps"`
+	SegmentIDs          []string `json:"segment_ids"`
+	ListIDs             []string `json:"list_ids"`
+	SuppressionListIDs  []string `json:"suppression_list_ids"`
+	SuppressionSegments []string `json:"suppression_segments"`
+	ExclusionSegmentIDs []string `json:"exclusion_segment_ids"`
+	TargetISPs          []ISP    `json:"target_isps"`
 }
 
 // AudienceEstimateResponse is the audience estimate with per-ISP breakdown.

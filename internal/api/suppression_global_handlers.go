@@ -1,10 +1,8 @@
 // Global suppression list HTTP handlers.
+// All global suppression operations delegate to GlobalSuppressionHub (single source of truth).
 package api
 
 import (
-	"crypto/md5"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
 // HandleGetGlobalSuppression returns the global suppression list with statistics
@@ -21,61 +20,19 @@ func (s *SuppressionService) HandleGetGlobalSuppression(w http.ResponseWriter, r
 		"name":        "Global Suppression List",
 		"description": "Industry-standard global suppression list applied to all campaigns",
 		"categories":  GlobalSuppressionCategories,
-		"stats":       map[string]interface{}{},
 	}
 
-	// Get total count
-	var totalCount int
-	s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE is_global = TRUE`).Scan(&totalCount)
-	result["total_entries"] = totalCount
-
-	// Get counts by category
-	categoryStats := make(map[string]int)
-	rows, err := s.db.Query(`
-		SELECT category, COUNT(*) as count 
-		FROM mailing_suppression_entries 
-		WHERE is_global = TRUE 
-		GROUP BY category
-	`)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var cat string
-			var count int
-			if rows.Scan(&cat, &count) == nil {
-				categoryStats[cat] = count
-			}
+	if s.globalHub != nil {
+		stats, err := s.globalHub.GetStats(r.Context())
+		if err == nil {
+			result["stats"] = stats
 		}
+		result["total_entries"] = s.globalHub.Count()
+	} else {
+		var totalCount int
+		s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE is_global = TRUE`).Scan(&totalCount)
+		result["total_entries"] = totalCount
 	}
-	result["by_category"] = categoryStats
-
-	// Get recent additions (last 24h)
-	var recentCount int
-	s.db.QueryRow(`
-		SELECT COUNT(*) FROM mailing_suppression_entries 
-		WHERE is_global = TRUE AND created_at > NOW() - INTERVAL '24 hours'
-	`).Scan(&recentCount)
-	result["recent_24h"] = recentCount
-
-	// Get entries by source
-	sourceStats := make(map[string]int)
-	sourceRows, err := s.db.Query(`
-		SELECT source, COUNT(*) as count 
-		FROM mailing_suppression_entries 
-		WHERE is_global = TRUE 
-		GROUP BY source
-	`)
-	if err == nil {
-		defer sourceRows.Close()
-		for sourceRows.Next() {
-			var src string
-			var count int
-			if sourceRows.Scan(&src, &count) == nil {
-				sourceStats[src] = count
-			}
-		}
-	}
-	result["by_source"] = sourceStats
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -154,23 +111,14 @@ func (s *SuppressionService) HandleRemoveFromGlobalSuppression(w http.ResponseWr
 	email := chi.URLParam(r, "email")
 	email = strings.ToLower(strings.TrimSpace(email))
 
-	_, err := s.db.Exec(`
-		DELETE FROM mailing_suppression_entries 
-		WHERE is_global = TRUE AND (email = $1 OR md5_hash = $1)
-	`, email)
-
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
+	if s.globalHub != nil {
+		if err := s.globalHub.Remove(r.Context(), email); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		s.db.Exec(`DELETE FROM mailing_suppression_entries WHERE is_global = TRUE AND (email = $1 OR md5_hash = $1)`, email)
 	}
-
-	// Update entry count
-	s.db.Exec(`
-		UPDATE mailing_suppression_lists 
-		SET entry_count = (SELECT COUNT(*) FROM mailing_suppression_entries WHERE list_id = 'global-suppression-list'),
-		    updated_at = NOW()
-		WHERE id = 'global-suppression-list'
-	`)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "email": email})
@@ -178,27 +126,32 @@ func (s *SuppressionService) HandleRemoveFromGlobalSuppression(w http.ResponseWr
 
 // HandleGetGlobalSuppressionEntries returns entries from the global suppression list
 func (s *SuppressionService) HandleGetGlobalSuppressionEntries(w http.ResponseWriter, r *http.Request) {
-	category := r.URL.Query().Get("category")
-	limit := r.URL.Query().Get("limit")
-	if limit == "" {
-		limit = "500"
+	query := r.URL.Query().Get("q")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 500
+	if limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
 	}
 
-	query := `
-		SELECT id, email, md5_hash, reason, source, category, created_at
-		FROM mailing_suppression_entries
-		WHERE is_global = TRUE
-	`
-	args := []interface{}{}
-
-	if category != "" {
-		query += " AND category = $1"
-		args = append(args, category)
+	if s.globalHub != nil {
+		entries, total, err := s.globalHub.Search(r.Context(), query, limit, 0)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"entries": []interface{}{}, "total": 0})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"entries": entries, "total": total})
+		return
 	}
 
-	query += " ORDER BY created_at DESC LIMIT " + limit
-
-	rows, err := s.db.Query(query, args...)
+	// Fallback to legacy table
+	dbQuery := `SELECT id, email, md5_hash, reason, source, category, created_at
+		FROM mailing_suppression_entries WHERE is_global = TRUE ORDER BY created_at DESC LIMIT $1`
+	rows, err := s.db.Query(dbQuery, limit)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"entries": []interface{}{}})
@@ -209,60 +162,42 @@ func (s *SuppressionService) HandleGetGlobalSuppressionEntries(w http.ResponseWr
 	entries := []map[string]interface{}{}
 	for rows.Next() {
 		var id, source, cat string
-		var email, md5Hash, reason sql.NullString
+		var email, md5Hash, reason interface{}
 		var createdAt time.Time
-		if err := rows.Scan(&id, &email, &md5Hash, &reason, &source, &cat, &createdAt); err != nil {
-			continue
+		if rows.Scan(&id, &email, &md5Hash, &reason, &source, &cat, &createdAt) == nil {
+			entries = append(entries, map[string]interface{}{
+				"id": id, "email": email, "md5_hash": md5Hash,
+				"reason": reason, "source": source, "category": cat, "created_at": createdAt,
+			})
 		}
-		entries = append(entries, map[string]interface{}{
-			"id":         id,
-			"email":      email.String,
-			"md5_hash":   md5Hash.String,
-			"reason":     reason.String,
-			"source":     source,
-			"category":   cat,
-			"created_at": createdAt,
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"entries": entries})
 }
 
-// HandleCheckGlobalSuppression checks if an email is in the global suppression list
+// HandleCheckGlobalSuppression checks if an email is in the global suppression list.
+// Delegates to GlobalSuppressionHub for O(1) in-memory lookup.
 func (s *SuppressionService) HandleCheckGlobalSuppression(w http.ResponseWriter, r *http.Request) {
 	email := chi.URLParam(r, "email")
 	email = strings.ToLower(strings.TrimSpace(email))
 
-	// Compute MD5
-	hash := md5.Sum([]byte(email))
-	md5Hash := hex.EncodeToString(hash[:])
-
-	var category, reason, source string
-	var createdAt time.Time
-	err := s.db.QueryRow(`
-		SELECT category, reason, source, created_at 
-		FROM mailing_suppression_entries 
-		WHERE is_global = TRUE AND (email = $1 OR md5_hash = $2)
-		LIMIT 1
-	`, email, md5Hash).Scan(&category, &reason, &source, &createdAt)
-
-	suppressed := err == nil
-
 	result := map[string]interface{}{
-		"email":      email,
-		"suppressed": suppressed,
+		"email":        email,
+		"is_role_based": IsRoleBasedEmail(email),
 	}
 
-	if suppressed {
-		result["category"] = category
-		result["reason"] = reason
-		result["source"] = source
-		result["suppressed_at"] = createdAt
+	if s.globalHub != nil {
+		suppressed := s.globalHub.IsSuppressed(email)
+		result["suppressed"] = suppressed
+		result["md5_hash"] = engine.MD5Hash(email)
+	} else {
+		md5Hash := engine.MD5Hash(email)
+		var exists bool
+		s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM mailing_suppression_entries WHERE is_global = TRUE AND (email = $1 OR md5_hash = $2))`, email, md5Hash).Scan(&exists)
+		result["suppressed"] = exists
+		result["md5_hash"] = md5Hash
 	}
-
-	// Also check if it's a role-based address
-	result["is_role_based"] = IsRoleBasedEmail(email)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -272,7 +207,7 @@ func (s *SuppressionService) HandleCheckGlobalSuppression(w http.ResponseWriter,
 func (s *SuppressionService) HandleProcessBounce(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Email      string `json:"email"`
-		BounceType string `json:"bounce_type"` // hard, soft
+		BounceType string `json:"bounce_type"`
 		ESP        string `json:"esp"`
 		ErrorCode  string `json:"error_code"`
 		Timestamp  string `json:"timestamp"`
@@ -284,13 +219,11 @@ func (s *SuppressionService) HandleProcessBounce(w http.ResponseWriter, r *http.
 
 	category := "hard_bounce"
 	if input.BounceType == "soft" {
-		// Soft bounces should be tracked separately and promoted after threshold
 		category = "soft_bounce_promoted"
 	}
 
 	source := fmt.Sprintf("esp_%s_bounce", input.ESP)
 	err := s.AddToGlobalSuppression(input.Email, category, source)
-
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -298,10 +231,7 @@ func (s *SuppressionService) HandleProcessBounce(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"email":       input.Email,
-		"category":    category,
-		"bounce_type": input.BounceType,
+		"success": true, "email": input.Email, "category": category,
 	})
 }
 
@@ -324,7 +254,6 @@ func (s *SuppressionService) HandleProcessComplaint(w http.ResponseWriter, r *ht
 	}
 
 	err := s.AddToGlobalSuppression(input.Email, "spam_complaint", source)
-
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -332,8 +261,6 @@ func (s *SuppressionService) HandleProcessComplaint(w http.ResponseWriter, r *ht
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"email":    input.Email,
-		"category": "spam_complaint",
+		"success": true, "email": input.Email, "category": "spam_complaint",
 	})
 }

@@ -25,7 +25,7 @@ const (
 	VersionListPerformance         = "1.0"
 	VersionEngagementReport        = "1.0"
 	VersionDeliverabilityReport    = "1.0"
-	VersionInfrastructureBreakdown = "1.4"
+	VersionInfrastructureBreakdown = "1.5"
 	VersionRevenueReport           = "1.0"
 	VersionHistoricalMetrics       = "1.0"
 )
@@ -904,7 +904,11 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 			SELECT LOWER(SPLIT_PART(sub.email, '@', 2)) as isp,
 			       COUNT(*) as cnt
 			FROM mailing_subscribers sub
-			JOIN mailing_campaigns c ON c.list_id = sub.list_id
+			JOIN mailing_campaigns c ON (
+				c.list_id = sub.list_id
+				OR (c.list_ids IS NOT NULL AND c.list_ids != '[]'::jsonb
+				    AND sub.list_id::text IN (SELECT jsonb_array_elements_text(c.list_ids)))
+			)
 			WHERE %s
 			  AND c.from_email IS NOT NULL AND c.from_email LIKE '%%@%%'
 			  AND sub.email LIKE '%%@%%'
@@ -1006,7 +1010,18 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 			}
 		}
 
-		rates := ComputeInfraRates(estSent, estDelivered, opens, clicks, bounces, complaints, deferred)
+		// When proportional allocation yields 0 but we have real event data,
+		// use delivered+bounces as an approximation for sent
+		rateSent := estSent
+		rateDelivered := estDelivered
+		if rateSent == 0 && (delivered > 0 || bounces > 0) {
+			rateSent = delivered + bounces
+		}
+		if rateDelivered == 0 && delivered > 0 {
+			rateDelivered = delivered
+		}
+
+		rates := ComputeInfraRates(rateSent, rateDelivered, opens, clicks, bounces, complaints, deferred)
 		capRate := func(r float64) float64 {
 			if r > 100 {
 				return 100

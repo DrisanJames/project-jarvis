@@ -365,6 +365,11 @@ func generatePMTAConfig(cfg ProvisionConfig) string {
 	sb.WriteString("<feedback-loop-processor>\n")
 	sb.WriteString("    deliver-unmatched-email no\n")
 	sb.WriteString("    deliver-matched-email no\n")
+	if cfg.WebhookBaseURL != "" {
+		// Forward ISP FBL (ARF) complaints to the application's /fbl/report
+		// endpoint. PMTA pipes the multipart/report body via curl.
+		sb.WriteString(fmt.Sprintf("    forward %s/fbl/report\n", strings.TrimRight(cfg.WebhookBaseURL, "/")))
+	}
 	sb.WriteString("</feedback-loop-processor>\n")
 
 	sb.WriteString("\n<spool /var/spool/pmta>\n")

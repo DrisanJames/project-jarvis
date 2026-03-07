@@ -37,24 +37,24 @@ type GlobalSuppressionSuppressor interface {
 }
 
 type SendWorkerPool struct {
-	db              *sql.DB
-	workerID        string
-	numWorkers      int
-	batchSize       int
-	pollInterval    time.Duration
-	
+	db           *sql.DB
+	workerID     string
+	numWorkers   int
+	batchSize    int
+	pollInterval time.Duration
+
 	// Stats
-	totalSent       int64
-	totalFailed     int64
-	totalSkipped    int64
-	
+	totalSent    int64
+	totalFailed  int64
+	totalSkipped int64
+
 	// Control
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	running         bool
-	mu              sync.RWMutex
-	
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running bool
+	mu      sync.RWMutex
+
 	// ESP Senders (injected)
 	sparkpostSender ESPSender
 	sesSender       ESPSender
@@ -62,16 +62,16 @@ type SendWorkerPool struct {
 	sendgridSender  ESPSender
 
 	// Global suppression hub (single source of truth)
-	globalHub       GlobalSuppressionChecker
+	globalHub        GlobalSuppressionChecker
 	globalSuppressor GlobalSuppressionSuppressor
 
 	// Tracking infrastructure
-	trackingURL     string // Base URL for open/click/unsubscribe tracking
-	trackingSecret  string // HMAC signing key for tracking tokens
-	orgID           string // Organization ID for tracking data
+	trackingURL    string // Base URL for open/click/unsubscribe tracking
+	trackingSecret string // HMAC signing key for tracking tokens
+	orgID          string // Organization ID for tracking data
 
 	profileTrackingDomainCache map[string]string // profileID -> resolved tracking base URL
-	ptdMu                     sync.RWMutex
+	ptdMu                      sync.RWMutex
 }
 
 // ESPSender interface for sending via different ESPs
@@ -81,21 +81,21 @@ type ESPSender interface {
 
 // EmailMessage represents an email to be sent
 type EmailMessage struct {
-	ID            string
-	CampaignID    string
-	SubscriberID  string
-	Email         string
-	FromName      string
-	FromEmail     string
-	ReplyTo       string
-	Subject       string
-	HTMLContent   string
-	TextContent   string
-	PreviewText   string // Pre-header text (injected as hidden span before <body> content)
-	ProfileID     string
-	ESPType       string
-	Metadata      map[string]interface{}
-	Headers       map[string]string // Custom SMTP headers (List-Unsubscribe, X-Job, etc.)
+	ID           string
+	CampaignID   string
+	SubscriberID string
+	Email        string
+	FromName     string
+	FromEmail    string
+	ReplyTo      string
+	Subject      string
+	HTMLContent  string
+	TextContent  string
+	PreviewText  string // Pre-header text (injected as hidden span before <body> content)
+	ProfileID    string
+	ESPType      string
+	Metadata     map[string]interface{}
+	Headers      map[string]string // Custom SMTP headers (List-Unsubscribe, X-Job, etc.)
 }
 
 // injectPreviewText prepends a hidden preheader span into the HTML body.
@@ -179,12 +179,12 @@ func NewSendWorkerPool(db *sql.DB, numWorkers int) *SendWorkerPool {
 	if numWorkers <= 0 {
 		numWorkers = 50 // Default for ~100 emails/second with batching
 	}
-	
+
 	return &SendWorkerPool{
 		db:           db,
 		workerID:     fmt.Sprintf("worker-%s", uuid.New().String()[:8]),
 		numWorkers:   numWorkers,
-		batchSize:    100, // Claim 100 items per batch
+		batchSize:    100,                    // Claim 100 items per batch
 		pollInterval: 100 * time.Millisecond, // Poll frequently for low latency
 	}
 }
@@ -277,15 +277,15 @@ func (p *SendWorkerPool) Start() {
 	p.running = true
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.mu.Unlock()
-	
+
 	log.Printf("SendWorkerPool: Starting %d workers (batch_size=%d)", p.numWorkers, p.batchSize)
-	
+
 	// Register this worker
 	p.registerWorker()
-	
+
 	// Start heartbeat
 	go p.heartbeatLoop()
-	
+
 	// Start workers
 	for i := 0; i < p.numWorkers; i++ {
 		p.wg.Add(1)
@@ -303,13 +303,13 @@ func (p *SendWorkerPool) Stop() {
 	p.running = false
 	p.cancel()
 	p.mu.Unlock()
-	
+
 	log.Println("SendWorkerPool: Stopping workers...")
 	p.wg.Wait()
-	
+
 	// Deregister worker
 	p.deregisterWorker()
-	
+
 	log.Printf("SendWorkerPool: Stopped. Total sent: %d, failed: %d, skipped: %d",
 		atomic.LoadInt64(&p.totalSent), atomic.LoadInt64(&p.totalFailed), atomic.LoadInt64(&p.totalSkipped))
 }
@@ -326,7 +326,7 @@ func (p *SendWorkerPool) Stats() map[string]int64 {
 // worker is the main worker loop
 func (p *SendWorkerPool) worker(workerNum int) {
 	defer p.wg.Done()
-	
+
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -339,13 +339,13 @@ func (p *SendWorkerPool) worker(workerNum int) {
 				time.Sleep(time.Second)
 				continue
 			}
-			
+
 			if len(items) == 0 {
 				// No items available, wait before polling again
 				time.Sleep(p.pollInterval)
 				continue
 			}
-			
+
 			// Process batch
 			for _, item := range items {
 				if err := p.processItem(item); err != nil {
@@ -360,7 +360,7 @@ func (p *SendWorkerPool) worker(workerNum int) {
 func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
-	
+
 	// Use the claim function from the database
 	rows, err := p.db.QueryContext(ctx, `
 		WITH claimed AS (
@@ -373,7 +373,7 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 				SELECT q.id FROM mailing_campaign_queue q
 				JOIN mailing_campaigns camp ON camp.id = q.campaign_id
 				WHERE q.status = 'queued'
-				  AND camp.status NOT IN ('cancelled', 'paused', 'failed')
+				  AND camp.status = 'sending'
 				  AND q.scheduled_at <= NOW()
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
 				ORDER BY q.priority DESC, q.scheduled_at ASC
@@ -417,12 +417,12 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
 		LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
 	`, p.workerID, p.batchSize)
-	
+
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var items []QueueItem
 	for rows.Next() {
 		var item QueueItem
@@ -466,7 +466,7 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 		item.ESPType = espType
 		items = append(items, item)
 	}
-	
+
 	return items, nil
 }
 
@@ -504,7 +504,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		atomic.AddInt64(&p.totalSkipped, 1)
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
-	
+
 	// ── Personalization: full Liquid template engine with all subscriber data ──
 	renderCtx := p.buildRenderContext(item)
 	templateSvc := mailing.NewTemplateService()
@@ -552,6 +552,14 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	}
 	headers["X-Job"] = item.CampaignID.String()
 
+	// Feedback-ID enables Gmail FBL and aids ISP complaint attribution.
+	feedbackDomain := item.FromEmail
+	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
+		feedbackDomain = item.FromEmail[atIdx+1:]
+	}
+	headers["Feedback-ID"] = fmt.Sprintf("%s:%s:%s:%s",
+		item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(), feedbackDomain)
+
 	msg := &EmailMessage{
 		ID:           item.ID.String(),
 		CampaignID:   item.CampaignID.String(),
@@ -568,7 +576,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		ESPType:      item.ESPType,
 		Headers:      headers,
 	}
-	
+
 	// Select sender based on ESP type
 	var sender ESPSender
 	switch item.ESPType {
@@ -583,12 +591,12 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	default:
 		sender = p.sesSender // Default to SES
 	}
-	
+
 	if sender == nil {
 		atomic.AddInt64(&p.totalFailed, 1)
 		return p.markFailed(ctx, item.ID, "no sender configured for "+item.ESPType)
 	}
-	
+
 	// Send the email
 	result, err := sender.Send(ctx, msg)
 	if err != nil || !result.Success {
@@ -601,17 +609,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		p.recordBounce(ctx, item, errMsg)
 		return p.markFailed(ctx, item.ID, errMsg)
 	}
-	
+
 	// Mark as sent and update campaign stats
 	atomic.AddInt64(&p.totalSent, 1)
 	if err := p.markSent(ctx, item, result.MessageID); err != nil {
 		log.Printf("Error marking sent: %v", err)
 	}
-	
+
 	// Update campaign sent count and subscriber email count
 	p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'sent_count', 1)`, item.CampaignID)
 	p.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_emails_received = COALESCE(total_emails_received, 0) + 1, updated_at = NOW() WHERE id = $1`, item.SubscriberID)
-	
+
 	return nil
 }
 
@@ -669,18 +677,18 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		SET status = 'sent', message_id = $2, sent_at = NOW()
 		WHERE id = $1
 	`, item.ID, messageID)
-	
+
 	if err != nil {
 		return err
 	}
-	
+
 	// Log message for webhook correlation
 	p.db.ExecContext(ctx, `
 		INSERT INTO mailing_message_log (message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at)
 		SELECT $1, camp.organization_id, $2, $3, $4, $5, NOW()
 		FROM mailing_campaigns camp WHERE camp.id = $2
 	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
-	
+
 	// Extract sending domain from the from_email address
 	sendingDomain := ""
 	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
@@ -693,7 +701,7 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		SELECT uuid_generate_v4(), camp.organization_id, $1, $2, $3, 'sent', NOW(), $4
 		FROM mailing_campaigns camp WHERE camp.id = $1
 	`, item.CampaignID, item.SubscriberID, strings.ToLower(strings.TrimSpace(item.Email)), sendingDomain)
-	
+
 	return nil
 }
 
@@ -817,7 +825,7 @@ func (p *SendWorkerPool) deregisterWorker() {
 func (p *SendWorkerPool) heartbeatLoop() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -849,10 +857,10 @@ func getHostname() string {
 func replaceTrackingMergeTags(html string, campaignID string, subscriberID string) string {
 	now := time.Now()
 	dateStr := fmt.Sprintf("%02d%02d%d", now.Month(), now.Day(), now.Year())
-	
+
 	html = strings.ReplaceAll(html, "{{DATE_MMDDYYYY}}", dateStr)
 	html = strings.ReplaceAll(html, "{{MAILING_ID}}", subscriberID)
-	
+
 	return html
 }
 
@@ -963,12 +971,12 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem) mailing.RenderContex
 
 	// Campaign metadata
 	rc["campaign"] = map[string]interface{}{
-		"id":          item.CampaignID.String(),
-		"name":        item.CampaignName,
-		"subject":     item.Subject,
+		"id":           item.CampaignID.String(),
+		"name":         item.CampaignName,
+		"subject":      item.Subject,
 		"preview_text": item.PreviewText,
-		"from_name":   item.FromName,
-		"from_email":  item.FromEmail,
+		"from_name":    item.FromName,
+		"from_email":   item.FromEmail,
 	}
 	rc["campaignId"] = item.CampaignID.String()
 	rc["campaign_name"] = item.CampaignName
@@ -1001,7 +1009,10 @@ func personalizeContent(content, email, firstName, lastName string) string {
 		emailDomain = email[at+1:]
 	}
 
-	replacements := []struct{ tags []string; value string }{
+	replacements := []struct {
+		tags  []string
+		value string
+	}{
 		{[]string{"{{ first_name }}", "{{first_name}}", "[FIRST_NAME]"}, firstName},
 		{[]string{"{{ last_name }}", "{{last_name}}", "[LAST_NAME]"}, lastName},
 		{[]string{"{{ full_name }}", "{{full_name}}", "[FULL_NAME]"}, fullName},

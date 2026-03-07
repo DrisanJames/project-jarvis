@@ -15,6 +15,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// campaignRecorder abstracts campaign event recording for testability.
+type campaignRecorder interface {
+	RecordEvent(e CampaignEvent)
+}
+
 // Ingestor receives PMTA accounting records via webhook and polls PMTA
 // status APIs. It classifies each record by ISP and fans out to the
 // SignalProcessor, agent clusters, CampaignEventTracker, and
@@ -22,7 +27,7 @@ import (
 type Ingestor struct {
 	registry  *ISPRegistry
 	processor *SignalProcessor
-	tracker   *CampaignEventTracker
+	tracker   campaignRecorder
 	globalHub *GlobalSuppressionHub
 	db        *sql.DB
 
@@ -170,7 +175,7 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	case "b":
 		eventType = ClassifyBounce(rec.BounceCat)
 	case "t", "tq":
-		return // transients are not campaign-level events
+		eventType = "deferred"
 	case "f":
 		eventType = "complaint"
 	default:
@@ -238,6 +243,8 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		eventType = "bounced"
 	case "f":
 		eventType = "complained"
+	case "t", "tq":
+		eventType = "deferred"
 	default:
 		return
 	}
@@ -326,16 +333,21 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
 	}
 
-	// Update campaign aggregate counters
+	// Update campaign aggregate counters.
+	// Note: eventType for bounces is "bounced" (matching the CHECK constraint),
+	// so we increment bounce_count here. The sub-classification (hard/soft)
+	// is stored in the bounce_type column of mailing_tracking_events.
 	switch eventType {
 	case "delivered":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
-	case "hard_bounce":
-		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
-	case "soft_bounce":
-		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+	case "bounced":
+		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "complained":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+	case "deferred":
+		// Deferrals are persisted to mailing_tracking_events and queried
+		// by the analytics layer. No dedicated counter column exists on
+		// mailing_campaigns — the source of truth is the events table.
 	}
 
 	// Enrich inbox profiles with delivery/bounce data from PMTA webhook

@@ -80,6 +80,10 @@ type ProvisionConfig struct {
 	SESRelayUser     string   // IAM access key ID
 	SESRelayPassword string   // Derived SES SMTP password
 	SESRelayDomains  []string // Envelope-sender domains routed through SES
+
+	// WebhookBaseURL is the application's base URL for receiving FBL reports
+	// and other webhooks (e.g. "https://app.projectjarvis.io").
+	WebhookBaseURL string
 }
 
 // ProvisionResult tracks setup status.

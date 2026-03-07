@@ -37,6 +37,7 @@ export interface ConditionBuilder {
   event_min_count?: number;
   event_max_count?: number;
   event_property_path?: string;
+  event_sending_domain?: string;
 }
 
 export interface ConditionGroupBuilder {
@@ -132,7 +133,7 @@ const OPERATORS: OperatorMeta[] = [
 // DEFAULT FIELDS
 // ==========================================
 
-const DEFAULT_FIELDS: ContactField[] = [
+export const DEFAULT_FIELDS: ContactField[] = [
   // Contact Profile Fields
   { field_key: 'email', field_label: 'Email Address', field_type: 'string', category: 'profile', is_system: true },
   { field_key: 'first_name', field_label: 'First Name', field_type: 'string', category: 'profile', is_system: true },
@@ -225,10 +226,16 @@ const QUICK_FILTERS: Array<{
   },
 ];
 
-const DEFAULT_EVENTS = [
-  'email_opened', 'email_clicked', 'email_bounced', 'email_unsubscribed',
+export const DEFAULT_EVENTS = [
+  'email_opened', 'email_clicked', 'email_delivered', 'email_sent',
+  'email_bounced', 'email_unsubscribed',
   'page_view', 'form_submit', 'add_to_cart', 'purchase', 'login'
 ];
+
+const TRACKING_EVENTS = new Set([
+  'email_opened', 'email_clicked', 'email_delivered', 'email_sent',
+  'email_bounced', 'email_unsubscribed', 'email_complained',
+]);
 
 // ==========================================
 // HELPERS
@@ -240,7 +247,7 @@ const getOperatorsForFieldType = (fieldType: FieldType): OperatorMeta[] => {
   return OPERATORS.filter(op => op.applicable_types.includes(fieldType));
 };
 
-const createEmptyCondition = (): ConditionBuilder => ({
+export const createEmptyCondition = (): ConditionBuilder => ({
   id: generateId(),
   condition_type: 'profile',
   field: '',
@@ -248,7 +255,7 @@ const createEmptyCondition = (): ConditionBuilder => ({
   value: '',
 });
 
-const createEmptyGroup = (): ConditionGroupBuilder => ({
+export const createEmptyGroup = (): ConditionGroupBuilder => ({
   id: generateId(),
   logic_operator: 'AND',
   is_negated: false,
@@ -345,26 +352,37 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
     });
   };
 
+  const selectStyle: React.CSSProperties = {
+    padding: '7px 10px', fontSize: 13, borderRadius: 8,
+    border: '1px solid rgba(0,200,255,0.12)', background: '#0a1020', color: '#e0e6f0',
+    outline: 'none',
+  };
+  const inputStyle: React.CSSProperties = {
+    ...selectStyle, width: 140,
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
-      {/* Condition Type Selector - Enhanced with icons */}
+    <div style={{
+      display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8,
+      padding: 12, borderRadius: 8,
+      background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)',
+    }}>
       <select
         value={condition.condition_type}
         onChange={(e) => handleConditionTypeChange(e.target.value as ConditionType)}
-        className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white font-medium"
+        style={{ ...selectStyle, fontWeight: 500 }}
       >
-        <option value="profile">👤 Contact Field</option>
-        <option value="custom_field">📝 Custom Field</option>
-        <option value="event">📊 Event</option>
-        <option value="tag">🏷️ Tags</option>
+        <option value="profile">Contact Field</option>
+        <option value="custom_field">Custom Field</option>
+        <option value="event">Event</option>
+        <option value="tag">Tags</option>
       </select>
 
-      {/* Field/Event Selector - Grouped by category */}
       {condition.condition_type === 'event' ? (
         <select
           value={condition.event_name || ''}
           onChange={(e) => onChange({ ...condition, event_name: e.target.value })}
-          className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white min-w-[150px]"
+          style={{ ...selectStyle, minWidth: 150 }}
         >
           <option value="">Select event...</option>
           {events.map(event => (
@@ -372,17 +390,17 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
           ))}
         </select>
       ) : condition.condition_type === 'tag' ? (
-        <span className="px-2 py-1.5 text-sm font-medium text-gray-700">🏷️ Tags</span>
+        <span style={{ padding: '7px 10px', fontSize: 13, fontWeight: 500, color: 'rgba(180,210,240,0.65)' }}>Tags</span>
       ) : (
         <select
           value={condition.field}
           onChange={(e) => handleFieldChange(e.target.value)}
-          className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white min-w-[180px]"
+          style={{ ...selectStyle, minWidth: 180 }}
         >
           <option value="">Select field...</option>
           {Array.from(groupedFields.entries()).map(([category, categoryFields]) => (
-            <optgroup 
-              key={category} 
+            <optgroup
+              key={category}
               label={FIELD_CATEGORIES[category]?.label || category}
             >
               {categoryFields.map(field => (
@@ -395,78 +413,89 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
         </select>
       )}
 
-      {/* Operator Selector */}
       <select
         value={condition.operator}
         onChange={(e) => onChange({ ...condition, operator: e.target.value as Operator })}
-        className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white min-w-[140px]"
+        style={{ ...selectStyle, minWidth: 140 }}
       >
         {operators.map(op => (
           <option key={op.operator} value={op.operator}>{op.label}</option>
         ))}
       </select>
 
-      {/* Value Input - with contextual placeholder */}
       {selectedOperator?.requires_value && (
         <input
           type={fieldType === 'number' || fieldType === 'integer' || fieldType === 'decimal' ? 'number' : 'text'}
           value={condition.value || ''}
           onChange={(e) => onChange({ ...condition, value: e.target.value })}
           placeholder={getValuePlaceholder(condition.operator, fieldType as FieldType)}
-          className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white w-[140px] placeholder:text-gray-400"
+          style={inputStyle}
         />
       )}
 
-      {/* Secondary Value (for "between" operators) */}
       {selectedOperator?.requires_secondary && (
         <>
-          <span className="text-sm text-gray-500">and</span>
+          <span style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>and</span>
           <input
             type={fieldType === 'number' || fieldType === 'integer' || fieldType === 'decimal' ? 'number' : 'text'}
             value={condition.value_secondary || ''}
             onChange={(e) => onChange({ ...condition, value_secondary: e.target.value })}
             placeholder="Value"
-            className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white w-[120px]"
+            style={{ ...inputStyle, width: 120 }}
           />
         </>
       )}
 
-      {/* Array Values (for "contains_any" etc) */}
       {selectedOperator?.requires_array && (
         <input
           type="text"
           value={(condition.values_array || []).join(', ')}
-          onChange={(e) => onChange({ 
-            ...condition, 
+          onChange={(e) => onChange({
+            ...condition,
             values_array: e.target.value.split(',').map(v => v.trim()).filter(Boolean)
           })}
           placeholder="value1, value2, ..."
-          className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white w-[200px]"
+          style={{ ...inputStyle, width: 200 }}
         />
       )}
 
-      {/* Event Time Window */}
       {condition.condition_type === 'event' && (
-        <div className="flex items-center gap-1">
-          <span className="text-sm text-gray-500">in last</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>in last</span>
           <input
             type="number"
             value={condition.event_time_window_days || ''}
             onChange={(e) => onChange({ ...condition, event_time_window_days: parseInt(e.target.value) || undefined })}
             placeholder="days"
-            className="px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white w-[60px]"
+            style={{ ...inputStyle, width: 60 }}
           />
-          <span className="text-sm text-gray-500">days</span>
+          <span style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>days</span>
         </div>
       )}
 
-      {/* Remove Button */}
+      {condition.condition_type === 'event' && TRACKING_EVENTS.has(condition.event_name || '') && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>from domain</span>
+          <input
+            type="text"
+            value={condition.event_sending_domain || ''}
+            onChange={(e) => onChange({ ...condition, event_sending_domain: e.target.value })}
+            placeholder="e.g. discountblog.com"
+            style={{ ...inputStyle, width: 180 }}
+          />
+        </div>
+      )}
+
       <button
         onClick={onRemove}
-        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+        style={{
+          padding: 6, background: 'rgba(233,69,96,0.1)', border: 'none',
+          borderRadius: 6, cursor: 'pointer', color: '#e94560',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
         title="Remove condition"
       >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg width={14} height={14} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
@@ -487,7 +516,20 @@ interface ConditionGroupEditorProps {
   onRemove?: () => void;
 }
 
-const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
+const groupBorders = [
+  'rgba(0,200,255,0.12)',
+  'rgba(0,140,255,0.18)',
+  'rgba(0,184,148,0.18)',
+  'rgba(140,100,255,0.18)',
+];
+const groupBgs = [
+  'rgba(10,16,32,0.6)',
+  'rgba(0,80,180,0.06)',
+  'rgba(0,140,100,0.06)',
+  'rgba(100,60,200,0.06)',
+];
+
+export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
   group,
   fields,
   events,
@@ -495,10 +537,8 @@ const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
   onChange,
   onRemove,
 }) => {
-  const bgColors = ['bg-white', 'bg-blue-50', 'bg-green-50', 'bg-purple-50'];
-  const borderColors = ['border-gray-200', 'border-blue-200', 'border-green-200', 'border-purple-200'];
-  const bgColor = bgColors[depth % bgColors.length];
-  const borderColor = borderColors[depth % borderColors.length];
+  const borderClr = groupBorders[depth % groupBorders.length];
+  const bgClr = groupBgs[depth % groupBgs.length];
 
   const handleConditionChange = (index: number, condition: ConditionBuilder) => {
     const newConditions = [...group.conditions];
@@ -551,45 +591,61 @@ const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
   };
 
   return (
-    <div className={`rounded-lg border-2 ${borderColor} ${bgColor} p-4`}>
+    <div
+      style={{
+        borderRadius: 10,
+        border: `2px solid ${borderClr}`,
+        background: bgClr,
+        padding: 16,
+      }}
+    >
       {/* Group Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {group.is_negated && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded">NOT</span>
+            <span style={{
+              padding: '2px 8px', fontSize: 11, fontWeight: 600, borderRadius: 4,
+              background: 'rgba(233,69,96,0.15)', color: '#e94560',
+            }}>NOT</span>
           )}
           <button
             onClick={toggleLogicOperator}
-            className={`px-3 py-1 text-sm font-semibold rounded-md transition-colors ${
-              group.logic_operator === 'AND'
-                ? 'bg-blue-500 text-white hover:bg-blue-600'
-                : 'bg-orange-500 text-white hover:bg-orange-600'
-            }`}
+            style={{
+              padding: '6px 14px', fontSize: 13, fontWeight: 700, borderRadius: 6, border: 'none',
+              cursor: 'pointer', transition: 'all 0.2s', letterSpacing: 1,
+              background: group.logic_operator === 'AND' ? 'rgba(0,229,255,0.15)' : 'rgba(255,160,50,0.18)',
+              color: group.logic_operator === 'AND' ? '#00e5ff' : '#ffb347',
+              boxShadow: group.logic_operator === 'AND'
+                ? '0 0 8px rgba(0,229,255,0.2)' : '0 0 8px rgba(255,160,50,0.2)',
+            }}
           >
             {group.logic_operator}
           </button>
-          <span className="text-sm text-gray-500">
+          <span style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
             Match {group.logic_operator === 'AND' ? 'all' : 'any'} of the following
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <button
             onClick={toggleNegation}
-            className={`px-2 py-1 text-xs rounded ${
-              group.is_negated
-                ? 'bg-red-100 text-red-700 hover:bg-red-200'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
+            style={{
+              padding: '4px 10px', fontSize: 11, borderRadius: 4, border: 'none', cursor: 'pointer',
+              background: group.is_negated ? 'rgba(233,69,96,0.15)' : 'rgba(0,200,255,0.08)',
+              color: group.is_negated ? '#e94560' : 'rgba(180,210,240,0.65)',
+            }}
           >
             {group.is_negated ? 'Negated' : 'Negate'}
           </button>
           {onRemove && depth > 0 && (
             <button
               onClick={onRemove}
-              className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+              style={{
+                padding: 4, background: 'none', border: 'none', cursor: 'pointer',
+                color: 'rgba(180,210,240,0.5)', borderRadius: 4,
+              }}
               title="Remove group"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg width={16} height={16} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
@@ -598,17 +654,18 @@ const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
       </div>
 
       {/* Conditions */}
-      <div className="space-y-2">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {group.conditions.map((condition, index) => (
-          <div key={condition.id} className="flex items-start">
+          <div key={condition.id} style={{ display: 'flex', alignItems: 'flex-start' }}>
             {index > 0 && (
-              <span className={`mr-2 mt-3 text-xs font-medium ${
-                group.logic_operator === 'AND' ? 'text-blue-500' : 'text-orange-500'
-              }`}>
+              <span style={{
+                marginRight: 8, marginTop: 12, fontSize: 11, fontWeight: 600,
+                color: group.logic_operator === 'AND' ? '#00e5ff' : '#ffb347',
+              }}>
                 {group.logic_operator}
               </span>
             )}
-            <div className="flex-1">
+            <div style={{ flex: 1 }}>
               <ConditionEditor
                 condition={condition}
                 fields={fields}
@@ -622,11 +679,12 @@ const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
 
         {/* Nested Groups */}
         {group.groups.map((childGroup, index) => (
-          <div key={childGroup.id} className="mt-3">
+          <div key={childGroup.id} style={{ marginTop: 8 }}>
             {(group.conditions.length > 0 || index > 0) && (
-              <span className={`text-xs font-medium ${
-                group.logic_operator === 'AND' ? 'text-blue-500' : 'text-orange-500'
-              }`}>
+              <span style={{
+                fontSize: 11, fontWeight: 600,
+                color: group.logic_operator === 'AND' ? '#00e5ff' : '#ffb347',
+              }}>
                 {group.logic_operator}
               </span>
             )}
@@ -643,21 +701,33 @@ const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
       </div>
 
       {/* Add Buttons */}
-      <div className="flex gap-2 mt-3">
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
           onClick={handleAddCondition}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 14px', fontSize: 13, fontWeight: 500, borderRadius: 8,
+            border: '1px solid rgba(0,229,255,0.15)', cursor: 'pointer',
+            background: 'rgba(0,229,255,0.08)', color: '#00e5ff',
+            transition: 'all 0.2s',
+          }}
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg width={14} height={14} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
           Add Condition
         </button>
         <button
           onClick={handleAddGroup}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-md transition-colors"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 14px', fontSize: 13, fontWeight: 500, borderRadius: 8,
+            border: '1px solid rgba(140,100,255,0.2)', cursor: 'pointer',
+            background: 'rgba(140,100,255,0.08)', color: '#b18cff',
+            transition: 'all 0.2s',
+          }}
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg width={14} height={14} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
           </svg>
           Add Group

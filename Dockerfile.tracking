@@ -1,3 +1,27 @@
+FROM golang:1.22-alpine AS go-builder
+
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ARG IMAGE_URI=
+
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . ./
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+  -ldflags="-s -w \
+  -X 'github.com/ignite/sparkpost-monitor/internal/buildinfo.Version=${VERSION}' \
+  -X 'github.com/ignite/sparkpost-monitor/internal/buildinfo.GitSHA=${GIT_SHA}' \
+  -X 'github.com/ignite/sparkpost-monitor/internal/buildinfo.BuildTime=${BUILD_TIME}' \
+  -X 'github.com/ignite/sparkpost-monitor/internal/buildinfo.ImageURI=${IMAGE_URI}'" \
+  -o /out/tracking ./cmd/tracking
+
 FROM alpine:3.20
 
 RUN apk --no-cache add ca-certificates tzdata wget && \
@@ -5,7 +29,7 @@ RUN apk --no-cache add ca-certificates tzdata wget && \
 
 WORKDIR /app
 
-COPY build/tracking .
+COPY --from=go-builder /out/tracking ./tracking
 
 RUN chown -R ignite:ignite /app
 

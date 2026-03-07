@@ -9,7 +9,7 @@
     "containerDefinitions": [
         {
             "name": "ignite-api",
-            "image": "146361001621.dkr.ecr.us-east-1.amazonaws.com/ignite-upside-down:latest",
+            "image": "__IMAGE_URI__",
             "essential": true,
             "portMappings": [
                 {
@@ -28,6 +28,11 @@
                 {"name": "IGNITE_S3_PREFIX", "value": "ignite/knowledge/"},
                 {"name": "TRACKING_URL", "value": "http://ignite-upside-down-alb-349670800.us-east-1.elb.amazonaws.com"},
                 {"name": "TRACKING_SECRET", "value": "ignite-tracking-prod-2026"},
+                {"name": "SQS_PMTA_WAVE_QUEUE_URL", "value": "${SQS_PMTA_WAVE_QUEUE_URL}"},
+                {"name": "APP_GIT_SHA", "value": "__APP_GIT_SHA__"},
+                {"name": "APP_BUILD_TIME", "value": "__APP_BUILD_TIME__"},
+                {"name": "APP_IMAGE_URI", "value": "__IMAGE_URI__"},
+                {"name": "APP_IMAGE_DIGEST", "value": "__APP_IMAGE_DIGEST__"},
                 {"name": "DEV_MODE", "value": "false"},
                 {"name": "SES_SMTP_USER", "value": "${SES_SMTP_USER}"},
                 {"name": "SES_SMTP_SECRET", "value": "${SES_SMTP_SECRET}"},

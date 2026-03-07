@@ -671,6 +671,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Bridge: ingestor feeds ALL negative PMTA signals to global hub
 			ingestor.SetGlobalSuppressionHub(globalHub)
 
+			// Wire global hub to SuppressionService (consolidates all global suppression)
+			suppSvc.SetGlobalSuppressionHub(globalHub)
+
 			// Wire global hub to all send pipelines
 			if s.mailingSvc != nil {
 				s.mailingSvc.SetGlobalSuppressionHub(globalHub)

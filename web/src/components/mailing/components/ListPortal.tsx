@@ -27,9 +27,19 @@ import {
   faDownload,
   faFileAlt,
   faRocket,
+  faLock,
+  faRobot,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ChunkedUploader } from '../ChunkedUploader';
+import {
+  ConditionGroupBuilder,
+  ConditionGroupEditor,
+  ContactField,
+  createEmptyGroup,
+  DEFAULT_FIELDS,
+  DEFAULT_EVENTS,
+} from '../../segments/SegmentBuilder';
 import './ListPortal.css';
 
 // ============================================================================
@@ -59,15 +69,11 @@ interface Segment {
   segment_type: 'dynamic' | 'static';
   subscriber_count: number;
   status: 'active' | 'draft' | 'archived';
-  conditions?: SegmentCondition[];
+  calculation_mode?: string;
+  include_suppressed?: boolean;
+  is_system?: boolean;
   created_at: string;
   updated_at: string;
-}
-
-interface SegmentCondition {
-  field: string;
-  operator: string;
-  value: string;
 }
 
 interface Subscriber {
@@ -177,16 +183,16 @@ export const ListPortal: React.FC = () => {
     try {
       const [listsRes, segmentsRes, activityRes] = await Promise.all([
         orgFetch('/api/mailing/lists'),
-        orgFetch('/api/mailing/segments'),
+        orgFetch('/api/mailing/v2/segments'),
         orgFetch('/api/mailing/lists/activity').catch(() => null),
       ]);
 
       const listsData = await listsRes.json().catch(() => ({ lists: [] }));
-      const segmentsData = await segmentsRes.json().catch(() => ({ segments: [] }));
+      const segmentsRaw = await segmentsRes.json().catch(() => []);
       const activityData = activityRes ? await activityRes.json().catch(() => ({})) : {};
 
       const allLists: List[] = listsData.lists || [];
-      const allSegments: Segment[] = segmentsData.segments || [];
+      const allSegments: Segment[] = Array.isArray(segmentsRaw) ? segmentsRaw : (segmentsRaw?.segments || []);
 
       setLists(allLists);
       setSegments(allSegments);
@@ -596,13 +602,28 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
                 <div 
                   key={segment.id} 
                   className="segment-item"
-                  onClick={() => onNavigate('edit-segment', undefined, segment)}
+                  onClick={() => segment.is_system ? null : onNavigate('edit-segment', undefined, segment)}
+                  style={segment.is_system ? { cursor: 'default' } : undefined}
                 >
-                  <div className={`segment-type-badge ${segment.segment_type}`}>
-                    {segment.segment_type === 'dynamic' ? <FontAwesomeIcon icon={faBolt} /> : <FontAwesomeIcon icon={faLayerGroup} />}
+                  <div className={`segment-type-badge ${segment.is_system ? 'system' : segment.segment_type}`}>
+                    {segment.is_system ? <FontAwesomeIcon icon={faRobot} /> : (segment.segment_type === 'dynamic' ? <FontAwesomeIcon icon={faBolt} /> : <FontAwesomeIcon icon={faLayerGroup} />)}
                   </div>
                   <div className="segment-info">
-                    <div className="segment-name">{segment.name}</div>
+                    <div className="segment-name" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      {segment.name}
+                      {segment.is_system && (
+                        <span style={{
+                          background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                          color: '#fff',
+                          fontSize: '0.55rem',
+                          padding: '1px 6px',
+                          borderRadius: '8px',
+                          fontWeight: 600,
+                        }}>
+                          <FontAwesomeIcon icon={faLock} style={{ fontSize: '0.5rem', marginRight: '3px' }} />SYSTEM
+                        </span>
+                      )}
+                    </div>
                     <div className="segment-meta">
                       <span><FontAwesomeIcon icon={faUsers} /> {segment.subscriber_count?.toLocaleString() || 0}</span>
                       {segment.list_name && <span>{segment.list_name}</span>}
@@ -1341,7 +1362,7 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
     
     setDeleting(segment.id);
     try {
-      await orgFetch(`/api/mailing/segments/${segment.id}`, { method: 'DELETE' });
+      await orgFetch(`/api/mailing/v2/segments/${segment.id}`, { method: 'DELETE' });
       onRefresh();
     } catch (err) {
       alert('Failed to delete segment');
@@ -1399,18 +1420,35 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
           filteredSegments.map((segment, idx) => (
             <div 
               key={segment.id} 
-              className="segment-card"
+              className={`segment-card${segment.is_system ? ' system-segment' : ''}`}
               style={{ animationDelay: `${idx * 50}ms` }}
             >
               <div className="segment-card-header">
-                <div className={`segment-type-icon ${segment.segment_type}`}>
-                  <FontAwesomeIcon icon={segment.segment_type === 'dynamic' ? faBolt : faLayerGroup} />
+                <div className={`segment-type-icon ${segment.is_system ? 'system' : segment.segment_type}`}>
+                  <FontAwesomeIcon icon={segment.is_system ? faRobot : (segment.segment_type === 'dynamic' ? faBolt : faLayerGroup)} />
                 </div>
                 <div className="segment-title">
                   <h3>{segment.name}</h3>
-                  <span className={`segment-type-badge ${segment.segment_type}`}>
-                    {segment.segment_type}
-                  </span>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {segment.is_system && (
+                      <span className="segment-type-badge system" style={{
+                        background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                        color: '#fff',
+                        fontSize: '0.65rem',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}>
+                        <FontAwesomeIcon icon={faLock} style={{ fontSize: '0.55rem' }} /> SYSTEM
+                      </span>
+                    )}
+                    <span className={`segment-type-badge ${segment.segment_type}`}>
+                      {segment.segment_type}
+                    </span>
+                  </div>
                 </div>
               </div>
               
@@ -1434,13 +1472,15 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
               <div className="segment-card-footer">
                 <span className={`status-badge status-${segment.status}`}>{segment.status}</span>
                 <div className="segment-actions">
-                  <button 
-                    className="action-btn"
-                    onClick={() => onNavigate('edit-segment', undefined, segment)}
-                    title="Edit Segment"
-                  >
-                    <FontAwesomeIcon icon={faPencilAlt} />
-                  </button>
+                  {!segment.is_system && (
+                    <button 
+                      className="action-btn"
+                      onClick={() => onNavigate('edit-segment', undefined, segment)}
+                      title="Edit Segment"
+                    >
+                      <FontAwesomeIcon icon={faPencilAlt} />
+                    </button>
+                  )}
                   <button 
                     className="action-btn"
                     onClick={() => {/* Preview */}}
@@ -1448,14 +1488,16 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                   >
                     <FontAwesomeIcon icon={faEye} />
                   </button>
-                  <button 
-                    className="action-btn danger"
-                    onClick={() => handleDelete(segment)}
-                    disabled={deleting === segment.id}
-                    title="Delete Segment"
-                  >
-                    <FontAwesomeIcon icon={deleting === segment.id ? faSpinner : faTrash} spin={deleting === segment.id} />
-                  </button>
+                  {!segment.is_system && (
+                    <button 
+                      className="action-btn danger"
+                      onClick={() => handleDelete(segment)}
+                      disabled={deleting === segment.id}
+                      title="Delete Segment"
+                    >
+                      <FontAwesomeIcon icon={deleting === segment.id ? faSpinner : faTrash} spin={deleting === segment.id} />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1485,58 +1527,18 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
     list_id: '',
     segment_type: 'dynamic',
   });
-  const [conditions, setConditions] = useState<SegmentCondition[]>([
-    { field: 'engagement_score', operator: 'greater_than', value: '50' }
-  ]);
+  const [rootGroup, setRootGroup] = useState<ConditionGroupBuilder>(createEmptyGroup());
+  const [fields, setFields] = useState<ContactField[]>(DEFAULT_FIELDS);
   const [saving, setSaving] = useState(false);
 
-  const fieldOptions = [
-    { value: 'first_name', label: 'First Name', group: 'Contact' },
-    { value: 'last_name', label: 'Last Name', group: 'Contact' },
-    { value: 'email', label: 'Email Address', group: 'Contact' },
-    { value: 'phone', label: 'Phone', group: 'Contact' },
-    { value: 'city', label: 'City', group: 'Contact' },
-    { value: 'country', label: 'Country', group: 'Contact' },
-    { value: 'timezone', label: 'Timezone', group: 'Contact' },
-    { value: 'status', label: 'Subscription Status', group: 'Contact' },
-    { value: 'total_emails_received', label: 'Emails Sent', group: 'Activity' },
-    { value: 'total_opens', label: 'Total Opens', group: 'Activity' },
-    { value: 'total_clicks', label: 'Total Clicks', group: 'Activity' },
-    { value: 'engagement_score', label: 'Engagement Score', group: 'Activity' },
-    { value: 'last_email_at', label: 'Last Sent Date', group: 'Dates' },
-    { value: 'last_open_at', label: 'Last Open Date', group: 'Dates' },
-    { value: 'last_click_at', label: 'Last Click Date', group: 'Dates' },
-    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Dates' },
-  ];
-
-  const operatorOptions = [
-    { value: 'equals', label: 'Equals' },
-    { value: 'not_equals', label: 'Does not equal' },
-    { value: 'contains', label: 'Contains' },
-    { value: 'not_contains', label: 'Does not contain' },
-    { value: 'starts_with', label: 'Starts with' },
-    { value: 'ends_with', label: 'Ends with' },
-    { value: 'is_empty', label: 'Is empty' },
-    { value: 'is_not_empty', label: 'Is not empty' },
-    { value: 'greater_than', label: 'Greater than' },
-    { value: 'less_than', label: 'Less than' },
-    { value: 'greater_than_or_equal', label: 'Greater than or equal' },
-    { value: 'less_than_or_equal', label: 'Less than or equal' },
-    { value: 'in_last_days', label: 'In the last X days' },
-    { value: 'more_than_days_ago', label: 'More than X days ago' },
-  ];
-
-  const addCondition = () => {
-    setConditions(prev => [...prev, { field: 'total_emails_received', operator: 'greater_than', value: '' }]);
-  };
-
-  const removeCondition = (index: number) => {
-    setConditions(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const updateCondition = (index: number, field: keyof SegmentCondition, value: string) => {
-    setConditions(prev => prev.map((c, i) => i === index ? { ...c, [field]: value } : c));
-  };
+  useEffect(() => {
+    orgFetch('/api/mailing/v2/contact-fields')
+      .then(r => r.ok ? r.json() : [])
+      .then(custom => {
+        if (Array.isArray(custom) && custom.length > 0) setFields([...DEFAULT_FIELDS, ...custom]);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1544,14 +1546,18 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
 
     setSaving(true);
     try {
-      const res = await orgFetch('/api/mailing/segments', {
+      const payload: Record<string, unknown> = {
+        name: formData.name,
+        description: formData.description,
+        root_group: rootGroup,
+      };
+      if (formData.list_id) payload.list_id = formData.list_id;
+
+      const res = await orgFetch('/api/mailing/v2/segments', {
         method: 'POST',
-        body: JSON.stringify({
-          ...formData,
-          conditions: formData.segment_type === 'dynamic' ? conditions : undefined,
-        }),
+        body: JSON.stringify(payload),
       });
-      
+
       if (res.ok) {
         onSuccess();
       } else {
@@ -1648,77 +1654,15 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
 
         {formData.segment_type === 'dynamic' && (
           <div className="form-section">
-            <div className="section-header">
-              <h3>Conditions</h3>
-              <button type="button" className="btn btn-small" onClick={addCondition}>
-                <FontAwesomeIcon icon={faPlus} /> Add Condition
-              </button>
-            </div>
-            <p className="section-hint">Subscribers matching ALL conditions will be included</p>
-            
-            <div className="conditions-list">
-              {conditions.map((condition, idx) => {
-                // Determine placeholder based on operator
-                const getPlaceholder = (op: string) => {
-                  switch (op) {
-                    case 'contains':
-                    case 'not_contains':
-                      return 'e.g., gmail.com';
-                    case 'starts_with':
-                      return 'e.g., john';
-                    case 'ends_with':
-                      return 'e.g., .com';
-                    case 'is_empty':
-                    case 'is_not_empty':
-                      return '(no value needed)';
-                    case 'in_last_days':
-                    case 'more_than_days_ago':
-                      return 'days (e.g., 30)';
-                    default:
-                      return 'Value';
-                  }
-                };
-                const noValueNeeded = ['is_empty', 'is_not_empty'].includes(condition.operator);
-                
-                return (
-                  <div key={idx} className="condition-row">
-                    <select
-                      value={condition.field}
-                      onChange={e => updateCondition(idx, 'field', e.target.value)}
-                    >
-                      {fieldOptions.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={condition.operator}
-                      onChange={e => updateCondition(idx, 'operator', e.target.value)}
-                    >
-                      {operatorOptions.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      value={noValueNeeded ? '' : condition.value}
-                      onChange={e => updateCondition(idx, 'value', e.target.value)}
-                      placeholder={getPlaceholder(condition.operator)}
-                      disabled={noValueNeeded}
-                      style={noValueNeeded ? { opacity: 0.5, backgroundColor: '#0a1020' } : undefined}
-                    />
-                    {conditions.length > 1 && (
-                      <button 
-                        type="button" 
-                        className="condition-remove"
-                        onClick={() => removeCondition(idx)}
-                      >
-                        <FontAwesomeIcon icon={faTimes} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <h3>Conditions</h3>
+            <p className="section-hint">Click the AND / OR button to toggle how conditions are combined</p>
+            <ConditionGroupEditor
+              group={rootGroup}
+              fields={fields}
+              events={DEFAULT_EVENTS}
+              depth={0}
+              onChange={setRootGroup}
+            />
           </div>
         )}
 
@@ -1749,6 +1693,27 @@ interface EditSegmentProps {
   animateIn: boolean;
 }
 
+const hydrateIds = (group: Record<string, unknown>): ConditionGroupBuilder => {
+  const genId = () => Math.random().toString(36).substring(2, 11);
+  return {
+    id: (group.id as string) || genId(),
+    logic_operator: (group.logic_operator as 'AND' | 'OR') || 'AND',
+    is_negated: !!group.is_negated,
+    conditions: Array.isArray(group.conditions)
+      ? (group.conditions as Record<string, unknown>[]).map(c => ({
+          ...c,
+          id: (c.id as string) || genId(),
+          condition_type: (c.condition_type || 'profile') as ConditionGroupBuilder['conditions'][0]['condition_type'],
+          field: (c.field || '') as string,
+          operator: (c.operator || 'equals') as ConditionGroupBuilder['conditions'][0]['operator'],
+        } as ConditionGroupBuilder['conditions'][0]))
+      : [],
+    groups: Array.isArray(group.groups)
+      ? (group.groups as Record<string, unknown>[]).map(g => hydrateIds(g))
+      : [],
+  };
+};
+
 const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableLists, onCancel, onSuccess, orgFetch, animateIn }) => {
   const [formData, setFormData] = useState({
     name: segment.name,
@@ -1756,89 +1721,45 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
     list_id: segment.list_id || '',
     status: segment.status,
   });
-  const [conditions, setConditions] = useState<SegmentCondition[]>([]);
+  const [rootGroup, setRootGroup] = useState<ConditionGroupBuilder>(createEmptyGroup());
+  const [fields, setFields] = useState<ContactField[]>(DEFAULT_FIELDS);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const fieldOptions = [
-    { value: 'first_name', label: 'First Name', group: 'Contact' },
-    { value: 'last_name', label: 'Last Name', group: 'Contact' },
-    { value: 'email', label: 'Email Address', group: 'Contact' },
-    { value: 'phone', label: 'Phone', group: 'Contact' },
-    { value: 'city', label: 'City', group: 'Contact' },
-    { value: 'country', label: 'Country', group: 'Contact' },
-    { value: 'timezone', label: 'Timezone', group: 'Contact' },
-    { value: 'status', label: 'Subscription Status', group: 'Contact' },
-    { value: 'total_emails_received', label: 'Emails Sent', group: 'Activity' },
-    { value: 'total_opens', label: 'Total Opens', group: 'Activity' },
-    { value: 'total_clicks', label: 'Total Clicks', group: 'Activity' },
-    { value: 'engagement_score', label: 'Engagement Score', group: 'Activity' },
-    { value: 'last_email_at', label: 'Last Sent Date', group: 'Dates' },
-    { value: 'last_open_at', label: 'Last Open Date', group: 'Dates' },
-    { value: 'last_click_at', label: 'Last Click Date', group: 'Dates' },
-    { value: 'subscribed_at', label: 'Subscribed Date', group: 'Dates' },
-  ];
-
-  const operatorOptions = [
-    { value: 'equals', label: 'Equals' },
-    { value: 'not_equals', label: 'Does not equal' },
-    { value: 'contains', label: 'Contains' },
-    { value: 'not_contains', label: 'Does not contain' },
-    { value: 'starts_with', label: 'Starts with' },
-    { value: 'ends_with', label: 'Ends with' },
-    { value: 'is_empty', label: 'Is empty' },
-    { value: 'is_not_empty', label: 'Is not empty' },
-    { value: 'greater_than', label: 'Greater than' },
-    { value: 'less_than', label: 'Less than' },
-    { value: 'greater_than_or_equal', label: 'Greater than or equal' },
-    { value: 'less_than_or_equal', label: 'Less than or equal' },
-    { value: 'in_last_days', label: 'In the last X days' },
-    { value: 'more_than_days_ago', label: 'More than X days ago' },
-  ];
-
   useEffect(() => {
-    const fetchSegment = async () => {
+    const fetchData = async () => {
       try {
-        const res = await orgFetch(`/api/mailing/segments/${segment.id}`);
-        if (res.ok) {
-          const data = await res.json();
+        const [segRes, fieldsRes] = await Promise.all([
+          orgFetch(`/api/mailing/v2/segments/${segment.id}`),
+          orgFetch('/api/mailing/v2/contact-fields').catch(() => null),
+        ]);
+
+        if (segRes.ok) {
+          const data = await segRes.json();
+          const seg = data.segment || data;
           setFormData({
-            name: data.name || segment.name,
-            description: data.description || '',
-            list_id: data.list_id || '',
-            status: data.status || 'active',
+            name: seg.name || segment.name,
+            description: seg.description || '',
+            list_id: seg.list_id || '',
+            status: seg.status || 'active',
           });
-          if (data.conditions && Array.isArray(data.conditions) && data.conditions.length > 0) {
-            setConditions(data.conditions.map((c: any) => ({
-              field: c.field || 'engagement_score',
-              operator: c.operator || 'greater_than',
-              value: c.value || '',
-            })));
+          if (data.conditions && data.conditions.logic_operator) {
+            setRootGroup(hydrateIds(data.conditions));
           }
         }
-      } catch {
-        // Fall back to the segment data we already have from the list
-        if (segment.conditions && segment.conditions.length > 0) {
-          setConditions(segment.conditions);
+
+        if (fieldsRes?.ok) {
+          const custom = await fieldsRes.json();
+          if (Array.isArray(custom) && custom.length > 0) setFields([...DEFAULT_FIELDS, ...custom]);
         }
+      } catch {
+        // fallback — keep defaults
       } finally {
         setLoading(false);
       }
     };
-    fetchSegment();
+    fetchData();
   }, [segment.id]);
-
-  const addCondition = () => {
-    setConditions(prev => [...prev, { field: 'engagement_score', operator: 'greater_than', value: '' }]);
-  };
-
-  const removeCondition = (index: number) => {
-    setConditions(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const updateCondition = (index: number, field: keyof SegmentCondition, value: string) => {
-    setConditions(prev => prev.map((c, i) => i === index ? { ...c, [field]: value } : c));
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1846,11 +1767,14 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
 
     setSaving(true);
     try {
-      const payload: any = {
-        ...formData,
-        conditions: segment.segment_type === 'dynamic' ? conditions.map((c, i) => ({ ...c, group: i })) : undefined,
+      const payload: Record<string, unknown> = {
+        name: formData.name,
+        description: formData.description,
+        root_group: rootGroup,
       };
-      const res = await orgFetch(`/api/mailing/segments/${segment.id}`, {
+      if (formData.list_id) payload.list_id = formData.list_id;
+
+      const res = await orgFetch(`/api/mailing/v2/segments/${segment.id}`, {
         method: 'PUT',
         body: JSON.stringify(payload),
       });
@@ -1868,17 +1792,6 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
     }
   };
 
-  const getPlaceholder = (op: string) => {
-    switch (op) {
-      case 'contains': case 'not_contains': return 'e.g., gmail.com';
-      case 'starts_with': return 'e.g., john';
-      case 'ends_with': return 'e.g., .com';
-      case 'is_empty': case 'is_not_empty': return '(no value needed)';
-      case 'in_last_days': case 'more_than_days_ago': return 'days (e.g., 30)';
-      default: return 'Value';
-    }
-  };
-
   if (loading) {
     return (
       <div className={`create-form-container ${animateIn ? 'animate-in' : ''}`}>
@@ -1893,7 +1806,7 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
     <div className={`create-form-container ${animateIn ? 'animate-in' : ''}`}>
       <div className="form-header">
         <h2><FontAwesomeIcon icon={faPencilAlt} /> Edit Segment</h2>
-        <p>Update settings for "{segment.name}"</p>
+        <p>Update settings for &ldquo;{segment.name}&rdquo;</p>
       </div>
 
       <form onSubmit={handleSubmit} className="create-form">
@@ -1945,62 +1858,15 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
 
         {segment.segment_type === 'dynamic' && (
           <div className="form-section">
-            <div className="section-header">
-              <h3>Conditions</h3>
-              <button type="button" className="btn btn-small" onClick={addCondition}>
-                <FontAwesomeIcon icon={faPlus} /> Add Condition
-              </button>
-            </div>
-            <p className="section-hint">Subscribers matching ALL conditions will be included</p>
-
-            {conditions.length === 0 && (
-              <p style={{ color: '#94a3b8', fontStyle: 'italic', padding: '12px 0' }}>
-                No conditions defined. Click "Add Condition" to define targeting rules.
-              </p>
-            )}
-
-            <div className="conditions-list">
-              {conditions.map((condition, idx) => {
-                const noValueNeeded = ['is_empty', 'is_not_empty'].includes(condition.operator);
-                return (
-                  <div key={idx} className="condition-row">
-                    <select
-                      value={condition.field}
-                      onChange={e => updateCondition(idx, 'field', e.target.value)}
-                    >
-                      {fieldOptions.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={condition.operator}
-                      onChange={e => updateCondition(idx, 'operator', e.target.value)}
-                    >
-                      {operatorOptions.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      value={noValueNeeded ? '' : condition.value}
-                      onChange={e => updateCondition(idx, 'value', e.target.value)}
-                      placeholder={getPlaceholder(condition.operator)}
-                      disabled={noValueNeeded}
-                      style={noValueNeeded ? { opacity: 0.5, backgroundColor: '#0a1020' } : undefined}
-                    />
-                    {conditions.length > 1 && (
-                      <button
-                        type="button"
-                        className="condition-remove"
-                        onClick={() => removeCondition(idx)}
-                      >
-                        <FontAwesomeIcon icon={faTimes} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <h3>Conditions</h3>
+            <p className="section-hint">Click the AND / OR button to toggle how conditions are combined</p>
+            <ConditionGroupEditor
+              group={rootGroup}
+              fields={fields}
+              events={DEFAULT_EVENTS}
+              depth={0}
+              onChange={setRootGroup}
+            />
           </div>
         )}
 

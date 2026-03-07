@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -267,7 +268,11 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		ipID = ip.ID
 	}
 
-	messageID := fmt.Sprintf("%s@pmta", uuid.New().String())
+	msgDomain := "mail.projectjarvis.io"
+	if parts := strings.SplitN(msg.FromEmail, "@", 2); len(parts) == 2 && parts[1] != "" {
+		msgDomain = parts[1]
+	}
+	messageID := fmt.Sprintf("%s@%s", uuid.New().String(), msgDomain)
 
 	var headerBuf bytes.Buffer
 	headerBuf.WriteString(fmt.Sprintf("From: %s <%s>\r\n", msg.FromName, msg.FromEmail))
@@ -286,6 +291,16 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	headerBuf.WriteString(fmt.Sprintf("X-Campaign-ID: %s\r\n", msg.CampaignID))
 	headerBuf.WriteString(fmt.Sprintf("X-Subscriber-ID: %s\r\n", msg.SubscriberID))
 	headerBuf.WriteString(fmt.Sprintf("X-Message-ID: %s\r\n", msg.ID))
+
+	// Feedback-ID is required by Gmail for FBL (Feedback Loop) correlation.
+	// Format: campaignID:subscriberID:orgID:sendingDomain
+	// Gmail uses the last segment (SenderId) as the primary identifier.
+	feedbackDomain := msg.FromEmail
+	if atIdx := strings.LastIndex(msg.FromEmail, "@"); atIdx >= 0 {
+		feedbackDomain = msg.FromEmail[atIdx+1:]
+	}
+	headerBuf.WriteString(fmt.Sprintf("Feedback-ID: %s:%s:%s:%s\r\n",
+		msg.CampaignID, msg.SubscriberID, msg.ID, feedbackDomain))
 
 	for k, v := range msg.Headers {
 		headerBuf.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))

@@ -13,11 +13,18 @@ ECS_TASK="$APP_NAME-task"
 ALB_NAME="$APP_NAME-alb"
 TG_NAME="$APP_NAME-tg"
 SG_NAME="$APP_NAME-sg"
+INITIAL_IMAGE_URI="${INITIAL_IMAGE_URI:-}"
 
 echo "=== Ignite Upside-Down ECS Setup ==="
 echo "AWS Account: $AWS_ACCOUNT_ID"
 echo "AWS Region: $AWS_REGION"
 echo ""
+
+if [ -z "$INITIAL_IMAGE_URI" ]; then
+    echo "INITIAL_IMAGE_URI is required for bootstrap so ECS starts from an immutable image reference."
+    echo "Example: INITIAL_IMAGE_URI=$ECR_REPO@sha256:..."
+    exit 1
+fi
 
 # Get default VPC
 echo "Getting default VPC..."
@@ -179,7 +186,7 @@ TASK_DEF=$(cat <<EOF
     "taskRoleArn": "$TASK_ROLE_ARN",
     "containerDefinitions": [{
         "name": "$APP_NAME",
-        "image": "$ECR_REPO:latest",
+        "image": "$INITIAL_IMAGE_URI",
         "essential": true,
         "portMappings": [{
             "containerPort": 8080,
@@ -188,7 +195,8 @@ TASK_DEF=$(cat <<EOF
         }],
         "environment": [
             {"name": "PORT", "value": "8080"},
-            {"name": "AWS_REGION", "value": "$AWS_REGION"}
+            {"name": "AWS_REGION", "value": "$AWS_REGION"},
+            {"name": "APP_IMAGE_URI", "value": "$INITIAL_IMAGE_URI"}
         ],
         "logConfiguration": {
             "logDriver": "awslogs",

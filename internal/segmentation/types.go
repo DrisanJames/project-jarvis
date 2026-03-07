@@ -207,6 +207,8 @@ type Segment struct {
 	SubscriberCount      int             `json:"subscriber_count" db:"subscriber_count"`
 	LastCalculatedAt     *time.Time      `json:"last_calculated_at,omitempty" db:"last_calculated_at"`
 	Status               string          `json:"status" db:"status"`
+	IsSystem             bool            `json:"is_system" db:"is_system"`
+	SystemQuery          string          `json:"system_query,omitempty" db:"system_query"`
 	CreatedBy            *uuid.UUID      `json:"created_by,omitempty" db:"created_by"`
 	LastEditedBy         *uuid.UUID      `json:"last_edited_by,omitempty" db:"last_edited_by"`
 	LastEditedAt         *time.Time      `json:"last_edited_at,omitempty" db:"last_edited_at"`
@@ -288,6 +290,7 @@ type ConditionBuilder struct {
 	EventMinCount       int           `json:"event_min_count,omitempty"`
 	EventMaxCount       int           `json:"event_max_count,omitempty"`
 	EventPropertyPath   string        `json:"event_property_path,omitempty"`
+	EventSendingDomain  string        `json:"event_sending_domain,omitempty"`
 }
 
 // ==========================================

@@ -129,7 +129,6 @@ func TestHealthCheck(t *testing.T) {
 	assert.Contains(t, response, "status")
 	assert.Contains(t, response, "version")
 	assert.Contains(t, response, "uptime")
-	assert.Contains(t, response, "checks")
 
 	// Test /health/live endpoint
 	req = httptest.NewRequest(http.MethodGet, "/health/live", nil)

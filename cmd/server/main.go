@@ -20,8 +20,10 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/api"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
 	"github.com/ignite/sparkpost-monitor/internal/azure"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
+	"github.com/ignite/sparkpost-monitor/internal/datanorm"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
 	"github.com/ignite/sparkpost-monitor/internal/financial"
 	"github.com/ignite/sparkpost-monitor/internal/intelligence"
@@ -29,11 +31,10 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/mailgun"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
-	"github.com/ignite/sparkpost-monitor/internal/datanorm"
-	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
+	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -72,6 +73,8 @@ func main() {
 	log.Println("║  IGNITE Production Server (cmd/server/main.go)            ║")
 	log.Println("║  Real database-backed API with full ESP integrations      ║")
 	log.Println("╚════════════════════════════════════════════════════════════╝")
+	bi := buildinfo.Current()
+	log.Printf("Build info: version=%s git_sha=%s image_digest=%s build_time=%s", bi.Version, bi.GitSHA, bi.ImageDigest, bi.BuildTime)
 
 	// Load configuration
 	cfg, err := config.LoadFromEnv("config/config.yaml")
@@ -125,7 +128,7 @@ func main() {
 		if envURL := os.Getenv("AUTH_BASE_URL"); envURL != "" {
 			baseURL = envURL
 		}
-		
+
 		authManager = auth.NewAuthManager(&cfg.Auth, baseURL)
 
 		// Pre-flight: validate OAuth credentials against Google before accepting traffic.
@@ -217,11 +220,11 @@ func main() {
 					redisClient.Close()
 					redisClient = nil
 				} else {
-				server.SetRedisClient(redisClient)
-				if authManager != nil {
-					authManager.SetRedisClient(redisClient)
-				}
-				log.Printf("Redis connected: %s (distributed locking + persistent sessions enabled)", redisURL)
+					server.SetRedisClient(redisClient)
+					if authManager != nil {
+						authManager.SetRedisClient(redisClient)
+					}
+					log.Printf("Redis connected: %s (distributed locking + persistent sessions enabled)", redisURL)
 				}
 				pingCancel()
 			} else {
@@ -232,10 +235,10 @@ func main() {
 			server.SetMailingDB(mailingDB)
 			log.Println("Mailing Platform routes registered")
 
-		mailingDB.SetMaxOpenConns(25)
-		mailingDB.SetMaxIdleConns(15)
-		mailingDB.SetConnMaxLifetime(5 * time.Minute)
-		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
+			mailingDB.SetMaxOpenConns(25)
+			mailingDB.SetMaxIdleConns(15)
+			mailingDB.SetConnMaxLifetime(5 * time.Minute)
+			mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
 			// Test connection with timeout — only start background workers if DB is reachable
 			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -246,139 +249,165 @@ func main() {
 				pingCancel()
 				log.Println("Mailing Platform database connected successfully")
 
-			// Run critical schema migrations at startup (DB is inside VPC,
-			// so migrations must run from the server, not the CI runner).
-			runStartupMigrations(mailingDB)
-			runAdminMigrations()
+				// Run critical schema migrations at startup (DB is inside VPC,
+				// so migrations must run from the server, not the CI runner).
+				runStartupMigrations(mailingDB)
+				runAdminMigrations()
 
-			// Start Backpressure Monitor
-			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
-			go backpressure.Start(ctx)
-			worker.SetPackageBackpressure(backpressure)
-			log.Println("Backpressure Monitor started (threshold: 100,000, check every 30s)")
+				// Start Backpressure Monitor
+				backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
+				go backpressure.Start(ctx)
+				worker.SetPackageBackpressure(backpressure)
+				log.Println("Backpressure Monitor started (threshold: 100,000, check every 30s)")
 
-			// Start Campaign Scheduler Worker (polls for scheduled campaigns and enqueues them)
-			campaignScheduler := worker.NewCampaignScheduler(mailingDB)
-			campaignScheduler.SetBackpressure(backpressure)
-			if redisClient != nil {
-				campaignScheduler.SetRedisClient(redisClient)
-			}
-			if err := campaignScheduler.Start(); err != nil {
-				log.Printf("Warning: Failed to start Campaign Scheduler: %v", err)
-			} else {
-				log.Println("Campaign Scheduler Worker started (polls every 30s for scheduled campaigns)")
-			}
-			
-			// Start Send Worker Pool (processes the queue and sends emails)
-			sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10)
-			profileSender := worker.NewProfileBasedSender(mailingDB)
-			sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
-
-			trackURL := os.Getenv("TRACKING_URL")
-			if trackURL == "" {
-				trackURL = "http://localhost:8080"
-			}
-			trackSecret := os.Getenv("TRACKING_SECRET")
-			if trackSecret == "" {
-				trackSecret = "ignite-tracking-secret-dev"
-			}
-			sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
-
-			// Start SQS tracking event consumer
-			var trackingConsumer *tracking.Consumer
-			if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {
-				awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
-				if err != nil {
-					log.Printf("Warning: AWS config for SQS consumer failed: %v", err)
-				} else {
-					sqsClient := sqs.NewFromConfig(awsCfg)
-					trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
-					trackingConsumer.Start(ctx)
-					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
-				}
-			}
-
-			// Wire global suppression hub to send worker pool for bounce recording
-			if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
-				sendWorkerPool.SetGlobalSuppressionHub(hub)
-			}
-			if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
-				sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
-			}
-
-			sendWorkerPool.Start()
-			log.Printf("SendWorkerPool: Starting 10 workers (batch_size=100)")
-			
-			// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
-			queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
-			go queueRecovery.Start(ctx)
-			log.Println("Queue Recovery Worker started (scans every 2m for stuck items, max 5 retries)")
-			
-			// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
-			dataCleanup := worker.NewDataCleanupWorker(mailingDB)
-			go dataCleanup.Start(ctx)
-			log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
-
-			// Start S3 Data Normalizer (imports from jvc-email-data bucket)
-			datanormCfg := datanorm.Config{
-				Bucket:     cfg.DataNorm.S3Bucket,
-				Region:     cfg.DataNorm.S3Region,
-				AWSProfile: cfg.DataNorm.AWSProfile,
-				OrgID:      "00000000-0000-0000-0000-000000000001",
-				ListID:     cfg.DataNorm.DefaultListID,
-				Interval:   time.Duration(cfg.DataNorm.IntervalMinutes) * time.Minute,
-			}
-			var normalizer *datanorm.Normalizer
-			if cfg.DataNorm.Enabled {
-				var err error
-				normalizer, err = datanorm.NewNormalizer(mailingDB, datanormCfg)
-				if err != nil {
-					log.Printf("Warning: Data normalizer init failed: %v", err)
-				} else {
-					normalizer.Start()
-					server.SetNormalizer(normalizer)
-					log.Printf("S3 Data Normalizer started (bucket: %s, interval: %dm)", cfg.DataNorm.S3Bucket, cfg.DataNorm.IntervalMinutes)
-				}
-			}
-
-			// Initialize EventWriter for subscriber_events table
-			eventWriter := datanorm.NewEventWriter(mailingDB)
-			_ = eventWriter // will be wired to handlers in subsequent phases
-
-			// Ensure workers stop on shutdown (H12)
-			go func() {
-				<-ctx.Done()
-				campaignScheduler.Stop()
-				sendWorkerPool.Stop()
-				if trackingConsumer != nil {
-					trackingConsumer.Stop()
-				}
-				if normalizer != nil {
-					normalizer.Stop()
-				}
+				// Start Campaign Scheduler Worker (polls for scheduled campaigns and enqueues them)
+				campaignScheduler := worker.NewCampaignScheduler(mailingDB)
+				campaignScheduler.SetBackpressure(backpressure)
 				if redisClient != nil {
-					redisClient.Close()
+					campaignScheduler.SetRedisClient(redisClient)
 				}
-			}()
+				if err := campaignScheduler.Start(); err != nil {
+					log.Printf("Warning: Failed to start Campaign Scheduler: %v", err)
+				} else {
+					log.Println("Campaign Scheduler Worker started (polls every 30s for scheduled campaigns)")
+				}
+
+				// Start PMTA ISP wave scheduler / consumer.
+				pmtaWaveQueueURL := os.Getenv("SQS_PMTA_WAVE_QUEUE_URL")
+				var pmtaWaveSQSClient *sqs.Client
+				if pmtaWaveQueueURL != "" {
+					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+					if err != nil {
+						log.Printf("Warning: AWS config for PMTA wave SQS failed: %v", err)
+					} else {
+						pmtaWaveSQSClient = sqs.NewFromConfig(awsCfg)
+						pmtaWaveConsumer := worker.NewPMTAWaveConsumer(pmtaWaveSQSClient, pmtaWaveQueueURL, mailingDB)
+						pmtaWaveConsumer.Start(ctx)
+						log.Printf("PMTA wave consumer started (queue=%s)", pmtaWaveQueueURL)
+					}
+				}
+				pmtaWaveScheduler := worker.NewPMTAWaveScheduler(mailingDB, pmtaWaveSQSClient, pmtaWaveQueueURL)
+				if redisClient != nil {
+					pmtaWaveScheduler.SetRedisClient(redisClient)
+				}
+				if err := pmtaWaveScheduler.Start(); err != nil {
+					log.Printf("Warning: Failed to start PMTA wave scheduler: %v", err)
+				} else if pmtaWaveQueueURL != "" {
+					log.Printf("PMTA wave scheduler started (queue=%s)", pmtaWaveQueueURL)
+				} else {
+					log.Println("PMTA wave scheduler started (direct DB enqueue fallback)")
+				}
+
+				// Start Send Worker Pool (processes the queue and sends emails)
+				sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10)
+				profileSender := worker.NewProfileBasedSender(mailingDB)
+				sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
+
+				trackURL := os.Getenv("TRACKING_URL")
+				if trackURL == "" {
+					trackURL = "http://localhost:8080"
+				}
+				trackSecret := os.Getenv("TRACKING_SECRET")
+				if trackSecret == "" {
+					trackSecret = "ignite-tracking-secret-dev"
+				}
+				sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
+
+				// Start SQS tracking event consumer
+				var trackingConsumer *tracking.Consumer
+				if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {
+					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+					if err != nil {
+						log.Printf("Warning: AWS config for SQS consumer failed: %v", err)
+					} else {
+						sqsClient := sqs.NewFromConfig(awsCfg)
+						trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
+						trackingConsumer.Start(ctx)
+						log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
+					}
+				}
+
+				// Wire global suppression hub to send worker pool for bounce recording
+				if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
+					sendWorkerPool.SetGlobalSuppressionHub(hub)
+				}
+				if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
+					sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
+				}
+
+				sendWorkerPool.Start()
+				log.Printf("SendWorkerPool: Starting 10 workers (batch_size=100)")
+
+				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
+				queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
+				go queueRecovery.Start(ctx)
+				log.Println("Queue Recovery Worker started (scans every 2m for stuck items, max 5 retries)")
+
+				// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
+				dataCleanup := worker.NewDataCleanupWorker(mailingDB)
+				go dataCleanup.Start(ctx)
+				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
+
+				// Start S3 Data Normalizer (imports from jvc-email-data bucket)
+				datanormCfg := datanorm.Config{
+					Bucket:     cfg.DataNorm.S3Bucket,
+					Region:     cfg.DataNorm.S3Region,
+					AWSProfile: cfg.DataNorm.AWSProfile,
+					OrgID:      "00000000-0000-0000-0000-000000000001",
+					ListID:     cfg.DataNorm.DefaultListID,
+					Interval:   time.Duration(cfg.DataNorm.IntervalMinutes) * time.Minute,
+				}
+				var normalizer *datanorm.Normalizer
+				if cfg.DataNorm.Enabled {
+					var err error
+					normalizer, err = datanorm.NewNormalizer(mailingDB, datanormCfg)
+					if err != nil {
+						log.Printf("Warning: Data normalizer init failed: %v", err)
+					} else {
+						normalizer.Start()
+						server.SetNormalizer(normalizer)
+						log.Printf("S3 Data Normalizer started (bucket: %s, interval: %dm)", cfg.DataNorm.S3Bucket, cfg.DataNorm.IntervalMinutes)
+					}
+				}
+
+				// Initialize EventWriter for subscriber_events table
+				eventWriter := datanorm.NewEventWriter(mailingDB)
+				_ = eventWriter // will be wired to handlers in subsequent phases
+
+				// Ensure workers stop on shutdown (H12)
+				go func() {
+					<-ctx.Done()
+					campaignScheduler.Stop()
+					sendWorkerPool.Stop()
+					if trackingConsumer != nil {
+						trackingConsumer.Stop()
+					}
+					if normalizer != nil {
+						normalizer.Stop()
+					}
+					if redisClient != nil {
+						redisClient.Close()
+					}
+				}()
+			}
 		}
+	} else {
+		log.Println("Mailing Platform not configured (disabled or missing database_url)")
 	}
-} else {
-	log.Println("Mailing Platform not configured (disabled or missing database_url)")
-}
 
 	// Initialize Mailgun - always run if API key is configured
 	if cfg.Mailgun.APIKey != "" && len(cfg.Mailgun.Domains) > 0 {
 		log.Println("Initializing Mailgun integration...")
-		
+
 		mgClient := mailgun.NewClient(cfg.Mailgun)
 		mgCollector := mailgun.NewCollector(mgClient, store, learningAgent, cfg.Polling)
-		
+
 		// Set Mailgun collector on server
 		server.SetMailgunCollector(mgCollector)
-		
+
 		// Start Mailgun collector in background
 		go mgCollector.Start(ctx)
-		
+
 		log.Printf("Mailgun integration started with %d domains", len(cfg.Mailgun.Domains))
 	} else {
 		log.Println("Mailgun integration not configured (missing API key or domains)")
@@ -387,19 +416,19 @@ func main() {
 	// Initialize SES - always run if credentials are configured
 	if cfg.SES.AccessKey != "" && cfg.SES.SecretKey != "" {
 		log.Println("Initializing AWS SES integration...")
-		
+
 		sesClient, err := ses.NewClient(ctx, cfg.SES)
 		if err != nil {
 			log.Printf("Warning: Failed to initialize SES client: %v", err)
 		} else {
 			sesCollector := ses.NewCollector(sesClient, store, learningAgent, cfg.Polling)
-			
+
 			// Set SES collector on server
 			server.SetSESCollector(sesCollector)
-			
+
 			// Start SES collector in background
 			go sesCollector.Start(ctx)
-			
+
 			log.Printf("SES integration started with %d ISPs configured", len(cfg.SES.DefaultISPs()))
 		}
 	} else {
@@ -410,7 +439,7 @@ func main() {
 	var ongageClient *ongage.Client
 	if cfg.Ongage.Enabled && cfg.Ongage.BaseURL != "" && cfg.Ongage.Username != "" {
 		log.Println("Initializing Ongage integration...")
-		
+
 		ongageConfig := ongage.Config{
 			BaseURL:     cfg.Ongage.BaseURL,
 			Username:    cfg.Ongage.Username,
@@ -419,13 +448,13 @@ func main() {
 			ListID:      cfg.Ongage.ListID,
 		}
 		ongageClient = ongage.NewClient(ongageConfig)
-		
+
 		// Calculate fetch interval (use polling interval or default to 2 minutes)
 		fetchInterval := time.Duration(cfg.Polling.IntervalSeconds) * time.Second
 		if fetchInterval < 2*time.Minute {
 			fetchInterval = 2 * time.Minute
 		}
-		
+
 		ongageCollector := ongage.NewCollector(ongageClient, fetchInterval, cfg.Ongage.LookbackDays)
 
 		// Configure S3-backed persistence for Contact Activity volume data.
@@ -448,10 +477,10 @@ func main() {
 
 		// Set Ongage collector on server
 		server.SetOngageCollector(ongageCollector)
-		
+
 		// Start Ongage collector in background
 		ongageCollector.Start()
-		
+
 		log.Printf("Ongage integration started with %d days lookback", cfg.Ongage.LookbackDays)
 	} else {
 		log.Println("Ongage integration not configured (missing credentials or disabled)")
@@ -461,7 +490,7 @@ func main() {
 	var efCollector *everflow.Collector
 	if cfg.Everflow.Enabled && cfg.Everflow.APIKey != "" && len(cfg.Everflow.AffiliateIDs) > 0 {
 		log.Println("Initializing Everflow integration...")
-		
+
 		efConfig := everflow.Config{
 			APIKey:       cfg.Everflow.APIKey,
 			BaseURL:      cfg.Everflow.BaseURL,
@@ -471,15 +500,15 @@ func main() {
 			AffiliateIDs: cfg.Everflow.AffiliateIDs,
 		}
 		efClient := everflow.NewClient(efConfig)
-		
+
 		// Calculate fetch interval (use polling interval or default to 5 minutes)
 		fetchInterval := time.Duration(cfg.Polling.IntervalSeconds) * time.Second
 		if fetchInterval < 5*time.Minute {
 			fetchInterval = 5 * time.Minute
 		}
-		
+
 		efCollector = everflow.NewCollector(efClient, fetchInterval, cfg.Everflow.LookbackDays)
-		
+
 		// Set up campaign enricher if Ongage is configured
 		if ongageClient != nil {
 			campaignEnricher := everflow.NewCampaignEnricher(ongageClient)
@@ -490,13 +519,13 @@ func main() {
 			efCollector.SetCampaignEnricher(campaignEnricher)
 			log.Println("Everflow campaign enricher configured with Ongage integration")
 		}
-		
+
 		// Set up cost calculator if ESP contracts are configured
 		log.Printf("DEBUG: ESP contracts in config: %d", len(cfg.ESPContracts))
 		if len(cfg.ESPContracts) > 0 {
 			contracts := make([]everflow.ESPContractInfo, 0, len(cfg.ESPContracts))
 			for i, c := range cfg.ESPContracts {
-				log.Printf("DEBUG: Contract %d: Name=%q, Enabled=%v, Monthly=%d, Fee=%.2f", 
+				log.Printf("DEBUG: Contract %d: Name=%q, Enabled=%v, Monthly=%d, Fee=%.2f",
 					i, c.ESPName, c.Enabled, c.MonthlyIncluded, c.MonthlyFee)
 				if c.Enabled {
 					contracts = append(contracts, everflow.ESPContractInfo{
@@ -517,13 +546,13 @@ func main() {
 		} else {
 			log.Println("DEBUG: No ESP contracts found in config")
 		}
-		
+
 		// Set Everflow collector on server
 		server.SetEverflowCollector(efCollector)
-		
+
 		// Start Everflow collector in background
 		efCollector.Start()
-		
+
 		// Start Network Intelligence Collector (network-wide data, no affiliate filter)
 		// This background worker continuously processes the entire Everflow network
 		// to build audience profiles and AI recommendations for campaign creation
@@ -535,7 +564,7 @@ func main() {
 		networkIntelCollector.Start()
 		server.SetNetworkIntelligenceCollector(networkIntelCollector)
 		log.Println("Network Intelligence Collector started (network-wide offer analytics + audience profiling)")
-		
+
 		log.Printf("Everflow integration started with %d affiliate(s) and %d days lookback",
 			len(cfg.Everflow.AffiliateIDs), cfg.Everflow.LookbackDays)
 	} else {
@@ -552,27 +581,27 @@ func main() {
 		server.SetEnrichmentService(enrichmentService)
 		log.Println("Everflow enrichment service initialized (Ongage linked:", ongageClient != nil, ")")
 	}
-	
+
 	// Initialize Knowledge Base for the AI agent
 	// Check for S3 storage configuration (preferred) or fall back to local
 	var knowledgeBase *agent.KnowledgeBase
-	
+
 	s3Bucket := os.Getenv("IGNITE_S3_BUCKET")
 	s3Prefix := os.Getenv("IGNITE_S3_PREFIX")
 	s3EncKey := os.Getenv("IGNITE_S3_ENCRYPTION_KEY") // Base64-encoded 32-byte AES-256 key
 	useAWSOnly := os.Getenv("IGNITE_USE_AWS_ONLY") == "true"
-	
+
 	// Use S3 bucket from config if available
 	if s3Bucket == "" && cfg.Storage.S3Bucket != "" {
 		s3Bucket = cfg.Storage.S3Bucket
 	}
-	
+
 	if s3Bucket != "" {
 		// Use S3 storage for knowledge base (keeps data on AWS)
 		if s3Prefix == "" {
 			s3Prefix = "ignite/knowledge/"
 		}
-		
+
 		kbConfig := agent.KnowledgeBaseConfig{
 			LocalPath:       "data/knowledge_base.json", // Fallback
 			S3Bucket:        s3Bucket,
@@ -581,7 +610,7 @@ func main() {
 			S3EncryptionKey: s3EncKey,
 			S3Compress:      true,
 		}
-		
+
 		knowledgeBase = agent.NewKnowledgeBaseWithConfig(kbConfig)
 		log.Printf("Knowledge Base initialized with S3 storage: s3://%s/%s", s3Bucket, s3Prefix)
 	} else {
@@ -590,12 +619,12 @@ func main() {
 		knowledgeBase = agent.NewKnowledgeBase(knowledgeBasePath)
 		log.Println("Knowledge Base initialized with local file storage")
 	}
-	
+
 	// Determine which AI backend to use
 	// Priority: IGNITE_USE_AWS_ONLY -> OpenAI (if configured)
 	var openaiAgent *agent.OpenAIAgent
 	var bedrockAgent *agent.BedrockAgent
-	
+
 	if useAWSOnly {
 		// Use AWS Bedrock (data stays on AWS)
 		log.Println("Initializing AWS Bedrock agent (AWS-only mode)...")
@@ -604,7 +633,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to initialize Bedrock agent: %v", err)
 		} else {
-			log.Printf("AWS Bedrock agent initialized (model: %s, region: %s)", 
+			log.Printf("AWS Bedrock agent initialized (model: %s, region: %s)",
 				bedrockAgent.GetModelID(), bedrockAgent.GetRegion())
 		}
 	} else if cfg.OpenAI.Enabled && cfg.OpenAI.APIKey != "" {
@@ -615,13 +644,13 @@ func main() {
 	} else {
 		log.Println("No AI agent configured - using keyword-based chat fallback")
 	}
-	
+
 	// Start hourly learning cycle in background (if any AI agent is configured)
 	if openaiAgent != nil || bedrockAgent != nil {
 		go func() {
 			// Wait for initial data collection
 			time.Sleep(30 * time.Second)
-			
+
 			// Run initial learning cycle
 			log.Println("Knowledge Base: Running initial learning cycle...")
 			if err := knowledgeBase.RunLearningCycle(ctx, learningAgent); err != nil {
@@ -630,11 +659,11 @@ func main() {
 			if err := knowledgeBase.Save(); err != nil {
 				log.Printf("Knowledge Base: Save error: %v", err)
 			}
-			
+
 			// Run hourly learning cycles
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
-			
+
 			for {
 				select {
 				case <-ctx.Done():
@@ -652,7 +681,7 @@ func main() {
 				}
 			}
 		}()
-		
+
 		// Start the Agentic Self-Learning Loop
 		if s3Bucket != "" && useAWSOnly {
 			// Use full AWS configuration
@@ -685,22 +714,22 @@ func main() {
 			log.Println("Agentic self-learning loop started (5-minute intervals)")
 		}
 	}
-	
+
 	// Initialize Data Injections monitoring (Azure Table Storage + Snowflake + Ongage Imports)
 	var azureCollector *azure.Collector
 	var snowflakeCollector *snowflake.Collector
-	
+
 	// Initialize Azure Table Storage collector if configured
 	if cfg.Azure.Enabled && cfg.Azure.ConnectionString != "" {
 		log.Println("Initializing Azure Table Storage integration...")
-		
+
 		azureCfg := azure.Config{
 			ConnectionString:  cfg.Azure.ConnectionString,
 			TableName:         cfg.Azure.TableName,
 			GapThresholdHours: cfg.Azure.GapThresholdHours,
 			Enabled:           cfg.Azure.Enabled,
 		}
-		
+
 		azureClient, err := azure.NewClient(azureCfg)
 		if err != nil {
 			log.Printf("Warning: Failed to initialize Azure client: %v", err)
@@ -762,11 +791,11 @@ func main() {
 	} else {
 		log.Println("Azure Table Storage integration not configured (disabled or missing connection string)")
 	}
-	
+
 	// Initialize Snowflake collector if configured
 	if cfg.Snowflake.Enabled && (cfg.Snowflake.User != "" || cfg.Snowflake.ConnectionString != "") {
 		log.Println("Initializing Snowflake integration...")
-		
+
 		snowflakeCfg := snowflake.Config{
 			Account:   cfg.Snowflake.Account,
 			User:      cfg.Snowflake.User,
@@ -776,7 +805,7 @@ func main() {
 			Warehouse: cfg.Snowflake.Warehouse,
 			Enabled:   cfg.Snowflake.Enabled,
 		}
-		
+
 		// If using connection string, parse it
 		if cfg.Snowflake.ConnectionString != "" {
 			parsedCfg := snowflake.ParseConnectionString(cfg.Snowflake.ConnectionString)
@@ -796,7 +825,7 @@ func main() {
 				snowflakeCfg.Schema = parsedCfg.Schema
 			}
 		}
-		
+
 		snowflakeClient, err := snowflake.NewClient(snowflakeCfg)
 		if err != nil {
 			log.Printf("Warning: Failed to initialize Snowflake client: %v", err)
@@ -808,18 +837,18 @@ func main() {
 	} else {
 		log.Println("Snowflake integration not configured (disabled or missing credentials)")
 	}
-	
+
 	// Initialize Data Injections service if any data source is available
 	// This service monitors partner data flow: Ingestion (Azure) -> Validation (Snowflake) -> Import (Ongage)
 	// Track data injections service for Kanban
 	var dataInjectionsService *datainjections.Service
 	if azureCollector != nil || snowflakeCollector != nil || ongageClient != nil {
 		log.Println("Initializing Data Injections monitoring service...")
-		
+
 		dataInjectionsService = datainjections.NewService(azureCollector, snowflakeCollector, ongageClient)
 		go dataInjectionsService.Start(ctx)
 		server.SetDataInjectionsService(dataInjectionsService)
-		
+
 		log.Printf("Data Injections service started (Azure: %v, Snowflake: %v, Ongage: %v)",
 			azureCollector != nil, snowflakeCollector != nil, ongageClient != nil)
 	} else {
@@ -829,13 +858,13 @@ func main() {
 	// Initialize Kanban task management
 	if cfg.Kanban.Enabled || cfg.Storage.DynamoDBTable != "" {
 		log.Println("Initializing Kanban task management...")
-		
+
 		// Use Kanban-specific table or fallback to storage table
 		tableName := cfg.Kanban.DynamoDBTable
 		if tableName == "" {
 			tableName = cfg.Storage.DynamoDBTable
 		}
-		
+
 		if tableName != "" {
 			kanbanClient, err := kanban.NewClient(ctx, tableName, cfg.Storage.AWSRegion, cfg.Storage.AWSProfile)
 			if err != nil {
@@ -857,11 +886,11 @@ func main() {
 				if kanbanConfig.AIRunInterval == 0 {
 					kanbanConfig.AIRunInterval = 1 * time.Hour
 				}
-				
+
 				// Create services
 				kanbanService := kanban.NewService(kanbanClient, kanbanConfig)
 				server.SetKanbanService(kanbanService)
-				
+
 				// Create AI analyzer with collectors
 				collectors := &kanban.CollectorSet{
 					SparkPost:      spCollector,
@@ -870,18 +899,18 @@ func main() {
 				}
 				kanbanAIAnalyzer := kanban.NewAIAnalyzer(kanbanService, collectors, kanbanConfig)
 				server.SetKanbanAIAnalyzer(kanbanAIAnalyzer)
-				
+
 				// Create archival service
 				kanbanArchival := kanban.NewArchivalService(kanbanClient, kanbanService)
 				server.SetKanbanArchival(kanbanArchival)
-				
+
 				// Start scheduler (AI analysis, weekly cleanup, monthly reports)
 				kanbanScheduler := kanban.NewScheduler(kanbanAIAnalyzer, kanbanArchival, kanbanConfig)
 				go kanbanScheduler.Start(ctx)
-				
+
 				// Start service
 				go kanbanService.Start(ctx)
-				
+
 				log.Println("Kanban task management started")
 			}
 		} else {
@@ -910,7 +939,7 @@ func main() {
 	intelligenceService.Start()
 	server.SetIntelligenceService(intelligenceService)
 	log.Println("Intelligence service initialized with continuous learning")
-	
+
 	// Register comprehensive health routes (must be after all Set* calls so
 	// the checker can access db, redis, s3, etc.)
 	server.RegisterHealthRoutes()
@@ -976,6 +1005,9 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_segment_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_segment_ids JSONB DEFAULT '[]'`},
 		{"add_isp_quotas", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`},
+		{"add_execution_mode", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT 'standard'`},
+		{"drop_execution_mode_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_execution_mode_check`},
+		{"readd_execution_mode_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_execution_mode_check CHECK (execution_mode IN ('standard', 'pmta_isp_wave'))`},
 		{"add_hard_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS hard_bounce_count INTEGER DEFAULT 0`},
 		{"add_soft_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS soft_bounce_count INTEGER DEFAULT 0`},
 		{"create_automation_workflows", `CREATE TABLE IF NOT EXISTS mailing_automation_workflows (
@@ -1019,6 +1051,95 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_enrollment_unique", `CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_workflow_sub ON mailing_automation_enrollments(workflow_id, subscriber_id)`},
 		{"add_queue_locked_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
 		{"add_queue_worker_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
+		{"add_queue_isp_plan_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS isp_plan_id UUID`},
+		{"add_queue_wave_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS wave_id UUID`},
+		{"add_queue_recipient_isp", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS recipient_isp VARCHAR(50)`},
+		{"add_queue_selection_rank", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS selection_rank INTEGER`},
+		{"add_queue_audience_source_type", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_type VARCHAR(30)`},
+		{"add_queue_audience_source_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_id UUID`},
+		{"create_pmta_isp_plans", `CREATE TABLE IF NOT EXISTS mailing_campaign_isp_plans (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
+			organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			isp VARCHAR(50) NOT NULL,
+			sending_domain VARCHAR(255) NOT NULL,
+			sending_profile_id UUID REFERENCES mailing_sending_profiles(id) ON DELETE SET NULL,
+			quota INTEGER DEFAULT 0,
+			randomize_audience BOOLEAN DEFAULT FALSE,
+			throttle_strategy VARCHAR(50) DEFAULT 'auto',
+			selection_strategy VARCHAR(50) DEFAULT 'priority_first',
+			priority_strategy VARCHAR(50) DEFAULT 'selection_rank',
+			timezone VARCHAR(80) DEFAULT 'UTC',
+			status VARCHAR(30) DEFAULT 'planned',
+			audience_estimated_count INTEGER DEFAULT 0,
+			audience_selected_count INTEGER DEFAULT 0,
+			enqueued_count INTEGER DEFAULT 0,
+			sent_count INTEGER DEFAULT 0,
+			failed_count INTEGER DEFAULT 0,
+			config_snapshot JSONB DEFAULT '{}',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"create_pmta_isp_plan_indexes", `CREATE INDEX IF NOT EXISTS idx_campaign_isp_plans_campaign ON mailing_campaign_isp_plans(campaign_id); CREATE INDEX IF NOT EXISTS idx_campaign_isp_plans_status ON mailing_campaign_isp_plans(status, isp)`},
+		{"create_pmta_isp_spans", `CREATE TABLE IF NOT EXISTS mailing_campaign_isp_time_spans (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			isp_plan_id UUID NOT NULL REFERENCES mailing_campaign_isp_plans(id) ON DELETE CASCADE,
+			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
+			span_type VARCHAR(20) DEFAULT 'absolute',
+			day_of_week VARCHAR(20),
+			start_hour INTEGER,
+			end_hour INTEGER,
+			start_at TIMESTAMPTZ NOT NULL,
+			end_at TIMESTAMPTZ NOT NULL,
+			timezone VARCHAR(80) DEFAULT 'UTC',
+			source VARCHAR(50) DEFAULT 'manual',
+			sort_order INTEGER DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"create_pmta_isp_spans_index", `CREATE INDEX IF NOT EXISTS idx_campaign_isp_time_spans_plan ON mailing_campaign_isp_time_spans(isp_plan_id, sort_order)`},
+		{"create_pmta_waves", `CREATE TABLE IF NOT EXISTS mailing_campaign_waves (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
+			isp_plan_id UUID NOT NULL REFERENCES mailing_campaign_isp_plans(id) ON DELETE CASCADE,
+			wave_number INTEGER NOT NULL,
+			scheduled_at TIMESTAMPTZ NOT NULL,
+			window_start_at TIMESTAMPTZ NOT NULL,
+			window_end_at TIMESTAMPTZ NOT NULL,
+			cadence_minutes INTEGER DEFAULT 0,
+			batch_size INTEGER DEFAULT 0,
+			planned_recipients INTEGER DEFAULT 0,
+			enqueued_recipients INTEGER DEFAULT 0,
+			status VARCHAR(30) DEFAULT 'planned',
+			idempotency_key VARCHAR(255) NOT NULL,
+			sqs_message_id VARCHAR(255),
+			started_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ,
+			failed_at TIMESTAMPTZ,
+			last_error TEXT,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (isp_plan_id, wave_number),
+			UNIQUE (idempotency_key)
+		)`},
+		{"create_pmta_waves_indexes", `CREATE INDEX IF NOT EXISTS idx_campaign_waves_due ON mailing_campaign_waves(status, scheduled_at); CREATE INDEX IF NOT EXISTS idx_campaign_waves_campaign ON mailing_campaign_waves(campaign_id, isp_plan_id)`},
+		{"create_pmta_plan_recipients", `CREATE TABLE IF NOT EXISTS mailing_campaign_plan_recipients (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
+			isp_plan_id UUID NOT NULL REFERENCES mailing_campaign_isp_plans(id) ON DELETE CASCADE,
+			wave_id UUID REFERENCES mailing_campaign_waves(id) ON DELETE SET NULL,
+			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
+			email VARCHAR(255) NOT NULL,
+			recipient_isp VARCHAR(50) NOT NULL,
+			selection_rank INTEGER NOT NULL,
+			audience_source_type VARCHAR(30) NOT NULL,
+			audience_source_id UUID,
+			status VARCHAR(20) DEFAULT 'selected',
+			queued_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (isp_plan_id, subscriber_id)
+		)`},
+		{"create_pmta_plan_recipients_indexes", `CREATE INDEX IF NOT EXISTS idx_campaign_plan_recipients_plan ON mailing_campaign_plan_recipients(isp_plan_id, status, selection_rank); CREATE INDEX IF NOT EXISTS idx_campaign_plan_recipients_wave ON mailing_campaign_plan_recipients(wave_id)`},
+		{"create_queue_wave_indexes", `CREATE INDEX IF NOT EXISTS idx_queue_wave_id ON mailing_campaign_queue(wave_id); CREATE INDEX IF NOT EXISTS idx_queue_plan_id ON mailing_campaign_queue(isp_plan_id); CREATE INDEX IF NOT EXISTS idx_queue_campaign_wave_schedule ON mailing_campaign_queue(campaign_id, wave_id, scheduled_at)`},
 		{"create_suppressions_table", `CREATE TABLE IF NOT EXISTS mailing_suppressions (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			email VARCHAR(255) NOT NULL,
@@ -1091,6 +1212,114 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_tracking_sending_ip", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45)`},
 		{"idx_tracking_sending_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_domain ON mailing_tracking_events(sending_domain)`},
 		{"idx_tracking_sending_ip", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_ip ON mailing_tracking_events(sending_ip)`},
+		{"backfill_sending_domain_startup", `
+			UPDATE mailing_tracking_events t
+			SET sending_domain = LOWER(SPLIT_PART(c.from_email, '@', 2))
+			FROM mailing_campaigns c
+			WHERE t.campaign_id = c.id
+			  AND (t.sending_domain IS NULL OR t.sending_domain = '')
+			  AND c.from_email IS NOT NULL
+			  AND c.from_email LIKE '%@%'
+		`},
+		{"create_auto_fill_sending_domain_fn_startup", `
+			CREATE OR REPLACE FUNCTION auto_fill_sending_domain()
+			RETURNS TRIGGER AS $$
+			BEGIN
+			  IF NEW.sending_domain IS NULL OR NEW.sending_domain = '' THEN
+			    SELECT LOWER(SPLIT_PART(c.from_email, '@', 2)) INTO NEW.sending_domain
+			    FROM mailing_campaigns c
+			    WHERE c.id = NEW.campaign_id
+			      AND c.from_email IS NOT NULL AND c.from_email LIKE '%@%';
+			  END IF;
+			  RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql
+		`},
+		{"create_auto_fill_trigger_startup", `
+			DO $$ BEGIN
+			  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_auto_fill_sending_domain') THEN
+			    CREATE TRIGGER trg_auto_fill_sending_domain
+			    BEFORE INSERT ON mailing_tracking_events
+			    FOR EACH ROW EXECUTE FUNCTION auto_fill_sending_domain();
+			  END IF;
+			END $$
+		`},
+		{"consolidate_suppression_entries", `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+			SELECT gen_random_uuid(),
+				COALESCE(
+					(SELECT organization_id FROM mailing_suppression_lists WHERE id = e.list_id LIMIT 1),
+					(SELECT id FROM organizations LIMIT 1)
+				),
+				LOWER(TRIM(e.email)), e.md5_hash,
+				COALESCE(e.reason, e.category, 'manual'),
+				COALESCE(e.source, 'legacy_migration'),
+				COALESCE(e.created_at, NOW())
+			FROM mailing_suppression_entries e
+			WHERE e.is_global = TRUE AND e.md5_hash IS NOT NULL AND e.md5_hash != ''
+			AND NOT EXISTS (SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = e.md5_hash)
+			ON CONFLICT DO NOTHING
+		`},
+		{"consolidate_suppression_legacy", `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+			SELECT gen_random_uuid(), (SELECT id FROM organizations LIMIT 1),
+				LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email))),
+				COALESCE(s.reason, 'manual'), COALESCE(s.source, 'legacy_migration'),
+				COALESCE(s.created_at, NOW())
+			FROM mailing_suppressions s WHERE s.active = TRUE
+			AND NOT EXISTS (SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = MD5(LOWER(TRIM(s.email))))
+			ON CONFLICT DO NOTHING
+		`},
+		{"cleanup_global_entries_from_legacy", `DELETE FROM mailing_suppression_entries WHERE is_global = TRUE`},
+		// System segments: companion table (owned by ignite) to avoid ALTER on apex_admin-owned mailing_segments
+		{"create_system_segments_table", `CREATE TABLE IF NOT EXISTS mailing_system_segments (
+			segment_id UUID PRIMARY KEY,
+			system_query TEXT NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		// Seed bot detection segment: first create in mailing_segments, then link in companion table
+		{"seed_bot_segment_row", `
+			INSERT INTO mailing_segments (
+				id, organization_id, name, description, segment_type, conditions,
+				calculation_mode, include_suppressed, status, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), id,
+				'Bot Clickers (System)',
+				'Auto-detected bot clickers: high click frequency (5+/campaign), clicks without opens, inhuman click speed (<2s).',
+				'dynamic', '{"logic_operator":"OR","conditions":[]}'::jsonb,
+				'batch', false, 'active', NOW(), NOW()
+			FROM organizations
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segments WHERE name = 'Bot Clickers (System)' AND organization_id = organizations.id
+			)
+		`},
+		{"seed_bot_segment_query", `
+			INSERT INTO mailing_system_segments (segment_id, system_query)
+			SELECT ms.id,
+				'SELECT COUNT(DISTINCT s.id) FROM mailing_subscribers s WHERE s.organization_id = $1 AND s.status = ''confirmed'' AND (
+					EXISTS (
+						SELECT 1 FROM mailing_tracking_events e
+						WHERE e.subscriber_id = s.id AND e.event_type = ''clicked''
+						AND e.event_at > NOW() - INTERVAL ''30 days''
+						GROUP BY e.campaign_id HAVING COUNT(*) >= 5
+					)
+					OR (
+						EXISTS (SELECT 1 FROM mailing_tracking_events e WHERE e.subscriber_id = s.id AND e.event_type = ''clicked'' AND e.event_at > NOW() - INTERVAL ''30 days'')
+						AND NOT EXISTS (SELECT 1 FROM mailing_tracking_events e WHERE e.subscriber_id = s.id AND e.event_type = ''opened'' AND e.event_at > NOW() - INTERVAL ''30 days'')
+					)
+					OR EXISTS (
+						SELECT 1 FROM mailing_tracking_events click
+						JOIN mailing_tracking_events deliver ON deliver.subscriber_id = click.subscriber_id
+							AND deliver.campaign_id = click.campaign_id AND deliver.event_type = ''delivered''
+						WHERE click.subscriber_id = s.id AND click.event_type = ''clicked''
+						AND click.event_at > NOW() - INTERVAL ''30 days''
+						AND click.event_at - deliver.event_at < INTERVAL ''2 seconds''
+					)
+				)'
+			FROM mailing_segments ms
+			WHERE ms.name = 'Bot Clickers (System)'
+			AND NOT EXISTS (SELECT 1 FROM mailing_system_segments WHERE segment_id = ms.id)
+		`},
 	}
 
 	var ok, fail int

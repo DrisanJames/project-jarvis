@@ -111,8 +111,10 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
 	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type)
-		VALUES ($1, $2, $3, $4, 'opened', $5, $6, $7, $8)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain)
+		SELECT $1, $2, $3, $4, 'opened', $5, $6, $7, $8,
+			LOWER(SPLIT_PART(c.from_email, '@', 2))
+		FROM mailing_campaigns c WHERE c.id = $3
 		ON CONFLICT DO NOTHING
 	`, emailID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent))
 	if err != nil {
@@ -137,8 +139,10 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
 	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url)
-		VALUES ($1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain)
+		SELECT $1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9,
+			LOWER(SPLIT_PART(c.from_email, '@', 2))
+		FROM mailing_campaigns c WHERE c.id = $3
 	`, uuid.New(), orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL)
 	if err != nil {
 		return err

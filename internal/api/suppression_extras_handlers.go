@@ -3,7 +3,6 @@ package api
 
 import (
 	"context"
-	"crypto/md5"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -80,12 +79,7 @@ func (s *SuppressionService) HandleUnsubscribeAll(w http.ResponseWriter, r *http
 	}
 	json.NewDecoder(r.Body).Decode(&input)
 
-	// Add to global suppression
-	id := fmt.Sprintf("sup-%d", time.Now().UnixNano())
-	s.db.Exec(`
-		INSERT INTO mailing_suppression_entries (id, email, reason, source)
-		VALUES ($1, $2, 'unsubscribe_all', 'preference_center')
-	`, id, strings.ToLower(input.Email))
+	s.AddToGlobalSuppression(input.Email, "unsubscribe", "preference_center")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
@@ -412,18 +406,22 @@ func (s *SuppressionService) HandleMatcherStats(w http.ResponseWriter, r *http.R
 
 // HandleSuppressionAnalytics returns suppression analytics
 func (s *SuppressionService) HandleSuppressionAnalytics(w http.ResponseWriter, r *http.Request) {
-	var totalCount, bounceCount, complaintCount, unsubCount int
+	tbl := "mailing_global_suppressions"
+	if s.globalHub == nil {
+		tbl = "mailing_suppression_entries"
+	}
 
-	s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries`).Scan(&totalCount)
-	s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE reason = 'bounce'`).Scan(&bounceCount)
-	s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE reason = 'complaint'`).Scan(&complaintCount)
-	s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE reason LIKE '%unsub%'`).Scan(&unsubCount)
+	var totalCount, bounceCount, complaintCount, unsubCount int
+	s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tbl)).Scan(&totalCount)
+	s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE reason LIKE '%%bounce%%'`, tbl)).Scan(&bounceCount)
+	s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE reason LIKE '%%complaint%%'`, tbl)).Scan(&complaintCount)
+	s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE reason LIKE '%%unsub%%'`, tbl)).Scan(&unsubCount)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total":      totalCount,
-		"bounces":    bounceCount,
-		"complaints": complaintCount,
+		"total":        totalCount,
+		"bounces":      bounceCount,
+		"complaints":   complaintCount,
 		"unsubscribes": unsubCount,
 		"by_reason": map[string]int{
 			"bounce":      bounceCount,
@@ -436,12 +434,11 @@ func (s *SuppressionService) HandleSuppressionAnalytics(w http.ResponseWriter, r
 
 // HandleSuppressionAudit returns audit log of suppression changes
 func (s *SuppressionService) HandleSuppressionAudit(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(`
-		SELECT id, email, reason, source, created_at
-		FROM mailing_suppression_entries
-		ORDER BY created_at DESC
-		LIMIT 100
-	`)
+	q := `SELECT id, email, reason, source, created_at FROM mailing_suppression_entries ORDER BY created_at DESC LIMIT 100`
+	if s.globalHub != nil {
+		q = `SELECT id, email, reason, source, created_at FROM mailing_global_suppressions ORDER BY created_at DESC LIMIT 100`
+	}
+	rows, err := s.db.Query(q)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"audit_log": []interface{}{}})
@@ -472,7 +469,7 @@ func (s *SuppressionService) HandleSuppressionAudit(w http.ResponseWriter, r *ht
 }
 
 // HandleOneClickUnsubscribe handles RFC 8058 one-click unsubscribe.
-// Feeds ALL suppression repositories: entries table, legacy table, and global hub.
+// Uses GlobalSuppressionHub as the single source of truth.
 func (s *SuppressionService) HandleOneClickUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -492,31 +489,9 @@ func (s *SuppressionService) HandleOneClickUnsubscribe(w http.ResponseWriter, r 
 	}
 
 	emailLower := strings.ToLower(strings.TrimSpace(email))
-	md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
 
-	// 1. Suppression entries table
-	id := fmt.Sprintf("unsub-%d", time.Now().UnixNano())
-	s.db.Exec(`
-		INSERT INTO mailing_suppression_entries (id, email, md5_hash, reason, source, is_global)
-		VALUES ($1, $2, $3, 'one_click_unsubscribe', 'rfc8058', true)
-		ON CONFLICT DO NOTHING
-	`, id, emailLower, md5Hash)
+	s.AddToGlobalSuppression(emailLower, "unsubscribe", "rfc8058_one_click")
 
-	// 2. Legacy suppression table
-	s.db.Exec(`
-		INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
-		VALUES (gen_random_uuid(), $1, 'one_click_unsubscribe', 'rfc8058', true, NOW(), NOW())
-		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'one_click_unsubscribe', updated_at = NOW()
-	`, emailLower)
-
-	// 3. Global suppression hub (single source of truth)
-	s.db.Exec(`
-		INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
-		SELECT gen_random_uuid(), (SELECT id FROM organizations LIMIT 1), $1, $2, 'unsubscribe', 'rfc8058_one_click', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = $2)
-	`, emailLower, md5Hash)
-
-	// 4. Update subscriber status
 	s.db.Exec(`UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE LOWER(email) = $1`, emailLower)
 
 	w.WriteHeader(http.StatusOK)

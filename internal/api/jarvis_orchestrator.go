@@ -348,6 +348,18 @@ func (j *JarvisOrchestrator) HandleStatus(w http.ResponseWriter, r *http.Request
 					"complaints": complaints, "unsubscribes": unsubs,
 					"open_rate":  calcRate(opens, maxInt(delivered, sent)),
 					"click_rate": calcRate(clicks, maxInt(delivered, sent)),
+					// Fields expected by JarvisDashboard that are only present
+					// on real Jarvis campaigns — provide zero defaults so the
+					// frontend doesn't crash calling .toFixed() on undefined.
+					"total_sent":        sent,
+					"total_delivered":   delivered,
+					"total_opens":       opens,
+					"total_clicks":      clicks,
+					"total_conversions": 0,
+					"total_bounces":     bounces,
+					"conversion_rate":   0.0,
+					"total_revenue":     0.0,
+					"revenue_per_send":  0.0,
 				},
 			}
 			if startedAt.Valid {

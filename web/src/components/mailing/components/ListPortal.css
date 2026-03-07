@@ -869,6 +869,20 @@
   color: #00e5ff;
 }
 
+.list-portal .segment-type-icon.system {
+  background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.15));
+  color: #f59e0b;
+}
+
+.list-portal .segment-card.system-segment {
+  border: 1px solid rgba(245,158,11,0.25);
+  background: linear-gradient(135deg, #0d1526 0%, #1a1508 100%);
+}
+
+.list-portal .segment-card.system-segment:hover {
+  box-shadow: 0 4px 12px rgba(245,158,11,0.1);
+}
+
 .list-portal .segment-title {
   flex: 1;
 }
