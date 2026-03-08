@@ -473,21 +473,42 @@ func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond Co
 				%s.%s = %s
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_tracking_events sent_e
-					WHERE sent_e.subscriber_id = %s.subscriber_id
+					WHERE (
+						sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id
+						OR (
+							sent_e.subscriber_id IS NULL
+							AND %s.subscriber_id IS NULL
+							AND COALESCE(LOWER(sent_e.email), '') = COALESCE(LOWER(%s.email), '')
+						)
+					)
 					  AND sent_e.campaign_id IS NOT DISTINCT FROM %s.campaign_id
 					  AND sent_e.event_type = %s
 				)
 			)
-		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, alias, alias, sentFallbackArg)
+		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, alias, alias, alias, alias, sentFallbackArg)
 	}
 
 	return fmt.Sprintf("AND %s.%s = %s", alias, eventCol, qb.nextArg(eventVal))
+}
+
+func (qb *QueryBuilder) buildTrackingSubscriberMatch(alias string) string {
+	return fmt.Sprintf(`(
+		%s.subscriber_id = s.id
+		OR (
+			%s.subscriber_id IS NULL
+			AND COALESCE(LOWER(%s.email), '') = LOWER(s.email)
+		)
+	)`, alias, alias, alias)
 }
 
 // buildEventCondition builds SQL for event-based conditions
 func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, error) {
 	eventTable, eventCol, eventVal := resolveEventTable(cond.EventName)
 	useTrackingTable := eventTable == "mailing_tracking_events"
+	subscriberFilter := "e.subscriber_id = s.id"
+	if useTrackingTable {
+		subscriberFilter = qb.buildTrackingSubscriberMatch("e")
+	}
 
 	domainFilter := ""
 	if cond.EventSendingDomain != "" && useTrackingTable {
@@ -501,36 +522,36 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e
-				WHERE e.subscriber_id = s.id
+				WHERE %s
 				%s %s %s
-			)`, eventTable, eventFilter, timeWindow, domainFilter), nil
+			)`, eventTable, subscriberFilter, eventFilter, timeWindow, domainFilter), nil
 
 	case OpEventCountGte:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
 		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
-			 WHERE e.subscriber_id = s.id 
+			 WHERE %s
 			 %s %s %s) >= %s`,
-			eventTable, eventFilter, timeWindow, domainFilter, qb.nextArg(cond.Value)), nil
+			eventTable, subscriberFilter, eventFilter, timeWindow, domainFilter, qb.nextArg(cond.Value)), nil
 
 	case OpEventCountLte:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
 		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
-			 WHERE e.subscriber_id = s.id 
+			 WHERE %s
 			 %s %s %s) <= %s`,
-			eventTable, eventFilter, timeWindow, domainFilter, qb.nextArg(cond.Value)), nil
+			eventTable, subscriberFilter, eventFilter, timeWindow, domainFilter, qb.nextArg(cond.Value)), nil
 
 	case OpEventCountBetween:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
 		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
-			 WHERE e.subscriber_id = s.id 
+			 WHERE %s
 			 %s %s %s) BETWEEN %s AND %s`,
-			eventTable, eventFilter, timeWindow, domainFilter,
+			eventTable, subscriberFilter, eventFilter, timeWindow, domainFilter,
 			qb.nextArg(cond.Value), qb.nextArg(cond.ValueSecondary)), nil
 
 	case OpEventInLastDays:
@@ -538,33 +559,33 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 
-				WHERE e.subscriber_id = s.id 
+				WHERE %s
 				%s 
 				AND e.event_at >= NOW() - INTERVAL '%s days'
 				%s
-			)`, eventTable, eventFilter, cond.Value, domainFilter), nil
+			)`, eventTable, subscriberFilter, eventFilter, cond.Value, domainFilter), nil
 
 	case OpEventNotInLastDays:
 		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			NOT EXISTS (
 				SELECT 1 FROM %s e 
-				WHERE e.subscriber_id = s.id 
+				WHERE %s
 				%s 
 				AND e.event_at >= NOW() - INTERVAL '%s days'
 				%s
-			)`, eventTable, eventFilter, cond.Value, domainFilter), nil
+			)`, eventTable, subscriberFilter, eventFilter, cond.Value, domainFilter), nil
 
 	case OpEventPropertyEquals:
 		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 
-				WHERE e.subscriber_id = s.id 
+				WHERE %s
 				%s 
 				AND e.properties->>'%s' = %s
 				%s %s
-			)`, eventTable, eventFilter, cond.EventPropertyPath,
+			)`, eventTable, subscriberFilter, eventFilter, cond.EventPropertyPath,
 			qb.nextArg(cond.Value), qb.buildEventTimeFilter(cond.EventTimeWindowDays), domainFilter), nil
 
 	case OpEventPropertyContains:
@@ -572,11 +593,11 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 
-				WHERE e.subscriber_id = s.id 
+				WHERE %s
 				%s 
 				AND e.properties->>'%s' ILIKE %s
 				%s %s
-			)`, eventTable, eventFilter, cond.EventPropertyPath,
+			)`, eventTable, subscriberFilter, eventFilter, cond.EventPropertyPath,
 			qb.nextArg("%"+cond.Value+"%"), qb.buildEventTimeFilter(cond.EventTimeWindowDays), domainFilter), nil
 
 	default:

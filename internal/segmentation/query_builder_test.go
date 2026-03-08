@@ -29,6 +29,9 @@ func TestBuildCountQueryTreatsDeliveredAsFallbackForEmailSent(t *testing.T) {
 	if !strings.Contains(query, "sent_e.campaign_id IS NOT DISTINCT FROM e.campaign_id") {
 		t.Fatalf("expected PMTA sent fallback in query, got %s", query)
 	}
+	if !strings.Contains(query, "COALESCE(LOWER(e.email), '') = LOWER(s.email)") {
+		t.Fatalf("expected email fallback match in query, got %s", query)
+	}
 	if !strings.Contains(query, "NOT EXISTS") {
 		t.Fatalf("expected NOT EXISTS fallback guard in query, got %s", query)
 	}
