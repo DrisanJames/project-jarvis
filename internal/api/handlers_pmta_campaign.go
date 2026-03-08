@@ -64,6 +64,8 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 	r.Route("/pmta-campaign", func(cr chi.Router) {
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
+		cr.Get("/draft", s.HandleGetDraftCampaign)
+		cr.Post("/draft", s.HandleSaveDraftCampaign)
 		cr.Post("/intel", s.HandleCampaignIntel)
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
@@ -586,6 +588,62 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		ISPBreakdown:       ispBreakdown,
 		SuppressionSources: suppressionSources,
 	})
+}
+
+// HandleGetDraftCampaign returns the most recent PMTA draft for the org.
+func (s *PMTACampaignService) HandleGetDraftCampaign(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	result, err := loadLatestPMTADraft(ctx, s.db, orgID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondJSON(w, http.StatusNotFound, map[string]string{"error": "no PMTA draft found"})
+			return
+		}
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, result)
+}
+
+// HandleSaveDraftCampaign stores the PMTA wizard state on a single draft row.
+func (s *PMTACampaignService) HandleSaveDraftCampaign(w http.ResponseWriter, r *http.Request) {
+	var draft engine.PMTACampaignDraftInput
+	if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	input := draft.CampaignInput
+	if strings.TrimSpace(input.Name) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign name is required"})
+		return
+	}
+	if len(input.TargetISPs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
+		return
+	}
+	if strings.TrimSpace(input.SendingDomain) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending domain is required"})
+		return
+	}
+	if len(input.Variants) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
+		return
+	}
+
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	result, err := savePMTADraftCampaign(ctx, s.db, orgID, draft)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, result)
 }
 
 // HandleDeployCampaign creates a PMTA-routed campaign and queues it for sending.

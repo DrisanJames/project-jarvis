@@ -218,10 +218,10 @@ func normalizeISPPlan(
 		throttleStrategy = defaultThrottle
 	}
 
-	spans, err := normalizeTimeSpans(raw.TimeSpans, sendMode, timezone, legacyScheduledAt, now)
-	if err != nil {
-		return pmtaNormalizedPlan{}, err
-	}
+		spans, err := normalizeTimeSpans(raw.TimeSpans, sendMode, timezone, legacyScheduledAt, now)
+		if err != nil {
+			return pmtaNormalizedPlan{}, err
+		}
 
 	return pmtaNormalizedPlan{
 		ISP:               isp,

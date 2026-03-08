@@ -169,6 +169,53 @@ interface ISPPlanFormState {
   timeSpans: ISPTimeSpanFormState[];
 }
 
+interface PersistedPMTATimeSpan {
+  start_at?: string;
+  end_at?: string;
+  timezone?: string;
+  source?: string;
+}
+
+interface PersistedPMTAPlan {
+  isp: string;
+  quota?: number;
+  throttle_strategy?: string;
+  timezone?: string;
+  cadence?: {
+    mode?: 'single' | 'interval';
+    every_minutes?: number;
+    batch_size?: number;
+  };
+  time_spans?: PersistedPMTATimeSpan[];
+}
+
+interface PersistedPMTACampaignInput {
+  campaign_id?: string;
+  name?: string;
+  target_isps?: string[];
+  sending_domain?: string;
+  variants?: ContentVariant[];
+  isp_plans?: PersistedPMTAPlan[];
+  inclusion_segments?: string[];
+  inclusion_lists?: string[];
+  send_priority?: { id: string; type: 'list' | 'segment' }[];
+  exclusion_segments?: string[];
+  exclusion_lists?: string[];
+  isp_quotas?: { isp: string; volume: number }[];
+  randomize_audience?: boolean;
+  send_mode?: 'immediate' | 'scheduled';
+  scheduled_at?: string;
+}
+
+interface PMTADraftResponse {
+  campaign_id: string;
+  name: string;
+  status: string;
+  schedule_mode?: 'quick' | 'per-isp';
+  updated_at?: string;
+  campaign_input: PersistedPMTACampaignInput;
+}
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 const STEPS = [
@@ -251,6 +298,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<any>(null);
+  const [campaignId, setCampaignId] = useState('');
+  const [loadingDraft, setLoadingDraft] = useState(true);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftStatus, setDraftStatus] = useState('');
+  const [draftError, setDraftError] = useState('');
   const [domainError, setDomainError] = useState('');
 
   // ── Validation state ─────────────────────────────────────────────────────
@@ -545,6 +597,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             const validSpans = (plan?.timeSpans || []).filter(span => span.startAt && span.endAt);
             if (validSpans.length === 0) {
               errors.push(`${ISP_META[isp]?.label || isp}: add at least one time span`);
+            } else {
+              validSpans.forEach((span, idx) => {
+                if (new Date(span.endAt).getTime() <= new Date(span.startAt).getTime()) {
+                  errors.push(`${ISP_META[isp]?.label || isp}: time span ${idx + 1} end must be after start`);
+                }
+              });
             }
           });
         }
@@ -589,6 +647,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
 
+  const toLocalInputValue = (raw?: string) => {
+    if (!raw) return '';
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? '' : toDateTimeLocal(parsed);
+  };
+
   const nextScheduleFromWindow = (window: SendTimeWindowRecommendation) => {
     const now = new Date();
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -601,8 +665,106 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     start.setHours(window.start_hour, 0, 0, 0);
     const end = new Date(start);
     end.setHours(window.end_hour, 0, 0, 0);
+    if (window.end_hour < window.start_hour) {
+      end.setDate(end.getDate() + 1);
+    }
     return { start, end };
   };
+
+  const hydrateDraft = useCallback((draft: PMTADraftResponse) => {
+    const input = draft.campaign_input || {};
+    const derivedISPs = Array.from(new Set([
+      ...(input.target_isps || []),
+      ...((input.isp_plans || []).map(plan => plan.isp).filter(Boolean)),
+    ]));
+    const nextPriority = (input.send_priority && input.send_priority.length > 0)
+      ? input.send_priority
+      : [
+          ...(input.inclusion_lists || []).map(id => ({ id, type: 'list' as const })),
+          ...(input.inclusion_segments || []).map(id => ({ id, type: 'segment' as const })),
+        ];
+    const nextQuotas = (input.isp_quotas || []).reduce<Record<string, number>>((acc, quota) => {
+      if (quota?.isp) acc[quota.isp] = quota.volume || 0;
+      return acc;
+    }, {});
+    const nextPlans = (input.isp_plans || []).reduce<Record<string, ISPPlanFormState>>((acc, plan, index) => {
+      if (!plan?.isp) return acc;
+      acc[plan.isp] = {
+        isp: plan.isp,
+        useCustomSchedule: draft.schedule_mode === 'per-isp',
+        timezone: plan.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        cadenceMode: plan.cadence?.mode === 'interval' ? 'interval' : 'single',
+        everyMinutes: plan.cadence?.every_minutes || 15,
+        batchSize: plan.cadence?.batch_size || nextQuotas[plan.isp] || 500,
+        throttleStrategy: plan.throttle_strategy || 'auto',
+        timeSpans: (plan.time_spans || []).map((span, spanIndex) => ({
+          id: `${plan.isp}-draft-${index}-${spanIndex}`,
+          startAt: toLocalInputValue(span.start_at),
+          endAt: toLocalInputValue(span.end_at),
+          timezone: span.timezone || plan.timezone || 'UTC',
+          source: span.source || 'manual',
+        })),
+      };
+      return acc;
+    }, {});
+
+    setCampaignId(draft.campaign_id || input.campaign_id || '');
+    setCampaignName(input.name || draft.name || '');
+    setSelectedISPs(derivedISPs);
+    setISPQuotas(nextQuotas);
+    setRandomizeAudience(Boolean(input.randomize_audience));
+    setSelectedDomain(input.sending_domain || '');
+    setVariants(input.variants && input.variants.length > 0
+      ? input.variants
+      : [{ variant_name: 'A', from_name: '', subject: '', preview_text: '', html_content: '', split_percent: 100 }]);
+    setSelectedLists(input.inclusion_lists || []);
+    setSelectedSegments(input.inclusion_segments || []);
+    setSendPriority(nextPriority);
+    setSelectedSuppLists(input.exclusion_lists || []);
+    setSelectedExclusionSegments(input.exclusion_segments || []);
+    setSendMode(input.send_mode === 'scheduled' ? 'scheduled' : 'immediate');
+    setScheduleMode(draft.schedule_mode === 'per-isp' ? 'per-isp' : 'quick');
+    setScheduledAt(toLocalInputValue(input.scheduled_at));
+    setISPPlansByKey(nextPlans);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!orgId) {
+      setLoadingDraft(false);
+      return;
+    }
+
+    setLoadingDraft(true);
+    fetchWithRetry(`${API_BASE}/pmta-campaign/draft`)
+      .then(async res => {
+        if (res.status === 404) return null;
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(data?.error || `Failed to load draft (HTTP ${res.status})`);
+        }
+        return data as PMTADraftResponse;
+      })
+      .then(data => {
+        if (cancelled || !data) return;
+        hydrateDraft(data);
+        setDraftError('');
+        const loadedAt = data.updated_at ? new Date(data.updated_at).toLocaleString() : 'earlier';
+        setDraftStatus(`Loaded saved draft from ${loadedAt}.`);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setDraftError(err?.message || 'Failed to load saved draft.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDraft(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, fetchWithRetry, hydrateDraft]);
 
   const buildDefaultISPPlan = useCallback((isp: string, previous?: ISPPlanFormState): ISPPlanFormState => ({
     isp,
@@ -656,83 +818,134 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // ── Deploy ───────────────────────────────────────────────────────────────
 
-  const handleDeploy = async () => {
+  const buildCampaignPayload = useCallback(() => {
+    const quotaArray = Object.entries(ispQuotas)
+      .filter(([, v]) => v > 0)
+      .map(([isp, volume]) => ({ isp, volume }));
+    const globalScheduleISO = scheduledAt ? new Date(scheduledAt).toISOString() : '';
+    const ispPlans = selectedISPs.map(isp => {
+      const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
+      const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
+      const spans = sendMode === 'scheduled'
+        ? (useGlobalSchedule
+          ? (globalScheduleISO
+            ? [{
+                type: 'absolute',
+                start_at: globalScheduleISO,
+                end_at: globalScheduleISO,
+                timezone: plan.timezone,
+                source: 'global-default',
+              }]
+            : [])
+          : plan.timeSpans
+              .filter(span => span.startAt && span.endAt)
+              .map(span => ({
+                type: 'absolute',
+                start_at: new Date(span.startAt).toISOString(),
+                end_at: new Date(span.endAt).toISOString(),
+                timezone: span.timezone || plan.timezone,
+                source: span.source || 'manual',
+              })))
+        : [];
+      return {
+        isp,
+        quota: ispQuotas[isp] || 0,
+        randomize_audience: randomizeAudience,
+        throttle_strategy: plan.throttleStrategy || 'auto',
+        timezone: plan.timezone,
+        cadence: {
+          mode: useGlobalSchedule ? 'single' : plan.cadenceMode,
+          every_minutes: useGlobalSchedule ? 0 : plan.everyMinutes,
+          batch_size: useGlobalSchedule ? (ispQuotas[isp] || 0) : plan.batchSize,
+        },
+        time_spans: spans,
+      };
+    });
+
+    const payload: Record<string, any> = {
+      name: campaignName,
+      target_isps: selectedISPs,
+      sending_domain: selectedDomain,
+      variants,
+      isp_plans: ispPlans,
+      isp_quotas: quotaArray,
+      randomize_audience: randomizeAudience,
+      inclusion_segments: sendPriority.filter(p => p.type === 'segment').map(p => p.id),
+      inclusion_lists: sendPriority.filter(p => p.type === 'list').map(p => p.id),
+      send_priority: sendPriority,
+      exclusion_lists: selectedSuppLists,
+      exclusion_segments: selectedExclusionSegments,
+      send_days: [],
+      send_hour: new Date().getUTCHours(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      throttle_strategy: 'auto',
+      send_mode: sendMode,
+    };
+
+    if (campaignId) {
+      payload.campaign_id = campaignId;
+    }
+    if (sendMode === 'scheduled' && scheduledAt) {
+      payload.scheduled_at = new Date(scheduledAt).toISOString();
+    }
+    return payload;
+  }, [
+    campaignId,
+    campaignName,
+    buildDefaultISPPlan,
+    ispPlansByKey,
+    ispQuotas,
+    randomizeAudience,
+    scheduleMode,
+    scheduledAt,
+    selectedDomain,
+    selectedExclusionSegments,
+    selectedISPs,
+    selectedSuppLists,
+    sendMode,
+    sendPriority,
+    variants,
+  ]);
+
+  const handleSaveDraft = async () => {
+    setSavingDraft(true);
+    setDraftError('');
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/draft`, {
+        method: 'POST',
+        body: JSON.stringify({
+          campaign_input: buildCampaignPayload(),
+          schedule_mode: scheduleMode,
+        }),
+      }, 3);
+      const data = await res.json();
+      if (!res.ok) {
+        setDraftError(data.error || `Draft save failed (HTTP ${res.status})`);
+        return;
+      }
+      setCampaignId(data.campaign_id || '');
+      setDraftStatus(`Draft saved ${data.updated_at ? new Date(data.updated_at).toLocaleString() : 'successfully'}.`);
+    } catch (err: any) {
+      setDraftError(err?.message || 'Draft save failed — network error. Click Save Draft to retry.');
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const handleDeploy = useCallback(async () => {
     setDeploying(true);
     setDeployResult(null);
     try {
-      const quotaArray = Object.entries(ispQuotas)
-        .filter(([, v]) => v > 0)
-        .map(([isp, volume]) => ({ isp, volume }));
-      const globalScheduleISO = scheduledAt ? new Date(scheduledAt).toISOString() : '';
-      const ispPlans = selectedISPs.map(isp => {
-        const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
-        const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
-        const spans = sendMode === 'scheduled'
-          ? (useGlobalSchedule
-            ? (globalScheduleISO
-              ? [{
-                  type: 'absolute',
-                  start_at: globalScheduleISO,
-                  end_at: globalScheduleISO,
-                  timezone: plan.timezone,
-                  source: 'global-default',
-                }]
-              : [])
-            : plan.timeSpans
-                .filter(span => span.startAt && span.endAt)
-                .map(span => ({
-                  type: 'absolute',
-                  start_at: new Date(span.startAt).toISOString(),
-                  end_at: new Date(span.endAt).toISOString(),
-                  timezone: span.timezone || plan.timezone,
-                  source: span.source || 'manual',
-                })))
-          : [];
-        return {
-          isp,
-          quota: ispQuotas[isp] || 0,
-          randomize_audience: randomizeAudience,
-          throttle_strategy: plan.throttleStrategy || 'auto',
-          timezone: plan.timezone,
-          cadence: {
-            mode: useGlobalSchedule ? 'single' : plan.cadenceMode,
-            every_minutes: useGlobalSchedule ? 0 : plan.everyMinutes,
-            batch_size: useGlobalSchedule ? (ispQuotas[isp] || 0) : plan.batchSize,
-          },
-          time_spans: spans,
-        };
-      });
-      const payload: Record<string, any> = {
-        name: campaignName,
-        target_isps: selectedISPs,
-        sending_domain: selectedDomain,
-        variants,
-        isp_plans: ispPlans,
-        isp_quotas: quotaArray,
-        randomize_audience: randomizeAudience,
-        inclusion_segments: sendPriority.filter(p => p.type === 'segment').map(p => p.id),
-        inclusion_lists: sendPriority.filter(p => p.type === 'list').map(p => p.id),
-        send_priority: sendPriority,
-        exclusion_lists: selectedSuppLists,
-        exclusion_segments: selectedExclusionSegments,
-        send_days: [],
-        send_hour: new Date().getUTCHours(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        throttle_strategy: 'auto',
-        send_mode: sendMode,
-      };
-      if (sendMode === 'scheduled' && scheduledAt) {
-        payload.scheduled_at = new Date(scheduledAt).toISOString();
-      }
       const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/deploy`, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildCampaignPayload()),
       }, 3);
       const data = await res.json();
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
       } else {
         setDeployResult(data);
+        setCampaignId(data.campaign_id || campaignId);
         campaignComplete(campaignName || 'Campaign');
         setShowCompleteModal(true);
       }
@@ -740,7 +953,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setDeployResult({ error: err?.message || 'Deploy failed — network error. Click Deploy to retry.' });
     }
     setDeploying(false);
-  };
+  }, [buildCampaignPayload, campaignComplete, campaignId, campaignName, fetchWithRetry]);
 
   // ── Toggle helpers ───────────────────────────────────────────────────────
 
@@ -2126,6 +2339,27 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
       <StepErrorBanner stepNum={6} />
+      {loadingDraft && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(0,176,255,0.08)', border: '1px solid rgba(0,176,255,0.18)', borderRadius: 8, fontSize: 12, color: '#7dd3fc' }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading saved draft state...
+        </div>
+      )}
+      {draftError && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 12, color: '#fca5a5' }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} /> {draftError}
+        </div>
+      )}
+      {!loadingDraft && campaignId && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: 8, fontSize: 12, color: '#86efac' }}>
+          <strong>Draft linked</strong> {campaignId}
+          {draftStatus ? ` · ${draftStatus}` : ''}
+        </div>
+      )}
+      {!loadingDraft && !campaignId && draftStatus && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: 8, fontSize: 12, color: '#86efac' }}>
+          {draftStatus}
+        </div>
+      )}
 
       {deployResult ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
@@ -2499,32 +2733,57 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
             </div>
           )}
 
-          <button
-            className="ig-btn-glow ig-ripple"
-            onClick={() => {
-              const errors = getStepErrors(6);
-              if (errors.length > 0) {
-                setStepAttempted(prev => ({ ...prev, 6: true }));
-                return;
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button
+              onClick={() => {
+                const errors = getStepErrors(6);
+                if (errors.length > 0) {
+                  setStepAttempted(prev => ({ ...prev, 6: true }));
+                  return;
+                }
+                handleSaveDraft();
+              }}
+              disabled={savingDraft || deploying || loadingDraft}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                flex: 1, padding: '14px 0',
+                background: savingDraft ? '#4b5563' : '#0d1526',
+                color: '#7dd3fc', border: '1px solid rgba(0,176,255,0.18)', borderRadius: 10, fontSize: 15, fontWeight: 600,
+                cursor: savingDraft || deploying || loadingDraft ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {savingDraft
+                ? <><FontAwesomeIcon icon={faSpinner} spin /> Saving...</>
+                : <><FontAwesomeIcon icon={faSave} /> Save Draft</>
               }
-              handleDeploy();
-            }}
-            disabled={deploying}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              width: '100%', padding: '14px 0',
-              background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
-              color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
-              cursor: deploying ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {deploying
-              ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
-              : sendMode === 'scheduled'
-                ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
-                : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
-            }
-          </button>
+            </button>
+            <button
+              className="ig-btn-glow ig-ripple"
+              onClick={() => {
+                const errors = getStepErrors(6);
+                if (errors.length > 0) {
+                  setStepAttempted(prev => ({ ...prev, 6: true }));
+                  return;
+                }
+                handleDeploy();
+              }}
+              disabled={deploying || savingDraft}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                flex: 1.4, padding: '14px 0',
+                background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
+                color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
+                cursor: deploying || savingDraft ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {deploying
+                ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
+                : sendMode === 'scheduled'
+                  ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
+                  : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
+              }
+            </button>
+          </div>
         </>
       )}
     </div>

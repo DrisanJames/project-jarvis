@@ -601,6 +601,7 @@ type PMTAISPScheduleInput struct {
 
 // PMTACampaignInput is the deploy payload for creating a PMTA-routed campaign.
 type PMTACampaignInput struct {
+	CampaignID        string                 `json:"campaign_id,omitempty"`
 	Name              string                 `json:"name"`
 	TargetISPs        []ISP                  `json:"target_isps"`
 	SendingDomain     string                 `json:"sending_domain"`
@@ -619,6 +620,24 @@ type PMTACampaignInput struct {
 	RandomizeAudience bool                   `json:"randomize_audience"`
 	SendMode          string                 `json:"send_mode"`    // "immediate" or "scheduled"
 	ScheduledAt       *time.Time             `json:"scheduled_at"` // required when send_mode="scheduled"
+}
+
+// PMTACampaignDraftInput captures the save-draft payload for the PMTA wizard.
+// It stores the campaign input plus the wizard-specific scheduling mode so the
+// same draft can be resumed later without creating duplicate campaigns.
+type PMTACampaignDraftInput struct {
+	CampaignInput PMTACampaignInput `json:"campaign_input"`
+	ScheduleMode  string            `json:"schedule_mode,omitempty"` // "quick" or "per-isp"
+}
+
+// PMTACampaignDraftResult is returned when saving or loading a PMTA draft.
+type PMTACampaignDraftResult struct {
+	CampaignID    string            `json:"campaign_id"`
+	Name          string            `json:"name"`
+	Status        string            `json:"status"`
+	ScheduleMode  string            `json:"schedule_mode,omitempty"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	CampaignInput PMTACampaignInput `json:"campaign_input"`
 }
 
 // ISPQuota defines a volume cap for a single ISP within a campaign.
