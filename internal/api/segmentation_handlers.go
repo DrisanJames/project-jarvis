@@ -34,12 +34,12 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 		r.Get("/", api.ListSegments)
 		r.Post("/", api.CreateSegment)
 		r.Post("/preview", api.PreviewSegment)
-		
+
 		r.Route("/{segmentID}", func(r chi.Router) {
 			r.Get("/", api.GetSegment)
 			r.Put("/", api.UpdateSegment)
 			r.Delete("/", api.DeleteSegment)
-			r.Get("/count", api.GetSegmentCount)        // Dedicated count endpoint
+			r.Get("/count", api.GetSegmentCount) // Dedicated count endpoint
 			r.Post("/execute", api.ExecuteSegment)
 			r.Post("/snapshot", api.CreateSnapshot)
 			r.Get("/subscribers", api.GetSegmentSubscribers)
@@ -70,13 +70,13 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 
 // CreateSegmentRequest is the request body for creating a segment
 type CreateSegmentRequest struct {
-	Name              string                           `json:"name"`
-	Description       string                           `json:"description,omitempty"`
-	ListID            *uuid.UUID                       `json:"list_id,omitempty"`
-	CalculationMode   string                           `json:"calculation_mode,omitempty"`
-	IncludeSuppressed bool                             `json:"include_suppressed"`
+	Name              string                             `json:"name"`
+	Description       string                             `json:"description,omitempty"`
+	ListID            *uuid.UUID                         `json:"list_id,omitempty"`
+	CalculationMode   string                             `json:"calculation_mode,omitempty"`
+	IncludeSuppressed bool                               `json:"include_suppressed"`
 	RootGroup         segmentation.ConditionGroupBuilder `json:"root_group"`
-	GlobalExclusions  []segmentation.ConditionBuilder  `json:"global_exclusions,omitempty"`
+	GlobalExclusions  []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
 }
 
 // ListSegments returns all segments for the organization
@@ -125,7 +125,7 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 					log.Printf("[Segment] refresh count for %s (%s): failed to load conditions: %v", s.Name, s.ID, err)
 					return
 				}
-				qb := segmentation.NewQueryBuilder()
+				qb := api.engine.NewQueryBuilder(context.Background())
 				qb.SetOrganizationID(s.OrganizationID.String())
 				if s.ListID != nil {
 					qb.SetListID(s.ListID.String())
@@ -204,7 +204,7 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 	countCtx, countCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer countCancel()
 
-	qb := segmentation.NewQueryBuilder()
+	qb := api.engine.NewQueryBuilder(countCtx)
 	qb.SetOrganizationID(segment.OrganizationID.String())
 	if segment.ListID != nil {
 		qb.SetListID(segment.ListID.String())
@@ -318,7 +318,7 @@ func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request
 	countCtx, countCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer countCancel()
 
-	uqb := segmentation.NewQueryBuilder()
+	uqb := api.engine.NewQueryBuilder(countCtx)
 	uqb.SetOrganizationID(segment.OrganizationID.String())
 	if segment.ListID != nil {
 		uqb.SetListID(segment.ListID.String())
@@ -376,10 +376,10 @@ func (api *SegmentationAPI) PreviewSegment(w http.ResponseWriter, r *http.Reques
 	orgID := segmentGetOrgIDFromRequest(r)
 
 	var req struct {
-		ListID           *uuid.UUID                          `json:"list_id,omitempty"`
-		RootGroup        segmentation.ConditionGroupBuilder  `json:"root_group"`
-		GlobalExclusions []segmentation.ConditionBuilder     `json:"global_exclusions,omitempty"`
-		Limit            int                                 `json:"limit,omitempty"`
+		ListID           *uuid.UUID                         `json:"list_id,omitempty"`
+		RootGroup        segmentation.ConditionGroupBuilder `json:"root_group"`
+		GlobalExclusions []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
+		Limit            int                                `json:"limit,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -500,7 +500,7 @@ func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Reque
 			json.Unmarshal(segment.GlobalExclusionRules, &globalExclusions)
 		}
 
-		qb := segmentation.NewQueryBuilder()
+		qb := api.engine.NewQueryBuilder(ctx)
 		qb.SetOrganizationID(segment.OrganizationID.String())
 		if segment.ListID != nil {
 			qb.SetListID(segment.ListID.String())

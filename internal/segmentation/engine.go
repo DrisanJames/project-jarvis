@@ -30,6 +30,12 @@ func (e *Engine) Store() *Store {
 	return e.store
 }
 
+func (e *Engine) NewQueryBuilder(ctx context.Context) *QueryBuilder {
+	qb := NewQueryBuilder()
+	qb.SetTrackingEmailMatchEnabled(e.store.SupportsTrackingEmailMatch(ctx))
+	return qb
+}
+
 // ==========================================
 // SEGMENT EXECUTION
 // ==========================================
@@ -63,7 +69,7 @@ func (e *Engine) ExecuteSegment(ctx context.Context, segmentID uuid.UUID) (*Segm
 	}
 
 	// Build and execute query
-	qb := NewQueryBuilder()
+	qb := e.NewQueryBuilder(ctx)
 	qb.SetOrganizationID(segment.OrganizationID.String())
 	if segment.ListID != nil {
 		qb.SetListID(segment.ListID.String())
@@ -121,7 +127,7 @@ func (e *Engine) PreviewSegment(ctx context.Context, orgID uuid.UUID, listID *uu
 	}
 
 	// Build query builder
-	qb := NewQueryBuilder()
+	qb := e.NewQueryBuilder(ctx)
 	qb.SetOrganizationID(orgID.String())
 	if listID != nil {
 		qb.SetListID(listID.String())
@@ -140,7 +146,7 @@ func (e *Engine) PreviewSegment(ctx context.Context, orgID uuid.UUID, listID *uu
 
 	// Get sample subscribers
 	// Reset query builder for the main query
-	qb = NewQueryBuilder()
+	qb = e.NewQueryBuilder(ctx)
 	qb.SetOrganizationID(orgID.String())
 	if listID != nil {
 		qb.SetListID(listID.String())
@@ -228,7 +234,7 @@ func (e *Engine) EvaluateSubscriber(ctx context.Context, subscriberID, segmentID
 	}
 
 	// Build query with subscriber ID filter
-	qb := NewQueryBuilder()
+	qb := e.NewQueryBuilder(ctx)
 	qb.SetOrganizationID(segment.OrganizationID.String())
 	if segment.ListID != nil {
 		qb.SetListID(segment.ListID.String())
@@ -327,7 +333,7 @@ func (e *Engine) GetSnapshotSubscribers(ctx context.Context, snapshotID uuid.UUI
 		return nil, fmt.Errorf("unmarshal conditions: %w", err)
 	}
 
-	qb := NewQueryBuilder()
+	qb := e.NewQueryBuilder(ctx)
 	qb.SetOrganizationID(snapshot.OrganizationID.String())
 
 	query, args, err := qb.BuildQuery(conditions, nil)

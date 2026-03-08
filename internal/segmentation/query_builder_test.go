@@ -8,6 +8,7 @@ import (
 func TestBuildCountQueryTreatsDeliveredAsFallbackForEmailSent(t *testing.T) {
 	qb := NewQueryBuilder()
 	qb.SetOrganizationID("org-123")
+	qb.SetTrackingEmailMatchEnabled(true)
 
 	group := ConditionGroupBuilder{
 		LogicOperator: LogicAnd,

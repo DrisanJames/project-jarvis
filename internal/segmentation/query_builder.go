@@ -16,6 +16,7 @@ type QueryBuilder struct {
 	includeSupressed bool
 	listID           string
 	organizationID   string
+	trackingEmailOK  bool
 	debug            bool
 }
 
@@ -37,6 +38,13 @@ func (qb *QueryBuilder) SetOrganizationID(orgID string) *QueryBuilder {
 // SetListID sets the list filter
 func (qb *QueryBuilder) SetListID(listID string) *QueryBuilder {
 	qb.listID = listID
+	return qb
+}
+
+// SetTrackingEmailMatchEnabled enables matching tracking rows by email when
+// subscriber_id is unavailable and the schema supports the email column.
+func (qb *QueryBuilder) SetTrackingEmailMatchEnabled(enabled bool) *QueryBuilder {
+	qb.trackingEmailOK = enabled
 	return qb
 }
 
@@ -464,6 +472,17 @@ func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond Co
 	// Treat delivered as the "sent" signal only when a matching sent event is absent
 	// for the same campaign/subscriber, so SMTP flows with both rows do not double-count.
 	if cond.EventName == "email_sent" && eventCol == "event_type" {
+		identityMatch := fmt.Sprintf("sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id", alias)
+		if qb.trackingEmailOK {
+			identityMatch = fmt.Sprintf(`(
+				sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id
+				OR (
+					sent_e.subscriber_id IS NULL
+					AND %s.subscriber_id IS NULL
+					AND COALESCE(LOWER(sent_e.email), '') = COALESCE(LOWER(%s.email), '')
+				)
+			)`, alias, alias, alias)
+		}
 		sentArg := qb.nextArg("sent")
 		deliveredArg := qb.nextArg("delivered")
 		sentFallbackArg := qb.nextArg("sent")
@@ -473,25 +492,21 @@ func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond Co
 				%s.%s = %s
 				AND NOT EXISTS (
 					SELECT 1 FROM mailing_tracking_events sent_e
-					WHERE (
-						sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id
-						OR (
-							sent_e.subscriber_id IS NULL
-							AND %s.subscriber_id IS NULL
-							AND COALESCE(LOWER(sent_e.email), '') = COALESCE(LOWER(%s.email), '')
-						)
-					)
+					WHERE %s
 					  AND sent_e.campaign_id IS NOT DISTINCT FROM %s.campaign_id
 					  AND sent_e.event_type = %s
 				)
 			)
-		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, alias, alias, alias, alias, sentFallbackArg)
+		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, identityMatch, alias, sentFallbackArg)
 	}
 
 	return fmt.Sprintf("AND %s.%s = %s", alias, eventCol, qb.nextArg(eventVal))
 }
 
 func (qb *QueryBuilder) buildTrackingSubscriberMatch(alias string) string {
+	if !qb.trackingEmailOK {
+		return fmt.Sprintf("%s.subscriber_id = s.id", alias)
+	}
 	return fmt.Sprintf(`(
 		%s.subscriber_id = s.id
 		OR (

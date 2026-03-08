@@ -23,6 +23,9 @@ func TestPreviewSegmentScansPostgresTagsArray(t *testing.T) {
 	subscriberID := uuid.New()
 	now := time.Now()
 
+	mock.ExpectQuery("WITH tracking_tables AS").
+		WillReturnRows(sqlmock.NewRows([]string{"supported"}).AddRow(true))
+
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM mailing_subscribers s").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,11 +15,51 @@ import (
 // Store provides database operations for segmentation
 type Store struct {
 	db *sql.DB
+
+	trackingEmailMatchOnce sync.Once
+	trackingEmailMatchOK   bool
 }
 
 // NewStore creates a new segmentation store
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// SupportsTrackingEmailMatch reports whether mailing_tracking_events and all of
+// its partitions expose the email column needed for email-based fallback
+// matching in segment event queries.
+func (s *Store) SupportsTrackingEmailMatch(ctx context.Context) bool {
+	s.trackingEmailMatchOnce.Do(func() {
+		var supported bool
+		err := s.db.QueryRowContext(ctx, `
+			WITH tracking_tables AS (
+				SELECT 'mailing_tracking_events'::text AS table_name
+				UNION
+				SELECT child.relname
+				FROM pg_inherits inh
+				JOIN pg_class parent ON parent.oid = inh.inhparent
+				JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+				JOIN pg_class child ON child.oid = inh.inhrelid
+				JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+				WHERE parent_ns.nspname = 'public'
+				  AND child_ns.nspname = 'public'
+				  AND parent.relname = 'mailing_tracking_events'
+			)
+			SELECT NOT EXISTS (
+				SELECT 1
+				FROM tracking_tables tt
+				WHERE NOT EXISTS (
+					SELECT 1
+					FROM information_schema.columns c
+					WHERE c.table_schema = 'public'
+					  AND c.table_name = tt.table_name
+					  AND c.column_name = 'email'
+				)
+			)
+		`).Scan(&supported)
+		s.trackingEmailMatchOK = err == nil && supported
+	})
+	return s.trackingEmailMatchOK
 }
 
 // ==========================================

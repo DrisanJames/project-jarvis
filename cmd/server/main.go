@@ -987,7 +987,19 @@ func runStartupMigrations(db *sql.DB) {
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},
-		{"add_tracking_email_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT`},
+		{"ensure_tracking_email_col", `DO $$
+		DECLARE
+			part regclass;
+		BEGIN
+			ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT;
+			FOR part IN
+				SELECT inhrelid::regclass
+				FROM pg_inherits
+				WHERE inhparent = 'public.mailing_tracking_events'::regclass
+			LOOP
+				EXECUTE format('ALTER TABLE %s ADD COLUMN IF NOT EXISTS email TEXT', part);
+			END LOOP;
+		END $$`},
 		{"add_tracking_event_time_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW()`},
 		{"add_tracking_metadata_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`},
 		{"add_tracking_is_unique_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`},
