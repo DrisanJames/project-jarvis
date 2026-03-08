@@ -441,7 +441,7 @@ var trackingEventMap = map[string]string{
 	"email_clicked":      "clicked",
 	"email_bounced":      "bounced",
 	"email_delivered":    "delivered",
-	"email_sent":         "sent",
+	"email_sent":         "delivered",
 	"email_unsubscribed": "unsubscribed",
 	"email_complained":   "complained",
 }
@@ -463,16 +463,6 @@ func resolveEventTable(eventName string) (table, col, val string) {
 	return "mailing_custom_events", "event_name", eventName
 }
 
-func (qb *QueryBuilder) buildMessageLogSubscriberMatch(alias string) string {
-	return fmt.Sprintf(`(
-		%s.subscriber_id = s.id
-		OR (
-			%s.subscriber_id IS NULL
-			AND COALESCE(LOWER(%s.email), '') = LOWER(s.email)
-		)
-	)`, alias, alias, alias)
-}
-
 func (qb *QueryBuilder) buildTimestampFilter(alias, column string, days int) string {
 	if days > 0 {
 		return fmt.Sprintf("AND %s.%s >= NOW() - INTERVAL '%d days'", alias, column, days)
@@ -480,96 +470,9 @@ func (qb *QueryBuilder) buildTimestampFilter(alias, column string, days int) str
 	return ""
 }
 
-func (qb *QueryBuilder) buildMessageLogSentCondition(cond ConditionBuilder) (string, error) {
-	subscriberFilter := qb.buildMessageLogSubscriberMatch("ml")
-	timeWindow := qb.buildTimestampFilter("ml", "sent_at", cond.EventTimeWindowDays)
-
-	switch cond.Operator {
-	case OpEquals:
-		return fmt.Sprintf(`
-			EXISTS (
-				SELECT 1 FROM mailing_message_log ml
-				WHERE %s
-				%s
-			)`, subscriberFilter, timeWindow), nil
-
-	case OpEventCountGte:
-		return fmt.Sprintf(`
-			(SELECT COUNT(*) FROM mailing_message_log ml
-			 WHERE %s
-			 %s) >= %s`,
-			subscriberFilter, timeWindow, qb.nextArg(cond.Value)), nil
-
-	case OpEventCountLte:
-		return fmt.Sprintf(`
-			(SELECT COUNT(*) FROM mailing_message_log ml
-			 WHERE %s
-			 %s) <= %s`,
-			subscriberFilter, timeWindow, qb.nextArg(cond.Value)), nil
-
-	case OpEventCountBetween:
-		return fmt.Sprintf(`
-			(SELECT COUNT(*) FROM mailing_message_log ml
-			 WHERE %s
-			 %s) BETWEEN %s AND %s`,
-			subscriberFilter, timeWindow, qb.nextArg(cond.Value), qb.nextArg(cond.ValueSecondary)), nil
-
-	case OpEventInLastDays:
-		return fmt.Sprintf(`
-			EXISTS (
-				SELECT 1 FROM mailing_message_log ml
-				WHERE %s
-				AND ml.sent_at >= NOW() - INTERVAL '%s days'
-			)`, subscriberFilter, cond.Value), nil
-
-	case OpEventNotInLastDays:
-		return fmt.Sprintf(`
-			NOT EXISTS (
-				SELECT 1 FROM mailing_message_log ml
-				WHERE %s
-				AND ml.sent_at >= NOW() - INTERVAL '%s days'
-			)`, subscriberFilter, cond.Value), nil
-
-	default:
-		return "", fmt.Errorf("unsupported email_sent operator for message log: %s", cond.Operator)
-	}
-}
-
 func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond ConditionBuilder, eventVal string) string {
 	if eventVal == "" {
 		return ""
-	}
-
-	// PMTA accounting persists delivered/bounced/etc. but not a standalone sent row.
-	// Treat delivered as the "sent" signal only when a matching sent event is absent
-	// for the same campaign/subscriber, so SMTP flows with both rows do not double-count.
-	if cond.EventName == "email_sent" && eventCol == "event_type" {
-		identityMatch := fmt.Sprintf("sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id", alias)
-		if qb.trackingEmailOK {
-			identityMatch = fmt.Sprintf(`(
-				sent_e.subscriber_id IS NOT DISTINCT FROM %s.subscriber_id
-				OR (
-					sent_e.subscriber_id IS NULL
-					AND %s.subscriber_id IS NULL
-					AND COALESCE(LOWER(sent_e.email), '') = COALESCE(LOWER(%s.email), '')
-				)
-			)`, alias, alias, alias)
-		}
-		sentArg := qb.nextArg("sent")
-		deliveredArg := qb.nextArg("delivered")
-		sentFallbackArg := qb.nextArg("sent")
-		return fmt.Sprintf(`AND (
-			%s.%s = %s
-			OR (
-				%s.%s = %s
-				AND NOT EXISTS (
-					SELECT 1 FROM mailing_tracking_events sent_e
-					WHERE %s
-					  AND sent_e.campaign_id IS NOT DISTINCT FROM %s.campaign_id
-					  AND sent_e.event_type = %s
-				)
-			)
-		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, identityMatch, alias, sentFallbackArg)
 	}
 
 	return fmt.Sprintf("AND %s.%s = %s", alias, eventCol, qb.nextArg(eventVal))
@@ -590,10 +493,6 @@ func (qb *QueryBuilder) buildTrackingSubscriberMatch(alias string) string {
 
 // buildEventCondition builds SQL for event-based conditions
 func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, error) {
-	if cond.EventName == "email_sent" && cond.EventSendingDomain == "" {
-		return qb.buildMessageLogSentCondition(cond)
-	}
-
 	eventTable, eventCol, eventVal := resolveEventTable(cond.EventName)
 	useTrackingTable := eventTable == "mailing_tracking_events"
 	subscriberFilter := "e.subscriber_id = s.id"
