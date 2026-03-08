@@ -14,6 +14,11 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
+func expectPMTAConfigColumnCheck(mock sqlmock.Sqlmock, exists bool) {
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(exists))
+}
+
 func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -44,6 +49,7 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
+	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_ab_tests").
@@ -118,6 +124,7 @@ func TestHandleSaveDraftCampaign_CreatesDraft(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
@@ -186,6 +193,7 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(draftID))
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
+	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectExec("DELETE FROM mailing_ab_variants").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM mailing_ab_tests").

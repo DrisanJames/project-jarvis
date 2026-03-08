@@ -19,6 +19,10 @@ type pmtaCampaignProfile struct {
 	ReplyTo   sql.NullString
 }
 
+type pmtaQueryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func createPMTAWaveCampaign(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -56,6 +60,10 @@ func createPMTAWaveCampaign(
 	configJSON, _ := json.Marshal(pmtaCampaignConfig{
 		CampaignInput: withCampaignID(input, campaignID.String()),
 	})
+	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, tx)
+	if err != nil {
+		return engine.PMTAWavePlanResult{}, err
+	}
 	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
 	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
@@ -66,66 +74,130 @@ func createPMTAWaveCampaign(
 		if err := clearPMTACampaignChildren(ctx, tx, campaignID.String()); err != nil {
 			return engine.PMTAWavePlanResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE mailing_campaigns
-			SET name = $2,
-			    status = 'scheduled',
-			    scheduled_at = $3,
-			    from_name = $4,
-			    from_email = $5,
-			    reply_to = $6,
-			    subject = $7,
-			    preview_text = $8,
-			    html_content = $9,
-			    sending_profile_id = $10,
-			    esp_quotas = $11,
-			    isp_quotas = $12,
-			    list_ids = $13,
-			    suppression_list_ids = $14,
-			    suppression_segment_ids = $15,
-			    max_recipients = $16,
-			    send_type = 'blast',
-			    timezone = $17,
-			    execution_mode = $18,
-			    total_recipients = $19,
-			    pmta_config = $20,
-			    queued_count = 0,
-			    started_at = NULL,
-			    completed_at = NULL,
-			    updated_at = NOW()
-			WHERE id = $1 AND organization_id = $21
-		`, campaignID, input.Name, scheduledAt,
-			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-			nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-			suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave,
-			audience.SelectedTotal, configJSON, orgID,
-		); err != nil {
-			return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
+		if hasPMTAConfig {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET name = $2,
+				    status = 'scheduled',
+				    scheduled_at = $3,
+				    from_name = $4,
+				    from_email = $5,
+				    reply_to = $6,
+				    subject = $7,
+				    preview_text = $8,
+				    html_content = $9,
+				    sending_profile_id = $10,
+				    esp_quotas = $11,
+				    isp_quotas = $12,
+				    list_ids = $13,
+				    suppression_list_ids = $14,
+				    suppression_segment_ids = $15,
+				    max_recipients = $16,
+				    send_type = 'blast',
+				    timezone = $17,
+				    execution_mode = $18,
+				    total_recipients = $19,
+				    pmta_config = $20,
+				    queued_count = 0,
+				    started_at = NULL,
+				    completed_at = NULL,
+				    updated_at = NOW()
+				WHERE id = $1 AND organization_id = $21
+			`, campaignID, input.Name, scheduledAt,
+				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
+				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave,
+				audience.SelectedTotal, configJSON, orgID,
+			); err != nil {
+				return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET name = $2,
+				    status = 'scheduled',
+				    scheduled_at = $3,
+				    from_name = $4,
+				    from_email = $5,
+				    reply_to = $6,
+				    subject = $7,
+				    preview_text = $8,
+				    html_content = $9,
+				    sending_profile_id = $10,
+				    esp_quotas = $11,
+				    isp_quotas = $12,
+				    list_ids = $13,
+				    suppression_list_ids = $14,
+				    suppression_segment_ids = $15,
+				    max_recipients = $16,
+				    send_type = 'blast',
+				    timezone = $17,
+				    execution_mode = $18,
+				    total_recipients = $19,
+				    queued_count = 0,
+				    started_at = NULL,
+				    completed_at = NULL,
+				    updated_at = NOW()
+				WHERE id = $1 AND organization_id = $20
+			`, campaignID, input.Name, scheduledAt,
+				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
+				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave,
+				audience.SelectedTotal, orgID,
+			); err != nil {
+				return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
+			}
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO mailing_campaigns (
-				id, organization_id, name, status, scheduled_at,
-				from_name, from_email, reply_to, subject, preview_text, html_content,
-				sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
-				max_recipients, send_type, timezone, execution_mode, total_recipients, queued_count,
-				pmta_config, created_at, updated_at
-			) VALUES (
-				$1, $2, $3, 'scheduled', $4,
-				$5, $6, $7, $8, $9, $10,
-				$11, $12, $13, $14, $15, $16,
-				$17, 'blast', $18, $19, $20, 0,
-				$21, NOW(), NOW()
-			)
-		`, campaignID, orgID, input.Name, scheduledAt,
-			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-			nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-			suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave, audience.SelectedTotal,
-			configJSON,
-		); err != nil {
-			return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
+		if hasPMTAConfig {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO mailing_campaigns (
+					id, organization_id, name, status, scheduled_at,
+					from_name, from_email, reply_to, subject, preview_text, html_content,
+					sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
+					max_recipients, send_type, timezone, execution_mode, total_recipients, queued_count,
+					pmta_config, created_at, updated_at
+				) VALUES (
+					$1, $2, $3, 'scheduled', $4,
+					$5, $6, $7, $8, $9, $10,
+					$11, $12, $13, $14, $15, $16,
+					$17, 'blast', $18, $19, $20, 0,
+					$21, NOW(), NOW()
+				)
+			`, campaignID, orgID, input.Name, scheduledAt,
+				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
+				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave, audience.SelectedTotal,
+				configJSON,
+			); err != nil {
+				return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO mailing_campaigns (
+					id, organization_id, name, status, scheduled_at,
+					from_name, from_email, reply_to, subject, preview_text, html_content,
+					sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
+					max_recipients, send_type, timezone, execution_mode, total_recipients, queued_count,
+					created_at, updated_at
+				) VALUES (
+					$1, $2, $3, 'scheduled', $4,
+					$5, $6, $7, $8, $9, $10,
+					$11, $12, $13, $14, $15, $16,
+					$17, 'blast', $18, $19, $20, 0,
+					NOW(), NOW()
+				)
+			`, campaignID, orgID, input.Name, scheduledAt,
+				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
+				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave, audience.SelectedTotal,
+			); err != nil {
+				return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
+			}
 		}
 	}
 
@@ -260,6 +332,14 @@ type pmtaCampaignConfig struct {
 }
 
 func loadLatestPMTADraft(ctx context.Context, db *sql.DB, orgID string) (engine.PMTACampaignDraftResult, error) {
+	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, db)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, err
+	}
+	if !hasPMTAConfig {
+		return engine.PMTACampaignDraftResult{}, sql.ErrNoRows
+	}
+
 	var (
 		campaignID string
 		name       string
@@ -307,6 +387,14 @@ func savePMTADraftCampaign(
 		return engine.PMTACampaignDraftResult{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, tx)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, err
+	}
+	if !hasPMTAConfig {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("PMTA drafts are unavailable until the mailing_campaigns.pmta_config column is installed")
+	}
 
 	campaignID, _, err := resolvePMTACampaignIdentity(ctx, tx, orgID, draft.CampaignInput.CampaignID)
 	if err != nil {
@@ -478,6 +566,22 @@ func nullUUID(raw string) interface{} {
 		return nil
 	}
 	return id
+}
+
+func hasPMTAConfigColumn(ctx context.Context, q pmtaQueryRower) (bool, error) {
+	var exists bool
+	if err := q.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'mailing_campaigns'
+			  AND column_name = 'pmta_config'
+		)
+	`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check pmta_config column: %w", err)
+	}
+	return exists, nil
 }
 
 func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, requestedCampaignID string) (uuid.UUID, bool, error) {

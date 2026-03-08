@@ -1006,10 +1006,8 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_suppression_segment_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_segment_ids JSONB DEFAULT '[]'`},
 		{"add_isp_quotas", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`},
 		{"add_execution_mode", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT 'standard'`},
-		{"add_pmta_config", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS pmta_config JSONB DEFAULT '{}'::jsonb`},
 		{"drop_execution_mode_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_execution_mode_check`},
 		{"readd_execution_mode_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_execution_mode_check CHECK (execution_mode IN ('standard', 'pmta_isp_wave'))`},
-		{"create_pmta_draft_index", `CREATE INDEX IF NOT EXISTS idx_mailing_campaigns_pmta_drafts ON mailing_campaigns (organization_id, updated_at DESC) WHERE status = 'draft' AND execution_mode = 'pmta_isp_wave'`},
 		{"add_hard_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS hard_bounce_count INTEGER DEFAULT 0`},
 		{"add_soft_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS soft_bounce_count INTEGER DEFAULT 0`},
 		{"create_automation_workflows", `CREATE TABLE IF NOT EXISTS mailing_automation_workflows (
@@ -1372,6 +1370,8 @@ func runAdminMigrations() {
 		{"idx_sending_ip", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_ip ON mailing_tracking_events(sending_ip)`},
 		{"grant_tracking_to_ignite", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
 		{"grant_campaigns_to_ignite", `GRANT ALL ON TABLE mailing_campaigns TO ignite`},
+		{"add_pmta_config", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS pmta_config JSONB DEFAULT '{}'::jsonb`},
+		{"create_pmta_draft_index", `CREATE INDEX IF NOT EXISTS idx_mailing_campaigns_pmta_drafts ON mailing_campaigns (organization_id, updated_at DESC) WHERE status = 'draft' AND execution_mode = 'pmta_isp_wave'`},
 		{"backfill_sending_domain", `
 			UPDATE mailing_tracking_events t
 			SET sending_domain = LOWER(SPLIT_PART(c.from_email, '@', 2))
