@@ -10,13 +10,13 @@ import (
 
 // QueryBuilder builds SQL queries from segment conditions
 type QueryBuilder struct {
-	baseTable         string
-	args              []interface{}
-	argCounter        int
-	includeSupressed  bool
-	listID            string
-	organizationID    string
-	debug             bool
+	baseTable        string
+	args             []interface{}
+	argCounter       int
+	includeSupressed bool
+	listID           string
+	organizationID   string
+	debug            bool
 }
 
 // NewQueryBuilder creates a new QueryBuilder
@@ -202,7 +202,7 @@ func (qb *QueryBuilder) BuildCountQuery(group ConditionGroupBuilder, globalExclu
 // buildJoins determines what JOINs are needed
 func (qb *QueryBuilder) buildJoins(group ConditionGroupBuilder) string {
 	joins := []string{}
-	
+
 	// Check if we need computed fields
 	if qb.needsComputedFields(group) {
 		joins = append(joins, `
@@ -268,7 +268,7 @@ func (qb *QueryBuilder) buildGroupCondition(group ConditionGroupBuilder) (string
 	}
 
 	result := strings.Join(parts, operator)
-	
+
 	if group.IsNegated {
 		result = "NOT (" + result + ")"
 	}
@@ -297,7 +297,7 @@ func (qb *QueryBuilder) buildCondition(cond ConditionBuilder) (string, error) {
 // buildProfileCondition builds SQL for profile/attribute conditions
 func (qb *QueryBuilder) buildProfileCondition(cond ConditionBuilder) (string, error) {
 	field := "s." + cond.Field
-	
+
 	switch cond.Operator {
 	// String operators
 	case OpEquals:
@@ -354,7 +354,7 @@ func (qb *QueryBuilder) buildProfileCondition(cond ConditionBuilder) (string, er
 		// Value format: "MM-DD"
 		parts := strings.Split(cond.Value, "-")
 		if len(parts) == 2 {
-			return fmt.Sprintf("EXTRACT(MONTH FROM %s) = %s AND EXTRACT(DAY FROM %s) = %s", 
+			return fmt.Sprintf("EXTRACT(MONTH FROM %s) = %s AND EXTRACT(DAY FROM %s) = %s",
 				field, qb.nextArg(parts[0]), field, qb.nextArg(parts[1])), nil
 		}
 		return fmt.Sprintf("TO_CHAR(%s, 'MM-DD') = %s", field, qb.nextArg(cond.Value)), nil
@@ -380,7 +380,7 @@ func (qb *QueryBuilder) buildProfileCondition(cond ConditionBuilder) (string, er
 func (qb *QueryBuilder) buildCustomFieldCondition(cond ConditionBuilder) (string, error) {
 	// Custom fields are stored in s.custom_fields JSONB
 	jsonPath := fmt.Sprintf("s.custom_fields->>'%s'", cond.Field)
-	
+
 	// For type-specific operations, we need to cast
 	switch cond.FieldType {
 	case FieldNumber, FieldInteger, FieldDecimal:
@@ -455,6 +455,35 @@ func resolveEventTable(eventName string) (table, col, val string) {
 	return "mailing_custom_events", "event_name", eventName
 }
 
+func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond ConditionBuilder, eventVal string) string {
+	if eventVal == "" {
+		return ""
+	}
+
+	// PMTA accounting persists delivered/bounced/etc. but not a standalone sent row.
+	// Treat delivered as the "sent" signal only when a matching sent event is absent
+	// for the same campaign/subscriber, so SMTP flows with both rows do not double-count.
+	if cond.EventName == "email_sent" && eventCol == "event_type" {
+		sentArg := qb.nextArg("sent")
+		deliveredArg := qb.nextArg("delivered")
+		sentFallbackArg := qb.nextArg("sent")
+		return fmt.Sprintf(`AND (
+			%s.%s = %s
+			OR (
+				%s.%s = %s
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_tracking_events sent_e
+					WHERE sent_e.subscriber_id = %s.subscriber_id
+					  AND sent_e.campaign_id IS NOT DISTINCT FROM %s.campaign_id
+					  AND sent_e.event_type = %s
+				)
+			)
+		)`, alias, eventCol, sentArg, alias, eventCol, deliveredArg, alias, alias, sentFallbackArg)
+	}
+
+	return fmt.Sprintf("AND %s.%s = %s", alias, eventCol, qb.nextArg(eventVal))
+}
+
 // buildEventCondition builds SQL for event-based conditions
 func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, error) {
 	eventTable, eventCol, eventVal := resolveEventTable(cond.EventName)
@@ -468,10 +497,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 	switch cond.Operator {
 	case OpEquals:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e
@@ -481,10 +507,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 
 	case OpEventCountGte:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
 			 WHERE e.subscriber_id = s.id 
@@ -493,10 +516,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 
 	case OpEventCountLte:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
 			 WHERE e.subscriber_id = s.id 
@@ -505,10 +525,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 
 	case OpEventCountBetween:
 		timeWindow := qb.buildEventTimeFilter(cond.EventTimeWindowDays)
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			(SELECT COUNT(*) FROM %s e 
 			 WHERE e.subscriber_id = s.id 
@@ -517,10 +534,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 			qb.nextArg(cond.Value), qb.nextArg(cond.ValueSecondary)), nil
 
 	case OpEventInLastDays:
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 
@@ -531,10 +545,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 			)`, eventTable, eventFilter, cond.Value, domainFilter), nil
 
 	case OpEventNotInLastDays:
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			NOT EXISTS (
 				SELECT 1 FROM %s e 
@@ -545,10 +556,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 			)`, eventTable, eventFilter, cond.Value, domainFilter), nil
 
 	case OpEventPropertyEquals:
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 
@@ -560,10 +568,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 			qb.nextArg(cond.Value), qb.buildEventTimeFilter(cond.EventTimeWindowDays), domainFilter), nil
 
 	case OpEventPropertyContains:
-		eventFilter := ""
-		if eventVal != "" {
-			eventFilter = fmt.Sprintf("AND e.%s = %s", eventCol, qb.nextArg(eventVal))
-		}
+		eventFilter := qb.buildTrackingEventFilter("e", eventCol, cond, eventVal)
 		return fmt.Sprintf(`
 			EXISTS (
 				SELECT 1 FROM %s e 

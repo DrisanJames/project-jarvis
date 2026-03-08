@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // Engine is the main segmentation engine
@@ -86,11 +87,12 @@ func (e *Engine) ExecuteSegment(ctx context.Context, segmentID uuid.UUID) (*Segm
 		var sub struct {
 			ID uuid.UUID
 		}
+		var tags []string
 		// We only need the ID for the result, scan the rest into throwaway variables
 		err := rows.Scan(&sub.ID, new(uuid.UUID), new(uuid.UUID), new(string), new(sql.NullString),
 			new(sql.NullString), new(string), new(float64), new(int), new(int),
 			new(sql.NullTime), new(sql.NullTime), new(sql.NullInt32), new(sql.NullString),
-			new(time.Time), new(json.RawMessage), new([]string))
+			new(time.Time), new(json.RawMessage), pq.Array(&tags))
 		if err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
@@ -175,7 +177,7 @@ func (e *Engine) PreviewSegment(ctx context.Context, orgID uuid.UUID, listID *uu
 		err := rows.Scan(&sub.ID, &orgID, &listID, &sub.Email, &firstName,
 			&lastName, &status, &sub.EngagementScore, &totalOpens, &totalClicks,
 			&lastOpenAt, &lastClickAt, &optimalHour, &timezone,
-			&subscribedAt, &customFields, &tags)
+			&subscribedAt, &customFields, pq.Array(&tags))
 		if err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}

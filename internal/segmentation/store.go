@@ -1,6 +1,7 @@
 package segmentation
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -161,6 +162,13 @@ func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Se
 
 // GetSegmentConditions retrieves the condition tree for a segment
 func (s *Store) GetSegmentConditions(ctx context.Context, segmentID uuid.UUID) (*ConditionGroupBuilder, error) {
+	if conditions, err := s.loadSerializedConditions(ctx, segmentID); err != nil {
+		return nil, err
+	} else if conditions != nil {
+		return conditions, nil
+	}
+
+	// Fall back to the normalized condition tables for legacy rows.
 	// Get root group (no parent)
 	groupQuery := `
 		SELECT id, logic_operator, is_negated, sort_order
@@ -169,7 +177,7 @@ func (s *Store) GetSegmentConditions(ctx context.Context, segmentID uuid.UUID) (
 		ORDER BY sort_order
 		LIMIT 1
 	`
-	
+
 	var rootGroupID uuid.UUID
 	var rootGroup ConditionGroupBuilder
 	err := s.db.QueryRowContext(ctx, groupQuery, segmentID).Scan(
@@ -194,6 +202,40 @@ func (s *Store) GetSegmentConditions(ctx context.Context, segmentID uuid.UUID) (
 		return nil, err
 	}
 	rootGroup.Groups = childGroups
+
+	return &rootGroup, nil
+}
+
+func (s *Store) loadSerializedConditions(ctx context.Context, segmentID uuid.UUID) (*ConditionGroupBuilder, error) {
+	var conditionsJSON []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT conditions
+		FROM mailing_segments
+		WHERE id = $1
+	`, segmentID).Scan(&conditionsJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	conditionsJSON = bytes.TrimSpace(conditionsJSON)
+	if len(conditionsJSON) == 0 || bytes.Equal(conditionsJSON, []byte("null")) || bytes.Equal(conditionsJSON, []byte("[]")) {
+		return nil, nil
+	}
+
+	var rootGroup ConditionGroupBuilder
+	if err := json.Unmarshal(conditionsJSON, &rootGroup); err != nil {
+		return nil, nil
+	}
+
+	if rootGroup.LogicOperator == "" && len(rootGroup.Conditions) == 0 && len(rootGroup.Groups) == 0 && !rootGroup.IsNegated {
+		return nil, nil
+	}
+	if rootGroup.LogicOperator == "" {
+		rootGroup.LogicOperator = LogicAnd
+	}
 
 	return &rootGroup, nil
 }
