@@ -463,6 +463,78 @@ func resolveEventTable(eventName string) (table, col, val string) {
 	return "mailing_custom_events", "event_name", eventName
 }
 
+func (qb *QueryBuilder) buildMessageLogSubscriberMatch(alias string) string {
+	return fmt.Sprintf(`(
+		%s.subscriber_id = s.id
+		OR (
+			%s.subscriber_id IS NULL
+			AND COALESCE(LOWER(%s.email), '') = LOWER(s.email)
+		)
+	)`, alias, alias, alias)
+}
+
+func (qb *QueryBuilder) buildTimestampFilter(alias, column string, days int) string {
+	if days > 0 {
+		return fmt.Sprintf("AND %s.%s >= NOW() - INTERVAL '%d days'", alias, column, days)
+	}
+	return ""
+}
+
+func (qb *QueryBuilder) buildMessageLogSentCondition(cond ConditionBuilder) (string, error) {
+	subscriberFilter := qb.buildMessageLogSubscriberMatch("ml")
+	timeWindow := qb.buildTimestampFilter("ml", "sent_at", cond.EventTimeWindowDays)
+
+	switch cond.Operator {
+	case OpEquals:
+		return fmt.Sprintf(`
+			EXISTS (
+				SELECT 1 FROM mailing_message_log ml
+				WHERE %s
+				%s
+			)`, subscriberFilter, timeWindow), nil
+
+	case OpEventCountGte:
+		return fmt.Sprintf(`
+			(SELECT COUNT(*) FROM mailing_message_log ml
+			 WHERE %s
+			 %s) >= %s`,
+			subscriberFilter, timeWindow, qb.nextArg(cond.Value)), nil
+
+	case OpEventCountLte:
+		return fmt.Sprintf(`
+			(SELECT COUNT(*) FROM mailing_message_log ml
+			 WHERE %s
+			 %s) <= %s`,
+			subscriberFilter, timeWindow, qb.nextArg(cond.Value)), nil
+
+	case OpEventCountBetween:
+		return fmt.Sprintf(`
+			(SELECT COUNT(*) FROM mailing_message_log ml
+			 WHERE %s
+			 %s) BETWEEN %s AND %s`,
+			subscriberFilter, timeWindow, qb.nextArg(cond.Value), qb.nextArg(cond.ValueSecondary)), nil
+
+	case OpEventInLastDays:
+		return fmt.Sprintf(`
+			EXISTS (
+				SELECT 1 FROM mailing_message_log ml
+				WHERE %s
+				AND ml.sent_at >= NOW() - INTERVAL '%s days'
+			)`, subscriberFilter, cond.Value), nil
+
+	case OpEventNotInLastDays:
+		return fmt.Sprintf(`
+			NOT EXISTS (
+				SELECT 1 FROM mailing_message_log ml
+				WHERE %s
+				AND ml.sent_at >= NOW() - INTERVAL '%s days'
+			)`, subscriberFilter, cond.Value), nil
+
+	default:
+		return "", fmt.Errorf("unsupported email_sent operator for message log: %s", cond.Operator)
+	}
+}
+
 func (qb *QueryBuilder) buildTrackingEventFilter(alias, eventCol string, cond ConditionBuilder, eventVal string) string {
 	if eventVal == "" {
 		return ""
@@ -518,6 +590,10 @@ func (qb *QueryBuilder) buildTrackingSubscriberMatch(alias string) string {
 
 // buildEventCondition builds SQL for event-based conditions
 func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, error) {
+	if cond.EventName == "email_sent" && cond.EventSendingDomain == "" {
+		return qb.buildMessageLogSentCondition(cond)
+	}
+
 	eventTable, eventCol, eventVal := resolveEventTable(cond.EventName)
 	useTrackingTable := eventTable == "mailing_tracking_events"
 	subscriberFilter := "e.subscriber_id = s.id"
@@ -622,10 +698,7 @@ func (qb *QueryBuilder) buildEventCondition(cond ConditionBuilder) (string, erro
 
 // buildEventTimeFilter builds the time window filter for events
 func (qb *QueryBuilder) buildEventTimeFilter(days int) string {
-	if days > 0 {
-		return fmt.Sprintf("AND e.event_at >= NOW() - INTERVAL '%d days'", days)
-	}
-	return ""
+	return qb.buildTimestampFilter("e", "event_at", days)
 }
 
 // buildComputedCondition builds SQL for computed field conditions
