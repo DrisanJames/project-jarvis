@@ -110,7 +110,6 @@ func (p *OrgContextProvider) ExtractOrgID(r *http.Request) (uuid.UUID, error) {
 	if p.devModeEnabled && p.defaultOrgID != uuid.Nil {
 		return p.defaultOrgID, nil
 	}
-	
 	return uuid.Nil, fmt.Errorf("organization ID not found in request")
 }
 

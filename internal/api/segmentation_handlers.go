@@ -174,7 +174,7 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 	// Validate conditions
 	errors := api.engine.ValidateConditions(req.RootGroup)
 	if len(errors) > 0 {
-		segmentRespondJSON(w, map[string]interface{}{
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
 			"error":   "validation_failed",
 			"details": errors,
 		})
@@ -284,7 +284,7 @@ func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request
 	// Validate conditions
 	errors := api.engine.ValidateConditions(req.RootGroup)
 	if len(errors) > 0 {
-		segmentRespondJSON(w, map[string]interface{}{
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
 			"error":   "validation_failed",
 			"details": errors,
 		})
@@ -613,8 +613,7 @@ func (api *SegmentationAPI) TrackEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	segmentRespondJSON(w, map[string]string{"status": "tracked"})
+	segmentRespondJSONStatus(w, http.StatusCreated, map[string]string{"status": "tracked"})
 }
 
 // ==========================================
@@ -718,6 +717,11 @@ func segmentGetUserIDFromContext(ctx interface{}) *uuid.UUID {
 }
 
 func segmentRespondJSON(w http.ResponseWriter, data interface{}) {
+	segmentRespondJSONStatus(w, http.StatusOK, data)
+}
+
+func segmentRespondJSONStatus(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }

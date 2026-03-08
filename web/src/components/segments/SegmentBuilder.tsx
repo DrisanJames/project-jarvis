@@ -487,6 +487,7 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
       )}
 
       <button
+        type="button"
         onClick={onRemove}
         style={{
           padding: 6, background: 'rgba(233,69,96,0.1)', border: 'none',
@@ -609,6 +610,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
             }}>NOT</span>
           )}
           <button
+            type="button"
             onClick={toggleLogicOperator}
             style={{
               padding: '6px 14px', fontSize: 13, fontWeight: 700, borderRadius: 6, border: 'none',
@@ -627,6 +629,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <button
+            type="button"
             onClick={toggleNegation}
             style={{
               padding: '4px 10px', fontSize: 11, borderRadius: 4, border: 'none', cursor: 'pointer',
@@ -638,6 +641,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
           </button>
           {onRemove && depth > 0 && (
             <button
+              type="button"
               onClick={onRemove}
               style={{
                 padding: 4, background: 'none', border: 'none', cursor: 'pointer',
@@ -703,6 +707,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
       {/* Add Buttons */}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
+          type="button"
           onClick={handleAddCondition}
           style={{
             display: 'flex', alignItems: 'center', gap: 6,
@@ -718,6 +723,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
           Add Condition
         </button>
         <button
+          type="button"
           onClick={handleAddGroup}
           style={{
             display: 'flex', alignItems: 'center', gap: 6,
@@ -936,6 +942,7 @@ export const SegmentBuilder: React.FC<SegmentBuilderProps> = ({
           <div className="flex flex-wrap gap-2">
             {QUICK_FILTERS.map((filter, index) => (
               <button
+                type="button"
                 key={index}
                 onClick={() => {
                   const newCondition: ConditionBuilder = {
@@ -975,6 +982,7 @@ export const SegmentBuilder: React.FC<SegmentBuilderProps> = ({
         {/* Save Button */}
         {onSave && (
           <button
+            type="button"
             onClick={handleSave}
             className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
           >

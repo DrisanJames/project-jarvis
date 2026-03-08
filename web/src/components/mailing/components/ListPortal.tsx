@@ -1520,6 +1520,26 @@ interface CreateSegmentProps {
   animateIn: boolean;
 }
 
+const getSegmentRequestErrorMessage = (payload: unknown, fallback = 'Unknown error') => {
+  if (!payload || typeof payload !== 'object') return fallback;
+
+  const error = 'error' in payload && typeof payload.error === 'string' ? payload.error : '';
+  const details = 'details' in payload && Array.isArray(payload.details)
+    ? payload.details.filter((detail): detail is string => typeof detail === 'string')
+    : [];
+
+  if (error === 'validation_failed' && details.length > 0) {
+    return details.join(', ');
+  }
+  if (error) {
+    return error;
+  }
+  return fallback;
+};
+
+const hasSegmentRequestError = (payload: unknown): payload is { error: string; details?: string[] } =>
+  !!payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string';
+
 const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSuccess, orgFetch, animateIn }) => {
   const [formData, setFormData] = useState({
     name: '',
@@ -1557,12 +1577,12 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      const data = await res.json().catch(() => null);
 
-      if (res.ok) {
+      if (res.ok && !hasSegmentRequestError(data)) {
         onSuccess();
       } else {
-        const error = await res.json();
-        alert(`Failed to create segment: ${error.error || 'Unknown error'}`);
+        alert(`Failed to create segment: ${getSegmentRequestErrorMessage(data)}`);
       }
     } catch (err) {
       alert('Failed to create segment');
@@ -1778,12 +1798,12 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
         method: 'PUT',
         body: JSON.stringify(payload),
       });
+      const data = await res.json().catch(() => null);
 
-      if (res.ok) {
+      if (res.ok && !hasSegmentRequestError(data)) {
         onSuccess();
       } else {
-        const error = await res.json();
-        alert(`Failed to update segment: ${error.error || 'Unknown error'}`);
+        alert(`Failed to update segment: ${getSegmentRequestErrorMessage(data)}`);
       }
     } catch (err) {
       alert('Failed to update segment');
