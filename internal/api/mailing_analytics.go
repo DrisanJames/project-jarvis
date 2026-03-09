@@ -1923,7 +1923,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
 		JOIN mailing_campaigns c ON p.campaign_id = c.id
 		WHERE ($1 = '' OR c.organization_id::text = $1)
-		  AND c.status IN ('completed','sent','sending')
+		  AND c.status IN ('completed','sent','cancelled','completed_with_errors','sending')
 		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
 	`, orgID)
 	if quotaRows != nil {

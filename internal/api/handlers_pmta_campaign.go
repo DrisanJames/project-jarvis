@@ -1449,7 +1449,7 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 		       %s
 		FROM mailing_campaigns
 		WHERE organization_id = $1
-		  AND status IN ('completed', 'sent', 'sending', 'draft')
+		  AND status IN ('completed', 'sent', 'cancelled', 'completed_with_errors', 'sending', 'draft')
 		ORDER BY
 		  CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END DESC,
 		  COALESCE(sent_count, 0) DESC,
@@ -1669,7 +1669,9 @@ func (s *PMTACampaignService) HandleLastQuotas(w http.ResponseWriter, r *http.Re
 		query += `, COALESCE(pmta_config::text, '')`
 	}
 	query += ` FROM mailing_campaigns
-		WHERE organization_id = $1 AND status IN ('completed', 'sent')
+		WHERE organization_id = $1
+		  AND status IN ('completed', 'sent', 'cancelled', 'completed_with_errors')
+		  AND COALESCE(sent_count, 0) > 0
 		ORDER BY COALESCE(completed_at, started_at, created_at) DESC LIMIT 1`
 
 	var err error
