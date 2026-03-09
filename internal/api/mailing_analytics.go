@@ -21,6 +21,7 @@ import (
 const (
 	VersionAnalyticsOverview       = "1.2"
 	VersionISPPerformance          = "1.0"
+	VersionISPSendingInsights      = "1.0"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -1818,4 +1819,390 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		"api_version": VersionISPPerformance,
 		"isps":        isps,
 	})
+}
+
+// ================== ISP SENDING INSIGHTS ==================
+
+func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.Header.Get("X-Organization-ID")
+
+	end := time.Now()
+	start := end.Add(-3 * 24 * time.Hour)
+
+	domSubquery := `SELECT t.*, LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2))) as dom
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
+		WHERE t.event_at >= $1 AND t.event_at <= $2`
+
+	// 1. Daily metrics per ISP
+	dailyQ := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at) as day,
+		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounced,
+		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complained,
+		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
+		SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open, false) = true THEN 1 ELSE 0 END) as mpp_opens
+	FROM (%s) d
+	GROUP BY isp, day ORDER BY isp, day`, ispDomainCaseSQL, domSubquery)
+
+	dailyRows, err := s.db.QueryContext(ctx, dailyQ, start, end)
+	if err != nil {
+		log.Printf("[ISPSendingInsights] daily query error: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+		return
+	}
+	defer dailyRows.Close()
+
+	type dailyRow struct {
+		day                                                   string
+		sent, delivered, bounced, deferred, complained, opened, mppOpens int
+	}
+	ispDaily := map[string][]dailyRow{}
+	for dailyRows.Next() {
+		var isp string
+		var day time.Time
+		var sent, delivered, bounced, deferred, complained, opened, mppOpens int
+		dailyRows.Scan(&isp, &day, &sent, &delivered, &bounced, &deferred, &complained, &opened, &mppOpens)
+		ispDaily[isp] = append(ispDaily[isp], dailyRow{
+			day: day.Format("2006-01-02"), sent: sent, delivered: delivered,
+			bounced: bounced, deferred: deferred, complained: complained,
+			opened: opened, mppOpens: mppOpens,
+		})
+	}
+
+	// 2. Bounce category breakdown per ISP
+	catQ := fmt.Sprintf(`SELECT %s as isp, COALESCE(NULLIF(d.bounce_type,''), 'unknown') as category, COUNT(*) as cnt
+	FROM (%s) d
+	WHERE d.event_type IN ('bounced','hard_bounce','soft_bounce')
+	GROUP BY isp, category`, ispDomainCaseSQL, domSubquery)
+
+	catRows, _ := s.db.QueryContext(ctx, catQ, start, end)
+	ispBounceCategories := map[string]map[string]int{}
+	if catRows != nil {
+		defer catRows.Close()
+		for catRows.Next() {
+			var isp, cat string
+			var cnt int
+			catRows.Scan(&isp, &cat, &cnt)
+			if ispBounceCategories[isp] == nil {
+				ispBounceCategories[isp] = map[string]int{}
+			}
+			ispBounceCategories[isp][cat] = cnt
+		}
+	}
+
+	// 3. Hourly deferral distribution per ISP
+	hrQ := fmt.Sprintf(`SELECT %s as isp, EXTRACT(HOUR FROM d.event_at)::int as hr, COUNT(*) as cnt
+	FROM (%s) d
+	WHERE d.event_type IN ('deferred','deferral')
+	GROUP BY isp, hr ORDER BY isp, hr`, ispDomainCaseSQL, domSubquery)
+
+	hrRows, _ := s.db.QueryContext(ctx, hrQ, start, end)
+	ispHourlyDeferrals := map[string][24]int{}
+	if hrRows != nil {
+		defer hrRows.Close()
+		for hrRows.Next() {
+			var isp string
+			var hr, cnt int
+			hrRows.Scan(&isp, &hr, &cnt)
+			if hr >= 0 && hr < 24 {
+				arr := ispHourlyDeferrals[isp]
+				arr[hr] = cnt
+				ispHourlyDeferrals[isp] = arr
+			}
+		}
+	}
+
+	// 4. Current quotas from last campaign
+	currentQuotas := map[string]int{}
+	quotaRows, _ := s.db.QueryContext(ctx, `
+		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
+		JOIN mailing_campaigns c ON p.campaign_id = c.id
+		WHERE ($1 = '' OR c.organization_id::text = $1)
+		  AND c.status IN ('completed','sent','sending')
+		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
+	`, orgID)
+	if quotaRows != nil {
+		defer quotaRows.Close()
+		for quotaRows.Next() {
+			var isp string
+			var quota int
+			quotaRows.Scan(&isp, &quota)
+			if _, seen := currentQuotas[isp]; !seen {
+				currentQuotas[isp] = quota
+			}
+		}
+	}
+
+	// 5. Build per-ISP insights
+	var isps []map[string]interface{}
+	for _, isp := range []string{"gmail", "yahoo", "microsoft", "apple", "comcast", "att", "cox", "charter", "other"} {
+		days := ispDaily[isp]
+		if len(days) == 0 {
+			continue
+		}
+
+		var totalSent, totalDelivered, totalBounced, totalDeferred, totalComplained, totalOpened, totalMPP int
+		dailyEntries := make([]map[string]interface{}, 0, len(days))
+		bounceRates := make([]float64, 0, len(days))
+		deferralRates := make([]float64, 0, len(days))
+
+		for _, d := range days {
+			totalSent += d.sent
+			totalDelivered += d.delivered
+			totalBounced += d.bounced
+			totalDeferred += d.deferred
+			totalComplained += d.complained
+			totalOpened += d.opened
+			totalMPP += d.mppOpens
+
+			br := 0.0
+			dr := 0.0
+			if d.sent > 0 {
+				br = float64(d.bounced) / float64(d.sent) * 100
+				dr = float64(d.deferred) / float64(d.sent) * 100
+			}
+			bounceRates = append(bounceRates, br)
+			deferralRates = append(deferralRates, dr)
+
+			dailyEntries = append(dailyEntries, map[string]interface{}{
+				"date": d.day, "sent": d.sent, "delivered": d.delivered,
+				"bounced": d.bounced, "deferred": d.deferred,
+				"bounce_rate": math.Round(br*100) / 100,
+			})
+		}
+
+		bounceRate, deferralRate, complaintRate, humanOpenRate := 0.0, 0.0, 0.0, 0.0
+		humanOpens := totalOpened - totalMPP
+		if humanOpens < 0 {
+			humanOpens = 0
+		}
+		if totalSent > 0 {
+			bounceRate = math.Round(float64(totalBounced)/float64(totalSent)*10000) / 100
+			deferralRate = math.Round(float64(totalDeferred)/float64(totalSent)*10000) / 100
+			complaintRate = math.Round(float64(totalComplained)/float64(totalSent)*10000) / 100
+			humanOpenRate = math.Round(float64(humanOpens)/float64(totalSent)*10000) / 100
+		}
+		deliveryRate := 0.0
+		if totalSent > 0 {
+			deliveryRate = math.Round(float64(totalDelivered)/float64(totalSent)*10000) / 100
+		}
+
+		// Bounce trend: slope via simple linear regression on daily bounce rates
+		bounceTrendSlope := linearSlope(bounceRates)
+		deferralTrendSlope := linearSlope(deferralRates)
+
+		// Throttle bounce category ratio
+		throttlePct := 0.0
+		cats := ispBounceCategories[isp]
+		if cats != nil && totalBounced > 0 {
+			throttleBounces := cats["quota-issues"] + cats["rate-limited"] + cats["message-expired"]
+			throttlePct = float64(throttleBounces) / float64(totalBounced) * 100
+		}
+
+		// Deferral concentration: top-3 hours' share
+		hourly := ispHourlyDeferrals[isp]
+		hourlySlice := make([]int, 24)
+		copy(hourlySlice, hourly[:])
+		deferralConcentration := top3HourShare(hourlySlice, totalDeferred)
+
+		// Risk score (0-100)
+		normBounce := math.Min(bounceRate/5.0, 1.0)      // 5% bounce rate = max
+		normDeferral := math.Min(deferralRate/10.0, 1.0)  // 10% deferral rate = max
+		normComplaint := math.Min(complaintRate/0.1, 1.0)  // 0.1% complaint rate = max
+		normThrottle := throttlePct / 100.0
+		normBounceTrend := math.Min(math.Max(bounceTrendSlope/2.0, 0), 1.0)
+
+		riskScore := int(math.Round(math.Min(100, math.Max(0,
+			normBounce*25+
+				normDeferral*25+
+				normBounceTrend*20+
+				normThrottle*20+
+				normComplaint*10,
+		))))
+
+		// Recommendation and suggested quota
+		currentQ := currentQuotas[isp]
+		var recommendation string
+		var suggestedQ int
+		switch {
+		case riskScore > 80:
+			recommendation = "PAUSE"
+			suggestedQ = 0
+		case riskScore > 60:
+			recommendation = "DECREASE"
+			suggestedQ = int(float64(currentQ) * 0.65)
+		case riskScore > 40:
+			recommendation = "CAUTION"
+			suggestedQ = int(float64(currentQ) * 0.85)
+		case riskScore > 20:
+			recommendation = "MAINTAIN"
+			suggestedQ = currentQ
+		default:
+			recommendation = "INCREASE"
+			suggestedQ = int(float64(currentQ) * 1.25)
+		}
+		if currentQ == 0 {
+			suggestedQ = 0
+		}
+
+		// Signals
+		var signals []map[string]interface{}
+
+		bounceTrendDir := "stable"
+		if bounceTrendSlope > 0.3 {
+			bounceTrendDir = "increasing"
+		} else if bounceTrendSlope < -0.3 {
+			bounceTrendDir = "decreasing"
+		}
+		if len(bounceRates) >= 2 {
+			signals = append(signals, map[string]interface{}{
+				"type": "bounce_trend", "direction": bounceTrendDir,
+				"slope": math.Round(bounceTrendSlope*100) / 100,
+				"detail": fmt.Sprintf("Bounce rate %s from %.1f%% to %.1f%% over %d days",
+					bounceTrendDir, bounceRates[0], bounceRates[len(bounceRates)-1], len(bounceRates)),
+			})
+		}
+
+		if deferralConcentration > 50 {
+			peakHrs := topNHours(hourlySlice, 3)
+			signals = append(signals, map[string]interface{}{
+				"type": "deferral_spike", "severity": severityLabel(deferralConcentration),
+				"detail": fmt.Sprintf("%.0f%% of deferrals concentrated in hours %v UTC", deferralConcentration, peakHrs),
+			})
+		}
+
+		if throttlePct > 10 {
+			signals = append(signals, map[string]interface{}{
+				"type": "throttle_bounces", "pct": math.Round(throttlePct*10) / 10,
+				"detail": fmt.Sprintf("%.0f%% of bounces are quota-issues or rate-limited categories", throttlePct),
+			})
+		}
+
+		if complaintRate > 0.05 {
+			signals = append(signals, map[string]interface{}{
+				"type": "complaint_rate", "severity": severityLabel(complaintRate * 1000),
+				"detail": fmt.Sprintf("Complaint rate at %.3f%% — threshold is 0.1%%", complaintRate),
+			})
+		}
+
+		if deferralTrendSlope > 0.5 {
+			signals = append(signals, map[string]interface{}{
+				"type": "deferral_trend", "direction": "increasing",
+				"detail": fmt.Sprintf("Deferral rate rising over %d days — ISP may be increasing throttling", len(deferralRates)),
+			})
+		}
+
+		if signals == nil {
+			signals = []map[string]interface{}{}
+		}
+
+		label := ispLabels[isp]
+		if label == "" {
+			label = isp
+		}
+
+		isps = append(isps, map[string]interface{}{
+			"isp": isp, "label": label,
+			"sent": totalSent, "delivered": totalDelivered,
+			"bounced": totalBounced, "deferred": totalDeferred,
+			"complained": totalComplained, "opened": totalOpened,
+			"mpp_opens": totalMPP, "human_opens": humanOpens,
+			"delivery_rate": deliveryRate, "bounce_rate": bounceRate,
+			"deferral_rate": deferralRate, "complaint_rate": complaintRate,
+			"human_open_rate": humanOpenRate,
+			"current_quota": currentQ, "suggested_quota": suggestedQ,
+			"recommendation": recommendation, "risk_score": riskScore,
+			"signals":           signals,
+			"daily":             dailyEntries,
+			"hourly_deferrals":  hourlySlice,
+		})
+	}
+
+	if isps == nil {
+		isps = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version":    VersionISPSendingInsights,
+		"window":         map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
+		"current_quotas": currentQuotas,
+		"isps":           isps,
+	})
+}
+
+// linearSlope computes the slope of a simple linear regression on y values indexed 0..n-1.
+func linearSlope(ys []float64) float64 {
+	n := float64(len(ys))
+	if n < 2 {
+		return 0
+	}
+	var sumX, sumY, sumXY, sumX2 float64
+	for i, y := range ys {
+		x := float64(i)
+		sumX += x
+		sumY += y
+		sumXY += x * y
+		sumX2 += x * x
+	}
+	denom := n*sumX2 - sumX*sumX
+	if denom == 0 {
+		return 0
+	}
+	return (n*sumXY - sumX*sumY) / denom
+}
+
+func top3HourShare(hourly []int, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	sorted := make([]int, len(hourly))
+	copy(sorted, hourly)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j] > sorted[i] {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	top3 := 0
+	for i := 0; i < 3 && i < len(sorted); i++ {
+		top3 += sorted[i]
+	}
+	return float64(top3) / float64(total) * 100
+}
+
+func topNHours(hourly []int, n int) []int {
+	type hv struct{ hr, cnt int }
+	pairs := make([]hv, 0, 24)
+	for h, c := range hourly {
+		if c > 0 {
+			pairs = append(pairs, hv{h, c})
+		}
+	}
+	for i := 0; i < len(pairs); i++ {
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].cnt > pairs[i].cnt {
+				pairs[i], pairs[j] = pairs[j], pairs[i]
+			}
+		}
+	}
+	result := make([]int, 0, n)
+	for i := 0; i < n && i < len(pairs); i++ {
+		result = append(result, pairs[i].hr)
+	}
+	return result
+}
+
+func severityLabel(pct float64) string {
+	if pct > 70 {
+		return "critical"
+	}
+	if pct > 40 {
+		return "high"
+	}
+	return "moderate"
 }

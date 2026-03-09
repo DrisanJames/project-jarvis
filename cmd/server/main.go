@@ -1387,6 +1387,8 @@ func runStartupMigrations(db *sql.DB) {
 			  )
 			ON CONFLICT DO NOTHING
 		`},
+		{"add_is_machine_open_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_machine_open BOOLEAN DEFAULT FALSE`},
+		{"add_idx_mte_machine_open", `CREATE INDEX IF NOT EXISTS idx_mte_machine_open ON mailing_tracking_events (campaign_id, is_machine_open) WHERE event_type = 'opened' AND is_machine_open = TRUE`},
 	}
 
 	var ok, fail int

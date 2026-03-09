@@ -85,14 +85,30 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
+	// MPP detection: check if delivery happened within the last 30 seconds
+	isMachineOpen := false
+	var deliveredAt time.Time
+	err = svc.db.QueryRowContext(ctx, `
+		SELECT event_at FROM mailing_tracking_events
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'delivered'
+		ORDER BY event_at DESC LIMIT 1
+	`, subscriberID, campaignID).Scan(&deliveredAt)
+	if err == nil && time.Since(deliveredAt) <= 30*time.Second {
+		isMachineOpen = true
+	}
+
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, is_machine_open)
 		SELECT $1, $2, $3, $4, 'opened', NOW(), $5::inet, $6, $7,
-			LOWER(SPLIT_PART(c.from_email, '@', 2))
+			LOWER(SPLIT_PART(c.from_email, '@', 2)), $8
 		FROM mailing_campaigns c WHERE c.id = $3
 		ON CONFLICT DO NOTHING
-	`, emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent())); err != nil {
+	`, emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), isMachineOpen); err != nil {
 		log.Printf("TRACK OPEN DB ERROR: %v", err)
+	}
+
+	if isMachineOpen {
+		log.Printf("TRACK OPEN MPP: campaign=%s subscriber=%s delta=%v", campaignID, subscriberID, time.Since(deliveredAt))
 	}
 
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1 WHERE id = $1`, campaignID)

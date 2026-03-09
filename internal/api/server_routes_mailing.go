@@ -256,6 +256,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/campaigns/{campaignId}/devices", advSvc.HandleCampaignByDevice)
 			r.Get("/analytics/overview", advSvc.HandleAnalyticsOverview)
 			r.Get("/analytics/isp-performance", advSvc.HandleISPPerformance)
+			r.Get("/analytics/isp-sending-insights", advSvc.HandleISPSendingInsights)
 			
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)

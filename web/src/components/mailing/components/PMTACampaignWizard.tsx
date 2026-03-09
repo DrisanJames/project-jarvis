@@ -249,6 +249,25 @@ interface CloneCandidate {
   recommended: boolean;
 }
 
+interface ISPInsight {
+  isp: string; label: string;
+  sent: number; delivered: number; bounced: number; deferred: number; complained: number;
+  opened: number; mpp_opens: number; human_opens: number;
+  delivery_rate: number; bounce_rate: number; deferral_rate: number; complaint_rate: number;
+  human_open_rate: number;
+  current_quota: number; suggested_quota: number;
+  recommendation: string; risk_score: number;
+  signals: { type: string; direction?: string; severity?: string; pct?: number; detail: string }[];
+  daily: { date: string; sent: number; delivered: number; bounced: number; deferred: number; bounce_rate: number }[];
+  hourly_deferrals: number[];
+}
+
+const RECOMMENDATION_COLORS: Record<string, string> = {
+  INCREASE: '#22c55e', MAINTAIN: '#3b82f6', CAUTION: '#f59e0b', DECREASE: '#ef4444', PAUSE: '#dc2626',
+};
+
+const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 const STEPS = [
@@ -283,6 +302,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [selectedISPs, setSelectedISPs] = useState<string[]>([...ALL_ISPS]);
   const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({ ...DEFAULT_ISP_QUOTAS });
   const [randomizeAudience, setRandomizeAudience] = useState(false);
+
+  // ISP Sending Health insights
+  const [ispInsights, setIspInsights] = useState<ISPInsight[]>([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [expandedInsightISP, setExpandedInsightISP] = useState<string | null>(null);
+  const [insightsCollapsed, setInsightsCollapsed] = useState(false);
 
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
@@ -393,6 +418,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     }
     setReadinessLoading(false);
   }, [fetchWithRetry]);
+
+  const fetchInsights = useCallback(async () => {
+    setInsightsLoading(true);
+    try {
+      const res = await orgFetch(`${API_BASE}/analytics/isp-sending-insights`, orgId);
+      const data = await res.json();
+      setIspInsights(data?.isps || []);
+    } catch (err) {
+      console.warn('[Wizard] ISP insights fetch failed:', err);
+    }
+    setInsightsLoading(false);
+  }, [orgId]);
 
   const fetchDomains = useCallback(async () => {
     setDomainError('');
@@ -578,12 +615,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Load data on step entry
   useEffect(() => {
-    if (step === 1) fetchReadiness();
+    if (step === 1) { fetchReadiness(); fetchInsights(); }
     if (step === 2) fetchDomains();
     if (step === 3) fetchTemplates();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel]);
+  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -1290,6 +1327,268 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         Choose which ISP ecosystems to target. Cards show live health from the governance engine.
       </p>
       <StepErrorBanner stepNum={1} />
+
+      {/* ── ISP Sending Health Panel ────────────────────────── */}
+      <div style={{
+        marginBottom: 20, border: '1px solid rgba(0,200,255,0.1)', borderRadius: 12,
+        background: 'linear-gradient(135deg, rgba(10,15,26,0.95), rgba(13,21,38,0.95))',
+        overflow: 'hidden',
+      }}>
+        <button
+          onClick={() => setInsightsCollapsed(!insightsCollapsed)}
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer', color: '#e0e6f0',
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>
+            <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#00e5ff' }} />
+            3-Day ISP Sending Health
+            {insightsLoading && <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#64748b', fontSize: 11 }} />}
+            {!insightsLoading && ispInsights.length > 0 && (
+              <span style={{ fontSize: 11, color: '#64748b', fontWeight: 400 }}>
+                — {ispInsights.filter(i => i.recommendation === 'DECREASE' || i.recommendation === 'PAUSE').length} ISPs need attention
+              </span>
+            )}
+          </span>
+          <FontAwesomeIcon icon={insightsCollapsed ? faChevronDown : faChevronUp} style={{ color: '#64748b', fontSize: 11 }} />
+        </button>
+
+        {!insightsCollapsed && (
+          <div style={{ padding: '0 16px 16px' }}>
+            {insightsLoading && ispInsights.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: '#64748b', fontSize: 12 }}>
+                <FontAwesomeIcon icon={faSpinner} spin /> Analyzing 3-day sending performance…
+              </div>
+            )}
+
+            {!insightsLoading && ispInsights.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: '#4b5563', fontSize: 12 }}>
+                No sending data found in the last 3 days.
+              </div>
+            )}
+
+            {ispInsights.length > 0 && (
+              <>
+                {ispInsights.some(i => i.suggested_quota !== i.current_quota && i.current_quota > 0) && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+                    <button
+                      onClick={() => {
+                        const updated = { ...ispQuotas };
+                        ispInsights.forEach(i => {
+                          if (i.suggested_quota !== i.current_quota && i.current_quota > 0) {
+                            updated[i.isp] = i.suggested_quota;
+                          }
+                        });
+                        setISPQuotas(updated);
+                      }}
+                      style={{
+                        padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(0,200,255,0.2)',
+                        background: 'rgba(0,200,255,0.08)', color: '#00b0ff', fontSize: 11,
+                        fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                      }}
+                    >
+                      <FontAwesomeIcon icon={faMagic} /> Apply All Suggestions
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                  {ispInsights.filter(i => i.isp !== 'other').map(insight => {
+                    const meta = ISP_META[insight.isp] || { label: insight.label, color: '#64748b', emoji: '🌐' };
+                    const isExpanded = expandedInsightISP === insight.isp;
+                    const recColor = RECOMMENDATION_COLORS[insight.recommendation] || '#64748b';
+                    const scoreColor = insight.risk_score >= 60 ? '#ef4444' : insight.risk_score >= 40 ? '#f59e0b' : insight.risk_score >= 20 ? '#3b82f6' : '#22c55e';
+
+                    return (
+                      <div key={insight.isp} style={{ display: 'flex', flexDirection: 'column' }}>
+                        <div
+                          onClick={() => setExpandedInsightISP(isExpanded ? null : insight.isp)}
+                          style={{
+                            padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
+                            border: `1px solid ${isExpanded ? meta.color : 'rgba(0,200,255,0.08)'}`,
+                            background: isExpanded ? 'rgba(0,200,255,0.04)' : 'rgba(255,255,255,0.02)',
+                            transition: 'all 0.2s',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>
+                              {meta.emoji} {meta.label}
+                            </span>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                              background: `${recColor}18`, color: recColor,
+                            }}>
+                              {insight.recommendation}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <span style={{ fontSize: 18, fontWeight: 700, color: scoreColor, fontFamily: 'monospace' }}>
+                              {insight.risk_score}
+                            </span>
+                            <span style={{ fontSize: 9, color: '#64748b' }}>RISK</span>
+                            <span style={{ marginLeft: 'auto', fontSize: 11, color: '#c0c4d0' }}>{fmtK(insight.sent)} sent</span>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 8px', fontSize: 10 }}>
+                            <span style={{ color: '#64748b' }}>Bounce <strong style={{ color: insight.bounce_rate > 2 ? '#ef4444' : '#c0c4d0' }}>{insight.bounce_rate}%</strong></span>
+                            <span style={{ color: '#64748b' }}>Defer <strong style={{ color: insight.deferral_rate > 5 ? '#f59e0b' : '#c0c4d0' }}>{insight.deferral_rate}%</strong></span>
+                            <span style={{ color: '#64748b' }}>Cmpl <strong style={{ color: insight.complaint_rate > 0.05 ? '#ef4444' : '#c0c4d0' }}>{insight.complaint_rate}%</strong></span>
+                            <span style={{ color: '#64748b' }}>Opens <strong style={{ color: '#22c55e' }}>{insight.human_open_rate}%</strong></span>
+                          </div>
+
+                          {insight.mpp_opens > 0 && (
+                            <div style={{ marginTop: 4, fontSize: 9, color: '#f59e0b' }}>
+                              MPP: {fmtK(insight.mpp_opens)} machine opens ({insight.opened > 0 ? Math.round(insight.mpp_opens / insight.opened * 100) : 0}%)
+                            </div>
+                          )}
+
+                          {insight.signals.length > 0 && (
+                            <div style={{ marginTop: 6, fontSize: 10, color: '#94a3b8', lineHeight: 1.4, borderTop: '1px solid rgba(0,200,255,0.06)', paddingTop: 6 }}>
+                              {insight.signals[0].detail}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Expanded detail panel */}
+                {expandedInsightISP && (() => {
+                  const insight = ispInsights.find(i => i.isp === expandedInsightISP);
+                  if (!insight) return null;
+                  const meta = ISP_META[insight.isp] || { label: insight.label, color: '#64748b', emoji: '🌐' };
+                  const maxDefer = Math.max(...insight.hourly_deferrals, 1);
+
+                  return (
+                    <div style={{
+                      marginTop: 12, padding: 16, borderRadius: 10,
+                      border: `1px solid ${meta.color}40`, background: 'rgba(255,255,255,0.02)',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: meta.color }}>
+                          {meta.emoji} {meta.label} — Detailed Analysis
+                        </h4>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {insight.suggested_quota !== insight.current_quota && insight.current_quota > 0 && (
+                            <button
+                              onClick={() => setISPQuotas(prev => ({ ...prev, [insight.isp]: insight.suggested_quota }))}
+                              style={{
+                                padding: '4px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600,
+                                border: '1px solid rgba(0,200,255,0.2)', background: 'rgba(0,200,255,0.08)',
+                                color: '#00b0ff', cursor: 'pointer',
+                              }}
+                            >
+                              Apply Suggested Quota ({fmtK(insight.suggested_quota)})
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setExpandedInsightISP(null)}
+                            style={{ background: 'none', border: '1px solid rgba(0,200,255,0.1)', color: '#64748b', cursor: 'pointer', borderRadius: 6, width: 28, height: 28, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                          >&times;</button>
+                        </div>
+                      </div>
+
+                      {/* Quota comparison */}
+                      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+                        <div style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(0,200,255,0.06)' }}>
+                          <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Current Quota</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: '#e0e6f0' }}>{fmtK(insight.current_quota)}</div>
+                        </div>
+                        <div style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(0,200,255,0.06)' }}>
+                          <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Suggested</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: RECOMMENDATION_COLORS[insight.recommendation] || '#c0c4d0' }}>
+                            {fmtK(insight.suggested_quota)}
+                            {insight.suggested_quota !== insight.current_quota && insight.current_quota > 0 && (
+                              <span style={{ fontSize: 11, marginLeft: 6, color: insight.suggested_quota < insight.current_quota ? '#ef4444' : '#22c55e' }}>
+                                ({insight.suggested_quota < insight.current_quota ? '' : '+'}{Math.round((insight.suggested_quota - insight.current_quota) / insight.current_quota * 100)}%)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(0,200,255,0.06)' }}>
+                          <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>3-Day Volume</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: '#e0e6f0' }}>{fmtK(insight.sent)}</div>
+                        </div>
+                        <div style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(0,200,255,0.06)' }}>
+                          <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Human Opens</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: '#22c55e' }}>{insight.human_open_rate}%</div>
+                        </div>
+                      </div>
+
+                      {/* Daily breakdown */}
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase' }}>Daily Breakdown</div>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+                              {['Date', 'Sent', 'Delivered', 'Bounced', 'Deferred', 'Bounce %'].map(h => (
+                                <th key={h} style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 10 }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {insight.daily.map(d => (
+                              <tr key={d.date} style={{ borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                                <td style={{ padding: '4px 8px', color: '#94a3b8' }}>{d.date.slice(5)}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#c0c4d0' }}>{fmtK(d.sent)}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#c0c4d0' }}>{fmtK(d.delivered)}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.bounced > 0 ? '#ef4444' : '#c0c4d0' }}>{d.bounced}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.deferred > 0 ? '#f59e0b' : '#c0c4d0' }}>{d.deferred}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.bounce_rate > 2 ? '#ef4444' : '#c0c4d0' }}>{d.bounce_rate}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Hourly deferral heatmap */}
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase' }}>Hourly Deferral Distribution (UTC)</div>
+                        <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 40 }}>
+                          {insight.hourly_deferrals.map((cnt, hr) => (
+                            <div
+                              key={hr}
+                              title={`${hr}:00 — ${cnt} deferrals`}
+                              style={{
+                                flex: 1, minWidth: 0,
+                                height: `${Math.max(4, (cnt / maxDefer) * 40)}px`,
+                                background: cnt === 0 ? 'rgba(255,255,255,0.04)' : `rgba(245, 158, 11, ${Math.max(0.2, cnt / maxDefer)})`,
+                                borderRadius: 2,
+                              }}
+                            />
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: '#4b5563', marginTop: 2 }}>
+                          <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>23h</span>
+                        </div>
+                      </div>
+
+                      {/* Signals */}
+                      {insight.signals.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase' }}>Signals</div>
+                          {insight.signals.map((sig, i) => (
+                            <div key={i} style={{
+                              padding: '6px 10px', marginBottom: 4, borderRadius: 6, fontSize: 11, color: '#c0c4d0',
+                              background: sig.severity === 'critical' ? 'rgba(239,68,68,0.08)' : sig.severity === 'high' ? 'rgba(245,158,11,0.08)' : 'rgba(0,200,255,0.04)',
+                              borderLeft: `3px solid ${sig.severity === 'critical' ? '#ef4444' : sig.severity === 'high' ? '#f59e0b' : '#3b82f6'}`,
+                            }}>
+                              {sig.detail}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Skeleton loading */}
       {readinessLoading && ispReadiness.length === 0 && (

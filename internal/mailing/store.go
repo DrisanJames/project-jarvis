@@ -544,13 +544,13 @@ func (s *Store) RecordTrackingEvent(ctx context.Context, event *TrackingEvent) e
 
 	query := `INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id,
 		email_id, event_type, ip_address, user_agent, device_type, link_url, bounce_type, 
-		bounce_reason, sending_domain, sending_ip, event_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
+		bounce_reason, sending_domain, sending_ip, is_machine_open, event_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
 
 	_, err := s.db.ExecContext(ctx, query, event.ID, event.OrganizationID, event.CampaignID,
 		event.SubscriberID, event.EmailID, event.EventType, event.IPAddress, event.UserAgent,
 		event.DeviceType, event.LinkURL, event.BounceType, event.BounceReason,
-		event.SendingDomain, event.SendingIP,
+		event.SendingDomain, event.SendingIP, event.IsMachineOpen,
 		event.EventAt, event.CreatedAt)
 	return err
 }

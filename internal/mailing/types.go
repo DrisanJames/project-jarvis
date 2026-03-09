@@ -237,6 +237,7 @@ type TrackingEvent struct {
 	BounceReason   string     `json:"bounce_reason" db:"bounce_reason"`
 	SendingDomain  string     `json:"sending_domain" db:"sending_domain"`
 	SendingIP      string     `json:"sending_ip" db:"sending_ip"`
+	IsMachineOpen  bool       `json:"is_machine_open" db:"is_machine_open"`
 	EventAt        time.Time  `json:"event_at" db:"event_at"`
 	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
 }

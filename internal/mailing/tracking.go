@@ -149,6 +149,19 @@ func (ts *TrackingService) HandleOpen(ctx context.Context, encoded, signature st
 	subscriberID, _ := uuid.Parse(parts[2])
 	emailID, _ := uuid.Parse(parts[3])
 
+	// MPP detection: check if delivery happened within 30 seconds
+	isMachineOpen := false
+	var deliveredAt time.Time
+	if err := ts.store.db.QueryRowContext(ctx, `
+		SELECT event_at FROM mailing_tracking_events
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'delivered'
+		ORDER BY event_at DESC LIMIT 1
+	`, subscriberID, campaignID).Scan(&deliveredAt); err == nil {
+		if time.Since(deliveredAt) <= 30*time.Second {
+			isMachineOpen = true
+		}
+	}
+
 	event := &TrackingEvent{
 		OrganizationID: orgID,
 		CampaignID:     &campaignID,
@@ -158,6 +171,7 @@ func (ts *TrackingService) HandleOpen(ctx context.Context, encoded, signature st
 		IPAddress:      getIP(r),
 		UserAgent:      r.UserAgent(),
 		DeviceType:     detectDevice(r.UserAgent()),
+		IsMachineOpen:  isMachineOpen,
 		EventAt:        time.Now(),
 	}
 
