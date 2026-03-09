@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,13 +83,26 @@ func (e *Executor) ensureSSH() (*ssh.Client, error) {
 		e.sshClient = nil
 	}
 
-	keyBytes, err := os.ReadFile(e.sshKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("read SSH key %s: %w", e.sshKeyPath, err)
+	var keyBytes []byte
+	if strings.HasPrefix(e.sshKeyPath, "-----BEGIN") {
+		keyBytes = []byte(e.sshKeyPath)
+	} else {
+		raw, readErr := os.ReadFile(e.sshKeyPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read SSH key %s: %w", e.sshKeyPath, readErr)
+		}
+		keyBytes = raw
 	}
-	signer, err := ssh.ParsePrivateKey(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse SSH key: %w", err)
+	passphrase := os.Getenv("PMTA_SSH_PASSPHRASE")
+	var signer ssh.Signer
+	var parseErr error
+	if passphrase != "" {
+		signer, parseErr = ssh.ParsePrivateKeyWithPassphrase(keyBytes, []byte(passphrase))
+	} else {
+		signer, parseErr = ssh.ParsePrivateKey(keyBytes)
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse SSH key: %w", parseErr)
 	}
 
 	config := &ssh.ClientConfig{

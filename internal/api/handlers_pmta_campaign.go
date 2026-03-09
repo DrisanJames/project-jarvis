@@ -31,6 +31,7 @@ type PMTACampaignService struct {
 	suppMatcher  *SuppressionMatcher
 	globalHub    *engine.GlobalSuppressionHub
 	executor     *engine.Executor
+	colCache     *campaignColumnCache
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
@@ -45,6 +46,8 @@ func NewPMTACampaignService(
 	processor *engine.SignalProcessor,
 	orgID string,
 ) *PMTACampaignService {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	return &PMTACampaignService{
 		db:           db,
 		orchestrator: orchestrator,
@@ -52,6 +55,7 @@ func NewPMTACampaignService(
 		processor:    processor,
 		orgID:        orgID,
 		suppMatcher:  NewSuppressionMatcher(),
+		colCache:     probeCampaignColumns(ctx, db),
 	}
 }
 
@@ -75,6 +79,8 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/push-ses-relay", s.HandlePushSESRelay)
 		cr.Post("/test-ses-send", s.HandleTestSESSend)
 		cr.Post("/{campaignId}/emergency-stop", s.HandleEmergencyCampaignStop)
+		cr.Get("/clone-candidates", s.HandleCloneCandidates)
+		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
 	})
 }
 
@@ -99,6 +105,23 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 		ON CONFLICT (organization_id, domain) DO NOTHING
 	`, orgID)
 
+	profileFromNames := make(map[string]string)
+	pfRows, pfErr := s.db.QueryContext(ctx, `
+		SELECT sending_domain, from_name FROM mailing_sending_profiles
+		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active'
+		  AND sending_domain IS NOT NULL AND sending_domain != ''
+		  AND from_name IS NOT NULL AND from_name != ''
+	`, orgID)
+	if pfErr == nil {
+		for pfRows.Next() {
+			var dom, fn string
+			if pfRows.Scan(&dom, &fn) == nil {
+				profileFromNames[dom] = fn
+			}
+		}
+		pfRows.Close()
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sd.id, sd.domain, sd.spf_verified, sd.dkim_verified, sd.dmarc_verified,
 		       COALESCE(sd.status, 'active')
@@ -120,7 +143,6 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 			continue
 		}
 
-		// Find IP pool association for this domain
 		var poolName string
 		var ipCount, activeCount, warmupCount int
 		var ips []string
@@ -160,6 +182,7 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 
 		domains = append(domains, engine.SendingDomainInfo{
 			Domain:          domain,
+			FromName:        profileFromNames[domain],
 			DKIMConfigured:  dkim,
 			SPFConfigured:   spf,
 			DMARCConfigured: dmarc,
@@ -595,7 +618,7 @@ func (s *PMTACampaignService) HandleGetDraftCampaign(w http.ResponseWriter, r *h
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
-	result, err := loadLatestPMTADraft(ctx, s.db, orgID)
+	result, err := loadLatestPMTADraft(ctx, s.db, orgID, s.colCache)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			respondJSON(w, http.StatusNotFound, map[string]string{"error": "no PMTA draft found"})
@@ -637,7 +660,7 @@ func (s *PMTACampaignService) HandleSaveDraftCampaign(w http.ResponseWriter, r *
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
-	result, err := savePMTADraftCampaign(ctx, s.db, orgID, draft)
+	result, err := savePMTADraftCampaign(ctx, s.db, orgID, draft, s.colCache)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -656,14 +679,6 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 
 	if input.Name == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign name is required"})
-		return
-	}
-
-	// projectjarvis.io is reserved for system notifications only
-	if strings.EqualFold(input.SendingDomain, "projectjarvis.io") || strings.HasSuffix(strings.ToLower(input.SendingDomain), ".projectjarvis.io") {
-		respondJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "projectjarvis.io is reserved for system notifications. Use a dedicated sending domain (e.g. discountblog.com, quizfiesta.com).",
-		})
 		return
 	}
 
@@ -708,7 +723,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	}
 	defer tx.Rollback()
 
-	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience)
+	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience, s.colCache)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1408,4 +1423,232 @@ func buildSegmentQuery(conditionsRaw string, listIDVal interface{}) (string, []i
 	var conditions []SegmentConditionInput
 	json.Unmarshal([]byte(raw), &conditions)
 	return BuildSegmentSubscriberQuery(listIDVal, conditions)
+}
+
+// HandleCloneCandidates returns completed PMTA campaigns ranked by performance,
+// with enough metadata for the user to pick one to clone.
+func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	configSelect := "false AS has_config"
+	if s.colCache.has("pmta_config") {
+		configSelect = "(pmta_config IS NOT NULL AND pmta_config::text != '{}') AS has_config"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id::text, name, status,
+		       COALESCE(sent_count, 0), COALESCE(open_count, 0), COALESCE(click_count, 0),
+		       COALESCE(bounce_count, 0), COALESCE(complaint_count, 0),
+		       COALESCE(completed_at, started_at, created_at) AS campaign_date,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END AS open_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(click_count, 0)::float / sent_count ELSE 0 END AS click_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(bounce_count, 0)::float / sent_count ELSE 0 END AS bounce_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(complaint_count, 0)::float / sent_count ELSE 0 END AS complaint_rate,
+		       %s
+		FROM mailing_campaigns
+		WHERE organization_id = $1
+		  AND status IN ('completed', 'sent', 'sending', 'draft')
+		ORDER BY
+		  CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END DESC,
+		  COALESCE(sent_count, 0) DESC,
+		  created_at DESC
+		LIMIT 20
+	`, configSelect)
+
+	rows, err := s.db.QueryContext(ctx, query, orgID)
+	if err != nil {
+		log.Printf("[CloneCandidates] query error: %v", err)
+		http.Error(w, fmt.Sprintf(`{"error":"failed to query campaigns: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		ID             string  `json:"id"`
+		Name           string  `json:"name"`
+		Status         string  `json:"status"`
+		SentCount      int     `json:"sent_count"`
+		OpenCount      int     `json:"open_count"`
+		ClickCount     int     `json:"click_count"`
+		BounceCount    int     `json:"bounce_count"`
+		ComplaintCount int     `json:"complaint_count"`
+		CampaignDate   string  `json:"campaign_date"`
+		OpenRate       float64 `json:"open_rate"`
+		ClickRate      float64 `json:"click_rate"`
+		BounceRate     float64 `json:"bounce_rate"`
+		ComplaintRate  float64 `json:"complaint_rate"`
+		HasConfig      bool    `json:"has_config"`
+		Recommended    bool    `json:"recommended"`
+	}
+
+	var candidates []candidate
+	bestScore := -1.0
+	bestIdx := -1
+
+	for rows.Next() {
+		var c candidate
+		var campaignDate time.Time
+		if err := rows.Scan(&c.ID, &c.Name, &c.Status,
+			&c.SentCount, &c.OpenCount, &c.ClickCount, &c.BounceCount, &c.ComplaintCount,
+			&campaignDate, &c.OpenRate, &c.ClickRate, &c.BounceRate, &c.ComplaintRate, &c.HasConfig,
+		); err != nil {
+			log.Printf("[CloneCandidates] scan error: %v", err)
+			continue
+		}
+		c.CampaignDate = campaignDate.Format(time.RFC3339)
+		c.OpenRate = float64(int(c.OpenRate*10000)) / 100
+		c.ClickRate = float64(int(c.ClickRate*10000)) / 100
+		c.BounceRate = float64(int(c.BounceRate*10000)) / 100
+		c.ComplaintRate = float64(int(c.ComplaintRate*10000)) / 100
+
+		if c.SentCount > 0 {
+			score := c.OpenRate*3 + c.ClickRate*5 - c.ComplaintRate*20 - c.BounceRate*2
+			if c.HasConfig {
+				score += 10 // Bonus for having full PMTA config
+			}
+			if score > bestScore {
+				bestScore = score
+				bestIdx = len(candidates)
+			}
+		}
+		candidates = append(candidates, c)
+	}
+	if bestIdx >= 0 && bestIdx < len(candidates) {
+		candidates[bestIdx].Recommended = true
+	}
+	if candidates == nil {
+		candidates = []candidate{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"campaigns": candidates,
+	})
+}
+
+// HandleCloneData returns the full PMTA config for a specific campaign,
+// formatted as a draft response the wizard can hydrate.
+func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	campaignID := chi.URLParam(r, "campaignId")
+	orgID := getOrgID(r)
+
+	var name, status string
+	var configJSON sql.NullString
+	var completedAt sql.NullTime
+
+	if s.colCache.has("pmta_config") {
+		err := s.db.QueryRowContext(ctx, `
+			SELECT name, status, COALESCE(pmta_config::text, ''), completed_at
+			FROM mailing_campaigns
+			WHERE id = $1 AND organization_id = $2
+		`, campaignID, orgID).Scan(&name, &status, &configJSON, &completedAt)
+		if err != nil {
+			log.Printf("[CloneData] query error for %s: %v", campaignID, err)
+			http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
+			return
+		}
+	} else {
+		// Fallback: read base campaign fields without pmta_config
+		err := s.db.QueryRowContext(ctx, `
+			SELECT name, status, completed_at
+			FROM mailing_campaigns
+			WHERE id = $1 AND organization_id = $2
+		`, campaignID, orgID).Scan(&name, &status, &completedAt)
+		if err != nil {
+			log.Printf("[CloneData] query error for %s: %v", campaignID, err)
+			http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
+			return
+		}
+	}
+
+	// Try to use the stored pmta_config first
+	if configJSON.Valid && configJSON.String != "" && configJSON.String != "{}" {
+		var cfg struct {
+			CampaignInput json.RawMessage `json:"campaign_input"`
+			ScheduleMode  string          `json:"schedule_mode,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(configJSON.String), &cfg); err == nil && len(cfg.CampaignInput) > 2 {
+			var inputMap map[string]interface{}
+			if err := json.Unmarshal(cfg.CampaignInput, &inputMap); err == nil {
+				delete(inputMap, "campaign_id")
+				inputMap["name"] = name + " (Clone)"
+				cfg.CampaignInput, _ = json.Marshal(inputMap)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"campaign_id":    "",
+				"name":           name + " (Clone)",
+				"status":         "draft",
+				"schedule_mode":  cfg.ScheduleMode,
+				"source_id":      campaignID,
+				"source_status":  status,
+				"campaign_input": json.RawMessage(cfg.CampaignInput),
+			})
+			return
+		}
+	}
+
+	// Fallback: reconstruct config from ISP plans and base campaign data
+	var subject, fromName, fromEmail, htmlContent, previewText, sendingDomain sql.NullString
+	s.db.QueryRowContext(ctx, `
+		SELECT subject, from_name, from_email, html_content, preview_text,
+		       COALESCE(SPLIT_PART(from_email, '@', 2), '')
+		FROM mailing_campaigns WHERE id = $1
+	`, campaignID).Scan(&subject, &fromName, &fromEmail, &htmlContent, &previewText, &sendingDomain)
+
+	// Get ISP plans
+	planRows, _ := s.db.QueryContext(ctx, `
+		SELECT isp, quota, COALESCE(throttle_strategy, 'auto'), COALESCE(timezone, 'UTC')
+		FROM mailing_campaign_isp_plans
+		WHERE campaign_id = $1 ORDER BY isp
+	`, campaignID)
+	var ispPlans []map[string]interface{}
+	var targetISPs []string
+	var ispQuotas []map[string]interface{}
+	if planRows != nil {
+		defer planRows.Close()
+		for planRows.Next() {
+			var isp string
+			var quota int
+			var throttle, tz string
+			if err := planRows.Scan(&isp, &quota, &throttle, &tz); err == nil {
+				targetISPs = append(targetISPs, isp)
+				ispQuotas = append(ispQuotas, map[string]interface{}{"isp": isp, "volume": quota})
+				ispPlans = append(ispPlans, map[string]interface{}{
+					"isp": isp, "quota": quota, "throttle_strategy": throttle, "timezone": tz,
+				})
+			}
+		}
+	}
+
+	clonedInput := map[string]interface{}{
+		"name":          name + " (Clone)",
+		"target_isps":   targetISPs,
+		"sending_domain": sendingDomain.String,
+		"isp_plans":     ispPlans,
+		"isp_quotas":    ispQuotas,
+		"variants": []map[string]interface{}{{
+			"variant_name":  "A",
+			"from_name":     fromName.String,
+			"subject":       subject.String,
+			"preview_text":  previewText.String,
+			"html_content":  htmlContent.String,
+			"split_percent": 100,
+		}},
+	}
+
+	clonedJSON, _ := json.Marshal(clonedInput)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"campaign_id":    "",
+		"name":           name + " (Clone)",
+		"status":         "draft",
+		"source_id":      campaignID,
+		"source_status":  status,
+		"campaign_input": json.RawMessage(clonedJSON),
+	})
 }

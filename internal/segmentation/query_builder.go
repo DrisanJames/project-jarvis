@@ -441,7 +441,7 @@ var trackingEventMap = map[string]string{
 	"email_clicked":      "clicked",
 	"email_bounced":      "bounced",
 	"email_delivered":    "delivered",
-	"email_sent":         "delivered",
+	"email_sent":         "sent",
 	"email_unsubscribed": "unsubscribed",
 	"email_complained":   "complained",
 }

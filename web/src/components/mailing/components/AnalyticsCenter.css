@@ -51,18 +51,9 @@
 .ac-empty-mini { text-align: center; padding: 24px; color: #4b5563; font-size: 13px; }
 
 /* ─── Daily Trend Chart ─────────────────────────────────────────────────── */
-.ac-trend-chart { display: flex; flex-direction: column; gap: 10px; }
-.ac-trend-bars { display: flex; gap: 2px; align-items: flex-end; height: 140px; }
-.ac-trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; }
-.ac-bar-wrap { flex: 1; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; align-items: center; }
-.ac-bar { width: 80%; max-width: 20px; border-radius: 3px 3px 0 0; min-height: 2px; transition: height 0.3s; }
-.ac-bar-sent { background: linear-gradient(180deg, #00e5ff, #0091b3); }
-.ac-bar-opens { background: linear-gradient(180deg, #10b981, #059669); }
-.ac-trend-label { font-size: 8px; color: #4b5563; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30px; }
+.ac-trend-chart { display: flex; flex-direction: column; gap: 10px; min-height: 300px; }
 .ac-trend-legend { display: flex; gap: 16px; font-size: 11px; color: #6b7280; }
 .ac-legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
-.ac-dot-sent { background: #00e5ff; }
-.ac-dot-opens { background: #10b981; }
 
 /* ─── Campaign Performance Table ────────────────────────────────────────── */
 .ac-table-wrap { overflow-x: auto; }

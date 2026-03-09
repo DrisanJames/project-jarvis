@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,8 +21,41 @@ type pmtaCampaignProfile struct {
 	ReplyTo   sql.NullString
 }
 
-type pmtaQueryRower interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+// campaignColumnCache holds the set of columns that actually exist on
+// mailing_campaigns. Probed once at service startup, then reused so that
+// dynamic SQL builders never reference a missing column.
+type campaignColumnCache struct {
+	mu   sync.RWMutex
+	cols map[string]bool
+}
+
+func (c *campaignColumnCache) has(col string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cols[col]
+}
+
+// probeCampaignColumns queries information_schema once and populates the cache.
+func probeCampaignColumns(ctx context.Context, db *sql.DB) *campaignColumnCache {
+	cache := &campaignColumnCache{cols: make(map[string]bool)}
+	rows, err := db.QueryContext(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'mailing_campaigns'
+	`)
+	if err != nil {
+		log.Printf("[PMTA] WARNING: could not probe mailing_campaigns columns: %v", err)
+		return cache
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err == nil {
+			cache.cols[col] = true
+		}
+	}
+	log.Printf("[PMTA] column cache loaded: %d columns detected", len(cache.cols))
+	return cache
 }
 
 func createPMTAWaveCampaign(
@@ -31,8 +66,9 @@ func createPMTAWaveCampaign(
 	input engine.PMTACampaignInput,
 	normalized pmtaNormalizedCampaign,
 	audience pmtaAudiencePlan,
+	cc *campaignColumnCache,
 ) (engine.PMTAWavePlanResult, error) {
-	campaignID, reusingDraft, err := resolvePMTACampaignIdentity(ctx, tx, orgID, input.CampaignID)
+	campaignID, reusingDraft, err := resolvePMTACampaignIdentity(ctx, tx, orgID, input.CampaignID, cc)
 	if err != nil {
 		return engine.PMTAWavePlanResult{}, err
 	}
@@ -60,10 +96,6 @@ func createPMTAWaveCampaign(
 	configJSON, _ := json.Marshal(pmtaCampaignConfig{
 		CampaignInput: withCampaignID(input, campaignID.String()),
 	})
-	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, tx)
-	if err != nil {
-		return engine.PMTAWavePlanResult{}, err
-	}
 	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
 	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
@@ -74,130 +106,101 @@ func createPMTAWaveCampaign(
 		if err := clearPMTACampaignChildren(ctx, tx, campaignID.String()); err != nil {
 			return engine.PMTAWavePlanResult{}, err
 		}
-		if hasPMTAConfig {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE mailing_campaigns
-				SET name = $2,
-				    status = 'scheduled',
-				    scheduled_at = $3,
-				    from_name = $4,
-				    from_email = $5,
-				    reply_to = $6,
-				    subject = $7,
-				    preview_text = $8,
-				    html_content = $9,
-				    sending_profile_id = $10,
-				    esp_quotas = $11,
-				    isp_quotas = $12,
-				    list_ids = $13,
-				    suppression_list_ids = $14,
-				    suppression_segment_ids = $15,
-				    max_recipients = $16,
-				    send_type = 'blast',
-				    timezone = $17,
-				    execution_mode = $18,
-				    total_recipients = $19,
-				    pmta_config = $20,
-				    queued_count = 0,
-				    started_at = NULL,
-				    completed_at = NULL,
-				    updated_at = NOW()
-				WHERE id = $1 AND organization_id = $21
-			`, campaignID, input.Name, scheduledAt,
-				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave,
-				audience.SelectedTotal, configJSON, orgID,
-			); err != nil {
-				return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE mailing_campaigns
-				SET name = $2,
-				    status = 'scheduled',
-				    scheduled_at = $3,
-				    from_name = $4,
-				    from_email = $5,
-				    reply_to = $6,
-				    subject = $7,
-				    preview_text = $8,
-				    html_content = $9,
-				    sending_profile_id = $10,
-				    esp_quotas = $11,
-				    isp_quotas = $12,
-				    list_ids = $13,
-				    suppression_list_ids = $14,
-				    suppression_segment_ids = $15,
-				    max_recipients = $16,
-				    send_type = 'blast',
-				    timezone = $17,
-				    execution_mode = $18,
-				    total_recipients = $19,
-				    queued_count = 0,
-				    started_at = NULL,
-				    completed_at = NULL,
-				    updated_at = NOW()
-				WHERE id = $1 AND organization_id = $20
-			`, campaignID, input.Name, scheduledAt,
-				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave,
-				audience.SelectedTotal, orgID,
-			); err != nil {
-				return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
+
+		setClauses := "name = $2, status = 'scheduled', scheduled_at = $3, " +
+			"from_name = $4, from_email = $5, reply_to = $6, " +
+			"subject = $7, preview_text = $8, html_content = $9"
+		args := []any{
+			campaignID, input.Name, scheduledAt,
+			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+		}
+		nextP := 10
+
+		type optCol struct {
+			col string
+			val any
+		}
+		optionalSets := []optCol{
+			{"sending_profile_id", nullUUID(profile.ProfileID.String)},
+			{"esp_quotas", quotaPayload},
+			{"isp_quotas", quotaPayload},
+			{"list_ids", inclusionListsJSON},
+			{"suppression_list_ids", suppressionListsJSON},
+			{"suppression_segment_ids", suppressionSegmentsJSON},
+			{"max_recipients", maxRecipients},
+			{"timezone", firstPlanTimezone(normalized)},
+			{"total_recipients", audience.SelectedTotal},
+			{"queued_count", 0},
+			{"execution_mode", pmtaExecutionModeWave},
+			{"pmta_config", configJSON},
+		}
+		for _, o := range optionalSets {
+			if cc.has(o.col) {
+				setClauses += fmt.Sprintf(", %s = $%d", o.col, nextP)
+				args = append(args, o.val)
+				nextP++
 			}
 		}
+		if cc.has("send_type") {
+			setClauses += ", send_type = 'blast'"
+		}
+		setClauses += ", started_at = NULL, completed_at = NULL, updated_at = NOW()"
+
+		args = append(args, orgID)
+		query := fmt.Sprintf(`UPDATE mailing_campaigns SET %s WHERE id = $1 AND organization_id = $%d`, setClauses, nextP)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return engine.PMTAWavePlanResult{}, fmt.Errorf("update wave campaign: %w", err)
+		}
 	} else {
-		if hasPMTAConfig {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO mailing_campaigns (
-					id, organization_id, name, status, scheduled_at,
-					from_name, from_email, reply_to, subject, preview_text, html_content,
-					sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
-					max_recipients, send_type, timezone, execution_mode, total_recipients, queued_count,
-					pmta_config, created_at, updated_at
-				) VALUES (
-					$1, $2, $3, 'scheduled', $4,
-					$5, $6, $7, $8, $9, $10,
-					$11, $12, $13, $14, $15, $16,
-					$17, 'blast', $18, $19, $20, 0,
-					$21, NOW(), NOW()
-				)
-			`, campaignID, orgID, input.Name, scheduledAt,
-				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave, audience.SelectedTotal,
-				configJSON,
-			); err != nil {
-				return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
+		colList := []string{"id", "organization_id", "name", "status", "scheduled_at",
+			"from_name", "from_email", "reply_to", "subject", "preview_text", "html_content",
+			"created_at", "updated_at"}
+		valList := []string{"$1", "$2", "$3", "'scheduled'", "$4",
+			"$5", "$6", "$7", "$8", "$9", "$10",
+			"NOW()", "NOW()"}
+		args := []any{
+			campaignID, orgID, input.Name, scheduledAt,
+			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
+			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+		}
+		nextP := 11
+
+		type optCol struct {
+			col string
+			val any
+		}
+		optionals := []optCol{
+			{"sending_profile_id", nullUUID(profile.ProfileID.String)},
+			{"esp_quotas", quotaPayload},
+			{"isp_quotas", quotaPayload},
+			{"list_ids", inclusionListsJSON},
+			{"suppression_list_ids", suppressionListsJSON},
+			{"suppression_segment_ids", suppressionSegmentsJSON},
+			{"max_recipients", maxRecipients},
+			{"timezone", firstPlanTimezone(normalized)},
+			{"total_recipients", audience.SelectedTotal},
+			{"queued_count", 0},
+			{"execution_mode", pmtaExecutionModeWave},
+			{"pmta_config", configJSON},
+		}
+		for _, o := range optionals {
+			if cc.has(o.col) {
+				colList = append(colList, o.col)
+				valList = append(valList, fmt.Sprintf("$%d", nextP))
+				args = append(args, o.val)
+				nextP++
 			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO mailing_campaigns (
-					id, organization_id, name, status, scheduled_at,
-					from_name, from_email, reply_to, subject, preview_text, html_content,
-					sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
-					max_recipients, send_type, timezone, execution_mode, total_recipients, queued_count,
-					created_at, updated_at
-				) VALUES (
-					$1, $2, $3, 'scheduled', $4,
-					$5, $6, $7, $8, $9, $10,
-					$11, $12, $13, $14, $15, $16,
-					$17, 'blast', $18, $19, $20, 0,
-					NOW(), NOW()
-				)
-			`, campaignID, orgID, input.Name, scheduledAt,
-				resolvedFromName, resolvedFromEmail, profile.ReplyTo,
-				input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
-				nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON,
-				suppressionSegmentsJSON, maxRecipients, firstPlanTimezone(normalized), pmtaExecutionModeWave, audience.SelectedTotal,
-			); err != nil {
-				return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
-			}
+		}
+		if cc.has("send_type") {
+			colList = append(colList, "send_type")
+			valList = append(valList, "'blast'")
+		}
+
+		query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
+			strings.Join(colList, ", "), strings.Join(valList, ", "))
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return engine.PMTAWavePlanResult{}, fmt.Errorf("insert wave campaign: %w", err)
 		}
 	}
 
@@ -331,14 +334,23 @@ type pmtaCampaignConfig struct {
 	ScheduleMode  string                   `json:"schedule_mode,omitempty"`
 }
 
-func loadLatestPMTADraft(ctx context.Context, db *sql.DB, orgID string) (engine.PMTACampaignDraftResult, error) {
-	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, db)
-	if err != nil {
-		return engine.PMTACampaignDraftResult{}, err
+func loadLatestPMTADraft(ctx context.Context, db *sql.DB, orgID string, cc *campaignColumnCache) (engine.PMTACampaignDraftResult, error) {
+	hasPMTAConfig := cc.has("pmta_config")
+	hasExecMode := cc.has("execution_mode")
+
+	selectCols := "id::text, name, status, updated_at"
+	if hasPMTAConfig {
+		selectCols += ", COALESCE(pmta_config, '{}'::jsonb)::text"
 	}
-	if !hasPMTAConfig {
-		return engine.PMTACampaignDraftResult{}, sql.ErrNoRows
+
+	where := "organization_id = $1 AND status = 'draft'"
+	args := []any{orgID}
+	if hasExecMode {
+		where += " AND execution_mode = $2"
+		args = append(args, pmtaExecutionModeWave)
 	}
+
+	query := fmt.Sprintf(`SELECT %s FROM mailing_campaigns WHERE %s ORDER BY updated_at DESC, created_at DESC LIMIT 1`, selectCols, where)
 
 	var (
 		campaignID string
@@ -348,22 +360,39 @@ func loadLatestPMTADraft(ctx context.Context, db *sql.DB, orgID string) (engine.
 		configJSON []byte
 	)
 
-	if err := db.QueryRowContext(ctx, `
-		SELECT id::text, name, status, updated_at, COALESCE(pmta_config, '{}'::jsonb)::text
-		FROM mailing_campaigns
-		WHERE organization_id = $1
-		  AND status = 'draft'
-		  AND execution_mode = $2
-		ORDER BY updated_at DESC, created_at DESC
-		LIMIT 1
-	`, orgID, pmtaExecutionModeWave).Scan(&campaignID, &name, &status, &updatedAt, &configJSON); err != nil {
-		return engine.PMTACampaignDraftResult{}, err
+	if hasPMTAConfig {
+		if err := db.QueryRowContext(ctx, query, args...).Scan(&campaignID, &name, &status, &updatedAt, &configJSON); err != nil {
+			return engine.PMTACampaignDraftResult{}, err
+		}
+	} else {
+		if err := db.QueryRowContext(ctx, query, args...).Scan(&campaignID, &name, &status, &updatedAt); err != nil {
+			return engine.PMTACampaignDraftResult{}, err
+		}
 	}
 
 	var cfg pmtaCampaignConfig
 	if len(configJSON) > 0 {
 		_ = json.Unmarshal(configJSON, &cfg)
 	}
+
+	if cfg.CampaignInput.Name == "" && !hasPMTAConfig {
+		var subj, fromN, prevT, htmlC, sendDom sql.NullString
+		_ = db.QueryRowContext(ctx, `
+			SELECT COALESCE(subject,''), COALESCE(from_name,''), COALESCE(preview_text,''),
+			       COALESCE(html_content,''), COALESCE(SPLIT_PART(from_email,'@',2),'')
+			FROM mailing_campaigns WHERE id = $1
+		`, campaignID).Scan(&subj, &fromN, &prevT, &htmlC, &sendDom)
+
+		cfg.CampaignInput = engine.PMTACampaignInput{
+			Name:          name,
+			SendingDomain: sendDom.String,
+			Variants: []engine.ContentVariant{{
+				VariantName: "A", FromName: fromN.String, Subject: subj.String,
+				PreviewText: prevT.String, HTMLContent: htmlC.String, SplitPercent: 100,
+			}},
+		}
+	}
+
 	cfg.CampaignInput = withCampaignID(cfg.CampaignInput, campaignID)
 
 	return engine.PMTACampaignDraftResult{
@@ -381,6 +410,7 @@ func savePMTADraftCampaign(
 	db *sql.DB,
 	orgID string,
 	draft engine.PMTACampaignDraftInput,
+	cc *campaignColumnCache,
 ) (engine.PMTACampaignDraftResult, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -388,15 +418,7 @@ func savePMTADraftCampaign(
 	}
 	defer tx.Rollback()
 
-	hasPMTAConfig, err := hasPMTAConfigColumn(ctx, tx)
-	if err != nil {
-		return engine.PMTACampaignDraftResult{}, err
-	}
-	if !hasPMTAConfig {
-		return engine.PMTACampaignDraftResult{}, fmt.Errorf("PMTA drafts are unavailable until the mailing_campaigns.pmta_config column is installed")
-	}
-
-	campaignID, _, err := resolvePMTACampaignIdentity(ctx, tx, orgID, draft.CampaignInput.CampaignID)
+	campaignID, _, err := resolvePMTACampaignIdentity(ctx, tx, orgID, draft.CampaignInput.CampaignID, cc)
 	if err != nil {
 		return engine.PMTACampaignDraftResult{}, err
 	}
@@ -447,51 +469,58 @@ func savePMTADraftCampaign(
 		timezone = "UTC"
 	}
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO mailing_campaigns (
-			id, organization_id, name, status, scheduled_at,
-			from_name, from_email, reply_to, subject, preview_text, html_content,
-			sending_profile_id, esp_quotas, isp_quotas, list_ids, suppression_list_ids, suppression_segment_ids,
-			send_type, timezone, execution_mode, total_recipients, queued_count,
-			pmta_config, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, 'draft', $4,
-			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16,
-			'blast', $17, $18, 0, 0,
-			$19, NOW(), NOW()
-		)
-		ON CONFLICT (id) DO UPDATE SET
-			name = EXCLUDED.name,
-			status = 'draft',
-			scheduled_at = EXCLUDED.scheduled_at,
-			from_name = EXCLUDED.from_name,
-			from_email = EXCLUDED.from_email,
-			reply_to = EXCLUDED.reply_to,
-			subject = EXCLUDED.subject,
-			preview_text = EXCLUDED.preview_text,
-			html_content = EXCLUDED.html_content,
-			sending_profile_id = EXCLUDED.sending_profile_id,
-			esp_quotas = EXCLUDED.esp_quotas,
-			isp_quotas = EXCLUDED.isp_quotas,
-			list_ids = EXCLUDED.list_ids,
-			suppression_list_ids = EXCLUDED.suppression_list_ids,
-			suppression_segment_ids = EXCLUDED.suppression_segment_ids,
-			send_type = EXCLUDED.send_type,
-			timezone = EXCLUDED.timezone,
-			execution_mode = EXCLUDED.execution_mode,
-			total_recipients = 0,
-			queued_count = 0,
-			started_at = NULL,
-			completed_at = NULL,
-			pmta_config = EXCLUDED.pmta_config,
-			updated_at = NOW()
-	`, campaignID, orgID, input.Name, scheduledAt,
+	colList := []string{"id", "organization_id", "name", "status", "scheduled_at",
+		"from_name", "from_email", "reply_to", "subject", "preview_text", "html_content",
+		"created_at", "updated_at"}
+	valList := []string{"$1", "$2", "$3", "'draft'", "$4",
+		"$5", "$6", "$7", "$8", "$9", "$10",
+		"NOW()", "NOW()"}
+	updateParts := []string{
+		"name = EXCLUDED.name", "status = 'draft'", "scheduled_at = EXCLUDED.scheduled_at",
+		"from_name = EXCLUDED.from_name", "from_email = EXCLUDED.from_email", "reply_to = EXCLUDED.reply_to",
+		"subject = EXCLUDED.subject", "preview_text = EXCLUDED.preview_text", "html_content = EXCLUDED.html_content",
+		"total_recipients = 0", "started_at = NULL", "completed_at = NULL", "updated_at = NOW()",
+	}
+	args := []any{
+		campaignID, orgID, input.Name, scheduledAt,
 		resolvedFromName, resolvedFromEmail, profile.ReplyTo, subject, previewText, htmlContent,
-		nullUUID(profile.ProfileID.String), quotaPayload, quotaPayload, inclusionListsJSON, suppressionListsJSON, suppressionSegmentsJSON,
-		timezone, pmtaExecutionModeWave, configJSON,
-	)
-	if err != nil {
+	}
+	nextP := 11
+
+	type optCol struct {
+		col string
+		val any
+	}
+	optionals := []optCol{
+		{"sending_profile_id", nullUUID(profile.ProfileID.String)},
+		{"esp_quotas", quotaPayload},
+		{"isp_quotas", quotaPayload},
+		{"list_ids", inclusionListsJSON},
+		{"suppression_list_ids", suppressionListsJSON},
+		{"suppression_segment_ids", suppressionSegmentsJSON},
+		{"timezone", timezone},
+		{"queued_count", 0},
+		{"execution_mode", pmtaExecutionModeWave},
+		{"pmta_config", configJSON},
+	}
+	for _, o := range optionals {
+		if cc.has(o.col) {
+			colList = append(colList, o.col)
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			updateParts = append(updateParts, fmt.Sprintf("%s = EXCLUDED.%s", o.col, o.col))
+			args = append(args, o.val)
+			nextP++
+		}
+	}
+	if cc.has("send_type") {
+		colList = append(colList, "send_type")
+		valList = append(valList, "'blast'")
+		updateParts = append(updateParts, "send_type = EXCLUDED.send_type")
+	}
+
+	query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s) ON CONFLICT (id) DO UPDATE SET %s`,
+		strings.Join(colList, ", "), strings.Join(valList, ", "), strings.Join(updateParts, ", "))
+	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
 		return engine.PMTACampaignDraftResult{}, fmt.Errorf("save PMTA draft: %w", err)
 	}
 
@@ -568,23 +597,8 @@ func nullUUID(raw string) interface{} {
 	return id
 }
 
-func hasPMTAConfigColumn(ctx context.Context, q pmtaQueryRower) (bool, error) {
-	var exists bool
-	if err := q.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM information_schema.columns
-			WHERE table_schema = 'public'
-			  AND table_name = 'mailing_campaigns'
-			  AND column_name = 'pmta_config'
-		)
-	`).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check pmta_config column: %w", err)
-	}
-	return exists, nil
-}
-
-func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, requestedCampaignID string) (uuid.UUID, bool, error) {
+func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, requestedCampaignID string, cc *campaignColumnCache) (uuid.UUID, bool, error) {
+	hasExecMode := cc.has("execution_mode")
 	requestedCampaignID = strings.TrimSpace(requestedCampaignID)
 	if requestedCampaignID != "" {
 		campaignID, err := uuid.Parse(requestedCampaignID)
@@ -592,16 +606,18 @@ func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, request
 			return uuid.Nil, false, fmt.Errorf("invalid campaign_id: %w", err)
 		}
 
+		var query string
+		var args []any
+		if hasExecMode {
+			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status = 'draft' AND execution_mode = $3 LIMIT 1`
+			args = []any{campaignID, orgID, pmtaExecutionModeWave}
+		} else {
+			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status = 'draft' LIMIT 1`
+			args = []any{campaignID, orgID}
+		}
+
 		var existingID uuid.UUID
-		if err := tx.QueryRowContext(ctx, `
-			SELECT id
-			FROM mailing_campaigns
-			WHERE id = $1
-			  AND organization_id = $2
-			  AND status = 'draft'
-			  AND execution_mode = $3
-			LIMIT 1
-		`, campaignID, orgID, pmtaExecutionModeWave).Scan(&existingID); err != nil {
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID); err != nil {
 			if err == sql.ErrNoRows {
 				return uuid.Nil, false, fmt.Errorf("PMTA draft %s was not found or is no longer editable", requestedCampaignID)
 			}
@@ -610,16 +626,18 @@ func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, request
 		return existingID, true, nil
 	}
 
+	var query string
+	var args []any
+	if hasExecMode {
+		query = `SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND status = 'draft' AND execution_mode = $2 ORDER BY updated_at DESC, created_at DESC LIMIT 1`
+		args = []any{orgID, pmtaExecutionModeWave}
+	} else {
+		query = `SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND status = 'draft' ORDER BY updated_at DESC, created_at DESC LIMIT 1`
+		args = []any{orgID}
+	}
+
 	var existingID uuid.UUID
-	if err := tx.QueryRowContext(ctx, `
-		SELECT id
-		FROM mailing_campaigns
-		WHERE organization_id = $1
-		  AND status = 'draft'
-		  AND execution_mode = $2
-		ORDER BY updated_at DESC, created_at DESC
-		LIMIT 1
-	`, orgID, pmtaExecutionModeWave).Scan(&existingID); err == nil {
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID); err == nil {
 		return existingID, true, nil
 	} else if err != sql.ErrNoRows {
 		return uuid.Nil, false, fmt.Errorf("lookup latest draft campaign: %w", err)

@@ -6,6 +6,7 @@ import {
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faMagic, faSave, faEye, faUpload, faCode, faGripVertical,
+  faCopy, faTrophy, faChevronDown, faChevronUp,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -38,6 +39,17 @@ const ISP_META: Record<string, { label: string; color: string; emoji: string }> 
 
 const ALL_ISPS = ['gmail', 'yahoo', 'microsoft', 'apple', 'comcast', 'att', 'cox', 'charter'];
 
+const DEFAULT_ISP_QUOTAS: Record<string, number> = {
+  gmail:     50000,
+  yahoo:     20000,
+  microsoft: 20000,
+  apple:     10000,
+  comcast:    5000,
+  att:        5000,
+  cox:        3000,
+  charter:    3000,
+};
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ISPReadiness {
@@ -62,6 +74,7 @@ interface ISPReadiness {
 
 interface SendingDomain {
   domain: string;
+  from_name?: string;
   dkim_configured: boolean;
   spf_configured: boolean;
   dmarc_configured: boolean;
@@ -165,6 +178,8 @@ interface ISPPlanFormState {
   cadenceMode: 'single' | 'interval';
   everyMinutes: number;
   batchSize: number;
+  durationHours: number;
+  startTime: string;
   throttleStrategy: string;
   timeSpans: ISPTimeSpanFormState[];
 }
@@ -216,6 +231,24 @@ interface PMTADraftResponse {
   campaign_input: PersistedPMTACampaignInput;
 }
 
+interface CloneCandidate {
+  id: string;
+  name: string;
+  status: string;
+  sent_count: number;
+  open_count: number;
+  click_count: number;
+  bounce_count: number;
+  complaint_count: number;
+  campaign_date: string;
+  open_rate: number;
+  click_rate: number;
+  bounce_rate: number;
+  complaint_rate: number;
+  has_config: boolean;
+  recommended: boolean;
+}
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 const STEPS = [
@@ -247,8 +280,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 1 state
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
-  const [selectedISPs, setSelectedISPs] = useState<string[]>([]);
-  const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({});
+  const [selectedISPs, setSelectedISPs] = useState<string[]>([...ALL_ISPS]);
+  const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({ ...DEFAULT_ISP_QUOTAS });
   const [randomizeAudience, setRandomizeAudience] = useState(false);
 
   // Step 2 state
@@ -289,11 +322,17 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
-  const [sendMode, setSendMode] = useState<'immediate' | 'scheduled'>('immediate');
-  const [scheduleMode, setScheduleMode] = useState<'quick' | 'per-isp'>('quick');
+  const [sendMode, setSendMode] = useState<'immediate' | 'scheduled'>('scheduled');
+  const [scheduleMode, setScheduleMode] = useState<'quick' | 'per-isp'>('per-isp');
   const [scheduledAt, setScheduledAt] = useState('');
   const [recommendations, setRecommendations] = useState<ISPRecommendation[]>([]);
   const [ispPlansByKey, setISPPlansByKey] = useState<Record<string, ISPPlanFormState>>({});
+  const [globalScheduleDuration, setGlobalScheduleDuration] = useState(8);
+  const [globalScheduleInterval, setGlobalScheduleInterval] = useState(15);
+  const [globalScheduleStart, setGlobalScheduleStart] = useState('');
+  const [globalScheduleTimezone, setGlobalScheduleTimezone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
@@ -304,6 +343,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [draftStatus, setDraftStatus] = useState('');
   const [draftError, setDraftError] = useState('');
   const [domainError, setDomainError] = useState('');
+
+  // Clone state
+  const [showClonePanel, setShowClonePanel] = useState(false);
+  const [cloneCandidates, setCloneCandidates] = useState<CloneCandidate[]>([]);
+  const [cloneLoading, setCloneLoading] = useState(false);
+  const [cloneApplying, setCloneApplying] = useState('');
+  const clonePanelRef = useRef<HTMLDivElement>(null);
 
   // ── Validation state ─────────────────────────────────────────────────────
   const [stepAttempted, setStepAttempted] = useState<Record<number, boolean>>({});
@@ -594,10 +640,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         if (sendMode === 'scheduled' && scheduleMode === 'per-isp') {
           selectedISPs.forEach(isp => {
             const plan = ispPlansByKey[isp];
-            const validSpans = (plan?.timeSpans || []).filter(span => span.startAt && span.endAt);
-            if (validSpans.length === 0) {
-              errors.push(`${ISP_META[isp]?.label || isp}: add at least one time span`);
-            } else {
+            if (!plan?.useCustomSchedule) return;
+            const hasStartTime = plan.startTime && plan.startTime.trim() !== '';
+            const validSpans = (plan.timeSpans || []).filter(span => span.startAt && span.endAt);
+            if (!hasStartTime && validSpans.length === 0) {
+              errors.push(`${ISP_META[isp]?.label || isp}: set a start time or add a time span`);
+            } else if (validSpans.length > 0) {
               validSpans.forEach((span, idx) => {
                 if (new Date(span.endAt).getTime() <= new Date(span.startAt).getTime()) {
                   errors.push(`${ISP_META[isp]?.label || isp}: time span ${idx + 1} end must be after start`);
@@ -689,6 +737,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     }, {});
     const nextPlans = (input.isp_plans || []).reduce<Record<string, ISPPlanFormState>>((acc, plan, index) => {
       if (!plan?.isp) return acc;
+      const spans = (plan.time_spans || []).map((span, spanIndex) => ({
+        id: `${plan.isp}-draft-${index}-${spanIndex}`,
+        startAt: toLocalInputValue(span.start_at),
+        endAt: toLocalInputValue(span.end_at),
+        timezone: span.timezone || plan.timezone || 'UTC',
+        source: span.source || 'manual',
+      }));
+      let durationHours = 8;
+      if (spans.length > 0 && spans[0].startAt && spans[0].endAt) {
+        const s = new Date(spans[0].startAt).getTime();
+        const e = new Date(spans[0].endAt).getTime();
+        if (e > s) durationHours = Math.round((e - s) / 3600000);
+      }
       acc[plan.isp] = {
         isp: plan.isp,
         useCustomSchedule: draft.schedule_mode === 'per-isp',
@@ -696,14 +757,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         cadenceMode: plan.cadence?.mode === 'interval' ? 'interval' : 'single',
         everyMinutes: plan.cadence?.every_minutes || 15,
         batchSize: plan.cadence?.batch_size || nextQuotas[plan.isp] || 500,
+        durationHours,
+        startTime: spans.length > 0 ? spans[0].startAt : '',
         throttleStrategy: plan.throttle_strategy || 'auto',
-        timeSpans: (plan.time_spans || []).map((span, spanIndex) => ({
-          id: `${plan.isp}-draft-${index}-${spanIndex}`,
-          startAt: toLocalInputValue(span.start_at),
-          endAt: toLocalInputValue(span.end_at),
-          timezone: span.timezone || plan.timezone || 'UTC',
-          source: span.source || 'manual',
-        })),
+        timeSpans: spans,
       };
       return acc;
     }, {});
@@ -727,6 +784,65 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setScheduledAt(toLocalInputValue(input.scheduled_at));
     setISPPlansByKey(nextPlans);
   }, []);
+
+  const fetchCloneCandidates = useCallback(async () => {
+    setCloneLoading(true);
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/clone-candidates`);
+      if (res.ok) {
+        const data = await res.json();
+        setCloneCandidates(data.campaigns || []);
+      }
+    } catch (err) {
+      console.warn('[Wizard] clone candidates fetch failed:', err);
+    }
+    setCloneLoading(false);
+  }, [fetchWithRetry]);
+
+  const applyClone = useCallback(async (candidateId: string) => {
+    setCloneApplying(candidateId);
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/${candidateId}/clone-data`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        console.warn('[Wizard] clone data error:', data?.error || res.status);
+        setCloneApplying('');
+        return;
+      }
+      const draftData = await res.json() as PMTADraftResponse;
+      hydrateDraft(draftData);
+      setCampaignId('');
+      setShowClonePanel(false);
+      setStep(1);
+
+      // Clear stale state from previous wizard sessions
+      setStepAttempted({});
+      setAudienceEstimate(null);
+      setAudienceError('');
+      setISPIntel([]);
+      setRecommendations([]);
+      setRecsLoaded(false);
+      setDeployResult(null);
+      setDraftError('');
+
+      setDraftStatus(`Cloned from "${draftData.name?.replace(' (Clone)', '')}"`);
+    } catch (err) {
+      console.warn('[Wizard] clone apply failed:', err);
+    }
+    setCloneApplying('');
+  }, [fetchWithRetry, hydrateDraft]);
+
+  // Close clone panel on outside click
+  useEffect(() => {
+    if (!showClonePanel) return;
+    const handleClick = (e: MouseEvent) => {
+      if (clonePanelRef.current && !clonePanelRef.current.contains(e.target as Node)) {
+        setShowClonePanel(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showClonePanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -768,14 +884,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   const buildDefaultISPPlan = useCallback((isp: string, previous?: ISPPlanFormState): ISPPlanFormState => ({
     isp,
-    useCustomSchedule: previous?.useCustomSchedule ?? false,
+    useCustomSchedule: previous?.useCustomSchedule ?? true,
     timezone: previous?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    cadenceMode: previous?.cadenceMode || 'single',
+    cadenceMode: previous?.cadenceMode || 'interval',
     everyMinutes: previous?.everyMinutes || 15,
-    batchSize: previous?.batchSize || (ispQuotas[isp] || 500),
+    batchSize: previous?.batchSize || (DEFAULT_ISP_QUOTAS[isp] || 500),
+    durationHours: previous?.durationHours || 8,
+    startTime: previous?.startTime || '',
     throttleStrategy: previous?.throttleStrategy || 'auto',
     timeSpans: previous?.timeSpans || [],
-  }), [ispQuotas]);
+  }), []);
 
   const updateISPPlan = (isp: string, updater: (plan: ISPPlanFormState) => ISPPlanFormState) => {
     setISPPlansByKey(prev => {
@@ -826,18 +944,44 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     const ispPlans = selectedISPs.map(isp => {
       const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
       const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
-      const spans = sendMode === 'scheduled'
-        ? (useGlobalSchedule
-          ? (globalScheduleISO
-            ? [{
-                type: 'absolute',
-                start_at: globalScheduleISO,
-                end_at: globalScheduleISO,
-                timezone: plan.timezone,
-                source: 'global-default',
-              }]
-            : [])
-          : plan.timeSpans
+      const quota = ispQuotas[isp] || 0;
+
+      let spans: any[] = [];
+      let cadenceMode = 'single';
+      let everyMinutes = 0;
+      let batchSize = quota;
+
+      if (sendMode === 'scheduled') {
+        if (useGlobalSchedule) {
+          if (globalScheduleISO) {
+            spans = [{
+              type: 'absolute',
+              start_at: globalScheduleISO,
+              end_at: globalScheduleISO,
+              timezone: plan.timezone,
+              source: 'global-default',
+            }];
+          }
+        } else {
+          const dur = plan.durationHours || 8;
+          const interval = plan.everyMinutes || 15;
+          const totalIntervals = Math.max(1, Math.floor(dur * 60 / interval));
+          batchSize = quota > 0 ? Math.ceil(quota / totalIntervals) : plan.batchSize;
+          cadenceMode = plan.cadenceMode;
+          everyMinutes = interval;
+
+          if (plan.startTime) {
+            const start = new Date(plan.startTime);
+            const end = new Date(start.getTime() + dur * 3600000);
+            spans = [{
+              type: 'absolute',
+              start_at: start.toISOString(),
+              end_at: end.toISOString(),
+              timezone: plan.timezone,
+              source: 'duration-calc',
+            }];
+          } else if (plan.timeSpans.length > 0) {
+            spans = plan.timeSpans
               .filter(span => span.startAt && span.endAt)
               .map(span => ({
                 type: 'absolute',
@@ -845,18 +989,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 end_at: new Date(span.endAt).toISOString(),
                 timezone: span.timezone || plan.timezone,
                 source: span.source || 'manual',
-              })))
-        : [];
+              }));
+          }
+        }
+      }
+
       return {
         isp,
-        quota: ispQuotas[isp] || 0,
+        quota,
         randomize_audience: randomizeAudience,
         throttle_strategy: plan.throttleStrategy || 'auto',
         timezone: plan.timezone,
         cadence: {
-          mode: useGlobalSchedule ? 'single' : plan.cadenceMode,
-          every_minutes: useGlobalSchedule ? 0 : plan.everyMinutes,
-          batch_size: useGlobalSchedule ? (ispQuotas[isp] || 0) : plan.batchSize,
+          mode: cadenceMode,
+          every_minutes: everyMinutes,
+          batch_size: batchSize,
         },
         time_spans: spans,
       };
@@ -1009,6 +1156,32 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     });
   };
   const dragPriorityRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (lists.length === 0 && segments.length === 0) return;
+    setSendPriority(prev => {
+      const validListIds = new Set(lists.map(l => l.id));
+      const validSegmentIds = new Set(segments.map(s => s.id));
+      const pruned = prev.filter(item =>
+        item.type === 'list' ? validListIds.has(item.id) : validSegmentIds.has(item.id)
+      );
+      return pruned.length === prev.length ? prev : pruned;
+    });
+  }, [lists, segments]);
+
+  // ── Auto-populate from_name when sending domain changes ─────────────────
+  useEffect(() => {
+    if (!selectedDomain) return;
+    const match = sendingDomains.find(d => d.domain === selectedDomain);
+    if (!match?.from_name) return;
+    setVariants(prev => {
+      if (prev.length === 0) return prev;
+      if (prev[0].from_name && prev[0].from_name.trim() !== '') return prev;
+      const updated = [...prev];
+      updated[0] = { ...updated[0], from_name: match.from_name! };
+      return updated;
+    });
+  }, [selectedDomain, sendingDomains]);
 
   // ── Variant management ───────────────────────────────────────────────────
 
@@ -1878,7 +2051,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                     const info = isListItem
                       ? lists.find(l => l.id === item.id)
                       : segments.find(s => s.id === item.id);
-                    if (!info) return null;
+                    const label = info ? info.name : `${isListItem ? 'List' : 'Segment'} ${item.id.slice(0, 8)}…`;
+                    const count = info ? ((info as any).subscriber_count || 0) : 0;
                     const accent = isListItem ? '#f59e0b' : '#8b5cf6';
                     return (
                       <div
@@ -1903,6 +2077,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                           border: `1.5px solid ${idx === 0 ? `${accent}4d` : 'rgba(0,200,255,0.06)'}`,
                           borderRadius: 8, cursor: 'grab', userSelect: 'none' as const,
                           transition: 'all 0.2s ease',
+                          opacity: info ? 1 : 0.6,
                         }}
                       >
                         <FontAwesomeIcon icon={faGripVertical} style={{ color: 'rgba(180,210,240,0.25)', fontSize: 12 }} />
@@ -1916,8 +2091,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <span style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {info.name}
+                            <span style={{ fontSize: 12, fontWeight: 500, color: info ? '#e0e6f0' : 'rgba(180,210,240,0.4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {label}
                             </span>
                             <span style={{
                               fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
@@ -1928,7 +2103,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                             </span>
                           </div>
                           <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 1 }}>
-                            {((info as any).subscriber_count || 0).toLocaleString()} {isListItem ? 'subscribers' : 'contacts'}
+                            {count.toLocaleString()} {isListItem ? 'subscribers' : 'contacts'}
                             {idx === 0 && ' — sends first for warmup'}
                           </div>
                         </div>
@@ -2531,15 +2706,106 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {/* Apply to All global settings */}
+                  <div style={{ background: '#0d1526', border: '1px solid rgba(0,229,255,0.15)', borderRadius: 10, padding: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                      <div style={{ width: 4, height: 16, borderRadius: 2, background: '#00e5ff' }} />
+                      <h4 style={{ margin: 0, fontSize: 13, color: '#00e5ff', fontWeight: 600 }}>Global Settings</h4>
+                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Configure once, apply to all ISPs</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Start Time</label>
+                        <input
+                          type="datetime-local"
+                          value={globalScheduleStart}
+                          onChange={e => setGlobalScheduleStart(e.target.value)}
+                          min={toDateTimeLocal(new Date(Date.now() + 5 * 60 * 1000))}
+                          style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Duration (hours)</label>
+                        <select
+                          value={globalScheduleDuration}
+                          onChange={e => setGlobalScheduleDuration(Number(e.target.value))}
+                          style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
+                        >
+                          {[1, 2, 4, 6, 8, 10, 12, 16, 24].map(h => (
+                            <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Interval (min)</label>
+                        <select
+                          value={globalScheduleInterval}
+                          onChange={e => setGlobalScheduleInterval(Number(e.target.value))}
+                          style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
+                        >
+                          {[5, 10, 15, 30, 60].map(m => (
+                            <option key={m} value={m}>Every {m} min</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Timezone</label>
+                        <input
+                          value={globalScheduleTimezone}
+                          onChange={e => setGlobalScheduleTimezone(e.target.value)}
+                          style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                        />
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setISPPlansByKey(prev => {
+                          const next: Record<string, ISPPlanFormState> = {};
+                          selectedISPs.forEach(isp => {
+                            const existing = prev[isp] || buildDefaultISPPlan(isp);
+                            next[isp] = {
+                              ...existing,
+                              useCustomSchedule: true,
+                              timezone: globalScheduleTimezone,
+                              cadenceMode: 'interval',
+                              everyMinutes: globalScheduleInterval,
+                              durationHours: globalScheduleDuration,
+                              startTime: globalScheduleStart,
+                            };
+                          });
+                          return next;
+                        });
+                      }}
+                      style={{
+                        width: '100%', padding: '8px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        background: 'rgba(0,229,255,0.12)', color: '#00e5ff', border: '1px solid rgba(0,229,255,0.25)',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      Apply to All ISPs
+                    </button>
+                  </div>
+
+                  {/* Per-ISP cards */}
                   {selectedISPs.map(isp => {
                     const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
                     const meta = ISP_META[isp];
-                    const rec = recommendations.find(r => r.isp === isp);
+                    const quota = ispQuotas[isp] || 0;
+                    const dur = plan.durationHours || 8;
+                    const interval = plan.everyMinutes || 15;
+                    const totalIntervals = Math.max(1, Math.floor(dur * 60 / interval));
+                    const msgsPerInterval = quota > 0 ? Math.ceil(quota / totalIntervals) : 0;
+                    const msgsPerHour = msgsPerInterval * Math.floor(60 / interval);
                     return (
                       <div key={isp} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: meta?.color || '#e0e6f0' }}>
-                            {meta?.emoji || '🌐'} {meta?.label || isp}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: meta?.color || '#e0e6f0' }}>
+                              {meta?.emoji || '🌐'} {meta?.label || isp}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', background: 'rgba(0,200,255,0.06)', padding: '2px 8px', borderRadius: 4 }}>
+                              Quota: {quota.toLocaleString()}
+                            </span>
                           </div>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
                             <input
@@ -2547,129 +2813,86 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                               checked={plan.useCustomSchedule}
                               onChange={e => updateISPPlan(isp, curr => ({ ...curr, useCustomSchedule: e.target.checked }))}
                             />
-                            Use custom schedule
+                            Custom schedule
                           </label>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
-                          <div>
-                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Timezone</label>
-                            <input
-                              value={plan.timezone}
-                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, timezone: e.target.value }))}
-                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Cadence</label>
-                            <select
-                              value={plan.cadenceMode}
-                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, cadenceMode: e.target.value as 'single' | 'interval' }))}
-                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
-                            >
-                              <option value="single">Single wave</option>
-                              <option value="interval">Interval waves</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Batch Size</label>
-                            <input
-                              type="number"
-                              min={0}
-                              value={plan.batchSize}
-                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, batchSize: Number(e.target.value) || 0 }))}
-                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
-                            />
-                          </div>
-                        </div>
-                        {plan.cadenceMode === 'interval' && (
-                          <div style={{ marginBottom: 10 }}>
-                            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Every Minutes</label>
-                            <input
-                              type="number"
-                              min={1}
-                              value={plan.everyMinutes}
-                              onChange={e => updateISPPlan(isp, curr => ({ ...curr, everyMinutes: Number(e.target.value) || 1 }))}
-                              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
-                            />
-                          </div>
-                        )}
-                        {rec && rec.windows.length > 0 && (
-                          <div style={{ marginBottom: 10 }}>
-                            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginBottom: 6 }}>Recommended windows</div>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              {rec.windows.slice(0, 3).map((window, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => {
-                                    const { start, end } = nextScheduleFromWindow(window);
-                                    addTimeSpanToPlan(isp, {
-                                      startAt: toDateTimeLocal(start),
-                                      endAt: toDateTimeLocal(end),
-                                      timezone: plan.timezone,
-                                      source: window.source,
-                                    });
-                                  }}
-                                  style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', background: '#0a1628', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.2)' }}
+
+                        {plan.useCustomSchedule && (
+                          <>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+                              <div>
+                                <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Start Time</label>
+                                <input
+                                  type="datetime-local"
+                                  value={plan.startTime}
+                                  onChange={e => updateISPPlan(isp, curr => ({ ...curr, startTime: e.target.value }))}
+                                  min={toDateTimeLocal(new Date(Date.now() + 5 * 60 * 1000))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Duration</label>
+                                <select
+                                  value={plan.durationHours}
+                                  onChange={e => updateISPPlan(isp, curr => ({ ...curr, durationHours: Number(e.target.value) }))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
                                 >
-                                  {window.day_of_week} {window.start_hour}:00–{window.end_hour}:00
-                                </button>
-                              ))}
+                                  {[1, 2, 4, 6, 8, 10, 12, 16, 24].map(h => (
+                                    <option key={h} value={h}>{h}h</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Interval</label>
+                                <select
+                                  value={plan.everyMinutes}
+                                  onChange={e => updateISPPlan(isp, curr => ({ ...curr, everyMinutes: Number(e.target.value) }))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}
+                                >
+                                  {[5, 10, 15, 30, 60].map(m => (
+                                    <option key={m} value={m}>{m} min</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Timezone</label>
+                                <input
+                                  value={plan.timezone}
+                                  onChange={e => updateISPPlan(isp, curr => ({ ...curr, timezone: e.target.value }))}
+                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+                                />
+                              </div>
                             </div>
+
+                            {/* Dynamic throughput calculation */}
+                            {quota > 0 && (
+                              <div style={{
+                                background: 'rgba(0,200,255,0.04)', border: '1px solid rgba(0,200,255,0.08)',
+                                borderRadius: 6, padding: '8px 12px', marginBottom: 10,
+                                display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap',
+                              }}>
+                                <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                                  {totalIntervals} intervals
+                                </span>
+                                <span style={{ fontSize: 11, color: '#00e5ff', fontWeight: 600 }}>
+                                  ~{msgsPerInterval} msgs/{interval}min
+                                </span>
+                                <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                                  ~{msgsPerHour.toLocaleString()} msgs/hr
+                                </span>
+                                <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                                  Batch size: {msgsPerInterval}
+                                </span>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {!plan.useCustomSchedule && (
+                          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.35)', fontStyle: 'italic', padding: '4px 0' }}>
+                            Using global schedule settings
                           </div>
                         )}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Time spans</div>
-                          <button
-                            onClick={() => addTimeSpanToPlan(isp)}
-                            style={{ background: 'transparent', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.18)', borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
-                          >
-                            Add Span
-                          </button>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {plan.timeSpans.length === 0 && (
-                            <div style={{ fontSize: 11, color: showErr(6) ? '#ef4444' : 'rgba(180,210,240,0.35)' }}>
-                              No custom time spans yet.
-                            </div>
-                          )}
-                          {plan.timeSpans.map((span) => (
-                            <div key={span.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
-                              <div>
-                                <label style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>Start</label>
-                                <input
-                                  type="datetime-local"
-                                  value={span.startAt}
-                                  onChange={e => updateISPPlan(isp, curr => ({
-                                    ...curr,
-                                    timeSpans: curr.timeSpans.map(item => item.id === span.id ? { ...item, startAt: e.target.value } : item),
-                                  }))}
-                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
-                                />
-                              </div>
-                              <div>
-                                <label style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', display: 'block', marginBottom: 3 }}>End</label>
-                                <input
-                                  type="datetime-local"
-                                  value={span.endAt}
-                                  onChange={e => updateISPPlan(isp, curr => ({
-                                    ...curr,
-                                    timeSpans: curr.timeSpans.map(item => item.id === span.id ? { ...item, endAt: e.target.value } : item),
-                                  }))}
-                                  style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
-                                />
-                              </div>
-                              <button
-                                onClick={() => updateISPPlan(isp, curr => ({
-                                  ...curr,
-                                  timeSpans: curr.timeSpans.filter(item => item.id !== span.id),
-                                }))}
-                                style={{ background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 6, padding: '8px 10px', fontSize: 11, cursor: 'pointer' }}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                        </div>
                       </div>
                     );
                   })}
@@ -2810,7 +3033,106 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           )}
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>PMTA Campaign Wizard</h2>
         </div>
-        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Step {step} of {STEPS.length}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Clone button */}
+          <div style={{ position: 'relative' }} ref={clonePanelRef}>
+            <button
+              onClick={() => {
+                if (loadingDraft) return;
+                if (!showClonePanel && cloneCandidates.length === 0) fetchCloneCandidates();
+                setShowClonePanel(!showClonePanel);
+              }}
+              disabled={loadingDraft}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 6,
+                border: '1px solid rgba(0,200,255,0.15)',
+                background: showClonePanel ? 'rgba(0,200,255,0.12)' : 'rgba(0,200,255,0.04)',
+                color: loadingDraft ? '#4b5563' : showClonePanel ? '#00b0ff' : 'rgba(180,210,240,0.75)',
+                fontSize: 12, cursor: loadingDraft ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap',
+                transition: 'all 0.2s',
+                opacity: loadingDraft ? 0.5 : 1,
+              }}
+            >
+              <FontAwesomeIcon icon={loadingDraft ? faSpinner : faCopy} spin={loadingDraft} />
+              Clone
+              <FontAwesomeIcon icon={showClonePanel ? faChevronUp : faChevronDown} style={{ fontSize: 10 }} />
+            </button>
+
+            {/* Clone dropdown panel */}
+            {showClonePanel && (
+              <div style={{
+                position: 'absolute', top: '100%', right: 0, marginTop: 6,
+                width: 420, maxHeight: 400, overflowY: 'auto',
+                background: '#0d1526', border: '1px solid rgba(0,200,255,0.12)',
+                borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+                zIndex: 100, padding: 0,
+              }}>
+                <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(0,200,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>Clone from Previous Campaign</span>
+                  <button onClick={() => setShowClonePanel(false)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>
+                    <FontAwesomeIcon icon={faTimes} />
+                  </button>
+                </div>
+
+                {cloneLoading && (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
+                    <FontAwesomeIcon icon={faSpinner} spin /> Loading campaigns...
+                  </div>
+                )}
+
+                {!cloneLoading && cloneCandidates.length === 0 && (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
+                    No PMTA campaigns available to clone.
+                  </div>
+                )}
+
+                {!cloneLoading && cloneCandidates.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => applyClone(c.id)}
+                    disabled={cloneApplying === c.id}
+                    style={{
+                      display: 'flex', flexDirection: 'column', gap: 4,
+                      width: '100%', padding: '10px 14px', textAlign: 'left',
+                      background: c.recommended ? 'rgba(16,185,129,0.06)' : 'transparent',
+                      border: 'none', borderBottom: '1px solid rgba(0,200,255,0.05)',
+                      color: '#e0e6f0', cursor: cloneApplying ? 'not-allowed' : 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e => { if (!c.recommended) (e.target as HTMLElement).closest('button')!.style.background = 'rgba(0,200,255,0.04)'; }}
+                    onMouseLeave={e => { if (!c.recommended) (e.target as HTMLElement).closest('button')!.style.background = 'transparent'; }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                      {c.recommended && (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 3,
+                          padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          background: 'rgba(16,185,129,0.15)', color: '#10b981',
+                          border: '1px solid rgba(16,185,129,0.3)',
+                        }}>
+                          <FontAwesomeIcon icon={faTrophy} /> TOP
+                        </span>
+                      )}
+                      <span style={{ fontSize: 12, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.name}
+                      </span>
+                      {cloneApplying === c.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, fontSize: 10, color: 'rgba(180,210,240,0.55)' }}>
+                      <span>{c.sent_count.toLocaleString()} sent</span>
+                      <span style={{ color: c.open_rate > 5 ? '#10b981' : '#f59e0b' }}>{c.open_rate}% opens</span>
+                      <span style={{ color: c.click_rate > 1 ? '#10b981' : '#64748b' }}>{c.click_rate}% clicks</span>
+                      {c.bounce_rate > 5 && <span style={{ color: '#ef4444' }}>{c.bounce_rate}% bounced</span>}
+                      <span>{new Date(c.campaign_date).toLocaleDateString()}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Step {step} of {STEPS.length}</div>
+        </div>
       </div>
 
       {/* Step indicator */}

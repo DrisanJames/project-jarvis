@@ -190,6 +190,12 @@ func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS everflow_creative_id INTEGER`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS everflow_offer_id INTEGER`,
 		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS tracking_link_template TEXT`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT 'standard'`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS pmta_config JSONB DEFAULT '{}'::jsonb`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS hard_bounce_count INTEGER DEFAULT 0`,
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS soft_bounce_count INTEGER DEFAULT 0`,
 	}
 	
 	for _, migration := range migrations {

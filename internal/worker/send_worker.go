@@ -684,8 +684,8 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 
 	// Log message for webhook correlation
 	p.db.ExecContext(ctx, `
-		INSERT INTO mailing_message_log (message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at)
-		SELECT $1, camp.organization_id, $2, $3, $4, $5, NOW()
+		INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at)
+		SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, NOW()
 		FROM mailing_campaigns camp WHERE camp.id = $2
 	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
 
@@ -695,12 +695,13 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		sendingDomain = strings.ToLower(item.FromEmail[atIdx+1:])
 	}
 
-	// Record tracking event (email is needed for PMTA webhook delivery correlation)
-	p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, email, event_type, event_at, sending_domain)
-		SELECT uuid_generate_v4(), camp.organization_id, $1, $2, $3, 'sent', NOW(), $4
+	if _, trackErr := p.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3
 		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, strings.ToLower(strings.TrimSpace(item.Email)), sendingDomain)
+	`, item.CampaignID, item.SubscriberID, sendingDomain); trackErr != nil {
+		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
+	}
 
 	return nil
 }

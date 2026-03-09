@@ -6,8 +6,12 @@ import {
   faBrain,   faShieldAlt, faCalendarAlt, faClock,
   faSyncAlt, faSpinner, faArrowUp, faArrowDown,
   faDatabase, faBolt,
-  faChartBar, faTrophy, faUsers, faChartPie
+  faTrophy, faUsers, faChartPie
 } from '@fortawesome/free-solid-svg-icons';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
+} from 'recharts';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useDateFilter } from '../../../context/DateFilterContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -113,7 +117,7 @@ interface InfraRow {
 
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
-const PAGE_VERSION = '1.4';
+const PAGE_VERSION = '1.5';
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
@@ -335,7 +339,7 @@ export const AnalyticsCenter: React.FC = () => {
   const totals = overview?.totals || { sent: 0, opens: 0, clicks: 0, bounces: 0, complaints: 0, revenue: 0 };
   const rates = overview?.rates || { open_rate: 0, click_rate: 0, bounce_rate: 0, complaint_rate: 0 };
   const trend = overview?.daily_trend || [];
-  const maxTrendSent = Math.max(...trend.map(d => d.sent), 1);
+  const granularity = overview?.granularity || 'day';
 
   // AI knowledge depth across all agents
   const totalKnowledge = agents.reduce((sum, a) => {
@@ -534,30 +538,84 @@ export const AnalyticsCenter: React.FC = () => {
 
               {/* Daily Trend Chart */}
               <div className="ac-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faChartBar} /> Daily Send Volume &amp; Engagement</h3>
+                <h3><FontAwesomeIcon icon={faChartLine} /> Send Volume &amp; Engagement</h3>
                 {trend.length === 0 ? (
                   <div className="ac-empty-mini">No trend data available for this period.</div>
                 ) : (
                   <div className="ac-trend-chart">
-                    <div className="ac-trend-bars">
-                      {trend.slice(-Math.min(trend.length, 30)).map((d, i) => {
-                        const h = Math.max((d.sent / maxTrendSent) * 100, 2);
-                        const openPct = d.sent > 0 ? (d.opens / d.sent) * 100 : 0;
-                        return (
-                          <div key={i} className="ac-trend-col" title={`${d.date}\nSent: ${d.sent}\nOpens: ${d.opens}\nClicks: ${d.clicks}`}>
-                            <div className="ac-bar-wrap">
-                              <div className="ac-bar ac-bar-sent" style={{ height: `${h}%` }} />
-                              <div className="ac-bar ac-bar-opens" style={{ height: `${Math.max(openPct, 1)}%` }} />
-                            </div>
-                            <span className="ac-trend-label">{d.date.slice(5)}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="ac-trend-legend">
-                      <span><span className="ac-legend-dot ac-dot-sent" /> Sent</span>
-                      <span><span className="ac-legend-dot ac-dot-opens" /> Opens</span>
-                    </div>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <LineChart data={trend} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          stroke="#334155"
+                          tick={{ fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={{ stroke: '#1e293b' }}
+                          minTickGap={30}
+                          tickFormatter={(value: string) => {
+                            if (granularity === '10min' || granularity === 'hour') {
+                              const t = value.includes('T') ? value.split('T')[1] : value;
+                              if (range === '1h') return t.slice(0, 5);
+                              const h = parseInt(t.split(':')[0], 10);
+                              const ampm = h >= 12 ? 'PM' : 'AM';
+                              return `${h === 0 ? 12 : h > 12 ? h - 12 : h} ${ampm}`;
+                            }
+                            return value.slice(5);
+                          }}
+                        />
+                        <YAxis
+                          yAxisId="sent"
+                          stroke="#334155"
+                          tick={{ fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={false}
+                          width={55}
+                          tickFormatter={(v: number) => {
+                            if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
+                            if (v >= 1_000) return (v / 1_000).toFixed(0) + 'K';
+                            return String(v);
+                          }}
+                        />
+                        <YAxis
+                          yAxisId="engagement"
+                          orientation="right"
+                          stroke="#334155"
+                          tick={{ fill: '#475569', fontSize: 10 }}
+                          tickLine={false}
+                          axisLine={false}
+                          width={45}
+                          tickFormatter={(v: number) => {
+                            if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
+                            if (v >= 1_000) return (v / 1_000).toFixed(0) + 'K';
+                            return String(v);
+                          }}
+                        />
+                        <RechartsTooltip
+                          contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }}
+                          labelStyle={{ color: '#94a3b8', marginBottom: 4 }}
+                          itemStyle={{ padding: '1px 0' }}
+                          labelFormatter={(label: string) => {
+                            if (granularity === '10min' || granularity === 'hour') {
+                              const t = String(label).includes('T') ? String(label).split('T')[1] : String(label);
+                              return t.slice(0, 5);
+                            }
+                            return label;
+                          }}
+                          formatter={(value: number) => fmt(value)}
+                        />
+                        <Legend
+                          verticalAlign="top"
+                          height={30}
+                          wrapperStyle={{ fontSize: 11, color: '#94a3b8' }}
+                        />
+                        <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="#00e5ff" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="#10b981" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="#f59e0b" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
+                      </LineChart>
+                    </ResponsiveContainer>
                   </div>
                 )}
               </div>

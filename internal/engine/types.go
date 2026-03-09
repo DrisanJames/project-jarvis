@@ -550,6 +550,7 @@ type CampaignIntelResponse struct {
 // SendingDomainInfo describes a PMTA sending domain with its infrastructure.
 type SendingDomainInfo struct {
 	Domain          string   `json:"domain"`
+	FromName        string   `json:"from_name,omitempty"`
 	DKIMConfigured  bool     `json:"dkim_configured"`
 	SPFConfigured   bool     `json:"spf_configured"`
 	DMARCConfigured bool     `json:"dmarc_configured"`

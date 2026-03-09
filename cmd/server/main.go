@@ -251,8 +251,10 @@ func main() {
 
 				// Run critical schema migrations at startup (DB is inside VPC,
 				// so migrations must run from the server, not the CI runner).
-				runStartupMigrations(mailingDB)
+				// Admin migrations run first to fix table ownership, then startup
+				// migrations can ALTER tables owned by the app user.
 				runAdminMigrations()
+				runStartupMigrations(mailingDB)
 
 				// Start Backpressure Monitor
 				backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
@@ -394,6 +396,19 @@ func main() {
 	} else {
 		log.Println("Mailing Platform not configured (disabled or missing database_url)")
 	}
+
+	// Register early health endpoint so ALB health checks pass while slow
+	// integrations (Mailgun, SES, Ongage, Everflow, Snowflake, etc.) initialize.
+	server.RegisterHealthRoutes()
+	log.Println("Health check routes registered: /health, /health/live, /health/ready")
+
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
+		log.Printf("Starting server on %s (early — integration init continues in background)", addr)
+		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
 
 	// Initialize Mailgun - always run if API key is configured
 	if cfg.Mailgun.APIKey != "" && len(cfg.Mailgun.Domains) > 0 {
@@ -940,22 +955,9 @@ func main() {
 	server.SetIntelligenceService(intelligenceService)
 	log.Println("Intelligence service initialized with continuous learning")
 
-	// Register comprehensive health routes (must be after all Set* calls so
-	// the checker can access db, redis, s3, etc.)
-	server.RegisterHealthRoutes()
-	log.Println("Health check routes registered: /health, /health/live, /health/ready")
-
 	// Setup graceful shutdown
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
-		log.Printf("Starting server on %s", addr)
-		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
-	}()
 
 	log.Println("All services initialized — server is ready")
 
@@ -1061,6 +1063,41 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_automation_total_completed", `ALTER TABLE mailing_automation_workflows ADD COLUMN IF NOT EXISTS total_completed INTEGER DEFAULT 0`},
 		{"add_enrollment_step_id", `ALTER TABLE mailing_automation_enrollments ADD COLUMN IF NOT EXISTS current_step_id UUID`},
 		{"add_enrollment_unique", `CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_workflow_sub ON mailing_automation_enrollments(workflow_id, subscriber_id)`},
+		{"create_campaign_queue", `CREATE TABLE IF NOT EXISTS mailing_campaign_queue (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
+			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
+			subject VARCHAR(500),
+			html_content TEXT,
+			plain_content TEXT,
+			scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			priority INTEGER DEFAULT 5,
+			predicted_open_prob DECIMAL(5,4),
+			predicted_click_prob DECIMAL(5,4),
+			predicted_revenue DECIMAL(10,4),
+			status VARCHAR(20) DEFAULT 'queued',
+			attempts INTEGER DEFAULT 0,
+			last_attempt_at TIMESTAMPTZ,
+			error_message TEXT,
+			message_id VARCHAR(255),
+			delivery_server_id UUID,
+			sent_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			locked_at TIMESTAMPTZ,
+			worker_id VARCHAR(100),
+			isp_plan_id UUID,
+			wave_id UUID,
+			recipient_isp VARCHAR(50),
+			selection_rank INTEGER,
+			audience_source_type VARCHAR(30),
+			audience_source_id UUID
+		)`},
+		{"create_campaign_queue_indexes", `
+			CREATE INDEX IF NOT EXISTS idx_queue_campaign ON mailing_campaign_queue(campaign_id);
+			CREATE INDEX IF NOT EXISTS idx_queue_status ON mailing_campaign_queue(status);
+			CREATE INDEX IF NOT EXISTS idx_queue_scheduled ON mailing_campaign_queue(scheduled_at) WHERE status = 'queued';
+			CREATE INDEX IF NOT EXISTS idx_queue_subscriber ON mailing_campaign_queue(subscriber_id)
+		`},
 		{"add_queue_locked_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
 		{"add_queue_worker_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
 		{"add_queue_isp_plan_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS isp_plan_id UUID`},
@@ -1332,6 +1369,24 @@ func runStartupMigrations(db *sql.DB) {
 			WHERE ms.name = 'Bot Clickers (System)'
 			AND NOT EXISTS (SELECT 1 FROM mailing_system_segments WHERE segment_id = ms.id)
 		`},
+		{"backfill_sent_from_queue_v2", `
+			INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain)
+			SELECT gen_random_uuid(), c.organization_id, q.campaign_id, q.subscriber_id,
+			       'sent', q.sent_at,
+			       COALESCE(LOWER(SPLIT_PART(c.from_email, '@', 2)), '')
+			FROM mailing_campaign_queue q
+			JOIN mailing_campaigns c ON c.id = q.campaign_id
+			WHERE q.status = 'sent'
+			  AND q.sent_at IS NOT NULL
+			  AND q.sent_at >= NOW() - INTERVAL '14 days'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM mailing_tracking_events te
+			      WHERE te.campaign_id = q.campaign_id
+			        AND te.subscriber_id = q.subscriber_id
+			        AND te.event_type = 'sent'
+			  )
+			ON CONFLICT DO NOTHING
+		`},
 	}
 
 	var ok, fail int
@@ -1355,6 +1410,14 @@ func runAdminMigrations() {
 		return
 	}
 
+	if !strings.Contains(adminURL, "connect_timeout") {
+		sep := "?"
+		if strings.Contains(adminURL, "?") {
+			sep = "&"
+		}
+		adminURL += sep + "connect_timeout=10"
+	}
+
 	adminDB, err := sql.Open("postgres", adminURL)
 	if err != nil {
 		log.Printf("[AdminMigration] connect error: %v", err)
@@ -1365,10 +1428,10 @@ func runAdminMigrations() {
 	adminDB.SetMaxOpenConns(2)
 	adminDB.SetConnMaxLifetime(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := adminDB.PingContext(ctx); err != nil {
-		log.Printf("[AdminMigration] ping error: %v", err)
+		log.Printf("[AdminMigration] ping error (skipping): %v", err)
 		return
 	}
 
@@ -1383,6 +1446,11 @@ func runAdminMigrations() {
 		{"grant_tracking_to_ignite", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
 		{"grant_campaigns_to_ignite", `GRANT ALL ON TABLE mailing_campaigns TO ignite`},
 		{"add_pmta_config", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS pmta_config JSONB DEFAULT '{}'::jsonb`},
+		{"add_isp_quotas_admin", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`},
+		{"add_execution_mode_admin", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT 'standard'`},
+		{"add_queued_count_admin", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
+		{"add_hard_bounce_count_admin", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS hard_bounce_count INTEGER DEFAULT 0`},
+		{"add_soft_bounce_count_admin", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS soft_bounce_count INTEGER DEFAULT 0`},
 		{"create_pmta_draft_index", `CREATE INDEX IF NOT EXISTS idx_mailing_campaigns_pmta_drafts ON mailing_campaigns (organization_id, updated_at DESC) WHERE status = 'draft' AND execution_mode = 'pmta_isp_wave'`},
 		{"backfill_sending_domain", `
 			UPDATE mailing_tracking_events t
@@ -1428,6 +1496,35 @@ func runAdminMigrations() {
 			  AND s.email LIKE '%@%'
 		`},
 		{"grant_tracking_events_all", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
+		{"grant_all_mailing_tables", `
+			DO $$ DECLARE r record;
+			BEGIN
+				FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'mailing_%'
+				LOOP
+					EXECUTE format('ALTER TABLE %I OWNER TO ignite', r.tablename);
+					EXECUTE format('GRANT ALL ON TABLE %I TO ignite', r.tablename);
+				END LOOP;
+				FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' AND sequence_name LIKE 'mailing_%'
+				LOOP
+					EXECUTE format('ALTER SEQUENCE %I OWNER TO ignite', r.sequence_name);
+					EXECUTE format('GRANT ALL ON SEQUENCE %I TO ignite', r.sequence_name);
+				END LOOP;
+			END $$
+		`},
+		{"add_queue_updated_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`},
+		{"add_queue_locked_at_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`},
+		{"add_queue_worker_id_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS worker_id VARCHAR(100)`},
+		{"add_queue_isp_plan_id_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS isp_plan_id UUID`},
+		{"add_queue_wave_id_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS wave_id UUID`},
+		{"add_queue_recipient_isp_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS recipient_isp VARCHAR(50)`},
+		{"add_queue_selection_rank_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS selection_rank INTEGER`},
+		{"add_queue_audience_source_type_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_type VARCHAR(30)`},
+		{"add_queue_audience_source_id_admin", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_id UUID`},
+		{"create_queue_wave_indexes_admin", `
+			CREATE INDEX IF NOT EXISTS idx_queue_wave_id ON mailing_campaign_queue(wave_id);
+			CREATE INDEX IF NOT EXISTS idx_queue_plan_id ON mailing_campaign_queue(isp_plan_id);
+			CREATE INDEX IF NOT EXISTS idx_queue_campaign_wave_schedule ON mailing_campaign_queue(campaign_id, wave_id, scheduled_at)
+		`},
 	}
 
 	var ok, fail int

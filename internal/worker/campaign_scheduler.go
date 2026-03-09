@@ -53,6 +53,7 @@ type CampaignScheduler struct {
 	redisClient  *redis.Client // optional; nil falls back to PG advisory locks
 	workerID     string
 	pollInterval time.Duration
+	hasExecMode  bool
 
 	// Backpressure
 	backpressure *BackpressureMonitor
@@ -95,10 +96,16 @@ type ScheduledCampaign struct {
 // NewCampaignScheduler creates a new campaign scheduler
 func NewCampaignScheduler(db *sql.DB) *CampaignScheduler {
 	hostname := getHostname()
+	var hasExec bool
+	_ = db.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema='public' AND table_name='mailing_campaigns' AND column_name='execution_mode'
+	)`).Scan(&hasExec)
 	return &CampaignScheduler{
 		db:           db,
 		workerID:     fmt.Sprintf("scheduler-%s-%d", hostname, time.Now().UnixNano()%10000),
 		pollInterval: DefaultSchedulerPollInterval,
+		hasExecMode:  hasExec,
 	}
 }
 
@@ -356,7 +363,11 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 	// NOTE: We check BOTH scheduled_at and send_at for backwards compatibility
 	// - scheduled_at is the preferred column (used by campaign_builder.go)
 	// - send_at is used by legacy code (store.go, some scripts)
-	rows, err := cs.db.QueryContext(ctx, `
+	execFilter := ""
+	if cs.hasExecMode {
+		execFilter = "AND COALESCE(execution_mode, 'standard') != 'pmta_isp_wave'"
+	}
+	query := fmt.Sprintf(`
 		SELECT 
 			id, name, subject, 
 			COALESCE(html_content, ''), COALESCE(plain_content, ''),
@@ -369,11 +380,12 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			COALESCE(esp_quotas::text, '{}')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
-		  AND COALESCE(execution_mode, 'standard') != 'pmta_isp_wave'
+		  %s
 		  AND COALESCE(scheduled_at, send_at) <= NOW()
 		ORDER BY COALESCE(scheduled_at, send_at) ASC
 		LIMIT 10
-	`)
+	`, execFilter)
+	rows, err := cs.db.QueryContext(ctx, query)
 
 	if err != nil {
 		log.Printf("[CampaignScheduler] Error fetching ready campaigns: %v", err)

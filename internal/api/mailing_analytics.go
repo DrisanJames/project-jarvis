@@ -19,7 +19,7 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "1.1"
+	VersionAnalyticsOverview       = "1.2"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -125,7 +125,11 @@ func parseAnalyticsRange(r *http.Request) (start, end time.Time) {
 }
 
 func trendGranularity(start, end time.Time) string {
-	if end.Sub(start) <= 48*time.Hour {
+	d := end.Sub(start)
+	if d <= time.Hour+time.Minute {
+		return "10min"
+	}
+	if d <= 48*time.Hour {
 		return "hour"
 	}
 	return "day"
@@ -283,7 +287,11 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	gran := trendGranularity(start, end)
 	truncFn := "DATE(event_at)"
 	dateFmt := "2006-01-02"
-	if gran == "hour" {
+	switch gran {
+	case "10min":
+		truncFn = "DATE_TRUNC('hour', event_at) + INTERVAL '10 min' * FLOOR(EXTRACT(MINUTE FROM event_at) / 10)"
+		dateFmt = "2006-01-02T15:04"
+	case "hour":
 		truncFn = "DATE_TRUNC('hour', event_at)"
 		dateFmt = "2006-01-02T15:04"
 	}

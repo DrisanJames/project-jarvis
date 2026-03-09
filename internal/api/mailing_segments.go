@@ -259,6 +259,23 @@ type SegmentConditionInput struct {
 	Value    string `json:"value"`
 }
 
+// trackingEventTypeMap maps frontend event field names to DB event_type values.
+var trackingEventTypeMap = map[string]string{
+	"email_sent":         "sent",
+	"email_opened":       "opened",
+	"email_clicked":      "clicked",
+	"email_bounced":      "bounced",
+	"email_delivered":    "delivered",
+	"email_unsubscribed": "unsubscribed",
+	"email_complained":   "complained",
+}
+
+// isEventField returns true if the field maps to mailing_tracking_events.
+func isEventField(field string) bool {
+	_, ok := trackingEventTypeMap[field]
+	return ok
+}
+
 // BuildSegmentWhereClause builds a SQL WHERE clause from segment conditions.
 // Returns the clause string (without "WHERE") and positional args.
 // Callers can prefix their own SELECT and append this.
@@ -274,6 +291,16 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 	}
 
 	for _, c := range conditions {
+		if isEventField(c.Field) {
+			clause, newArgs, newArgNum := buildEventWhereClause(c, argNum)
+			if clause != "" {
+				whereClauses = append(whereClauses, clause)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			}
+			continue
+		}
+
 		dbField := mapFieldToColumn(c.Field)
 		var clause string
 		switch c.Operator {
@@ -334,6 +361,60 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 	}
 
 	return strings.Join(whereClauses, " AND "), args
+}
+
+// buildEventWhereClause generates an EXISTS/NOT EXISTS subquery against
+// mailing_tracking_events for event-based segment conditions.
+func buildEventWhereClause(c SegmentConditionInput, argNum int) (string, []interface{}, int) {
+	eventType := trackingEventTypeMap[c.Field]
+	var args []interface{}
+
+	switch c.Operator {
+	case "equals", "is":
+		// "has this event" → EXISTS
+		args = append(args, eventType)
+		clause := fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+		)`, argNum)
+		return clause, args, argNum + 1
+
+	case "not_equals", "is_not":
+		// "does not have this event" → NOT EXISTS
+		args = append(args, eventType)
+		clause := fmt.Sprintf(`NOT EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+		)`, argNum)
+		return clause, args, argNum + 1
+
+	case "in_last_days":
+		// "event occurred in last N days" → EXISTS with time filter
+		args = append(args, eventType)
+		clause := fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+			  AND e.event_at >= NOW() - INTERVAL '%s days'
+		)`, argNum, c.Value)
+		return clause, args, argNum + 1
+
+	case "not_in_last_days", "more_than_days_ago":
+		// "event did NOT occur in last N days" → NOT EXISTS with time filter
+		args = append(args, eventType)
+		clause := fmt.Sprintf(`NOT EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+			  AND e.event_at >= NOW() - INTERVAL '%s days'
+		)`, argNum, c.Value)
+		return clause, args, argNum + 1
+
+	default:
+		return "", nil, argNum
+	}
 }
 
 // BuildSegmentSubscriberQuery returns a SELECT query for subscriber id+email
@@ -433,6 +514,28 @@ func (s *AdvancedMailingService) HandleGetSegment(w http.ResponseWriter, r *http
 
 	var conditions []interface{}
 	json.Unmarshal([]byte(conditionsRaw), &conditions)
+
+	// Fallback: if JSONB conditions are empty, read from mailing_segment_conditions table
+	if len(conditions) == 0 {
+		rows, qErr := s.db.QueryContext(ctx, `
+			SELECT condition_group, field, operator, value
+			FROM mailing_segment_conditions
+			WHERE segment_id = $1
+			ORDER BY condition_group
+		`, segmentID)
+		if qErr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var group int
+				var field, operator, value string
+				if err := rows.Scan(&group, &field, &operator, &value); err == nil {
+					conditions = append(conditions, map[string]interface{}{
+						"group": group, "field": field, "operator": operator, "value": value,
+					})
+				}
+			}
+		}
+	}
 
 	resp := map[string]interface{}{
 		"id": id.String(), "name": name, "description": desc,
@@ -543,9 +646,40 @@ func (s *AdvancedMailingService) HandlePreviewSegment(w http.ResponseWriter, r *
 	if conditionsJSON.Valid && conditionsJSON.String != "" && conditionsJSON.String != "[]" {
 		json.Unmarshal([]byte(conditionsJSON.String), &conditions)
 	}
-	
-	// Calculate count using the shared function
-	count := s.calculateSegmentCount(ctx, segmentUUID, listID, conditions)
+
+	// Fallback: if JSONB conditions column is empty, read from mailing_segment_conditions table
+	if len(conditions) == 0 {
+		rows, qErr := s.db.QueryContext(ctx, `
+			SELECT condition_group, field, operator, value
+			FROM mailing_segment_conditions
+			WHERE segment_id = $1
+			ORDER BY condition_group
+		`, segmentID)
+		if qErr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var c struct {
+					Group    int    `json:"group"`
+					Field    string `json:"field"`
+					Operator string `json:"operator"`
+					Value    string `json:"value"`
+				}
+				if err := rows.Scan(&c.Group, &c.Field, &c.Operator, &c.Value); err == nil {
+					conditions = append(conditions, c)
+				}
+			}
+		}
+	}
+
+	// Convert *uuid.UUID to interface{} correctly: a nil *uuid.UUID wrapped in
+	// interface{} is non-nil, which would cause BuildSegmentWhereClause to add
+	// a broken "list_id = NULL" equality clause. Pass a true nil instead.
+	var listIDArg interface{}
+	if listID != nil {
+		listIDArg = *listID
+	}
+
+	count := s.calculateSegmentCount(ctx, segmentUUID, listIDArg, conditions)
 	
 	// Update segment count
 	s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2, updated_at = NOW() WHERE id = $1`, segmentID, count)

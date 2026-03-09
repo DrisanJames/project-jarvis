@@ -102,13 +102,25 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 		}
 	}
 
+	if len(waveIDs) > 0 {
+		log.Printf("[PMTAWaveScheduler] found %d due waves", len(waveIDs))
+	}
+
 	for _, waveID := range waveIDs {
 		lock := distlock.NewLock(s.redisClient, s.db, fmt.Sprintf("pmta-wave:%s", waveID), 2*time.Minute)
 		acquired, err := lock.Acquire(ctx)
 		if err != nil || !acquired {
+			if err != nil {
+				log.Printf("[PMTAWaveScheduler] lock acquire error for wave %s: %v", waveID, err)
+			}
 			continue
 		}
-		_ = s.dispatchWave(ctx, waveID)
+		enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID)
+		if err != nil {
+			log.Printf("[PMTAWaveScheduler] enqueue error for wave %s: %v", waveID, err)
+		} else {
+			log.Printf("[PMTAWaveScheduler] wave %s enqueued %d recipients", waveID, enqueued)
+		}
 		lock.Release(ctx)
 	}
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,15 @@ DISALLOWED_KEYS = {
     "registeredBy",
     "deregisteredAt",
 }
+
+PASSTHROUGH_ENV_VARS = [
+    "PMTA_SSH_KEY",
+    "PMTA_SSH_PASSPHRASE",
+]
+
+REMOVE_ENV_VARS = [
+    "DB_ADMIN_URL",
+]
 
 
 def upsert_env(env_list, name, value):
@@ -61,6 +71,13 @@ def main() -> int:
     upsert_env(env_list, "APP_BUILD_TIME", build_time)
     upsert_env(env_list, "APP_IMAGE_URI", image_uri)
     upsert_env(env_list, "APP_IMAGE_DIGEST", image_digest)
+
+    for var_name in PASSTHROUGH_ENV_VARS:
+        val = os.environ.get(var_name)
+        if val:
+            upsert_env(env_list, var_name, val)
+
+    env_list[:] = [e for e in env_list if e.get("name") not in REMOVE_ENV_VARS]
 
     output_path.write_text(json.dumps(sanitized, indent=2) + "\n")
     return 0
