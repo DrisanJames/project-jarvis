@@ -21,7 +21,7 @@ import (
 const (
 	VersionAnalyticsOverview       = "1.2"
 	VersionISPPerformance          = "1.0"
-	VersionISPSendingInsights      = "1.0"
+	VersionISPSendingInsights      = "1.1"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -1835,11 +1835,12 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
 		WHERE t.event_at >= $1 AND t.event_at <= $2`
 
-	// 1. Daily metrics per ISP
+	// 1. Daily metrics per ISP (hard vs soft bounce split)
 	dailyQ := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at) as day,
 		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounced,
+		SUM(CASE WHEN d.event_type = 'hard_bounce' OR (d.event_type = 'bounced' AND COALESCE(d.bounce_type,'') IN ('bad-mailbox','bad-domain','no-answer-from-host','inactive-mailbox','policy-related','routing-errors','bad-connection')) THEN 1 ELSE 0 END) as hard_bounces,
+		SUM(CASE WHEN d.event_type = 'soft_bounce' OR d.event_type = 'soft_bounced' OR (d.event_type = 'bounced' AND COALESCE(d.bounce_type,'') NOT IN ('bad-mailbox','bad-domain','no-answer-from-host','inactive-mailbox','policy-related','routing-errors','bad-connection')) THEN 1 ELSE 0 END) as soft_bounces,
 		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complained,
 		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
@@ -1856,18 +1857,19 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	defer dailyRows.Close()
 
 	type dailyRow struct {
-		day                                                   string
-		sent, delivered, bounced, deferred, complained, opened, mppOpens int
+		day                                                                        string
+		sent, delivered, hardBounces, softBounces, deferred, complained, opened, mppOpens int
 	}
 	ispDaily := map[string][]dailyRow{}
 	for dailyRows.Next() {
 		var isp string
 		var day time.Time
-		var sent, delivered, bounced, deferred, complained, opened, mppOpens int
-		dailyRows.Scan(&isp, &day, &sent, &delivered, &bounced, &deferred, &complained, &opened, &mppOpens)
+		var sent, delivered, hardBounces, softBounces, deferred, complained, opened, mppOpens int
+		dailyRows.Scan(&isp, &day, &sent, &delivered, &hardBounces, &softBounces, &deferred, &complained, &opened, &mppOpens)
 		ispDaily[isp] = append(ispDaily[isp], dailyRow{
 			day: day.Format("2006-01-02"), sent: sent, delivered: delivered,
-			bounced: bounced, deferred: deferred, complained: complained,
+			hardBounces: hardBounces, softBounces: softBounces,
+			deferred: deferred, complained: complained,
 			opened: opened, mppOpens: mppOpens,
 		})
 	}
@@ -1944,7 +1946,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			continue
 		}
 
-		var totalSent, totalDelivered, totalBounced, totalDeferred, totalComplained, totalOpened, totalMPP int
+		var totalSent, totalDelivered, totalHardBounces, totalSoftBounces, totalDeferred, totalComplained, totalOpened, totalMPP int
 		dailyEntries := make([]map[string]interface{}, 0, len(days))
 		bounceRates := make([]float64, 0, len(days))
 		deferralRates := make([]float64, 0, len(days))
@@ -1952,16 +1954,18 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		for _, d := range days {
 			totalSent += d.sent
 			totalDelivered += d.delivered
-			totalBounced += d.bounced
+			totalHardBounces += d.hardBounces
+			totalSoftBounces += d.softBounces
 			totalDeferred += d.deferred
 			totalComplained += d.complained
 			totalOpened += d.opened
 			totalMPP += d.mppOpens
 
+			totalDayBounces := d.hardBounces + d.softBounces
 			br := 0.0
 			dr := 0.0
 			if d.sent > 0 {
-				br = float64(d.bounced) / float64(d.sent) * 100
+				br = float64(totalDayBounces) / float64(d.sent) * 100
 				dr = float64(d.deferred) / float64(d.sent) * 100
 			}
 			bounceRates = append(bounceRates, br)
@@ -1969,11 +1973,13 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 
 			dailyEntries = append(dailyEntries, map[string]interface{}{
 				"date": d.day, "sent": d.sent, "delivered": d.delivered,
-				"bounced": d.bounced, "deferred": d.deferred,
+				"hard_bounces": d.hardBounces, "soft_bounces": d.softBounces,
+				"deferred": d.deferred,
 				"bounce_rate": math.Round(br*100) / 100,
 			})
 		}
 
+		totalBounced := totalHardBounces + totalSoftBounces
 		bounceRate, deferralRate, complaintRate, humanOpenRate := 0.0, 0.0, 0.0, 0.0
 		humanOpens := totalOpened - totalMPP
 		if humanOpens < 0 {
@@ -2104,13 +2110,21 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			label = isp
 		}
 
+		hardBounceRate, softBounceRate := 0.0, 0.0
+		if totalSent > 0 {
+			hardBounceRate = math.Round(float64(totalHardBounces)/float64(totalSent)*10000) / 100
+			softBounceRate = math.Round(float64(totalSoftBounces)/float64(totalSent)*10000) / 100
+		}
+
 		isps = append(isps, map[string]interface{}{
 			"isp": isp, "label": label,
 			"sent": totalSent, "delivered": totalDelivered,
-			"bounced": totalBounced, "deferred": totalDeferred,
+			"bounced": totalBounced, "hard_bounces": totalHardBounces, "soft_bounces": totalSoftBounces,
+			"deferred": totalDeferred,
 			"complained": totalComplained, "opened": totalOpened,
 			"mpp_opens": totalMPP, "human_opens": humanOpens,
-			"delivery_rate": deliveryRate, "bounce_rate": bounceRate,
+			"delivery_rate": deliveryRate,
+			"bounce_rate": bounceRate, "hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate,
 			"deferral_rate": deferralRate, "complaint_rate": complaintRate,
 			"human_open_rate": humanOpenRate,
 			"current_quota": currentQ, "suggested_quota": suggestedQ,

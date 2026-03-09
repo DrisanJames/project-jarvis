@@ -251,14 +251,16 @@ interface CloneCandidate {
 
 interface ISPInsight {
   isp: string; label: string;
-  sent: number; delivered: number; bounced: number; deferred: number; complained: number;
+  sent: number; delivered: number; bounced: number; hard_bounces: number; soft_bounces: number;
+  deferred: number; complained: number;
   opened: number; mpp_opens: number; human_opens: number;
-  delivery_rate: number; bounce_rate: number; deferral_rate: number; complaint_rate: number;
+  delivery_rate: number; bounce_rate: number; hard_bounce_rate: number; soft_bounce_rate: number;
+  deferral_rate: number; complaint_rate: number;
   human_open_rate: number;
   current_quota: number; suggested_quota: number;
   recommendation: string; risk_score: number;
   signals: { type: string; direction?: string; severity?: string; pct?: number; detail: string }[];
-  daily: { date: string; sent: number; delivered: number; bounced: number; deferred: number; bounce_rate: number }[];
+  daily: { date: string; sent: number; delivered: number; hard_bounces: number; soft_bounces: number; deferred: number; bounce_rate: number }[];
   hourly_deferrals: number[];
 }
 
@@ -1432,7 +1434,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                           </div>
 
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 8px', fontSize: 10 }}>
-                            <span style={{ color: '#64748b' }}>Bounce <strong style={{ color: insight.bounce_rate > 2 ? '#ef4444' : '#c0c4d0' }}>{insight.bounce_rate}%</strong></span>
+                            <span style={{ color: '#64748b' }}>Hard <strong style={{ color: insight.hard_bounce_rate > 1 ? '#ef4444' : '#c0c4d0' }}>{insight.hard_bounce_rate}%</strong></span>
+                            <span style={{ color: '#64748b' }}>Soft <strong style={{ color: insight.soft_bounce_rate > 3 ? '#f59e0b' : '#c0c4d0' }}>{insight.soft_bounce_rate}%</strong></span>
                             <span style={{ color: '#64748b' }}>Defer <strong style={{ color: insight.deferral_rate > 5 ? '#f59e0b' : '#c0c4d0' }}>{insight.deferral_rate}%</strong></span>
                             <span style={{ color: '#64748b' }}>Cmpl <strong style={{ color: insight.complaint_rate > 0.05 ? '#ef4444' : '#c0c4d0' }}>{insight.complaint_rate}%</strong></span>
                             <span style={{ color: '#64748b' }}>Opens <strong style={{ color: '#22c55e' }}>{insight.human_open_rate}%</strong></span>
@@ -1524,7 +1527,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                           <thead>
                             <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
-                              {['Date', 'Sent', 'Delivered', 'Bounced', 'Deferred', 'Bounce %'].map(h => (
+                              {['Date', 'Sent', 'Delivered', 'Hard', 'Soft', 'Deferred', 'Bounce %'].map(h => (
                                 <th key={h} style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 10 }}>{h}</th>
                               ))}
                             </tr>
@@ -1535,7 +1538,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                                 <td style={{ padding: '4px 8px', color: '#94a3b8' }}>{d.date.slice(5)}</td>
                                 <td style={{ padding: '4px 8px', textAlign: 'right', color: '#c0c4d0' }}>{fmtK(d.sent)}</td>
                                 <td style={{ padding: '4px 8px', textAlign: 'right', color: '#c0c4d0' }}>{fmtK(d.delivered)}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.bounced > 0 ? '#ef4444' : '#c0c4d0' }}>{d.bounced}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.hard_bounces > 0 ? '#ef4444' : '#c0c4d0' }}>{d.hard_bounces}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: d.soft_bounces > 0 ? '#f59e0b' : '#c0c4d0' }}>{d.soft_bounces}</td>
                                 <td style={{ padding: '4px 8px', textAlign: 'right', color: d.deferred > 0 ? '#f59e0b' : '#c0c4d0' }}>{d.deferred}</td>
                                 <td style={{ padding: '4px 8px', textAlign: 'right', color: d.bounce_rate > 2 ? '#ef4444' : '#c0c4d0' }}>{d.bounce_rate}%</td>
                               </tr>
