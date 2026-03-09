@@ -115,9 +115,28 @@ interface InfraRow {
   parent_delivered?: number;
 }
 
+interface ISPData {
+  isp: string; label: string;
+  sent: number; delivered: number; opens: number; clicks: number;
+  bounces: number; complaints: number;
+  open_rate: number; click_rate: number; bounce_rate: number; complaint_rate: number;
+}
+
+const ISP_LABELS: Record<string, string> = {
+  gmail: 'Gmail', yahoo: 'Yahoo', microsoft: 'Microsoft',
+  apple: 'Apple iCloud', comcast: 'Comcast', att: 'AT&T',
+  cox: 'Cox', charter: 'Charter/Spectrum', other: 'Other',
+};
+
+const ISP_COLORS: Record<string, string> = {
+  gmail: '#EA4335', yahoo: '#6001D2', microsoft: '#00A4EF',
+  apple: '#A2AAAD', comcast: '#ED1C24', att: '#009FDB',
+  cox: '#0070C0', charter: '#0078D4', other: '#6B7280',
+};
+
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
-const PAGE_VERSION = '1.5';
+const PAGE_VERSION = '1.6';
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
@@ -226,6 +245,13 @@ export const AnalyticsCenter: React.FC = () => {
   const [_chartTrend, setChartTrend] = useState<OverviewData['daily_trend']>([]);
   const [_chartLoading, setChartLoading] = useState(false);
 
+  // ISP Performance
+  const [ispCards, setIspCards] = useState<ISPData[]>([]);
+  const [selectedISP, setSelectedISP] = useState<string | null>(null);
+  const [ispTrend, setIspTrend] = useState<OverviewData['daily_trend']>([]);
+  const [ispGranularity, setIspGranularity] = useState<string>('day');
+  const [ispTrendLoading, setIspTrendLoading] = useState(false);
+
   // Deployment verification: track API versions from responses
   const [apiVersions, setApiVersions] = useState<Record<string, string>>({});
 
@@ -237,7 +263,7 @@ export const AnalyticsCenter: React.FC = () => {
         '1h': '1', '24h': '1', 'today': '1', '7': '7', '14': '14', '30': '30', '90': '90',
       };
       const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}`;
-      const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes] = await Promise.all([
+      const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes, ispRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
         orgFetch(`/api/mailing/reports/engagement${qp}`, orgId),
         orgFetch(`/api/mailing/reports/deliverability${qp}`, orgId),
@@ -247,8 +273,9 @@ export const AnalyticsCenter: React.FC = () => {
         orgFetch(`/api/mailing/isp-agents${qp}`, orgId),
         orgFetch(`/api/mailing/analytics/optimal-send${qp}`, orgId),
         orgFetch(`/api/mailing/dashboard${qp}`, orgId),
+        orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId),
       ]);
-      const [ov, eng, del, rev, camp, prof, ag, opt, dash] = await Promise.all([
+      const [ov, eng, del, rev, camp, prof, ag, opt, dash, ispPerf] = await Promise.all([
         ovRes.json().catch(() => null),
         engRes.json().catch(() => null),
         delRes.json().catch(() => null),
@@ -258,6 +285,7 @@ export const AnalyticsCenter: React.FC = () => {
         agentRes.json().catch(() => null),
         optRes.json().catch(() => null),
         dashRes.json().catch(() => null),
+        ispRes.json().catch(() => null),
       ]);
       setOverview(ov);
       setEngagement(eng);
@@ -269,6 +297,9 @@ export const AnalyticsCenter: React.FC = () => {
       setAgents(ag?.agents || []);
       setOptimalSend(opt);
       setDashData(dash);
+      setIspCards(ispPerf?.isps || []);
+      setSelectedISP(null);
+      setIspTrend([]);
       setApiVersions(prev => ({
         ...prev,
         overview: ov?.api_version || '?',
@@ -276,6 +307,7 @@ export const AnalyticsCenter: React.FC = () => {
         deliverability: del?.api_version || '?',
         revenue: rev?.api_version || '?',
         campaigns: camp?.api_version || '?',
+        isp_performance: ispPerf?.api_version || '?',
       }));
     } catch (err) {
       console.error('Analytics load error:', err);
@@ -285,6 +317,31 @@ export const AnalyticsCenter: React.FC = () => {
   }, [range, orgId, dateRange.startDate, dateRange.endDate, dateRange.type]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  useEffect(() => {
+    if (!selectedISP) { setIspTrend([]); return; }
+    let cancelled = false;
+    const load = async () => {
+      setIspTrendLoading(true);
+      try {
+        const { startDate, endDate } = computeDateRange(range);
+        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&isp=${selectedISP}`;
+        const res = await orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId);
+        const data = await res.json();
+        if (!cancelled) {
+          setIspTrend(data?.trend || []);
+          setIspGranularity(data?.granularity || 'day');
+        }
+      } catch (err) {
+        console.error('ISP trend load error:', err);
+        if (!cancelled) setIspTrend([]);
+      } finally {
+        if (!cancelled) setIspTrendLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [selectedISP, range, orgId, dateRange.startDate, dateRange.endDate]);
 
   const fetchInfrastructure = useCallback(async (domain: string | null, type: 'ip' | 'isp', campaignId?: string) => {
     setInfraLoading(true);
@@ -448,88 +505,129 @@ export const AnalyticsCenter: React.FC = () => {
             </div>
           </div>
 
-          {/* ─── Statistical Intelligence Bar ──────────────────────────── */}
-          {trend.length >= 3 && (() => {
-            const sentArr = trend.map(d => d.sent);
-            // openArr/clickArr used implicitly via trend data in rate calculations
-            const mean = (a: number[]) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
-            const stdDev = (a: number[]) => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
-            const pctChg = (a: number, b: number) => b === 0 ? 0 : ((a - b) / b) * 100;
-
-            const sentMean = mean(sentArr);
-            const sentStdDev = stdDev(sentArr);
-            const sentCV = sentMean > 0 ? (sentStdDev / sentMean) * 100 : 0;
-
-            // Momentum: last 3 vs prior 3
-            const last3Sent = sentArr.slice(-3);
-            const prior3Sent = sentArr.slice(-6, -3);
-            const momentum = prior3Sent.length >= 3 ? pctChg(mean(last3Sent), mean(prior3Sent)) : 0;
-            const mSignal = momentum > 10 ? 'bullish' : momentum < -10 ? 'bearish' : 'neutral';
-
-            // Streak
-            let upStreak = 0, downStreak = 0;
-            for (let i = sentArr.length - 1; i > 0; i--) {
-              if (sentArr[i] >= sentArr[i - 1]) { if (downStreak === 0) upStreak++; else break; }
-              else { if (upStreak === 0) downStreak++; else break; }
-            }
-
-            // Open rate trend
-            const orArr = trend.map(d => d.sent > 0 ? (d.opens / d.sent) * 100 : 0);
-            const orMomentum = orArr.length >= 6 ? pctChg(mean(orArr.slice(-3)), mean(orArr.slice(-6, -3))) : 0;
-            const avgOpenRate = mean(orArr);
-
-            // Click rate trend
-            const crArr = trend.map(d => d.opens > 0 ? (d.clicks / d.opens) * 100 : 0);
-            const avgCTR = mean(crArr);
-
-            // Volatility label
-            const vol = sentCV > 50 ? 'HIGH' : sentCV > 25 ? 'MODERATE' : 'LOW';
-            const volColor = sentCV > 50 ? '#ef4444' : sentCV > 25 ? '#f59e0b' : '#22c55e';
-
-            return (
-              <div className="ac-intel-bar ig-data-stream">
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">SEND MOMENTUM</span>
-                  <span className="ac-intel-value" style={{ color: mSignal === 'bullish' ? '#22c55e' : mSignal === 'bearish' ? '#ef4444' : '#94a3b8' }}>
-                    {mSignal === 'bullish' ? '▲' : mSignal === 'bearish' ? '▼' : '●'} {mSignal.toUpperCase()}
-                  </span>
-                  <span className="ac-intel-sub" style={{ color: momentum >= 0 ? '#22c55e' : '#ef4444' }}>{momentum >= 0 ? '+' : ''}{momentum.toFixed(1)}%</span>
+          {/* ─── ISP Performance Cards ─────────────────────────────────── */}
+          <div className="ac-card ig-card-hover" style={{ gridColumn: '1 / -1' }}>
+            <h3><FontAwesomeIcon icon={faChartPie} /> Performance by ISP</h3>
+            {ispCards.length === 0 ? (
+              <div className="ac-empty-mini">No ISP data available for this period.</div>
+            ) : (
+              <>
+                <div className="ac-isp-grid">
+                  {ispCards.filter(c => c.isp !== 'other').map(card => {
+                    const score = Math.max(0, Math.min(100, Math.round(card.open_rate - card.bounce_rate * 2 - card.complaint_rate * 10)));
+                    const scoreColor = score >= 60 ? '#22c55e' : score >= 30 ? '#f59e0b' : '#ef4444';
+                    const isSelected = selectedISP === card.isp;
+                    return (
+                      <div
+                        key={card.isp}
+                        className={`ac-isp-card${isSelected ? ' selected' : ''}`}
+                        onClick={() => setSelectedISP(isSelected ? null : card.isp)}
+                        style={{ borderColor: isSelected ? ISP_COLORS[card.isp] || '#6366f1' : undefined }}
+                      >
+                        <div className="ac-isp-card-header">
+                          <span className="ac-isp-dot" style={{ background: ISP_COLORS[card.isp] || '#6B7280' }} />
+                          <span className="ac-isp-name">{ISP_LABELS[card.isp] || card.label}</span>
+                          <span className="ac-isp-score" style={{ color: scoreColor }}>{score}</span>
+                        </div>
+                        <div className="ac-isp-card-metrics">
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val">{fmt(card.sent)}</span>
+                            <span className="ac-isp-metric-lbl">Sent</span>
+                          </div>
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val" style={{ color: '#22c55e' }}>{card.open_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Opens</span>
+                          </div>
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val" style={{ color: '#3b82f6' }}>{card.click_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Clicks</span>
+                          </div>
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.bounce_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Bounces</span>
+                          </div>
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.complaint_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Complaints</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">VOLATILITY</span>
-                  <span className="ac-intel-value" style={{ color: volColor }}>{vol}</span>
-                  <span className="ac-intel-sub">CV: {sentCV.toFixed(1)}%</span>
-                </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">AVG DAILY SEND</span>
-                  <span className="ac-intel-value">{fmt(Math.round(sentMean))}</span>
-                  <span className="ac-intel-sub">&sigma; {fmt(Math.round(sentStdDev))}</span>
-                </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">AVG OPEN RATE</span>
-                  <span className="ac-intel-value">{avgOpenRate.toFixed(1)}%</span>
-                  <span className="ac-intel-sub" style={{ color: orMomentum >= 0 ? '#22c55e' : '#ef4444' }}>
-                    {orMomentum >= 0 ? '▲' : '▼'} {Math.abs(orMomentum).toFixed(1)}%
-                  </span>
-                </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">AVG CTR</span>
-                  <span className="ac-intel-value">{avgCTR.toFixed(2)}%</span>
-                </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">STREAK</span>
-                  <span className="ac-intel-value" style={{ color: upStreak > 0 ? '#22c55e' : downStreak > 0 ? '#ef4444' : '#94a3b8' }}>
-                    {upStreak > 0 ? `${upStreak}d ▲` : downStreak > 0 ? `${downStreak}d ▼` : 'FLAT'}
-                  </span>
-                </div>
-                <div className="ac-intel-item">
-                  <span className="ac-intel-label">BEST DAY</span>
-                  <span className="ac-intel-value">{fmt(Math.max(...sentArr))}</span>
-                  <span className="ac-intel-sub">{(() => { const idx = sentArr.indexOf(Math.max(...sentArr)); return idx >= 0 && trend[idx] ? trend[idx].date.slice(5) : '–'; })()}</span>
-                </div>
-              </div>
-            );
-          })()}
+
+                {selectedISP && (
+                  <div className="ac-isp-detail">
+                    <div className="ac-isp-detail-header">
+                      <h4 style={{ color: ISP_COLORS[selectedISP] || '#a5b4fc' }}>
+                        {ISP_LABELS[selectedISP] || selectedISP} — Detailed Metrics
+                      </h4>
+                      <button className="ac-isp-close" onClick={() => setSelectedISP(null)}>&times;</button>
+                    </div>
+                    {ispTrendLoading ? (
+                      <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading trend…</div>
+                    ) : ispTrend.length === 0 ? (
+                      <div className="ac-empty-mini">No trend data for this ISP.</div>
+                    ) : (
+                      <div className="ac-trend-chart">
+                        <ResponsiveContainer width="100%" height={300}>
+                          <LineChart data={ispTrend} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                            <XAxis
+                              dataKey="date"
+                              stroke="#334155"
+                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              tickLine={false}
+                              axisLine={{ stroke: '#1e293b' }}
+                              minTickGap={30}
+                              tickFormatter={(value: string) => {
+                                if (ispGranularity === '10min' || ispGranularity === 'hour') {
+                                  const t = value.includes('T') ? value.split('T')[1] : value;
+                                  if (range === '1h') return t.slice(0, 5);
+                                  const h = parseInt(t.split(':')[0], 10);
+                                  const ampm = h >= 12 ? 'PM' : 'AM';
+                                  return `${h === 0 ? 12 : h > 12 ? h - 12 : h} ${ampm}`;
+                                }
+                                return value.slice(5);
+                              }}
+                            />
+                            <YAxis
+                              yAxisId="left"
+                              stroke="#334155"
+                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              tickLine={false}
+                              axisLine={false}
+                              tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
+                            />
+                            <YAxis
+                              yAxisId="right"
+                              orientation="right"
+                              stroke="#334155"
+                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              tickLine={false}
+                              axisLine={false}
+                              tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
+                            />
+                            <RechartsTooltip
+                              contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                              labelStyle={{ color: '#94a3b8' }}
+                              formatter={(value: number, name: string) => [fmt(value), name.charAt(0).toUpperCase() + name.slice(1)]}
+                            />
+                            <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+                            <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || '#a5b4fc'} strokeWidth={2} dot={false} name="Sent" />
+                            <Line yAxisId="right" type="monotone" dataKey="opens" stroke="#22c55e" strokeWidth={1.5} dot={false} name="Opens" />
+                            <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Clicks" />
+                            <Line yAxisId="right" type="monotone" dataKey="bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Complaints" />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
 
           {/* ─── Two-Column Layout ──────────────────────────────────────── */}
           <div className="ac-two-col ig-fade-in">

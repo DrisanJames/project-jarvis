@@ -214,59 +214,132 @@
 .ac-agent-perf-bar-fill.ac-st-adapting { background: linear-gradient(90deg, #00e5ff, #00b0ff); }
 .ac-agent-perf-bar-val { font-size: 11px; font-weight: 600; color: #c0c4d0; min-width: 36px; text-align: right; }
 
-/* ─── Statistical Intelligence Bar ──────────────────────────────────────── */
-.ac-intel-bar {
-  display: flex;
-  gap: 0;
-  overflow-x: auto;
-  margin-bottom: 20px;
-  border: 1px solid rgba(0,200,255,0.08);
-  border-radius: 10px;
-  background: linear-gradient(135deg, rgba(10,15,26,0.95), rgba(13,21,38,0.95));
-  backdrop-filter: blur(10px);
+/* ─── ISP Performance Cards ────────────────────────────────────────────── */
+.ac-isp-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
 }
-.ac-intel-item {
+.ac-isp-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(0,200,255,0.08);
+  border-radius: 12px;
+  padding: 14px;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.ac-isp-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0,200,255,0.2);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+.ac-isp-card.selected {
+  border-width: 2px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+.ac-isp-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ac-isp-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ac-isp-card-header .ac-isp-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e6f0;
   flex: 1;
-  min-width: 100px;
-  padding: 10px 12px;
-  border-right: 1px solid rgba(0,200,255,0.08);
+  min-width: 0;
+}
+.ac-isp-score {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.ac-isp-card-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+.ac-isp-card-metrics .ac-isp-metric:first-child {
+  grid-column: 1 / -1;
+}
+.ac-isp-metric {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  text-align: center;
 }
-.ac-intel-item:last-child { border-right: none; }
-.ac-intel-label {
-  font-size: 8px;
-  letter-spacing: 0.08em;
-  color: #6b7280;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-.ac-intel-value {
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 14px;
+.ac-isp-metric-val {
+  font-size: 13px;
   font-weight: 700;
   color: #e0e6f0;
   line-height: 1.2;
 }
-.ac-intel-sub {
-  font-size: 10px;
-  font-family: monospace;
-  color: #64748b;
+.ac-isp-metric-lbl {
+  font-size: 9px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ISP Detail panel (expanded line chart) */
+.ac-isp-detail {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(0,200,255,0.12);
+  border-radius: 12px;
+}
+.ac-isp-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.ac-isp-detail-header h4 {
+  margin: 0;
+  font-size: 15px;
   font-weight: 600;
+}
+.ac-isp-close {
+  background: none;
+  border: 1px solid rgba(0,200,255,0.12);
+  color: #6b7280;
+  font-size: 20px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.ac-isp-close:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
 }
 
 /* ─── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .ac-kpi-grid { grid-template-columns: repeat(3, 1fr); }
   .ac-two-col { grid-template-columns: 1fr; }
+  .ac-isp-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 900px) {
   .ac-kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .ac-container { padding: 16px; }
+  .ac-isp-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
   .ac-kpi-grid { grid-template-columns: 1fr; }
+  .ac-isp-grid { grid-template-columns: 1fr; }
 }

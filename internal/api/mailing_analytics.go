@@ -20,6 +20,7 @@ import (
 // JSON response so the frontend can display it for deployment verification.
 const (
 	VersionAnalyticsOverview       = "1.2"
+	VersionISPPerformance          = "1.0"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -1630,5 +1631,191 @@ func (s *AdvancedMailingService) HandleStoreCampaignLearning(w http.ResponseWrit
 		"learnings":     learnings,
 		"stored":        true,
 		"learning_applied": true,
+	})
+}
+
+// ================== ISP PERFORMANCE ==================
+
+const ispDomainCaseSQL = `CASE
+	WHEN dom IN ('gmail.com','googlemail.com') THEN 'gmail'
+	WHEN dom IN ('yahoo.com','ymail.com','aol.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp') THEN 'yahoo'
+	WHEN dom IN ('outlook.com','hotmail.com','live.com','msn.com') THEN 'microsoft'
+	WHEN dom IN ('icloud.com','me.com','mac.com') THEN 'apple'
+	WHEN dom IN ('comcast.net','xfinity.com') THEN 'comcast'
+	WHEN dom IN ('att.net','sbcglobal.net','bellsouth.net') THEN 'att'
+	WHEN dom IN ('cox.net') THEN 'cox'
+	WHEN dom IN ('charter.net','spectrum.net') THEN 'charter'
+	ELSE 'other'
+END`
+
+var ispDomainFilter = map[string]string{
+	"gmail":     "('gmail.com','googlemail.com')",
+	"yahoo":     "('yahoo.com','ymail.com','aol.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp')",
+	"microsoft": "('outlook.com','hotmail.com','live.com','msn.com')",
+	"apple":     "('icloud.com','me.com','mac.com')",
+	"comcast":   "('comcast.net','xfinity.com')",
+	"att":       "('att.net','sbcglobal.net','bellsouth.net')",
+	"cox":       "('cox.net')",
+	"charter":   "('charter.net','spectrum.net')",
+}
+
+var ispLabels = map[string]string{
+	"gmail": "Gmail", "yahoo": "Yahoo", "microsoft": "Microsoft",
+	"apple": "Apple iCloud", "comcast": "Comcast", "att": "AT&T",
+	"cox": "Cox", "charter": "Charter/Spectrum", "other": "Other",
+}
+
+func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start, end := parseAnalyticsRange(r)
+	ispParam := r.URL.Query().Get("isp")
+
+	domSubquery := `SELECT t.*, LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2))) as dom
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
+		WHERE t.event_at >= $1 AND t.event_at <= $2`
+
+	if ispParam != "" {
+		domains, ok := ispDomainFilter[ispParam]
+		if !ok {
+			http.Error(w, `{"error":"unknown isp"}`, http.StatusBadRequest)
+			return
+		}
+
+		gran := trendGranularity(start, end)
+		truncFn := "DATE(d.event_at)"
+		dateFmt := "2006-01-02"
+		switch gran {
+		case "10min":
+			truncFn = "DATE_TRUNC('hour', d.event_at) + INTERVAL '10 min' * FLOOR(EXTRACT(MINUTE FROM d.event_at) / 10)"
+			dateFmt = "2006-01-02T15:04"
+		case "hour":
+			truncFn = "DATE_TRUNC('hour', d.event_at)"
+			dateFmt = "2006-01-02T15:04"
+		}
+
+		q := fmt.Sprintf(`SELECT %s as bucket,
+			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+			SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounces,
+			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
+		FROM (%s) d
+		WHERE d.dom IN %s
+		GROUP BY bucket ORDER BY bucket`, truncFn, domSubquery, domains)
+
+		rows, err := s.db.QueryContext(ctx, q, start, end)
+		if err != nil {
+			log.Printf("[ISPPerformance trend] query error: %v", err)
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+			return
+		}
+		defer rows.Close()
+
+		var trend []map[string]interface{}
+		var tSent, tDel, tOpens, tClicks, tBounces, tComplaints int
+		for rows.Next() {
+			var bucket time.Time
+			var sent, delivered, opens, clicks, bounces, complaints int
+			rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &bounces, &complaints)
+			tSent += sent
+			tDel += delivered
+			tOpens += opens
+			tClicks += clicks
+			tBounces += bounces
+			tComplaints += complaints
+			trend = append(trend, map[string]interface{}{
+				"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
+				"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints,
+			})
+		}
+		if trend == nil {
+			trend = []map[string]interface{}{}
+		}
+
+		openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
+		if tSent > 0 {
+			openRate = math.Round(float64(tOpens)/float64(tSent)*10000) / 100
+			clickRate = math.Round(float64(tClicks)/float64(tSent)*10000) / 100
+			bounceRate = math.Round(float64(tBounces)/float64(tSent)*10000) / 100
+			complaintRate = math.Round(float64(tComplaints)/float64(tSent)*10000) / 100
+		}
+
+		label := ispLabels[ispParam]
+		if label == "" {
+			label = ispParam
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"api_version": VersionISPPerformance,
+			"isp":         ispParam,
+			"label":       label,
+			"granularity":  gran,
+			"totals": map[string]interface{}{
+				"sent": tSent, "delivered": tDel, "opens": tOpens,
+				"clicks": tClicks, "bounces": tBounces, "complaints": tComplaints,
+				"open_rate": openRate, "click_rate": clickRate,
+				"bounce_rate": bounceRate, "complaint_rate": complaintRate,
+			},
+			"trend": trend,
+		})
+		return
+	}
+
+	q := fmt.Sprintf(`SELECT %s as isp,
+		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN d.subscriber_id END) as opens,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN d.subscriber_id END) as clicks,
+		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounces,
+		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
+	FROM (%s) d
+	GROUP BY isp ORDER BY sent DESC`, ispDomainCaseSQL, domSubquery)
+
+	rows, err := s.db.QueryContext(ctx, q, start, end)
+	if err != nil {
+		log.Printf("[ISPPerformance summary] query error: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	var isps []map[string]interface{}
+	for rows.Next() {
+		var isp string
+		var sent, delivered, opens, clicks, bounces, complaints int
+		rows.Scan(&isp, &sent, &delivered, &opens, &clicks, &bounces, &complaints)
+
+		openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
+		if sent > 0 {
+			openRate = math.Round(float64(opens)/float64(sent)*10000) / 100
+			clickRate = math.Round(float64(clicks)/float64(sent)*10000) / 100
+			bounceRate = math.Round(float64(bounces)/float64(sent)*10000) / 100
+			complaintRate = math.Round(float64(complaints)/float64(sent)*10000) / 100
+		}
+
+		label := ispLabels[isp]
+		if label == "" {
+			label = isp
+		}
+
+		isps = append(isps, map[string]interface{}{
+			"isp": isp, "label": label,
+			"sent": sent, "delivered": delivered, "opens": opens,
+			"clicks": clicks, "bounces": bounces, "complaints": complaints,
+			"open_rate": openRate, "click_rate": clickRate,
+			"bounce_rate": bounceRate, "complaint_rate": complaintRate,
+		})
+	}
+	if isps == nil {
+		isps = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionISPPerformance,
+		"isps":        isps,
 	})
 }
