@@ -29,9 +29,9 @@ func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request
 		),
 		list_events AS (
 			SELECT s.list_id,
-				COUNT(DISTINCT CASE WHEN te.event_type = 'open' THEN te.subscriber_id END) as unique_opens,
-				COUNT(DISTINCT CASE WHEN te.event_type = 'click' THEN te.subscriber_id END) as unique_clicks,
-				COUNT(DISTINCT CASE WHEN te.event_type = 'complaint' THEN te.subscriber_id END) as unique_complaints
+				COUNT(DISTINCT CASE WHEN te.event_type = 'opened' THEN te.subscriber_id END) as unique_opens,
+				COUNT(DISTINCT CASE WHEN te.event_type = 'clicked' THEN te.subscriber_id END) as unique_clicks,
+				COUNT(DISTINCT CASE WHEN te.event_type = 'complained' THEN te.subscriber_id END) as unique_complaints
 			FROM mailing_tracking_events te
 			JOIN mailing_subscribers s ON te.subscriber_id = s.id
 			GROUP BY s.list_id

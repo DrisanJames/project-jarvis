@@ -772,8 +772,9 @@
 
 .list-portal .list-stats {
   display: flex;
-  gap: 24px;
-  padding: 16px 0;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 0;
   border-top: 1px solid rgba(0,200,255,0.08);
   border-bottom: 1px solid rgba(0,200,255,0.08);
   margin-bottom: 16px;
@@ -781,17 +782,22 @@
 
 .list-portal .list-stats .stat {
   text-align: center;
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 .list-portal .list-stats .stat-value {
   display: block;
-  font-size: 1.25rem;
+  font-size: 0.85rem;
   font-weight: 600;
   color: #e0e6f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .list-portal .list-stats .stat-label {
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(180,210,240,0.65);
   text-transform: uppercase;
   letter-spacing: 0.5px;
