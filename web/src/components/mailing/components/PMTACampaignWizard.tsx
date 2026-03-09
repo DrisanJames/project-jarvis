@@ -862,12 +862,30 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         }
         return data as PMTADraftResponse;
       })
-      .then(data => {
-        if (cancelled || !data) return;
-        hydrateDraft(data);
-        setDraftError('');
-        const loadedAt = data.updated_at ? new Date(data.updated_at).toLocaleString() : 'earlier';
-        setDraftStatus(`Loaded saved draft from ${loadedAt}.`);
+      .then(async data => {
+        if (cancelled) return;
+        if (data) {
+          hydrateDraft(data);
+          setDraftError('');
+          const loadedAt = data.updated_at ? new Date(data.updated_at).toLocaleString() : 'earlier';
+          setDraftStatus(`Loaded saved draft from ${loadedAt}.`);
+          return;
+        }
+        // No draft — seed quotas from the most recent completed campaign
+        try {
+          const lqRes = await fetchWithRetry(`${API_BASE}/pmta-campaign/last-quotas`);
+          if (!lqRes.ok || cancelled) return;
+          const lq = await lqRes.json();
+          if (cancelled || !lq?.quotas) return;
+          const parsed = (lq.quotas as { isp: string; volume: number }[]).reduce<Record<string, number>>(
+            (acc, q) => { if (q?.isp) acc[q.isp] = q.volume || 0; return acc; }, {},
+          );
+          if (Object.keys(parsed).length > 0) {
+            setISPQuotas(parsed);
+            const src = lq.source_campaign || 'previous campaign';
+            setDraftStatus(`Quotas loaded from: ${src}`);
+          }
+        } catch { /* fall through to DEFAULT_ISP_QUOTAS */ }
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -3031,7 +3049,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               <FontAwesomeIcon icon={faArrowLeft} />
             </button>
           )}
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>PMTA Campaign Wizard</h2>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>Campaign Manager</h2>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {/* Clone button */}

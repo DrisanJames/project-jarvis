@@ -29,6 +29,7 @@ import {
   faRocket,
   faLock,
   faRobot,
+  faEnvelope,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ChunkedUploader } from '../ChunkedUploader';
@@ -52,6 +53,10 @@ interface List {
   description?: string;
   subscriber_count: number;
   active_count: number;
+  mailed_to_count: number;
+  open_pct: number;
+  click_pct: number;
+  complaint_pct: number;
   status: 'active' | 'paused' | 'archived';
   opt_in_type: 'single' | 'double';
   default_from_name?: string;
@@ -100,7 +105,7 @@ interface DashboardStats {
   unsubscribes_7d: number;
   avg_engagement: number;
   lists_by_status: { status: string; count: number }[];
-  top_lists: { id: string; name: string; subscriber_count: number; active_count: number }[];
+  top_lists: { id: string; name: string; subscriber_count: number; active_count: number; mailed_to_count: number; open_pct: number; click_pct: number; complaint_pct: number }[];
   recent_activity: { action: string; details: string; timestamp: string }[];
 }
 
@@ -571,8 +576,10 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
                   <div className="list-info">
                     <div className="list-name">{list.name}</div>
                     <div className="list-meta">
-                      <span><FontAwesomeIcon icon={faUsers} /> {list.subscriber_count?.toLocaleString() || 0}</span>
-                      <span><FontAwesomeIcon icon={faCheckCircle} /> {list.active_count?.toLocaleString() || 0} active</span>
+                      <span><FontAwesomeIcon icon={faEnvelope} /> {(list.mailed_to_count || 0).toLocaleString()} / {(list.subscriber_count || 0).toLocaleString()}</span>
+                      <span>{(list.open_pct || 0).toFixed(1)}% opens</span>
+                      <span>{(list.click_pct || 0).toFixed(1)}% clicks</span>
+                      <span>{(list.complaint_pct || 0).toFixed(1)}% complaints</span>
                     </div>
                   </div>
                   <FontAwesomeIcon icon={faArrowRight} className="list-arrow" />
@@ -773,16 +780,20 @@ const ListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigate, onRefres
                   <span className="stat-label">Subscribers</span>
                 </div>
                 <div className="stat">
-                  <span className="stat-value">{(list.active_count || 0).toLocaleString()}</span>
-                  <span className="stat-label">Active</span>
+                  <span className="stat-value">{(list.mailed_to_count || 0).toLocaleString()} / {(list.subscriber_count || 0).toLocaleString()}</span>
+                  <span className="stat-label">Mailed To</span>
                 </div>
                 <div className="stat">
-                  <span className="stat-value">
-                    {list.subscriber_count > 0 
-                      ? Math.round((list.active_count / list.subscriber_count) * 100) 
-                      : 0}%
-                  </span>
-                  <span className="stat-label">Rate</span>
+                  <span className="stat-value">{(list.open_pct || 0).toFixed(1)}%</span>
+                  <span className="stat-label">Opens</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">{(list.click_pct || 0).toFixed(1)}%</span>
+                  <span className="stat-label">Clicks</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">{(list.complaint_pct || 0).toFixed(1)}%</span>
+                  <span className="stat-label">Complaints</span>
                 </div>
               </div>
 

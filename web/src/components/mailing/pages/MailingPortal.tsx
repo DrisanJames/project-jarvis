@@ -49,7 +49,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
-  { id: 'pmta-wizard', label: 'PMTA Campaign', icon: faRocket, description: 'ISP-native PMTA campaign builder' },
+  { id: 'pmta-wizard', label: 'Campaign Manager', icon: faRocket, description: 'ISP-native campaign builder with wave scheduling' },
   { id: 'consciousness', label: 'Consciousness', icon: faBrain, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns' },
   { id: 'journey-center', label: 'Journey Center', icon: faRoute, description: 'Monitor & manage automated journeys' },
@@ -1000,7 +1000,7 @@ const TemplatesManager: React.FC = () => {
     <div className="manager-page" style={{ background: '#0a0f1a' }}>
       <div className="page-explanation">
         <h3 style={{ color: '#e0e6f0' }}>Content Library</h3>
-        <p style={{ color: 'rgba(180,210,240,0.65)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the PMTA Campaign wizard are automatically filed here.</p>
+        <p style={{ color: 'rgba(180,210,240,0.65)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the Campaign Manager are automatically filed here.</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -15,12 +16,38 @@ import (
 	"github.com/google/uuid"
 )
 
-// HandleGetLists returns all lists
+// HandleGetLists returns all lists with per-list mailing stats
 func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := svc.db.QueryContext(ctx, `
-		SELECT id, name, description, subscriber_count, status, created_at 
-		FROM mailing_lists ORDER BY created_at DESC
+		WITH list_sends AS (
+			SELECT s.list_id, COUNT(DISTINCT q.subscriber_id) as mailed_count
+			FROM mailing_campaign_queue q
+			JOIN mailing_subscribers s ON q.subscriber_id = s.id
+			WHERE q.status = 'sent'
+			GROUP BY s.list_id
+		),
+		list_events AS (
+			SELECT s.list_id,
+				COUNT(DISTINCT CASE WHEN te.event_type = 'open' THEN te.subscriber_id END) as unique_opens,
+				COUNT(DISTINCT CASE WHEN te.event_type = 'click' THEN te.subscriber_id END) as unique_clicks,
+				COUNT(DISTINCT CASE WHEN te.event_type = 'complaint' THEN te.subscriber_id END) as unique_complaints
+			FROM mailing_tracking_events te
+			JOIN mailing_subscribers s ON te.subscriber_id = s.id
+			GROUP BY s.list_id
+		)
+		SELECT l.id, l.name, l.description, l.subscriber_count,
+			(SELECT COUNT(*) FROM mailing_subscribers sub
+			 WHERE sub.list_id = l.id AND sub.status = 'confirmed') as active_count,
+			l.status, l.created_at,
+			COALESCE(ls.mailed_count, 0) as mailed_to_count,
+			COALESCE(le.unique_opens, 0) as unique_opens,
+			COALESCE(le.unique_clicks, 0) as unique_clicks,
+			COALESCE(le.unique_complaints, 0) as unique_complaints
+		FROM mailing_lists l
+		LEFT JOIN list_sends ls ON ls.list_id = l.id
+		LEFT JOIN list_events le ON le.list_id = l.id
+		ORDER BY l.created_at DESC
 	`)
 	if err != nil {
 		log.Printf("[HandleGetLists] query error: %v", err)
@@ -33,12 +60,28 @@ func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request
 	for rows.Next() {
 		var id uuid.UUID
 		var name, desc, status string
-		var subCount int
+		var subCount, activeCount, mailedTo, uniqueOpens, uniqueClicks, uniqueComplaints int
 		var createdAt time.Time
-		rows.Scan(&id, &name, &desc, &subCount, &status, &createdAt)
+		rows.Scan(&id, &name, &desc, &subCount, &activeCount, &status, &createdAt,
+			&mailedTo, &uniqueOpens, &uniqueClicks, &uniqueComplaints)
+
+		openPct := 0.0
+		clickPct := 0.0
+		complaintPct := 0.0
+		if mailedTo > 0 {
+			openPct = math.Round(float64(uniqueOpens)/float64(mailedTo)*10000) / 100
+			clickPct = math.Round(float64(uniqueClicks)/float64(mailedTo)*10000) / 100
+			complaintPct = math.Round(float64(uniqueComplaints)/float64(mailedTo)*10000) / 100
+		}
+
 		lists = append(lists, map[string]interface{}{
 			"id": id.String(), "name": name, "description": desc,
-			"subscriber_count": subCount, "status": status, "created_at": createdAt,
+			"subscriber_count": subCount, "active_count": activeCount,
+			"status": status, "created_at": createdAt,
+			"mailed_to_count": mailedTo,
+			"open_pct":        openPct,
+			"click_pct":       clickPct,
+			"complaint_pct":   complaintPct,
 		})
 	}
 	if lists == nil {

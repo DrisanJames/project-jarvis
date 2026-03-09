@@ -81,6 +81,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/{campaignId}/emergency-stop", s.HandleEmergencyCampaignStop)
 		cr.Get("/clone-candidates", s.HandleCloneCandidates)
 		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
+		cr.Get("/last-quotas", s.HandleLastQuotas)
 	})
 }
 
@@ -1650,5 +1651,96 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 		"source_id":      campaignID,
 		"source_status":  status,
 		"campaign_input": json.RawMessage(clonedJSON),
+	})
+}
+
+// HandleLastQuotas returns ISP quotas from the most recently completed/sent
+// campaign so the wizard can default new campaigns to the same volumes.
+func (s *PMTACampaignService) HandleLastQuotas(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	var campaignID, name string
+	var completedAt sql.NullTime
+	var configJSON sql.NullString
+
+	query := `SELECT id::text, name, COALESCE(completed_at, started_at, created_at)`
+	if s.colCache.has("pmta_config") {
+		query += `, COALESCE(pmta_config::text, '')`
+	}
+	query += ` FROM mailing_campaigns
+		WHERE organization_id = $1 AND status IN ('completed', 'sent')
+		ORDER BY COALESCE(completed_at, started_at, created_at) DESC LIMIT 1`
+
+	var err error
+	if s.colCache.has("pmta_config") {
+		err = s.db.QueryRowContext(ctx, query, orgID).Scan(&campaignID, &name, &completedAt, &configJSON)
+	} else {
+		err = s.db.QueryRowContext(ctx, query, orgID).Scan(&campaignID, &name, &completedAt)
+	}
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"quotas": nil})
+		return
+	}
+
+	sourceDate := ""
+	if completedAt.Valid {
+		sourceDate = completedAt.Time.Format(time.RFC3339)
+	}
+
+	// Try pmta_config first
+	if configJSON.Valid && configJSON.String != "" && configJSON.String != "{}" {
+		var cfg struct {
+			CampaignInput struct {
+				ISPQuotas []struct {
+					ISP    string `json:"isp"`
+					Volume int    `json:"volume"`
+				} `json:"isp_quotas"`
+			} `json:"campaign_input"`
+		}
+		if err := json.Unmarshal([]byte(configJSON.String), &cfg); err == nil && len(cfg.CampaignInput.ISPQuotas) > 0 {
+			quotas := make([]map[string]interface{}, 0, len(cfg.CampaignInput.ISPQuotas))
+			for _, q := range cfg.CampaignInput.ISPQuotas {
+				quotas = append(quotas, map[string]interface{}{"isp": q.ISP, "volume": q.Volume})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"quotas":          quotas,
+				"source_campaign": name,
+				"source_date":     sourceDate,
+			})
+			return
+		}
+	}
+
+	// Fallback: reconstruct from mailing_campaign_isp_plans
+	planRows, _ := s.db.QueryContext(ctx, `
+		SELECT isp, quota FROM mailing_campaign_isp_plans
+		WHERE campaign_id = $1 ORDER BY isp
+	`, campaignID)
+	var quotas []map[string]interface{}
+	if planRows != nil {
+		defer planRows.Close()
+		for planRows.Next() {
+			var isp string
+			var quota int
+			if err := planRows.Scan(&isp, &quota); err == nil {
+				quotas = append(quotas, map[string]interface{}{"isp": isp, "volume": quota})
+			}
+		}
+	}
+
+	if len(quotas) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"quotas": nil})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"quotas":          quotas,
+		"source_campaign": name,
+		"source_date":     sourceDate,
 	})
 }
