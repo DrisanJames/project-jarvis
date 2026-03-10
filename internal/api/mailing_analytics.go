@@ -21,7 +21,7 @@ import (
 const (
 	VersionAnalyticsOverview       = "1.2"
 	VersionISPPerformance          = "1.0"
-	VersionISPSendingInsights      = "1.1"
+	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -1826,6 +1826,7 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.Header.Get("X-Organization-ID")
+	domainFilter := strings.TrimSpace(r.URL.Query().Get("sending_domain"))
 
 	end := time.Now()
 	start := end.Add(-3 * 24 * time.Hour)
@@ -1834,6 +1835,33 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		FROM mailing_tracking_events t
 		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
 		WHERE t.event_at >= $1 AND t.event_at <= $2`
+	subqueryArgs := []interface{}{start, end}
+
+	if domainFilter != "" {
+		domSubquery += fmt.Sprintf(` AND LOWER(COALESCE(NULLIF(t.sending_domain,''),'unknown')) = LOWER($%d)`, len(subqueryArgs)+1)
+		subqueryArgs = append(subqueryArgs, domainFilter)
+	}
+
+	// Fetch distinct sending domains for the filter dropdown
+	var sendingDomains []string
+	domRows, _ := s.db.QueryContext(ctx,
+		`SELECT DISTINCT LOWER(COALESCE(NULLIF(sending_domain,''),'unknown')) as sd
+		 FROM mailing_tracking_events
+		 WHERE event_at >= $1 AND event_at <= $2
+		 ORDER BY sd`, start, end)
+	if domRows != nil {
+		defer domRows.Close()
+		for domRows.Next() {
+			var sd string
+			domRows.Scan(&sd)
+			if sd != "unknown" && sd != "" {
+				sendingDomains = append(sendingDomains, sd)
+			}
+		}
+	}
+	if sendingDomains == nil {
+		sendingDomains = []string{}
+	}
 
 	// 1. Daily metrics per ISP (hard vs soft bounce split)
 	dailyQ := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at) as day,
@@ -1848,7 +1876,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	FROM (%s) d
 	GROUP BY isp, day ORDER BY isp, day`, ispDomainCaseSQL, domSubquery)
 
-	dailyRows, err := s.db.QueryContext(ctx, dailyQ, start, end)
+	dailyRows, err := s.db.QueryContext(ctx, dailyQ, subqueryArgs...)
 	if err != nil {
 		log.Printf("[ISPSendingInsights] daily query error: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
@@ -1880,7 +1908,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	WHERE d.event_type IN ('bounced','hard_bounce','soft_bounce')
 	GROUP BY isp, category`, ispDomainCaseSQL, domSubquery)
 
-	catRows, _ := s.db.QueryContext(ctx, catQ, start, end)
+	catRows, _ := s.db.QueryContext(ctx, catQ, subqueryArgs...)
 	ispBounceCategories := map[string]map[string]int{}
 	if catRows != nil {
 		defer catRows.Close()
@@ -1901,7 +1929,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	WHERE d.event_type IN ('deferred','deferral')
 	GROUP BY isp, hr ORDER BY isp, hr`, ispDomainCaseSQL, domSubquery)
 
-	hrRows, _ := s.db.QueryContext(ctx, hrQ, start, end)
+	hrRows, _ := s.db.QueryContext(ctx, hrQ, subqueryArgs...)
 	ispHourlyDeferrals := map[string][24]int{}
 	if hrRows != nil {
 		defer hrRows.Close()
@@ -2141,10 +2169,12 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"api_version":    VersionISPSendingInsights,
-		"window":         map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
-		"current_quotas": currentQuotas,
-		"isps":           isps,
+		"api_version":     VersionISPSendingInsights,
+		"window":          map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
+		"current_quotas":  currentQuotas,
+		"isps":            isps,
+		"sending_domains": sendingDomains,
+		"domain_filter":   domainFilter,
 	})
 }
 

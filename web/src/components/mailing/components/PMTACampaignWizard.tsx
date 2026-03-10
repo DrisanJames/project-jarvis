@@ -310,6 +310,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [expandedInsightISP, setExpandedInsightISP] = useState<string | null>(null);
   const [insightsCollapsed, setInsightsCollapsed] = useState(false);
+  const [insightDomainFilter, setInsightDomainFilter] = useState('');
+  const [insightAvailableDomains, setInsightAvailableDomains] = useState<string[]>([]);
 
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
@@ -421,12 +423,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     setReadinessLoading(false);
   }, [fetchWithRetry]);
 
-  const fetchInsights = useCallback(async () => {
+  const fetchInsights = useCallback(async (domain?: string) => {
     setInsightsLoading(true);
     try {
-      const res = await orgFetch(`${API_BASE}/analytics/isp-sending-insights`, orgId);
+      const qs = domain ? `?sending_domain=${encodeURIComponent(domain)}` : '';
+      const res = await orgFetch(`${API_BASE}/analytics/isp-sending-insights${qs}`, orgId);
       const data = await res.json();
       setIspInsights(data?.isps || []);
+      if (data?.sending_domains) {
+        setInsightAvailableDomains(data.sending_domains);
+      }
     } catch (err) {
       console.warn('[Wizard] ISP insights fetch failed:', err);
     }
@@ -617,12 +623,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Load data on step entry
   useEffect(() => {
-    if (step === 1) { fetchReadiness(); fetchInsights(); }
+    if (step === 1) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
     if (step === 2) fetchDomains();
     if (step === 3) fetchTemplates();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel]);
+  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel, insightDomainFilter]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -1369,6 +1375,38 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
         {!insightsCollapsed && (
           <div style={{ padding: '0 16px 16px' }}>
+            {insightAvailableDomains.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, paddingTop: 4 }}>
+                <label style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, whiteSpace: 'nowrap' }}>Sending Domain:</label>
+                <select
+                  value={insightDomainFilter}
+                  onChange={(e) => setInsightDomainFilter(e.target.value)}
+                  style={{
+                    flex: '0 1 260px', padding: '5px 10px', borderRadius: 6,
+                    border: '1px solid rgba(0,200,255,0.15)', background: 'rgba(10,15,26,0.8)',
+                    color: '#e0e6f0', fontSize: 12, cursor: 'pointer',
+                    outline: 'none',
+                  }}
+                >
+                  <option value="">All Domains</option>
+                  {insightAvailableDomains.map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                {insightDomainFilter && (
+                  <button
+                    onClick={() => setInsightDomainFilter('')}
+                    title="Clear filter"
+                    style={{
+                      background: 'none', border: 'none', color: '#64748b', cursor: 'pointer',
+                      fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                    }}
+                  >
+                    <FontAwesomeIcon icon={faTimes} />
+                  </button>
+                )}
+              </div>
+            )}
             {insightsLoading && ispInsights.length === 0 && (
               <div style={{ textAlign: 'center', padding: 20, color: '#64748b', fontSize: 12 }}>
                 <FontAwesomeIcon icon={faSpinner} spin /> Analyzing 3-day sending performance…
@@ -1377,7 +1415,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
             {!insightsLoading && ispInsights.length === 0 && (
               <div style={{ textAlign: 'center', padding: 20, color: '#4b5563', fontSize: 12 }}>
-                No sending data found in the last 3 days.
+                No sending data found in the last 3 days{insightDomainFilter ? ` for ${insightDomainFilter}` : ''}.
               </div>
             )}
 
