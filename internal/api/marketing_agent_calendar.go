@@ -890,69 +890,48 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		Folder  string `json:"folder"`
 	}
 
-	loadTemplatesByFolder := func(keywords []string) []savedTemplate {
-		var result []savedTemplate
-		for _, kw := range keywords {
-			tRows, err := a.db.QueryContext(r.Context(),
-				`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
-				 FROM mailing_templates t
-				 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
-				 WHERE t.organization_id::text = $1 AND t.status = 'active'
-				   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 0
-				   AND (LOWER(COALESCE(f.name,'')) LIKE '%' || $2 || '%' OR LOWER(t.name) LIKE '%' || $2 || '%')
-				 ORDER BY t.updated_at DESC LIMIT 10`, orgID, strings.ToLower(kw))
-			if err != nil {
-				log.Printf("[MarketingAgent] template query error for keyword '%s': %v", kw, err)
+	// Load ALL active templates with HTML content, then categorize by name/folder
+	var allTemplates []savedTemplate
+	tRows, tErr := a.db.QueryContext(r.Context(),
+		`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
+		 FROM mailing_templates t
+		 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
+		 WHERE t.organization_id = $1 AND t.status = 'active'
+		   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 10
+		 ORDER BY t.updated_at DESC LIMIT 30`, orgID)
+	if tErr != nil {
+		log.Printf("[MarketingAgent] template query error: %v (orgID=%s)", tErr, orgID)
+	} else {
+		defer tRows.Close()
+		for tRows.Next() {
+			var t savedTemplate
+			if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder); scanErr != nil {
+				log.Printf("[MarketingAgent] template scan error: %v", scanErr)
 				continue
 			}
-			defer tRows.Close()
-			for tRows.Next() {
-				var t savedTemplate
-				if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder); scanErr != nil {
-					log.Printf("[MarketingAgent] template scan error: %v", scanErr)
-					continue
-				}
-				result = append(result, t)
-			}
+			allTemplates = append(allTemplates, t)
 		}
-		return result
 	}
+	log.Printf("[MarketingAgent] loaded %d templates total (orgID=%s)", len(allTemplates), orgID)
 
-	// For warmup: use newsletter/re-engagement templates; for welcome: use welcome series
-	warmupTemplates := loadTemplatesByFolder([]string{"newsletter", "re-engagement", "engagement"})
-	welcomeTemplates := loadTemplatesByFolder([]string{"welcome"})
-	log.Printf("[MarketingAgent] keyword search: %d warmup, %d welcome templates", len(warmupTemplates), len(welcomeTemplates))
-
-	// Fallback: if no category-specific templates found, use ANY active template
-	if len(warmupTemplates) == 0 && len(welcomeTemplates) == 0 {
-		allRows, err := a.db.QueryContext(r.Context(),
-			`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
-			 FROM mailing_templates t
-			 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
-			 WHERE t.organization_id::text = $1 AND t.status = 'active'
-			   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 0
-			 ORDER BY t.updated_at DESC LIMIT 10`, orgID)
-		if err != nil {
-			log.Printf("[MarketingAgent] fallback template query error: %v", err)
+	// Split into categories by name/folder keywords
+	var warmupTemplates, welcomeTemplates []savedTemplate
+	for _, t := range allTemplates {
+		lower := strings.ToLower(t.Name + " " + t.Folder)
+		if strings.Contains(lower, "welcome") {
+			welcomeTemplates = append(welcomeTemplates, t)
 		} else {
-			defer allRows.Close()
-			for allRows.Next() {
-				var t savedTemplate
-				allRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder)
-				warmupTemplates = append(warmupTemplates, t)
-				welcomeTemplates = append(welcomeTemplates, t)
-			}
-			log.Printf("[MarketingAgent] fallback found %d templates", len(warmupTemplates))
+			warmupTemplates = append(warmupTemplates, t)
 		}
 	}
 	if len(warmupTemplates) == 0 {
-		warmupTemplates = welcomeTemplates
+		warmupTemplates = allTemplates
 	}
 	if len(welcomeTemplates) == 0 {
-		welcomeTemplates = warmupTemplates
+		welcomeTemplates = allTemplates
 	}
 
-	log.Printf("[MarketingAgent] final: %d warmup templates, %d welcome templates (orgID=%s)", len(warmupTemplates), len(welcomeTemplates), orgID)
+	log.Printf("[MarketingAgent] categorized: %d warmup, %d welcome templates", len(warmupTemplates), len(welcomeTemplates))
 
 	// Generate daily recommendations — two campaigns per day
 	created := 0
