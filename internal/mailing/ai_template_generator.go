@@ -17,6 +17,7 @@ import (
 type TemplateGenerationRequest struct {
 	CampaignType  string `json:"campaign_type"`  // welcome, winback, newsletter, promotional, re-engagement, announcement
 	SendingDomain string `json:"sending_domain"` // domain to scrape for brand intelligence
+	ReferenceHTML string `json:"reference_html"`  // optional existing template HTML as style inspiration
 }
 
 // GeneratedVariation is one AI-produced email template.
@@ -61,6 +62,13 @@ func (s *AIContentService) GenerateEmailTemplates(ctx context.Context, req Templ
 
 	brand := s.scrapeBrandIntelligence(ctx, req.SendingDomain)
 	prompt := buildTemplateGenerationPrompt(req.CampaignType, brand)
+	if req.ReferenceHTML != "" {
+		trimmed := req.ReferenceHTML
+		if len(trimmed) > 4000 {
+			trimmed = trimmed[:4000] + "\n...[truncated]"
+		}
+		prompt += "\n\n## REFERENCE TEMPLATE (use as style/layout inspiration — DO NOT copy verbatim)\n\nStudy this existing template's layout, color scheme, font choices, button styles, and overall design language. Your new templates should feel like they belong to the same brand family while being fresh and distinct.\n\n```html\n" + trimmed + "\n```"
+	}
 
 	var variations []GeneratedVariation
 	var err error

@@ -900,14 +900,15 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	var warmupTemplates []savedTemplate
 	var welcomeTemplates []savedTemplate
 
-	generateTemplates := func(campaignType string) []savedTemplate {
+	generateTemplates := func(ctx context.Context, campaignType string) []savedTemplate {
 		if a.aiContent == nil {
 			return nil
 		}
 		log.Printf("[MarketingAgent] generating %s templates for %s...", campaignType, input.SendingDomain)
-		result, genErr := a.aiContent.GenerateEmailTemplates(r.Context(), mailing.TemplateGenerationRequest{
+		result, genErr := a.aiContent.GenerateEmailTemplates(ctx, mailing.TemplateGenerationRequest{
 			CampaignType:  campaignType,
 			SendingDomain: input.SendingDomain,
+			ReferenceHTML: referenceTemplateHTML,
 		})
 		if genErr != nil {
 			log.Printf("[MarketingAgent] template generation warning (%s): %v", campaignType, genErr)
@@ -919,7 +920,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		var saved []savedTemplate
 		for _, v := range result.Variations {
 			var templateID string
-			saveErr := a.db.QueryRowContext(r.Context(),
+			saveErr := a.db.QueryRowContext(ctx,
 				`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, html_content, preview_text, status, created_at, updated_at)
 				 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
 				 RETURNING id::text`,
@@ -934,9 +935,6 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 				continue
 			}
 			saved = append(saved, savedTemplate{ID: templateID, Name: v.VariantName, Subject: v.Subject})
-			if v.FromName != "" && fromName == "" {
-				fromName = v.FromName
-			}
 		}
 		log.Printf("[MarketingAgent] generated %d %s templates", len(saved), campaignType)
 		return saved
@@ -1065,8 +1063,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// Background: generate templates and patch them into recommendations
 	go func() {
 		bgCtx := context.Background()
-		warmupTemplates = generateTemplates("re-engagement")
-		welcomeTemplates = generateTemplates("welcome")
+		warmupTemplates = generateTemplates(bgCtx, "re-engagement")
+		welcomeTemplates = generateTemplates(bgCtx, "welcome")
 		totalGenerated := len(warmupTemplates) + len(welcomeTemplates)
 		if totalGenerated == 0 {
 			log.Printf("[MarketingAgent] background template generation produced 0 templates")
