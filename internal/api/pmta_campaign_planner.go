@@ -265,6 +265,9 @@ func normalizeTimeSpans(
 			if raw.EndAt != nil {
 				endAt = raw.EndAt.UTC()
 			}
+			if sendMode == "scheduled" && startAt.Before(now) {
+				return nil, fmt.Errorf("scheduled time span start_at (%s) is in the past", startAt.Format(time.RFC3339))
+			}
 			if endAt.Before(startAt) {
 				return nil, fmt.Errorf("time span end_at must be after start_at")
 			}

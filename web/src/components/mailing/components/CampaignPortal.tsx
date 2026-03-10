@@ -41,6 +41,8 @@ import {
   faSave,
   faBullseye,
   faCode,
+  faChevronDown,
+  faChevronUp,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -126,6 +128,22 @@ const getEditLockInfo = (campaign: Campaign): { isLocked: boolean; lockTime?: Da
   };
 };
 
+interface ISPBreakdownEntry {
+  isp: string;
+  quota?: number;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  complaints: number;
+  open_rate: number;
+  click_rate: number;
+  planned_recipients?: number;
+  enqueued_recipients?: number;
+}
+
 interface CampaignStats {
   sent: number;
   opens: number;
@@ -138,6 +156,8 @@ interface CampaignStats {
   bounce_rate: number;
   complaint_rate: number;
   unsubscribe_rate: number;
+  isp_breakdown?: ISPBreakdownEntry[];
+  domain_breakdown?: Array<{ domain: string; sent: number; delivered: number; opens: number; clicks: number }>;
 }
 
 interface DashboardStats {
@@ -848,6 +868,76 @@ const CampaignDetailsModal: React.FC<{
                 </div>
               )}
 
+              {/* ISP Breakdown — Quotas & Actual Mailed */}
+              {stats && stats.isp_breakdown && stats.isp_breakdown.length > 0 && (
+                <div className="details-section">
+                  <h3><FontAwesomeIcon icon={faBullseye} /> ISP Breakdown — Quotas &amp; Delivery</h3>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="isp-breakdown-table">
+                      <thead>
+                        <tr>
+                          <th>ISP</th>
+                          <th>Quota</th>
+                          <th>Sent</th>
+                          <th>Delivered</th>
+                          <th>Opens</th>
+                          <th>Clicks</th>
+                          <th>Hard B.</th>
+                          <th>Soft B.</th>
+                          <th>Complaints</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stats.isp_breakdown.map(row => {
+                          const ispLabels: Record<string, string> = {
+                            gmail: 'Gmail', yahoo: 'Yahoo', microsoft: 'Microsoft', apple: 'Apple iCloud',
+                            comcast: 'Comcast', att: 'AT&T', cox: 'Cox', charter: 'Charter/Spectrum', other: 'Other',
+                          };
+                          const pct = (n: number, d: number) => d > 0 ? (n / d * 100).toFixed(1) + '%' : '—';
+                          const quotaUsed = row.quota && row.quota > 0 ? Math.round(row.sent / row.quota * 100) : null;
+                          return (
+                            <tr key={row.isp}>
+                              <td style={{ fontWeight: 600, color: '#e0e6f0' }}>{ispLabels[row.isp] || row.isp}</td>
+                              <td>
+                                {row.quota ? (
+                                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                    <span>{row.quota.toLocaleString()}</span>
+                                    {quotaUsed !== null && (
+                                      <span style={{
+                                        fontSize: '0.7rem',
+                                        color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : '#22c55e',
+                                        fontWeight: 700,
+                                      }}>{quotaUsed}% used</span>
+                                    )}
+                                  </span>
+                                ) : <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>}
+                              </td>
+                              <td>{row.sent.toLocaleString()}</td>
+                              <td>{row.delivered.toLocaleString()}</td>
+                              <td>
+                                <span>{row.opens.toLocaleString()}</span>
+                                <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                  ({pct(row.opens, row.delivered)})
+                                </span>
+                              </td>
+                              <td>
+                                <span>{row.clicks.toLocaleString()}</span>
+                                <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                  ({pct(row.clicks, row.delivered)})
+                                </span>
+                              </td>
+                              <td style={{ color: row.hard_bounces > 0 ? '#ef4444' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
+                              <td style={{ color: row.soft_bounces > 0 ? '#f59e0b' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
+                              <td style={{ color: row.complaints > 0 ? '#ef4444' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               {/* Edit Lock Info */}
               {campaign.status === 'scheduled' && campaign.scheduled_at && (
                 <div className={`edit-lock-info ${getEditLockInfo(campaign).isLocked ? 'locked' : ''}`}>
@@ -979,6 +1069,11 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
   const [testSubjectPrefix, setTestSubjectPrefix] = useState('[TEST] ');
   const [testResult, setTestResult] = useState<TestEmailResult | null>(null);
   const [testHistory, setTestHistory] = useState<TestEmailResult[]>([]);
+
+  // Performance & Quota stats (edit mode only)
+  const [editStats, setEditStats] = useState<CampaignStats | null>(null);
+  const [editStatsExpanded, setEditStatsExpanded] = useState(false);
+  const [editStatsLoading, setEditStatsLoading] = useState(false);
 
   const steps: { id: EditorStep; label: string; icon: any }[] = [
     { id: 'purpose', label: 'Purpose', icon: faBullseye },
@@ -1120,6 +1215,26 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
     
     loadData();
   }, [isEditing, campaign, organization]);
+
+  // Fetch performance stats when editing an existing campaign
+  useEffect(() => {
+    if (!isEditing || !campaign?.id) return;
+    const fetchEditStats = async () => {
+      setEditStatsLoading(true);
+      try {
+        const res = await orgFetch(`${API_BASE}/campaigns/${campaign.id}/stats`, organization?.id);
+        if (res.ok) {
+          const data = await res.json();
+          setEditStats(data);
+        }
+      } catch (err) {
+        console.error('Failed to load campaign stats for editor:', err);
+      } finally {
+        setEditStatsLoading(false);
+      }
+    };
+    fetchEditStats();
+  }, [isEditing, campaign?.id, organization?.id]);
 
   // Calculate estimated reach when segments change
   useEffect(() => {
@@ -1338,6 +1453,137 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
           </button>
         </div>
       </div>
+
+      {/* Performance & Quotas Banner (edit mode only) */}
+      {isEditing && (editStats || editStatsLoading) && (
+        <div className="cb-perf-banner">
+          <button
+            className="cb-perf-banner-toggle"
+            onClick={() => setEditStatsExpanded(prev => !prev)}
+            aria-expanded={editStatsExpanded}
+          >
+            <FontAwesomeIcon icon={faBullseye} />
+            <span className="cb-perf-banner-title">Performance &amp; Quotas</span>
+            {!editStatsExpanded && editStats && (
+              <span className="cb-perf-banner-summary">
+                {editStats.sent.toLocaleString()} sent · {editStats.open_rate.toFixed(1)}% opens · {editStats.click_rate.toFixed(1)}% clicks
+                {editStats.isp_breakdown && editStats.isp_breakdown.length > 0 && (
+                  <> · {editStats.isp_breakdown.length} ISPs</>
+                )}
+              </span>
+            )}
+            <FontAwesomeIcon icon={editStatsExpanded ? faChevronUp : faChevronDown} className="cb-perf-banner-chevron" />
+          </button>
+
+          {editStatsExpanded && (
+            <div className="cb-perf-banner-content">
+              {editStatsLoading ? (
+                <div style={{ textAlign: 'center', padding: '16px 0', color: 'rgba(180,210,240,0.55)' }}>
+                  <FontAwesomeIcon icon={faSpinner} spin /> Loading stats...
+                </div>
+              ) : editStats ? (
+                <>
+                  {/* Summary metrics row */}
+                  <div className="cb-perf-metrics-row">
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.sent.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Sent</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.opens.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Opens ({editStats.open_rate.toFixed(1)}%)</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.clicks.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Clicks ({editStats.click_rate.toFixed(1)}%)</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.bounces.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Bounces ({editStats.bounce_rate.toFixed(1)}%)</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.complaints.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Complaints ({editStats.complaint_rate.toFixed(3)}%)</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value">{editStats.unsubscribes.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Unsubs ({editStats.unsubscribe_rate.toFixed(2)}%)</span>
+                    </div>
+                  </div>
+
+                  {/* ISP Breakdown table */}
+                  {editStats.isp_breakdown && editStats.isp_breakdown.length > 0 && (
+                    <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                      <table className="isp-breakdown-table">
+                        <thead>
+                          <tr>
+                            <th>ISP</th>
+                            <th>Quota</th>
+                            <th>Sent</th>
+                            <th>Delivered</th>
+                            <th>Opens</th>
+                            <th>Clicks</th>
+                            <th>Hard B.</th>
+                            <th>Soft B.</th>
+                            <th>Complaints</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {editStats.isp_breakdown.map(row => {
+                            const ispLabels: Record<string, string> = {
+                              gmail: 'Gmail', yahoo: 'Yahoo', microsoft: 'Microsoft',
+                              apple: 'Apple iCloud', comcast: 'Comcast', charter: 'Charter/Spectrum',
+                              cox: 'Cox', att: 'AT&T', verizon: 'Verizon', aol: 'AOL',
+                            };
+                            const pct = (n: number, d: number) => d > 0 ? (n / d * 100).toFixed(1) + '%' : '—';
+                            const quotaUsed = row.quota && row.quota > 0 ? Math.round(row.sent / row.quota * 100) : null;
+                            return (
+                              <tr key={row.isp}>
+                                <td style={{ fontWeight: 600, color: '#e0e6f0' }}>{ispLabels[row.isp] || row.isp}</td>
+                                <td>
+                                  {row.quota ? (
+                                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                      <span>{row.quota.toLocaleString()}</span>
+                                      {quotaUsed !== null && (
+                                        <span style={{
+                                          fontSize: '0.7rem',
+                                          color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : '#22c55e',
+                                          fontWeight: 700,
+                                        }}>{quotaUsed}% used</span>
+                                      )}
+                                    </span>
+                                  ) : <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>}
+                                </td>
+                                <td>{row.sent.toLocaleString()}</td>
+                                <td>{row.delivered.toLocaleString()}</td>
+                                <td>
+                                  <span>{row.opens.toLocaleString()}</span>
+                                  <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                    ({pct(row.opens, row.delivered)})
+                                  </span>
+                                </td>
+                                <td>
+                                  <span>{row.clicks.toLocaleString()}</span>
+                                  <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                    ({pct(row.clicks, row.delivered)})
+                                  </span>
+                                </td>
+                                <td style={{ color: row.hard_bounces > 0 ? '#ef4444' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
+                                <td style={{ color: row.soft_bounces > 0 ? '#f59e0b' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
+                                <td style={{ color: row.complaints > 0 ? '#ef4444' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Progress Steps (ARIA-accessible) */}
       <nav aria-label="Campaign wizard steps" className="cb-steps-nav">

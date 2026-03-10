@@ -55,6 +55,20 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 		r.Get("/auth/callback", authManager.HandleCallback)
 		r.Get("/auth/logout", authManager.HandleLogout)
 		r.Get("/auth/user", authManager.HandleUserInfo)
+	} else {
+		r.Get("/auth/user", func(w http.ResponseWriter, r *http.Request) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"authenticated": true,
+				"user": map[string]interface{}{
+					"id": "admin", "email": "admin@ignitemediagroup.co",
+					"name": "Admin", "domain": "ignitemediagroup.co",
+				},
+				"organization": map[string]interface{}{
+					"id": "00000000-0000-0000-0000-000000000001",
+					"name": "Jarvis", "domain": "ignitemediagroup.co",
+				},
+			})
+		})
 	}
 
 	// API routes (protected by auth middleware)

@@ -116,8 +116,13 @@ export const JarvisDashboard: React.FC = () => {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API}/status`);
+      if (!res.ok) {
+        setIdle(true);
+        setCampaign(null);
+        return;
+      }
       const data = await res.json();
-      if (data.status === 'idle') {
+      if (data.status === 'idle' || !data.recipients) {
         setIdle(true);
         setCampaign(null);
       } else {
@@ -126,6 +131,8 @@ export const JarvisDashboard: React.FC = () => {
       }
     } catch (e) {
       console.error('Failed to fetch Jarvis status:', e);
+      setIdle(true);
+      setCampaign(null);
     }
   }, []);
 
@@ -174,9 +181,10 @@ export const JarvisDashboard: React.FC = () => {
     ? Math.round((campaign.current_round / campaign.max_rounds) * 100)
     : 0;
 
+  const logs = campaign.log || [];
   const filteredLogs = logFilter === 'all'
-    ? campaign.log
-    : campaign.log.filter(l => l.level === logFilter);
+    ? logs
+    : logs.filter(l => l.level === logFilter);
 
   return (
     <div style={styles.container}>
@@ -271,9 +279,9 @@ export const JarvisDashboard: React.FC = () => {
 
       {/* Recipients Grid */}
       <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>📬 Recipients ({campaign.recipients.length})</h3>
+        <h3 style={styles.sectionTitle}>📬 Recipients ({(campaign.recipients || []).length})</h3>
         <div style={styles.recipientsGrid}>
-          {campaign.recipients.map(r => (
+          {(campaign.recipients || []).map(r => (
             <div key={r.email} style={styles.recipientCard}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 13 }}>{r.email}</span>
@@ -300,9 +308,9 @@ export const JarvisDashboard: React.FC = () => {
 
       {/* Creatives */}
       <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>🎨 Creatives ({campaign.creatives.length})</h3>
+        <h3 style={styles.sectionTitle}>🎨 Creatives ({(campaign.creatives || []).length})</h3>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {campaign.creatives.map(c => (
+          {(campaign.creatives || []).map(c => (
             <div key={c.id} style={styles.creativeCard}>
               <div style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
               <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>

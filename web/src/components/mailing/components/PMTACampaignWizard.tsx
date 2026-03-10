@@ -673,21 +673,32 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         break;
       case 6:
         if (!campaignName.trim()) errors.push('Campaign name is required');
-        if (sendMode === 'scheduled' && scheduleMode === 'quick' && !scheduledAt) {
-          errors.push('Scheduled date and time is required');
+        if (sendMode === 'scheduled' && scheduleMode === 'quick') {
+          if (!scheduledAt) {
+            errors.push('Scheduled date and time is required');
+          } else if (new Date(scheduledAt).getTime() <= Date.now()) {
+            errors.push('Scheduled date and time must be in the future');
+          }
         }
         if (sendMode === 'scheduled' && scheduleMode === 'per-isp') {
+          const now = Date.now();
           selectedISPs.forEach(isp => {
             const plan = ispPlansByKey[isp];
+            const label = ISP_META[isp]?.label || isp;
             if (!plan?.useCustomSchedule) return;
             const hasStartTime = plan.startTime && plan.startTime.trim() !== '';
             const validSpans = (plan.timeSpans || []).filter(span => span.startAt && span.endAt);
             if (!hasStartTime && validSpans.length === 0) {
-              errors.push(`${ISP_META[isp]?.label || isp}: set a start time or add a time span`);
+              errors.push(`${label}: set a start time or add a time span`);
+            } else if (hasStartTime && new Date(plan.startTime).getTime() <= now) {
+              errors.push(`${label}: start time must be in the future`);
             } else if (validSpans.length > 0) {
               validSpans.forEach((span, idx) => {
+                if (new Date(span.startAt).getTime() <= now) {
+                  errors.push(`${label}: time span ${idx + 1} start must be in the future`);
+                }
                 if (new Date(span.endAt).getTime() <= new Date(span.startAt).getTime()) {
-                  errors.push(`${ISP_META[isp]?.label || isp}: time span ${idx + 1} end must be after start`);
+                  errors.push(`${label}: time span ${idx + 1} end must be after start`);
                 }
               });
             }

@@ -32,8 +32,11 @@ RUN apk add --no-cache ca-certificates tzdata wget
 # Copy binary from builder
 COPY --from=builder /api-server /app/api-server
 
-# Copy frontend build (if exists)
-COPY --from=builder /app/web/dist /app/web/dist 2>/dev/null || true
+# Copy config (example config as base; env vars override at runtime)
+COPY config/config.example.yaml /app/config/config.yaml
+
+# Copy frontend build from local context (built by CI or locally before docker build)
+COPY web/dist /app/web/dist
 
 # Create non-root user
 RUN addgroup -g 1000 esp && \
@@ -45,9 +48,9 @@ USER esp
 # Expose port
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget -q --spider http://localhost:8080/health || exit 1
+# Disable container-level healthcheck; rely on ALB target group health checks
+# Server takes ~150s to start due to cross-region DB initialization
+HEALTHCHECK NONE
 
 # Run the server
 ENTRYPOINT ["/app/api-server"]

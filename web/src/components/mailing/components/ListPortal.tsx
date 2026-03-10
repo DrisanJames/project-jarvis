@@ -563,10 +563,15 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
                 <button onClick={() => onNavigate('create-list')}>Create Your First List</button>
               </div>
             ) : (
-              stats.top_lists.map((list, idx) => (
+              stats.top_lists.map((list, idx) => {
+                const exhaustion = list.subscriber_count > 0 ? (list.mailed_to_count || 0) / list.subscriber_count : 0;
+                const cardBg = exhaustion >= 0.9 ? 'rgba(239,68,68,0.15)' : exhaustion >= 0.5 ? `rgba(234,179,8,${0.05 + (exhaustion - 0.5) * 0.25})` : undefined;
+                const borderTint = exhaustion >= 0.9 ? '1px solid rgba(239,68,68,0.3)' : exhaustion >= 0.5 ? `1px solid rgba(234,179,8,${0.15 + (exhaustion - 0.5) * 0.35})` : undefined;
+                return (
                 <div 
                   key={list.id} 
                   className="top-list-item"
+                  style={cardBg ? { background: cardBg, border: borderTint } : undefined}
                   onClick={() => {
                     const fullList = lists.find(l => l.id === list.id);
                     if (fullList) onNavigate('subscribers', fullList);
@@ -584,7 +589,8 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
                   </div>
                   <FontAwesomeIcon icon={faArrowRight} className="list-arrow" />
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -762,11 +768,15 @@ const ListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigate, onRefres
             )}
           </div>
         ) : (
-          filteredLists.map((list, idx) => (
+          filteredLists.map((list, idx) => {
+            const exhaustion = list.subscriber_count > 0 ? (list.mailed_to_count || 0) / list.subscriber_count : 0;
+            const cardBg = exhaustion >= 0.9 ? 'rgba(239,68,68,0.18)' : exhaustion >= 0.5 ? `rgba(234,179,8,${0.06 + (exhaustion - 0.5) * 0.3})` : undefined;
+            const borderTint = exhaustion >= 0.9 ? '1px solid rgba(239,68,68,0.35)' : exhaustion >= 0.5 ? `1px solid rgba(234,179,8,${0.15 + (exhaustion - 0.5) * 0.4})` : undefined;
+            return (
             <div 
               key={list.id} 
               className="list-card"
-              style={{ animationDelay: `${idx * 50}ms` }}
+              style={{ animationDelay: `${idx * 50}ms`, ...(cardBg ? { background: cardBg, border: borderTint } : {}) }}
             >
               <div className="list-card-header">
                 <h3>{list.name}</h3>
@@ -827,7 +837,8 @@ const ListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigate, onRefres
                 </div>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

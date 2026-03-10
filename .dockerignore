@@ -1,6 +1,6 @@
 # Dependencies & build artifacts
 web/node_modules
-web/dist
+!web/dist
 web/.vite
 node_modules
 build/

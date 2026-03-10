@@ -5,10 +5,19 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
+
+func safeInt(m map[string]int, key string) int {
+	if m == nil {
+		return 0
+	}
+	return m[key]
+}
 
 // HandleSendTestCampaign sends a test email for the campaign
 func (cb *CampaignBuilder) HandleSendTestCampaign(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +191,129 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		domainBreakdown = []map[string]interface{}{}
 	}
 
+	// Aggregate domain breakdown into ISP groups
+	ispAgg := map[string]map[string]int{}
+	for _, d := range domainBreakdown {
+		domain, _ := d["domain"].(string)
+		group := isp.GroupFromDomain(domain)
+		if _, ok := ispAgg[group]; !ok {
+			ispAgg[group] = map[string]int{}
+		}
+		for _, k := range []string{"sent", "delivered", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints"} {
+			if v, ok := d[k].(int); ok {
+				ispAgg[group][k] += v
+			}
+		}
+	}
+
+	// Fetch PMTA quotas from pmta_config on the campaign
+	ispQuotaMap := map[string]int{}
+	var pmtaCfgJSON sql.NullString
+	cb.db.QueryRowContext(ctx, `SELECT pmta_config::text FROM mailing_campaigns WHERE id = $1`, id).Scan(&pmtaCfgJSON)
+	if pmtaCfgJSON.Valid {
+		var cfgWrapper map[string]interface{}
+		if json.Unmarshal([]byte(pmtaCfgJSON.String), &cfgWrapper) == nil {
+			if ci, ok := cfgWrapper["campaign_input"].(map[string]interface{}); ok {
+				if quotas, ok := ci["isp_quotas"].([]interface{}); ok {
+					for _, q := range quotas {
+						if qm, ok := q.(map[string]interface{}); ok {
+							ispName, _ := qm["isp"].(string)
+							vol := 0
+							if v, ok := qm["volume"].(float64); ok {
+								vol = int(v)
+							}
+							if ispName != "" {
+								ispQuotaMap[strings.ToLower(ispName)] = vol
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Also check mailing_campaign_waves for actual enqueued/planned per ISP plan
+	waveRows, _ := cb.db.QueryContext(ctx, `
+		SELECT isp_plan_id, SUM(COALESCE(planned_recipients,0)), SUM(COALESCE(enqueued_recipients,0))
+		FROM mailing_campaign_waves WHERE campaign_id = $1
+		GROUP BY isp_plan_id
+	`, id)
+	ispWaveData := map[string]map[string]int{}
+	if waveRows != nil {
+		defer waveRows.Close()
+		for waveRows.Next() {
+			var planID string
+			var planned, enqueued int
+			if err := waveRows.Scan(&planID, &planned, &enqueued); err == nil {
+				ispWaveData[strings.ToLower(planID)] = map[string]int{
+					"planned": planned, "enqueued": enqueued,
+				}
+			}
+		}
+	}
+
+	var ispBreakdown []map[string]interface{}
+	for _, g := range isp.KnownGroups() {
+		agg, hasAgg := ispAgg[g]
+		quota := ispQuotaMap[g]
+		wave := ispWaveData[g]
+		if !hasAgg && quota == 0 && len(wave) == 0 {
+			continue
+		}
+		s := safeInt(agg, "sent")
+		del := safeInt(agg, "delivered")
+		o := safeInt(agg, "opens")
+		c := safeInt(agg, "clicks")
+		hb := safeInt(agg, "hard_bounces")
+		sb := safeInt(agg, "soft_bounces")
+		comp := safeInt(agg, "complaints")
+		oRate, cRate := 0.0, 0.0
+		if del > 0 {
+			oRate = float64(o) / float64(del) * 100
+			cRate = float64(c) / float64(del) * 100
+		}
+		entry := map[string]interface{}{
+			"isp": g, "sent": s, "delivered": del,
+			"opens": o, "clicks": c,
+			"hard_bounces": hb, "soft_bounces": sb, "complaints": comp,
+			"open_rate": math.Round(oRate*100) / 100,
+			"click_rate": math.Round(cRate*100) / 100,
+		}
+		if quota > 0 {
+			entry["quota"] = quota
+		}
+		if len(wave) > 0 {
+			entry["planned_recipients"] = wave["planned"]
+			entry["enqueued_recipients"] = wave["enqueued"]
+		}
+		ispBreakdown = append(ispBreakdown, entry)
+	}
+	if otherAgg, ok := ispAgg[isp.Other]; ok {
+		s := safeInt(otherAgg, "sent")
+		if s > 0 {
+			del := safeInt(otherAgg, "delivered")
+			o := safeInt(otherAgg, "opens")
+			c := safeInt(otherAgg, "clicks")
+			oRate, cRate := 0.0, 0.0
+			if del > 0 {
+				oRate = float64(o) / float64(del) * 100
+				cRate = float64(c) / float64(del) * 100
+			}
+			ispBreakdown = append(ispBreakdown, map[string]interface{}{
+				"isp": "other", "sent": s, "delivered": del,
+				"opens": o, "clicks": c,
+				"hard_bounces": safeInt(otherAgg, "hard_bounces"),
+				"soft_bounces": safeInt(otherAgg, "soft_bounces"),
+				"complaints":   safeInt(otherAgg, "complaints"),
+				"open_rate":    math.Round(oRate*100) / 100,
+				"click_rate":   math.Round(cRate*100) / 100,
+			})
+		}
+	}
+	if ispBreakdown == nil {
+		ispBreakdown = []map[string]interface{}{}
+	}
+
 	// Hourly timeline
 	timeRows, _ := cb.db.QueryContext(ctx, `
 		SELECT DATE_TRUNC('hour', event_at) as hour,
@@ -231,6 +363,7 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		"complaint_rate":   calcRate(complaints, sent),
 		"unsubscribe_rate": calcRate(unsubscribes, sent),
 		"domain_breakdown": domainBreakdown,
+		"isp_breakdown":    ispBreakdown,
 		"hourly_timeline":  timeline,
 	})
 }

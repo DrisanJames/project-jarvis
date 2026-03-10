@@ -90,6 +90,7 @@ func (c *CampaignCopilot) toolListCampaigns(ctx context.Context, orgID string, a
 
 	rows, err := c.db.QueryContext(ctx, q, qArgs...)
 	if err != nil {
+		log.Printf("[CampaignCopilot] toolListCampaigns: query error: %v", err)
 		return map[string]string{"error": err.Error()}
 	}
 	defer rows.Close()
