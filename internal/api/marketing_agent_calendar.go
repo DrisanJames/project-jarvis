@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -793,6 +794,26 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		}
 	}
 
+	// Default warmup starting quotas when no campaign history exists
+	if len(currentQuotas) == 0 {
+		log.Printf("[MarketingAgent] no historical quotas found for org %s, using warmup defaults", orgID)
+		maxDaily := 50000
+		if mv, ok := params["max_daily_volume"].(float64); ok && int(mv) > 0 {
+			maxDaily = int(mv)
+		}
+		// Distribution based on typical US mailbox market share
+		currentQuotas = map[string]int{
+			"gmail":     int(float64(maxDaily) * 0.30),
+			"yahoo":     int(float64(maxDaily) * 0.18),
+			"microsoft": int(float64(maxDaily) * 0.20),
+			"apple":     int(float64(maxDaily) * 0.12),
+			"comcast":   int(float64(maxDaily) * 0.08),
+			"att":       int(float64(maxDaily) * 0.06),
+			"cox":       int(float64(maxDaily) * 0.03),
+			"charter":   int(float64(maxDaily) * 0.03),
+		}
+	}
+
 	increasePct := 10.0
 	if v, ok := params["daily_volume_increase_pct"].(float64); ok && v > 0 {
 		increasePct = v
@@ -812,6 +833,9 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
 		 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'active' LIMIT 1`,
 		orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
+	if fromName == "" {
+		fromName = strings.Split(input.SendingDomain, ".")[0]
+	}
 
 	audiencePriority := []string{"openers_7d", "clickers_14d", "engagers_30d", "recent_subscribers", "cold"}
 	if ap, ok := params["audience_priority"].([]interface{}); ok {
@@ -822,6 +846,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			}
 		}
 	}
+	newDataPriority := []string{"recent_subscribers", "cold"}
 
 	// Load real mailing lists for this org
 	type listInfo struct {
@@ -846,7 +871,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// Load suppression lists
 	var exclusionLists []listInfo
 	suppRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 50`, orgID)
+		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 ORDER BY name LIMIT 50`, orgID)
 	if suppRows != nil {
 		defer suppRows.Close()
 		for suppRows.Next() {
@@ -859,54 +884,68 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		exclusionLists = []listInfo{}
 	}
 
-	// Generate templates via AI (one batch of 5 variations, cycled across days)
+	// Look up an existing template as reference for AI generation
+	var referenceTemplateHTML string
+	a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(html_content,'') FROM mailing_templates
+		 WHERE organization_id = $1 AND status IN ('active','draft') AND html_content IS NOT NULL AND html_content != ''
+		 ORDER BY updated_at DESC LIMIT 1`, orgID).Scan(&referenceTemplateHTML)
+
+	// Generate templates via AI (one batch per campaign type) — runs in background
 	type savedTemplate struct {
 		ID      string `json:"id"`
 		Name    string `json:"name"`
 		Subject string `json:"subject"`
 	}
-	var generatedTemplates []savedTemplate
-	if a.aiContent != nil {
-		log.Printf("[MarketingAgent] generating templates for %s forecast...", input.SendingDomain)
-		campaignType := "welcome"
-		if strategy == "performance" {
-			campaignType = "promotional"
+	var warmupTemplates []savedTemplate
+	var welcomeTemplates []savedTemplate
+
+	generateTemplates := func(campaignType string) []savedTemplate {
+		if a.aiContent == nil {
+			return nil
 		}
+		log.Printf("[MarketingAgent] generating %s templates for %s...", campaignType, input.SendingDomain)
 		result, genErr := a.aiContent.GenerateEmailTemplates(r.Context(), mailing.TemplateGenerationRequest{
 			CampaignType:  campaignType,
 			SendingDomain: input.SendingDomain,
 		})
 		if genErr != nil {
-			log.Printf("[MarketingAgent] template generation warning (non-fatal): %v", genErr)
-		} else if result != nil {
-			for _, v := range result.Variations {
-				var templateID string
-				saveErr := a.db.QueryRowContext(r.Context(),
-					`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, html_content, preview_text, status, created_at, updated_at)
-					 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
-					 RETURNING id::text`,
-					orgID,
-					fmt.Sprintf("[Maven Forecast] %s — %s", campaignType, v.VariantName),
-					v.Subject,
-					v.FromName,
-					v.HTMLContent,
-				).Scan(&templateID)
-				if saveErr != nil {
-					log.Printf("[MarketingAgent] template save warning: %v", saveErr)
-					continue
-				}
-				generatedTemplates = append(generatedTemplates, savedTemplate{
-					ID: templateID, Name: v.VariantName, Subject: v.Subject,
-				})
-				if v.FromName != "" && fromName == "" {
-					fromName = v.FromName
-				}
-			}
-			log.Printf("[MarketingAgent] generated %d templates for forecast", len(generatedTemplates))
+			log.Printf("[MarketingAgent] template generation warning (%s): %v", campaignType, genErr)
+			return nil
 		}
+		if result == nil {
+			return nil
+		}
+		var saved []savedTemplate
+		for _, v := range result.Variations {
+			var templateID string
+			saveErr := a.db.QueryRowContext(r.Context(),
+				`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, html_content, preview_text, status, created_at, updated_at)
+				 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
+				 RETURNING id::text`,
+				orgID,
+				fmt.Sprintf("[Maven] %s — %s", campaignType, v.VariantName),
+				v.Subject,
+				v.FromName,
+				v.HTMLContent,
+			).Scan(&templateID)
+			if saveErr != nil {
+				log.Printf("[MarketingAgent] template save warning: %v", saveErr)
+				continue
+			}
+			saved = append(saved, savedTemplate{ID: templateID, Name: v.VariantName, Subject: v.Subject})
+			if v.FromName != "" && fromName == "" {
+				fromName = v.FromName
+			}
+		}
+		log.Printf("[MarketingAgent] generated %d %s templates", len(saved), campaignType)
+		return saved
 	}
 
-	// Generate daily recommendations for weekdays
+	// Use reference HTML as fallback if no existing templates exist
+	_ = referenceTemplateHTML
+
+	// Generate daily recommendations FIRST (fast), then trigger template generation in background
 	created := 0
 	endDate := t.AddDate(0, 1, -1)
 	current := t
@@ -921,55 +960,90 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			continue
 		}
 
-		dailyQuotas := map[string]interface{}{}
-		totalVolume := 0
 		multiplier := 1.0 + (increasePct/100.0)*float64(dayIndex)
+
+		// CAMPAIGN 1: Warmup — Engaged Data (70% of daily volume)
+		warmupQuotas := map[string]interface{}{}
+		warmupVolume := 0
 		for isp, base := range currentQuotas {
-			adjusted := int(float64(base) * multiplier)
-			dailyQuotas[isp] = adjusted
-			totalVolume += adjusted
+			adjusted := int(float64(base) * multiplier * 0.70)
+			warmupQuotas[isp] = adjusted
+			warmupVolume += adjusted
 		}
-
-		// Cycle through generated templates
-		var templateID, templateName, subject string
-		if len(generatedTemplates) > 0 {
-			tmpl := generatedTemplates[dayIndex%len(generatedTemplates)]
-			templateID = tmpl.ID
-			templateName = tmpl.Name
-			subject = tmpl.Subject
-		}
-
-		name := input.SendingDomain + " — " + current.Format("Jan 2")
-		configJSON, _ := json.Marshal(map[string]interface{}{
+		warmupName := input.SendingDomain + " — Warmup Engaged — " + current.Format("Jan 2")
+		warmupCfg, _ := json.Marshal(map[string]interface{}{
 			"sending_domain":        input.SendingDomain,
-			"isp_quotas":            dailyQuotas,
-			"name":                  name,
+			"isp_quotas":            warmupQuotas,
+			"name":                  warmupName,
 			"scheduled_date":        current.Format("2006-01-02"),
 			"scheduled_time":        "13:00",
 			"from_name":             fromName,
 			"from_email":            fromEmail,
-			"subject":               subject,
+			"subject":               "",
 			"preview_text":          "",
-			"template_id":           templateID,
-			"template_name":         templateName,
+			"template_id":           "",
+			"template_name":         "",
 			"wave_interval_minutes": 15,
 			"throttle_per_wave":     0,
 			"audience_priority":     audiencePriority,
 			"inclusion_lists":       inclusionLists,
 			"exclusion_lists":       exclusionLists,
+			"campaign_type":         "warmup_engaged",
 		})
-
 		_, err := a.db.ExecContext(r.Context(),
 			`INSERT INTO agent_campaign_recommendations
 			 (organization_id, sending_domain, scheduled_date, scheduled_time,
 			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
 			 VALUES ($1, $2, $3, '13:00', $4, $5, $6, $7, $8, 'pending')`,
 			orgID, input.SendingDomain, current.Format("2006-01-02"),
-			name, string(configJSON),
-			fmt.Sprintf("Auto-generated forecast based on %s strategy with %.0f%% daily volume increase. Template: %s", strategy, increasePct, templateName),
-			strategy, totalVolume)
+			warmupName, string(warmupCfg),
+			fmt.Sprintf("Warmup campaign targeting engaged audience (openers, clickers) — 70%% of daily volume. Builds ISP reputation with high-engagement data. Day %d of warmup, %.0f%% cumulative volume increase.", dayIndex+1, increasePct*float64(dayIndex)),
+			strategy, warmupVolume)
 		if err != nil {
-			log.Printf("[MarketingAgent] forecast insert error: %v", err)
+			log.Printf("[MarketingAgent] forecast insert error (warmup): %v", err)
+		} else {
+			created++
+		}
+
+		// CAMPAIGN 2: Welcome Series — New Data (30% of daily volume)
+		welcomeQuotas := map[string]interface{}{}
+		welcomeVolume := 0
+		for isp, base := range currentQuotas {
+			adjusted := int(float64(base) * multiplier * 0.30)
+			welcomeQuotas[isp] = adjusted
+			welcomeVolume += adjusted
+		}
+		welcomeName := input.SendingDomain + " — Welcome Series — " + current.Format("Jan 2")
+		welcomeCfg, _ := json.Marshal(map[string]interface{}{
+			"sending_domain":        input.SendingDomain,
+			"isp_quotas":            welcomeQuotas,
+			"name":                  welcomeName,
+			"scheduled_date":        current.Format("2006-01-02"),
+			"scheduled_time":        "14:00",
+			"from_name":             fromName,
+			"from_email":            fromEmail,
+			"subject":               "",
+			"preview_text":          "",
+			"template_id":           "",
+			"template_name":         "",
+			"wave_interval_minutes": 15,
+			"throttle_per_wave":     0,
+			"audience_priority":     newDataPriority,
+			"inclusion_lists":       inclusionLists,
+			"exclusion_lists":       exclusionLists,
+			"campaign_type":         "welcome_series",
+		})
+		_, err = a.db.ExecContext(r.Context(),
+			`INSERT INTO agent_campaign_recommendations
+			 (organization_id, sending_domain, scheduled_date, scheduled_time,
+			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
+			 VALUES ($1, $2, $3, '14:00', $4, $5, $6, $7, $8, 'pending')`,
+			orgID, input.SendingDomain, current.Format("2006-01-02"),
+			welcomeName, string(welcomeCfg),
+			fmt.Sprintf("Welcome series targeting new subscribers and cold data — 30%% of daily volume. Introduces fresh recipients at controlled pace. Day %d of warmup.", dayIndex+1),
+			strategy, welcomeVolume)
+		if err != nil {
+			log.Printf("[MarketingAgent] forecast insert error (welcome): %v", err)
 		} else {
 			created++
 		}
@@ -978,12 +1052,70 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		current = current.AddDate(0, 0, 1)
 	}
 
+	// Respond immediately — templates will generate in the background
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":                  "generated",
 		"recommendations_created": created,
-		"templates_generated":     len(generatedTemplates),
 		"sending_domain":          input.SendingDomain,
 		"strategy":                strategy,
 		"month":                   input.Month,
+		"template_status":         "generating in background — refresh calendar in ~60 seconds to see templates",
 	})
+
+	// Background: generate templates and patch them into recommendations
+	go func() {
+		bgCtx := context.Background()
+		warmupTemplates = generateTemplates("re-engagement")
+		welcomeTemplates = generateTemplates("welcome")
+		totalGenerated := len(warmupTemplates) + len(welcomeTemplates)
+		if totalGenerated == 0 {
+			log.Printf("[MarketingAgent] background template generation produced 0 templates")
+			return
+		}
+		log.Printf("[MarketingAgent] background generated %d templates, patching into recommendations...", totalGenerated)
+
+		// Patch templates into pending recommendations for this month
+		recRows, err := a.db.QueryContext(bgCtx,
+			`SELECT id::text, campaign_config::text FROM agent_campaign_recommendations
+			 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'pending'
+			   AND scheduled_date >= $3 AND scheduled_date <= $4
+			 ORDER BY scheduled_date, scheduled_time`,
+			orgID, input.SendingDomain, startDate, t.AddDate(0, 1, -1).Format("2006-01-02"))
+		if err != nil {
+			log.Printf("[MarketingAgent] background patch query error: %v", err)
+			return
+		}
+		defer recRows.Close()
+
+		idx := 0
+		for recRows.Next() {
+			var recID, cfgJSON string
+			recRows.Scan(&recID, &cfgJSON)
+			var cfg map[string]interface{}
+			json.Unmarshal([]byte(cfgJSON), &cfg)
+
+			campType, _ := cfg["campaign_type"].(string)
+			var templates []savedTemplate
+			if campType == "welcome_series" {
+				templates = welcomeTemplates
+			} else {
+				templates = warmupTemplates
+			}
+			if len(templates) == 0 {
+				continue
+			}
+			tmpl := templates[(idx/2)%len(templates)]
+			cfg["template_id"] = tmpl.ID
+			cfg["template_name"] = tmpl.Name
+			if tmpl.Subject != "" {
+				cfg["subject"] = tmpl.Subject
+			}
+			updatedCfg, _ := json.Marshal(cfg)
+			a.db.ExecContext(bgCtx,
+				`UPDATE agent_campaign_recommendations SET campaign_config = $1, updated_at = NOW() WHERE id = $2`,
+				string(updatedCfg), recID)
+			idx++
+		}
+		log.Printf("[MarketingAgent] background template patching complete — %d recommendations updated", idx)
+	}()
 }
