@@ -7,7 +7,7 @@ import {
   faEdit, faSave, faArrowLeft,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.2';
+const PAGE_VERSION = '1.3';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -233,6 +233,11 @@ const AgentCalendar: React.FC = () => {
   const [miniChatMessages, setMiniChatMessages] = useState<{role: string; content: string}[]>([]);
   const [miniChatLoading, setMiniChatLoading] = useState(false);
   const [cameFromDay, setCameFromDay] = useState<CalendarDay | null>(null);
+  const [templateHtml, setTemplateHtml] = useState<string | null>(null);
+  const [showTemplatePreview, setShowTemplatePreview] = useState(false);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [approvalResult, setApprovalResult] = useState<Record<string, any> | null>(null);
 
   useEffect(() => { loadDomains(); }, []);
   useEffect(() => { if (selectedDomain) loadForecast(); }, [selectedDomain, month]);
@@ -249,6 +254,7 @@ const AgentCalendar: React.FC = () => {
         subject: cfg.subject || '',
         preview_text: cfg.preview_text || '',
         template_id: cfg.template_id || '',
+        template_name: cfg.template_name || '',
         wave_interval_minutes: cfg.wave_interval_minutes || 15,
         throttle_per_wave: cfg.throttle_per_wave || 0,
         audience_priority: cfg.audience_priority || ['openers_7d','clickers_14d','engagers_30d','recent_subscribers','cold'],
@@ -258,6 +264,17 @@ const AgentCalendar: React.FC = () => {
       });
       setMiniChatMessages([]);
       setMiniChatInput('');
+      setTemplateHtml(null);
+      setShowTemplatePreview(false);
+      setApprovalResult(null);
+      if (cfg.template_id) {
+        setTemplateLoading(true);
+        fetch(`/api/mailing/templates/${cfg.template_id}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.html_content) setTemplateHtml(data.html_content); })
+          .catch(() => {})
+          .finally(() => setTemplateLoading(false));
+      }
     }
   }, [selectedRec]);
 
@@ -294,9 +311,22 @@ const AgentCalendar: React.FC = () => {
   };
 
   const approveRec = async (id: string) => {
-    await fetch(`/api/mailing/agent/calendar/recommendations/${id}/approve`, { method: 'POST' });
-    loadForecast();
-    setSelectedRec(null);
+    setApproving(true);
+    setApprovalResult(null);
+    try {
+      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${id}/approve`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setApprovalResult({ error: data.error || 'Approval failed' });
+        return;
+      }
+      setApprovalResult(data);
+      loadForecast();
+    } catch (err: unknown) {
+      setApprovalResult({ error: err instanceof Error ? err.message : 'Unknown error' });
+    } finally {
+      setApproving(false);
+    }
   };
   const rejectRec = async (id: string) => {
     await fetch(`/api/mailing/agent/calendar/recommendations/${id}/reject`, { method: 'POST' });
@@ -520,13 +550,15 @@ const AgentCalendar: React.FC = () => {
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Content</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Name</label>
-                  <input value={editConfig.from_name || ''} onChange={e => setEditConfig(c => ({ ...c, from_name: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Email</label>
-                  <input value={editConfig.from_email || ''} readOnly style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#94a3b8', fontSize: 13, cursor: 'not-allowed', boxSizing: 'border-box' as const }} />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Name</label>
+                    <input value={editConfig.from_name || ''} onChange={e => setEditConfig(c => ({ ...c, from_name: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Email</label>
+                    <input value={editConfig.from_email || ''} readOnly style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#94a3b8', fontSize: 13, cursor: 'not-allowed', boxSizing: 'border-box' as const }} />
+                  </div>
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Subject Line</label>
@@ -536,9 +568,33 @@ const AgentCalendar: React.FC = () => {
                   <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Preview / Pre-header Text</label>
                   <input value={editConfig.preview_text || ''} onChange={e => setEditConfig(c => ({ ...c, preview_text: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
-                {editConfig.template_id && (
-                  <div style={{ fontSize: 12, color: '#94a3b8', padding: '6px 10px', background: 'rgba(99,102,241,0.06)', borderRadius: 6, border: '1px solid rgba(99,102,241,0.1)' }}>
-                    Template: <strong style={{ color: '#a5b4fc' }}>{editConfig.template_id}</strong> <span style={{ color: '#64748b' }}>(Content from template library)</span>
+                {editConfig.template_id ? (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(99,102,241,0.06)', borderRadius: 8, border: '1px solid rgba(99,102,241,0.1)' }}>
+                      <div>
+                        <div style={{ fontSize: 12, color: '#a5b4fc', fontWeight: 600 }}>{editConfig.template_name || 'Template'}</div>
+                        <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>ID: {editConfig.template_id}</div>
+                      </div>
+                      <button onClick={() => setShowTemplatePreview(!showTemplatePreview)}
+                        style={{ padding: '5px 12px', background: showTemplatePreview ? 'rgba(239,68,68,0.1)' : 'rgba(99,102,241,0.1)', border: `1px solid ${showTemplatePreview ? 'rgba(239,68,68,0.2)' : 'rgba(99,102,241,0.2)'}`, borderRadius: 6, color: showTemplatePreview ? '#ef4444' : '#a5b4fc', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                        {showTemplatePreview ? 'Hide Preview' : 'Preview Template'}
+                      </button>
+                    </div>
+                    {showTemplatePreview && (
+                      <div style={{ marginTop: 8, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(99,102,241,0.15)' }}>
+                        {templateLoading ? (
+                          <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 12 }}><FontAwesomeIcon icon={faSpinner} spin /> Loading template...</div>
+                        ) : templateHtml ? (
+                          <iframe srcDoc={templateHtml} sandbox="" style={{ width: '100%', height: 400, border: 'none', background: '#fff', borderRadius: 8 }} title="Template Preview" />
+                        ) : (
+                          <div style={{ padding: 16, textAlign: 'center', color: '#475569', fontSize: 12 }}>Template HTML not available</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ padding: '10px', background: 'rgba(251,191,36,0.06)', borderRadius: 8, border: '1px solid rgba(251,191,36,0.15)', fontSize: 12, color: '#fbbf24' }}>
+                    No template assigned. Generate a forecast to auto-create templates, or ask Maven to generate one.
                   </div>
                 )}
               </div>
@@ -572,15 +628,37 @@ const AgentCalendar: React.FC = () => {
                   ))}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Inclusion Lists</div>
-                  <div style={{ fontSize: 12, color: '#e2e8f0' }}>{(editConfig.inclusion_lists || []).length > 0 ? (editConfig.inclusion_lists as string[]).join(', ') : <span style={{ color: '#475569' }}>Not configured</span>}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Exclusion Lists</div>
-                  <div style={{ fontSize: 12, color: '#e2e8f0' }}>{(editConfig.exclusion_lists || []).length > 0 ? (editConfig.exclusion_lists as string[]).join(', ') : <span style={{ color: '#475569' }}>None</span>}</div>
-                </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6, fontWeight: 600 }}>Inclusion Lists ({(editConfig.inclusion_lists || []).length})</div>
+                {(editConfig.inclusion_lists || []).length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {(editConfig.inclusion_lists as any[]).map((item: any, i: number) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#111827', borderRadius: 6, border: '1px solid rgba(99,102,241,0.08)' }}>
+                        <span style={{ fontSize: 10, color: '#64748b', fontWeight: 700, width: 18, textAlign: 'center' as const }}>{i + 1}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 500 }}>{typeof item === 'object' ? item.name : item}</div>
+                          {typeof item === 'object' && item.id && <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{item.id}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#fbbf24', padding: '8px 10px', background: 'rgba(251,191,36,0.06)', borderRadius: 6, border: '1px solid rgba(251,191,36,0.1)' }}>No inclusion lists — required for deployment</div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6, fontWeight: 600 }}>Suppression Lists ({(editConfig.exclusion_lists || []).length})</div>
+                {(editConfig.exclusion_lists || []).length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {(editConfig.exclusion_lists as any[]).map((item: any, i: number) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#111827', borderRadius: 6, border: '1px solid rgba(239,68,68,0.08)' }}>
+                        <span style={{ fontSize: 12, color: '#e2e8f0' }}>{typeof item === 'object' ? item.name : item}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>No suppression lists configured</div>
+                )}
               </div>
             </div>
 
@@ -606,26 +684,47 @@ const AgentCalendar: React.FC = () => {
 
             {/* Section 7: Actions */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Actions</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Deploy</div>
+              {approvalResult && (
+                <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 8, background: approvalResult.error ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)', border: `1px solid ${approvalResult.error ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)'}` }}>
+                  {approvalResult.error ? (
+                    <div style={{ fontSize: 12, color: '#ef4444' }}>{approvalResult.error}</div>
+                  ) : (
+                    <div style={{ fontSize: 12 }}>
+                      <div style={{ color: '#22c55e', fontWeight: 600, marginBottom: 4 }}>Campaign Deployed Successfully</div>
+                      <div style={{ color: '#94a3b8' }}>Campaign ID: <strong style={{ color: '#a5b4fc' }}>{approvalResult.campaign_id}</strong></div>
+                      <div style={{ color: '#94a3b8' }}>Scheduled: <strong style={{ color: '#e2e8f0' }}>{approvalResult.scheduled_at ? new Date(approvalResult.scheduled_at).toLocaleString() : 'N/A'}</strong></div>
+                      <div style={{ color: '#94a3b8' }}>Audience: <strong style={{ color: '#e2e8f0' }}>{(approvalResult.total_audience || 0).toLocaleString()}</strong></div>
+                    </div>
+                  )}
+                </div>
+              )}
               {selectedRec.status === 'pending' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <button onClick={saveRecommendation} disabled={saving} style={{ padding: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 8, color: '#a5b4fc', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: saving ? 0.6 : 1 }}>
                     <FontAwesomeIcon icon={saving ? faSpinner : faSave} spin={saving} /> {saving ? 'Saving...' : 'Save Changes'}
                   </button>
+                  <div style={{ fontSize: 11, color: '#64748b', padding: '0 4px', lineHeight: 1.4 }}>
+                    Approving will deploy this as a real scheduled campaign. It will be sent at the configured date/time through the PMTA pipeline.
+                  </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => approveRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, color: '#22c55e', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-                      <FontAwesomeIcon icon={faCheck} /> Approve
+                    <button onClick={() => approveRec(selectedRec.id)} disabled={approving}
+                      style={{ flex: 1, padding: '10px', background: 'linear-gradient(135deg, rgba(34,197,94,0.2), rgba(34,197,94,0.1))', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, color: '#22c55e', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: approving ? 0.6 : 1 }}>
+                      {approving ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</> : <><FontAwesomeIcon icon={faCheck} /> Approve &amp; Deploy</>}
                     </button>
-                    <button onClick={() => rejectRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                    <button onClick={() => rejectRec(selectedRec.id)} disabled={approving}
+                      style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FontAwesomeIcon icon={faTimes} /> Reject
                     </button>
                   </div>
                 </div>
               ) : (
-                <div style={{ padding: '12px', background: `${statusColor(selectedRec.status)}10`, borderRadius: 8, border: `1px solid ${statusColor(selectedRec.status)}25`, textAlign: 'center' as const }}>
-                  <span style={{ fontSize: 13, color: statusColor(selectedRec.status), fontWeight: 600 }}>
-                    {selectedRec.status === 'approved' ? 'Approved' : selectedRec.status === 'rejected' ? 'Rejected' : selectedRec.status === 'executed' ? 'Executed' : selectedRec.status}
-                  </span>
+                <div style={{ padding: '12px', background: `${statusColor(selectedRec.status)}10`, borderRadius: 8, border: `1px solid ${statusColor(selectedRec.status)}25` }}>
+                  <div style={{ textAlign: 'center' as const }}>
+                    <span style={{ fontSize: 13, color: statusColor(selectedRec.status), fontWeight: 600 }}>
+                      {selectedRec.status === 'approved' ? 'Deployed — Campaign Scheduled' : selectedRec.status === 'rejected' ? 'Rejected' : selectedRec.status === 'executed' ? 'Executed' : selectedRec.status}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>

@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 // HandleGetForecast returns calendar data for a month/domain showing recommendations grouped by date.
@@ -250,15 +253,22 @@ func (a *EmailMarketingAgent) HandleGetRecommendation(w http.ResponseWriter, r *
 	respondJSON(w, http.StatusOK, result)
 }
 
-// HandleApproveRecommendation moves a recommendation to 'approved' status.
+// HandleApproveRecommendation deploys the recommendation as a real scheduled campaign
+// through the existing PMTA campaign pipeline — identical to deploying from Campaign Manager.
 func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter, r *http.Request) {
 	recID := chi.URLParam(r, "id")
 	orgID := getOrgID(r)
+	ctx := r.Context()
 
-	var status string
-	err := a.db.QueryRowContext(r.Context(),
-		`SELECT status FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
-		recID, orgID).Scan(&status)
+	var status, configJSON, campaignName, recStrategy, sendingDomain string
+	var scheduledDate time.Time
+	var scheduledTime sql.NullString
+	err := a.db.QueryRowContext(ctx,
+		`SELECT status, campaign_config::text, COALESCE(campaign_name,''), COALESCE(strategy,''),
+		        sending_domain, scheduled_date, scheduled_time
+		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&status, &configJSON, &campaignName, &recStrategy,
+		&sendingDomain, &scheduledDate, &scheduledTime)
 	if err != nil {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found"})
 		return
@@ -267,14 +277,228 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only approve pending recommendations, current status: " + status})
 		return
 	}
-	_, err = a.db.ExecContext(r.Context(),
-		`UPDATE agent_campaign_recommendations SET status = 'approved', approved_at = NOW(), updated_at = NOW() WHERE id = $1`,
-		recID)
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	var cfg map[string]interface{}
+	if configJSON != "" {
+		json.Unmarshal([]byte(configJSON), &cfg)
+	}
+	if cfg == nil {
+		cfg = map[string]interface{}{}
+	}
+
+	// Load template HTML (required — campaign needs content)
+	templateID, _ := cfg["template_id"].(string)
+	var htmlContent string
+	if templateID != "" {
+		a.db.QueryRowContext(ctx,
+			`SELECT COALESCE(html_content,'') FROM mailing_templates WHERE id = $1 AND organization_id = $2`,
+			templateID, orgID).Scan(&htmlContent)
+	}
+	if strings.TrimSpace(htmlContent) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no email template assigned or template has no HTML content. Assign a template first."})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "approved", "id": recID})
+
+	subject, _ := cfg["subject"].(string)
+	fromName, _ := cfg["from_name"].(string)
+	previewText, _ := cfg["preview_text"].(string)
+	if subject == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: subject line is required"})
+		return
+	}
+	if fromName == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: from name is required"})
+		return
+	}
+
+	// Build scheduled time
+	timeStr := "13:00"
+	if scheduledTime.Valid && scheduledTime.String != "" {
+		timeStr = scheduledTime.String
+	}
+	if t, ok := cfg["scheduled_time"].(string); ok && t != "" {
+		timeStr = t
+	}
+	if !strings.Contains(timeStr, ":") {
+		timeStr = "13:00"
+	}
+	parts := strings.Split(timeStr, ":")
+	hour, minute := 13, 0
+	if len(parts) >= 2 {
+		fmt.Sscanf(parts[0], "%d", &hour)
+		fmt.Sscanf(parts[1], "%d", &minute)
+	}
+	schedAt := time.Date(scheduledDate.Year(), scheduledDate.Month(), scheduledDate.Day(), hour, minute, 0, 0, time.UTC)
+	if schedAt.Before(time.Now().Add(2 * time.Minute)) {
+		schedAt = time.Now().Add(5 * time.Minute)
+	}
+
+	// Build ISP quotas and target ISPs from config
+	var targetISPs []engine.ISP
+	var ispQuotas []engine.ISPQuota
+	var ispPlans []engine.PMTAISPScheduleInput
+	waveInterval := 15
+	if wi, ok := cfg["wave_interval_minutes"].(float64); ok && int(wi) > 0 {
+		waveInterval = int(wi)
+	}
+	if quotas, ok := cfg["isp_quotas"].(map[string]interface{}); ok {
+		for isp, v := range quotas {
+			vol := 0
+			switch n := v.(type) {
+			case float64:
+				vol = int(n)
+			case int:
+				vol = n
+			}
+			if vol <= 0 {
+				continue
+			}
+			targetISPs = append(targetISPs, engine.ISP(isp))
+			ispQuotas = append(ispQuotas, engine.ISPQuota{ISP: isp, Volume: vol})
+			ispPlans = append(ispPlans, engine.PMTAISPScheduleInput{
+				ISP:               isp,
+				Quota:             vol,
+				RandomizeAudience: false,
+				ThrottleStrategy:  "auto",
+				Timezone:          "UTC",
+				Cadence: engine.PMTACadenceInput{
+					Mode:         "interval",
+					EveryMinutes: waveInterval,
+					BatchSize:    0,
+				},
+				TimeSpans: []engine.PMTATimeSpanInput{{
+					Type:    "absolute",
+					StartAt: &schedAt,
+					EndAt:   func() *time.Time { t := schedAt.Add(4 * time.Hour); return &t }(),
+				}},
+			})
+		}
+	}
+	if len(targetISPs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no ISP quotas configured"})
+		return
+	}
+
+	// Build inclusion lists (extract IDs from the config objects)
+	var inclusionListIDs []string
+	var sendPriority []engine.PriorityItem
+	if lists, ok := cfg["inclusion_lists"].([]interface{}); ok {
+		for _, item := range lists {
+			switch v := item.(type) {
+			case map[string]interface{}:
+				if id, ok := v["id"].(string); ok && id != "" {
+					inclusionListIDs = append(inclusionListIDs, id)
+					sendPriority = append(sendPriority, engine.PriorityItem{ID: id, Type: "list"})
+				}
+			case string:
+				if v != "" {
+					inclusionListIDs = append(inclusionListIDs, v)
+					sendPriority = append(sendPriority, engine.PriorityItem{ID: v, Type: "list"})
+				}
+			}
+		}
+	}
+	if len(inclusionListIDs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no inclusion lists configured — add at least one mailing list"})
+		return
+	}
+
+	var exclusionListIDs []string
+	if lists, ok := cfg["exclusion_lists"].([]interface{}); ok {
+		for _, item := range lists {
+			switch v := item.(type) {
+			case map[string]interface{}:
+				if id, ok := v["id"].(string); ok && id != "" {
+					exclusionListIDs = append(exclusionListIDs, id)
+				}
+			case string:
+				if v != "" {
+					exclusionListIDs = append(exclusionListIDs, v)
+				}
+			}
+		}
+	}
+
+	// Build the full PMTACampaignInput
+	deployInput := engine.PMTACampaignInput{
+		Name:          campaignName,
+		TargetISPs:    targetISPs,
+		SendingDomain: sendingDomain,
+		Variants: []engine.ContentVariant{{
+			VariantName:  "A",
+			FromName:     fromName,
+			Subject:      subject,
+			PreviewText:  previewText,
+			HTMLContent:  htmlContent,
+			SplitPercent: 100,
+		}},
+		ISPPlans:          ispPlans,
+		ISPQuotas:         ispQuotas,
+		InclusionLists:    inclusionListIDs,
+		SendPriority:      sendPriority,
+		ExclusionLists:    exclusionListIDs,
+		InclusionSegments: []string{},
+		ExclusionSegments: []string{},
+		SendDays:          []string{},
+		SendHour:          hour,
+		Timezone:          "UTC",
+		ThrottleStrategy:  "auto",
+		RandomizeAudience: false,
+		SendMode:          "scheduled",
+		ScheduledAt:       &schedAt,
+	}
+
+	// Normalize, plan audience, and create the real campaign
+	normalized, normErr := normalizePMTACampaignInput(deployInput)
+	if normErr != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign normalization failed: " + normErr.Error()})
+		return
+	}
+
+	audience, audErr := planPMTAAudience(ctx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher)
+	if audErr != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "audience planning failed: " + audErr.Error()})
+		return
+	}
+
+	tx, txErr := a.db.BeginTx(ctx, nil)
+	if txErr != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": txErr.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	result, createErr := createPMTAWaveCampaign(ctx, tx, a.db, orgID, deployInput, normalized, audience, a.pmtaSvc.colCache)
+	if createErr != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "campaign creation failed: " + createErr.Error()})
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "commit failed: " + err.Error()})
+		return
+	}
+
+	// Mark recommendation as approved and link to the deployed campaign
+	a.db.ExecContext(ctx,
+		`UPDATE agent_campaign_recommendations
+		 SET status = 'approved', approved_at = NOW(), executed_campaign_id = $1::uuid, updated_at = NOW()
+		 WHERE id = $2`,
+		result.CampaignID, recID)
+
+	log.Printf("[MarketingAgent] recommendation %s approved → campaign %s scheduled for %s", recID, result.CampaignID, schedAt.Format(time.RFC3339))
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":          "approved",
+		"id":              recID,
+		"campaign_id":     result.CampaignID,
+		"campaign_name":   result.Name,
+		"campaign_status": result.Status,
+		"scheduled_at":    schedAt.Format(time.RFC3339),
+		"total_audience":  result.TotalAudience,
+		"target_isps":     result.TargetISPs,
+		"isp_plans":       len(result.ISPPlans),
+	})
 }
 
 // HandleRejectRecommendation moves a recommendation to 'rejected' status.
@@ -599,6 +823,89 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		}
 	}
 
+	// Load real mailing lists for this org
+	type listInfo struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	var inclusionLists []listInfo
+	listRows, _ := a.db.QueryContext(r.Context(),
+		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 50`, orgID)
+	if listRows != nil {
+		defer listRows.Close()
+		for listRows.Next() {
+			var li listInfo
+			listRows.Scan(&li.ID, &li.Name)
+			inclusionLists = append(inclusionLists, li)
+		}
+	}
+	if inclusionLists == nil {
+		inclusionLists = []listInfo{}
+	}
+
+	// Load suppression lists
+	var exclusionLists []listInfo
+	suppRows, _ := a.db.QueryContext(r.Context(),
+		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 50`, orgID)
+	if suppRows != nil {
+		defer suppRows.Close()
+		for suppRows.Next() {
+			var li listInfo
+			suppRows.Scan(&li.ID, &li.Name)
+			exclusionLists = append(exclusionLists, li)
+		}
+	}
+	if exclusionLists == nil {
+		exclusionLists = []listInfo{}
+	}
+
+	// Generate templates via AI (one batch of 5 variations, cycled across days)
+	type savedTemplate struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Subject string `json:"subject"`
+	}
+	var generatedTemplates []savedTemplate
+	if a.aiContent != nil {
+		log.Printf("[MarketingAgent] generating templates for %s forecast...", input.SendingDomain)
+		campaignType := "welcome"
+		if strategy == "performance" {
+			campaignType = "promotional"
+		}
+		result, genErr := a.aiContent.GenerateEmailTemplates(r.Context(), mailing.TemplateGenerationRequest{
+			CampaignType:  campaignType,
+			SendingDomain: input.SendingDomain,
+		})
+		if genErr != nil {
+			log.Printf("[MarketingAgent] template generation warning (non-fatal): %v", genErr)
+		} else if result != nil {
+			for _, v := range result.Variations {
+				var templateID string
+				saveErr := a.db.QueryRowContext(r.Context(),
+					`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, html_content, preview_text, status, created_at, updated_at)
+					 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
+					 RETURNING id::text`,
+					orgID,
+					fmt.Sprintf("[Maven Forecast] %s — %s", campaignType, v.VariantName),
+					v.Subject,
+					v.FromName,
+					v.HTMLContent,
+				).Scan(&templateID)
+				if saveErr != nil {
+					log.Printf("[MarketingAgent] template save warning: %v", saveErr)
+					continue
+				}
+				generatedTemplates = append(generatedTemplates, savedTemplate{
+					ID: templateID, Name: v.VariantName, Subject: v.Subject,
+				})
+				if v.FromName != "" && fromName == "" {
+					fromName = v.FromName
+				}
+			}
+			log.Printf("[MarketingAgent] generated %d templates for forecast", len(generatedTemplates))
+		}
+	}
+
 	// Generate daily recommendations for weekdays
 	created := 0
 	endDate := t.AddDate(0, 1, -1)
@@ -623,22 +930,33 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			totalVolume += adjusted
 		}
 
+		// Cycle through generated templates
+		var templateID, templateName, subject string
+		if len(generatedTemplates) > 0 {
+			tmpl := generatedTemplates[dayIndex%len(generatedTemplates)]
+			templateID = tmpl.ID
+			templateName = tmpl.Name
+			subject = tmpl.Subject
+		}
+
 		name := input.SendingDomain + " — " + current.Format("Jan 2")
 		configJSON, _ := json.Marshal(map[string]interface{}{
-			"sending_domain":       input.SendingDomain,
-			"isp_quotas":           dailyQuotas,
-			"name":                 name,
-			"scheduled_date":       current.Format("2006-01-02"),
-			"scheduled_time":       "13:00",
-			"from_name":            fromName,
-			"from_email":           fromEmail,
-			"subject":              "",
-			"preview_text":         "",
+			"sending_domain":        input.SendingDomain,
+			"isp_quotas":            dailyQuotas,
+			"name":                  name,
+			"scheduled_date":        current.Format("2006-01-02"),
+			"scheduled_time":        "13:00",
+			"from_name":             fromName,
+			"from_email":            fromEmail,
+			"subject":               subject,
+			"preview_text":          "",
+			"template_id":           templateID,
+			"template_name":         templateName,
 			"wave_interval_minutes": 15,
-			"throttle_per_wave":    0,
-			"audience_priority":    audiencePriority,
-			"inclusion_lists":      []string{},
-			"exclusion_lists":      []string{},
+			"throttle_per_wave":     0,
+			"audience_priority":     audiencePriority,
+			"inclusion_lists":       inclusionLists,
+			"exclusion_lists":       exclusionLists,
 		})
 
 		_, err := a.db.ExecContext(r.Context(),
@@ -648,7 +966,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			 VALUES ($1, $2, $3, '13:00', $4, $5, $6, $7, $8, 'pending')`,
 			orgID, input.SendingDomain, current.Format("2006-01-02"),
 			name, string(configJSON),
-			fmt.Sprintf("Auto-generated forecast based on %s strategy with %.0f%% daily volume increase", strategy, increasePct),
+			fmt.Sprintf("Auto-generated forecast based on %s strategy with %.0f%% daily volume increase. Template: %s", strategy, increasePct, templateName),
 			strategy, totalVolume)
 		if err != nil {
 			log.Printf("[MarketingAgent] forecast insert error: %v", err)
@@ -661,10 +979,11 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"status":               "generated",
+		"status":                  "generated",
 		"recommendations_created": created,
-		"sending_domain":       input.SendingDomain,
-		"strategy":             strategy,
-		"month":                input.Month,
+		"templates_generated":     len(generatedTemplates),
+		"sending_domain":          input.SendingDomain,
+		"strategy":                strategy,
+		"month":                   input.Month,
 	})
 }
