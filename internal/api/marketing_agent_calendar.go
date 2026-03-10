@@ -890,16 +890,17 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		Folder  string `json:"folder"`
 	}
 
-	loadTemplatesByFolder := func(folders []string) []savedTemplate {
+	loadTemplatesByFolder := func(keywords []string) []savedTemplate {
 		var result []savedTemplate
-		for _, folder := range folders {
+		for _, kw := range keywords {
 			tRows, _ := a.db.QueryContext(r.Context(),
-				`SELECT id::text, name, COALESCE(subject,''), COALESCE(folder_name,'')
-				 FROM mailing_templates
-				 WHERE organization_id = $1 AND status = 'active'
-				   AND html_content IS NOT NULL AND html_content != ''
-				   AND (LOWER(folder_name) LIKE '%' || $2 || '%' OR LOWER(name) LIKE '%' || $2 || '%')
-				 ORDER BY updated_at DESC LIMIT 10`, orgID, strings.ToLower(folder))
+				`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
+				 FROM mailing_templates t
+				 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
+				 WHERE t.organization_id = $1 AND t.status = 'active'
+				   AND t.html_content IS NOT NULL AND t.html_content != ''
+				   AND (LOWER(COALESCE(f.name,'')) LIKE '%' || $2 || '%' OR LOWER(t.name) LIKE '%' || $2 || '%')
+				 ORDER BY t.updated_at DESC LIMIT 10`, orgID, strings.ToLower(kw))
 			if tRows != nil {
 				defer tRows.Close()
 				for tRows.Next() {
@@ -919,11 +920,12 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// Fallback: if no category-specific templates found, use ANY active template
 	if len(warmupTemplates) == 0 && len(welcomeTemplates) == 0 {
 		allRows, _ := a.db.QueryContext(r.Context(),
-			`SELECT id::text, name, COALESCE(subject,''), COALESCE(folder_name,'')
-			 FROM mailing_templates
-			 WHERE organization_id = $1 AND status = 'active'
-			   AND html_content IS NOT NULL AND html_content != ''
-			 ORDER BY updated_at DESC LIMIT 10`, orgID)
+			`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
+			 FROM mailing_templates t
+			 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
+			 WHERE t.organization_id = $1 AND t.status = 'active'
+			   AND t.html_content IS NOT NULL AND t.html_content != ''
+			 ORDER BY t.updated_at DESC LIMIT 10`, orgID)
 		if allRows != nil {
 			defer allRows.Close()
 			for allRows.Next() {
