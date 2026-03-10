@@ -42,6 +42,20 @@ interface ForecastData { month: string; sending_domain: string; strategy: string
 
 type SubTab = 'chat' | 'calendar' | 'strategy';
 
+const MST_OFFSET = -7;
+function utcToMst(utcTime: string): string {
+  const match = utcTime.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return utcTime;
+  let h = (parseInt(match[1], 10) + 24 + MST_OFFSET) % 24;
+  return `${h.toString().padStart(2, '0')}:${match[2]}`;
+}
+function mstToUtc(mstTime: string): string {
+  const match = mstTime.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return mstTime;
+  let h = (parseInt(match[1], 10) + 24 - MST_OFFSET) % 24;
+  return `${h.toString().padStart(2, '0')}:${match[2]}`;
+}
+
 // ── Styles ──────────────────────────────────────────────────────────────────
 const S = {
   container: { display: 'flex', flexDirection: 'column' as const, height: '100%', background: '#0a0e1a', color: '#e2e8f0', fontFamily: '-apple-system,BlinkMacSystemFont,sans-serif' },
@@ -253,9 +267,9 @@ const AgentCalendar: React.FC = () => {
         scheduled_date: selectedRec.scheduled_date || '',
         scheduled_time: (() => {
           const raw = cfg.scheduled_time || selectedRec.scheduled_time || '13:00';
-          // Handle formats: "11:26", "0000-01-01T11:26:00Z", "11:26:00"
           const match = raw.match(/(\d{1,2}:\d{2})/);
-          return match ? match[1] : '13:00';
+          const utcTime = match ? match[1] : '13:00';
+          return utcToMst(utcTime);
         })(),
         from_name: cfg.from_name || '',
         from_email: cfg.from_email || '',
@@ -402,10 +416,14 @@ const AgentCalendar: React.FC = () => {
     if (!selectedRec) return;
     setSaving(true);
     try {
+      const payload = { ...editConfig };
+      if (payload.scheduled_time) {
+        payload.scheduled_time = mstToUtc(payload.scheduled_time);
+      }
       const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${selectedRec.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editConfig),
+        body: JSON.stringify(payload),
       });
       if (resp.ok) {
         await loadForecast();
@@ -532,7 +550,7 @@ const AgentCalendar: React.FC = () => {
                   <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: `${statusColor(rec.status)}15`, color: statusColor(rec.status), fontWeight: 600 }}>{rec.status}</span>
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{rec.reasoning}</div>
-                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Volume: {rec.projected_volume.toLocaleString()} | Time: {rec.scheduled_time || '13:00'} UTC</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Volume: {rec.projected_volume.toLocaleString()} | Time: {utcToMst(rec.scheduled_time || '13:00')} MST</div>
                 {rec.campaign_config?.isp_quotas && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
                     {Object.entries(rec.campaign_config.isp_quotas).map(([isp, q]) => (
@@ -596,7 +614,7 @@ const AgentCalendar: React.FC = () => {
                   <input type="date" value={editConfig.scheduled_date || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_date: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Time (UTC)</label>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Time (MST)</label>
                   <input type="time" value={editConfig.scheduled_time || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_time: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
