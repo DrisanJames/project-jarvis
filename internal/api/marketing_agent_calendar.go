@@ -30,7 +30,8 @@ func (a *EmailMarketingAgent) HandleGetForecast(w http.ResponseWriter, r *http.R
 	}
 	endDate := t.AddDate(0, 1, -1).Format("2006-01-02")
 
-	q := `SELECT id::text, sending_domain, scheduled_date, scheduled_time,
+	q := `SELECT id::text, sending_domain, scheduled_date,
+	             COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
 	             COALESCE(campaign_name,''), COALESCE(reasoning,''),
 	             COALESCE(strategy,''), projected_volume, status,
 	             campaign_config::text, created_at
@@ -133,7 +134,8 @@ func (a *EmailMarketingAgent) HandleListRecommendations(w http.ResponseWriter, r
 	status := r.URL.Query().Get("status")
 	domain := r.URL.Query().Get("sending_domain")
 
-	q := `SELECT id::text, sending_domain, scheduled_date, scheduled_time,
+	q := `SELECT id::text, sending_domain, scheduled_date,
+	             COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
 	             COALESCE(campaign_name,''), COALESCE(reasoning,''),
 	             COALESCE(strategy,''), projected_volume, status,
 	             approved_at::text, executed_campaign_id::text, created_at
@@ -212,9 +214,10 @@ func (a *EmailMarketingAgent) HandleGetRecommendation(w http.ResponseWriter, r *
 	var createdAt time.Time
 
 	err := a.db.QueryRowContext(r.Context(),
-		`SELECT sending_domain, scheduled_date, scheduled_time, COALESCE(campaign_name,''),
-		        COALESCE(reasoning,''), COALESCE(strategy,''), projected_volume, status,
-		        campaign_config::text, approved_at::text, executed_campaign_id::text,
+		`SELECT sending_domain, scheduled_date, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
+		        COALESCE(campaign_name,''), COALESCE(reasoning,''), COALESCE(strategy,''),
+		        projected_volume, status, campaign_config::text,
+		        approved_at::text, executed_campaign_id::text,
 		        COALESCE(execution_error,''), created_at
 		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
 		recID, orgID).Scan(&domain, &scheduledDate, &scheduledTime, &name,
@@ -264,7 +267,7 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 	var scheduledTime sql.NullString
 	err := a.db.QueryRowContext(ctx,
 		`SELECT status, campaign_config::text, COALESCE(campaign_name,''), COALESCE(strategy,''),
-		        sending_domain, scheduled_date, scheduled_time
+		        sending_domain, scheduled_date, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), '')
 		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
 		recID, orgID).Scan(&status, &configJSON, &campaignName, &recStrategy,
 		&sendingDomain, &scheduledDate, &scheduledTime)
@@ -691,9 +694,10 @@ func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, 
 	var createdAt time.Time
 
 	err = a.db.QueryRowContext(r.Context(),
-		`SELECT sending_domain, scheduled_date, scheduled_time, COALESCE(campaign_name,''),
-		        COALESCE(reasoning,''), COALESCE(strategy,''), projected_volume, status,
-		        campaign_config::text, approved_at::text, executed_campaign_id::text,
+		`SELECT sending_domain, scheduled_date, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
+		        COALESCE(campaign_name,''), COALESCE(reasoning,''), COALESCE(strategy,''),
+		        projected_volume, status, campaign_config::text,
+		        approved_at::text, executed_campaign_id::text,
 		        COALESCE(execution_error,''), created_at
 		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
 		recID, orgID).Scan(&domain, &retScheduledDate, &retScheduledTime, &name,
@@ -833,17 +837,19 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		domainPrefix = "qf"
 	}
 
-	// Pull from_name from the most recent sent campaign for this domain
-	var fromName, fromEmail, histScheduleTime string
+	// Pull from_name, preview_text, schedule time from the most recent sent campaign for this domain
+	var fromName, fromEmail, histScheduleTime, histPreviewText string
+	var histCampaignID string
 	a.db.QueryRowContext(r.Context(),
-		`SELECT COALESCE(from_name,''), COALESCE(from_email,''),
-		        TO_CHAR(scheduled_at AT TIME ZONE 'UTC', 'HH24:MI')
-		 FROM mailing_campaigns
-		 WHERE organization_id::text = $1
-		   AND from_email LIKE '%@' || $2
-		   AND status IN ('sent','completed','sending')
-		 ORDER BY COALESCE(scheduled_at, created_at) DESC LIMIT 1`,
-		orgID, input.SendingDomain).Scan(&fromName, &fromEmail, &histScheduleTime)
+		`SELECT c.id::text, COALESCE(c.from_name,''), COALESCE(c.from_email,''),
+		        TO_CHAR(c.scheduled_at AT TIME ZONE 'UTC', 'HH24:MI'),
+		        COALESCE(c.preview_text,'')
+		 FROM mailing_campaigns c
+		 WHERE c.organization_id::text = $1
+		   AND c.from_email LIKE '%@' || $2
+		   AND c.status IN ('sent','completed','sending')
+		 ORDER BY COALESCE(c.scheduled_at, c.created_at) DESC LIMIT 1`,
+		orgID, input.SendingDomain).Scan(&histCampaignID, &fromName, &fromEmail, &histScheduleTime, &histPreviewText)
 	if fromName == "" {
 		a.db.QueryRowContext(r.Context(),
 			`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
@@ -861,12 +867,70 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		fromEmail = "hello@" + input.SendingDomain
 	}
 
+	// Pull wave interval from the most recent ISP plan for this domain's campaign
+	histWaveInterval := 15
+	histThrottlePerWave := 0
+	if histCampaignID != "" {
+		var cadenceJSON string
+		err := a.db.QueryRowContext(r.Context(),
+			`SELECT COALESCE(config_snapshot::text, '{}')
+			 FROM mailing_campaign_isp_plans WHERE campaign_id = $1 LIMIT 1`,
+			histCampaignID).Scan(&cadenceJSON)
+		if err == nil && cadenceJSON != "" {
+			var snapshot map[string]interface{}
+			if json.Unmarshal([]byte(cadenceJSON), &snapshot) == nil {
+				if cadence, ok := snapshot["cadence"].(map[string]interface{}); ok {
+					if em, ok := cadence["every_minutes"].(float64); ok && int(em) > 0 {
+						histWaveInterval = int(em)
+					}
+					if bs, ok := cadence["batch_size"].(float64); ok && int(bs) > 0 {
+						histThrottlePerWave = int(bs)
+					}
+				}
+			}
+		}
+	}
+	log.Printf("[MarketingAgent] historical data: from=%q preview=%q wave=%d throttle=%d",
+		fromName, histPreviewText, histWaveInterval, histThrottlePerWave)
+
+	// If no historical preview_text, pull a pool of recent preview texts from this domain's campaigns
+	var previewTextPool []string
+	if histPreviewText != "" {
+		previewTextPool = append(previewTextPool, histPreviewText)
+	}
+	ptRows, _ := a.db.QueryContext(r.Context(),
+		`SELECT DISTINCT COALESCE(preview_text,'')
+		 FROM mailing_campaigns
+		 WHERE organization_id::text = $1 AND from_email LIKE '%@' || $2
+		   AND status IN ('sent','completed','sending') AND preview_text IS NOT NULL AND preview_text != ''
+		 ORDER BY 1 LIMIT 10`,
+		orgID, input.SendingDomain)
+	if ptRows != nil {
+		defer ptRows.Close()
+		for ptRows.Next() {
+			var pt string
+			ptRows.Scan(&pt)
+			if pt != "" {
+				found := false
+				for _, existing := range previewTextPool {
+					if existing == pt {
+						found = true
+						break
+					}
+				}
+				if !found {
+					previewTextPool = append(previewTextPool, pt)
+				}
+			}
+		}
+	}
+	log.Printf("[MarketingAgent] preview_text pool: %d entries", len(previewTextPool))
+
 	// Use historical schedule time or sensible defaults
 	warmupTime := "11:00"
 	welcomeTime := "14:00"
 	if histScheduleTime != "" {
 		warmupTime = histScheduleTime
-		// Welcome series 3 hours after warmup
 		if h := strings.Split(histScheduleTime, ":"); len(h) == 2 {
 			hour := 0
 			fmt.Sscanf(h[0], "%d", &hour)
@@ -1050,6 +1114,9 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			wu1Subject = tmpl.Subject
 			wu1PreviewText = tmpl.PreviewText
 		}
+		if wu1PreviewText == "" && len(previewTextPool) > 0 {
+			wu1PreviewText = previewTextPool[dayIndex%len(previewTextPool)]
+		}
 		warmupName := input.SendingDomain + " — Warmup Engaged — " + current.Format("Jan 2")
 		warmupCfg, _ := json.Marshal(map[string]interface{}{
 			"sending_domain":        input.SendingDomain,
@@ -1063,8 +1130,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			"preview_text":          wu1PreviewText,
 			"template_id":           wu1TemplateID,
 			"template_name":         wu1TemplateName,
-			"wave_interval_minutes": 15,
-			"throttle_per_wave":     0,
+			"wave_interval_minutes": histWaveInterval,
+			"throttle_per_wave":     histThrottlePerWave,
 			"audience_priority":     audiencePriority,
 			"inclusion_lists":       inclusionLists,
 			"exclusion_lists":       exclusionLists,
@@ -1101,6 +1168,9 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			wlSubject = tmpl.Subject
 			wlPreviewText = tmpl.PreviewText
 		}
+		if wlPreviewText == "" && len(previewTextPool) > 0 {
+			wlPreviewText = previewTextPool[(dayIndex+1)%len(previewTextPool)]
+		}
 		welcomeName := input.SendingDomain + " — Welcome Series — " + current.Format("Jan 2")
 		welcomeCfg, _ := json.Marshal(map[string]interface{}{
 			"sending_domain":        input.SendingDomain,
@@ -1114,8 +1184,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			"preview_text":          wlPreviewText,
 			"template_id":           wlTemplateID,
 			"template_name":         wlTemplateName,
-			"wave_interval_minutes": 15,
-			"throttle_per_wave":     0,
+			"wave_interval_minutes": histWaveInterval,
+			"throttle_per_wave":     histThrottlePerWave,
 			"audience_priority":     newDataPriority,
 			"inclusion_lists":       inclusionLists,
 			"exclusion_lists":       exclusionLists,

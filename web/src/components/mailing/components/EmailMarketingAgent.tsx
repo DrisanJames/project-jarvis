@@ -251,7 +251,12 @@ const AgentCalendar: React.FC = () => {
       setEditConfig({
         campaign_name: selectedRec.campaign_name || '',
         scheduled_date: selectedRec.scheduled_date || '',
-        scheduled_time: ((selectedRec.campaign_config || {}).scheduled_time || (selectedRec.scheduled_time || '13:00')).replace(/T.*$/, '').replace(/:\d{2}$/, '').slice(-5),
+        scheduled_time: (() => {
+          const raw = cfg.scheduled_time || selectedRec.scheduled_time || '13:00';
+          // Handle formats: "11:26", "0000-01-01T11:26:00Z", "11:26:00"
+          const match = raw.match(/(\d{1,2}:\d{2})/);
+          return match ? match[1] : '13:00';
+        })(),
         from_name: cfg.from_name || '',
         from_email: cfg.from_email || '',
         subject: cfg.subject || '',
