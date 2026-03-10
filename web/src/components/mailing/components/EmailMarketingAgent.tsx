@@ -4,9 +4,10 @@ import {
   faRobot, faCalendarAlt, faCogs, faComments, faPaperPlane,
   faSpinner, faPlus, faTrash, faCheck, faTimes,
   faChartLine, faArrowUp, faSyncAlt, faHistory,
+  faEdit, faSave, faArrowLeft,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.1';
+const PAGE_VERSION = '1.2';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -206,6 +207,17 @@ const AgentChat: React.FC = () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // CALENDAR SUB-TAB
 // ═══════════════════════════════════════════════════════════════════════════
+const ISP_BUCKETS = [
+  { key: 'gmail', label: 'Gmail' },
+  { key: 'yahoo', label: 'Yahoo/AOL' },
+  { key: 'microsoft', label: 'Microsoft' },
+  { key: 'apple', label: 'Apple' },
+  { key: 'comcast', label: 'Comcast' },
+  { key: 'att', label: 'AT&T' },
+  { key: 'cox', label: 'Cox' },
+  { key: 'charter', label: 'Charter' },
+];
+
 const AgentCalendar: React.FC = () => {
   const [forecast, setForecast] = useState<ForecastData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -215,9 +227,39 @@ const AgentCalendar: React.FC = () => {
   const [selectedDomain, setSelectedDomain] = useState('');
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [generating, setGenerating] = useState(false);
+  const [editConfig, setEditConfig] = useState<Record<string, any>>({});
+  const [saving, setSaving] = useState(false);
+  const [miniChatInput, setMiniChatInput] = useState('');
+  const [miniChatMessages, setMiniChatMessages] = useState<{role: string; content: string}[]>([]);
+  const [miniChatLoading, setMiniChatLoading] = useState(false);
+  const [cameFromDay, setCameFromDay] = useState<CalendarDay | null>(null);
 
   useEffect(() => { loadDomains(); }, []);
   useEffect(() => { if (selectedDomain) loadForecast(); }, [selectedDomain, month]);
+
+  useEffect(() => {
+    if (selectedRec) {
+      const cfg = selectedRec.campaign_config || {};
+      setEditConfig({
+        campaign_name: selectedRec.campaign_name || '',
+        scheduled_date: selectedRec.scheduled_date || '',
+        scheduled_time: (selectedRec.scheduled_time || '13:00').replace(/:\d{2}$/, ''),
+        from_name: cfg.from_name || '',
+        from_email: cfg.from_email || '',
+        subject: cfg.subject || '',
+        preview_text: cfg.preview_text || '',
+        template_id: cfg.template_id || '',
+        wave_interval_minutes: cfg.wave_interval_minutes || 15,
+        throttle_per_wave: cfg.throttle_per_wave || 0,
+        audience_priority: cfg.audience_priority || ['openers_7d','clickers_14d','engagers_30d','recent_subscribers','cold'],
+        inclusion_lists: cfg.inclusion_lists || [],
+        exclusion_lists: cfg.exclusion_lists || [],
+        isp_quotas: cfg.isp_quotas || {},
+      });
+      setMiniChatMessages([]);
+      setMiniChatInput('');
+    }
+  }, [selectedRec]);
 
   const loadDomains = async () => {
     try {
@@ -260,6 +302,44 @@ const AgentCalendar: React.FC = () => {
     await fetch(`/api/mailing/agent/calendar/recommendations/${id}/reject`, { method: 'POST' });
     loadForecast();
     setSelectedRec(null);
+  };
+
+  const saveRecommendation = async () => {
+    if (!selectedRec) return;
+    setSaving(true);
+    try {
+      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${selectedRec.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editConfig),
+      });
+      if (resp.ok) {
+        await loadForecast();
+        setSelectedRec(null);
+      }
+    } catch {} finally { setSaving(false); }
+  };
+
+  const sendMiniChat = async () => {
+    if (!miniChatInput.trim() || miniChatLoading || !selectedRec) return;
+    const msg = miniChatInput.trim();
+    setMiniChatInput('');
+    setMiniChatMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setMiniChatLoading(true);
+    try {
+      const resp = await fetch('/api/mailing/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `[Re: campaign "${selectedRec.campaign_name}" for ${selectedRec.scheduled_date}] ${msg}`,
+          conversation_id: '',
+        }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setMiniChatMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+      }
+    } catch {} finally { setMiniChatLoading(false); }
   };
 
   const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -329,7 +409,7 @@ const AgentCalendar: React.FC = () => {
                     <div style={{ fontSize: 11, color: day.date === today ? '#a5b4fc' : '#64748b', fontWeight: day.date === today ? 700 : 400 }}>{parseInt(day.date.split('-')[2])}</div>
                     {day.projected_volume > 0 && <div style={{ fontSize: 10, color: '#6366f1', fontWeight: 600, marginTop: 2 }}>{(day.projected_volume / 1000).toFixed(0)}K</div>}
                     {day.recommendations.map((r, j) => (
-                      <div key={j} onClick={(e) => { e.stopPropagation(); setSelectedDay(null); setSelectedRec(r); }}
+                      <div key={j} onClick={(e) => { e.stopPropagation(); setCameFromDay(day); setSelectedDay(null); setSelectedRec(r); }}
                         style={{ marginTop: 2, fontSize: 9, padding: '2px 4px', borderRadius: 4, background: `${statusColor(r.status)}15`, color: statusColor(r.status), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', border: `1px solid ${statusColor(r.status)}30` }}>
                         {r.campaign_name?.split('—')[0]?.trim() || r.sending_domain}
                       </div>
@@ -378,37 +458,177 @@ const AgentCalendar: React.FC = () => {
                     </button>
                   </div>
                 )}
+                <button onClick={() => { setCameFromDay(selectedDay); setSelectedDay(null); setSelectedRec(rec); }} style={{ width: '100%', padding: '6px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 6, color: '#818cf8', cursor: 'pointer', fontSize: 11, fontWeight: 600, marginTop: 8 }}>
+                  View Details <FontAwesomeIcon icon={faEdit} style={{ marginLeft: 4 }} />
+                </button>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Recommendation detail overlay */}
+      {/* Recommendation detail slide-out */}
       {selectedRec && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setSelectedRec(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#0f1629', borderRadius: 14, padding: 24, width: 500, maxHeight: '80vh', overflow: 'auto', border: '1px solid rgba(99,102,241,0.2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16, color: '#e2e8f0' }}>{selectedRec.campaign_name}</h3>
-              <button onClick={() => setSelectedRec(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}><FontAwesomeIcon icon={faTimes} /></button>
-            </div>
-            <div style={{ fontSize: 13, color: '#94a3b8', lineHeight: 1.6 }}>{selectedRec.reasoning}</div>
-            <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
-              <div style={{ background: '#111827', padding: 10, borderRadius: 8 }}><div style={{ color: '#64748b' }}>Domain</div><div style={{ color: '#e2e8f0', fontWeight: 600, marginTop: 2 }}>{selectedRec.sending_domain}</div></div>
-              <div style={{ background: '#111827', padding: 10, borderRadius: 8 }}><div style={{ color: '#64748b' }}>Volume</div><div style={{ color: '#e2e8f0', fontWeight: 600, marginTop: 2 }}>{selectedRec.projected_volume.toLocaleString()}</div></div>
-              <div style={{ background: '#111827', padding: 10, borderRadius: 8 }}><div style={{ color: '#64748b' }}>Date</div><div style={{ color: '#e2e8f0', fontWeight: 600, marginTop: 2 }}>{selectedRec.scheduled_date}</div></div>
-              <div style={{ background: '#111827', padding: 10, borderRadius: 8 }}><div style={{ color: '#64748b' }}>Strategy</div><div style={{ color: '#e2e8f0', fontWeight: 600, marginTop: 2 }}>{selectedRec.strategy || 'N/A'}</div></div>
-            </div>
-            {selectedRec.status === 'pending' && (
-              <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button onClick={() => approveRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, color: '#22c55e', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-                  <FontAwesomeIcon icon={faCheck} /> Approve
+        <div style={{ position: 'fixed', top: 0, right: 0, width: 560, height: '100vh', background: '#0f1629', borderLeft: '1px solid rgba(99,102,241,0.15)', zIndex: 200, display: 'flex', flexDirection: 'column', boxShadow: '-10px 0 40px rgba(0,0,0,0.5)' }}>
+          {/* Section 1: Header */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(99,102,241,0.1)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {cameFromDay && (
+                <button onClick={() => { setSelectedRec(null); setSelectedDay(cameFromDay); setCameFromDay(null); }} style={{ background: 'none', border: 'none', color: '#818cf8', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}>
+                  <FontAwesomeIcon icon={faArrowLeft} /> Back to day
                 </button>
-                <button onClick={() => rejectRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-                  <FontAwesomeIcon icon={faTimes} /> Reject
-                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: `${statusColor(selectedRec.status)}15`, color: statusColor(selectedRec.status), fontWeight: 600 }}>{selectedRec.status}</span>
+              <button onClick={() => { setSelectedRec(null); setCameFromDay(null); }} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
+            </div>
+            <input value={editConfig.campaign_name || ''} onChange={e => setEditConfig(c => ({ ...c, campaign_name: e.target.value }))} style={{ background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 16, fontWeight: 700, padding: '8px 12px', width: '100%', outline: 'none', boxSizing: 'border-box' as const }} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, fontWeight: 600, background: selectedRec.strategy === 'warmup' ? 'rgba(251,191,36,0.1)' : 'rgba(52,211,153,0.1)', color: selectedRec.strategy === 'warmup' ? '#fbbf24' : '#34d399', border: `1px solid ${selectedRec.strategy === 'warmup' ? 'rgba(251,191,36,0.2)' : 'rgba(52,211,153,0.2)'}` }}>
+                <FontAwesomeIcon icon={selectedRec.strategy === 'warmup' ? faArrowUp : faChartLine} style={{ marginRight: 4 }} />{selectedRec.strategy || 'N/A'}
+              </span>
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>{selectedRec.sending_domain}</span>
+            </div>
+          </div>
+
+          {/* Scrollable body */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {/* Section 2: Schedule & Delivery */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Schedule &amp; Delivery</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Date</label>
+                  <input type="date" value={editConfig.scheduled_date || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_date: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Time (UTC)</label>
+                  <input type="time" value={editConfig.scheduled_time || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_time: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Wave Interval (min)</label>
+                  <input type="number" value={editConfig.wave_interval_minutes ?? 15} onChange={e => setEditConfig(c => ({ ...c, wave_interval_minutes: +e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Throttle / Wave</label>
+                  <input type="number" value={editConfig.throttle_per_wave ?? 0} onChange={e => setEditConfig(c => ({ ...c, throttle_per_wave: +e.target.value }))} placeholder="0 = unlimited" style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
               </div>
-            )}
+            </div>
+
+            {/* Section 3: Content */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Content</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Name</label>
+                  <input value={editConfig.from_name || ''} onChange={e => setEditConfig(c => ({ ...c, from_name: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>From Email</label>
+                  <input value={editConfig.from_email || ''} readOnly style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#94a3b8', fontSize: 13, cursor: 'not-allowed', boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Subject Line</label>
+                  <input value={editConfig.subject || ''} onChange={e => setEditConfig(c => ({ ...c, subject: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Preview / Pre-header Text</label>
+                  <input value={editConfig.preview_text || ''} onChange={e => setEditConfig(c => ({ ...c, preview_text: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
+                </div>
+                {editConfig.template_id && (
+                  <div style={{ fontSize: 12, color: '#94a3b8', padding: '6px 10px', background: 'rgba(99,102,241,0.06)', borderRadius: 6, border: '1px solid rgba(99,102,241,0.1)' }}>
+                    Template: <strong style={{ color: '#a5b4fc' }}>{editConfig.template_id}</strong> <span style={{ color: '#64748b' }}>(Content from template library)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Section 4: ISP Quotas */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>ISP Quotas</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {ISP_BUCKETS.map(({ key, label }) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#111827', borderRadius: 8, border: '1px solid rgba(99,102,241,0.08)' }}>
+                    <span style={{ fontSize: 12, color: '#e2e8f0' }}>{label}</span>
+                    <input type="number" value={(editConfig.isp_quotas || {})[key] ?? ''} onChange={e => setEditConfig(c => ({ ...c, isp_quotas: { ...c.isp_quotas, [key]: e.target.value === '' ? 0 : +e.target.value } }))} style={{ width: 80, padding: '4px 8px', background: '#0d1220', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 12, textAlign: 'right' as const }} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(99,102,241,0.06)', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+                <span style={{ color: '#94a3b8' }}>Total Volume</span>
+                <strong style={{ color: '#a5b4fc' }}>{Object.values(editConfig.isp_quotas || {}).reduce((a: number, b: any) => a + (Number(b) || 0), 0).toLocaleString()}</strong>
+              </div>
+            </div>
+
+            {/* Section 5: Audience & Lists */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Audience &amp; Lists</div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Audience Priority</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {(editConfig.audience_priority || []).map((tier: string, i: number) => (
+                    <span key={i} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, background: 'rgba(99,102,241,0.08)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.12)' }}>{i + 1}. {tier}</span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Inclusion Lists</div>
+                  <div style={{ fontSize: 12, color: '#e2e8f0' }}>{(editConfig.inclusion_lists || []).length > 0 ? (editConfig.inclusion_lists as string[]).join(', ') : <span style={{ color: '#475569' }}>Not configured</span>}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Exclusion Lists</div>
+                  <div style={{ fontSize: 12, color: '#e2e8f0' }}>{(editConfig.exclusion_lists || []).length > 0 ? (editConfig.exclusion_lists as string[]).join(', ') : <span style={{ color: '#475569' }}>None</span>}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 6: AI Reasoning */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>AI Reasoning</div>
+              <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6, padding: '10px 12px', background: 'rgba(99,102,241,0.04)', borderRadius: 8, border: '1px solid rgba(99,102,241,0.08)' }}>{selectedRec.reasoning}</div>
+              <div style={{ marginTop: 10 }}>
+                {miniChatMessages.map((m, i) => (
+                  <div key={i} style={{ marginBottom: 8, padding: '8px 10px', borderRadius: 8, background: m.role === 'user' ? 'rgba(99,102,241,0.08)' : 'rgba(30,41,59,0.6)', border: `1px solid ${m.role === 'user' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)'}`, fontSize: 12, color: '#e2e8f0' }}>
+                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 3, fontWeight: 600 }}>{m.role === 'user' ? 'You' : 'Maven'}</div>
+                    {m.role === 'assistant' ? <div dangerouslySetInnerHTML={{ __html: simpleMarkdown(m.content) }} /> : m.content}
+                  </div>
+                ))}
+                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                  <input value={miniChatInput} onChange={e => setMiniChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMiniChat()} placeholder="Ask Maven about this campaign..." style={{ flex: 1, padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, outline: 'none' }} />
+                  <button onClick={sendMiniChat} disabled={!miniChatInput.trim() || miniChatLoading} style={{ padding: '8px 12px', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: 12, opacity: !miniChatInput.trim() || miniChatLoading ? 0.5 : 1 }}>
+                    {miniChatLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPaperPlane} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 7: Actions */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Actions</div>
+              {selectedRec.status === 'pending' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <button onClick={saveRecommendation} disabled={saving} style={{ padding: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 8, color: '#a5b4fc', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: saving ? 0.6 : 1 }}>
+                    <FontAwesomeIcon icon={saving ? faSpinner : faSave} spin={saving} /> {saving ? 'Saving...' : 'Save Changes'}
+                  </button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => approveRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, color: '#22c55e', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                      <FontAwesomeIcon icon={faCheck} /> Approve
+                    </button>
+                    <button onClick={() => rejectRec(selectedRec.id)} style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                      <FontAwesomeIcon icon={faTimes} /> Reject
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '12px', background: `${statusColor(selectedRec.status)}10`, borderRadius: 8, border: `1px solid ${statusColor(selectedRec.status)}25`, textAlign: 'center' as const }}>
+                  <span style={{ fontSize: 13, color: statusColor(selectedRec.status), fontWeight: 600 }}>
+                    {selectedRec.status === 'approved' ? 'Approved' : selectedRec.status === 'rejected' ? 'Rejected' : selectedRec.status === 'executed' ? 'Executed' : selectedRec.status}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

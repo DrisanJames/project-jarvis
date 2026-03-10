@@ -297,6 +297,217 @@ func (a *EmailMarketingAgent) HandleRejectRecommendation(w http.ResponseWriter, 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "rejected", "id": recID})
 }
 
+// HandleUpdateRecommendation allows editing a pending recommendation's campaign config.
+func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, r *http.Request) {
+	recID := chi.URLParam(r, "id")
+	orgID := getOrgID(r)
+
+	var input struct {
+		CampaignName       string                 `json:"campaign_name"`
+		ScheduledDate      string                 `json:"scheduled_date"`
+		ScheduledTime      string                 `json:"scheduled_time"`
+		ISPQuotas          map[string]interface{} `json:"isp_quotas"`
+		InclusionLists     []interface{}          `json:"inclusion_lists"`
+		ExclusionLists     []interface{}          `json:"exclusion_lists"`
+		TemplateID         string                 `json:"template_id"`
+		Subject            string                 `json:"subject"`
+		PreviewText        string                 `json:"preview_text"`
+		FromName           string                 `json:"from_name"`
+		FromEmail          string                 `json:"from_email"`
+		WaveIntervalMin    int                    `json:"wave_interval_minutes"`
+		ThrottlePerWave    int                    `json:"throttle_per_wave"`
+		AudiencePriority   []interface{}          `json:"audience_priority"`
+		Reasoning          string                 `json:"reasoning"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	var existingConfigJSON string
+	var status string
+	err := a.db.QueryRowContext(r.Context(),
+		`SELECT campaign_config::text, status FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&existingConfigJSON, &status)
+	if err != nil {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found"})
+		return
+	}
+	if status != "pending" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only edit pending recommendations"})
+		return
+	}
+
+	cfg := map[string]interface{}{}
+	if existingConfigJSON != "" {
+		json.Unmarshal([]byte(existingConfigJSON), &cfg)
+	}
+
+	if input.CampaignName != "" {
+		cfg["name"] = input.CampaignName
+	}
+	if input.ScheduledDate != "" {
+		cfg["scheduled_date"] = input.ScheduledDate
+	}
+	if input.ScheduledTime != "" {
+		cfg["scheduled_time"] = input.ScheduledTime
+	}
+	if input.ISPQuotas != nil {
+		cfg["isp_quotas"] = input.ISPQuotas
+	}
+	if input.InclusionLists != nil {
+		cfg["inclusion_lists"] = input.InclusionLists
+	}
+	if input.ExclusionLists != nil {
+		cfg["exclusion_lists"] = input.ExclusionLists
+	}
+	if input.TemplateID != "" {
+		cfg["template_id"] = input.TemplateID
+	}
+	if input.Subject != "" {
+		cfg["subject"] = input.Subject
+	}
+	if input.PreviewText != "" {
+		cfg["preview_text"] = input.PreviewText
+	}
+	if input.FromName != "" {
+		cfg["from_name"] = input.FromName
+	}
+	if input.FromEmail != "" {
+		cfg["from_email"] = input.FromEmail
+	}
+	if input.WaveIntervalMin != 0 {
+		cfg["wave_interval_minutes"] = input.WaveIntervalMin
+	}
+	if input.ThrottlePerWave != 0 {
+		cfg["throttle_per_wave"] = input.ThrottlePerWave
+	}
+	if input.AudiencePriority != nil {
+		cfg["audience_priority"] = input.AudiencePriority
+	}
+	if input.Reasoning != "" {
+		cfg["reasoning"] = input.Reasoning
+	}
+
+	projectedVolume := 0
+	if quotas, ok := cfg["isp_quotas"].(map[string]interface{}); ok {
+		for _, v := range quotas {
+			switch n := v.(type) {
+			case float64:
+				projectedVolume += int(n)
+			case int:
+				projectedVolume += n
+			case json.Number:
+				if i, err := n.Int64(); err == nil {
+					projectedVolume += int(i)
+				}
+			}
+		}
+	}
+
+	updatedConfigBytes, _ := json.Marshal(cfg)
+
+	campaignName := input.CampaignName
+	if campaignName == "" {
+		if n, ok := cfg["name"].(string); ok {
+			campaignName = n
+		}
+	}
+	scheduledDate := input.ScheduledDate
+	if scheduledDate == "" {
+		if d, ok := cfg["scheduled_date"].(string); ok {
+			scheduledDate = d
+		}
+	}
+	scheduledTime := input.ScheduledTime
+	if scheduledTime == "" {
+		if t, ok := cfg["scheduled_time"].(string); ok {
+			scheduledTime = t
+		}
+	}
+	reasoning := input.Reasoning
+
+	q := `UPDATE agent_campaign_recommendations SET campaign_config = $1, projected_volume = $2, updated_at = NOW()`
+	args := []interface{}{string(updatedConfigBytes), projectedVolume}
+	idx := 3
+	if campaignName != "" {
+		q += fmt.Sprintf(`, campaign_name = $%d`, idx)
+		args = append(args, campaignName)
+		idx++
+	}
+	if scheduledDate != "" {
+		q += fmt.Sprintf(`, scheduled_date = $%d`, idx)
+		args = append(args, scheduledDate)
+		idx++
+	}
+	if scheduledTime != "" {
+		q += fmt.Sprintf(`, scheduled_time = $%d`, idx)
+		args = append(args, scheduledTime)
+		idx++
+	}
+	if reasoning != "" {
+		q += fmt.Sprintf(`, reasoning = $%d`, idx)
+		args = append(args, reasoning)
+		idx++
+	}
+	q += fmt.Sprintf(` WHERE id = $%d AND organization_id = $%d`, idx, idx+1)
+	args = append(args, recID, orgID)
+
+	_, err = a.db.ExecContext(r.Context(), q, args...)
+	if err != nil {
+		log.Printf("[MarketingAgent] update recommendation error: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Return full updated recommendation (same shape as HandleGetRecommendation)
+	var domain, name, reas, strategy, retStatus, retConfigJSON string
+	var volume int
+	var retScheduledDate time.Time
+	var retScheduledTime, approvedAt, executedCampaign, executionError sql.NullString
+	var createdAt time.Time
+
+	err = a.db.QueryRowContext(r.Context(),
+		`SELECT sending_domain, scheduled_date, scheduled_time, COALESCE(campaign_name,''),
+		        COALESCE(reasoning,''), COALESCE(strategy,''), projected_volume, status,
+		        campaign_config::text, approved_at::text, executed_campaign_id::text,
+		        COALESCE(execution_error,''), created_at
+		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&domain, &retScheduledDate, &retScheduledTime, &name,
+		&reas, &strategy, &volume, &retStatus, &retConfigJSON,
+		&approvedAt, &executedCampaign, &executionError, &createdAt)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "updated but failed to reload: " + err.Error()})
+		return
+	}
+
+	result := map[string]interface{}{
+		"id": recID, "sending_domain": domain,
+		"scheduled_date": retScheduledDate.Format("2006-01-02"),
+		"campaign_name": name, "reasoning": reas,
+		"strategy": strategy, "projected_volume": volume,
+		"status": retStatus, "created_at": createdAt.Format(time.RFC3339),
+	}
+	if retScheduledTime.Valid {
+		result["scheduled_time"] = retScheduledTime.String
+	}
+	if approvedAt.Valid {
+		result["approved_at"] = approvedAt.String
+	}
+	if executedCampaign.Valid {
+		result["executed_campaign_id"] = executedCampaign.String
+	}
+	if executionError.Valid && executionError.String != "" {
+		result["execution_error"] = executionError.String
+	}
+	if retConfigJSON != "" {
+		var retCfg map[string]interface{}
+		json.Unmarshal([]byte(retConfigJSON), &retCfg)
+		result["campaign_config"] = retCfg
+	}
+	respondJSON(w, http.StatusOK, result)
+}
+
 // HandleGenerateForecast generates campaign recommendations for a month based on the domain strategy.
 func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
@@ -372,6 +583,22 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			orgID, input.SendingDomain, startDate, t.AddDate(0, 1, -1).Format("2006-01-02"))
 	}
 
+	var fromName, fromEmail string
+	a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
+		 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'active' LIMIT 1`,
+		orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
+
+	audiencePriority := []string{"openers_7d", "clickers_14d", "engagers_30d", "recent_subscribers", "cold"}
+	if ap, ok := params["audience_priority"].([]interface{}); ok {
+		audiencePriority = []string{}
+		for _, v := range ap {
+			if s, ok := v.(string); ok {
+				audiencePriority = append(audiencePriority, s)
+			}
+		}
+	}
+
 	// Generate daily recommendations for weekdays
 	created := 0
 	endDate := t.AddDate(0, 1, -1)
@@ -398,11 +625,20 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 
 		name := input.SendingDomain + " — " + current.Format("Jan 2")
 		configJSON, _ := json.Marshal(map[string]interface{}{
-			"sending_domain": input.SendingDomain,
-			"isp_quotas":     dailyQuotas,
-			"name":           name,
-			"scheduled_date": current.Format("2006-01-02"),
-			"scheduled_time": "13:00",
+			"sending_domain":       input.SendingDomain,
+			"isp_quotas":           dailyQuotas,
+			"name":                 name,
+			"scheduled_date":       current.Format("2006-01-02"),
+			"scheduled_time":       "13:00",
+			"from_name":            fromName,
+			"from_email":           fromEmail,
+			"subject":              "",
+			"preview_text":         "",
+			"wave_interval_minutes": 15,
+			"throttle_per_wave":    0,
+			"audience_priority":    audiencePriority,
+			"inclusion_lists":      []string{},
+			"exclusion_lists":      []string{},
 		})
 
 		_, err := a.db.ExecContext(r.Context(),
