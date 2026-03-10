@@ -1027,9 +1027,23 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		seenNames[nameLower] = true
 		inclusionLists = append(inclusionLists, li)
 	}
-	// Also add filtered segments to the inclusion pool
+	// Also add filtered segments to the inclusion pool (skip exclusion-type segments)
+	isExclusionSegment := func(name string) bool {
+		lower := strings.ToLower(name)
+		return strings.Contains(lower, "inactive") || strings.Contains(lower, "no engagement") ||
+			strings.Contains(lower, "no open") || strings.Contains(lower, "bot ") ||
+			strings.Contains(lower, "system") || strings.Contains(lower, "suppression")
+	}
 	for _, si := range allSegments {
-		if isTestOrSeed(si.Name) {
+		if isTestOrSeed(si.Name) || isExclusionSegment(si.Name) {
+			continue
+		}
+		lower := strings.ToLower(si.Name)
+		isQFSegment := strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta")
+		if isQFDomain && !isQFSegment && !strings.Contains(lower, "mailed") {
+			continue
+		}
+		if !isQFDomain && isQFSegment {
 			continue
 		}
 		nameLower := strings.ToLower(strings.TrimSpace(si.Name))
