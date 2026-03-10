@@ -7,7 +7,7 @@ import {
   faEdit, faSave, faArrowLeft,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.3';
+const PAGE_VERSION = '1.4';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -238,6 +238,9 @@ const AgentCalendar: React.FC = () => {
   const [templateLoading, setTemplateLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [approvalResult, setApprovalResult] = useState<Record<string, any> | null>(null);
+  const [listSearch, setListSearch] = useState('');
+  const [availableLists, setAvailableLists] = useState<{id: string; name: string}[]>([]);
+  const [listSearchType, setListSearchType] = useState<'inclusion' | 'exclusion' | null>(null);
 
   useEffect(() => { loadDomains(); }, []);
   useEffect(() => { if (selectedDomain) loadForecast(); }, [selectedDomain, month]);
@@ -248,7 +251,7 @@ const AgentCalendar: React.FC = () => {
       setEditConfig({
         campaign_name: selectedRec.campaign_name || '',
         scheduled_date: selectedRec.scheduled_date || '',
-        scheduled_time: (selectedRec.scheduled_time || '13:00').replace(/:\d{2}$/, ''),
+        scheduled_time: ((selectedRec.campaign_config || {}).scheduled_time || (selectedRec.scheduled_time || '13:00')).replace(/T.*$/, '').replace(/:\d{2}$/, '').slice(-5),
         from_name: cfg.from_name || '',
         from_email: cfg.from_email || '',
         subject: cfg.subject || '',
@@ -332,6 +335,42 @@ const AgentCalendar: React.FC = () => {
     await fetch(`/api/mailing/agent/calendar/recommendations/${id}/reject`, { method: 'POST' });
     loadForecast();
     setSelectedRec(null);
+  };
+
+  const loadAvailableLists = async (type: 'inclusion' | 'exclusion') => {
+    setListSearchType(type);
+    setListSearch('');
+    try {
+      if (type === 'inclusion') {
+        const resp = await fetch('/api/mailing/lists?limit=100');
+        if (resp.ok) {
+          const data = await resp.json();
+          const items = Array.isArray(data) ? data : data.lists || data.data || [];
+          setAvailableLists(items.map((l: any) => ({ id: l.id, name: l.name })));
+        }
+      } else {
+        const resp = await fetch('/api/mailing/suppression-lists?limit=50');
+        if (resp.ok) {
+          const data = await resp.json();
+          const items = Array.isArray(data) ? data : data.lists || data.data || [];
+          setAvailableLists(items.map((l: any) => ({ id: l.id, name: l.name })));
+        }
+      }
+    } catch { setAvailableLists([]); }
+  };
+
+  const addList = (type: 'inclusion' | 'exclusion', item: {id: string; name: string}) => {
+    const key = type === 'inclusion' ? 'inclusion_lists' : 'exclusion_lists';
+    setEditConfig(c => {
+      const existing = (c[key] || []) as any[];
+      if (existing.some((l: any) => (typeof l === 'object' ? l.id : l) === item.id)) return c;
+      return { ...c, [key]: [...existing, item] };
+    });
+  };
+
+  const removeList = (type: 'inclusion' | 'exclusion', index: number) => {
+    const key = type === 'inclusion' ? 'inclusion_lists' : 'exclusion_lists';
+    setEditConfig(c => ({ ...c, [key]: (c[key] || []).filter((_: any, i: number) => i !== index) }));
   };
 
   const saveRecommendation = async () => {
@@ -629,35 +668,88 @@ const AgentCalendar: React.FC = () => {
                 </div>
               </div>
               <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6, fontWeight: 600 }}>Inclusion Lists ({(editConfig.inclusion_lists || []).length})</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Inclusion Lists ({(editConfig.inclusion_lists || []).length})</div>
+                  {selectedRec?.status === 'pending' && (
+                    <button onClick={() => loadAvailableLists('inclusion')} style={{ fontSize: 10, padding: '3px 8px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 4, color: '#a5b4fc', cursor: 'pointer' }}>
+                      <FontAwesomeIcon icon={faPlus} style={{ marginRight: 4 }} />Add
+                    </button>
+                  )}
+                </div>
                 {(editConfig.inclusion_lists || []).length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 180, overflowY: 'auto' }}>
                     {(editConfig.inclusion_lists as any[]).map((item: any, i: number) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#111827', borderRadius: 6, border: '1px solid rgba(99,102,241,0.08)' }}>
-                        <span style={{ fontSize: 10, color: '#64748b', fontWeight: 700, width: 18, textAlign: 'center' as const }}>{i + 1}</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 500 }}>{typeof item === 'object' ? item.name : item}</div>
-                          {typeof item === 'object' && item.id && <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{item.id}</div>}
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#111827', borderRadius: 6, border: '1px solid rgba(99,102,241,0.08)' }}>
+                        <span style={{ fontSize: 10, color: '#64748b', fontWeight: 700, width: 16, textAlign: 'center' as const }}>{i + 1}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
                         </div>
+                        {selectedRec?.status === 'pending' && (
+                          <button onClick={() => removeList('inclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: '#ef4444', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
+                            <FontAwesomeIcon icon={faTimes} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
                 ) : (
                   <div style={{ fontSize: 12, color: '#fbbf24', padding: '8px 10px', background: 'rgba(251,191,36,0.06)', borderRadius: 6, border: '1px solid rgba(251,191,36,0.1)' }}>No inclusion lists — required for deployment</div>
                 )}
+                {listSearchType === 'inclusion' && (
+                  <div style={{ marginTop: 6, padding: 8, background: '#0d1220', borderRadius: 8, border: '1px solid rgba(99,102,241,0.15)' }}>
+                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search lists..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
+                    <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 20).map(l => (
+                        <div key={l.id} onClick={() => addList('inclusion', l)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
+                          <FontAwesomeIcon icon={faPlus} style={{ color: '#6366f1', fontSize: 10, flexShrink: 0 }} />
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setListSearchType(null)} style={{ marginTop: 4, width: '100%', padding: '4px', background: 'none', border: '1px solid rgba(99,102,241,0.1)', borderRadius: 4, color: '#64748b', cursor: 'pointer', fontSize: 10 }}>Close</button>
+                  </div>
+                )}
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6, fontWeight: 600 }}>Suppression Lists ({(editConfig.exclusion_lists || []).length})</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Suppression / Exclusions ({(editConfig.exclusion_lists || []).length})</div>
+                  {selectedRec?.status === 'pending' && (
+                    <button onClick={() => loadAvailableLists('exclusion')} style={{ fontSize: 10, padding: '3px 8px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: '#f87171', cursor: 'pointer' }}>
+                      <FontAwesomeIcon icon={faPlus} style={{ marginRight: 4 }} />Add
+                    </button>
+                  )}
+                </div>
                 {(editConfig.exclusion_lists || []).length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 150, overflowY: 'auto' }}>
                     {(editConfig.exclusion_lists as any[]).map((item: any, i: number) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#111827', borderRadius: 6, border: '1px solid rgba(239,68,68,0.08)' }}>
-                        <span style={{ fontSize: 12, color: '#e2e8f0' }}>{typeof item === 'object' ? item.name : item}</span>
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#111827', borderRadius: 6, border: '1px solid rgba(239,68,68,0.08)' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
+                        </div>
+                        {selectedRec?.status === 'pending' && (
+                          <button onClick={() => removeList('exclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: '#ef4444', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
+                            <FontAwesomeIcon icon={faTimes} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
                 ) : (
                   <div style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>No suppression lists configured</div>
+                )}
+                {listSearchType === 'exclusion' && (
+                  <div style={{ marginTop: 6, padding: 8, background: '#0d1220', borderRadius: 8, border: '1px solid rgba(239,68,68,0.1)' }}>
+                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search suppression lists..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
+                    <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 20).map(l => (
+                        <div key={l.id} onClick={() => addList('exclusion', l)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
+                          <FontAwesomeIcon icon={faPlus} style={{ color: '#ef4444', fontSize: 10, flexShrink: 0 }} />
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setListSearchType(null)} style={{ marginTop: 4, width: '100%', padding: '4px', background: 'none', border: '1px solid rgba(239,68,68,0.1)', borderRadius: 4, color: '#64748b', cursor: 'pointer', fontSize: 10 }}>Close</button>
+                  </div>
                 )}
               </div>
             </div>

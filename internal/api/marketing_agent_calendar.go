@@ -826,13 +826,52 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			orgID, input.SendingDomain, startDate, t.AddDate(0, 1, -1).Format("2006-01-02"))
 	}
 
-	var fromName, fromEmail string
+	// Determine domain affinity: "QF" prefix = quizfiesta, otherwise = discountblog
+	isQFDomain := strings.Contains(strings.ToLower(input.SendingDomain), "quizfiesta")
+	domainPrefix := ""
+	if isQFDomain {
+		domainPrefix = "qf"
+	}
+
+	// Pull from_name from the most recent sent campaign for this domain
+	var fromName, fromEmail, histScheduleTime string
 	a.db.QueryRowContext(r.Context(),
-		`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
-		 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'active' LIMIT 1`,
-		orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
+		`SELECT COALESCE(from_name,''), COALESCE(from_email,''),
+		        TO_CHAR(scheduled_at AT TIME ZONE 'UTC', 'HH24:MI')
+		 FROM mailing_campaigns
+		 WHERE organization_id::text = $1
+		   AND from_email LIKE '%@' || $2
+		   AND status IN ('sent','completed','sending')
+		 ORDER BY COALESCE(scheduled_at, created_at) DESC LIMIT 1`,
+		orgID, input.SendingDomain).Scan(&fromName, &fromEmail, &histScheduleTime)
 	if fromName == "" {
-		fromName = strings.Split(input.SendingDomain, ".")[0]
+		a.db.QueryRowContext(r.Context(),
+			`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
+			 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'active' LIMIT 1`,
+			orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
+	}
+	if fromName == "" {
+		if isQFDomain {
+			fromName = "Quiz Fiesta"
+		} else {
+			fromName = "Jamie @ Discount Blog"
+		}
+	}
+	if fromEmail == "" {
+		fromEmail = "hello@" + input.SendingDomain
+	}
+
+	// Use historical schedule time or sensible defaults
+	warmupTime := "11:00"
+	welcomeTime := "14:00"
+	if histScheduleTime != "" {
+		warmupTime = histScheduleTime
+		// Welcome series 3 hours after warmup
+		if h := strings.Split(histScheduleTime, ":"); len(h) == 2 {
+			hour := 0
+			fmt.Sscanf(h[0], "%d", &hour)
+			welcomeTime = fmt.Sprintf("%02d:%s", (hour+3)%24, h[1])
+		}
 	}
 
 	audiencePriority := []string{"openers_7d", "clickers_14d", "engagers_30d", "recent_subscribers", "cold"}
@@ -846,27 +885,40 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	}
 	newDataPriority := []string{"recent_subscribers", "cold"}
 
-	// Load real mailing lists for this org
 	type listInfo struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
-	var inclusionLists []listInfo
+
+	// Load mailing lists, filtered by domain affinity
+	var allLists []listInfo
 	listRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 50`, orgID)
+		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 100`, orgID)
 	if listRows != nil {
 		defer listRows.Close()
 		for listRows.Next() {
 			var li listInfo
 			listRows.Scan(&li.ID, &li.Name)
+			allLists = append(allLists, li)
+		}
+	}
+
+	// Filter lists by domain: QF-prefixed → quizfiesta, non-QF → discountblog
+	var inclusionLists []listInfo
+	for _, li := range allLists {
+		lower := strings.ToLower(li.Name)
+		hasQFPrefix := strings.HasPrefix(lower, "qf ")
+		if isQFDomain && hasQFPrefix {
+			inclusionLists = append(inclusionLists, li)
+		} else if !isQFDomain && !hasQFPrefix {
 			inclusionLists = append(inclusionLists, li)
 		}
 	}
-	if inclusionLists == nil {
-		inclusionLists = []listInfo{}
+	if len(inclusionLists) == 0 {
+		inclusionLists = allLists
 	}
 
-	// Load suppression lists
+	// Load suppression lists (always include ALL suppression lists)
 	var exclusionLists []listInfo
 	suppRows, _ := a.db.QueryContext(r.Context(),
 		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 ORDER BY name LIMIT 50`, orgID)
@@ -878,22 +930,39 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			exclusionLists = append(exclusionLists, li)
 		}
 	}
-	if exclusionLists == nil {
+
+	// Always add inactives segment as exclusion
+	segRows, _ := a.db.QueryContext(r.Context(),
+		`SELECT id::text, name FROM mailing_segments
+		 WHERE organization_id = $1 AND status = 'active'
+		   AND (LOWER(name) LIKE '%inactive%' OR LOWER(name) LIKE '%no engagement%' OR LOWER(name) LIKE '%no open%')
+		 ORDER BY name LIMIT 10`, orgID)
+	if segRows != nil {
+		defer segRows.Close()
+		for segRows.Next() {
+			var seg listInfo
+			segRows.Scan(&seg.ID, &seg.Name)
+			exclusionLists = append(exclusionLists, listInfo{ID: seg.ID, Name: "[Segment] " + seg.Name})
+		}
+	}
+
+	if len(exclusionLists) == 0 {
 		exclusionLists = []listInfo{}
 	}
+	log.Printf("[MarketingAgent] lists: %d inclusion (domain-filtered), %d exclusion (suppression+segments)", len(inclusionLists), len(exclusionLists))
 
-	// Load existing templates from this org for assignment to recommendations
+	// Load templates, filtered by domain affinity
 	type savedTemplate struct {
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		Subject string `json:"subject"`
-		Folder  string `json:"folder"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Subject     string `json:"subject"`
+		Folder      string `json:"folder"`
+		PreviewText string `json:"preview_text"`
 	}
 
-	// Load ALL active templates with HTML content, then categorize by name/folder
 	var allTemplates []savedTemplate
 	tRows, tErr := a.db.QueryContext(r.Context(),
-		`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
+		`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,''), COALESCE(t.preview_text,'')
 		 FROM mailing_templates t
 		 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
 		 WHERE t.organization_id = $1 AND t.status = 'active'
@@ -905,18 +974,32 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		defer tRows.Close()
 		for tRows.Next() {
 			var t savedTemplate
-			if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder); scanErr != nil {
+			if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder, &t.PreviewText); scanErr != nil {
 				log.Printf("[MarketingAgent] template scan error: %v", scanErr)
 				continue
 			}
 			allTemplates = append(allTemplates, t)
 		}
 	}
-	log.Printf("[MarketingAgent] loaded %d templates total (orgID=%s)", len(allTemplates), orgID)
 
-	// Split into categories by name/folder keywords
-	var warmupTemplates, welcomeTemplates []savedTemplate
+	// Filter templates by domain affinity: QF templates for QF domains, non-QF for DB
+	var domainTemplates []savedTemplate
 	for _, t := range allTemplates {
+		lower := strings.ToLower(t.Name + " " + t.Folder)
+		isQFTemplate := strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta") || strings.Contains(lower, "quizfiesta")
+		if isQFDomain && isQFTemplate {
+			domainTemplates = append(domainTemplates, t)
+		} else if !isQFDomain && !isQFTemplate {
+			domainTemplates = append(domainTemplates, t)
+		}
+	}
+	if len(domainTemplates) == 0 {
+		domainTemplates = allTemplates
+	}
+
+	// Split filtered templates into warmup (newsletter) vs welcome
+	var warmupTemplates, welcomeTemplates []savedTemplate
+	for _, t := range domainTemplates {
 		lower := strings.ToLower(t.Name + " " + t.Folder)
 		if strings.Contains(lower, "welcome") {
 			welcomeTemplates = append(welcomeTemplates, t)
@@ -925,13 +1008,14 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		}
 	}
 	if len(warmupTemplates) == 0 {
-		warmupTemplates = allTemplates
+		warmupTemplates = domainTemplates
 	}
 	if len(welcomeTemplates) == 0 {
-		welcomeTemplates = allTemplates
+		welcomeTemplates = domainTemplates
 	}
 
-	log.Printf("[MarketingAgent] categorized: %d warmup, %d welcome templates", len(warmupTemplates), len(welcomeTemplates))
+	_ = domainPrefix
+	log.Printf("[MarketingAgent] domain=%s isQF=%v templates: %d warmup, %d welcome, lists: %d inclusion", input.SendingDomain, isQFDomain, len(warmupTemplates), len(welcomeTemplates), len(inclusionLists))
 
 	// Generate daily recommendations — two campaigns per day
 	created := 0
@@ -958,12 +1042,13 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			warmupQuotas[isp] = adjusted
 			warmupVolume += adjusted
 		}
-		var wu1TemplateID, wu1TemplateName, wu1Subject string
+		var wu1TemplateID, wu1TemplateName, wu1Subject, wu1PreviewText string
 		if len(warmupTemplates) > 0 {
 			tmpl := warmupTemplates[dayIndex%len(warmupTemplates)]
 			wu1TemplateID = tmpl.ID
 			wu1TemplateName = tmpl.Name
 			wu1Subject = tmpl.Subject
+			wu1PreviewText = tmpl.PreviewText
 		}
 		warmupName := input.SendingDomain + " — Warmup Engaged — " + current.Format("Jan 2")
 		warmupCfg, _ := json.Marshal(map[string]interface{}{
@@ -971,11 +1056,11 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			"isp_quotas":            warmupQuotas,
 			"name":                  warmupName,
 			"scheduled_date":        current.Format("2006-01-02"),
-			"scheduled_time":        "13:00",
+			"scheduled_time":        warmupTime,
 			"from_name":             fromName,
 			"from_email":            fromEmail,
 			"subject":               wu1Subject,
-			"preview_text":          "",
+			"preview_text":          wu1PreviewText,
 			"template_id":           wu1TemplateID,
 			"template_name":         wu1TemplateName,
 			"wave_interval_minutes": 15,
@@ -989,8 +1074,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			`INSERT INTO agent_campaign_recommendations
 			 (organization_id, sending_domain, scheduled_date, scheduled_time,
 			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
-			 VALUES ($1, $2, $3, '13:00', $4, $5, $6, $7, $8, 'pending')`,
-			orgID, input.SendingDomain, current.Format("2006-01-02"),
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
+			orgID, input.SendingDomain, current.Format("2006-01-02"), warmupTime,
 			warmupName, string(warmupCfg),
 			fmt.Sprintf("Warmup campaign targeting engaged audience (openers, clickers) — 70%% of daily volume. Builds ISP reputation with high-engagement data. Day %d of warmup, %.0f%% cumulative volume increase.", dayIndex+1, increasePct*float64(dayIndex)),
 			strategy, warmupVolume)
@@ -1008,12 +1093,13 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			welcomeQuotas[isp] = adjusted
 			welcomeVolume += adjusted
 		}
-		var wlTemplateID, wlTemplateName, wlSubject string
+		var wlTemplateID, wlTemplateName, wlSubject, wlPreviewText string
 		if len(welcomeTemplates) > 0 {
 			tmpl := welcomeTemplates[dayIndex%len(welcomeTemplates)]
 			wlTemplateID = tmpl.ID
 			wlTemplateName = tmpl.Name
 			wlSubject = tmpl.Subject
+			wlPreviewText = tmpl.PreviewText
 		}
 		welcomeName := input.SendingDomain + " — Welcome Series — " + current.Format("Jan 2")
 		welcomeCfg, _ := json.Marshal(map[string]interface{}{
@@ -1021,11 +1107,11 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			"isp_quotas":            welcomeQuotas,
 			"name":                  welcomeName,
 			"scheduled_date":        current.Format("2006-01-02"),
-			"scheduled_time":        "14:00",
+			"scheduled_time":        welcomeTime,
 			"from_name":             fromName,
 			"from_email":            fromEmail,
 			"subject":               wlSubject,
-			"preview_text":          "",
+			"preview_text":          wlPreviewText,
 			"template_id":           wlTemplateID,
 			"template_name":         wlTemplateName,
 			"wave_interval_minutes": 15,
@@ -1039,8 +1125,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			`INSERT INTO agent_campaign_recommendations
 			 (organization_id, sending_domain, scheduled_date, scheduled_time,
 			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
-			 VALUES ($1, $2, $3, '14:00', $4, $5, $6, $7, $8, 'pending')`,
-			orgID, input.SendingDomain, current.Format("2006-01-02"),
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
+			orgID, input.SendingDomain, current.Format("2006-01-02"), welcomeTime,
 			welcomeName, string(welcomeCfg),
 			fmt.Sprintf("Welcome series targeting new subscribers and cold data — 30%% of daily volume. Introduces fresh recipients at controlled pace. Day %d of warmup.", dayIndex+1),
 			strategy, welcomeVolume)
