@@ -347,29 +347,49 @@ const AgentCalendar: React.FC = () => {
     setListSearch('');
     try {
       if (type === 'inclusion') {
-        const resp = await fetch('/api/mailing/lists?limit=100');
-        if (resp.ok) {
-          const data = await resp.json();
+        const [listResp, segResp] = await Promise.all([
+          fetch('/api/mailing/lists?limit=100'),
+          fetch('/api/mailing/segments?limit=50'),
+        ]);
+        const combined: {id: string; name: string; type: string}[] = [];
+        if (listResp.ok) {
+          const data = await listResp.json();
           const items = Array.isArray(data) ? data : data.lists || data.data || [];
-          setAvailableLists(items.map((l: any) => ({ id: l.id, name: l.name })));
+          items.forEach((l: any) => combined.push({ id: l.id, name: l.name, type: 'list' }));
         }
+        if (segResp.ok) {
+          const data = await segResp.json();
+          const items = Array.isArray(data) ? data : data.segments || data.data || [];
+          items.forEach((s: any) => combined.push({ id: s.id, name: s.name, type: 'segment' }));
+        }
+        setAvailableLists(combined);
       } else {
-        const resp = await fetch('/api/mailing/suppression-lists?limit=50');
-        if (resp.ok) {
-          const data = await resp.json();
+        const [suppResp, segResp] = await Promise.all([
+          fetch('/api/mailing/suppression-lists?limit=50'),
+          fetch('/api/mailing/segments?limit=50'),
+        ]);
+        const combined: {id: string; name: string; type: string}[] = [];
+        if (suppResp.ok) {
+          const data = await suppResp.json();
           const items = Array.isArray(data) ? data : data.lists || data.data || [];
-          setAvailableLists(items.map((l: any) => ({ id: l.id, name: l.name })));
+          items.forEach((l: any) => combined.push({ id: l.id, name: l.name, type: 'suppression_list' }));
         }
+        if (segResp.ok) {
+          const data = await segResp.json();
+          const items = Array.isArray(data) ? data : data.segments || data.data || [];
+          items.forEach((s: any) => combined.push({ id: s.id, name: s.name, type: 'segment' }));
+        }
+        setAvailableLists(combined);
       }
     } catch { setAvailableLists([]); }
   };
 
-  const addList = (type: 'inclusion' | 'exclusion', item: {id: string; name: string}) => {
+  const addList = (type: 'inclusion' | 'exclusion', item: {id: string; name: string; type?: string}) => {
     const key = type === 'inclusion' ? 'inclusion_lists' : 'exclusion_lists';
     setEditConfig(c => {
       const existing = (c[key] || []) as any[];
       if (existing.some((l: any) => (typeof l === 'object' ? l.id : l) === item.id)) return c;
-      return { ...c, [key]: [...existing, item] };
+      return { ...c, [key]: [...existing, { id: item.id, name: item.name, type: item.type || 'list' }] };
     });
   };
 
@@ -674,7 +694,7 @@ const AgentCalendar: React.FC = () => {
               </div>
               <div style={{ marginBottom: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Inclusion Lists ({(editConfig.inclusion_lists || []).length})</div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Inclusion Lists & Segments ({(editConfig.inclusion_lists || []).length})</div>
                   {selectedRec?.status === 'pending' && (
                     <button onClick={() => loadAvailableLists('inclusion')} style={{ fontSize: 10, padding: '3px 8px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 4, color: '#a5b4fc', cursor: 'pointer' }}>
                       <FontAwesomeIcon icon={faPlus} style={{ marginRight: 4 }} />Add
@@ -686,6 +706,11 @@ const AgentCalendar: React.FC = () => {
                     {(editConfig.inclusion_lists as any[]).map((item: any, i: number) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#111827', borderRadius: 6, border: '1px solid rgba(99,102,241,0.08)' }}>
                         <span style={{ fontSize: 10, color: '#64748b', fontWeight: 700, width: 16, textAlign: 'center' as const }}>{i + 1}</span>
+                        {typeof item === 'object' && item.type === 'segment' ? (
+                          <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(168,85,247,0.15)', color: '#c084fc', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5, textTransform: 'uppercase' as const }}>SEG</span>
+                        ) : (
+                          <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5, textTransform: 'uppercase' as const }}>LIST</span>
+                        )}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
                         </div>
@@ -702,11 +727,16 @@ const AgentCalendar: React.FC = () => {
                 )}
                 {listSearchType === 'inclusion' && (
                   <div style={{ marginTop: 6, padding: 8, background: '#0d1220', borderRadius: 8, border: '1px solid rgba(99,102,241,0.15)' }}>
-                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search lists..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
+                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search lists & segments..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
                     <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 20).map(l => (
-                        <div key={l.id} onClick={() => addList('inclusion', l)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
+                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 30).map(l => (
+                        <div key={l.id} onClick={() => addList('inclusion', l)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
+                          {(l as any).type === 'segment' ? (
+                            <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(168,85,247,0.15)', color: '#c084fc', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>SEG</span>
+                          ) : (
+                            <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>LIST</span>
+                          )}
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
                           <FontAwesomeIcon icon={faPlus} style={{ color: '#6366f1', fontSize: 10, flexShrink: 0 }} />
                         </div>
                       ))}
@@ -728,6 +758,11 @@ const AgentCalendar: React.FC = () => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 150, overflowY: 'auto' }}>
                     {(editConfig.exclusion_lists as any[]).map((item: any, i: number) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#111827', borderRadius: 6, border: '1px solid rgba(239,68,68,0.08)' }}>
+                        {typeof item === 'object' && item.type === 'segment' ? (
+                          <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(168,85,247,0.15)', color: '#c084fc', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5, textTransform: 'uppercase' as const }}>SEG</span>
+                        ) : (
+                          <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5, textTransform: 'uppercase' as const }}>SUPP</span>
+                        )}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 11, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
                         </div>
@@ -744,11 +779,16 @@ const AgentCalendar: React.FC = () => {
                 )}
                 {listSearchType === 'exclusion' && (
                   <div style={{ marginTop: 6, padding: 8, background: '#0d1220', borderRadius: 8, border: '1px solid rgba(239,68,68,0.1)' }}>
-                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search suppression lists..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
+                    <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search suppression lists & segments..." style={{ width: '100%', padding: '6px 10px', background: '#111827', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' }} />
                     <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 20).map(l => (
-                        <div key={l.id} onClick={() => addList('exclusion', l)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
+                      {availableLists.filter(l => !listSearch || l.name.toLowerCase().includes(listSearch.toLowerCase())).slice(0, 30).map(l => (
+                        <div key={l.id} onClick={() => addList('exclusion', l)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: '#111827', borderRadius: 4, cursor: 'pointer', fontSize: 11, color: '#e2e8f0' }}>
+                          {(l as any).type === 'segment' ? (
+                            <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(168,85,247,0.15)', color: '#c084fc', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>SEG</span>
+                          ) : (
+                            <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>SUPP</span>
+                          )}
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
                           <FontAwesomeIcon icon={faPlus} style={{ color: '#ef4444', fontSize: 10, flexShrink: 0 }} />
                         </div>
                       ))}

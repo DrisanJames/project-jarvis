@@ -381,14 +381,22 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		return
 	}
 
-	// Build inclusion lists (extract IDs from the config objects)
-	var inclusionListIDs []string
+	// Build inclusion lists and segments (extract IDs from the config objects, split by type)
+	var inclusionListIDs, inclusionSegmentIDs []string
 	var sendPriority []engine.PriorityItem
 	if lists, ok := cfg["inclusion_lists"].([]interface{}); ok {
 		for _, item := range lists {
 			switch v := item.(type) {
 			case map[string]interface{}:
-				if id, ok := v["id"].(string); ok && id != "" {
+				id, _ := v["id"].(string)
+				itemType, _ := v["type"].(string)
+				if id == "" {
+					continue
+				}
+				if itemType == "segment" {
+					inclusionSegmentIDs = append(inclusionSegmentIDs, id)
+					sendPriority = append(sendPriority, engine.PriorityItem{ID: id, Type: "segment"})
+				} else {
 					inclusionListIDs = append(inclusionListIDs, id)
 					sendPriority = append(sendPriority, engine.PriorityItem{ID: id, Type: "list"})
 				}
@@ -400,17 +408,24 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 			}
 		}
 	}
-	if len(inclusionListIDs) == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no inclusion lists configured — add at least one mailing list"})
+	if len(inclusionListIDs) == 0 && len(inclusionSegmentIDs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no inclusion lists or segments configured"})
 		return
 	}
 
-	var exclusionListIDs []string
+	var exclusionListIDs, exclusionSegmentIDs []string
 	if lists, ok := cfg["exclusion_lists"].([]interface{}); ok {
 		for _, item := range lists {
 			switch v := item.(type) {
 			case map[string]interface{}:
-				if id, ok := v["id"].(string); ok && id != "" {
+				id, _ := v["id"].(string)
+				itemType, _ := v["type"].(string)
+				if id == "" {
+					continue
+				}
+				if itemType == "segment" {
+					exclusionSegmentIDs = append(exclusionSegmentIDs, id)
+				} else {
 					exclusionListIDs = append(exclusionListIDs, id)
 				}
 			case string:
@@ -437,10 +452,10 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		ISPPlans:          ispPlans,
 		ISPQuotas:         ispQuotas,
 		InclusionLists:    inclusionListIDs,
+		InclusionSegments: inclusionSegmentIDs,
 		SendPriority:      sendPriority,
 		ExclusionLists:    exclusionListIDs,
-		InclusionSegments: []string{},
-		ExclusionSegments: []string{},
+		ExclusionSegments: exclusionSegmentIDs,
 		SendDays:          []string{},
 		SendHour:          hour,
 		Timezone:          "UTC",
@@ -952,6 +967,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	type listInfo struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		Type string `json:"type"`
 	}
 
 	// Load mailing lists, filtered by domain affinity
@@ -963,11 +979,28 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		for listRows.Next() {
 			var li listInfo
 			listRows.Scan(&li.ID, &li.Name)
+			li.Type = "list"
 			allLists = append(allLists, li)
 		}
 	}
 
-	// Filter lists: domain affinity, exclude test/seed, deduplicate by name
+	// Load active segments as inclusion candidates
+	var allSegments []listInfo
+	segIncRows, _ := a.db.QueryContext(r.Context(),
+		`SELECT id::text, name FROM mailing_segments
+		 WHERE organization_id = $1 AND status = 'active'
+		 ORDER BY name LIMIT 50`, orgID)
+	if segIncRows != nil {
+		defer segIncRows.Close()
+		for segIncRows.Next() {
+			var si listInfo
+			segIncRows.Scan(&si.ID, &si.Name)
+			si.Type = "segment"
+			allSegments = append(allSegments, si)
+		}
+	}
+
+	// Filter lists & segments: domain affinity, exclude test/seed, deduplicate by name
 	isTestOrSeed := func(name string) bool {
 		lower := strings.ToLower(name)
 		return strings.Contains(lower, "test") || strings.Contains(lower, "seed") ||
@@ -994,6 +1027,18 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		seenNames[nameLower] = true
 		inclusionLists = append(inclusionLists, li)
 	}
+	// Also add filtered segments to the inclusion pool
+	for _, si := range allSegments {
+		if isTestOrSeed(si.Name) {
+			continue
+		}
+		nameLower := strings.ToLower(strings.TrimSpace(si.Name))
+		if seenNames[nameLower] {
+			continue
+		}
+		seenNames[nameLower] = true
+		inclusionLists = append(inclusionLists, si)
+	}
 	if len(inclusionLists) == 0 {
 		inclusionLists = allLists
 	}
@@ -1007,6 +1052,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		for suppRows.Next() {
 			var li listInfo
 			suppRows.Scan(&li.ID, &li.Name)
+			li.Type = "suppression_list"
 			exclusionLists = append(exclusionLists, li)
 		}
 	}
@@ -1022,7 +1068,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		for segRows.Next() {
 			var seg listInfo
 			segRows.Scan(&seg.ID, &seg.Name)
-			exclusionLists = append(exclusionLists, listInfo{ID: seg.ID, Name: "[Segment] " + seg.Name})
+			seg.Type = "segment"
+			exclusionLists = append(exclusionLists, seg)
 		}
 	}
 
