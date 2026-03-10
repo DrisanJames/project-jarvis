@@ -350,6 +350,11 @@ func main() {
 				go dataCleanup.Start(ctx)
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
+				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts)
+				segRefresh := worker.NewSegmentRefreshWorker(mailingDB, 4*time.Hour)
+				segRefresh.Start(ctx)
+				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 4h)")
+
 				// Start S3 Data Normalizer (imports from jvc-email-data bucket)
 				datanormCfg := datanorm.Config{
 					Bucket:     cfg.DataNorm.S3Bucket,

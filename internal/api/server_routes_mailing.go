@@ -219,6 +219,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/segments/{segmentId}", advSvc.HandleGetSegment)
 			r.Put("/segments/{segmentId}", advSvc.HandleUpdateSegment)
 			r.Get("/segments/{segmentId}/preview", advSvc.HandlePreviewSegment)
+			r.Post("/segments/refresh-all", advSvc.HandleRefreshAllSegments)
 			r.Delete("/segments/{segmentId}", advSvc.HandleDeleteSegment)
 			
 			// Automation Workflows (Journeys)

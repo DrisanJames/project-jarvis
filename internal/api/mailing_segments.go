@@ -348,9 +348,9 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 			clause = fmt.Sprintf("(%s IS NULL OR %s = '')", dbField, dbField)
 		case "is_not_empty", "is_not_null":
 			clause = fmt.Sprintf("(%s IS NOT NULL AND %s != '')", dbField, dbField)
-		case "in_last_days":
-			clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, c.Value)
-		case "more_than_days_ago":
+	case "in_last_days", "within_last":
+		clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, c.Value)
+	case "more_than_days_ago":
 			clause = fmt.Sprintf("%s < NOW() - INTERVAL '%s days'", dbField, c.Value)
 		default:
 			continue
@@ -688,6 +688,71 @@ func (s *AdvancedMailingService) HandlePreviewSegment(w http.ResponseWriter, r *
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"subscriber_count": count,
 		"segment_id":       segmentID,
+	})
+}
+
+func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, list_id, name, COALESCE(conditions::text, '[]')
+		FROM mailing_segments
+		WHERE status = 'active' AND segment_type = 'dynamic'
+		ORDER BY name
+	`)
+	if err != nil {
+		http.Error(w, `{"error":"query error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type result struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		OldCount int    `json:"old_count"`
+		NewCount int    `json:"new_count"`
+	}
+	var results []result
+
+	for rows.Next() {
+		var id uuid.UUID
+		var listID *uuid.UUID
+		var name, condJSON string
+		if rows.Scan(&id, &listID, &name, &condJSON) != nil {
+			continue
+		}
+
+		var conditions []struct {
+			Group    int    `json:"group"`
+			Field    string `json:"field"`
+			Operator string `json:"operator"`
+			Value    string `json:"value"`
+		}
+		if condJSON != "" && condJSON != "[]" {
+			json.Unmarshal([]byte(condJSON), &conditions)
+		}
+		if len(conditions) == 0 {
+			continue
+		}
+
+		var listIDArg interface{}
+		if listID != nil {
+			listIDArg = *listID
+		}
+
+		var oldCount int
+		s.db.QueryRowContext(ctx, `SELECT COALESCE(subscriber_count,0) FROM mailing_segments WHERE id = $1`, id).Scan(&oldCount)
+
+		newCount := s.calculateSegmentCount(ctx, id, listIDArg, conditions)
+		s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW() WHERE id = $1`, id, newCount)
+
+		results = append(results, result{ID: id.String(), Name: name, OldCount: oldCount, NewCount: newCount})
+		log.Printf("[SegmentRefresh] %s: %d → %d", name, oldCount, newCount)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"refreshed": len(results),
+		"segments":  results,
 	})
 }
 
