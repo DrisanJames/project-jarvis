@@ -49,6 +49,10 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result = a.toolGetDomainStrategy(ctx, orgID, args)
 	case "get_recommendations":
 		result = a.toolGetRecommendations(ctx, orgID, args)
+	case "get_recommendation_details":
+		result = a.toolGetRecommendationDetails(ctx, orgID, args)
+	case "update_recommendation":
+		result, action = a.toolUpdateRecommendation(ctx, orgID, args)
 	case "save_domain_strategy":
 		result, action = a.toolSaveDomainStrategy(ctx, orgID, args)
 	case "create_recommendation":
@@ -521,8 +525,11 @@ func (a *EmailMarketingAgent) toolGetRecommendations(ctx context.Context, orgID 
 		endDate = time.Now().Add(30 * 24 * time.Hour).Format("2006-01-02")
 	}
 
-	q := `SELECT id, sending_domain, scheduled_date, scheduled_time, COALESCE(campaign_name,''),
-	             COALESCE(reasoning,''), COALESCE(strategy,''), projected_volume, status, created_at
+	q := `SELECT id::text, sending_domain, scheduled_date,
+	             COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
+	             COALESCE(campaign_name,''), COALESCE(reasoning,''),
+	             COALESCE(strategy,''), projected_volume, status,
+	             COALESCE(campaign_config::text, '{}'), created_at
 	      FROM agent_campaign_recommendations
 	      WHERE organization_id = $1 AND scheduled_date >= $2 AND scheduled_date <= $3`
 	qArgs := []interface{}{orgID, startDate, endDate}
@@ -545,21 +552,25 @@ func (a *EmailMarketingAgent) toolGetRecommendations(ctx context.Context, orgID 
 	defer rows.Close()
 	var recs []map[string]interface{}
 	for rows.Next() {
-		var id, domain, name, reasoning, strategy, status string
+		var id, domain, name, reasoning, strategy, status, configJSON string
 		var scheduledDate time.Time
-		var scheduledTime sql.NullString
+		var scheduledTime string
 		var volume int
 		var createdAt time.Time
-		rows.Scan(&id, &domain, &scheduledDate, &scheduledTime, &name, &reasoning, &strategy, &volume, &status, &createdAt)
+		rows.Scan(&id, &domain, &scheduledDate, &scheduledTime, &name, &reasoning, &strategy, &volume, &status, &configJSON, &createdAt)
 		rec := map[string]interface{}{
 			"id": id, "sending_domain": domain,
 			"scheduled_date": scheduledDate.Format("2006-01-02"),
-			"campaign_name": name, "reasoning": reasoning,
+			"scheduled_time": scheduledTime,
+			"campaign_name":  name, "reasoning": reasoning,
 			"strategy": strategy, "projected_volume": volume,
 			"status": status,
 		}
-		if scheduledTime.Valid {
-			rec["scheduled_time"] = scheduledTime.String
+		if configJSON != "" && configJSON != "{}" {
+			var cfg map[string]interface{}
+			if json.Unmarshal([]byte(configJSON), &cfg) == nil {
+				rec["campaign_config"] = cfg
+			}
 		}
 		recs = append(recs, rec)
 	}
@@ -567,6 +578,182 @@ func (a *EmailMarketingAgent) toolGetRecommendations(ctx context.Context, orgID 
 		recs = []map[string]interface{}{}
 	}
 	return map[string]interface{}{"recommendations": recs, "count": len(recs)}
+}
+
+func (a *EmailMarketingAgent) toolGetRecommendationDetails(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	recID, _ := args["recommendation_id"].(string)
+	if recID == "" {
+		return map[string]string{"error": "recommendation_id required"}
+	}
+	var domain, name, reasoning, strategy, status, configJSON string
+	var volume int
+	var scheduledDate time.Time
+	var scheduledTime string
+	var approvedAt, executedCampaign, executionError sql.NullString
+	var createdAt time.Time
+
+	err := a.db.QueryRowContext(ctx,
+		`SELECT sending_domain, scheduled_date, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), ''),
+		        COALESCE(campaign_name,''), COALESCE(reasoning,''), COALESCE(strategy,''),
+		        projected_volume, status, COALESCE(campaign_config::text, '{}'),
+		        approved_at::text, executed_campaign_id::text,
+		        COALESCE(execution_error,''), created_at
+		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&domain, &scheduledDate, &scheduledTime, &name, &reasoning, &strategy,
+		&volume, &status, &configJSON, &approvedAt, &executedCampaign, &executionError, &createdAt)
+	if err != nil {
+		return map[string]string{"error": "recommendation not found: " + recID}
+	}
+
+	result := map[string]interface{}{
+		"id": recID, "sending_domain": domain,
+		"scheduled_date":   scheduledDate.Format("2006-01-02"),
+		"scheduled_time":   scheduledTime,
+		"campaign_name":    name,
+		"reasoning":        reasoning,
+		"strategy":         strategy,
+		"projected_volume": volume,
+		"status":           status,
+		"created_at":       createdAt.Format(time.RFC3339),
+	}
+	if configJSON != "" && configJSON != "{}" {
+		var cfg map[string]interface{}
+		if json.Unmarshal([]byte(configJSON), &cfg) == nil {
+			result["campaign_config"] = cfg
+		}
+	}
+	if approvedAt.Valid {
+		result["approved_at"] = approvedAt.String
+	}
+	if executedCampaign.Valid {
+		result["executed_campaign_id"] = executedCampaign.String
+	}
+	if executionError.Valid && executionError.String != "" {
+		result["execution_error"] = executionError.String
+	}
+	return result
+}
+
+func (a *EmailMarketingAgent) toolUpdateRecommendation(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	recID, _ := args["recommendation_id"].(string)
+	if recID == "" {
+		return map[string]string{"error": "recommendation_id required"}, ""
+	}
+
+	var status, configJSON string
+	err := a.db.QueryRowContext(ctx,
+		`SELECT status, COALESCE(campaign_config::text, '{}')
+		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&status, &configJSON)
+	if err != nil {
+		return map[string]string{"error": "recommendation not found: " + recID}, ""
+	}
+	if status != "pending" {
+		return map[string]string{"error": fmt.Sprintf("can only update pending recommendations, current status: %s", status)}, ""
+	}
+
+	var cfg map[string]interface{}
+	json.Unmarshal([]byte(configJSON), &cfg)
+	if cfg == nil {
+		cfg = map[string]interface{}{}
+	}
+
+	updated := []string{}
+	setStr := func(key, argKey string) {
+		if v, ok := args[argKey].(string); ok && v != "" {
+			cfg[key] = v
+			updated = append(updated, key)
+		}
+	}
+	setNum := func(key, argKey string) {
+		if v, ok := args[argKey].(float64); ok {
+			cfg[key] = int(v)
+			updated = append(updated, key)
+		}
+	}
+
+	setStr("campaign_name", "campaign_name")
+	setStr("scheduled_date", "scheduled_date")
+	setStr("scheduled_time", "scheduled_time")
+	setStr("subject", "subject")
+	setStr("preview_text", "preview_text")
+	setStr("from_name", "from_name")
+	setStr("from_email", "from_email")
+	setStr("template_id", "template_id")
+	setNum("wave_interval_minutes", "wave_interval_minutes")
+	setNum("throttle_per_wave", "throttle_per_wave")
+	if v, ok := args["isp_quotas"].(map[string]interface{}); ok {
+		cfg["isp_quotas"] = v
+		updated = append(updated, "isp_quotas")
+	}
+	if v, ok := args["inclusion_lists"].([]interface{}); ok {
+		cfg["inclusion_lists"] = v
+		updated = append(updated, "inclusion_lists")
+	}
+	if v, ok := args["exclusion_lists"].([]interface{}); ok {
+		cfg["exclusion_lists"] = v
+		updated = append(updated, "exclusion_lists")
+	}
+	if v, ok := args["audience_priority"].([]interface{}); ok {
+		cfg["audience_priority"] = v
+		updated = append(updated, "audience_priority")
+	}
+	if v, ok := args["reasoning"].(string); ok && v != "" {
+		updated = append(updated, "reasoning")
+	}
+
+	newConfigJSON, _ := json.Marshal(cfg)
+
+	// Recalculate projected volume from ISP quotas
+	totalVolume := 0
+	if quotas, ok := cfg["isp_quotas"].(map[string]interface{}); ok {
+		for _, v := range quotas {
+			switch n := v.(type) {
+			case float64:
+				totalVolume += int(n)
+			case int:
+				totalVolume += n
+			}
+		}
+	}
+
+	// Build UPDATE query
+	updateQ := `UPDATE agent_campaign_recommendations SET campaign_config = $3, projected_volume = $4, updated_at = NOW()`
+	updateArgs := []interface{}{recID, orgID, string(newConfigJSON), totalVolume}
+	idx := 5
+	if v, ok := args["campaign_name"].(string); ok && v != "" {
+		updateQ += fmt.Sprintf(`, campaign_name = $%d`, idx)
+		updateArgs = append(updateArgs, v)
+		idx++
+	}
+	if v, ok := args["scheduled_date"].(string); ok && v != "" {
+		updateQ += fmt.Sprintf(`, scheduled_date = $%d`, idx)
+		updateArgs = append(updateArgs, v)
+		idx++
+	}
+	if v, ok := args["scheduled_time"].(string); ok && v != "" {
+		updateQ += fmt.Sprintf(`, scheduled_time = $%d`, idx)
+		updateArgs = append(updateArgs, v)
+		idx++
+	}
+	if v, ok := args["reasoning"].(string); ok && v != "" {
+		updateQ += fmt.Sprintf(`, reasoning = $%d`, idx)
+		updateArgs = append(updateArgs, v)
+		idx++
+	}
+	updateQ += ` WHERE id = $1 AND organization_id = $2`
+
+	_, err = a.db.ExecContext(ctx, updateQ, updateArgs...)
+	if err != nil {
+		return map[string]string{"error": "update failed: " + err.Error()}, ""
+	}
+
+	return map[string]interface{}{
+		"status":            "updated",
+		"recommendation_id": recID,
+		"fields_updated":    updated,
+		"projected_volume":  totalVolume,
+	}, fmt.Sprintf("Updated recommendation %s: %s", recID, strings.Join(updated, ", "))
 }
 
 // ── Write Tools ─────────────────────────────────────────────────────────────

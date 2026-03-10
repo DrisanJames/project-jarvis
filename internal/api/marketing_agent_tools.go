@@ -164,7 +164,7 @@ func getAgentTools() []agentToolDef {
 			Type: "function",
 			Function: agentToolFuncDef{
 				Name:        "get_recommendations",
-				Description: "Get campaign recommendations for a date range, optionally filtered by status or sending domain.",
+				Description: "Get campaign recommendations for a date range, optionally filtered by status or sending domain. Returns full campaign_config including ISP quotas, lists, template, schedule, wave/throttle settings.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -172,6 +172,20 @@ func getAgentTools() []agentToolDef {
 						"end_date":       prop("string", "End date (YYYY-MM-DD). Defaults to 30 days from now."),
 						"status":         prop("string", "Filter by status: pending, approved, rejected, executed, failed."),
 						"sending_domain": prop("string", "Filter by sending domain."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_recommendation_details",
+				Description: "Get full details of a single campaign recommendation including campaign_config (ISP quotas, inclusion/exclusion lists, template, subject, preview_text, scheduled_time, wave_interval_minutes, throttle_per_wave, from_name, from_email, audience_priority). Use this to inspect a recommendation before modifying it.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"recommendation_id"},
+					"properties": map[string]interface{}{
+						"recommendation_id": prop("string", "The recommendation UUID."),
 					},
 				},
 			},
@@ -234,6 +248,35 @@ func getAgentTools() []agentToolDef {
 						"campaign_type":         prop("string", "Template type: welcome, newsletter, promotional, winback, re-engagement, announcement, trivia."),
 						"sending_domain":        prop("string", "Domain to scrape for brand intelligence (e.g. quizfiesta.com)."),
 						"reference_template_id": prop("string", "Optional: existing template UUID to use as style reference."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "update_recommendation",
+				Description: "Update fields of a pending campaign recommendation. Use this to modify scheduled_time, wave_interval_minutes, throttle_per_wave, ISP quotas, lists, subject, preview_text, from_name, etc. Only pending recommendations can be updated.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"recommendation_id"},
+					"properties": map[string]interface{}{
+						"recommendation_id":  prop("string", "The recommendation UUID to update."),
+						"campaign_name":      prop("string", "Updated campaign name."),
+						"scheduled_date":     prop("string", "Updated date (YYYY-MM-DD)."),
+						"scheduled_time":     prop("string", "Updated time UTC (HH:MM)."),
+						"subject":            prop("string", "Updated subject line."),
+						"preview_text":       prop("string", "Updated preview/pre-header text."),
+						"from_name":          prop("string", "Updated from name."),
+						"from_email":         prop("string", "Updated from email."),
+						"template_id":        prop("string", "Updated template UUID."),
+						"wave_interval_minutes": prop("integer", "Minutes between waves (e.g. 15)."),
+						"throttle_per_wave":  prop("integer", "Batch size per wave (0 = unlimited)."),
+						"isp_quotas":         map[string]interface{}{"type": "object", "description": "Updated ISP quota map, e.g. {\"gmail\": 60000, \"yahoo\": 30000}."},
+						"inclusion_lists":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Updated inclusion list UUIDs."},
+						"exclusion_lists":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Updated exclusion list UUIDs."},
+						"audience_priority":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Updated audience priority order."},
+						"reasoning":          prop("string", "Updated reasoning text."),
 					},
 				},
 			},
