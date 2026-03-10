@@ -651,6 +651,10 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			pmtaCampaignAPI.RegisterRoutes(r)
 
+			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===
+			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
+			r.Post("/copilot/chat", campaignCopilot.HandleChat)
+
 			// === PMTA SEND-TIME RECOMMENDATIONS ===
 			sendTimeHandler := NewPMTASendTimeHandler(db)
 			sendTimeHandler.RegisterRoutes(r)

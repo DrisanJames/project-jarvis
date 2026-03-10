@@ -30,6 +30,7 @@ const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard')
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
 const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel').then(m => ({ default: m.DataNormalizerPanel })));
+const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -79,6 +80,7 @@ export const MailingPortal: React.FC = () => {
   // Cross-component offer state — when user clicks "Use This Offer" in Offer Center,
   // we switch to Campaign Center and pass the selected offer through.
   const [pendingOffer, setPendingOffer] = useState<{ offerId: string; offerName: string } | null>(null);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const handleUseOffer = (offerId: string, offerName: string) => {
     setPendingOffer({ offerId, offerName });
@@ -151,7 +153,29 @@ export const MailingPortal: React.FC = () => {
       case 'jarvis':
         return <JarvisDashboard />;
       case 'pmta-wizard':
-        return <PMTACampaignWizard onClose={() => handleTabChange('dashboard')} />;
+        return (
+          <>
+            <PMTACampaignWizard onClose={() => handleTabChange('dashboard')} />
+            <button
+              onClick={() => setCopilotOpen(true)}
+              title="Campaign Copilot"
+              style={{
+                position: 'fixed', bottom: 24, right: 24, zIndex: 9990,
+                width: 52, height: 52, borderRadius: 14,
+                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                border: 'none', color: '#fff', cursor: 'pointer',
+                boxShadow: '0 4px 20px rgba(99,102,241,0.4)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 20, fontWeight: 700, transition: 'transform 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.08)')}
+              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+            >AI</button>
+            <Suspense fallback={null}>
+              <CampaignCopilotPanel isOpen={copilotOpen} onClose={() => setCopilotOpen(false)} />
+            </Suspense>
+          </>
+        );
       case 'consciousness':
         return <ConsciousnessDashboard />;
       case 'data-import':
