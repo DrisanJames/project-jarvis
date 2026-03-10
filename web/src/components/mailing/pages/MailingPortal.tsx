@@ -31,6 +31,7 @@ const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDas
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
 const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel').then(m => ({ default: m.DataNormalizerPanel })));
 const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
+const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketingAgent').then(m => ({ default: m.EmailMarketingAgent })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -39,7 +40,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent';
 
 interface Tab {
   id: TabId;
@@ -51,6 +52,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
   { id: 'pmta-wizard', label: 'Campaign Manager', icon: faRocket, description: 'ISP-native campaign builder with wave scheduling' },
+  { id: 'marketing-agent', label: 'Marketing Agent', icon: faPaperPlane, description: 'AI strategist — warmup planning, calendar forecasts & campaign automation' },
   { id: 'consciousness', label: 'Consciousness', icon: faBrain, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns' },
   { id: 'journey-center', label: 'Journey Center', icon: faRoute, description: 'Monitor & manage automated journeys' },
@@ -176,6 +178,8 @@ export const MailingPortal: React.FC = () => {
             </Suspense>
           </>
         );
+      case 'marketing-agent':
+        return <EmailMarketingAgentPanel />;
       case 'consciousness':
         return <ConsciousnessDashboard />;
       case 'data-import':

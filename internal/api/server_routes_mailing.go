@@ -655,6 +655,27 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)
 
+			// === EMAIL MARKETING AGENT — Standalone AI strategist ===
+			marketingAgent := NewEmailMarketingAgent(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
+			r.Route("/agent", func(ar chi.Router) {
+				ar.Post("/chat", marketingAgent.HandleChat)
+				ar.Get("/conversations", marketingAgent.HandleListConversations)
+				ar.Get("/conversations/{id}", marketingAgent.HandleGetConversation)
+				ar.Delete("/conversations/{id}", marketingAgent.HandleDeleteConversation)
+				ar.Get("/memory", marketingAgent.HandleListMemory)
+				ar.Delete("/memory/{id}", marketingAgent.HandleDeleteMemory)
+				ar.Get("/strategies", marketingAgent.HandleListStrategies)
+				ar.Post("/strategies", marketingAgent.HandleSaveStrategy)
+				ar.Put("/strategies/{id}", marketingAgent.HandleUpdateStrategy)
+				ar.Delete("/strategies/{id}", marketingAgent.HandleDeleteStrategy)
+				ar.Get("/calendar/forecast", marketingAgent.HandleGetForecast)
+				ar.Get("/calendar/recommendations", marketingAgent.HandleListRecommendations)
+				ar.Get("/calendar/recommendations/{id}", marketingAgent.HandleGetRecommendation)
+				ar.Post("/calendar/recommendations/{id}/approve", marketingAgent.HandleApproveRecommendation)
+				ar.Post("/calendar/recommendations/{id}/reject", marketingAgent.HandleRejectRecommendation)
+				ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
+			})
+
 			// === PMTA SEND-TIME RECOMMENDATIONS ===
 			sendTimeHandler := NewPMTASendTimeHandler(db)
 			sendTimeHandler.RegisterRoutes(r)

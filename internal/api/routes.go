@@ -333,6 +333,13 @@ func spaHandler(r chi.Router, staticPath string) {
 			http.ServeFile(w, req, filePath)
 			return
 		}
+
+		// Static asset requests (JS/CSS/images with hashed filenames) that don't exist
+		// should 404 instead of falling back to index.html, which would cause MIME mismatch.
+		if strings.HasPrefix(path, "/assets/") {
+			http.NotFound(w, req)
+			return
+		}
 		
 		// For SPA routing, serve index.html for unknown paths
 		indexPath := filepath.Join(staticPath, "index.html")
