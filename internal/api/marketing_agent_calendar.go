@@ -967,16 +967,32 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Filter lists by domain: QF-prefixed → quizfiesta, non-QF → discountblog
+	// Filter lists: domain affinity, exclude test/seed, deduplicate by name
+	isTestOrSeed := func(name string) bool {
+		lower := strings.ToLower(name)
+		return strings.Contains(lower, "test") || strings.Contains(lower, "seed") ||
+			strings.Contains(lower, "s3 import") || strings.Contains(lower, "template test")
+	}
 	var inclusionLists []listInfo
+	seenNames := map[string]bool{}
 	for _, li := range allLists {
 		lower := strings.ToLower(li.Name)
 		hasQFPrefix := strings.HasPrefix(lower, "qf ")
-		if isQFDomain && hasQFPrefix {
-			inclusionLists = append(inclusionLists, li)
-		} else if !isQFDomain && !hasQFPrefix {
-			inclusionLists = append(inclusionLists, li)
+		if isQFDomain && !hasQFPrefix {
+			continue
 		}
+		if !isQFDomain && hasQFPrefix {
+			continue
+		}
+		if isTestOrSeed(li.Name) {
+			continue
+		}
+		nameLower := strings.ToLower(strings.TrimSpace(li.Name))
+		if seenNames[nameLower] {
+			continue
+		}
+		seenNames[nameLower] = true
+		inclusionLists = append(inclusionLists, li)
 	}
 	if len(inclusionLists) == 0 {
 		inclusionLists = allLists
@@ -1013,7 +1029,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	if len(exclusionLists) == 0 {
 		exclusionLists = []listInfo{}
 	}
-	log.Printf("[MarketingAgent] lists: %d inclusion (domain-filtered), %d exclusion (suppression+segments)", len(inclusionLists), len(exclusionLists))
+	log.Printf("[MarketingAgent] lists: %d raw → %d inclusion (filtered, deduped, no test/seed), %d exclusion (suppression+segments)", len(allLists), len(inclusionLists), len(exclusionLists))
 
 	// Load templates, filtered by domain affinity
 	type savedTemplate struct {
