@@ -1,0 +1,3 @@
+FROM 146361001621.dkr.ecr.us-west-2.amazonaws.com/ignite-upside-down:clone-fix-20260308170719
+COPY server-linux /app/server
+COPY dist-staging/ /app/web/dist/

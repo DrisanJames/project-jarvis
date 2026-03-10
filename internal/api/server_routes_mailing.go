@@ -656,6 +656,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===
+			ensureAgentTables(db)
 			marketingAgent := NewEmailMarketingAgent(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Route("/agent", func(ar chi.Router) {
 				ar.Post("/chat", marketingAgent.HandleChat)

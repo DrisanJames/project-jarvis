@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PMTA Campaign Schedule — Default Cadence</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060a14;
+    --surface: #0c1322;
+    --card: #111a2e;
+    --border: rgba(0,180,255,0.08);
+    --text: #e0e6f0;
+    --dim: rgba(160,190,220,0.5);
+    --accent: #00b8ff;
+    --green: #10b981;
+    --red: #ef4444;
+    --orange: #f59e0b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 32px;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #00b8ff, #7c3aed, #ec4899);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+  }
+  .header .subtitle {
+    font-size: 13px;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    text-align: center;
+  }
+  .stat-card .value {
+    font-size: 26px;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+  .stat-card .label {
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .isp-row {
+    display: grid;
+    grid-template-columns: 140px 100px 100px 100px 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(0,180,255,0.04);
+  }
+  .isp-row:last-child { border-bottom: none; }
+  .isp-name {
+    font-weight: 600;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .isp-stat {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .isp-stat strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .bar-container {
+    height: 24px;
+    background: rgba(0,180,255,0.04);
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.8s ease;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: #fff;
+  }
+  .chart-container {
+    position: relative;
+    height: 340px;
+    margin-top: 12px;
+  }
+  .wave-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .wave-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .wave-label {
+    min-width: 100px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: right;
+  }
+  .wave-track {
+    flex: 1;
+    height: 20px;
+    background: rgba(0,180,255,0.03);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+  .wave-tick {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    border-radius: 2px;
+    opacity: 0.85;
+    transition: opacity 0.2s;
+    cursor: pointer;
+  }
+  .wave-tick:hover {
+    opacity: 1;
+    z-index: 2;
+    box-shadow: 0 0 8px rgba(0,180,255,0.4);
+  }
+  .tooltip {
+    position: fixed;
+    background: #1a2540;
+    border: 1px solid rgba(0,180,255,0.2);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text);
+    pointer-events: none;
+    z-index: 100;
+    display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .time-markers {
+    display: flex;
+    justify-content: space-between;
+    margin-left: 108px;
+    margin-top: 6px;
+    padding: 0 4px;
+  }
+  .time-markers span {
+    font-size: 10px;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .legend-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+  .cadence-detail {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .cadence-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .cadence-card .label {
+    font-size: 10px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  .cadence-card .val {
+    font-size: 18px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    margin-top: 4px;
+  }
+  .cadence-card .sub {
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PMTA Campaign Schedule — Default Cadence</h1>
+  <div class="subtitle">8 ISPs &bull; 15-min interval &bull; 8-hour duration &bull; 116,000 total volume</div>
+</div>
+
+<div class="summary-grid" id="summaryGrid"></div>
+
+<div class="section">
+  <div class="section-title">📊 Per-ISP Quota Breakdown</div>
+  <div id="ispBreakdown"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">📈 Cumulative Send Volume Over Time</div>
+  <div class="chart-container">
+    <canvas id="cumulativeChart"></canvas>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">🔄 Wave Dispatch Timeline (8 Hours)</div>
+  <div id="waveTimeline" class="wave-timeline"></div>
+  <div class="time-markers" id="timeMarkers"></div>
+  <div class="legend-row" id="legend"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">⚡ Cadence Mathematics</div>
+  <div class="cadence-detail" id="cadenceDetail"></div>
+</div>
+
+<div id="tooltip" class="tooltip"></div>
+
+<script>
+const ISP_CONFIG = [
+  { isp: 'gmail',     label: 'Gmail',            emoji: '📧', color: '#ea4335', quota: 50000 },
+  { isp: 'yahoo',     label: 'Yahoo',            emoji: '🟣', color: '#7b1fa2', quota: 20000 },
+  { isp: 'microsoft', label: 'Microsoft',        emoji: '🔷', color: '#0078d4', quota: 20000 },
+  { isp: 'apple',     label: 'Apple iCloud',     emoji: '🍎', color: '#a2aaad', quota: 10000 },
+  { isp: 'comcast',   label: 'Comcast',          emoji: '📡', color: '#e60000', quota: 5000 },
+  { isp: 'att',       label: 'AT&T',             emoji: '📶', color: '#009fdb', quota: 5000 },
+  { isp: 'cox',       label: 'Cox',              emoji: '🔌', color: '#f26522', quota: 3000 },
+  { isp: 'charter',   label: 'Charter/Spectrum', emoji: '📺', color: '#0099d6', quota: 3000 },
+];
+
+const DURATION_HOURS = 8;
+const INTERVAL_MIN = 15;
+const TOTAL_INTERVALS = Math.floor(DURATION_HOURS * 60 / INTERVAL_MIN);
+const TOTAL_VOLUME = ISP_CONFIG.reduce((s, c) => s + c.quota, 0);
+
+function calcBatch(quota) { return Math.ceil(quota / TOTAL_INTERVALS); }
+function calcWaves(quota) {
+  const batch = calcBatch(quota);
+  let remaining = quota;
+  const waves = [];
+  for (let i = 0; i < TOTAL_INTERVALS && remaining > 0; i++) {
+    const size = Math.min(batch, remaining);
+    waves.push({ waveNum: i + 1, minuteOffset: i * INTERVAL_MIN, size });
+    remaining -= size;
+  }
+  return waves;
+}
+
+// Summary
+const summaryEl = document.getElementById('summaryGrid');
+const stats = [
+  { value: TOTAL_VOLUME.toLocaleString(), label: 'Total Volume' },
+  { value: TOTAL_INTERVALS, label: 'Waves per ISP' },
+  { value: `${INTERVAL_MIN} min`, label: 'Interval' },
+  { value: `${DURATION_HOURS} hrs`, label: 'Duration' },
+];
+stats.forEach(s => {
+  summaryEl.innerHTML += `<div class="stat-card"><div class="value">${s.value}</div><div class="label">${s.label}</div></div>`;
+});
+
+// ISP Breakdown
+const breakdownEl = document.getElementById('ispBreakdown');
+const headerRow = document.createElement('div');
+headerRow.className = 'isp-row';
+headerRow.style.borderBottom = '1px solid rgba(0,180,255,0.1)';
+headerRow.style.paddingBottom = '8px';
+headerRow.style.marginBottom = '4px';
+headerRow.innerHTML = `
+  <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px">ISP</div>
+  <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px">Quota</div>
+  <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px">Batch/Wave</div>
+  <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px">Waves</div>
+  <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px">Volume Share</div>
+`;
+breakdownEl.appendChild(headerRow);
+
+ISP_CONFIG.forEach(cfg => {
+  const batch = calcBatch(cfg.quota);
+  const waves = calcWaves(cfg.quota);
+  const pct = ((cfg.quota / TOTAL_VOLUME) * 100).toFixed(1);
+  const row = document.createElement('div');
+  row.className = 'isp-row';
+  row.innerHTML = `
+    <div class="isp-name" style="color:${cfg.color}">${cfg.emoji} ${cfg.label}</div>
+    <div class="isp-stat"><strong>${cfg.quota.toLocaleString()}</strong></div>
+    <div class="isp-stat"><strong>${batch.toLocaleString()}</strong></div>
+    <div class="isp-stat"><strong>${waves.length}</strong></div>
+    <div>
+      <div class="bar-container">
+        <div class="bar-fill" style="width:${pct}%;background:linear-gradient(90deg,${cfg.color},${cfg.color}88)">${pct}%</div>
+      </div>
+    </div>
+  `;
+  breakdownEl.appendChild(row);
+});
+
+// Cumulative chart
+const labels = [];
+for (let i = 0; i <= TOTAL_INTERVALS; i++) {
+  const h = Math.floor(i * INTERVAL_MIN / 60);
+  const m = (i * INTERVAL_MIN) % 60;
+  labels.push(`+${h}h${m > 0 ? m + 'm' : ''}`);
+}
+
+const datasets = ISP_CONFIG.map(cfg => {
+  const waves = calcWaves(cfg.quota);
+  let cumulative = 0;
+  const data = [0];
+  for (let i = 0; i < TOTAL_INTERVALS; i++) {
+    const wave = waves.find(w => w.waveNum === i + 1);
+    cumulative += wave ? wave.size : 0;
+    data.push(cumulative);
+  }
+  return {
+    label: cfg.label,
+    data,
+    borderColor: cfg.color,
+    backgroundColor: cfg.color + '18',
+    fill: true,
+    tension: 0.1,
+    pointRadius: 0,
+    pointHitRadius: 8,
+    borderWidth: 2,
+  };
+});
+
+const totalDataset = {
+  label: 'Total',
+  data: labels.map((_, i) => {
+    return datasets.reduce((sum, ds) => sum + ds.data[i], 0);
+  }),
+  borderColor: '#00e5ff',
+  backgroundColor: 'transparent',
+  borderWidth: 3,
+  borderDash: [6, 3],
+  tension: 0.1,
+  pointRadius: 0,
+  pointHitRadius: 8,
+};
+
+new Chart(document.getElementById('cumulativeChart'), {
+  type: 'line',
+  data: { labels, datasets: [...datasets, totalDataset] },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        labels: { color: '#a0bce0', font: { size: 11, family: 'JetBrains Mono' }, padding: 14 },
+      },
+      tooltip: {
+        backgroundColor: '#1a2540',
+        borderColor: 'rgba(0,180,255,0.2)',
+        borderWidth: 1,
+        titleFont: { family: 'JetBrains Mono', size: 12 },
+        bodyFont: { family: 'JetBrains Mono', size: 11 },
+        padding: 12,
+        callbacks: {
+          label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString()} sent`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: 'rgba(0,180,255,0.04)' },
+        ticks: { color: '#6b8ab0', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 45 },
+      },
+      y: {
+        grid: { color: 'rgba(0,180,255,0.04)' },
+        ticks: {
+          color: '#6b8ab0',
+          font: { size: 10, family: 'JetBrains Mono' },
+          callback: v => v >= 1000 ? (v / 1000) + 'k' : v,
+        },
+        title: { display: true, text: 'Cumulative Emails Sent', color: '#6b8ab0', font: { size: 11 } },
+      }
+    }
+  }
+});
+
+// Wave Timeline
+const timelineEl = document.getElementById('waveTimeline');
+const totalMinutes = DURATION_HOURS * 60;
+const tipEl = document.getElementById('tooltip');
+
+ISP_CONFIG.forEach(cfg => {
+  const waves = calcWaves(cfg.quota);
+  const row = document.createElement('div');
+  row.className = 'wave-row';
+
+  const label = document.createElement('div');
+  label.className = 'wave-label';
+  label.style.color = cfg.color;
+  label.innerHTML = `${cfg.emoji} ${cfg.label}`;
+  row.appendChild(label);
+
+  const track = document.createElement('div');
+  track.className = 'wave-track';
+
+  waves.forEach(w => {
+    const tick = document.createElement('div');
+    tick.className = 'wave-tick';
+    const leftPct = (w.minuteOffset / totalMinutes) * 100;
+    const widthPct = Math.max(0.4, (INTERVAL_MIN / totalMinutes) * 100 * 0.7);
+    tick.style.left = leftPct + '%';
+    tick.style.width = widthPct + '%';
+    tick.style.background = cfg.color;
+
+    tick.addEventListener('mouseenter', e => {
+      const h = Math.floor(w.minuteOffset / 60);
+      const m = w.minuteOffset % 60;
+      tipEl.innerHTML = `<strong>${cfg.label} — Wave ${w.waveNum}</strong><br>` +
+        `Time: +${h}h${m > 0 ? m + 'm' : ''}<br>` +
+        `Batch: ${w.size.toLocaleString()} emails`;
+      tipEl.style.display = 'block';
+      tipEl.style.left = (e.clientX + 12) + 'px';
+      tipEl.style.top = (e.clientY - 50) + 'px';
+    });
+    tick.addEventListener('mousemove', e => {
+      tipEl.style.left = (e.clientX + 12) + 'px';
+      tipEl.style.top = (e.clientY - 50) + 'px';
+    });
+    tick.addEventListener('mouseleave', () => { tipEl.style.display = 'none'; });
+
+    track.appendChild(tick);
+  });
+
+  row.appendChild(track);
+  timelineEl.appendChild(row);
+});
+
+const markersEl = document.getElementById('timeMarkers');
+for (let h = 0; h <= DURATION_HOURS; h++) {
+  const span = document.createElement('span');
+  span.textContent = `+${h}h`;
+  markersEl.appendChild(span);
+}
+
+// Legend
+const legendEl = document.getElementById('legend');
+ISP_CONFIG.forEach(cfg => {
+  legendEl.innerHTML += `<div class="legend-item"><div class="legend-dot" style="background:${cfg.color}"></div>${cfg.label}</div>`;
+});
+
+// Cadence Math
+const cadenceEl = document.getElementById('cadenceDetail');
+const perIntervalTotal = ISP_CONFIG.reduce((s, c) => s + calcBatch(c.quota), 0);
+const cadenceData = [
+  { label: 'Emails Per Interval', val: perIntervalTotal.toLocaleString(), sub: `All ISPs combined every ${INTERVAL_MIN} min` },
+  { label: 'Gmail Batch Size', val: calcBatch(50000).toLocaleString(), sub: `${calcWaves(50000).length} waves × ${calcBatch(50000).toLocaleString()} msgs` },
+  { label: 'Yahoo/MSFT Batch', val: calcBatch(20000).toLocaleString(), sub: `${calcWaves(20000).length} waves × ${calcBatch(20000).toLocaleString()} msgs` },
+  { label: 'Apple Batch Size', val: calcBatch(10000).toLocaleString(), sub: `${calcWaves(10000).length} waves × ${calcBatch(10000).toLocaleString()} msgs` },
+  { label: 'Comcast/AT&T Batch', val: calcBatch(5000).toLocaleString(), sub: `${calcWaves(5000).length} waves × ${calcBatch(5000).toLocaleString()} msgs` },
+  { label: 'Cox/Charter Batch', val: calcBatch(3000).toLocaleString(), sub: `${calcWaves(3000).length} waves × ${calcBatch(3000).toLocaleString()} msgs` },
+  { label: 'Peak Hourly Rate', val: (perIntervalTotal * (60 / INTERVAL_MIN)).toLocaleString(), sub: `${60 / INTERVAL_MIN} intervals/hr × ${perIntervalTotal.toLocaleString()} per interval` },
+  { label: 'Total Waves Created', val: ISP_CONFIG.reduce((s, c) => s + calcWaves(c.quota).length, 0).toString(), sub: `${TOTAL_INTERVALS} per ISP × ${ISP_CONFIG.length} ISPs` },
+  { label: 'Completion Time', val: `${DURATION_HOURS} hours`, sub: `All quotas fulfilled within the window` },
+];
+cadenceData.forEach(d => {
+  cadenceEl.innerHTML += `<div class="cadence-card"><div class="label">${d.label}</div><div class="val">${d.val}</div><div class="sub">${d.sub}</div></div>`;
+});
+</script>
+</body>
+</html>
