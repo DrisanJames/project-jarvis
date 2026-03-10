@@ -893,21 +893,26 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	loadTemplatesByFolder := func(keywords []string) []savedTemplate {
 		var result []savedTemplate
 		for _, kw := range keywords {
-			tRows, _ := a.db.QueryContext(r.Context(),
+			tRows, err := a.db.QueryContext(r.Context(),
 				`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
 				 FROM mailing_templates t
 				 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
-				 WHERE t.organization_id = $1 AND t.status = 'active'
-				   AND t.html_content IS NOT NULL AND t.html_content != ''
+				 WHERE t.organization_id::text = $1 AND t.status = 'active'
+				   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 0
 				   AND (LOWER(COALESCE(f.name,'')) LIKE '%' || $2 || '%' OR LOWER(t.name) LIKE '%' || $2 || '%')
 				 ORDER BY t.updated_at DESC LIMIT 10`, orgID, strings.ToLower(kw))
-			if tRows != nil {
-				defer tRows.Close()
-				for tRows.Next() {
-					var t savedTemplate
-					tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder)
-					result = append(result, t)
+			if err != nil {
+				log.Printf("[MarketingAgent] template query error for keyword '%s': %v", kw, err)
+				continue
+			}
+			defer tRows.Close()
+			for tRows.Next() {
+				var t savedTemplate
+				if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder); scanErr != nil {
+					log.Printf("[MarketingAgent] template scan error: %v", scanErr)
+					continue
 				}
+				result = append(result, t)
 			}
 		}
 		return result
@@ -916,17 +921,20 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// For warmup: use newsletter/re-engagement templates; for welcome: use welcome series
 	warmupTemplates := loadTemplatesByFolder([]string{"newsletter", "re-engagement", "engagement"})
 	welcomeTemplates := loadTemplatesByFolder([]string{"welcome"})
+	log.Printf("[MarketingAgent] keyword search: %d warmup, %d welcome templates", len(warmupTemplates), len(welcomeTemplates))
 
 	// Fallback: if no category-specific templates found, use ANY active template
 	if len(warmupTemplates) == 0 && len(welcomeTemplates) == 0 {
-		allRows, _ := a.db.QueryContext(r.Context(),
+		allRows, err := a.db.QueryContext(r.Context(),
 			`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,'')
 			 FROM mailing_templates t
 			 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
-			 WHERE t.organization_id = $1 AND t.status = 'active'
-			   AND t.html_content IS NOT NULL AND t.html_content != ''
+			 WHERE t.organization_id::text = $1 AND t.status = 'active'
+			   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 0
 			 ORDER BY t.updated_at DESC LIMIT 10`, orgID)
-		if allRows != nil {
+		if err != nil {
+			log.Printf("[MarketingAgent] fallback template query error: %v", err)
+		} else {
 			defer allRows.Close()
 			for allRows.Next() {
 				var t savedTemplate
@@ -934,6 +942,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 				warmupTemplates = append(warmupTemplates, t)
 				welcomeTemplates = append(welcomeTemplates, t)
 			}
+			log.Printf("[MarketingAgent] fallback found %d templates", len(warmupTemplates))
 		}
 	}
 	if len(warmupTemplates) == 0 {
@@ -943,7 +952,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		welcomeTemplates = warmupTemplates
 	}
 
-	log.Printf("[MarketingAgent] found %d warmup templates, %d welcome templates for forecast", len(warmupTemplates), len(welcomeTemplates))
+	log.Printf("[MarketingAgent] final: %d warmup templates, %d welcome templates (orgID=%s)", len(warmupTemplates), len(welcomeTemplates), orgID)
 
 	// Generate daily recommendations — two campaigns per day
 	created := 0
