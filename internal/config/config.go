@@ -498,6 +498,15 @@ func LoadFromEnv(path string) (*Config, error) {
 		cfg.Everflow.BaseURL = baseURL
 	}
 
+	// OpenAI override
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		cfg.OpenAI.APIKey = v
+		cfg.OpenAI.Enabled = true
+	}
+	if v := os.Getenv("OPENAI_MODEL"); v != "" {
+		cfg.OpenAI.Model = v
+	}
+
 	// Database override (critical for ECS deployment where config.yaml has local defaults)
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		cfg.Mailing.DatabaseURL = dbURL
