@@ -971,13 +971,23 @@ func resolveListNamesToIDs(ctx context.Context, db *sql.DB, orgID string, names 
 			ids = append(ids, name)
 			continue
 		}
-		// Otherwise look up by name
+		// Look up in mailing_lists first
 		var listID string
 		err := db.QueryRowContext(ctx, `
 			SELECT id::text FROM mailing_lists
 			WHERE organization_id = $1 AND name = $2
 			LIMIT 1
 		`, orgID, name).Scan(&listID)
+		if err == nil {
+			ids = append(ids, listID)
+			continue
+		}
+		// Fallback: mailing_suppression_lists (for exclusions like "Global Suppression", "global-suppression-list")
+		err = db.QueryRowContext(ctx, `
+			SELECT id FROM mailing_suppression_lists
+			WHERE id = $1 OR LOWER(name) = LOWER($1)
+			LIMIT 1
+		`, name).Scan(&listID)
 		if err == nil {
 			ids = append(ids, listID)
 		} else {

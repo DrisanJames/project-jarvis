@@ -70,6 +70,17 @@ func getAgentTools() []agentToolDef {
 		{
 			Type: "function",
 			Function: agentToolFuncDef{
+				Name:        "list_suppression_lists",
+				Description: "List all suppression lists (exclusion lists). Use for exclusion_lists in recommendations. ALWAYS include 'Global Suppression' (id: global-suppression-list) as the first exclusion. Returns id, name, type='suppression_list', entry_count.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
 				Name:        "list_templates",
 				Description: "List templates in the content library. Optionally filter by folder or search by name.",
 				Parameters: map[string]interface{}{
@@ -291,6 +302,20 @@ func getAgentTools() []agentToolDef {
 					"required": []string{"recommendation_id"},
 					"properties": map[string]interface{}{
 						"recommendation_id": prop("string", "The recommendation UUID to deploy."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "clear_forecasts",
+				Description: "Delete all pending campaign recommendations (forecasts) for the organization. Use when the user wants to clear the calendar and regenerate, or remove all generated forecasts.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"sending_domain": prop("string", "Optional: only clear forecasts for this sending domain. Omit to clear all."),
+						"status":         prop("string", "Optional: only clear forecasts with this status (default: pending). Use 'all' to clear regardless of status."),
 					},
 				},
 			},

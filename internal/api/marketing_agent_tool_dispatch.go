@@ -33,6 +33,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result = a.toolListLists(ctx, orgID)
 	case "list_segments":
 		result = a.toolListSegments(ctx, orgID)
+	case "list_suppression_lists":
+		result = a.toolListSuppressionLists(ctx, orgID)
 	case "list_templates":
 		result = a.toolListTemplates(ctx, orgID, args)
 	case "read_template":
@@ -61,6 +63,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolGenerateTemplate(ctx, orgID, args)
 	case "deploy_approved_campaign":
 		result, action = a.toolDeployApprovedCampaign(ctx, orgID, args)
+	case "clear_forecasts":
+		result, action = a.toolClearForecasts(ctx, orgID, args)
 	default:
 		result = map[string]string{"error": "unknown tool: " + name}
 	}
@@ -315,6 +319,75 @@ func (a *EmailMarketingAgent) toolListSegments(ctx context.Context, orgID string
 		segments = []map[string]interface{}{}
 	}
 	return map[string]interface{}{"segments": segments, "count": len(segments)}
+}
+
+func (a *EmailMarketingAgent) toolListSuppressionLists(ctx context.Context, orgID string) interface{} {
+	// Include org-specific lists and Global Suppression (may have NULL org in some setups)
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT id, name, COALESCE(entry_count, 0) as entry_count
+		FROM mailing_suppression_lists
+		WHERE organization_id::text = $1 OR id = 'global-suppression-list'
+		ORDER BY CASE WHEN id = 'global-suppression-list' THEN 0 ELSE 1 END, name
+		LIMIT 50
+	`, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+	var lists []map[string]interface{}
+	for rows.Next() {
+		var id, name string
+		var entryCount int
+		if rows.Scan(&id, &name, &entryCount) != nil {
+			continue
+		}
+		lists = append(lists, map[string]interface{}{
+			"id":           id,
+			"name":         name,
+			"type":         "suppression_list",
+			"entry_count":  entryCount,
+		})
+	}
+	if lists == nil {
+		lists = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"suppression_lists": lists, "count": len(lists)}
+}
+
+func (a *EmailMarketingAgent) toolClearForecasts(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	domain, _ := args["sending_domain"].(string)
+	statusFilter, _ := args["status"].(string)
+	if statusFilter == "" {
+		statusFilter = "pending"
+	}
+
+	var result sql.Result
+	var err error
+	if domain != "" && statusFilter != "all" {
+		result, err = a.db.ExecContext(ctx,
+			`DELETE FROM agent_campaign_recommendations WHERE organization_id = $1 AND sending_domain = $2 AND status = $3`,
+			orgID, domain, statusFilter)
+	} else if domain != "" && statusFilter == "all" {
+		result, err = a.db.ExecContext(ctx,
+			`DELETE FROM agent_campaign_recommendations WHERE organization_id = $1 AND sending_domain = $2`,
+			orgID, domain)
+	} else if statusFilter != "all" {
+		result, err = a.db.ExecContext(ctx,
+			`DELETE FROM agent_campaign_recommendations WHERE organization_id = $1 AND status = $2`,
+			orgID, statusFilter)
+	} else {
+		result, err = a.db.ExecContext(ctx,
+			`DELETE FROM agent_campaign_recommendations WHERE organization_id = $1`, orgID)
+	}
+	if err != nil {
+		return map[string]string{"error": err.Error()}, ""
+	}
+	n, _ := result.RowsAffected()
+	return map[string]interface{}{
+		"status":   "cleared",
+		"deleted":  n,
+		"message":  fmt.Sprintf("Cleared %d forecast recommendations", n),
+	}, "clear_forecasts"
 }
 
 func (a *EmailMarketingAgent) toolListTemplates(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
