@@ -799,7 +799,8 @@ func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter,
 		var id uuid.UUID
 		var listID *uuid.UUID
 		var name, condJSON string
-		if rows.Scan(&id, &listID, &name, &condJSON) != nil {
+		if err := rows.Scan(&id, &listID, &name, &condJSON); err != nil {
+			log.Printf("[SegmentRefresh] scan error: %v", err)
 			continue
 		}
 
@@ -810,9 +811,12 @@ func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter,
 			Value    string `json:"value"`
 		}
 		if condJSON != "" && condJSON != "[]" {
-			json.Unmarshal([]byte(condJSON), &conditions)
+			if err := json.Unmarshal([]byte(condJSON), &conditions); err != nil {
+				log.Printf("[SegmentRefresh] JSON parse error for %s: %v (json=%s)", name, err, condJSON[:100])
+			}
 		}
 		if len(conditions) == 0 {
+			log.Printf("[SegmentRefresh] skipping %s: no conditions (json=%s)", name, condJSON)
 			continue
 		}
 
@@ -828,7 +832,7 @@ func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter,
 		s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW() WHERE id = $1`, id, newCount)
 
 		results = append(results, result{ID: id.String(), Name: name, OldCount: oldCount, NewCount: newCount})
-		log.Printf("[SegmentRefresh] %s: %d → %d", name, oldCount, newCount)
+		log.Printf("[SegmentRefresh] %s: %d → %d (conditions=%d)", name, oldCount, newCount, len(conditions))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
