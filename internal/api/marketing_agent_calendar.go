@@ -1263,3 +1263,60 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		"month":                   input.Month,
 	})
 }
+
+// HandleClearForecasts deletes all agent campaign recommendations for the org.
+// POST /api/mailing/agent/calendar/clear-forecasts
+func (a *EmailMarketingAgent) HandleClearForecasts(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	result, err := a.db.ExecContext(r.Context(),
+		`DELETE FROM agent_campaign_recommendations WHERE organization_id = $1`, orgID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	n, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "cleared",
+		"deleted":  n,
+		"message":  fmt.Sprintf("Cleared %d forecast recommendations", n),
+	})
+}
+
+// HandleCancelTomorrowCampaigns cancels all campaigns scheduled for tomorrow (UTC).
+// POST /api/mailing/agent/calendar/cancel-tomorrow
+func (a *EmailMarketingAgent) HandleCancelTomorrowCampaigns(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+
+	result, err := a.db.ExecContext(r.Context(), `
+		UPDATE mailing_campaigns
+		SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
+		WHERE organization_id::text = $1
+		  AND status IN ('scheduled', 'preparing')
+		  AND scheduled_at IS NOT NULL
+		  AND (scheduled_at AT TIME ZONE 'UTC')::date = $2::date
+	`, orgID, tomorrow)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	cancelled, _ := result.RowsAffected()
+
+	// Cancel queued items for those campaigns
+	a.db.ExecContext(r.Context(), `
+		UPDATE mailing_campaign_queue
+		SET status = 'cancelled', updated_at = NOW()
+		WHERE campaign_id IN (
+			SELECT id FROM mailing_campaigns
+			WHERE organization_id::text = $1 AND status = 'cancelled' AND completed_at > NOW() - INTERVAL '1 minute'
+		)
+		AND status IN ('queued', 'paused')
+	`, orgID)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "cancelled",
+		"date":     tomorrow,
+		"count":    cancelled,
+		"message":  fmt.Sprintf("Cancelled %d campaigns scheduled for %s", cancelled, tomorrow),
+	})
+}
