@@ -84,11 +84,13 @@ type UnifiedISPMetric struct {
 	OpenRate      float64 `json:"open_rate"`      // Open percentage
 	Clicks        int64   `json:"clicks"`         // Total clicks
 	ClickRate     float64 `json:"click_rate"`     // Click percentage (CTR)
-	Bounces       int64   `json:"bounces"`        // Total bounces
-	BounceRate    float64 `json:"bounce_rate"`    // Bounce percentage
-	Complaints    int64   `json:"complaints"`     // Total complaints
-	ComplaintRate float64 `json:"complaint_rate"` // Complaint percentage
-	Status        string  `json:"status"`         // healthy, warning, critical
+	HardBounces    int64   `json:"hard_bounces"`     // Total hard bounces
+	SoftBounces    int64   `json:"soft_bounces"`     // Total soft bounces
+	HardBounceRate float64 `json:"hard_bounce_rate"` // Hard bounce percentage
+	SoftBounceRate float64 `json:"soft_bounce_rate"` // Soft bounce percentage
+	Complaints     int64   `json:"complaints"`       // Total complaints
+	ComplaintRate  float64 `json:"complaint_rate"`   // Complaint percentage
+	Status         string  `json:"status"`           // healthy, warning, critical
 }
 
 // UnifiedISPResponse is the response for the unified ISP metrics endpoint
@@ -118,8 +120,10 @@ func (h *Handlers) GetUnifiedISPMetrics(w http.ResponseWriter, r *http.Request) 
 				OpenRate:      m.Metrics.OpenRate,
 				Clicks:        m.Metrics.UniqueClicked,
 				ClickRate:     m.Metrics.ClickRate,
-				Bounces:       m.Metrics.Bounced,
-				BounceRate:    m.Metrics.BounceRate,
+				HardBounces:    m.Metrics.Bounced,
+				SoftBounces:    0,
+				HardBounceRate: m.Metrics.BounceRate,
+				SoftBounceRate: 0,
 				Complaints:    m.Metrics.Complaints,
 				ComplaintRate: m.Metrics.ComplaintRate,
 				Status:        m.Status,
@@ -142,8 +146,10 @@ func (h *Handlers) GetUnifiedISPMetrics(w http.ResponseWriter, r *http.Request) 
 				OpenRate:      m.Metrics.OpenRate,
 				Clicks:        m.Metrics.UniqueClicked,
 				ClickRate:     m.Metrics.ClickRate,
-				Bounces:       m.Metrics.Bounced,
-				BounceRate:    m.Metrics.BounceRate,
+				HardBounces:    m.Metrics.Bounced,
+				SoftBounces:    0,
+				HardBounceRate: m.Metrics.BounceRate,
+				SoftBounceRate: 0,
 				Complaints:    m.Metrics.Complaints,
 				ComplaintRate: m.Metrics.ComplaintRate,
 				Status:        m.Status,
@@ -166,8 +172,10 @@ func (h *Handlers) GetUnifiedISPMetrics(w http.ResponseWriter, r *http.Request) 
 				OpenRate:      m.Metrics.OpenRate,
 				Clicks:        m.Metrics.UniqueClicked,
 				ClickRate:     m.Metrics.ClickRate,
-				Bounces:       m.Metrics.Bounced,
-				BounceRate:    m.Metrics.BounceRate,
+				HardBounces:    m.Metrics.Bounced,
+				SoftBounces:    0,
+				HardBounceRate: m.Metrics.BounceRate,
+				SoftBounceRate: 0,
 				Complaints:    m.Metrics.Complaints,
 				ComplaintRate: m.Metrics.ComplaintRate,
 				Status:        m.Status,
@@ -196,12 +204,14 @@ type UnifiedIPMetric struct {
 	OpenRate      float64 `json:"open_rate"`      // Open percentage
 	Clicks        int64   `json:"clicks"`         // Total clicks
 	ClickRate     float64 `json:"click_rate"`     // Click percentage
-	Bounces       int64   `json:"bounces"`        // Total bounces
-	BounceRate    float64 `json:"bounce_rate"`    // Bounce percentage
-	Complaints    int64   `json:"complaints"`     // Total complaints
-	ComplaintRate float64 `json:"complaint_rate"` // Complaint percentage
-	Status        string  `json:"status"`         // healthy, warning, critical
-	StatusReason  string  `json:"status_reason"`  // Reason for status
+	HardBounces    int64   `json:"hard_bounces"`     // Total hard bounces
+	SoftBounces    int64   `json:"soft_bounces"`     // Total soft bounces
+	HardBounceRate float64 `json:"hard_bounce_rate"` // Hard bounce percentage
+	SoftBounceRate float64 `json:"soft_bounce_rate"` // Soft bounce percentage
+	Complaints     int64   `json:"complaints"`       // Total complaints
+	ComplaintRate  float64 `json:"complaint_rate"`   // Complaint percentage
+	Status         string  `json:"status"`           // healthy, warning, critical
+	StatusReason   string  `json:"status_reason"`    // Reason for status
 }
 
 // UnifiedIPResponse is the response for the unified IP metrics endpoint
@@ -254,8 +264,10 @@ func (h *Handlers) GetUnifiedIPMetrics(w http.ResponseWriter, r *http.Request) {
 					OpenRate:      m.Metrics.OpenRate,
 					Clicks:        m.Metrics.UniqueClicked,
 					ClickRate:     m.Metrics.ClickRate,
-					Bounces:       m.Metrics.Bounced,
-					BounceRate:    m.Metrics.BounceRate,
+					HardBounces:    m.Metrics.Bounced,
+					SoftBounces:    0,
+					HardBounceRate: m.Metrics.BounceRate,
+					SoftBounceRate: 0,
 					Complaints:    m.Metrics.Complaints,
 					ComplaintRate: m.Metrics.ComplaintRate,
 					Status:        m.Status,
@@ -287,12 +299,14 @@ type UnifiedDomainMetric struct {
 	OpenRate      float64 `json:"open_rate"`      // Open percentage
 	Clicks        int64   `json:"clicks"`         // Total clicks
 	ClickRate     float64 `json:"click_rate"`     // Click percentage
-	Bounces       int64   `json:"bounces"`        // Total bounces
-	BounceRate    float64 `json:"bounce_rate"`    // Bounce percentage
-	Complaints    int64   `json:"complaints"`     // Total complaints
-	ComplaintRate float64 `json:"complaint_rate"` // Complaint percentage
-	Status        string  `json:"status"`         // healthy, warning, critical
-	StatusReason  string  `json:"status_reason"`  // Reason for status
+	HardBounces    int64   `json:"hard_bounces"`     // Total hard bounces
+	SoftBounces    int64   `json:"soft_bounces"`     // Total soft bounces
+	HardBounceRate float64 `json:"hard_bounce_rate"` // Hard bounce percentage
+	SoftBounceRate float64 `json:"soft_bounce_rate"` // Soft bounce percentage
+	Complaints     int64   `json:"complaints"`       // Total complaints
+	ComplaintRate  float64 `json:"complaint_rate"`   // Complaint percentage
+	Status         string  `json:"status"`           // healthy, warning, critical
+	StatusReason   string  `json:"status_reason"`    // Reason for status
 }
 
 // UnifiedDomainResponse is the response for the unified domain metrics endpoint
@@ -323,8 +337,10 @@ func (h *Handlers) GetUnifiedDomainMetrics(w http.ResponseWriter, r *http.Reques
 					OpenRate:      m.Metrics.OpenRate,
 					Clicks:        m.Metrics.UniqueClicked,
 					ClickRate:     m.Metrics.ClickRate,
-					Bounces:       m.Metrics.Bounced,
-					BounceRate:    m.Metrics.BounceRate,
+					HardBounces:    m.Metrics.Bounced,
+					SoftBounces:    0,
+					HardBounceRate: m.Metrics.BounceRate,
+					SoftBounceRate: 0,
 					Complaints:    m.Metrics.Complaints,
 					ComplaintRate: m.Metrics.ComplaintRate,
 					Status:        m.Status,
@@ -350,8 +366,10 @@ func (h *Handlers) GetUnifiedDomainMetrics(w http.ResponseWriter, r *http.Reques
 					OpenRate:      m.Metrics.OpenRate,
 					Clicks:        m.Metrics.UniqueClicked,
 					ClickRate:     m.Metrics.ClickRate,
-					Bounces:       m.Metrics.Bounced,
-					BounceRate:    m.Metrics.BounceRate,
+					HardBounces:    m.Metrics.Bounced,
+					SoftBounces:    0,
+					HardBounceRate: m.Metrics.BounceRate,
+					SoftBounceRate: 0,
 					Complaints:    m.Metrics.Complaints,
 					ComplaintRate: m.Metrics.ComplaintRate,
 					Status:        m.Status,

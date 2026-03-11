@@ -86,7 +86,9 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 				mock.ExpectExec("UPDATE mailing_campaigns SET delivered_count").
 					WithArgs(sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(0, 1))
-				// inbox profile update
+				mock.ExpectExec("UPDATE mailing_ip_addresses SET total_delivered").
+					WithArgs(sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(0, 1))
@@ -94,13 +96,22 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 				mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
 					WithArgs(sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				// soft_bounce_count because default BounceCat is empty (not a hard category)
+				mock.ExpectExec("UPDATE mailing_campaigns SET soft_bounce_count").
+					WithArgs(sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("UPDATE mailing_ip_addresses SET total_bounced").
+					WithArgs(sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, 1))
 			case "complained":
 				mock.ExpectExec("UPDATE mailing_campaigns SET complaint_count").
 					WithArgs(sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(0, 1))
 			case "deferred":
-				// No campaign counter update expected — deferrals are tracked
-				// via the events table only.
+				// No campaign counter update expected.
 			}
 
 			ing.persistToDB(rec, ISP("comcast"))
@@ -148,6 +159,123 @@ func TestRouteToCampaignTracker_UnknownTypeSkipped(t *testing.T) {
 	ing.routeToCampaignTracker(rec, ISP("gmail"))
 
 	assert.Empty(t, tracker.events, "unknown type should not produce events")
+}
+
+func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ing := &Ingestor{db: db}
+	campaignUUID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	orgUUID := "11111111-2222-3333-4444-555555555555"
+	subUUID := "66666666-7777-8888-9999-aaaaaaaaaaaa"
+
+	rec := AccountingRecord{
+		Type:      "b",
+		Recipient: "user@gmail.com",
+		Sender:    "hello@em.discountblog.com",
+		JobID:     campaignUUID,
+		SourceIP:  "15.204.22.176",
+		BounceCat: "bad-mailbox",
+		DSNStatus: "5.1.1",
+	}
+
+	mock.ExpectQuery("SELECT s.id::text, c.organization_id::text").
+		WithArgs(sqlmock.AnyArg(), "user@gmail.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id"}).AddRow(subUUID, orgUUID))
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"bounced", "bad-mailbox", "5.1.1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET hard_bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_ip_addresses SET total_bounced").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	ing.persistToDB(rec, ISP("gmail"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIsHardBounceCategory(t *testing.T) {
+	hard := []string{"bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors"}
+	soft := []string{"quota-issues", "spam-related", "policy-related", "protocol-errors", "content-related", "other", ""}
+
+	for _, cat := range hard {
+		assert.True(t, isHardBounceCategory(cat), "category %q should be hard", cat)
+	}
+	for _, cat := range soft {
+		assert.False(t, isHardBounceCategory(cat), "category %q should be soft", cat)
+	}
+}
+
+func TestRouteToGlobalSuppression_HardBounce(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	hub := NewGlobalSuppressionHub(db, "org1", "")
+	ing := &Ingestor{globalHub: hub}
+
+	rec := AccountingRecord{
+		Type:      "b",
+		Recipient: "badbounce@example.com",
+		BounceCat: "bad-mailbox",
+		DSNStatus: "5.1.1",
+		SourceIP:  "15.204.22.176",
+		JobID:     "campaign-1",
+	}
+
+	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	ing.routeToGlobalSuppression(rec, ISP("other"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRouteToGlobalSuppression_SoftBounceNotSuppressed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	hub := NewGlobalSuppressionHub(db, "org1", "")
+	ing := &Ingestor{globalHub: hub}
+
+	rec := AccountingRecord{
+		Type:      "b",
+		Recipient: "soft@example.com",
+		BounceCat: "content-related",
+		DSNStatus: "4.3.1",
+	}
+
+	ing.routeToGlobalSuppression(rec, ISP("other"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRouteToGlobalSuppression_FBLSuppresses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	hub := NewGlobalSuppressionHub(db, "org1", "")
+	ing := &Ingestor{globalHub: hub}
+
+	rec := AccountingRecord{
+		Type:         "f",
+		Recipient:    "complaint@example.com",
+		FeedbackType: "abuse",
+		JobID:        "campaign-2",
+	}
+
+	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	ing.routeToGlobalSuppression(rec, ISP("gmail"))
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // mockTracker records CampaignEvents for assertion in tests.

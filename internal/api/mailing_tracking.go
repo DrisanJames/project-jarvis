@@ -490,11 +490,12 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	if events == nil { events = []map[string]interface{}{} }
 	
 	// Get summary counts
-	var sentCount, openCount, clickCount, bounceCount, complaintCount, unsubCount int
+	var sentCount, openCount, clickCount, hardBounceCount, softBounceCount, complaintCount, unsubCount int
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'sent'", campaignID).Scan(&sentCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'opened'", campaignID).Scan(&openCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'clicked'", campaignID).Scan(&clickCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type IN ('hard_bounce', 'soft_bounce', 'bounced')", campaignID).Scan(&bounceCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type IN ('hard_bounce', 'bounced')", campaignID).Scan(&hardBounceCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'soft_bounce'", campaignID).Scan(&softBounceCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'complained'", campaignID).Scan(&complaintCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'unsubscribed'", campaignID).Scan(&unsubCount)
 	
@@ -506,7 +507,8 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 			"sent":         sentCount,
 			"opened":       openCount,
 			"clicked":      clickCount,
-			"bounced":      bounceCount,
+			"hard_bounced": hardBounceCount,
+			"soft_bounced": softBounceCount,
 			"complained":   complaintCount,
 			"unsubscribed": unsubCount,
 			"open_rate":    calculateRate(openCount, sentCount),

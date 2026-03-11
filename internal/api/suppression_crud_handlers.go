@@ -152,6 +152,7 @@ func (s *SuppressionService) HandleSuppressionDashboard(w http.ResponseWriter, r
 		"global_suppression": map[string]interface{}{
 			"total":           0,
 			"hard_bounces":    0,
+			"soft_bounces":    0,
 			"spam_complaints": 0,
 			"unsubscribes":    0,
 			"spam_traps":      0,
@@ -235,6 +236,7 @@ func (s *SuppressionService) HandleSuppressionDashboard(w http.ResponseWriter, r
 	globalStats := map[string]interface{}{
 		"total":           0,
 		"hard_bounces":    0,
+		"soft_bounces":    0,
 		"spam_complaints": 0,
 		"unsubscribes":    0,
 		"spam_traps":      0,
@@ -283,6 +285,8 @@ func (s *SuppressionService) HandleSuppressionDashboard(w http.ResponseWriter, r
 				switch src {
 				case "hard_bounce":
 					globalStats["hard_bounces"] = entries
+				case "soft_bounce":
+					globalStats["soft_bounces"] = entries
 				case "spam_complaint":
 					globalStats["spam_complaints"] = entries
 				case "unsubscribe":

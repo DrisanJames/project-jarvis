@@ -47,6 +47,8 @@ type Campaign struct {
 	OpenCount        int     `json:"open_count" db:"open_count"`
 	ClickCount       int     `json:"click_count" db:"click_count"`
 	BounceCount      int     `json:"bounce_count" db:"bounce_count"`
+	HardBounceCount  int     `json:"hard_bounce_count" db:"hard_bounce_count"`
+	SoftBounceCount  int     `json:"soft_bounce_count" db:"soft_bounce_count"`
 	ComplaintCount   int     `json:"complaint_count" db:"complaint_count"`
 	UnsubscribeCount int     `json:"unsubscribe_count" db:"unsubscribe_count"`
 	Revenue          float64 `json:"revenue" db:"revenue"`

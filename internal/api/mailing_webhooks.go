@@ -80,12 +80,16 @@ func (s *AdvancedMailingService) HandleSparkPostWebhook(w http.ResponseWriter, r
 				bounceType = "throttle"
 			}
 
-			// Hard bounce = auto-suppress (preserve existing behavior)
-			if bounceType == "hard" {
-				s.addToSuppression(ctx, email, "Hard bounce: "+reason, "sparkpost_webhook")
-				s.updateSubscriberStatus(ctx, email, "bounced")
-				s.updateCampaignStat(ctx, email, "bounce_count") // Link to campaign
-			}
+		// Hard bounce = auto-suppress (preserve existing behavior)
+		if bounceType == "hard" {
+			s.addToSuppression(ctx, email, "Hard bounce: "+reason, "sparkpost_webhook")
+			s.updateSubscriberStatus(ctx, email, "bounced")
+			s.updateCampaignStat(ctx, email, "bounce_count")
+			s.updateCampaignStat(ctx, email, "hard_bounce_count")
+		} else if bounceType == "soft" || bounceType == "inbox_full" || bounceType == "throttle" {
+			s.updateCampaignStat(ctx, email, "bounce_count")
+			s.updateCampaignStat(ctx, email, "soft_bounce_count")
+		}
 		} else if event.Msys.MessageEvent.Type == "open" {
 			email = event.Msys.MessageEvent.Recipient
 			eventType = "open"
@@ -190,13 +194,19 @@ func (s *AdvancedMailingService) HandleSESWebhook(w http.ResponseWriter, r *http
 		}
 		json.Unmarshal([]byte(notification.Message), &message)
 		
-		if message.NotificationType == "Bounce" && message.Bounce.BounceType == "Permanent" {
-			for _, recipient := range message.Bounce.BouncedRecipients {
-				s.addToSuppression(ctx, recipient.EmailAddress, "SES hard bounce", "ses_webhook")
-				s.updateSubscriberStatus(ctx, recipient.EmailAddress, "bounced")
-				s.updateCampaignStat(ctx, recipient.EmailAddress, "bounce_count") // Link to campaign
-			}
-		} else if message.NotificationType == "Complaint" {
+	if message.NotificationType == "Bounce" && message.Bounce.BounceType == "Permanent" {
+		for _, recipient := range message.Bounce.BouncedRecipients {
+			s.addToSuppression(ctx, recipient.EmailAddress, "SES hard bounce", "ses_webhook")
+			s.updateSubscriberStatus(ctx, recipient.EmailAddress, "bounced")
+			s.updateCampaignStat(ctx, recipient.EmailAddress, "bounce_count")
+			s.updateCampaignStat(ctx, recipient.EmailAddress, "hard_bounce_count")
+		}
+	} else if message.NotificationType == "Bounce" && message.Bounce.BounceType == "Transient" {
+		for _, recipient := range message.Bounce.BouncedRecipients {
+			s.updateCampaignStat(ctx, recipient.EmailAddress, "bounce_count")
+			s.updateCampaignStat(ctx, recipient.EmailAddress, "soft_bounce_count")
+		}
+	} else if message.NotificationType == "Complaint" {
 			for _, recipient := range message.Complaint.ComplainedRecipients {
 				s.addToSuppression(ctx, recipient.EmailAddress, "SES complaint", "ses_webhook")
 				s.updateSubscriberStatus(ctx, recipient.EmailAddress, "complained")
@@ -240,12 +250,16 @@ func (s *AdvancedMailingService) HandleMailgunWebhook(w http.ResponseWriter, r *
 		// Handle different event types
 		switch eventType {
 		case "failed":
-			// Check if it's a permanent (hard) bounce
 			if event.EventData.Severity == "permanent" {
 				s.addToSuppression(ctx, recipient, "Mailgun hard bounce: "+reason, "mailgun_webhook")
 				s.updateSubscriberStatus(ctx, recipient, "bounced")
-				s.updateCampaignStat(ctx, recipient, "bounce_count") // Link to campaign
+				s.updateCampaignStat(ctx, recipient, "bounce_count")
+				s.updateCampaignStat(ctx, recipient, "hard_bounce_count")
 				log.Printf("Mailgun hard bounce: %s - %s", recipient, reason)
+			} else if event.EventData.Severity == "temporary" {
+				s.updateCampaignStat(ctx, recipient, "bounce_count")
+				s.updateCampaignStat(ctx, recipient, "soft_bounce_count")
+				log.Printf("Mailgun soft bounce: %s - %s", recipient, reason)
 			}
 		case "complained":
 			s.addToSuppression(ctx, recipient, "Mailgun spam complaint", "mailgun_webhook_fbl")
@@ -267,17 +281,17 @@ func (s *AdvancedMailingService) HandleMailgunWebhook(w http.ResponseWriter, r *
 		
 		switch eventType {
 		case "bounced":
-			// Legacy format uses "bounced" for hard bounces
 			s.addToSuppression(ctx, recipient, "Mailgun hard bounce: "+reason, "mailgun_webhook")
 			s.updateSubscriberStatus(ctx, recipient, "bounced")
-			s.updateCampaignStat(ctx, recipient, "bounce_count") // Link to campaign
+			s.updateCampaignStat(ctx, recipient, "bounce_count")
+			s.updateCampaignStat(ctx, recipient, "hard_bounce_count")
 		case "dropped":
-			// Dropped can be due to previous bounces/complaints
 			dropReason := r.FormValue("reason")
 			if dropReason == "hardfail" {
 				s.addToSuppression(ctx, recipient, "Mailgun dropped (hardfail)", "mailgun_webhook")
 				s.updateSubscriberStatus(ctx, recipient, "bounced")
-				s.updateCampaignStat(ctx, recipient, "bounce_count") // Link to campaign
+				s.updateCampaignStat(ctx, recipient, "bounce_count")
+				s.updateCampaignStat(ctx, recipient, "hard_bounce_count")
 			}
 		case "complained":
 			s.addToSuppression(ctx, recipient, "Mailgun spam complaint", "mailgun_webhook_fbl")

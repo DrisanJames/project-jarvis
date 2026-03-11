@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizePMTACampaignInput_LegacyScheduledTranslation(t *testing.T) {
@@ -81,4 +85,83 @@ func TestBuildPMTAWaveSpecs_IntervalCadence(t *testing.T) {
 	if !waves[1].ScheduledAt.Equal(start.Add(15 * time.Minute)) {
 		t.Fatalf("expected second wave at %s, got %s", start.Add(15*time.Minute), waves[1].ScheduledAt)
 	}
+}
+
+func TestPreflightDeployCheck_NoProfile(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT id::text, ip_pool").
+		WithArgs("org-1", "em.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}))
+
+	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
+	assert.False(t, res.OK)
+	require.Len(t, res.Errors, 1)
+	assert.Equal(t, "sending_profile", res.Errors[0].Check)
+}
+
+func TestPreflightDeployCheck_EmptyIPPool(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT id::text, ip_pool").
+		WithArgs("org-1", "em.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}).AddRow("profile-1", ""))
+
+	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
+	assert.False(t, res.OK)
+	require.Len(t, res.Errors, 1)
+	assert.Equal(t, "ip_pool", res.Errors[0].Check)
+}
+
+func TestPreflightDeployCheck_NoActiveIPs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT id::text, ip_pool").
+		WithArgs("org-1", "em.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}).AddRow("profile-1", "warmup-pool"))
+
+	mock.ExpectQuery("SELECT ip.hostname, ip.status").
+		WithArgs("warmup-pool").
+		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status"}))
+
+	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
+	assert.False(t, res.OK)
+	require.Len(t, res.Errors, 1)
+	assert.Equal(t, "ip_pool_empty", res.Errors[0].Check)
+}
+
+func TestWaveSanityCheck_TooFewWaves(t *testing.T) {
+	plans := []pmtaNormalizedPlan{{ISP: "gmail"}}
+	start := time.Now()
+	wavesByISP := map[string][]pmtaWaveSpec{
+		"gmail": {
+			{WaveNumber: 1, ScheduledAt: start},
+			{WaveNumber: 2, ScheduledAt: start.Add(15 * time.Minute)},
+		},
+	}
+	err := waveSanityCheck(plans, wavesByISP)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "only 2 waves")
+}
+
+func TestWaveSanityCheck_Valid(t *testing.T) {
+	plans := []pmtaNormalizedPlan{{ISP: "gmail"}}
+	start := time.Now()
+	wavesByISP := map[string][]pmtaWaveSpec{
+		"gmail": {
+			{WaveNumber: 1, ScheduledAt: start},
+			{WaveNumber: 2, ScheduledAt: start.Add(1 * time.Hour)},
+			{WaveNumber: 3, ScheduledAt: start.Add(2 * time.Hour)},
+			{WaveNumber: 4, ScheduledAt: start.Add(3 * time.Hour)},
+			{WaveNumber: 5, ScheduledAt: start.Add(4 * time.Hour)},
+		},
+	}
+	err := waveSanityCheck(plans, wavesByISP)
+	assert.NoError(t, err)
 }

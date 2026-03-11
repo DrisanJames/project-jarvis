@@ -98,7 +98,8 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 	dailyQ := fmt.Sprintf(`SELECT %s as isp,
 		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		SUM(CASE WHEN d.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as bounces,
+		SUM(CASE WHEN d.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens
@@ -134,18 +135,19 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 	var isps []map[string]interface{}
 	for rows.Next() {
 		var isp string
-		var sent, delivered, bounces, deferred, complaints, opens int
-		rows.Scan(&isp, &sent, &delivered, &bounces, &deferred, &complaints, &opens)
+		var sent, delivered, hardBounces, softBounces, deferred, complaints, opens int
+		rows.Scan(&isp, &sent, &delivered, &hardBounces, &softBounces, &deferred, &complaints, &opens)
 		if isp == "other" || sent == 0 {
 			continue
 		}
 
-		bounceRate := math.Round(float64(bounces)/float64(sent)*10000) / 100
+		hardBounceRate := math.Round(float64(hardBounces)/float64(sent)*10000) / 100
+		softBounceRate := math.Round(float64(softBounces)/float64(sent)*10000) / 100
 		deferralRate := math.Round(float64(deferred)/float64(sent)*10000) / 100
 		complaintRate := math.Round(float64(complaints)/float64(sent)*10000) / 100
 		openRate := math.Round(float64(opens)/float64(sent)*10000) / 100
 
-		normBounce := math.Min(bounceRate/5.0, 1.0)
+		normBounce := math.Min((hardBounceRate+softBounceRate)/5.0, 1.0)
 		normDeferral := math.Min(deferralRate/10.0, 1.0)
 		normComplaint := math.Min(complaintRate/0.1, 1.0)
 		riskScore := int(math.Round(math.Min(100, normBounce*35+normDeferral*35+normComplaint*30)))
@@ -172,9 +174,9 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 
 		isps = append(isps, map[string]interface{}{
 			"isp": isp, "label": ispLabels[isp],
-			"sent": sent, "delivered": delivered, "bounces": bounces, "deferred": deferred,
+			"sent": sent, "delivered": delivered, "hard_bounces": hardBounces, "soft_bounces": softBounces, "deferred": deferred,
 			"complaints": complaints, "opens": opens,
-			"bounce_rate": bounceRate, "deferral_rate": deferralRate,
+			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate, "deferral_rate": deferralRate,
 			"complaint_rate": complaintRate, "open_rate": openRate,
 			"risk_score": riskScore, "recommendation": recommendation,
 			"current_quota": currentQ, "suggested_quota": suggestedQ,
@@ -183,7 +185,48 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 	if isps == nil {
 		isps = []map[string]interface{}{}
 	}
-	return map[string]interface{}{"isps": isps, "window_days": 3, "domain_filter": domain}
+
+	// Past EDITH campaign outcomes for learning context
+	var pastOutcomes []map[string]interface{}
+	pastRows, pastErr := a.db.QueryContext(ctx, `
+		SELECT r.sending_domain, r.scheduled_date,
+		       r.execution_metrics->>'sent' as sent,
+		       r.execution_metrics->>'bounced' as bounced,
+		       r.execution_metrics->>'opens' as opens,
+		       r.execution_metrics->>'clicks' as clicks,
+		       r.status
+		FROM agent_campaign_recommendations r
+		WHERE r.organization_id::text = $1
+		  AND r.execution_metrics IS NOT NULL
+		ORDER BY r.scheduled_date DESC
+		LIMIT 10
+	`, orgID)
+	if pastErr == nil {
+		defer pastRows.Close()
+		for pastRows.Next() {
+			var dom, status string
+			var schedDate time.Time
+			var sent, bounced, opens, clicks sql.NullString
+			if pastRows.Scan(&dom, &schedDate, &sent, &bounced, &opens, &clicks, &status) == nil {
+				pastOutcomes = append(pastOutcomes, map[string]interface{}{
+					"domain":   dom,
+					"date":     schedDate.Format("2006-01-02"),
+					"sent":     sent.String,
+					"bounced":  bounced.String,
+					"opens":    opens.String,
+					"clicks":   clicks.String,
+					"status":   status,
+				})
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"isps":            isps,
+		"window_days":     3,
+		"domain_filter":   domain,
+		"past_campaigns":  pastOutcomes,
+	}
 }
 
 func (a *EmailMarketingAgent) toolListCampaigns(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
@@ -194,7 +237,8 @@ func (a *EmailMarketingAgent) toolListCampaigns(ctx context.Context, orgID strin
 	}
 	q := `SELECT id, name, status, COALESCE(from_email,''),
 	             sent_count, COALESCE(open_count,0), COALESCE(click_count,0),
-	             COALESCE(bounce_count,0), COALESCE(complaint_count,0),
+	             COALESCE(bounce_count,0), COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+	             COALESCE(complaint_count,0),
 	             scheduled_at, created_at
 	      FROM mailing_campaigns WHERE organization_id = $1`
 	qArgs := []interface{}{orgID}
@@ -212,13 +256,14 @@ func (a *EmailMarketingAgent) toolListCampaigns(ctx context.Context, orgID strin
 	var campaigns []map[string]interface{}
 	for rows.Next() {
 		var id, name, status, fromEmail string
-		var sent, opens, clicks, bounces, complaints int
+		var sent, opens, clicks, bounces, hardBounces, softBounces, complaints int
 		var scheduledAt, createdAt sql.NullTime
-		rows.Scan(&id, &name, &status, &fromEmail, &sent, &opens, &clicks, &bounces, &complaints, &scheduledAt, &createdAt)
+		rows.Scan(&id, &name, &status, &fromEmail, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &complaints, &scheduledAt, &createdAt)
 		c := map[string]interface{}{
 			"id": id, "name": name, "status": status, "from_email": fromEmail,
 			"sent_count": sent, "open_count": opens, "click_count": clicks,
-			"bounce_count": bounces, "complaint_count": complaints,
+			"bounce_count": bounces, "hard_bounce_count": hardBounces, "soft_bounce_count": softBounces,
+			"complaint_count": complaints,
 			"created_at": createdAt.Time.Format(time.RFC3339),
 		}
 		if sent > 0 {
@@ -242,23 +287,25 @@ func (a *EmailMarketingAgent) toolGetCampaignDetails(ctx context.Context, orgID 
 		return map[string]string{"error": "campaign_id required"}
 	}
 	var id, name, status, fromEmail string
-	var sent, opens, clicks, bounces, complaints int
+	var sent, opens, clicks, bounces, hardBounces, softBounces, complaints int
 	var pmtaConfig sql.NullString
 	var scheduledAt, createdAt sql.NullTime
 	err := a.db.QueryRowContext(ctx,
 		`SELECT id, name, status, COALESCE(from_email,''), sent_count,
 		        COALESCE(open_count,0), COALESCE(click_count,0),
-		        COALESCE(bounce_count,0), COALESCE(complaint_count,0),
+		        COALESCE(bounce_count,0), COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		        COALESCE(complaint_count,0),
 		        pmta_config::text, scheduled_at, created_at
 		 FROM mailing_campaigns WHERE id::text LIKE $1 AND organization_id = $2`,
-		cID+"%", orgID).Scan(&id, &name, &status, &fromEmail, &sent, &opens, &clicks, &bounces, &complaints, &pmtaConfig, &scheduledAt, &createdAt)
+		cID+"%", orgID).Scan(&id, &name, &status, &fromEmail, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &complaints, &pmtaConfig, &scheduledAt, &createdAt)
 	if err != nil {
 		return map[string]string{"error": "campaign not found"}
 	}
 	result := map[string]interface{}{
 		"id": id, "name": name, "status": status, "from_email": fromEmail,
 		"sent_count": sent, "open_count": opens, "click_count": clicks,
-		"bounce_count": bounces, "complaint_count": complaints,
+		"bounce_count": bounces, "hard_bounce_count": hardBounces, "soft_bounce_count": softBounces,
+		"complaint_count": complaints,
 		"created_at": createdAt.Time.Format(time.RFC3339),
 	}
 	if scheduledAt.Valid {

@@ -60,6 +60,8 @@ interface ISPReadiness {
   active_agents: number;
   total_agents: number;
   bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   deferral_rate: number;
   complaint_rate: number;
   warmup_ips: number;
@@ -239,11 +241,15 @@ interface CloneCandidate {
   open_count: number;
   click_count: number;
   bounce_count: number;
+  hard_bounce_count: number;
+  soft_bounce_count: number;
   complaint_count: number;
   campaign_date: string;
   open_rate: number;
   click_rate: number;
   bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   complaint_rate: number;
   has_config: boolean;
   recommended: boolean;
@@ -1661,7 +1667,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
       {(!readinessLoading || ispReadiness.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {(ispReadiness.length > 0 ? ispReadiness : ALL_ISPS.map(isp => ({ isp, display_name: ISP_META[isp]?.label || isp, health_score: 0, status: 'unknown', active_agents: 0, total_agents: 6, bounce_rate: 0, deferral_rate: 0, complaint_rate: 0, warmup_ips: 0, active_ips: 0, quarantined_ips: 0, max_daily_capacity: 0, max_hourly_rate: 0, pool_name: '', has_emergency: false, warnings: [] }))).map((r: any) => {
+          {(ispReadiness.length > 0 ? ispReadiness : ALL_ISPS.map(isp => ({ isp, display_name: ISP_META[isp]?.label || isp, health_score: 0, status: 'unknown', active_agents: 0, total_agents: 6, bounce_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, deferral_rate: 0, complaint_rate: 0, warmup_ips: 0, active_ips: 0, quarantined_ips: 0, max_daily_capacity: 0, max_hourly_rate: 0, pool_name: '', has_emergency: false, warnings: [] }))).map((r: any) => {
             const meta = ISP_META[r.isp] || { label: r.display_name, color: '#64748b', emoji: '🌐' };
             const selected = selectedISPs.includes(r.isp);
             return (
@@ -1703,12 +1709,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   <span>Active IPs: <strong style={{ color: '#e0e6f0' }}>{r.active_ips}</strong></span>
                   <span>Warmup IPs: <strong style={{ color: '#e0e6f0' }}>{r.warmup_ips}</strong></span>
                   <span>Capacity: <strong style={{ color: '#e0e6f0' }}>{(r.max_daily_capacity / 1000).toFixed(0)}k/day</strong></span>
-                  <span>Bounce: <strong style={{ color: r.bounce_rate > 5 ? '#ef4444' : '#e0e6f0' }}>{r.bounce_rate.toFixed(1)}%</strong></span>
+                  <span>Hard: <strong style={{ color: '#ef4444' }}>{(r.hard_bounce_rate ?? r.bounce_rate ?? 0).toFixed(1)}%</strong> / Soft: <strong style={{ color: '#f59e0b' }}>{(r.soft_bounce_rate ?? 0).toFixed(1)}%</strong></span>
                 </div>
                 {r.ip_details && r.ip_details.length > 0 && (
                   <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {r.ip_details.map((ipd: any) => (
-                      <span key={ipd.ip} title={`${ipd.ip} — Score: ${ipd.score.toFixed(0)}, Bounce: ${ipd.bounce_rate.toFixed(1)}%, Deferral: ${ipd.deferral_rate.toFixed(1)}%`} style={{
+                      <span key={ipd.ip} title={`${ipd.ip} — Score: ${ipd.score.toFixed(0)}, Hard: ${(ipd.hard_bounce_rate ?? ipd.bounce_rate ?? 0).toFixed(1)}% / Soft: ${(ipd.soft_bounce_rate ?? 0).toFixed(1)}%, Deferral: ${ipd.deferral_rate.toFixed(1)}%`} style={{
                         display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
                         background: ipd.status === 'healthy' ? '#10b98118' : ipd.status === 'throttled' ? '#f59e0b18' : ipd.status === 'blocked' ? '#ef444418' : '#64748b18',
                         color: ipd.status === 'healthy' ? '#10b981' : ipd.status === 'throttled' ? '#f59e0b' : ipd.status === 'blocked' ? '#ef4444' : '#8b8fa3',
@@ -3493,7 +3499,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                       <span>{c.sent_count.toLocaleString()} sent</span>
                       <span style={{ color: c.open_rate > 5 ? '#10b981' : '#f59e0b' }}>{c.open_rate}% opens</span>
                       <span style={{ color: c.click_rate > 1 ? '#10b981' : '#64748b' }}>{c.click_rate}% clicks</span>
-                      {c.bounce_rate > 5 && <span style={{ color: '#ef4444' }}>{c.bounce_rate}% bounced</span>}
+                      {(c.bounce_rate > 5 || (c.hard_bounce_rate ?? 0) > 0 || (c.soft_bounce_rate ?? 0) > 0) && (
+                        <>
+                          <span style={{ color: '#ef4444' }}>{(c.hard_bounce_rate ?? c.bounce_rate ?? 0)}% hard</span>
+                          <span style={{ color: '#f59e0b', marginLeft: 4 }}>{(c.soft_bounce_rate ?? 0)}% soft</span>
+                        </>
+                      )}
                       <span>{new Date(c.campaign_date).toLocaleDateString()}</span>
                     </div>
                   </button>

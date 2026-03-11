@@ -1435,8 +1435,12 @@ const _AnalyticsDashboard: React.FC = () => {
                 <span className="stat-label">Click Rate</span>
               </div>
               <div className="stat-item">
-                <span className="stat-value">{overview.rates?.bounce_rate?.toFixed(2) || 0}%</span>
-                <span className="stat-label">Bounce Rate</span>
+                <span className="stat-value" style={{ color: '#ef4444' }}>{overview.rates?.hard_bounce_rate?.toFixed(2) || 0}%</span>
+                <span className="stat-label">Hard Bounce Rate</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value" style={{ color: '#f59e0b' }}>{overview.rates?.soft_bounce_rate?.toFixed(2) || 0}%</span>
+                <span className="stat-label">Soft Bounce Rate</span>
               </div>
             </div>
           )}
@@ -1492,8 +1496,12 @@ const _AnalyticsDashboard: React.FC = () => {
               <div className="benchmark-label">Complaint Rate</div>
             </div>
             <div className="benchmark">
-              <div className="benchmark-value">&lt;2%</div>
-              <div className="benchmark-label">Bounce Rate</div>
+              <div className="benchmark-value">&lt;1%</div>
+              <div className="benchmark-label">Hard Bounce Rate</div>
+            </div>
+            <div className="benchmark">
+              <div className="benchmark-value">&lt;1%</div>
+              <div className="benchmark-label">Soft Bounce Rate</div>
             </div>
           </div>
         </div>

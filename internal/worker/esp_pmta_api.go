@@ -107,23 +107,26 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		"content":         rfc822.String(),
 	}
 
-	// Resolve VMTA from IP pool (same rotation as SMTP sender)
-	vmtaResolved := false
-	if s.ipPool != nil && msg.ProfileID != "" {
-		s.ipPool.refresh(ctx, msg.ProfileID)
-		if ip, err := s.ipPool.next(); err == nil {
-			payload["vmta"] = ip.Hostname
-			vmtaResolved = true
-			log.Printf("[PMTA-API] Routing %s via VMTA %s", msg.Email, ip.Hostname)
-		}
-	}
-	if !vmtaResolved {
-		payload["vmta"] = "default-pool"
-		log.Printf("[PMTA-API] Routing %s via default-pool (no IP pool data)", msg.Email)
-	}
-	// Header override takes precedence if explicitly set
+	// Explicit header takes highest precedence (set by campaign builder with
+	// the profile's ip_pool value which maps to a PMTA virtual-mta-pool).
 	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
 		payload["vmta"] = vmta
+		log.Printf("[PMTA-API] Routing %s via explicit VMTA header: %s", msg.Email, vmta)
+	} else if s.ipPool != nil && msg.ProfileID != "" {
+		s.ipPool.refresh(ctx, msg.ProfileID)
+		ip, err := s.ipPool.next()
+		if err != nil && len(s.ipPool.ips) > 0 {
+			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", err)
+		}
+		if err == nil {
+			vmta := vmtaShortName(ip.Hostname)
+			payload["vmta"] = vmta
+			log.Printf("[PMTA-API] Routing %s via VMTA %s (IP %s)", msg.Email, vmta, ip.Hostname)
+		} else {
+			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
+		}
+	} else {
+		return nil, fmt.Errorf("no VMTA routing available — no X-Virtual-MTA header and no IP pool configured; refusing to send via server IP")
 	}
 
 	var body bytes.Buffer

@@ -1249,7 +1249,8 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
                     <th>Delivered</th>
                     <th>Opens</th>
                     <th>Clicks</th>
-                    <th>Bounces</th>
+                    <th>Hard</th>
+                    <th>Soft</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1260,7 +1261,8 @@ const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, o
                       <td style={{ color: '#00b894' }}>{(t.delivered || 0).toLocaleString()}</td>
                       <td>{(t.opens || 0).toLocaleString()}</td>
                       <td>{(t.clicks || 0).toLocaleString()}</td>
-                      <td style={{ color: t.bounces > 0 ? '#ef4444' : undefined }}>{t.bounces || 0}</td>
+                      <td style={{ color: '#ef4444' }}>{t.hard_bounces || 0}</td>
+                      <td style={{ color: '#f59e0b' }}>{t.soft_bounces || 0}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1514,7 +1516,8 @@ export const CampaignsManager: React.FC = () => {
                       <div className="progress-labels">
                         <span>Open Rate: {calculateRate(campaign.open_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
                         <span>Click Rate: {calculateRate(campaign.click_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
-                        <span>Bounce Rate: {calculateRate(campaign.bounce_count, Math.max(campaign.delivered_count || 0, campaign.sent_count || 0))}%</span>
+                        <span style={{ color: '#ef4444' }}>Hard: {calculateRate(campaign.hard_bounce_count || 0, campaign.sent_count || 0)}%</span>
+                        <span style={{ color: '#f59e0b' }}>Soft: {calculateRate(campaign.soft_bounce_count || 0, campaign.sent_count || 0)}%</span>
                       </div>
                     </div>
                   )}

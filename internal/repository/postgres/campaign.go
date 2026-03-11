@@ -22,6 +22,7 @@ func (r *CampaignRepo) Get(ctx context.Context, orgID, id string) (*domain.Campa
 		SELECT id, organization_id, name, subject, from_name, from_email,
 		       COALESCE(reply_to,''), COALESCE(html_content,''), COALESCE(plain_content,''),
 		       status, sent_count, open_count, click_count, bounce_count,
+		       COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
 		       complaint_count, unsubscribe_count, revenue, created_at, updated_at
 		FROM mailing_campaigns
 		WHERE id = $1 AND organization_id = $2
@@ -29,6 +30,7 @@ func (r *CampaignRepo) Get(ctx context.Context, orgID, id string) (*domain.Campa
 		&c.ID, &c.OrganizationID, &c.Name, &c.Subject, &c.FromName, &c.FromEmail,
 		&c.ReplyTo, &c.HTMLContent, &c.PlainContent,
 		&c.Status, &c.SentCount, &c.OpenCount, &c.ClickCount, &c.BounceCount,
+		&c.HardBounceCount, &c.SoftBounceCount,
 		&c.ComplaintCount, &c.UnsubscribeCount, &c.Revenue, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {

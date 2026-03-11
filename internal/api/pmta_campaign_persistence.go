@@ -61,7 +61,7 @@ func probeCampaignColumns(ctx context.Context, db *sql.DB) *campaignColumnCache 
 func createPMTAWaveCampaign(
 	ctx context.Context,
 	tx *sql.Tx,
-	db *sql.DB,
+	db dbQuerier,
 	orgID string,
 	input engine.PMTACampaignInput,
 	normalized pmtaNormalizedCampaign,
@@ -205,6 +205,16 @@ func createPMTAWaveCampaign(
 	}
 
 	if err := insertABVariants(ctx, tx, orgID, campaignID.String(), input); err != nil {
+		return engine.PMTAWavePlanResult{}, err
+	}
+
+	// Pre-validate wave plans before any DB inserts.
+	preWaves := make(map[string][]pmtaWaveSpec, len(normalized.Plans))
+	for _, plan := range normalized.Plans {
+		count := audience.CountsByISP[plan.ISP]
+		preWaves[plan.ISP] = buildPMTAWaveSpecs(campaignID.String(), plan, count)
+	}
+	if err := waveSanityCheck(normalized.Plans, preWaves); err != nil {
 		return engine.PMTAWavePlanResult{}, err
 	}
 

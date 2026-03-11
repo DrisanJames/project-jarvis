@@ -77,6 +77,7 @@ interface OptizmoList {
 interface GlobalSuppressionStats {
   total: number;
   hard_bounces: number;
+  soft_bounces: number;
   spam_complaints: number;
   unsubscribes: number;
   spam_traps: number;
@@ -150,6 +151,7 @@ export const SuppressionPortal: React.FC = () => {
         global_suppression: {
           total: globalSupp.total || 0,
           hard_bounces: globalSupp.hard_bounces || 0,
+          soft_bounces: globalSupp.soft_bounces || 0,
           spam_complaints: globalSupp.spam_complaints || 0,
           unsubscribes: globalSupp.unsubscribes || 0,
           spam_traps: globalSupp.spam_traps || 0,
@@ -526,6 +528,15 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
               <span className="category-label">Hard Bounces</span>
             </div>
             <span className="category-badge critical">Critical</span>
+          </div>
+
+          <div className="global-category-card soft-bounce">
+            <div className="category-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
+            <div className="category-info">
+              <span className="category-value">{stats.global_suppression.soft_bounces.toLocaleString()}</span>
+              <span className="category-label">Soft Bounces</span>
+            </div>
+            <span className="category-badge warning">Warning</span>
           </div>
 
           <div className="global-category-card spam-complaint">

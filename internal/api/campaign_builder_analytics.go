@@ -321,7 +321,8 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type IN ('hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounces
+		       SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces
 		FROM mailing_tracking_events
 		WHERE campaign_id = $1
 		GROUP BY DATE_TRUNC('hour', event_at)
@@ -332,13 +333,13 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		defer timeRows.Close()
 		for timeRows.Next() {
 			var hour time.Time
-			var ts, td, to, tc, tb int
-			if err := timeRows.Scan(&hour, &ts, &td, &to, &tc, &tb); err != nil {
+			var ts, td, to, tc, thb, tsb int
+			if err := timeRows.Scan(&hour, &ts, &td, &to, &tc, &thb, &tsb); err != nil {
 				continue
 			}
 			timeline = append(timeline, map[string]interface{}{
 				"hour": hour.Format(time.RFC3339), "sent": ts, "delivered": td,
-				"opens": to, "clicks": tc, "bounces": tb,
+				"opens": to, "clicks": tc, "hard_bounces": thb, "soft_bounces": tsb,
 			})
 		}
 	}

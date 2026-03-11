@@ -19,7 +19,8 @@ interface LearningSources {
   sends: number;
   opens: number;
   clicks: number;
-  bounces: number;
+  hard_bounces: number;
+  soft_bounces: number;
   complaints: number;
 }
 
@@ -42,7 +43,8 @@ interface ISPAgent {
   total_sends: number;
   total_opens: number;
   total_clicks: number;
-  total_bounces: number;
+  total_hard_bounces: number;
+  total_soft_bounces: number;
   total_complaints: number;
   avg_engagement: number;
   avg_open_rate: number;
@@ -75,7 +77,8 @@ interface ManagedAgent {
   total_sends: number;
   total_opens: number;
   total_clicks: number;
-  total_bounces: number;
+  total_hard_bounces: number;
+  total_soft_bounces: number;
   total_complaints: number;
   avg_engagement: number;
   created_at: string;
@@ -241,7 +244,7 @@ const getKnowledgeDepth = (agent: ISPAgent): { score: number; label: string; col
   // Points for diversity of signals
   if (agent.learning_sources.opens > 0) score += 15;
   if (agent.learning_sources.clicks > 0) score += 15;
-  if (agent.learning_sources.bounces > 0) score += 5;
+  if ((agent.learning_sources.hard_bounces || 0) + (agent.learning_sources.soft_bounces || 0) > 0) score += 5;
   // Points for recency
   if (agent.status === 'active') score += 20;
   else if (agent.status === 'idle') score += 10;
@@ -550,7 +553,8 @@ export const ISPAgentIntelligence: React.FC = () => {
               const knowledge = agent.knowledge || {};
               const optimalHours = knowledge.optimal_send_hours as number[] | undefined;
               const riskLevel = knowledge.risk_level as string | undefined;
-              const bounceRate = knowledge.bounce_rate as number | undefined;
+              const hardBounceRate = knowledge.hard_bounce_rate as number | undefined;
+              const softBounceRate = knowledge.soft_bounce_rate as number | undefined;
               const statusColor = getManagedStatusColor(agent.status);
 
               return (
@@ -634,7 +638,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                   </div>
 
                   {/* Knowledge insights */}
-                  {(optimalHours || riskLevel || bounceRate !== undefined) && (
+                  {(optimalHours || riskLevel || hardBounceRate !== undefined || softBounceRate !== undefined) && (
                     <div className="ia-managed-knowledge">
                       <span className="ia-managed-knowledge-title">
                         <FontAwesomeIcon icon={faLightbulb} /> Knowledge
@@ -650,9 +654,12 @@ export const ISPAgentIntelligence: React.FC = () => {
                             <FontAwesomeIcon icon={faShieldAlt} /> Risk: {riskLevel}
                           </span>
                         )}
-                        {bounceRate !== undefined && (
+                        {(hardBounceRate !== undefined || softBounceRate !== undefined) && (
                           <span className="ia-managed-knowledge-item">
-                            <FontAwesomeIcon icon={faExclamationTriangle} /> Bounce: {bounceRate.toFixed(1)}%
+                            <FontAwesomeIcon icon={faExclamationTriangle} />
+                            <span style={{ color: '#ef4444' }}>Hard: {(hardBounceRate ?? 0).toFixed(1)}%</span>
+                            <span style={{ color: 'rgba(180,210,240,0.5)' }}> / </span>
+                            <span style={{ color: '#f59e0b' }}>Soft: {(softBounceRate ?? 0).toFixed(1)}%</span>
                           </span>
                         )}
                       </div>
@@ -750,8 +757,12 @@ export const ISPAgentIntelligence: React.FC = () => {
                               <span className="ia-feed-result-lbl">Clicks</span>
                             </div>
                             <div className="ia-feed-result-stat">
-                              <span className="ia-feed-result-val">{(agentActivity.by_result.bounced || 0).toLocaleString()}</span>
-                              <span className="ia-feed-result-lbl">Bounced</span>
+                              <span className="ia-feed-result-val" style={{ color: '#ef4444' }}>{(agentActivity.by_result.hard_bounced || 0).toLocaleString()}</span>
+                              <span className="ia-feed-result-lbl">Hard Bounced</span>
+                            </div>
+                            <div className="ia-feed-result-stat">
+                              <span className="ia-feed-result-val" style={{ color: '#f59e0b' }}>{(agentActivity.by_result.soft_bounced || 0).toLocaleString()}</span>
+                              <span className="ia-feed-result-lbl">Soft Bounced</span>
                             </div>
                           </div>
 
@@ -944,9 +955,12 @@ export const ISPAgentIntelligence: React.FC = () => {
                     <span className="ia-source-tag ia-src-clicks">
                       <FontAwesomeIcon icon={faMousePointer} /> {agent.learning_sources.clicks} clicks
                     </span>
-                    {agent.learning_sources.bounces > 0 && (
+                    {((agent.learning_sources.hard_bounces || 0) + (agent.learning_sources.soft_bounces || 0) > 0) && (
                       <span className="ia-source-tag ia-src-bounces">
-                        <FontAwesomeIcon icon={faExclamationTriangle} /> {agent.learning_sources.bounces} bounces
+                        <FontAwesomeIcon icon={faExclamationTriangle} />
+                        <span style={{ color: '#ef4444' }}>{agent.learning_sources.hard_bounces || 0} hard</span>
+                        <span style={{ color: 'rgba(180,210,240,0.5)' }}> / </span>
+                        <span style={{ color: '#f59e0b' }}>{agent.learning_sources.soft_bounces || 0} soft</span>
                       </span>
                     )}
                   </div>
@@ -1022,8 +1036,13 @@ export const ISPAgentIntelligence: React.FC = () => {
               </div>
               <div className="ia-dm">
                 <FontAwesomeIcon icon={faExclamationTriangle} />
-                <span className="ia-dm-val">{selectedAgent.total_bounces}</span>
-                <span className="ia-dm-lbl">Bounces</span>
+                <span className="ia-dm-val" style={{ color: '#ef4444' }}>{selectedAgent.total_hard_bounces}</span>
+                <span className="ia-dm-lbl">Hard Bounces</span>
+              </div>
+              <div className="ia-dm">
+                <FontAwesomeIcon icon={faExclamationTriangle} />
+                <span className="ia-dm-val" style={{ color: '#f59e0b' }}>{selectedAgent.total_soft_bounces}</span>
+                <span className="ia-dm-lbl">Soft Bounces</span>
               </div>
             </div>
             {/* Rate bars */}
@@ -1064,7 +1083,8 @@ export const ISPAgentIntelligence: React.FC = () => {
                 { label: 'Email Sends', value: selectedAgent.learning_sources.sends, icon: faEnvelope, color: '#00b0ff' },
                 { label: 'Opens Tracked', value: selectedAgent.learning_sources.opens, icon: faEye, color: '#10b981' },
                 { label: 'Clicks Tracked', value: selectedAgent.learning_sources.clicks, icon: faMousePointer, color: '#f59e0b' },
-                { label: 'Bounces Analyzed', value: selectedAgent.learning_sources.bounces, icon: faExclamationTriangle, color: '#ef4444' },
+                { label: 'Hard Bounces Analyzed', value: selectedAgent.learning_sources.hard_bounces ?? 0, icon: faExclamationTriangle, color: '#ef4444' },
+                { label: 'Soft Bounces Analyzed', value: selectedAgent.learning_sources.soft_bounces ?? 0, icon: faExclamationTriangle, color: '#f59e0b' },
                 { label: 'Complaints Analyzed', value: selectedAgent.learning_sources.complaints, icon: faShieldAlt, color: '#ec4899' },
               ].map((src, i) => (
                 <div key={i} className="ia-source-item">

@@ -195,10 +195,10 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	})
 }
 
-// routeToGlobalSuppression suppresses only permanent failures: hard bounces
-// (bad-mailbox, bad-domain, inactive-mailbox) and FBL complaints. Transient
-// issues like quota, throttling, and deferrals are NOT suppressed — they are
-// temporary and the recipient should be retried on future campaigns.
+// routeToGlobalSuppression suppresses permanent failures and recipient-quality
+// signals: hard bounces, quota-issues (Yahoo treats full-mailbox as a list
+// hygiene signal), and FBL complaints. Transient issues like rate-limiting,
+// message-expired, and deferrals are NOT suppressed.
 func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	if rec.Recipient == "" {
 		return
@@ -208,7 +208,8 @@ func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	switch rec.Type {
 	case "b": // bounce
 		switch rec.BounceCat {
-		case "bad-mailbox", "bad-domain", "inactive-mailbox", "quota-issues":
+		case "bad-mailbox", "bad-domain", "inactive-mailbox",
+			"no-answer-from-host", "routing-errors", "quota-issues":
 			reason = "hard_bounce"
 			source = "pmta_bounce"
 		default:
@@ -334,24 +335,38 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	}
 
 	// Update campaign aggregate counters.
-	// Note: eventType for bounces is "bounced" (matching the CHECK constraint),
-	// so we increment bounce_count here. The sub-classification (hard/soft)
-	// is stored in the bounce_type column of mailing_tracking_events.
 	switch eventType {
 	case "delivered":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "bounced":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+		if isHardBounceCategory(rec.BounceCat) {
+			ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1 WHERE id = $1`, campUUID)
+		} else {
+			ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1 WHERE id = $1`, campUUID)
+		}
 	case "complained":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "deferred":
-		// Deferrals are persisted to mailing_tracking_events and queried
-		// by the analytics layer. No dedicated counter column exists on
-		// mailing_campaigns — the source of truth is the events table.
+		// Deferrals live in mailing_tracking_events only; no campaign counter.
 	}
 
-	// Enrich inbox profiles with delivery/bounce data from PMTA webhook
-	if eventType == "delivered" || eventType == "hard_bounce" || eventType == "soft_bounce" {
+	// Update IP address counters when we can resolve the source IP.
+	if sendingIP != "" && (eventType == "delivered" || eventType == "bounced") {
+		switch eventType {
+		case "delivered":
+			ing.db.ExecContext(ctx, `
+				UPDATE mailing_ip_addresses SET total_delivered = COALESCE(total_delivered, 0) + 1, updated_at = NOW()
+				WHERE ip_address = $1::inet`, sendingIP)
+		case "bounced":
+			ing.db.ExecContext(ctx, `
+				UPDATE mailing_ip_addresses SET total_bounced = COALESCE(total_bounced, 0) + 1, updated_at = NOW()
+				WHERE ip_address = $1::inet`, sendingIP)
+		}
+	}
+
+	// Enrich inbox profiles with delivery/bounce data.
+	if eventType == "delivered" || eventType == "bounced" {
 		domain := ""
 		if parts := strings.SplitN(recipientEmail, "@", 2); len(parts) == 2 {
 			domain = parts[1]
@@ -369,6 +384,17 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 				ON CONFLICT (email) DO UPDATE SET total_bounces = COALESCE(mailing_inbox_profiles.total_bounces, 0) + 1, last_bounce_at = NOW(), updated_at = NOW()
 			`, recipientEmail, domain)
 		}
+	}
+}
+
+// isHardBounceCategory returns true for PMTA bounce categories that indicate
+// a permanent delivery failure. Aligns with routeToGlobalSuppression.
+func isHardBounceCategory(cat string) bool {
+	switch cat {
+	case "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -149,16 +149,18 @@ type AdvancedThrottleConfig struct {
 
 // ThrottleStats provides current statistics for a domain/ISP
 type ThrottleStats struct {
-	Domain        string     `json:"domain"`
-	ISP           string     `json:"isp,omitempty"`
-	SentLastHour  int        `json:"sent_last_hour"`
-	SentLastDay   int        `json:"sent_last_day"`
-	BounceRate    float64    `json:"bounce_rate"`
-	ComplaintRate float64    `json:"complaint_rate"`
-	IsThrottled   bool       `json:"is_throttled"`
-	ResumeTime    *time.Time `json:"resume_time,omitempty"`
-	HourlyLimit   int        `json:"hourly_limit"`
-	DailyLimit    int        `json:"daily_limit"`
+	Domain         string     `json:"domain"`
+	ISP            string     `json:"isp,omitempty"`
+	SentLastHour   int        `json:"sent_last_hour"`
+	SentLastDay    int        `json:"sent_last_day"`
+	BounceRate     float64    `json:"bounce_rate"`
+	HardBounceRate float64    `json:"hard_bounce_rate"`
+	SoftBounceRate float64    `json:"soft_bounce_rate"`
+	ComplaintRate  float64    `json:"complaint_rate"`
+	IsThrottled    bool       `json:"is_throttled"`
+	ResumeTime     *time.Time `json:"resume_time,omitempty"`
+	HourlyLimit    int        `json:"hourly_limit"`
+	DailyLimit     int        `json:"daily_limit"`
 }
 
 // ThrottleDecision represents the result of a throttle check

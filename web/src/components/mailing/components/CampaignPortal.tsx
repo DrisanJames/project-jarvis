@@ -62,6 +62,8 @@ interface Campaign {
   open_count: number;
   click_count: number;
   bounce_count: number;
+  hard_bounce_count: number;
+  soft_bounce_count: number;
   complaint_count: number;
   unsubscribe_count: number;
   queued_count?: number;
@@ -148,12 +150,14 @@ interface CampaignStats {
   sent: number;
   opens: number;
   clicks: number;
-  bounces: number;
+  hard_bounces: number;
+  soft_bounces: number;
   complaints: number;
   unsubscribes: number;
   open_rate: number;
   click_rate: number;
-  bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   complaint_rate: number;
   unsubscribe_rate: number;
   isp_breakdown?: ISPBreakdownEntry[];
@@ -169,12 +173,14 @@ interface DashboardStats {
   total_sent: number;
   total_opens: number;
   total_clicks: number;
-  total_bounces: number;
+  total_hard_bounces: number;
+  total_soft_bounces: number;
   total_complaints: number;
   total_unsubscribes: number;
   avg_open_rate: number;
   avg_click_rate: number;
-  avg_bounce_rate: number;
+  avg_hard_bounce_rate: number;
+  avg_soft_bounce_rate: number;
   avg_complaint_rate: number;
   total_revenue: number;
   recent_campaigns: Campaign[];
@@ -367,8 +373,9 @@ const CampaignDashboard: React.FC<{
         const clickToOpen = stats.total_opens > 0
           ? ((stats.total_clicks / stats.total_opens) * 100)
           : 0;
+        const combinedBounceRate = stats.avg_hard_bounce_rate + stats.avg_soft_bounce_rate;
         const deliveryHealth = stats.total_sent > 0
-          ? Math.max(0, 100 - (stats.avg_bounce_rate * 10) - (stats.avg_complaint_rate * 1000))
+          ? Math.max(0, 100 - (combinedBounceRate * 10) - (stats.avg_complaint_rate * 1000))
           : 0;
         const engagementScore = Math.min(100, (efficiency * 2) + (clickToOpen * 1.5) + (deliveryHealth * 0.3));
         const grade = engagementScore >= 80 ? 'A' : engagementScore >= 60 ? 'B' : engagementScore >= 40 ? 'C' : engagementScore >= 20 ? 'D' : 'F';
@@ -439,7 +446,8 @@ const CampaignDashboard: React.FC<{
         <div className="rates-grid ig-stagger">
           <RateDisplay rate={stats.avg_open_rate} label="Open Rate" icon={faEnvelopeOpen} color="green" />
           <RateDisplay rate={stats.avg_click_rate} label="Click Rate" icon={faMousePointer} color="blue" />
-          <RateDisplay rate={stats.avg_bounce_rate} label="Bounce Rate" icon={faBan} color="orange" />
+          <RateDisplay rate={stats.avg_hard_bounce_rate} label="Hard Bounce Rate" icon={faBan} color="#ef4444" />
+          <RateDisplay rate={stats.avg_soft_bounce_rate} label="Soft Bounce Rate" icon={faExclamationTriangle} color="#f59e0b" />
           <RateDisplay rate={stats.avg_complaint_rate} label="Complaint Rate" icon={faExclamationTriangle} color="red" />
         </div>
       </div>
@@ -451,9 +459,14 @@ const CampaignDashboard: React.FC<{
         </div>
         <div className="health-metrics ig-stagger">
           <div className="health-item">
-            <div className="health-label">Bounces</div>
-            <div className="health-value"><AnimatedCounter value={stats.total_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-            <ProgressBar value={stats.total_bounces} max={stats.total_sent} color={stats.avg_bounce_rate > 3 ? 'red' : 'green'} />
+            <div className="health-label" style={{ color: '#ef4444' }}>Hard Bounces</div>
+            <div className="health-value"><AnimatedCounter value={stats.total_hard_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
+            <ProgressBar value={stats.total_hard_bounces} max={stats.total_sent} color={stats.avg_hard_bounce_rate > 2 ? 'red' : 'green'} />
+          </div>
+          <div className="health-item">
+            <div className="health-label" style={{ color: '#f59e0b' }}>Soft Bounces</div>
+            <div className="health-value"><AnimatedCounter value={stats.total_soft_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
+            <ProgressBar value={stats.total_soft_bounces} max={stats.total_sent} color={stats.avg_soft_bounce_rate > 3 ? '#f59e0b' : 'green'} />
           </div>
           <div className="health-item">
             <div className="health-label">Complaints</div>
@@ -850,9 +863,14 @@ const CampaignDetailsModal: React.FC<{
                       <div className="metric-label">Clicks ({stats.click_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faBan} className="metric-icon" />
-                      <div className="metric-value"><AnimatedCounter value={stats.bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-                      <div className="metric-label">Bounces ({stats.bounce_rate.toFixed(1)}%)</div>
+                      <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: '#ef4444' }} />
+                      <div className="metric-value"><AnimatedCounter value={stats.hard_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
+                      <div className="metric-label">Hard Bounces ({stats.hard_bounce_rate.toFixed(1)}%)</div>
+                    </div>
+                    <div className="metric-box">
+                      <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
+                      <div className="metric-value"><AnimatedCounter value={stats.soft_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
+                      <div className="metric-label">Soft Bounces ({stats.soft_bounce_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" />
@@ -1498,8 +1516,12 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                       <span className="cb-perf-metric-label">Clicks ({editStats.click_rate.toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
-                      <span className="cb-perf-metric-value">{editStats.bounces.toLocaleString()}</span>
-                      <span className="cb-perf-metric-label">Bounces ({editStats.bounce_rate.toFixed(1)}%)</span>
+                      <span className="cb-perf-metric-value" style={{ color: '#ef4444' }}>{editStats.hard_bounces.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Hard Bounces ({editStats.hard_bounce_rate.toFixed(1)}%)</span>
+                    </div>
+                    <div className="cb-perf-metric">
+                      <span className="cb-perf-metric-value" style={{ color: '#f59e0b' }}>{editStats.soft_bounces.toLocaleString()}</span>
+                      <span className="cb-perf-metric-label">Soft Bounces ({editStats.soft_bounce_rate.toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
                       <span className="cb-perf-metric-value">{editStats.complaints.toLocaleString()}</span>
@@ -2411,12 +2433,14 @@ export const CampaignPortal: React.FC<{
         total_sent: allCampaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0),
         total_opens: allCampaigns.reduce((sum, c) => sum + (c.open_count || 0), 0),
         total_clicks: allCampaigns.reduce((sum, c) => sum + (c.click_count || 0), 0),
-        total_bounces: allCampaigns.reduce((sum, c) => sum + (c.bounce_count || 0), 0),
+        total_hard_bounces: allCampaigns.reduce((sum, c) => sum + (c.hard_bounce_count || 0), 0),
+        total_soft_bounces: allCampaigns.reduce((sum, c) => sum + (c.soft_bounce_count || 0), 0),
         total_complaints: allCampaigns.reduce((sum, c) => sum + (c.complaint_count || 0), 0),
         total_unsubscribes: allCampaigns.reduce((sum, c) => sum + (c.unsubscribe_count || 0), 0),
         avg_open_rate: 0,
         avg_click_rate: 0,
-        avg_bounce_rate: 0,
+        avg_hard_bounce_rate: 0,
+        avg_soft_bounce_rate: 0,
         avg_complaint_rate: 0,
         total_revenue: allCampaigns.reduce((sum, c) => sum + (c.revenue || 0), 0),
         recent_campaigns: [...allCampaigns].sort((a, b) => 
@@ -2444,7 +2468,8 @@ export const CampaignPortal: React.FC<{
       if (completedWithSent.length > 0) {
         stats.avg_open_rate = (stats.total_opens / stats.total_sent) * 100;
         stats.avg_click_rate = (stats.total_clicks / stats.total_sent) * 100;
-        stats.avg_bounce_rate = (stats.total_bounces / stats.total_sent) * 100;
+        stats.avg_hard_bounce_rate = (stats.total_hard_bounces / stats.total_sent) * 100;
+        stats.avg_soft_bounce_rate = (stats.total_soft_bounces / stats.total_sent) * 100;
         stats.avg_complaint_rate = (stats.total_complaints / stats.total_sent) * 100;
       }
 

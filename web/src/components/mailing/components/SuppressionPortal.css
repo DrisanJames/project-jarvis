@@ -1957,6 +1957,11 @@
   color: #e94560;
 }
 
+.global-category-card.soft-bounce .category-icon {
+  background: rgba(253,203,110,0.2);
+  color: #fdcb6e;
+}
+
 .global-category-card.spam-complaint .category-icon {
   background: rgba(249, 115, 22, 0.2);
   color: #fb923c;

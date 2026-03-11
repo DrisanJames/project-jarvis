@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -14,9 +15,19 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
-func expectPMTAConfigColumnCheck(mock sqlmock.Sqlmock, exists bool) {
-	mock.ExpectQuery("SELECT EXISTS \\(").
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(exists))
+func passingPreflight(_ context.Context, _ *sql.DB, _, _ string) preflightResult {
+	return preflightResult{OK: true}
+}
+
+func newTestPMTAService(db *sql.DB, orgID string) *PMTACampaignService {
+	svc := &PMTACampaignService{
+		db:          db,
+		orgID:       orgID,
+		suppMatcher: NewSuppressionMatcher(),
+		colCache:    &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
+		preflightFn: passingPreflight,
+	}
+	return svc
 }
 
 func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.T) {
@@ -26,7 +37,7 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 	}
 	defer db.Close()
 
-	service := NewPMTACampaignService(db, nil, nil, nil, defaultOrgID)
+	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
 		Name:          "Legacy Deploy",
@@ -49,7 +60,6 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
-	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_ab_tests").
@@ -104,7 +114,7 @@ func TestHandleSaveDraftCampaign_CreatesDraft(t *testing.T) {
 	}
 	defer db.Close()
 
-	service := NewPMTACampaignService(db, nil, nil, nil, defaultOrgID)
+	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(30 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignDraftInput{
 		ScheduleMode: "quick",
@@ -124,7 +134,6 @@ func TestHandleSaveDraftCampaign_CreatesDraft(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
@@ -168,7 +177,7 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 	}
 	defer db.Close()
 
-	service := NewPMTACampaignService(db, nil, nil, nil, defaultOrgID)
+	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
 	draftID := uuid.New().String()
 	input := engine.PMTACampaignInput{
@@ -193,7 +202,6 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(draftID))
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
-	expectPMTAConfigColumnCheck(mock, true)
 	mock.ExpectExec("DELETE FROM mailing_ab_variants").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM mailing_ab_tests").

@@ -525,20 +525,22 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
     delivered: acc.delivered + c.delivered,
     opens: acc.opens + c.opens,
     clicks: acc.clicks + c.clicks,
-    bounces: acc.bounces + c.soft_bounce + c.hard_bounce,
+    hard_bounces: acc.hard_bounces + (c.hard_bounce || 0),
+    soft_bounces: acc.soft_bounces + (c.soft_bounce || 0),
     complaints: acc.complaints + c.complaints,
-  }), { sent: 0, delivered: 0, opens: 0, clicks: 0, bounces: 0, complaints: 0 });
+  }), { sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0 });
 
   return (
     <div>
       {/* PMTA Throughput Summary */}
-      <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 20 }}>
+      <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
           { label: 'Total Sent', value: totals.sent, color: '#00b0ff' },
           { label: 'Delivered', value: totals.delivered, color: '#00b894' },
           { label: 'Opens', value: totals.opens, color: '#00e5ff' },
           { label: 'Clicks', value: totals.clicks, color: '#00e5ff' },
-          { label: 'Bounces', value: totals.bounces, color: '#fdcb6e' },
+          { label: 'Hard Bounces', value: totals.hard_bounces, color: '#ef4444' },
+          { label: 'Soft Bounces', value: totals.soft_bounces, color: '#f59e0b' },
           { label: 'Complaints', value: totals.complaints, color: '#e94560' },
         ].map(m => (
           <div key={m.label} className="ig-card-hover" style={{ background: '#0d1526', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid rgba(0,200,255,0.08)' }}>
@@ -599,7 +601,11 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
                         <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_opens} opens</span>
                         <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_clicks} clicks</span>
                         {(m.hard_bounce > 0 || m.soft_bounce > 0) && (
-                          <span style={{ color: '#e94560', fontSize: 11 }}>{m.hard_bounce + m.soft_bounce} bounces</span>
+                          <span style={{ fontSize: 11 }}>
+                            <span style={{ color: '#ef4444' }}>{m.hard_bounce} hard</span>
+                            <span style={{ color: 'rgba(180,210,240,0.5)' }}> / </span>
+                            <span style={{ color: '#f59e0b' }}>{m.soft_bounce} soft</span>
+                          </span>
                         )}
                       </div>
                     ))}

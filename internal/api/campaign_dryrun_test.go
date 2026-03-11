@@ -1,161 +1,133 @@
-//go:build ignore
-// Skipped: references removed symbols (ISPQuota, classifyAndCapSubscribers).
-
 package api
 
 import (
 	"testing"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestDryRunISPDistribution simulates the full dry-run pipeline:
-// classify subscribers by ISP, apply quota caps, and verify the
-// resulting distribution matches the configured quotas.
-// This confirms no mail would be injected and ISP routing is correct.
-func TestDryRunISPDistribution(t *testing.T) {
-	registry := engine.NewISPRegistry()
+func TestDryRun_NormalizationAndWaveSpecs(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	startAt := now.Add(1 * time.Hour)
 
-	// Simulate a realistic audience: 100 subscribers across ISPs
-	var emails []string
-	for i := 0; i < 40; i++ {
-		emails = append(emails, "u@gmail.com")
-	}
-	for i := 0; i < 25; i++ {
-		emails = append(emails, "u@yahoo.com")
-	}
-	for i := 0; i < 15; i++ {
-		emails = append(emails, "u@outlook.com")
-	}
-	for i := 0; i < 10; i++ {
-		emails = append(emails, "u@icloud.com")
-	}
-	for i := 0; i < 5; i++ {
-		emails = append(emails, "u@comcast.net")
-	}
-	for i := 0; i < 3; i++ {
-		emails = append(emails, "u@att.net")
-	}
-	for i := 0; i < 2; i++ {
-		emails = append(emails, "u@unknown-domain-xyz.com")
+	input := engine.PMTACampaignInput{
+		Name:          "dry-run-test",
+		SendingDomain: "example.com",
+		TargetISPs:    []engine.ISP{"gmail", "yahoo", "microsoft"},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 1000, TimeSpans: []engine.PMTATimeSpanInput{{
+				StartAt: &startAt,
+			}}},
+			{ISP: "yahoo", Quota: 500, TimeSpans: []engine.PMTATimeSpanInput{{
+				StartAt: &startAt,
+			}}},
+			{ISP: "microsoft", Quota: 300, TimeSpans: []engine.PMTATimeSpanInput{{
+				StartAt: &startAt,
+			}}},
+		},
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Test",
+			HTMLContent: "<p>test</p>",
+		}},
 	}
 
-	subs := makeSubscribers(emails)
-	quotas := []ISPQuota{
-		{ISP: "gmail", Volume: 10, PoolName: "gmail-pool"},
-		{ISP: "yahoo", Volume: 8, PoolName: "yahoo-pool"},
-		{ISP: "microsoft", Volume: 5, PoolName: "microsoft-pool"},
-		{ISP: "apple", Volume: 3, PoolName: "apple-pool"},
-		{ISP: "comcast", Volume: 2, PoolName: "comcast-pool"},
-		{ISP: "att", Volume: 2, PoolName: "att-pool"},
-	}
+	normalized, err := normalizePMTACampaignInput(input)
+	require.NoError(t, err)
+	assert.Len(t, normalized.Plans, 3)
 
-	buckets := classifyAndCapSubscribers(registry, subs, quotas)
+	for _, plan := range normalized.Plans {
+		waves := buildPMTAWaveSpecs("dry-run-test", plan, plan.Quota)
+		assert.GreaterOrEqual(t, len(waves), minWavesPerISP,
+			"ISP %s should have at least %d waves", plan.ISP, minWavesPerISP)
 
-	// Build pool name lookup
-	poolForISP := make(map[string]string)
-	for _, q := range quotas {
-		poolForISP[q.ISP] = q.PoolName
-	}
-
-	// Simulate the dry-run send loop
-	type taggedSubscriber struct {
-		sub      subscriber
-		ispKey   string
-		poolName string
-	}
-	var sendList []taggedSubscriber
-	for ispKey, subs := range buckets {
-		pool := poolForISP[ispKey]
-		if pool == "" && ispKey != "" && ispKey != "other" {
-			pool = ispKey + "-pool"
+		if len(waves) >= 2 {
+			first := waves[0].ScheduledAt
+			last := waves[len(waves)-1].ScheduledAt
+			span := last.Sub(first)
+			assert.GreaterOrEqual(t, span, defaultThrottleDuration-15*time.Minute,
+				"ISP %s wave span %v should be at least %v", plan.ISP, span, defaultThrottleDuration)
 		}
-		for _, sub := range subs {
-			sendList = append(sendList, taggedSubscriber{sub: sub, ispKey: ispKey, poolName: pool})
+
+		total := 0
+		for _, w := range waves {
+			assert.Greater(t, w.PlannedRecipients, 0)
+			total += w.PlannedRecipients
 		}
+		assert.Equal(t, plan.Quota, total,
+			"ISP %s total planned (%d) should equal quota (%d)", plan.ISP, total, plan.Quota)
 	}
-
-	dryRunISPCounts := make(map[string]int)
-	var totalWouldSend int
-	for _, tagged := range sendList {
-		dryRunISPCounts[tagged.ispKey]++
-		totalWouldSend++
-
-		// Verify pool name is set for known ISPs
-		if tagged.ispKey != "other" && tagged.ispKey != "" && tagged.poolName == "" {
-			t.Errorf("subscriber %s (ISP=%s) has empty pool name", tagged.sub.Email, tagged.ispKey)
-		}
-	}
-
-	// Verify quotas are respected
-	tests := []struct {
-		isp      string
-		wantMax  int
-		wantPool string
-	}{
-		{"gmail", 10, "gmail-pool"},
-		{"yahoo", 8, "yahoo-pool"},
-		{"microsoft", 5, "microsoft-pool"},
-		{"apple", 3, "apple-pool"},
-		{"comcast", 2, "comcast-pool"},
-		{"att", 2, "att-pool"},
-	}
-
-	for _, tc := range tests {
-		got := dryRunISPCounts[tc.isp]
-		if got > tc.wantMax {
-			t.Errorf("%s: want <= %d, got %d", tc.isp, tc.wantMax, got)
-		}
-		if got == 0 {
-			t.Errorf("%s: expected some subscribers, got 0", tc.isp)
-		}
-	}
-
-	// "other" bucket should have 2 unknown-domain subscribers (uncapped)
-	if dryRunISPCounts["other"] != 2 {
-		t.Errorf("other: want 2, got %d", dryRunISPCounts["other"])
-	}
-
-	// Total should be less than 100 due to caps
-	if totalWouldSend > 100 {
-		t.Errorf("total would_send (%d) exceeds audience size (100)", totalWouldSend)
-	}
-	// Expected: 10+8+5+3+2+2+2 = 32
-	expectedTotal := 10 + 8 + 5 + 3 + 2 + 2 + 2
-	if totalWouldSend != expectedTotal {
-		t.Errorf("total would_send: want %d, got %d", expectedTotal, totalWouldSend)
-	}
-
-	t.Logf("Dry-run results: would_send=%d, by_isp=%v", totalWouldSend, dryRunISPCounts)
 }
 
-// TestDryRunPoolNameDerivation verifies pool names are correctly derived
-// from ISP names when not explicitly set.
-func TestDryRunPoolNameDerivation(t *testing.T) {
-	registry := engine.NewISPRegistry()
+func TestDryRun_WaveSanityCheck(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	startAt := now.Add(1 * time.Hour)
 
-	subs := []subscriber{
-		{ID: uuid.New(), Email: "a@gmail.com", Status: "confirmed"},
-		{ID: uuid.New(), Email: "b@outlook.com", Status: "confirmed"},
+	input := engine.PMTACampaignInput{
+		Name:          "sanity-check-test",
+		SendingDomain: "example.com",
+		TargetISPs:    []engine.ISP{"gmail"},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 100, TimeSpans: []engine.PMTATimeSpanInput{{
+				StartAt: &startAt,
+			}}},
+		},
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Test",
+			HTMLContent: "<p>test</p>",
+		}},
 	}
 
-	quotas := []ISPQuota{
-		{ISP: "gmail", Volume: 10},     // PoolName intentionally empty
-		{ISP: "microsoft", Volume: 10}, // PoolName intentionally empty
+	normalized, err := normalizePMTACampaignInput(input)
+	require.NoError(t, err)
+
+	wavesByISP := make(map[string][]pmtaWaveSpec)
+	for _, plan := range normalized.Plans {
+		count := 100
+		if plan.Quota > 0 {
+			count = plan.Quota
+		}
+		wavesByISP[plan.ISP] = buildPMTAWaveSpecs("sanity-test", plan, count)
 	}
 
-	buckets := classifyAndCapSubscribers(registry, subs, quotas)
+	err = waveSanityCheck(normalized.Plans, wavesByISP)
+	assert.NoError(t, err, "valid campaign should pass sanity check")
+}
 
-	for ispKey := range buckets {
-		expectedPool := ispKey + "-pool"
-		if ispKey == "" || ispKey == "other" {
-			continue
+func TestDryRun_SmallAudienceStillGetsMinWaves(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	startAt := now.Add(1 * time.Hour)
+
+	input := engine.PMTACampaignInput{
+		Name:          "small-audience",
+		SendingDomain: "example.com",
+		TargetISPs:    []engine.ISP{"gmail"},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 3, TimeSpans: []engine.PMTATimeSpanInput{{
+				StartAt: &startAt,
+			}}},
+		},
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Test",
+			HTMLContent: "<p>test</p>",
+		}},
+	}
+
+	normalized, err := normalizePMTACampaignInput(input)
+	require.NoError(t, err)
+
+	for _, plan := range normalized.Plans {
+		waves := buildPMTAWaveSpecs("small-test", plan, 3)
+		total := 0
+		for _, w := range waves {
+			total += w.PlannedRecipients
 		}
-		// Verify the pool name derivation logic matches what the send loop does
-		pool := engine.PoolNameForISP(engine.ISP(ispKey))
-		if pool != expectedPool {
-			t.Errorf("ISP %s: pool name should be %s, got %s", ispKey, expectedPool, pool)
-		}
+		assert.Equal(t, 3, total, "all 3 recipients should be planned")
+		assert.GreaterOrEqual(t, len(waves), 1, "at least 1 wave for small audience")
 	}
 }

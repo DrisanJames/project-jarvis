@@ -81,6 +81,8 @@ export interface CampaignStats {
   open_rate: number;
   click_rate: number;
   bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   complaint_rate: number;
   unsubscribe_rate: number;
   ctr: number;

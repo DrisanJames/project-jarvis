@@ -106,40 +106,43 @@ func TestParseAnalyticsRange_Default30Days(t *testing.T) {
 // ─── ComputeInfraRates Tests ──────────────────────────────────────────────────
 
 func TestComputeInfraRates_Normal(t *testing.T) {
-	r := ComputeInfraRates(1000, 900, 180, 45, 50, 2, 10)
+	r := ComputeInfraRates(1000, 900, 180, 45, 30, 20, 2, 10)
 
 	assert.InDelta(t, 20.0, r.OpenRate, 0.1, "open_rate: 180/900*100")
 	assert.InDelta(t, 5.0, r.ClickRate, 0.1, "click_rate: 45/900*100")
-	assert.InDelta(t, 5.0, r.BounceRate, 0.1, "bounce_rate: 50/1000*100")
+	assert.InDelta(t, 3.0, r.HardBounceRate, 0.1, "hard_bounce_rate: 30/1000*100")
+	assert.InDelta(t, 2.0, r.SoftBounceRate, 0.1, "soft_bounce_rate: 20/1000*100")
 	assert.InDelta(t, 0.2, r.ComplaintRate, 0.01, "complaint_rate: 2/1000*100")
 	assert.InDelta(t, 1.0, r.DeferralRate, 0.1, "deferral_rate: 10/1000*100")
 }
 
 func TestComputeInfraRates_ZeroDelivered_FallbackToSent(t *testing.T) {
-	r := ComputeInfraRates(100, 0, 20, 5, 10, 1, 3)
+	r := ComputeInfraRates(100, 0, 20, 5, 7, 3, 1, 3)
 
 	assert.InDelta(t, 20.0, r.OpenRate, 0.1, "should use sent as base when delivered=0")
 	assert.InDelta(t, 5.0, r.ClickRate, 0.1)
-	assert.InDelta(t, 10.0, r.BounceRate, 0.1)
+	assert.InDelta(t, 7.0, r.HardBounceRate, 0.1)
+	assert.InDelta(t, 3.0, r.SoftBounceRate, 0.1)
 }
 
 func TestComputeInfraRates_ZeroSent(t *testing.T) {
-	r := ComputeInfraRates(0, 0, 0, 0, 0, 0, 0)
+	r := ComputeInfraRates(0, 0, 0, 0, 0, 0, 0, 0)
 
 	assert.Equal(t, 0.0, r.OpenRate)
 	assert.Equal(t, 0.0, r.ClickRate)
-	assert.Equal(t, 0.0, r.BounceRate)
+	assert.Equal(t, 0.0, r.HardBounceRate)
+	assert.Equal(t, 0.0, r.SoftBounceRate)
 	assert.Equal(t, 0.0, r.ComplaintRate)
 	assert.Equal(t, 0.0, r.DeferralRate)
 }
 
 func TestComputeInfraRates_EngagementBasedOnDelivered(t *testing.T) {
-	// 100 sent, 50 delivered, 50 unique opens = 100% open rate (not 50%)
-	r := ComputeInfraRates(100, 50, 50, 10, 5, 0, 0)
+	r := ComputeInfraRates(100, 50, 50, 10, 3, 2, 0, 0)
 
 	assert.InDelta(t, 100.0, r.OpenRate, 0.1, "50 opens / 50 delivered = 100%")
 	assert.InDelta(t, 20.0, r.ClickRate, 0.1, "10 clicks / 50 delivered = 20%")
-	assert.InDelta(t, 5.0, r.BounceRate, 0.1, "bounces always use sent as base")
+	assert.InDelta(t, 3.0, r.HardBounceRate, 0.1, "hard bounces use sent as base")
+	assert.InDelta(t, 2.0, r.SoftBounceRate, 0.1, "soft bounces use sent as base")
 }
 
 // ─── HandleInfrastructureBreakdown Handler Tests ──────────────────────────────
@@ -152,7 +155,7 @@ func newInfraService(t *testing.T) (*AdvancedMailingService, sqlmock.Sqlmock) {
 }
 
 func infraColumns() []string {
-	return []string{"entity", "sent", "delivered", "opens", "clicks", "bounces", "complaints", "deferred"}
+	return []string{"entity", "sent", "delivered", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints", "deferred"}
 }
 
 func TestInfraBreakdown_Level1_DomainAggregate(t *testing.T) {
@@ -164,10 +167,10 @@ func TestInfraBreakdown_Level1_DomainAggregate(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns c WHERE .+").
 		WillReturnRows(campRows)
 
-	evtCols := []string{"entity", "opens", "clicks", "bounces", "complaints", "deferred"}
+	evtCols := []string{"entity", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints", "deferred"}
 	evtRows := sqlmock.NewRows(evtCols).
-		AddRow("example.com", 180, 45, 50, 2, 10).
-		AddRow("other.com", 90, 20, 25, 1, 5)
+		AddRow("example.com", 180, 45, 30, 20, 2, 10).
+		AddRow("other.com", 90, 20, 15, 10, 1, 5)
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events t WHERE .+").
 		WillReturnRows(evtRows)
 
@@ -201,7 +204,7 @@ func TestInfraBreakdown_Level2_IPDrilldown(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns c WHERE .+").WillReturnRows(campRow)
 
 	rows := sqlmock.NewRows(infraColumns()).
-		AddRow("10.0.0.1", 500, 450, 90, 20, 25, 1, 5)
+		AddRow("10.0.0.1", 500, 450, 90, 20, 15, 10, 1, 5)
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events t WHERE .+").
 		WillReturnRows(rows)
 
@@ -232,8 +235,8 @@ func TestInfraBreakdown_Level2_ISPDrilldown(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns c WHERE .+").WillReturnRows(campRow)
 
 	rows := sqlmock.NewRows(infraColumns()).
-		AddRow("gmail.com", 300, 280, 60, 15, 10, 0, 2).
-		AddRow("comcast.net", 200, 180, 40, 8, 5, 1, 3)
+		AddRow("gmail.com", 300, 280, 60, 15, 6, 4, 0, 2).
+		AddRow("comcast.net", 200, 180, 40, 8, 3, 2, 1, 3)
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events t LEFT JOIN mailing_subscribers sub .+").
 		WillReturnRows(rows)
 
@@ -306,7 +309,7 @@ func TestInfraBreakdown_EmptyResults(t *testing.T) {
 
 	campRows := sqlmock.NewRows([]string{"entity", "sent", "delivered"})
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns").WillReturnRows(campRows)
-	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "bounces", "complaints", "deferred"})
+	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints", "deferred"})
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events").WillReturnRows(evtRows)
 
 	req := httptest.NewRequest("GET", "/?start_date=2026-01-01T00:00:00Z&end_date=2026-02-01T00:00:00Z", nil)
@@ -328,8 +331,8 @@ func TestInfraBreakdown_RateCalculation_DeliveredBase(t *testing.T) {
 		AddRow("example.com", 100, 90)
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns").WillReturnRows(campRows)
 
-	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "bounces", "complaints", "deferred"}).
-		AddRow("example.com", 20, 5, 8, 1, 2)
+	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints", "deferred"}).
+		AddRow("example.com", 20, 5, 5, 3, 1, 2)
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events").WillReturnRows(evtRows)
 
 	req := httptest.NewRequest("GET", "/?start_date=2026-01-01T00:00:00Z&end_date=2026-02-01T00:00:00Z", nil)
@@ -346,11 +349,13 @@ func TestInfraBreakdown_RateCalculation_DeliveredBase(t *testing.T) {
 
 	openRate := row["open_rate"].(float64)
 	clickRate := row["click_rate"].(float64)
-	bounceRate := row["bounce_rate"].(float64)
+	hardBounceRate := row["hard_bounce_rate"].(float64)
+	softBounceRate := row["soft_bounce_rate"].(float64)
 
 	assert.InDelta(t, 22.2, openRate, 0.2, "open_rate should be 20/90*100, not 20/100*100")
 	assert.InDelta(t, 5.6, clickRate, 0.2, "click_rate should be 5/90*100")
-	assert.InDelta(t, 8.0, bounceRate, 0.1, "bounce_rate should be 8/100*100 (uses sent)")
+	assert.InDelta(t, 5.0, hardBounceRate, 0.1, "hard_bounce_rate should be 5/100*100 (uses sent)")
+	assert.InDelta(t, 3.0, softBounceRate, 0.1, "soft_bounce_rate should be 3/100*100 (uses sent)")
 }
 
 func TestInfraBreakdown_VersionInResponse(t *testing.T) {
@@ -358,7 +363,7 @@ func TestInfraBreakdown_VersionInResponse(t *testing.T) {
 
 	campRows := sqlmock.NewRows([]string{"entity", "sent", "delivered"})
 	mock.ExpectQuery("SELECT .+ FROM mailing_campaigns").WillReturnRows(campRows)
-	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "bounces", "complaints", "deferred"})
+	evtRows := sqlmock.NewRows([]string{"entity", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints", "deferred"})
 	mock.ExpectQuery("SELECT .+ FROM mailing_tracking_events").WillReturnRows(evtRows)
 
 	req := httptest.NewRequest("GET", "/?start_date=2026-01-01T00:00:00Z&end_date=2026-02-01T00:00:00Z", nil)

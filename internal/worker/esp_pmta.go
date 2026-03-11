@@ -261,10 +261,16 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		if len(s.ipPool.ips) > 0 {
 			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
 		}
-		vmtaName = "default-pool"
-		log.Printf("[PMTA] No IP pool configured, routing via default-pool")
+		// NEVER fall back to default-pool — it uses the server IP which
+		// must not be used for campaign delivery. Fail hard so the queue
+		// item is retried after IPs are configured.
+		return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 	} else {
-		vmtaName = ip.Hostname
+		// PMTA VMTA names are the short prefix of the hostname
+		// (e.g. "mta1" from "mta1.mail.projectjarvis.io"). The full
+		// hostname does NOT match any <virtual-mta> directive and
+		// silently falls back to the server IP.
+		vmtaName = vmtaShortName(ip.Hostname)
 		ipID = ip.ID
 	}
 
@@ -367,8 +373,22 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 }
 
 // sendOnClient performs MAIL FROM / RCPT TO / DATA on an existing connection.
+//
+// We issue MAIL FROM manually instead of using client.Mail() because Go's
+// net/smtp unconditionally adds "SMTPUTF8" to MAIL FROM when the server
+// advertises it (even for pure-ASCII addresses). PMTA then marks the message
+// as requiring SMTPUTF8, and destinations that don't support it (Yahoo, Cox,
+// Charter, Comcast, Apple iCloud) bounce with 5.6.7. Using BODY=8BITMIME
+// alone is sufficient for UTF-8 message content with quoted-printable encoding.
 func (s *PMTASender) sendOnClient(client *smtp.Client, from, to string, msg []byte) error {
-	if err := client.Mail(from); err != nil {
+	id, err := client.Text.Cmd("MAIL FROM:<%s> BODY=8BITMIME", from)
+	if err != nil {
+		return fmt.Errorf("MAIL FROM: %w", err)
+	}
+	client.Text.StartResponse(id)
+	_, _, err = client.Text.ReadResponse(250)
+	client.Text.EndResponse(id)
+	if err != nil {
 		return fmt.Errorf("MAIL FROM: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
@@ -427,4 +447,13 @@ func (a *pmtaPlainAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 
 func (a *pmtaPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	return nil, nil
+}
+
+// vmtaShortName extracts the short VMTA prefix from a full hostname.
+// e.g. "mta1.mail.projectjarvis.io" → "mta1", "mta2" → "mta2", "" → "".
+func vmtaShortName(hostname string) string {
+	if dotIdx := strings.Index(hostname, "."); dotIdx > 0 {
+		return hostname[:dotIdx]
+	}
+	return hostname
 }

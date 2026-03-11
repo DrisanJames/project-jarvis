@@ -102,14 +102,16 @@ type Campaign struct {
 	MaxRecipients    *int       `json:"max_recipients,omitempty"`
 	
 	// Stats
-	Status        string     `json:"status"`
-	TotalRecipients int      `json:"total_recipients"`
-	SentCount     int        `json:"sent_count"`
-	OpenCount     int        `json:"open_count"`
-	ClickCount    int        `json:"click_count"`
-	BounceCount   int        `json:"bounce_count"`
-	ComplaintCount int       `json:"complaint_count"`
-	UnsubscribeCount int     `json:"unsubscribe_count"`
+	Status           string `json:"status"`
+	TotalRecipients  int    `json:"total_recipients"`
+	SentCount        int    `json:"sent_count"`
+	OpenCount        int    `json:"open_count"`
+	ClickCount       int    `json:"click_count"`
+	BounceCount      int    `json:"bounce_count"`
+	HardBounceCount  int    `json:"hard_bounce_count"`
+	SoftBounceCount  int    `json:"soft_bounce_count"`
+	ComplaintCount   int    `json:"complaint_count"`
+	UnsubscribeCount int    `json:"unsubscribe_count"`
 	
 	// Timestamps
 	CreatedAt   time.Time  `json:"created_at"`

@@ -110,7 +110,9 @@ func (mh *MailingHandlers) GetMailingDashboard(w http.ResponseWriter, r *http.Re
 
 	// Get recent campaigns
 	rows, err := mh.db.QueryContext(ctx, `
-		SELECT id, name, subject, status, sent_count, open_count, click_count, bounce_count, revenue, created_at
+		SELECT id, name, subject, status, sent_count, open_count, click_count,
+		       bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		       revenue, created_at
 		FROM mailing_campaigns
 		ORDER BY created_at DESC
 		LIMIT 5
@@ -120,22 +122,24 @@ func (mh *MailingHandlers) GetMailingDashboard(w http.ResponseWriter, r *http.Re
 		for rows.Next() {
 			var id uuid.UUID
 			var name, subject, status string
-			var sentCount, openCount, clickCount, bounceCount int
+			var sentCount, openCount, clickCount, bounceCount, hardBounceCount, softBounceCount int
 			var revenue float64
 			var createdAt time.Time
 
-			if err := rows.Scan(&id, &name, &subject, &status, &sentCount, &openCount, &clickCount, &bounceCount, &revenue, &createdAt); err == nil {
+			if err := rows.Scan(&id, &name, &subject, &status, &sentCount, &openCount, &clickCount, &bounceCount, &hardBounceCount, &softBounceCount, &revenue, &createdAt); err == nil {
 				dashboard.RecentCampaigns = append(dashboard.RecentCampaigns, map[string]interface{}{
-					"id":           id.String(),
-					"name":         name,
-					"subject":      subject,
-					"status":       status,
-					"sent_count":   sentCount,
-					"open_count":   openCount,
-					"click_count":  clickCount,
-					"bounce_count": bounceCount,
-					"revenue":      revenue,
-					"created_at":   createdAt.Format(time.RFC3339),
+					"id":                id.String(),
+					"name":              name,
+					"subject":           subject,
+					"status":            status,
+					"sent_count":        sentCount,
+					"open_count":        openCount,
+					"click_count":       clickCount,
+					"bounce_count":      bounceCount,
+					"hard_bounce_count": hardBounceCount,
+					"soft_bounce_count": softBounceCount,
+					"revenue":           revenue,
+					"created_at":        createdAt.Format(time.RFC3339),
 				})
 			}
 		}
@@ -267,7 +271,9 @@ func (mh *MailingHandlers) GetMailingCampaigns(w http.ResponseWriter, r *http.Re
 
 	rows, err := mh.db.QueryContext(ctx, `
 		SELECT id, name, subject, from_name, from_email, status, 
-			   total_recipients, sent_count, open_count, click_count, bounce_count, revenue, created_at
+			   total_recipients, sent_count, open_count, click_count,
+			   bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+			   revenue, created_at
 		FROM mailing_campaigns
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -282,29 +288,31 @@ func (mh *MailingHandlers) GetMailingCampaigns(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		var id uuid.UUID
 		var name, subject, fromName, fromEmail, status string
-		var totalRecipients, sentCount, openCount, clickCount, bounceCount int
+		var totalRecipients, sentCount, openCount, clickCount, bounceCount, hardBounceCount, softBounceCount int
 		var revenue float64
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &name, &subject, &fromName, &fromEmail, &status,
-			&totalRecipients, &sentCount, &openCount, &clickCount, &bounceCount, &revenue, &createdAt); err != nil {
+			&totalRecipients, &sentCount, &openCount, &clickCount, &bounceCount, &hardBounceCount, &softBounceCount, &revenue, &createdAt); err != nil {
 			continue
 		}
 
 		campaigns = append(campaigns, map[string]interface{}{
-			"id":               id.String(),
-			"name":             name,
-			"subject":          subject,
-			"from_name":        fromName,
-			"from_email":       fromEmail,
-			"status":           status,
-			"total_recipients": totalRecipients,
-			"sent_count":       sentCount,
-			"open_count":       openCount,
-			"click_count":      clickCount,
-			"bounce_count":     bounceCount,
-			"revenue":          revenue,
-			"created_at":       createdAt.Format(time.RFC3339),
+			"id":                id.String(),
+			"name":              name,
+			"subject":           subject,
+			"from_name":         fromName,
+			"from_email":        fromEmail,
+			"status":            status,
+			"total_recipients":  totalRecipients,
+			"sent_count":        sentCount,
+			"open_count":        openCount,
+			"click_count":       clickCount,
+			"bounce_count":      bounceCount,
+			"hard_bounce_count": hardBounceCount,
+			"soft_bounce_count": softBounceCount,
+			"revenue":           revenue,
+			"created_at":        createdAt.Format(time.RFC3339),
 		})
 	}
 

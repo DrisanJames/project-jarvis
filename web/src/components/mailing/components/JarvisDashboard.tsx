@@ -46,7 +46,8 @@ interface JarvisMetrics {
   total_opens: number;
   total_clicks: number;
   total_conversions: number;
-  total_bounces: number;
+  total_hard_bounces: number;
+  total_soft_bounces: number;
   open_rate: number;
   click_rate: number;
   conversion_rate: number;
@@ -56,7 +57,8 @@ interface JarvisMetrics {
   delivered?: number;
   opens?: number;
   clicks?: number;
-  bounces?: number;
+  hard_bounces?: number;
+  soft_bounces?: number;
 }
 
 interface JarvisCampaign {
@@ -248,12 +250,16 @@ export const JarvisDashboard: React.FC = () => {
             </div>
           );
         })}
-        {(campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0) > 0 && (
-          <div style={{ flex: '0 0 auto', minWidth: 60, padding: '8px 10px', borderLeft: '2px solid #e9456044' }}>
+        {((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) + (campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0)) > 0 && (
+          <div style={{ flex: '0 0 auto', minWidth: 80, padding: '8px 10px', borderLeft: '2px solid #e9456044' }}>
             <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#e94560', opacity: 0.8 }}>BOUNCED</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#e94560', fontFamily: 'monospace' }}>{campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0}</div>
-            <div style={{ fontSize: 9, color: '#e94560', fontFamily: 'monospace', fontWeight: 600 }}>
-              {(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_bounces ?? campaign.metrics.bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'monospace' }}>
+              <span style={{ color: '#ef4444' }}>{campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0}</span> hard / <span style={{ color: '#f59e0b' }}>{campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0}</span> soft
+            </div>
+            <div style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 600 }}>
+              <span style={{ color: '#ef4444' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
+              <span style={{ color: 'rgba(180,210,240,0.65)', margin: '0 4px' }}>/</span>
+              <span style={{ color: '#f59e0b' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
             </div>
           </div>
         )}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"net"
 	"strings"
 	"time"
 
@@ -17,7 +18,22 @@ import (
 const (
 	pmtaExecutionModeStandard = "standard"
 	pmtaExecutionModeWave     = "pmta_isp_wave"
+
+	// Mandatory throttle defaults. Every campaign MUST be spread across a
+	// delivery window — single-wave blasts are never acceptable.
+	defaultThrottleDuration = 4 * time.Hour
+	defaultCadenceMinutes   = 15
+	minWavesPerISP          = 4
 )
+
+// dbQuerier abstracts the common query methods shared by *sql.DB and *sql.Conn
+// so that callers can pass a dedicated connection with custom session settings
+// (e.g. extended statement_timeout) without changing the query logic.
+type dbQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
 
 type pmtaNormalizedTimeSpan struct {
 	StartAt  time.Time
@@ -130,14 +146,15 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 				ThrottleStrategy:  defaultThrottle,
 				Timezone:          defaultTZ,
 				Cadence: engine.PMTACadenceInput{
-					Mode:      "single",
-					BatchSize: quotaMap[ispName],
+					Mode:         "interval",
+					EveryMinutes: defaultCadenceMinutes,
+					BatchSize:    0, // auto-calculated in buildPMTAWaveSpecs
 				},
 				TimeSpans: []pmtaNormalizedTimeSpan{{
 					StartAt:  baseStart,
-					EndAt:    baseStart,
+					EndAt:    baseStart.Add(defaultThrottleDuration),
 					Timezone: defaultTZ,
-					Source:   "legacy_translation",
+					Source:   "legacy_throttle_window",
 				}},
 			})
 		}
@@ -200,14 +217,15 @@ func normalizeISPPlan(
 		timezone = defaultTZ
 	}
 	cadence := raw.Cadence
-	if cadence.Mode == "" {
-		cadence.Mode = "single"
+	// Force interval mode — single-wave blasts are never allowed.
+	if cadence.Mode == "" || cadence.Mode == "single" {
+		cadence.Mode = "interval"
 	}
-	if cadence.Mode != "single" && cadence.Mode != "interval" {
-		return pmtaNormalizedPlan{}, fmt.Errorf("isp_plan cadence mode for %s must be 'single' or 'interval'", isp)
+	if cadence.Mode != "interval" {
+		return pmtaNormalizedPlan{}, fmt.Errorf("isp_plan cadence mode for %s must be 'interval'", isp)
 	}
-	if cadence.Mode == "interval" && cadence.EveryMinutes <= 0 {
-		return pmtaNormalizedPlan{}, fmt.Errorf("isp_plan cadence every_minutes for %s must be > 0", isp)
+	if cadence.EveryMinutes <= 0 {
+		cadence.EveryMinutes = defaultCadenceMinutes
 	}
 	if cadence.BatchSize < 0 {
 		return pmtaNormalizedPlan{}, fmt.Errorf("isp_plan batch_size for %s must be >= 0", isp)
@@ -247,9 +265,9 @@ func normalizeTimeSpans(
 		}
 		return []pmtaNormalizedTimeSpan{{
 			StartAt:  startAt,
-			EndAt:    startAt,
+			EndAt:    startAt.Add(defaultThrottleDuration),
 			Timezone: timezone,
-			Source:   "default",
+			Source:   "default_throttle_window",
 		}}, nil
 	}
 
@@ -354,7 +372,7 @@ func weekdayIndex(day string) (int, bool) {
 
 func planPMTAAudience(
 	ctx context.Context,
-	db *sql.DB,
+	db dbQuerier,
 	orgID string,
 	input engine.PMTACampaignInput,
 	normalized pmtaNormalizedCampaign,
@@ -553,7 +571,7 @@ func planPMTAAudience(
 	}, nil
 }
 
-func loadExclusionSegmentEmails(ctx context.Context, db *sql.DB, segmentIDs []string) (map[string]bool, error) {
+func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []string) (map[string]bool, error) {
 	emails := make(map[string]bool)
 	for _, segmentID := range segmentIDs {
 		var segListID *string
@@ -588,8 +606,41 @@ func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCou
 		return nil
 	}
 
+	// Calculate the number of waves that fit in the delivery window.
+	// batch_size=0 means "auto-calculate" — spread the audience evenly
+	// across the full window. We NEVER allow a single-wave blast.
+	cadenceMin := plan.Cadence.EveryMinutes
+	if cadenceMin <= 0 {
+		cadenceMin = defaultCadenceMinutes
+	}
+
+	totalWindowMinutes := 0
+	for _, span := range plan.TimeSpans {
+		d := int(span.EndAt.Sub(span.StartAt).Minutes())
+		if d > 0 {
+			totalWindowMinutes += d
+		}
+	}
+	if totalWindowMinutes < cadenceMin {
+		totalWindowMinutes = int(defaultThrottleDuration.Minutes())
+		if len(plan.TimeSpans) > 0 {
+			plan.TimeSpans[0].EndAt = plan.TimeSpans[0].StartAt.Add(defaultThrottleDuration)
+		}
+	}
+
+	maxWaves := totalWindowMinutes/cadenceMin + 1
+	if maxWaves < minWavesPerISP {
+		maxWaves = minWavesPerISP
+	}
+
 	batchSize := plan.Cadence.BatchSize
-	if batchSize <= 0 || batchSize > recipientCount {
+	if batchSize <= 0 {
+		batchSize = (recipientCount + maxWaves - 1) / maxWaves
+		if batchSize < 1 {
+			batchSize = 1
+		}
+	}
+	if batchSize > recipientCount {
 		batchSize = recipientCount
 	}
 
@@ -624,50 +675,73 @@ func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCou
 			}
 		}
 	default:
+		// Even in the default/single-mode fallback, enforce interval delivery.
 		if len(plan.TimeSpans) == 0 {
+			startAt := time.Now().UTC()
 			plan.TimeSpans = []pmtaNormalizedTimeSpan{{
-				StartAt: time.Now().UTC(),
-				EndAt:   time.Now().UTC(),
+				StartAt: startAt,
+				EndAt:   startAt.Add(defaultThrottleDuration),
 			}}
 		}
-		for idx, span := range plan.TimeSpans {
+		for _, span := range plan.TimeSpans {
 			if remaining <= 0 {
 				break
 			}
-			planned := remaining
-			if len(plan.TimeSpans)-idx > 1 {
-				planned = int(float64(remaining) / float64(len(plan.TimeSpans)-idx))
-				if planned == 0 {
+			scheduledAt := span.StartAt
+			for remaining > 0 && !scheduledAt.After(span.EndAt) {
+				planned := batchSize
+				if planned > remaining {
 					planned = remaining
 				}
+				waves = append(waves, pmtaWaveSpec{
+					WaveNumber:        len(waves) + 1,
+					ScheduledAt:       scheduledAt,
+					WindowStartAt:     span.StartAt,
+					WindowEndAt:       span.EndAt,
+					CadenceMinutes:    cadenceMin,
+					BatchSize:         batchSize,
+					PlannedRecipients: planned,
+					IdempotencyKey:    fmt.Sprintf("%s:%s:%d", campaignID, plan.ISP, len(waves)+1),
+				})
+				remaining -= planned
+				scheduledAt = scheduledAt.Add(time.Duration(cadenceMin) * time.Minute)
 			}
-			waves = append(waves, pmtaWaveSpec{
-				WaveNumber:        len(waves) + 1,
-				ScheduledAt:       span.StartAt,
-				WindowStartAt:     span.StartAt,
-				WindowEndAt:       span.EndAt,
-				CadenceMinutes:    0,
-				BatchSize:         planned,
-				PlannedRecipients: planned,
-				IdempotencyKey:    fmt.Sprintf("%s:%s:%d", campaignID, plan.ISP, len(waves)+1),
-			})
-			remaining -= planned
-		}
-		if remaining > 0 && len(waves) > 0 {
-			waves[len(waves)-1].PlannedRecipients += remaining
 		}
 	}
 
+	// If somehow no waves were generated, create a throttled fallback
+	// spread across the default window — NEVER a single blast.
 	if len(waves) == 0 {
-		waves = append(waves, pmtaWaveSpec{
-			WaveNumber:        1,
-			ScheduledAt:       time.Now().UTC(),
-			WindowStartAt:     time.Now().UTC(),
-			WindowEndAt:       time.Now().UTC(),
-			BatchSize:         recipientCount,
-			PlannedRecipients: recipientCount,
-			IdempotencyKey:    fmt.Sprintf("%s:%s:%d", campaignID, plan.ISP, 1),
-		})
+		startAt := time.Now().UTC()
+		endAt := startAt.Add(defaultThrottleDuration)
+		totalWaves := int(defaultThrottleDuration.Minutes()) / defaultCadenceMinutes
+		if totalWaves < minWavesPerISP {
+			totalWaves = minWavesPerISP
+		}
+		fallbackBatch := (recipientCount + totalWaves - 1) / totalWaves
+		if fallbackBatch < 1 {
+			fallbackBatch = 1
+		}
+		rem := recipientCount
+		at := startAt
+		for w := 0; w < totalWaves && rem > 0; w++ {
+			planned := fallbackBatch
+			if planned > rem {
+				planned = rem
+			}
+			waves = append(waves, pmtaWaveSpec{
+				WaveNumber:        w + 1,
+				ScheduledAt:       at,
+				WindowStartAt:     startAt,
+				WindowEndAt:       endAt,
+				CadenceMinutes:    defaultCadenceMinutes,
+				BatchSize:         fallbackBatch,
+				PlannedRecipients: planned,
+				IdempotencyKey:    fmt.Sprintf("%s:%s:%d", campaignID, plan.ISP, w+1),
+			})
+			rem -= planned
+			at = at.Add(time.Duration(defaultCadenceMinutes) * time.Minute)
+		}
 	}
 
 	return waves
@@ -701,4 +775,189 @@ func pmtaMinInt(a, b int) int {
 func mustUUID(value string) uuid.UUID {
 	id, _ := uuid.Parse(value)
 	return id
+}
+
+// preflightError holds a single preflight check failure.
+type preflightError struct {
+	Check   string `json:"check"`
+	Message string `json:"message"`
+}
+
+// preflightResult aggregates all preflight outcomes.
+type preflightResult struct {
+	OK       bool             `json:"ok"`
+	Errors   []preflightError `json:"errors,omitempty"`
+	Warnings []preflightError `json:"warnings,omitempty"`
+}
+
+// preflightDeployCheck validates infrastructure readiness before campaign
+// deployment. It is intentionally fail-fast: any error means the campaign
+// should NOT be deployed.
+func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sendingDomain string) preflightResult {
+	res := preflightResult{OK: true}
+
+	// 1. Sending profile exists with an IP pool
+	var profileID, ipPool sql.NullString
+	err := db.QueryRowContext(ctx, `
+		SELECT id::text, ip_pool
+		FROM mailing_sending_profiles
+		WHERE organization_id = $1 AND vendor_type = 'pmta'
+		  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
+		  AND status = 'active'
+		ORDER BY created_at DESC LIMIT 1
+	`, orgID, sendingDomain).Scan(&profileID, &ipPool)
+	if err != nil || !profileID.Valid {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "sending_profile",
+			Message: fmt.Sprintf("no active PMTA sending profile found for domain %s", sendingDomain),
+		})
+		return res
+	}
+	if !ipPool.Valid || strings.TrimSpace(ipPool.String) == "" {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "ip_pool",
+			Message: fmt.Sprintf("sending profile %s has no IP pool assigned", profileID.String),
+		})
+		return res
+	}
+
+	// 2. IP pool has active IPs with valid VMTA names
+	rows, qErr := db.QueryContext(ctx, `
+		SELECT ip.hostname, ip.status
+		FROM mailing_ip_addresses ip
+		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+		WHERE pool.name = $1
+		  AND ip.status IN ('active', 'warmup')
+		  AND pool.status = 'active'
+	`, ipPool.String)
+	if qErr != nil {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "ip_pool_query",
+			Message: fmt.Sprintf("failed to query IP pool %s: %v", ipPool.String, qErr),
+		})
+		return res
+	}
+	defer rows.Close()
+
+	activeIPs := 0
+	for rows.Next() {
+		var hostname, status string
+		rows.Scan(&hostname, &status)
+		activeIPs++
+		vmta := hostname
+		if dotIdx := strings.Index(vmta, "."); dotIdx > 0 {
+			vmta = vmta[:dotIdx]
+		}
+		if len(vmta) < 2 || strings.Contains(vmta, ".") {
+			res.Warnings = append(res.Warnings, preflightError{
+				Check:   "vmta_name",
+				Message: fmt.Sprintf("IP hostname %q produces suspicious VMTA name %q", hostname, vmta),
+			})
+		}
+	}
+	if activeIPs == 0 {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "ip_pool_empty",
+			Message: fmt.Sprintf("IP pool %s has zero active/warmup IPs", ipPool.String),
+		})
+		return res
+	}
+
+	// 3. DKIM DNS record exists
+	dkimHost := "dkim._domainkey." + sendingDomain
+	txts, dkimErr := net.LookupTXT(dkimHost)
+	hasDKIM := false
+	if dkimErr == nil {
+		for _, txt := range txts {
+			if strings.Contains(txt, "v=DKIM1") || strings.Contains(txt, "p=") {
+				hasDKIM = true
+				break
+			}
+		}
+	}
+	if !hasDKIM {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "dkim_dns",
+			Message: fmt.Sprintf("no DKIM record found at %s — emails will fail DMARC", dkimHost),
+		})
+	}
+
+	// 4. SPF record exists
+	txts, spfErr := net.LookupTXT(sendingDomain)
+	hasSPF := false
+	spfCount := 0
+	if spfErr == nil {
+		for _, txt := range txts {
+			if strings.HasPrefix(strings.TrimSpace(txt), "v=spf1") {
+				hasSPF = true
+				spfCount++
+			}
+		}
+	}
+	if !hasSPF {
+		res.Warnings = append(res.Warnings, preflightError{
+			Check:   "spf_dns",
+			Message: fmt.Sprintf("no SPF record found for %s", sendingDomain),
+		})
+	}
+	if spfCount > 1 {
+		res.OK = false
+		res.Errors = append(res.Errors, preflightError{
+			Check:   "spf_duplicate",
+			Message: fmt.Sprintf("%s has %d SPF records — this causes a permerror; remove duplicates", sendingDomain, spfCount),
+		})
+	}
+
+	// 5. PMTA server is reachable (SMTP port check)
+	var smtpHost string
+	db.QueryRowContext(ctx, `
+		SELECT smtp_host FROM mailing_sending_profiles
+		WHERE id = $1`, profileID.String).Scan(&smtpHost)
+	if smtpHost != "" {
+		conn, dialErr := net.DialTimeout("tcp", smtpHost+":25", 5*time.Second)
+		if dialErr != nil {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "pmta_reachable",
+				Message: fmt.Sprintf("PMTA SMTP unreachable at %s:25 — %v", smtpHost, dialErr),
+			})
+		} else {
+			conn.Close()
+		}
+	}
+
+	return res
+}
+
+// waveSanityCheck validates the normalized wave plan meets minimum throttling
+// requirements. Called after normalizePMTACampaignInput + buildPMTAWaveSpecs.
+func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
+	var issues []string
+	for _, plan := range plans {
+		isp := plan.ISP
+		waves := wavesByISP[isp]
+		if len(waves) == 0 {
+			continue // no audience for this ISP — nothing to validate
+		}
+		if len(waves) < minWavesPerISP {
+			issues = append(issues, fmt.Sprintf("ISP %s has only %d waves (min %d)", isp, len(waves), minWavesPerISP))
+		}
+		if len(waves) >= 2 {
+			first := waves[0].ScheduledAt
+			last := waves[len(waves)-1].ScheduledAt
+			span := last.Sub(first)
+			if span < defaultThrottleDuration-15*time.Minute {
+				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v)", isp, span.Round(time.Minute), defaultThrottleDuration))
+			}
+		}
+	}
+	if len(issues) > 0 {
+		return fmt.Errorf("wave sanity check failed: %s", strings.Join(issues, "; "))
+	}
+	return nil
 }

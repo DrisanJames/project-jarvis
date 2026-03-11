@@ -20,10 +20,12 @@ interface AgentState {
   total_sent: number;
   total_opens: number;
   total_clicks: number;
-  total_bounces: number;
+  total_hard_bounces: number;
+  total_soft_bounces: number;
   total_complaints: number;
   current_open_rate: number;
-  current_bounce_rate: number;
+  current_hard_bounce_rate: number;
+  current_soft_bounce_rate: number;
   complaint_rate: number;
   inbox_rate: number;
   throttle_rate: number;
@@ -70,7 +72,8 @@ interface ABVariantStats {
   open_rate: number;
   click_rate: number;
   conversion_rate: number;
-  bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   complaint_rate: number;
   epc: number;
   confidence: number;
@@ -245,8 +248,9 @@ export const MissionControl: React.FC = () => {
 
   const stateDefaults: AgentState = {
     phase: 'idle', current_tier: 0, total_sent: 0, total_opens: 0, total_clicks: 0,
-    total_bounces: 0, total_complaints: 0, current_open_rate: 0, current_bounce_rate: 0,
-    complaint_rate: 0, inbox_rate: 0, throttle_rate: 0, is_paused: false,
+    total_hard_bounces: 0, total_soft_bounces: 0, total_complaints: 0, current_open_rate: 0,
+    current_hard_bounce_rate: 0, current_soft_bounce_rate: 0, complaint_rate: 0, inbox_rate: 0,
+    throttle_rate: 0, is_paused: false,
   };
   const state: AgentState = { ...stateDefaults, ...(snapshot.agent_state || {}) };
 
@@ -301,8 +305,10 @@ export const MissionControl: React.FC = () => {
         <KPI label="Open Rate" value={`${state.current_open_rate.toFixed(1)}%`} icon={faBullseye}
           className={state.current_open_rate >= 5 ? 'mc-kpi-green' : state.current_open_rate >= 3 ? 'mc-kpi-amber' : 'mc-kpi-red'} />
         <KPI label="Clicks" value={<AnimatedCounter value={state.total_clicks} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faHandPointer} />
-        <KPI label="Bounce%" value={`${state.current_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
-          className={state.current_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-red'} />
+        <KPI label="Hard Bnc%" value={`${state.current_hard_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
+          className={state.current_hard_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-red'} />
+        <KPI label="Soft Bnc%" value={`${state.current_soft_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
+          className={state.current_soft_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-amber'} />
         <KPI label="Complaint%" value={`${state.complaint_rate.toFixed(3)}%`} icon={faTriangleExclamation}
           className={state.complaint_rate < 0.08 ? 'mc-kpi-green' : 'mc-kpi-red'} />
         <KPI label="Throttle" value={`${state.throttle_rate}/min`} icon={faGauge} />

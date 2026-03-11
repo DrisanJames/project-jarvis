@@ -465,6 +465,19 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		ScheduledAt:       &schedAt,
 	}
 
+	// Pre-deploy infrastructure validation
+	preflight := preflightDeployCheck(ctx, a.db, orgID, sendingDomain)
+	if !preflight.OK {
+		msgs := make([]string, len(preflight.Errors))
+		for i, e := range preflight.Errors {
+			msgs[i] = e.Check + ": " + e.Message
+		}
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "preflight failed: " + strings.Join(msgs, "; "),
+		})
+		return
+	}
+
 	// Normalize, plan audience, and create the real campaign
 	normalized, normErr := normalizePMTACampaignInput(deployInput)
 	if normErr != nil {
@@ -505,6 +518,24 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 
 	log.Printf("[MarketingAgent] recommendation %s approved → campaign %s scheduled for %s", recID, result.CampaignID, schedAt.Format(time.RFC3339))
 
+	// Build wave plan preview for the response
+	wavePreview := make([]map[string]interface{}, 0, len(normalized.Plans))
+	for _, plan := range normalized.Plans {
+		count := audience.CountsByISP[plan.ISP]
+		waves := buildPMTAWaveSpecs(result.CampaignID, plan, count)
+		entry := map[string]interface{}{
+			"isp":            plan.ISP,
+			"audience_count": count,
+			"wave_count":     len(waves),
+		}
+		if len(waves) > 0 {
+			entry["first_wave_at"] = waves[0].ScheduledAt.Format(time.RFC3339)
+			entry["last_wave_at"] = waves[len(waves)-1].ScheduledAt.Format(time.RFC3339)
+			entry["batch_size"] = waves[0].BatchSize
+		}
+		wavePreview = append(wavePreview, entry)
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "approved",
 		"id":              recID,
@@ -515,6 +546,7 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		"total_audience":  result.TotalAudience,
 		"target_isps":     result.TargetISPs,
 		"isp_plans":       len(result.ISPPlans),
+		"wave_preview":    wavePreview,
 	})
 }
 

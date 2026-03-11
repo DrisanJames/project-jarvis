@@ -701,6 +701,8 @@ func (s *PMTAService) HandleSyncConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var config string
+
 	// Build VMTA config from IPs assigned to this server
 	rows, err := s.db.QueryContext(r.Context(), `
 		SELECT ip.ip_address::text, ip.hostname
@@ -714,11 +716,31 @@ func (s *PMTAService) HandleSyncConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var config string
 	for rows.Next() {
 		var ipAddr, hostname string
 		rows.Scan(&ipAddr, &hostname)
 		config += fmt.Sprintf("<virtual-mta %s>\n    smtp-source-host %s %s\n    <domain *>\n        dkim-sign yes\n        max-smtp-out 20\n    </domain>\n</virtual-mta>\n\n", hostname, ipAddr, hostname)
+	}
+
+	// Include DKIM domain-key directives from mailing_dkim_keys.
+	// Keys must be deployed to /etc/pmta/dkim-keys/<domain>.pem on the server.
+	dkimRows, err := s.db.QueryContext(r.Context(), `
+		SELECT dk.selector, dk.domain
+		FROM mailing_dkim_keys dk
+		WHERE dk.active = true
+		ORDER BY dk.domain
+	`)
+	if err == nil {
+		defer dkimRows.Close()
+		for dkimRows.Next() {
+			var selector, domain string
+			if err := dkimRows.Scan(&selector, &domain); err != nil {
+				continue
+			}
+			keyPath := fmt.Sprintf("/etc/pmta/dkim-keys/%s.pem", domain)
+			config += fmt.Sprintf("domain-key %s, %s, %s\n", selector, domain, keyPath)
+		}
+		config += "\n"
 	}
 
 	// Push config to PMTA
@@ -732,7 +754,7 @@ func (s *PMTAService) HandleSyncConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]string{"status": "synced", "message": "VMTA config pushed and PMTA reloaded"})
+	respondJSON(w, http.StatusOK, map[string]string{"status": "synced", "message": "VMTA + DKIM config pushed and PMTA reloaded"})
 }
 
 // =============================================================================

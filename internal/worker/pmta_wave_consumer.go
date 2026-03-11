@@ -69,21 +69,26 @@ func (c *PMTAWaveConsumer) poll(ctx context.Context) {
 		}
 
 		for _, msg := range out.Messages {
-			var payload PMTAWaveMessage
-			if err := json.Unmarshal([]byte(aws.ToString(msg.Body)), &payload); err != nil {
-				log.Printf("PMTA wave bad message: %v", err)
+			if processWaveMessage(ctx, c.db, aws.ToString(msg.Body)) {
 				c.deleteMessage(ctx, msg.ReceiptHandle)
-				continue
 			}
-
-			if _, err := EnqueuePMTAWave(ctx, c.db, payload.WaveID); err != nil {
-				log.Printf("PMTA wave enqueue error (%s): %v", payload.WaveID, err)
-				continue
-			}
-
-			c.deleteMessage(ctx, msg.ReceiptHandle)
 		}
 	}
+}
+
+// processWaveMessage handles a single SQS message body. Returns true if the
+// message should be deleted (successful processing or unrecoverable payload).
+func processWaveMessage(ctx context.Context, db *sql.DB, body string) bool {
+	var payload PMTAWaveMessage
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		log.Printf("PMTA wave bad message: %v", err)
+		return true
+	}
+	if _, err := EnqueuePMTAWave(ctx, db, payload.WaveID); err != nil {
+		log.Printf("PMTA wave enqueue error (%s): %v", payload.WaveID, err)
+		return false
+	}
+	return true
 }
 
 func (c *PMTAWaveConsumer) deleteMessage(ctx context.Context, handle *string) {

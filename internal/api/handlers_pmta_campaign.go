@@ -32,10 +32,21 @@ type PMTACampaignService struct {
 	globalHub    *engine.GlobalSuppressionHub
 	executor     *engine.Executor
 	colCache     *campaignColumnCache
+
+	// preflightFn overrides preflightDeployCheck for testing (DNS lookups
+	// cannot be mocked via sqlmock). Nil means use the real implementation.
+	preflightFn func(ctx context.Context, db *sql.DB, orgID, domain string) preflightResult
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
 	s.executor = e
+}
+
+func (s *PMTACampaignService) runPreflight(ctx context.Context, orgID, domain string) preflightResult {
+	if s.preflightFn != nil {
+		return s.preflightFn(ctx, s.db, orgID, domain)
+	}
+	return preflightDeployCheck(ctx, s.db, orgID, domain)
 }
 
 // NewPMTACampaignService creates the service.
@@ -73,6 +84,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/intel", s.HandleCampaignIntel)
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
+		cr.Post("/dry-run", s.HandleDryRunCampaign)
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 		cr.Get("/diag", s.HandlePMTADiag)
 		cr.Get("/trigger-send", s.HandleTriggerSend)
@@ -702,8 +714,22 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	ctx := r.Context()
+	deployCtx, deployCancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer deployCancel()
+	ctx := deployCtx
 	orgID := getOrgID(r)
+
+	preflight := s.runPreflight(ctx, orgID, input.SendingDomain)
+	if !preflight.OK {
+		msgs := make([]string, len(preflight.Errors))
+		for i, e := range preflight.Errors {
+			msgs[i] = e.Check + ": " + e.Message
+		}
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "preflight failed: " + strings.Join(msgs, "; "),
+		})
+		return
+	}
 
 	normalized, err := normalizePMTACampaignInput(input)
 	if err != nil {
@@ -711,7 +737,21 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		return
 	}
 
-	audience, err := planPMTAAudience(ctx, s.db, orgID, input, normalized, s.suppMatcher)
+	// Use a dedicated DB connection with an extended statement_timeout for
+	// audience planning, which can be slow when spanning many lists.
+	var audienceDB dbQuerier = s.db
+	conn, connErr := s.db.Conn(ctx)
+	if connErr == nil {
+		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '300s'"); err == nil {
+			audienceDB = conn
+		}
+		defer func() {
+			conn.ExecContext(context.Background(), "RESET statement_timeout")
+			conn.Close()
+		}()
+	}
+
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -752,6 +792,108 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		"after_suppression": audience.AfterSuppression,
 		"suppressed":        audience.TotalSeen - audience.AfterSuppression,
 		"per_isp_selected":  audience.CountsByISP,
+	})
+}
+
+// HandleDryRunCampaign returns a preview of what a campaign deployment would
+// look like — audience counts, wave schedule, ISP distribution — without
+// creating any database records. Uses the same normalization and audience
+// planning pipeline as the real deploy.
+func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *http.Request) {
+	var input engine.PMTACampaignInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	preflight := s.runPreflight(ctx, orgID, input.SendingDomain)
+
+	normalized, err := normalizePMTACampaignInput(input)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var audienceDB dbQuerier = s.db
+	conn, connErr := s.db.Conn(ctx)
+	if connErr == nil {
+		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '300s'"); err == nil {
+			audienceDB = conn
+		}
+		defer func() {
+			conn.ExecContext(context.Background(), "RESET statement_timeout")
+			conn.Close()
+		}()
+	}
+
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	type ispPreview struct {
+		ISP            string `json:"isp"`
+		AudienceCount  int    `json:"audience_count"`
+		WaveCount      int    `json:"wave_count"`
+		BatchSize      int    `json:"batch_size"`
+		WindowStart    string `json:"window_start,omitempty"`
+		WindowEnd      string `json:"window_end,omitempty"`
+		CadenceMinutes int    `json:"cadence_minutes"`
+	}
+
+	wavesByISP := make(map[string][]pmtaWaveSpec)
+	var previews []ispPreview
+	totalWaves := 0
+	totalRecipients := 0
+
+	for _, plan := range normalized.Plans {
+		count := audience.CountsByISP[plan.ISP]
+		waves := buildPMTAWaveSpecs("preview", plan, count)
+		wavesByISP[plan.ISP] = waves
+		totalWaves += len(waves)
+		totalRecipients += count
+
+		p := ispPreview{
+			ISP:           plan.ISP,
+			AudienceCount: count,
+			WaveCount:     len(waves),
+		}
+		if len(waves) > 0 {
+			p.BatchSize = waves[0].BatchSize
+			p.WindowStart = waves[0].ScheduledAt.Format(time.RFC3339)
+			p.WindowEnd = waves[len(waves)-1].ScheduledAt.Format(time.RFC3339)
+			p.CadenceMinutes = waves[0].CadenceMinutes
+		}
+		previews = append(previews, p)
+	}
+
+	var warnings []string
+	if err := waveSanityCheck(normalized.Plans, wavesByISP); err != nil {
+		warnings = append(warnings, err.Error())
+	}
+
+	var lastWaveAt time.Time
+	for _, waves := range wavesByISP {
+		if len(waves) > 0 && waves[len(waves)-1].ScheduledAt.After(lastWaveAt) {
+			lastWaveAt = waves[len(waves)-1].ScheduledAt
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"dry_run":              true,
+		"preflight":            preflight,
+		"total_waves":          totalWaves,
+		"total_recipients":     totalRecipients,
+		"total_seen":           audience.TotalSeen,
+		"after_suppression":    audience.AfterSuppression,
+		"suppressed":           audience.TotalSeen - audience.AfterSuppression,
+		"estimated_completion": lastWaveAt.Format(time.RFC3339),
+		"isp_plans":            previews,
+		"warnings":             warnings,
 	})
 }
 
@@ -960,7 +1102,7 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 // resolveListNamesToIDs converts a mix of list names and/or UUIDs into
 // actual list UUIDs. The PMTA wizard UI sends list names (e.g. "PMTA Test List")
 // but the campaign scheduler expects UUIDs in the list_ids JSONB column.
-func resolveListNamesToIDs(ctx context.Context, db *sql.DB, orgID string, names []string) []string {
+func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, names []string) []string {
 	if len(names) == 0 {
 		return names
 	}
@@ -1450,11 +1592,14 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 	query := fmt.Sprintf(`
 		SELECT id::text, name, status,
 		       COALESCE(sent_count, 0), COALESCE(open_count, 0), COALESCE(click_count, 0),
-		       COALESCE(bounce_count, 0), COALESCE(complaint_count, 0),
+		       COALESCE(bounce_count, 0), COALESCE(hard_bounce_count, 0), COALESCE(soft_bounce_count, 0),
+		       COALESCE(complaint_count, 0),
 		       COALESCE(completed_at, started_at, created_at) AS campaign_date,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END AS open_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(click_count, 0)::float / sent_count ELSE 0 END AS click_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(bounce_count, 0)::float / sent_count ELSE 0 END AS bounce_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(hard_bounce_count, 0)::float / sent_count ELSE 0 END AS hard_bounce_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(soft_bounce_count, 0)::float / sent_count ELSE 0 END AS soft_bounce_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(complaint_count, 0)::float / sent_count ELSE 0 END AS complaint_rate,
 		       %s
 		FROM mailing_campaigns
@@ -1476,21 +1621,25 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 	defer rows.Close()
 
 	type candidate struct {
-		ID             string  `json:"id"`
-		Name           string  `json:"name"`
-		Status         string  `json:"status"`
-		SentCount      int     `json:"sent_count"`
-		OpenCount      int     `json:"open_count"`
-		ClickCount     int     `json:"click_count"`
-		BounceCount    int     `json:"bounce_count"`
-		ComplaintCount int     `json:"complaint_count"`
-		CampaignDate   string  `json:"campaign_date"`
-		OpenRate       float64 `json:"open_rate"`
-		ClickRate      float64 `json:"click_rate"`
-		BounceRate     float64 `json:"bounce_rate"`
-		ComplaintRate  float64 `json:"complaint_rate"`
-		HasConfig      bool    `json:"has_config"`
-		Recommended    bool    `json:"recommended"`
+		ID              string  `json:"id"`
+		Name            string  `json:"name"`
+		Status          string  `json:"status"`
+		SentCount       int     `json:"sent_count"`
+		OpenCount       int     `json:"open_count"`
+		ClickCount      int     `json:"click_count"`
+		BounceCount     int     `json:"bounce_count"`
+		HardBounceCount int     `json:"hard_bounce_count"`
+		SoftBounceCount int     `json:"soft_bounce_count"`
+		ComplaintCount  int     `json:"complaint_count"`
+		CampaignDate    string  `json:"campaign_date"`
+		OpenRate        float64 `json:"open_rate"`
+		ClickRate       float64 `json:"click_rate"`
+		BounceRate      float64 `json:"bounce_rate"`
+		HardBounceRate  float64 `json:"hard_bounce_rate"`
+		SoftBounceRate  float64 `json:"soft_bounce_rate"`
+		ComplaintRate   float64 `json:"complaint_rate"`
+		HasConfig       bool    `json:"has_config"`
+		Recommended     bool    `json:"recommended"`
 	}
 
 	var candidates []candidate
@@ -1501,8 +1650,8 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 		var c candidate
 		var campaignDate time.Time
 		if err := rows.Scan(&c.ID, &c.Name, &c.Status,
-			&c.SentCount, &c.OpenCount, &c.ClickCount, &c.BounceCount, &c.ComplaintCount,
-			&campaignDate, &c.OpenRate, &c.ClickRate, &c.BounceRate, &c.ComplaintRate, &c.HasConfig,
+			&c.SentCount, &c.OpenCount, &c.ClickCount, &c.BounceCount, &c.HardBounceCount, &c.SoftBounceCount, &c.ComplaintCount,
+			&campaignDate, &c.OpenRate, &c.ClickRate, &c.BounceRate, &c.HardBounceRate, &c.SoftBounceRate, &c.ComplaintRate, &c.HasConfig,
 		); err != nil {
 			log.Printf("[CloneCandidates] scan error: %v", err)
 			continue
@@ -1511,6 +1660,8 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 		c.OpenRate = float64(int(c.OpenRate*10000)) / 100
 		c.ClickRate = float64(int(c.ClickRate*10000)) / 100
 		c.BounceRate = float64(int(c.BounceRate*10000)) / 100
+		c.HardBounceRate = float64(int(c.HardBounceRate*10000)) / 100
+		c.SoftBounceRate = float64(int(c.SoftBounceRate*10000)) / 100
 		c.ComplaintRate = float64(int(c.ComplaintRate*10000)) / 100
 
 		if c.SentCount > 0 {

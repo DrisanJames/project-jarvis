@@ -19,15 +19,15 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "1.2"
-	VersionISPPerformance          = "1.0"
+	VersionAnalyticsOverview       = "1.3"
+	VersionISPPerformance          = "1.1"
 	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
 	VersionEngagementReport        = "1.0"
 	VersionDeliverabilityReport    = "1.0"
-	VersionInfrastructureBreakdown = "1.5"
+	VersionInfrastructureBreakdown = "1.6"
 	VersionRevenueReport           = "1.0"
 	VersionHistoricalMetrics       = "1.0"
 )
@@ -36,17 +36,18 @@ const (
 
 // InfraRates holds computed percentage rates for infrastructure metrics.
 type InfraRates struct {
-	OpenRate      float64
-	ClickRate     float64
-	BounceRate    float64
-	ComplaintRate float64
-	DeferralRate  float64
+	OpenRate       float64
+	ClickRate      float64
+	HardBounceRate float64
+	SoftBounceRate float64
+	ComplaintRate  float64
+	DeferralRate   float64
 }
 
 // ComputeInfraRates calculates engagement and deliverability rates.
 // Open/Click rates use delivered as the base (falls back to sent if delivered is 0).
 // Bounce/Complaint/Deferral rates always use sent as the base.
-func ComputeInfraRates(sent, delivered, opens, clicks, bounces, complaints, deferred int) InfraRates {
+func ComputeInfraRates(sent, delivered, opens, clicks, hardBounces, softBounces, complaints, deferred int) InfraRates {
 	r := InfraRates{}
 	base := float64(delivered)
 	if base == 0 {
@@ -58,7 +59,8 @@ func ComputeInfraRates(sent, delivered, opens, clicks, bounces, complaints, defe
 	}
 	if sent > 0 {
 		s := float64(sent)
-		r.BounceRate = math.Round(float64(bounces) / s * 10000) / 100
+		r.HardBounceRate = math.Round(float64(hardBounces) / s * 10000) / 100
+		r.SoftBounceRate = math.Round(float64(softBounces) / s * 10000) / 100
 		r.ComplaintRate = math.Round(float64(complaints) / s * 100000) / 1000
 		r.DeferralRate = math.Round(float64(deferred) / s * 10000) / 100
 	}
@@ -145,7 +147,8 @@ func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r
 		SELECT DATE_TRUNC('hour', event_time) as hour,
 			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			   SUM(CASE WHEN event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces
+			   SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
+			   SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces
 		FROM mailing_tracking_events
 		WHERE campaign_id = $1
 		GROUP BY DATE_TRUNC('hour', event_time)
@@ -156,10 +159,10 @@ func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r
 	var timeline []map[string]interface{}
 	for rows.Next() {
 		var hour time.Time
-		var opens, clicks, bounces int
-		rows.Scan(&hour, &opens, &clicks, &bounces)
+		var opens, clicks, hardBounces, softBounces int
+		rows.Scan(&hour, &opens, &clicks, &hardBounces, &softBounces)
 		timeline = append(timeline, map[string]interface{}{
-			"hour": hour.Format(time.RFC3339), "opens": opens, "clicks": clicks, "bounces": bounces,
+			"hour": hour.Format(time.RFC3339), "opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces,
 		})
 	}
 	if timeline == nil { timeline = []map[string]interface{}{} }
@@ -312,7 +315,8 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type IN ('hard_bounce','soft_bounce','bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubscribes
@@ -325,11 +329,11 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	var trend []map[string]interface{}
 	for rows.Next() {
 		var bucket time.Time
-		var sent, delivered, opens, clicks, bounces, complaints, deferred, unsubscribes int
-		rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &bounces, &complaints, &deferred, &unsubscribes)
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints, deferred, unsubscribes int
+		rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints, &deferred, &unsubscribes)
 		trend = append(trend, map[string]interface{}{
 			"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
-			"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints,
+			"opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
 			"deferred": deferred, "unsubscribes": unsubscribes,
 		})
 	}
@@ -787,7 +791,8 @@ func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end tim
 		SELECT COALESCE(NULLIF(t.sending_domain, ''), 'unknown') as entity,
 		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id END) as opens,
 		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id END) as clicks,
-		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
 		FROM mailing_tracking_events t
@@ -811,7 +816,7 @@ func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end tim
 	rows.Close()
 
 	type evtRow struct {
-		opens, clicks, bounces, complaints, deferred int
+		opens, clicks, hardBounces, softBounces, complaints, deferred int
 	}
 	evtData := map[string]evtRow{}
 	rows2, err := s.db.QueryContext(ctx, evtQuery, evtArgs...)
@@ -821,7 +826,7 @@ func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end tim
 	for rows2.Next() {
 		var entity string
 		var r evtRow
-		if err := rows2.Scan(&entity, &r.opens, &r.clicks, &r.bounces, &r.complaints, &r.deferred); err != nil {
+		if err := rows2.Scan(&entity, &r.opens, &r.clicks, &r.hardBounces, &r.softBounces, &r.complaints, &r.deferred); err != nil {
 			continue
 		}
 		evtData[entity] = r
@@ -842,14 +847,14 @@ func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end tim
 		sent, delivered := cd[0], cd[1]
 		ed := evtData[entity]
 
-		rates := ComputeInfraRates(sent, delivered, ed.opens, ed.clicks, ed.bounces, ed.complaints, ed.deferred)
+		rates := ComputeInfraRates(sent, delivered, ed.opens, ed.clicks, ed.hardBounces, ed.softBounces, ed.complaints, ed.deferred)
 		results = append(results, map[string]interface{}{
 			"entity": entity, "sent": sent, "delivered": delivered,
-			"opens": ed.opens, "clicks": ed.clicks, "bounces": ed.bounces,
+			"opens": ed.opens, "clicks": ed.clicks, "hard_bounces": ed.hardBounces, "soft_bounces": ed.softBounces,
 			"complaints": ed.complaints, "deferred": ed.deferred,
 			"open_rate": rates.OpenRate, "click_rate": rates.ClickRate,
-			"bounce_rate": rates.BounceRate, "complaint_rate": rates.ComplaintRate,
-			"deferral_rate": rates.DeferralRate,
+			"hard_bounce_rate": rates.HardBounceRate, "soft_bounce_rate": rates.SoftBounceRate,
+			"complaint_rate": rates.ComplaintRate, "deferral_rate": rates.DeferralRate,
 		})
 	}
 
@@ -986,7 +991,8 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id ELSE NULL END) as opens,
 		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id ELSE NULL END) as clicks,
-		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'soft_bounce', 'bounced') THEN 1 ELSE 0 END) as bounces,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
 		FROM %s
@@ -1005,8 +1011,8 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 	var results []map[string]interface{}
 	for rows.Next() {
 		var entity string
-		var sent, delivered, opens, clicks, bounces, complaints, deferred int
-		if err := rows.Scan(&entity, &sent, &delivered, &opens, &clicks, &bounces, &complaints, &deferred); err != nil {
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints, deferred int
+		if err := rows.Scan(&entity, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints, &deferred); err != nil {
 			log.Printf("[infrastructure] scan error: %v", err)
 			continue
 		}
@@ -1024,14 +1030,14 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 		// use delivered+bounces as an approximation for sent
 		rateSent := estSent
 		rateDelivered := estDelivered
-		if rateSent == 0 && (delivered > 0 || bounces > 0) {
-			rateSent = delivered + bounces
+		if rateSent == 0 && (delivered > 0 || hardBounces > 0 || softBounces > 0) {
+			rateSent = delivered + hardBounces + softBounces
 		}
 		if rateDelivered == 0 && delivered > 0 {
 			rateDelivered = delivered
 		}
 
-		rates := ComputeInfraRates(rateSent, rateDelivered, opens, clicks, bounces, complaints, deferred)
+		rates := ComputeInfraRates(rateSent, rateDelivered, opens, clicks, hardBounces, softBounces, complaints, deferred)
 		capRate := func(r float64) float64 {
 			if r > 100 {
 				return 100
@@ -1040,10 +1046,10 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 		}
 		results = append(results, map[string]interface{}{
 			"entity": entity, "sent": estSent, "delivered": estDelivered,
-			"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints, "deferred": deferred,
+			"opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints, "deferred": deferred,
 			"open_rate": capRate(rates.OpenRate), "click_rate": capRate(rates.ClickRate),
-			"bounce_rate": capRate(rates.BounceRate), "complaint_rate": capRate(rates.ComplaintRate),
-			"deferral_rate": capRate(rates.DeferralRate),
+			"hard_bounce_rate": capRate(rates.HardBounceRate), "soft_bounce_rate": capRate(rates.SoftBounceRate),
+			"complaint_rate": capRate(rates.ComplaintRate), "deferral_rate": capRate(rates.DeferralRate),
 			"parent_sent": parentSent, "parent_delivered": parentDelivered,
 		})
 	}
@@ -1700,7 +1706,8 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounces,
+			SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce') THEN 1 ELSE 0 END) as hard_bounces,
+			SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM (%s) d
 		WHERE d.dom IN %s
@@ -1715,31 +1722,33 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		defer rows.Close()
 
 		var trend []map[string]interface{}
-		var tSent, tDel, tOpens, tClicks, tBounces, tComplaints int
+		var tSent, tDel, tOpens, tClicks, tHardBounces, tSoftBounces, tComplaints int
 		for rows.Next() {
 			var bucket time.Time
-			var sent, delivered, opens, clicks, bounces, complaints int
-			rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &bounces, &complaints)
+			var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
+			rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints)
 			tSent += sent
 			tDel += delivered
 			tOpens += opens
 			tClicks += clicks
-			tBounces += bounces
+			tHardBounces += hardBounces
+			tSoftBounces += softBounces
 			tComplaints += complaints
 			trend = append(trend, map[string]interface{}{
 				"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
-				"opens": opens, "clicks": clicks, "bounces": bounces, "complaints": complaints,
+				"opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
 			})
 		}
 		if trend == nil {
 			trend = []map[string]interface{}{}
 		}
 
-		openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
+		openRate, clickRate, hardBounceRate, softBounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0, 0.0
 		if tSent > 0 {
 			openRate = math.Round(float64(tOpens)/float64(tSent)*10000) / 100
 			clickRate = math.Round(float64(tClicks)/float64(tSent)*10000) / 100
-			bounceRate = math.Round(float64(tBounces)/float64(tSent)*10000) / 100
+			hardBounceRate = math.Round(float64(tHardBounces)/float64(tSent)*10000) / 100
+			softBounceRate = math.Round(float64(tSoftBounces)/float64(tSent)*10000) / 100
 			complaintRate = math.Round(float64(tComplaints)/float64(tSent)*10000) / 100
 		}
 
@@ -1756,9 +1765,9 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 			"granularity":  gran,
 			"totals": map[string]interface{}{
 				"sent": tSent, "delivered": tDel, "opens": tOpens,
-				"clicks": tClicks, "bounces": tBounces, "complaints": tComplaints,
+				"clicks": tClicks, "hard_bounces": tHardBounces, "soft_bounces": tSoftBounces, "complaints": tComplaints,
 				"open_rate": openRate, "click_rate": clickRate,
-				"bounce_rate": bounceRate, "complaint_rate": complaintRate,
+				"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate, "complaint_rate": complaintRate,
 			},
 			"trend": trend,
 		})
@@ -1770,7 +1779,8 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN d.subscriber_id END) as opens,
 		COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN d.subscriber_id END) as clicks,
-		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce','soft_bounce') THEN 1 ELSE 0 END) as bounces,
+		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce') THEN 1 ELSE 0 END) as hard_bounces,
+		SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 	FROM (%s) d
 	GROUP BY isp ORDER BY sent DESC`, ispDomainCaseSQL, domSubquery)
@@ -1786,14 +1796,15 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 	var isps []map[string]interface{}
 	for rows.Next() {
 		var isp string
-		var sent, delivered, opens, clicks, bounces, complaints int
-		rows.Scan(&isp, &sent, &delivered, &opens, &clicks, &bounces, &complaints)
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
+		rows.Scan(&isp, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints)
 
-		openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
+		openRate, clickRate, hardBounceRate, softBounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0, 0.0
 		if sent > 0 {
 			openRate = math.Round(float64(opens)/float64(sent)*10000) / 100
 			clickRate = math.Round(float64(clicks)/float64(sent)*10000) / 100
-			bounceRate = math.Round(float64(bounces)/float64(sent)*10000) / 100
+			hardBounceRate = math.Round(float64(hardBounces)/float64(sent)*10000) / 100
+			softBounceRate = math.Round(float64(softBounces)/float64(sent)*10000) / 100
 			complaintRate = math.Round(float64(complaints)/float64(sent)*10000) / 100
 		}
 
@@ -1805,9 +1816,9 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		isps = append(isps, map[string]interface{}{
 			"isp": isp, "label": label,
 			"sent": sent, "delivered": delivered, "opens": opens,
-			"clicks": clicks, "bounces": bounces, "complaints": complaints,
+			"clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
 			"open_rate": openRate, "click_rate": clickRate,
-			"bounce_rate": bounceRate, "complaint_rate": complaintRate,
+			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate, "complaint_rate": complaintRate,
 		})
 	}
 	if isps == nil {

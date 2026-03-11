@@ -176,14 +176,16 @@ func (svc *MailingService) HandleCampaignAnalytics(w http.ResponseWriter, r *htt
 	campaignID := chi.URLParam(r, "campaignId")
 
 	var name, subject, status string
-	var sent, opens, clicks, bounces int
+	var sent, opens, clicks, bounces, hardBounces, softBounces int
 	var revenue float64
 	var startedAt *time.Time
 
 	err := svc.db.QueryRowContext(ctx, `
-		SELECT name, subject, status, sent_count, open_count, click_count, bounce_count, revenue, started_at
+		SELECT name, subject, status, sent_count, open_count, click_count,
+		       bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		       revenue, started_at
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&name, &subject, &status, &sent, &opens, &clicks, &bounces, &revenue, &startedAt)
+	`, campaignID).Scan(&name, &subject, &status, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &revenue, &startedAt)
 
 	if err == sql.ErrNoRows {
 		http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
@@ -193,11 +195,15 @@ func (svc *MailingService) HandleCampaignAnalytics(w http.ResponseWriter, r *htt
 	openRate := 0.0
 	clickRate := 0.0
 	bounceRate := 0.0
+	hardBounceRate := 0.0
+	softBounceRate := 0.0
 	ctor := 0.0
 	if sent > 0 {
 		openRate = float64(opens) / float64(sent) * 100
 		clickRate = float64(clicks) / float64(sent) * 100
 		bounceRate = float64(bounces) / float64(sent) * 100
+		hardBounceRate = float64(hardBounces) / float64(sent) * 100
+		softBounceRate = float64(softBounces) / float64(sent) * 100
 	}
 	if opens > 0 {
 		ctor = float64(clicks) / float64(opens) * 100
@@ -236,10 +242,14 @@ func (svc *MailingService) HandleCampaignAnalytics(w http.ResponseWriter, r *htt
 		"opens":               opens,
 		"clicks":              clicks,
 		"bounces":             bounces,
+		"hard_bounces":        hardBounces,
+		"soft_bounces":        softBounces,
 		"revenue":             revenue,
 		"open_rate":           openRate,
 		"click_rate":          clickRate,
 		"bounce_rate":         bounceRate,
+		"hard_bounce_rate":    hardBounceRate,
+		"soft_bounce_rate":    softBounceRate,
 		"click_to_open_rate":  ctor,
 		"recommendations":     recs,
 	}

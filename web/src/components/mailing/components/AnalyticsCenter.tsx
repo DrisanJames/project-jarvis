@@ -22,11 +22,11 @@ import './AnalyticsCenter.css';
 interface OverviewData {
   totals: {
     sent: number; delivered: number; opens: number; clicks: number;
-    bounces: number; hard_bounces: number; soft_bounces: number;
+    hard_bounces: number; soft_bounces: number;
     complaints: number; revenue: number;
   };
-  rates: { open_rate: number; click_rate: number; bounce_rate: number; complaint_rate: number };
-  daily_trend: { date: string; sent: number; delivered: number; opens: number; clicks: number; bounces: number; complaints: number; deferred: number; unsubscribes: number }[];
+  rates: { open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
+  daily_trend: { date: string; sent: number; delivered: number; opens: number; clicks: number; hard_bounces: number; soft_bounces: number; complaints: number; deferred: number; unsubscribes: number }[];
   granularity: string;
   range: { start: string; end: string };
   sending_domains?: string[];
@@ -40,8 +40,8 @@ interface EngagementData {
 }
 
 interface DeliverabilityData {
-  totals: { sent: number; delivered: number; bounced: number; complaints: number };
-  rates: { delivery_rate: number; bounce_rate: number; complaint_rate: number };
+  totals: { sent: number; delivered: number; hard_bounced: number; soft_bounced: number; complaints: number };
+  rates: { delivery_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
   bounce_breakdown: { type: string; count: number }[];
   global_suppressions: number;
   api_version?: string;
@@ -60,8 +60,8 @@ interface RevenueData {
 interface CampaignData {
   campaigns: {
     id: string; name: string; status: string;
-    sent: number; opens: number; clicks: number; bounces: number;
-    revenue: number; open_rate: number; click_rate: number; bounce_rate: number;
+    sent: number; opens: number; clicks: number; hard_bounces: number; soft_bounces: number;
+    revenue: number; open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number;
     created_at: string;
   }[];
 }
@@ -103,12 +103,14 @@ interface InfraRow {
   delivered: number;
   opens: number;
   clicks: number;
-  bounces: number;
+  hard_bounces: number;
+  soft_bounces: number;
   complaints: number;
   deferred: number;
   open_rate: number;
   click_rate: number;
-  bounce_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
   complaint_rate: number;
   deferral_rate: number;
   parent_sent?: number;
@@ -118,8 +120,8 @@ interface InfraRow {
 interface ISPData {
   isp: string; label: string;
   sent: number; delivered: number; opens: number; clicks: number;
-  bounces: number; complaints: number;
-  open_rate: number; click_rate: number; bounce_rate: number; complaint_rate: number;
+  hard_bounces: number; soft_bounces: number; complaints: number;
+  open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number;
 }
 
 const ISP_LABELS: Record<string, string> = {
@@ -136,7 +138,7 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
-const PAGE_VERSION = '1.6';
+const PAGE_VERSION = '1.7';
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
@@ -393,8 +395,8 @@ export const AnalyticsCenter: React.FC = () => {
   }, [overview, chartDomain]);
 
   // ─── Derived Values ────────────────────────────────────────────────────────
-  const totals = overview?.totals || { sent: 0, opens: 0, clicks: 0, bounces: 0, complaints: 0, revenue: 0 };
-  const rates = overview?.rates || { open_rate: 0, click_rate: 0, bounce_rate: 0, complaint_rate: 0 };
+  const totals = overview?.totals || { sent: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, revenue: 0 };
+  const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0 };
   const trend = overview?.daily_trend || [];
   const granularity = overview?.granularity || 'day';
 
@@ -490,9 +492,17 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-kpi bounces ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value"><AnimatedCounter value={rates.bounce_rate} decimals={1} suffix="%" /></span>
-                <span className="ac-kpi-label">Bounce Rate</span>
-                <span className="ac-kpi-sub">{fmt(totals.bounces)} bounced</span>
+                <span className="ac-kpi-value" style={{ color: '#ef4444' }}><AnimatedCounter value={rates.hard_bounce_rate} decimals={1} suffix="%" /></span>
+                <span className="ac-kpi-label">Hard Bounce Rate</span>
+                <span className="ac-kpi-sub">{fmt(totals.hard_bounces)} hard bounced</span>
+              </div>
+            </div>
+            <div className="ac-kpi bounces ig-card-hover ig-shimmer">
+              <div className="ac-kpi-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
+              <div className="ac-kpi-body">
+                <span className="ac-kpi-value" style={{ color: '#f59e0b' }}><AnimatedCounter value={rates.soft_bounce_rate} decimals={1} suffix="%" /></span>
+                <span className="ac-kpi-label">Soft Bounce Rate</span>
+                <span className="ac-kpi-sub">{fmt(totals.soft_bounces)} soft bounced</span>
               </div>
             </div>
             <div className="ac-kpi complaints ig-card-hover ig-shimmer">
@@ -514,7 +524,7 @@ export const AnalyticsCenter: React.FC = () => {
               <>
                 <div className="ac-isp-grid">
                   {ispCards.filter(c => c.isp !== 'other').map(card => {
-                    const score = Math.max(0, Math.min(100, Math.round(card.open_rate - card.bounce_rate * 2 - card.complaint_rate * 10)));
+                    const score = Math.max(0, Math.min(100, Math.round(card.open_rate - (card.hard_bounce_rate + card.soft_bounce_rate) * 2 - card.complaint_rate * 10)));
                     const scoreColor = score >= 60 ? '#22c55e' : score >= 30 ? '#f59e0b' : '#ef4444';
                     const isSelected = selectedISP === card.isp;
                     return (
@@ -543,8 +553,12 @@ export const AnalyticsCenter: React.FC = () => {
                             <span className="ac-isp-metric-lbl">Clicks</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.bounce_rate}%</span>
-                            <span className="ac-isp-metric-lbl">Bounces</span>
+                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.hard_bounce_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Hard Bnc</span>
+                          </div>
+                          <div className="ac-isp-metric">
+                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.soft_bounce_rate}%</span>
+                            <span className="ac-isp-metric-lbl">Soft Bnc</span>
                           </div>
                           <div className="ac-isp-metric">
                             <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.complaint_rate}%</span>
@@ -617,8 +631,9 @@ export const AnalyticsCenter: React.FC = () => {
                             <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || '#a5b4fc'} strokeWidth={2} dot={false} name="Sent" />
                             <Line yAxisId="right" type="monotone" dataKey="opens" stroke="#22c55e" strokeWidth={1.5} dot={false} name="Opens" />
                             <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Clicks" />
-                            <Line yAxisId="right" type="monotone" dataKey="bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Bounces" />
-                            <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Complaints" />
+                            <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Complaints" />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
@@ -710,7 +725,8 @@ export const AnalyticsCenter: React.FC = () => {
                         <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="#00e5ff" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="#10b981" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="#f59e0b" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
                       </LineChart>
                     </ResponsiveContainer>
@@ -732,7 +748,8 @@ export const AnalyticsCenter: React.FC = () => {
                           <th>Sent</th>
                           <th>Open %</th>
                           <th>Click %</th>
-                          <th>Bounce %</th>
+                          <th>Hard %</th>
+                          <th>Soft %</th>
                           <th>Revenue</th>
                           <th>Action</th>
                         </tr>
@@ -747,7 +764,8 @@ export const AnalyticsCenter: React.FC = () => {
                             <td>{fmt(c.sent)}</td>
                             <td className={c.open_rate > 20 ? 'ac-good' : c.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(c.open_rate)}</td>
                             <td className={c.click_rate > 3 ? 'ac-good' : c.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(c.click_rate)}</td>
-                            <td className={c.bounce_rate < 2 ? 'ac-good' : c.bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(c.bounce_rate)}</td>
+                            <td className={c.hard_bounce_rate < 2 ? 'ac-good' : c.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(c.hard_bounce_rate)}</td>
+                            <td className={c.soft_bounce_rate < 2 ? 'ac-good' : c.soft_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(c.soft_bounce_rate)}</td>
                             <td>{fmtCurrency(c.revenue)}</td>
                             <td>
                               <button
@@ -793,8 +811,12 @@ export const AnalyticsCenter: React.FC = () => {
                       <strong className="ac-good">{fmt(deliverability?.totals?.delivered || 0)}</strong>
                     </div>
                     <div className="ac-dd-row">
-                      <span>Bounced</span>
-                      <strong className="ac-bad">{fmt(deliverability?.totals?.bounced || 0)}</strong>
+                      <span>Hard Bounced</span>
+                      <strong className="ac-bad" style={{ color: '#ef4444' }}>{fmt(deliverability?.totals?.hard_bounced || 0)}</strong>
+                    </div>
+                    <div className="ac-dd-row">
+                      <span>Soft Bounced</span>
+                      <strong className="ac-bad" style={{ color: '#f59e0b' }}>{fmt(deliverability?.totals?.soft_bounced || 0)}</strong>
                     </div>
                     <div className="ac-dd-row">
                       <span>Complaints</span>
@@ -876,7 +898,8 @@ export const AnalyticsCenter: React.FC = () => {
                           <th>Clicks</th>
                           <th>Open %</th>
                           <th>Click %</th>
-                          <th>Bounce %</th>
+                          <th>Hard %</th>
+                          <th>Soft %</th>
                           <th>Deferral %</th>
                           <th>Complaint %</th>
                           {!selectedDomain && <th>Action</th>}
@@ -892,7 +915,8 @@ export const AnalyticsCenter: React.FC = () => {
                             <td>{fmt(row.clicks)}</td>
                             <td className={row.open_rate > 20 ? 'ac-good' : row.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(row.open_rate)}</td>
                             <td className={row.click_rate > 3 ? 'ac-good' : row.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(row.click_rate)}</td>
-                            <td className={row.bounce_rate < 2 ? 'ac-good' : row.bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.bounce_rate)}</td>
+                            <td className={row.hard_bounce_rate < 2 ? 'ac-good' : row.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.hard_bounce_rate)}</td>
+                            <td className={row.soft_bounce_rate < 2 ? 'ac-good' : row.soft_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.soft_bounce_rate)}</td>
                             <td className={row.deferral_rate < 1 ? 'ac-good' : row.deferral_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(row.deferral_rate)}</td>
                             <td className={row.complaint_rate < 0.1 ? 'ac-good' : 'ac-bad'}>{row.complaint_rate.toFixed(2)}%</td>
                             {!selectedDomain && (
@@ -1188,7 +1212,8 @@ export const AnalyticsCenter: React.FC = () => {
                   {[
                     { label: 'Open Rate', yours: rates.open_rate, bench: 20, unit: '%' },
                     { label: 'Click Rate', yours: rates.click_rate, bench: 3, unit: '%' },
-                    { label: 'Bounce Rate', yours: rates.bounce_rate, bench: 2, unit: '%', inverse: true },
+                    { label: 'Hard Bounce Rate', yours: rates.hard_bounce_rate, bench: 1, unit: '%', inverse: true },
+                    { label: 'Soft Bounce Rate', yours: rates.soft_bounce_rate, bench: 1, unit: '%', inverse: true },
                     { label: 'Complaint Rate', yours: rates.complaint_rate, bench: 0.1, unit: '%', inverse: true },
                   ].map((b, i) => {
                     const better = b.inverse ? b.yours < b.bench : b.yours > b.bench;

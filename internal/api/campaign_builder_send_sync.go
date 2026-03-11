@@ -80,6 +80,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		APIEndpoint    sql.NullString
 		TrackingDomain sql.NullString
 		SendingDomain  sql.NullString
+		IPPool         sql.NullString
 	}
 	
 	if campaign.ProfileID.Valid {
@@ -87,11 +88,13 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			SELECT id, vendor_type, api_key, smtp_host, smtp_port, smtp_username, smtp_password,
 			       api_endpoint,
 			       COALESCE(tracking_domain, ''),
-			       COALESCE(sending_domain, '')
+			       COALESCE(sending_domain, ''),
+			       COALESCE(ip_pool, '')
 			FROM mailing_sending_profiles WHERE id = $1
 		`, campaign.ProfileID.String).Scan(&profile.ID, &profile.VendorType, &profile.APIKey,
 			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			&profile.APIEndpoint, &profile.TrackingDomain, &profile.SendingDomain)
+			&profile.APIEndpoint, &profile.TrackingDomain, &profile.SendingDomain,
+			&profile.IPPool)
 		if profileErr != nil {
 			log.Printf("ERROR loading sending profile %s: %v", campaign.ProfileID.String, profileErr)
 		} else {
@@ -293,6 +296,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			// Try HTTP bridge first (bypasses AWS SMTP port blocking), fall back to SMTP
 			if profile.APIEndpoint.Valid && profile.APIEndpoint.String != "" {
 				pmtaHeaders := map[string]string{"X-Job": id}
+				if profile.IPPool.Valid && profile.IPPool.String != "" {
+					pmtaHeaders["X-Virtual-MTA"] = profile.IPPool.String
+				}
 				for k, v := range unsubHeaders {
 					pmtaHeaders[k] = v
 				}
