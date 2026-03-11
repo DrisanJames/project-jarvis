@@ -182,7 +182,7 @@ func (s *AdvancedMailingService) HandleCampaignByDomain(w http.ResponseWriter, r
 		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN t.event_type = 'hard_bounce' THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
 		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM mailing_tracking_events t
@@ -275,17 +275,25 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	// Hard/soft bounce split from tracking events (reliable regardless of schema)
 	var totalHardBounce, totalSoftBounce int
 	s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END), 0),
+		SELECT COALESCE(SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END), 0)
 		FROM mailing_tracking_events
 		WHERE event_at >= $1 AND event_at <= $2
 	`, start, end).Scan(&totalHardBounce, &totalSoftBounce)
 
+	// If events don't have split data but campaigns do, fall back to campaign totals
+	if totalHardBounce+totalSoftBounce == 0 && totalBounces > 0 {
+		totalHardBounce = totalBounces
+	}
+
 	openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
+	hardBounceRate, softBounceRate := 0.0, 0.0
 	if totalSent > 0 {
 		openRate = float64(totalOpens) / float64(totalSent) * 100
 		clickRate = float64(totalClicks) / float64(totalSent) * 100
 		bounceRate = float64(totalBounces) / float64(totalSent) * 100
+		hardBounceRate = float64(totalHardBounce) / float64(totalSent) * 100
+		softBounceRate = float64(totalSoftBounce) / float64(totalSent) * 100
 		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
 	}
 
@@ -372,7 +380,9 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		},
 		"rates": map[string]interface{}{
 			"open_rate": math.Round(openRate*100) / 100, "click_rate": math.Round(clickRate*100) / 100,
-			"bounce_rate": math.Round(bounceRate*100) / 100, "complaint_rate": math.Round(complaintRate*1000) / 1000,
+			"bounce_rate": math.Round(bounceRate*100) / 100,
+			"hard_bounce_rate": math.Round(hardBounceRate*100) / 100, "soft_bounce_rate": math.Round(softBounceRate*100) / 100,
+			"complaint_rate": math.Round(complaintRate*1000) / 1000,
 		},
 		"daily_trend":     trend,
 		"sending_domains": domains,
@@ -387,7 +397,10 @@ func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter,
 	start, end := parseAnalyticsRange(r)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, status, sent_count, open_count, click_count, bounce_count, complaint_count, revenue,
+		SELECT id, name, status, sent_count, open_count, click_count, bounce_count,
+			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
+			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
+			   complaint_count, revenue,
 			   created_at, COALESCE(started_at, created_at), COALESCE(completed_at, created_at)
 		FROM mailing_campaigns
 		WHERE sent_count > 0
@@ -406,37 +419,39 @@ func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter,
 	for rows.Next() {
 		var id uuid.UUID
 		var name, status string
-		var sent, opens, clicks, bounces, complaints int
+		var sent, opens, clicks, bounces, hardBounces, softBounces, complaints int
 		var revenue float64
 		var created, started, completed time.Time
 		
-		rows.Scan(&id, &name, &status, &sent, &opens, &clicks, &bounces, &complaints, &revenue, &created, &started, &completed)
+		rows.Scan(&id, &name, &status, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &complaints, &revenue, &created, &started, &completed)
 		
-		openRate := 0.0
-		clickRate := 0.0
-		bounceRate := 0.0
+		openRate, clickRate, hardBounceRate, softBounceRate := 0.0, 0.0, 0.0, 0.0
 		if sent > 0 {
 			openRate = float64(opens) / float64(sent) * 100
 			clickRate = float64(clicks) / float64(sent) * 100
-			bounceRate = float64(bounces) / float64(sent) * 100
+			hardBounceRate = float64(hardBounces) / float64(sent) * 100
+			softBounceRate = float64(softBounces) / float64(sent) * 100
 		}
 		
 		campaigns = append(campaigns, map[string]interface{}{
-			"id":             id.String(),
-			"name":           name,
-			"status":         status,
-			"sent":           sent,
-			"opens":          opens,
-			"clicks":         clicks,
-			"bounces":        bounces,
-			"complaints":     complaints,
-			"revenue":        revenue,
-			"open_rate":      math.Round(openRate*100) / 100,
-			"click_rate":     math.Round(clickRate*100) / 100,
-			"bounce_rate":    math.Round(bounceRate*100) / 100,
-			"created_at":     created,
-			"started_at":     started,
-			"completed_at":   completed,
+			"id":                id.String(),
+			"name":              name,
+			"status":            status,
+			"sent":              sent,
+			"opens":             opens,
+			"clicks":            clicks,
+			"bounces":           bounces,
+			"hard_bounces":      hardBounces,
+			"soft_bounces":      softBounces,
+			"complaints":        complaints,
+			"revenue":           revenue,
+			"open_rate":         math.Round(openRate*100) / 100,
+			"click_rate":        math.Round(clickRate*100) / 100,
+			"hard_bounce_rate":  math.Round(hardBounceRate*100) / 100,
+			"soft_bounce_rate":  math.Round(softBounceRate*100) / 100,
+			"created_at":        created,
+			"started_at":        started,
+			"completed_at":      completed,
 		})
 	}
 	if campaigns == nil { campaigns = []map[string]interface{}{} }

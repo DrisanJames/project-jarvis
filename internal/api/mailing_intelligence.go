@@ -182,7 +182,9 @@ func (svc *MailingService) HandleCampaignAnalytics(w http.ResponseWriter, r *htt
 
 	err := svc.db.QueryRowContext(ctx, `
 		SELECT name, subject, status, sent_count, open_count, click_count,
-		       bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		       bounce_count,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
 		       revenue, started_at
 		FROM mailing_campaigns WHERE id = $1
 	`, campaignID).Scan(&name, &subject, &status, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &revenue, &startedAt)

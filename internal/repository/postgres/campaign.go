@@ -22,7 +22,8 @@ func (r *CampaignRepo) Get(ctx context.Context, orgID, id string) (*domain.Campa
 		SELECT id, organization_id, name, subject, from_name, from_email,
 		       COALESCE(reply_to,''), COALESCE(html_content,''), COALESCE(plain_content,''),
 		       status, sent_count, open_count, click_count, bounce_count,
-		       COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
 		       complaint_count, unsubscribe_count, revenue, created_at, updated_at
 		FROM mailing_campaigns
 		WHERE id = $1 AND organization_id = $2

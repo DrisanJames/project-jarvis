@@ -74,7 +74,7 @@ func (m *CampaignHealthMonitor) checkCampaigns() {
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT id, sent_count,
 		       COALESCE(bounce_count, 0),
-		       COALESCE(hard_bounce_count, 0),
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END,
 		       COALESCE(started_at, created_at)
 		FROM mailing_campaigns
 		WHERE status = 'sending'
@@ -160,8 +160,8 @@ func (m *CampaignHealthMonitor) recordCompletedMetrics() {
 		       c.sent_count,
 		       COALESCE(c.delivered_count, 0),
 		       COALESCE(c.bounce_count, 0),
-		       COALESCE(c.hard_bounce_count, 0),
-		       COALESCE(c.soft_bounce_count, 0),
+		       CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.hard_bounce_count,0) ELSE COALESCE(c.bounce_count,0) END,
+		       CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.soft_bounce_count,0) ELSE 0 END,
 		       COALESCE(c.open_count, 0),
 		       COALESCE(c.click_count, 0),
 		       COALESCE(c.complaint_count, 0)

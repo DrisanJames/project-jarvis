@@ -188,7 +188,7 @@ const fmtCurrency = (n: number): string => {
   return '$' + n.toFixed(2);
 };
 
-const pct = (n: number): string => n.toFixed(1) + '%';
+const pct = (n: number | undefined | null): string => (n == null || isNaN(n)) ? '0.0%' : n.toFixed(1) + '%';
 
 const timeAgo = (s?: string): string => {
   if (!s) return 'Never';
@@ -524,7 +524,7 @@ export const AnalyticsCenter: React.FC = () => {
               <>
                 <div className="ac-isp-grid">
                   {ispCards.filter(c => c.isp !== 'other').map(card => {
-                    const score = Math.max(0, Math.min(100, Math.round(card.open_rate - (card.hard_bounce_rate + card.soft_bounce_rate) * 2 - card.complaint_rate * 10)));
+                    const score = Math.max(0, Math.min(100, Math.round((card.open_rate || 0) - ((card.hard_bounce_rate || 0) + (card.soft_bounce_rate || 0)) * 2 - (card.complaint_rate || 0) * 10)));
                     const scoreColor = score >= 60 ? '#22c55e' : score >= 30 ? '#f59e0b' : '#ef4444';
                     const isSelected = selectedISP === card.isp;
                     return (
@@ -553,11 +553,11 @@ export const AnalyticsCenter: React.FC = () => {
                             <span className="ac-isp-metric-lbl">Clicks</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.hard_bounce_rate}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.hard_bounce_rate ?? 0}%</span>
                             <span className="ac-isp-metric-lbl">Hard Bnc</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.soft_bounce_rate}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.soft_bounce_rate ?? 0}%</span>
                             <span className="ac-isp-metric-lbl">Soft Bnc</span>
                           </div>
                           <div className="ac-isp-metric">

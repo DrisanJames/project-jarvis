@@ -1592,14 +1592,16 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 	query := fmt.Sprintf(`
 		SELECT id::text, name, status,
 		       COALESCE(sent_count, 0), COALESCE(open_count, 0), COALESCE(click_count, 0),
-		       COALESCE(bounce_count, 0), COALESCE(hard_bounce_count, 0), COALESCE(soft_bounce_count, 0),
+		       COALESCE(bounce_count, 0),
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
 		       COALESCE(complaint_count, 0),
 		       COALESCE(completed_at, started_at, created_at) AS campaign_date,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END AS open_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(click_count, 0)::float / sent_count ELSE 0 END AS click_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(bounce_count, 0)::float / sent_count ELSE 0 END AS bounce_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(hard_bounce_count, 0)::float / sent_count ELSE 0 END AS hard_bounce_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(soft_bounce_count, 0)::float / sent_count ELSE 0 END AS soft_bounce_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN (CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END)::float / sent_count ELSE 0 END AS hard_bounce_rate,
+		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN (CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END)::float / sent_count ELSE 0 END AS soft_bounce_rate,
 		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(complaint_count, 0)::float / sent_count ELSE 0 END AS complaint_rate,
 		       %s
 		FROM mailing_campaigns

@@ -111,7 +111,9 @@ func (mh *MailingHandlers) GetMailingDashboard(w http.ResponseWriter, r *http.Re
 	// Get recent campaigns
 	rows, err := mh.db.QueryContext(ctx, `
 		SELECT id, name, subject, status, sent_count, open_count, click_count,
-		       bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+		       bounce_count,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
+		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
 		       revenue, created_at
 		FROM mailing_campaigns
 		ORDER BY created_at DESC
@@ -272,7 +274,9 @@ func (mh *MailingHandlers) GetMailingCampaigns(w http.ResponseWriter, r *http.Re
 	rows, err := mh.db.QueryContext(ctx, `
 		SELECT id, name, subject, from_name, from_email, status, 
 			   total_recipients, sent_count, open_count, click_count,
-			   bounce_count, COALESCE(hard_bounce_count,0), COALESCE(soft_bounce_count,0),
+			   bounce_count,
+			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
+			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
 			   revenue, created_at
 		FROM mailing_campaigns
 		ORDER BY created_at DESC

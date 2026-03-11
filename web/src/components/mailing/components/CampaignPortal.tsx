@@ -865,12 +865,12 @@ const CampaignDetailsModal: React.FC<{
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: '#ef4444' }} />
                       <div className="metric-value"><AnimatedCounter value={stats.hard_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-                      <div className="metric-label">Hard Bounces ({stats.hard_bounce_rate.toFixed(1)}%)</div>
+                      <div className="metric-label">Hard Bounces ({(stats.hard_bounce_rate ?? 0).toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
                       <div className="metric-value"><AnimatedCounter value={stats.soft_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-                      <div className="metric-label">Soft Bounces ({stats.soft_bounce_rate.toFixed(1)}%)</div>
+                      <div className="metric-label">Soft Bounces ({(stats.soft_bounce_rate ?? 0).toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" />
@@ -1517,11 +1517,11 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                     </div>
                     <div className="cb-perf-metric">
                       <span className="cb-perf-metric-value" style={{ color: '#ef4444' }}>{editStats.hard_bounces.toLocaleString()}</span>
-                      <span className="cb-perf-metric-label">Hard Bounces ({editStats.hard_bounce_rate.toFixed(1)}%)</span>
+                      <span className="cb-perf-metric-label">Hard Bounces ({(editStats.hard_bounce_rate ?? 0).toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
                       <span className="cb-perf-metric-value" style={{ color: '#f59e0b' }}>{editStats.soft_bounces.toLocaleString()}</span>
-                      <span className="cb-perf-metric-label">Soft Bounces ({editStats.soft_bounce_rate.toFixed(1)}%)</span>
+                      <span className="cb-perf-metric-label">Soft Bounces ({(editStats.soft_bounce_rate ?? 0).toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
                       <span className="cb-perf-metric-value">{editStats.complaints.toLocaleString()}</span>

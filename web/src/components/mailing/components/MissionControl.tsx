@@ -305,10 +305,10 @@ export const MissionControl: React.FC = () => {
         <KPI label="Open Rate" value={`${state.current_open_rate.toFixed(1)}%`} icon={faBullseye}
           className={state.current_open_rate >= 5 ? 'mc-kpi-green' : state.current_open_rate >= 3 ? 'mc-kpi-amber' : 'mc-kpi-red'} />
         <KPI label="Clicks" value={<AnimatedCounter value={state.total_clicks} formatFn={(n) => Math.round(n).toLocaleString()} />} icon={faHandPointer} />
-        <KPI label="Hard Bnc%" value={`${state.current_hard_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
-          className={state.current_hard_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-red'} />
-        <KPI label="Soft Bnc%" value={`${state.current_soft_bounce_rate.toFixed(2)}%`} icon={faCircleExclamation}
-          className={state.current_soft_bounce_rate < 3 ? 'mc-kpi-green' : 'mc-kpi-amber'} />
+        <KPI label="Hard Bnc%" value={`${(state.current_hard_bounce_rate ?? 0).toFixed(2)}%`} icon={faCircleExclamation}
+          className={(state.current_hard_bounce_rate ?? 0) < 3 ? 'mc-kpi-green' : 'mc-kpi-red'} />
+        <KPI label="Soft Bnc%" value={`${(state.current_soft_bounce_rate ?? 0).toFixed(2)}%`} icon={faCircleExclamation}
+          className={(state.current_soft_bounce_rate ?? 0) < 3 ? 'mc-kpi-green' : 'mc-kpi-amber'} />
         <KPI label="Complaint%" value={`${state.complaint_rate.toFixed(3)}%`} icon={faTriangleExclamation}
           className={state.complaint_rate < 0.08 ? 'mc-kpi-green' : 'mc-kpi-red'} />
         <KPI label="Throttle" value={`${state.throttle_rate}/min`} icon={faGauge} />
