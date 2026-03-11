@@ -476,7 +476,9 @@ const AgentCalendar: React.FC = () => {
 
   const buildCalendarGrid = () => {
     if (!forecast) return [];
-    const firstDay = new Date(forecast.days[0]?.date || month + '-01');
+    const dateStr = forecast.days[0]?.date || month + '-01';
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const firstDay = new Date(y, m - 1, d);
     const startDow = firstDay.getDay();
     const grid: (CalendarDay | null)[] = [];
     for (let i = 0; i < startDow; i++) grid.push(null);
