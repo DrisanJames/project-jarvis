@@ -24,7 +24,7 @@ func newTestAgent(t *testing.T) (*EmailMarketingAgent, sqlmock.Sqlmock) {
 
 func TestBuildAgentSystemPrompt_Empty(t *testing.T) {
 	prompt := buildAgentSystemPrompt(nil, nil)
-	assert.Contains(t, prompt, "Maven")
+	assert.Contains(t, prompt, "EDITH")
 	assert.Contains(t, prompt, "email marketing strategist")
 	assert.NotContains(t, prompt, "What I Remember")
 	assert.NotContains(t, prompt, "Active Domain Strategies")

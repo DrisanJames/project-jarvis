@@ -987,7 +987,7 @@ func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID st
 			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
 			 RETURNING id::text`,
 			orgID,
-			fmt.Sprintf("[Maven] %s — %s", campaignType, v.VariantName),
+			fmt.Sprintf("[EDITH] %s — %s", campaignType, v.VariantName),
 			v.Subject,
 			v.FromName,
 			v.HTMLContent,
@@ -999,7 +999,7 @@ func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID st
 		savedTemplates = append(savedTemplates, map[string]interface{}{
 			"template_id":  templateID,
 			"variant_name": v.VariantName,
-			"name":         fmt.Sprintf("[Maven] %s — %s", campaignType, v.VariantName),
+			"name":         fmt.Sprintf("[EDITH] %s — %s", campaignType, v.VariantName),
 			"subject":      v.Subject,
 			"from_name":    v.FromName,
 			"status":       "draft",
