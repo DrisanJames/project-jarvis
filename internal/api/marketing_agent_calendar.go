@@ -371,7 +371,7 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 				TimeSpans: []engine.PMTATimeSpanInput{{
 					Type:    "absolute",
 					StartAt: &schedAt,
-					EndAt:   func() *time.Time { t := schedAt.Add(4 * time.Hour); return &t }(),
+					EndAt:   func() *time.Time { t := schedAt.Add(8 * time.Hour); return &t }(),
 				}},
 			})
 		}
