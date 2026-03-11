@@ -1086,7 +1086,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// Load suppression lists (always include ALL suppression lists)
 	var rawSuppressionLists []listInfo
 	suppRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 ORDER BY name LIMIT 50`, orgID)
+		`SELECT id::text, name FROM mailing_suppression_lists ORDER BY name LIMIT 50`)
 	if suppRows != nil {
 		defer suppRows.Close()
 		for suppRows.Next() {

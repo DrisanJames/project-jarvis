@@ -322,14 +322,12 @@ func (a *EmailMarketingAgent) toolListSegments(ctx context.Context, orgID string
 }
 
 func (a *EmailMarketingAgent) toolListSuppressionLists(ctx context.Context, orgID string) interface{} {
-	// Include org-specific lists and Global Suppression (may have NULL org in some setups)
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT id, name, COALESCE(entry_count, 0) as entry_count
 		FROM mailing_suppression_lists
-		WHERE organization_id::text = $1 OR id = 'global-suppression-list'
 		ORDER BY CASE WHEN id = 'global-suppression-list' THEN 0 ELSE 1 END, name
 		LIMIT 50
-	`, orgID)
+	`)
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
