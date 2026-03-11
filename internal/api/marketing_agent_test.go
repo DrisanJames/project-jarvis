@@ -26,6 +26,9 @@ func TestBuildAgentSystemPrompt_Empty(t *testing.T) {
 	prompt := buildAgentSystemPrompt(nil, nil)
 	assert.Contains(t, prompt, "EDITH")
 	assert.Contains(t, prompt, "email marketing strategist")
+	assert.Contains(t, prompt, "Affiliate Email Marketing")
+	assert.Contains(t, prompt, "Campaign Framework Pattern")
+	assert.Contains(t, prompt, "create_template")
 	assert.NotContains(t, prompt, "What I Remember")
 	assert.NotContains(t, prompt, "Active Domain Strategies")
 }
@@ -64,6 +67,7 @@ func TestGetAgentTools_Count(t *testing.T) {
 	assert.True(t, names["get_engagement_breakdown"])
 	assert.True(t, names["get_domain_strategy"])
 	assert.True(t, names["create_recommendation"])
+	assert.True(t, names["create_template"])
 	assert.True(t, names["save_domain_strategy"])
 	assert.True(t, names["deploy_approved_campaign"])
 }

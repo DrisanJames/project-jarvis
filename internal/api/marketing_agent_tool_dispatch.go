@@ -59,6 +59,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolSaveDomainStrategy(ctx, orgID, args)
 	case "create_recommendation":
 		result, action = a.toolCreateRecommendation(ctx, orgID, args)
+	case "create_template":
+		result, action = a.toolCreateTemplate(ctx, orgID, args)
 	case "generate_template":
 		result, action = a.toolGenerateTemplate(ctx, orgID, args)
 	case "deploy_approved_campaign":
@@ -903,17 +905,33 @@ func (a *EmailMarketingAgent) toolCreateRecommendation(ctx context.Context, orgI
 	}
 
 	campaignConfig := map[string]interface{}{
-		"sending_domain":  domain,
-		"name":            name,
-		"isp_quotas":      args["isp_quotas"],
-		"inclusion_lists":  args["inclusion_lists"],
-		"exclusion_lists":  args["exclusion_lists"],
-		"template_id":     args["template_id"],
-		"subject":         args["subject"],
-		"preview_text":    args["preview_text"],
-		"scheduled_date":  dateStr,
-		"scheduled_time":  timeStr,
+		"sending_domain": domain,
+		"name":           name,
+		"scheduled_date": dateStr,
+		"scheduled_time": timeStr,
 	}
+
+	setIfPresent := func(key, argKey string) {
+		if v, ok := args[argKey]; ok && v != nil {
+			campaignConfig[key] = v
+		}
+	}
+	setIfPresent("isp_quotas", "isp_quotas")
+	setIfPresent("inclusion_lists", "inclusion_lists")
+	setIfPresent("exclusion_lists", "exclusion_lists")
+	setIfPresent("template_id", "template_id")
+	setIfPresent("subject", "subject")
+	setIfPresent("preview_text", "preview_text")
+	setIfPresent("from_name", "from_name")
+	setIfPresent("from_email", "from_email")
+	setIfPresent("audience_priority", "audience_priority")
+	if v, ok := args["wave_interval_minutes"].(float64); ok {
+		campaignConfig["wave_interval_minutes"] = int(v)
+	}
+	if v, ok := args["throttle_per_wave"].(float64); ok {
+		campaignConfig["throttle_per_wave"] = int(v)
+	}
+
 	configJSON, _ := json.Marshal(campaignConfig)
 
 	totalVolume := 0
@@ -925,7 +943,6 @@ func (a *EmailMarketingAgent) toolCreateRecommendation(ctx context.Context, orgI
 		}
 	}
 
-	// Look up current strategy
 	var strategy string
 	a.db.QueryRowContext(ctx,
 		`SELECT strategy FROM agent_domain_strategies WHERE organization_id = $1 AND sending_domain = $2`,
@@ -948,6 +965,82 @@ func (a *EmailMarketingAgent) toolCreateRecommendation(ctx context.Context, orgI
 		"scheduled_date": dateStr, "scheduled_time": timeStr,
 		"projected_volume": totalVolume, "approval_status": "pending",
 	}, fmt.Sprintf("Created recommendation: %s for %s", name, dateStr)
+}
+
+func (a *EmailMarketingAgent) toolCreateTemplate(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	name, _ := args["name"].(string)
+	subject, _ := args["subject"].(string)
+	htmlContent, _ := args["html_content"].(string)
+	fromName, _ := args["from_name"].(string)
+	previewText, _ := args["preview_text"].(string)
+	folderName, _ := args["folder_name"].(string)
+	brand, _ := args["brand"].(string)
+
+	if name == "" || subject == "" || htmlContent == "" {
+		return map[string]string{"error": "name, subject, and html_content are required"}, ""
+	}
+	if len(htmlContent) < 200 {
+		return map[string]string{"error": "html_content is too short — must be a complete HTML email"}, ""
+	}
+	if !strings.Contains(htmlContent, "unsubscribe") {
+		return map[string]string{"error": "html_content must include an unsubscribe link ({{ system.unsubscribe_url }}) for CAN-SPAM compliance"}, ""
+	}
+
+	var folderID *string
+	if folderName != "" {
+		var fid string
+		err := a.db.QueryRowContext(ctx,
+			`SELECT id::text FROM mailing_template_folders WHERE organization_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+			orgID, folderName).Scan(&fid)
+		if err != nil {
+			err = a.db.QueryRowContext(ctx,
+				`INSERT INTO mailing_template_folders (organization_id, name, created_at, updated_at)
+				 VALUES ($1, $2, NOW(), NOW()) RETURNING id::text`,
+				orgID, folderName).Scan(&fid)
+			if err != nil {
+				log.Printf("[MarketingAgent] create folder %q: %v", folderName, err)
+			}
+		}
+		if fid != "" {
+			folderID = &fid
+		}
+	}
+
+	if brand != "" && !strings.Contains(name, brand) {
+		name = fmt.Sprintf("[%s] %s", brand, name)
+	}
+
+	var templateID string
+	var err error
+	if folderID != nil {
+		err = a.db.QueryRowContext(ctx,
+			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, html_content, folder_id, status, created_at, updated_at)
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::uuid, 'active', NOW(), NOW())
+			 RETURNING id::text`,
+			orgID, name, subject, fromName, previewText, htmlContent, *folderID,
+		).Scan(&templateID)
+	} else {
+		err = a.db.QueryRowContext(ctx,
+			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, html_content, status, created_at, updated_at)
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'active', NOW(), NOW())
+			 RETURNING id::text`,
+			orgID, name, subject, fromName, previewText, htmlContent,
+		).Scan(&templateID)
+	}
+	if err != nil {
+		return map[string]string{"error": "failed to save template: " + err.Error()}, ""
+	}
+
+	return map[string]interface{}{
+		"status":      "created",
+		"template_id": templateID,
+		"name":        name,
+		"subject":     subject,
+		"from_name":   fromName,
+		"brand":       brand,
+		"folder":      folderName,
+		"html_length": len(htmlContent),
+	}, fmt.Sprintf("Created template: %s (id: %s)", name, templateID)
 }
 
 func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
