@@ -292,7 +292,7 @@ func getAgentTools() []agentToolDef {
 			Type: "function",
 			Function: agentToolFuncDef{
 				Name:        "update_recommendation",
-				Description: "Update fields of a pending campaign recommendation. Use this to modify scheduled_time, wave_interval_minutes, throttle_per_wave, ISP quotas, lists, subject, preview_text, from_name, etc. Only pending recommendations can be updated.",
+				Description: "Update fields of a pending OR approved campaign recommendation. For approved recommendations, content changes (subject, preview_text, from_name, from_email) are also propagated to the linked deployed campaign. Use this to modify subject, preview_text, from_name, ISP quotas, lists, etc.",
 				Parameters: map[string]interface{}{
 					"type":     "object",
 					"required": []string{"recommendation_id"},
@@ -327,6 +327,20 @@ func getAgentTools() []agentToolDef {
 					"required": []string{"recommendation_id"},
 					"properties": map[string]interface{}{
 						"recommendation_id": prop("string", "The recommendation UUID to deploy."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "unapprove_recommendation",
+				Description: "Revert an approved recommendation back to pending status. This cancels the linked deployed campaign (if it hasn't started sending) and clears the executed_campaign_id, allowing full re-editing and re-approval.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"recommendation_id"},
+					"properties": map[string]interface{}{
+						"recommendation_id": prop("string", "The recommendation UUID to unapprove."),
 					},
 				},
 			},

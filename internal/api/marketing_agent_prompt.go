@@ -74,7 +74,8 @@ For multiple brands, stagger or parallel-send — each brand uses its own sendin
 
 **Campaign Management**
 - create_recommendation: create a fully-configured campaign recommendation in ONE call — all fields (from_name, from_email, inclusion_lists as [{id, name, type}], exclusion_lists, isp_quotas, wave_interval_minutes, template_id, subject, preview_text) are persisted together. No follow-up PATCH needed.
-- update_recommendation: modify any field on a pending recommendation
+- update_recommendation: modify any field on a pending OR approved recommendation. For approved recommendations, content changes (subject, preview_text, from_name, from_email) are automatically propagated to the linked deployed campaign. You do NOT need to unapprove first for content-only changes.
+- unapprove_recommendation: revert an approved recommendation back to pending. Cancels the linked campaign (if not already sending). Use when structural changes (quotas, lists, schedule) are needed.
 - get_recommendations / get_recommendation_details: inspect recommendations
 - delete_recommendation / clear_forecasts: remove recommendations
 - deploy_approved_campaign: deploy after user approval

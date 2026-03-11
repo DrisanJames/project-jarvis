@@ -570,7 +570,62 @@ func (a *EmailMarketingAgent) HandleRejectRecommendation(w http.ResponseWriter, 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "rejected", "id": recID})
 }
 
-// HandleUpdateRecommendation allows editing a pending recommendation's campaign config.
+// HandleUnapproveRecommendation reverts an approved recommendation back to pending
+// and cancels the linked campaign if it hasn't started sending.
+func (a *EmailMarketingAgent) HandleUnapproveRecommendation(w http.ResponseWriter, r *http.Request) {
+	recID := chi.URLParam(r, "id")
+	orgID := getOrgID(r)
+	ctx := r.Context()
+
+	var status string
+	var executedCampaignID sql.NullString
+	err := a.db.QueryRowContext(ctx,
+		`SELECT status, executed_campaign_id::text FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&status, &executedCampaignID)
+	if err != nil {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found"})
+		return
+	}
+	if status != "approved" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only unapprove approved recommendations, current status: " + status})
+		return
+	}
+
+	// Cancel the linked campaign if it exists and hasn't started sending
+	campaignCancelled := false
+	if executedCampaignID.Valid && executedCampaignID.String != "" {
+		var campStatus string
+		err := a.db.QueryRowContext(ctx,
+			`SELECT status FROM mailing_campaigns WHERE id = $1::uuid`, executedCampaignID.String).Scan(&campStatus)
+		if err == nil {
+			if campStatus == "sending" || campStatus == "sent" || campStatus == "completed" {
+				respondJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("cannot unapprove: linked campaign %s is already %s", executedCampaignID.String, campStatus),
+				})
+				return
+			}
+			a.db.ExecContext(ctx,
+				`UPDATE mailing_campaigns SET status = 'cancelled', updated_at = NOW() WHERE id = $1::uuid`,
+				executedCampaignID.String)
+			campaignCancelled = true
+		}
+	}
+
+	// Revert recommendation to pending
+	a.db.ExecContext(ctx,
+		`UPDATE agent_campaign_recommendations SET status = 'pending', approved_at = NULL, executed_campaign_id = NULL, updated_at = NOW()
+		 WHERE id = $1 AND organization_id = $2`, recID, orgID)
+
+	log.Printf("[MarketingAgent] recommendation %s unapproved (campaign cancelled: %v)", recID, campaignCancelled)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":             "pending",
+		"id":                 recID,
+		"campaign_cancelled": campaignCancelled,
+	})
+}
+
+// HandleUpdateRecommendation allows editing a pending or approved recommendation's campaign config.
 func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, r *http.Request) {
 	recID := chi.URLParam(r, "id")
 	orgID := getOrgID(r)
@@ -599,15 +654,16 @@ func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, 
 
 	var existingConfigJSON string
 	var status string
+	var linkedCampaignID sql.NullString
 	err := a.db.QueryRowContext(r.Context(),
-		`SELECT campaign_config::text, status FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
-		recID, orgID).Scan(&existingConfigJSON, &status)
+		`SELECT campaign_config::text, status, executed_campaign_id::text FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&existingConfigJSON, &status, &linkedCampaignID)
 	if err != nil {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found"})
 		return
 	}
-	if status != "pending" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only edit pending recommendations"})
+	if status != "pending" && status != "approved" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only edit pending or approved recommendations"})
 		return
 	}
 
@@ -731,6 +787,38 @@ func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, 
 		log.Printf("[MarketingAgent] update recommendation error: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+
+	// If approved with a linked campaign, propagate content changes
+	if status == "approved" && linkedCampaignID.Valid && linkedCampaignID.String != "" {
+		cSets := []string{}
+		cArgs := []interface{}{}
+		ci := 1
+		if input.Subject != "" {
+			cSets = append(cSets, fmt.Sprintf("subject = $%d", ci))
+			cArgs = append(cArgs, input.Subject)
+			ci++
+		}
+		if input.PreviewText != "" {
+			cSets = append(cSets, fmt.Sprintf("preview_text = $%d", ci))
+			cArgs = append(cArgs, input.PreviewText)
+			ci++
+		}
+		if input.FromName != "" {
+			cSets = append(cSets, fmt.Sprintf("from_name = $%d", ci))
+			cArgs = append(cArgs, input.FromName)
+			ci++
+		}
+		if input.FromEmail != "" {
+			cSets = append(cSets, fmt.Sprintf("from_email = $%d", ci))
+			cArgs = append(cArgs, input.FromEmail)
+			ci++
+		}
+		if len(cSets) > 0 {
+			cArgs = append(cArgs, linkedCampaignID.String)
+			cq := fmt.Sprintf("UPDATE mailing_campaigns SET %s, updated_at = NOW() WHERE id = $%d::uuid", strings.Join(cSets, ", "), ci)
+			a.db.ExecContext(r.Context(), cq, cArgs...)
+		}
 	}
 
 	// Return full updated recommendation (same shape as HandleGetRecommendation)

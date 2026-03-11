@@ -675,6 +675,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				ar.Get("/calendar/recommendations/{id}", marketingAgent.HandleGetRecommendation)
 				ar.Patch("/calendar/recommendations/{id}", marketingAgent.HandleUpdateRecommendation)
 				ar.Post("/calendar/recommendations/{id}/approve", marketingAgent.HandleApproveRecommendation)
+				ar.Post("/calendar/recommendations/{id}/unapprove", marketingAgent.HandleUnapproveRecommendation)
 				ar.Post("/calendar/recommendations/{id}/reject", marketingAgent.HandleRejectRecommendation)
 				ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
 				ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)

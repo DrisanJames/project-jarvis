@@ -65,6 +65,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolGenerateTemplate(ctx, orgID, args)
 	case "deploy_approved_campaign":
 		result, action = a.toolDeployApprovedCampaign(ctx, orgID, args)
+	case "unapprove_recommendation":
+		result, action = a.toolUnapproveRecommendation(ctx, orgID, args)
 	case "delete_recommendation":
 		result, action = a.toolDeleteRecommendation(ctx, orgID, args)
 	case "clear_forecasts":
@@ -788,15 +790,16 @@ func (a *EmailMarketingAgent) toolUpdateRecommendation(ctx context.Context, orgI
 	}
 
 	var status, configJSON string
+	var executedCampaignID sql.NullString
 	err := a.db.QueryRowContext(ctx,
-		`SELECT status, COALESCE(campaign_config::text, '{}')
+		`SELECT status, COALESCE(campaign_config::text, '{}'), executed_campaign_id::text
 		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
-		recID, orgID).Scan(&status, &configJSON)
+		recID, orgID).Scan(&status, &configJSON, &executedCampaignID)
 	if err != nil {
 		return map[string]string{"error": "recommendation not found: " + recID}, ""
 	}
-	if status != "pending" {
-		return map[string]string{"error": fmt.Sprintf("can only update pending recommendations, current status: %s", status)}, ""
+	if status != "pending" && status != "approved" {
+		return map[string]string{"error": fmt.Sprintf("can only update pending or approved recommendations, current status: %s", status)}, ""
 	}
 
 	var cfg map[string]interface{}
@@ -895,12 +898,93 @@ func (a *EmailMarketingAgent) toolUpdateRecommendation(ctx context.Context, orgI
 		return map[string]string{"error": "update failed: " + err.Error()}, ""
 	}
 
-	return map[string]interface{}{
+	// If approved with a linked campaign, propagate content changes to the real campaign
+	campaignUpdated := false
+	if status == "approved" && executedCampaignID.Valid && executedCampaignID.String != "" {
+		sets := []string{}
+		cArgs := []interface{}{}
+		ci := 1
+		if v, ok := cfg["subject"].(string); ok && v != "" {
+			sets = append(sets, fmt.Sprintf("subject = $%d", ci))
+			cArgs = append(cArgs, v)
+			ci++
+		}
+		if v, ok := cfg["preview_text"].(string); ok && v != "" {
+			sets = append(sets, fmt.Sprintf("preview_text = $%d", ci))
+			cArgs = append(cArgs, v)
+			ci++
+		}
+		if v, ok := cfg["from_name"].(string); ok && v != "" {
+			sets = append(sets, fmt.Sprintf("from_name = $%d", ci))
+			cArgs = append(cArgs, v)
+			ci++
+		}
+		if v, ok := cfg["from_email"].(string); ok && v != "" {
+			sets = append(sets, fmt.Sprintf("from_email = $%d", ci))
+			cArgs = append(cArgs, v)
+			ci++
+		}
+		if len(sets) > 0 {
+			cArgs = append(cArgs, executedCampaignID.String)
+			q := fmt.Sprintf("UPDATE mailing_campaigns SET %s, updated_at = NOW() WHERE id = $%d::uuid", strings.Join(sets, ", "), ci)
+			if _, e := a.db.ExecContext(ctx, q, cArgs...); e == nil {
+				campaignUpdated = true
+			}
+		}
+	}
+
+	result := map[string]interface{}{
 		"status":            "updated",
 		"recommendation_id": recID,
 		"fields_updated":    updated,
 		"projected_volume":  totalVolume,
-	}, fmt.Sprintf("Updated recommendation %s: %s", recID, strings.Join(updated, ", "))
+	}
+	if campaignUpdated {
+		result["campaign_updated"] = true
+		result["campaign_id"] = executedCampaignID.String
+	}
+	return result, fmt.Sprintf("Updated recommendation %s: %s", recID, strings.Join(updated, ", "))
+}
+
+func (a *EmailMarketingAgent) toolUnapproveRecommendation(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	recID, _ := args["recommendation_id"].(string)
+	if recID == "" {
+		return map[string]string{"error": "recommendation_id required"}, ""
+	}
+
+	var status string
+	var executedCampaignID sql.NullString
+	err := a.db.QueryRowContext(ctx,
+		`SELECT status, executed_campaign_id::text FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
+		recID, orgID).Scan(&status, &executedCampaignID)
+	if err != nil {
+		return map[string]string{"error": "recommendation not found: " + recID}, ""
+	}
+	if status != "approved" {
+		return map[string]string{"error": fmt.Sprintf("can only unapprove approved recommendations, current status: %s", status)}, ""
+	}
+
+	campaignCancelled := false
+	if executedCampaignID.Valid && executedCampaignID.String != "" {
+		var campStatus string
+		if e := a.db.QueryRowContext(ctx, `SELECT status FROM mailing_campaigns WHERE id = $1::uuid`, executedCampaignID.String).Scan(&campStatus); e == nil {
+			if campStatus == "sending" || campStatus == "sent" || campStatus == "completed" {
+				return map[string]string{"error": fmt.Sprintf("cannot unapprove: linked campaign %s is already %s", executedCampaignID.String, campStatus)}, ""
+			}
+			a.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'cancelled', updated_at = NOW() WHERE id = $1::uuid`, executedCampaignID.String)
+			campaignCancelled = true
+		}
+	}
+
+	a.db.ExecContext(ctx,
+		`UPDATE agent_campaign_recommendations SET status = 'pending', approved_at = NULL, executed_campaign_id = NULL, updated_at = NOW()
+		 WHERE id = $1 AND organization_id = $2`, recID, orgID)
+
+	return map[string]interface{}{
+		"status":             "pending",
+		"recommendation_id": recID,
+		"campaign_cancelled": campaignCancelled,
+	}, fmt.Sprintf("Unapproved recommendation %s, reverted to pending", recID)
 }
 
 // ── Write Tools ─────────────────────────────────────────────────────────────
