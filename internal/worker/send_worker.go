@@ -880,8 +880,9 @@ func (p *SendWorkerPool) trackSign(data string) string {
 func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
 	orgID := p.orgID
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
-	sig := p.trackSign(data)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
+	// Sign the encoded payload to match API verifySig (which signs the URL param as received)
+	sig := p.trackSign(encoded)
 
 	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`, baseURL, encoded, sig)
 	if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx >= 0 {
@@ -900,8 +901,9 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 			return match
 		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)
-		linkSig := p.trackSign(linkData)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
+		// Sign the encoded payload to match API verifySig (which signs the URL param as received)
+		linkSig := p.trackSign(linkEncoded)
 		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, baseURL, linkEncoded, linkSig)
 	})
 
@@ -910,8 +912,8 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 
 func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseURL string) string {
 	data := fmt.Sprintf("%s|%s|%s", p.orgID, campaignID, subscriberID)
-	sig := p.trackSign(data)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
+	sig := p.trackSign(encoded)
 	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", baseURL, encoded, sig)
 }
 

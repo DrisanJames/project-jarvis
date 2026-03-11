@@ -336,6 +336,23 @@ const AgentCalendar: React.FC = () => {
     setApproving(true);
     setApprovalResult(null);
     try {
+      // Persist any edits before approve — backend reads from DB, so unsaved edits would be lost
+      if (selectedRec && selectedRec.id === id) {
+        const payload = { ...editConfig };
+        if (payload.scheduled_time) {
+          payload.scheduled_time = mstToUtc(payload.scheduled_time);
+        }
+        const patchResp = await fetch(`/api/mailing/agent/calendar/recommendations/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!patchResp.ok) {
+          const patchData = await patchResp.json();
+          setApprovalResult({ error: patchData.error || 'Failed to save edits before deploy' });
+          return;
+        }
+      }
       const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${id}/approve`, { method: 'POST' });
       const data = await resp.json();
       if (!resp.ok) {

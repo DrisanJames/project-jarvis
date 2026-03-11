@@ -941,19 +941,14 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	}
 	log.Printf("[MarketingAgent] preview_text pool: %d entries", len(previewTextPool))
 
-	// Use historical schedule time or sensible defaults
-	warmupTime := "11:00"
-	welcomeTime := "14:00"
+	// Use historical schedule time or sensible default
+	scheduleTime := "11:00"
 	if histScheduleTime != "" {
-		warmupTime = histScheduleTime
-		if h := strings.Split(histScheduleTime, ":"); len(h) == 2 {
-			hour := 0
-			fmt.Sscanf(h[0], "%d", &hour)
-			welcomeTime = fmt.Sprintf("%02d:%s", (hour+3)%24, h[1])
-		}
+		scheduleTime = histScheduleTime
 	}
 
-	audiencePriority := []string{"openers_7d", "clickers_14d", "engagers_30d", "recent_subscribers", "cold"}
+	// 14D clickers and 7D openers are prioritized via ordered inclusion_lists; this is the semantic tier order
+	audiencePriority := []string{"clickers_14d", "openers_7d", "engagers_30d", "recent_subscribers", "cold"}
 	if ap, ok := params["audience_priority"].([]interface{}); ok {
 		audiencePriority = []string{}
 		for _, v := range ap {
@@ -962,7 +957,6 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			}
 		}
 	}
-	newDataPriority := []string{"recent_subscribers", "cold"}
 
 	type listInfo struct {
 		ID   string `json:"id"`
@@ -1057,8 +1051,40 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		inclusionLists = allLists
 	}
 
+	// Prioritize 14D clickers and 7D openers segments ahead of all lists
+	// Order: clickers_14d → openers_7d → rest
+	is14dClickers := func(name string) bool {
+		lower := strings.ToLower(name)
+		return strings.Contains(lower, "14d") && strings.Contains(lower, "clicker")
+	}
+	is7dOpeners := func(name string) bool {
+		lower := strings.ToLower(name)
+		return strings.Contains(lower, "7d") && strings.Contains(lower, "opener")
+	}
+	var orderedInclusion []listInfo
+	for _, li := range inclusionLists {
+		if li.Type == "segment" && is14dClickers(li.Name) {
+			orderedInclusion = append(orderedInclusion, li)
+		}
+	}
+	for _, li := range inclusionLists {
+		if li.Type == "segment" && is7dOpeners(li.Name) {
+			orderedInclusion = append(orderedInclusion, li)
+		}
+	}
+	seenPriority := map[string]bool{}
+	for _, li := range orderedInclusion {
+		seenPriority[li.ID] = true
+	}
+	for _, li := range inclusionLists {
+		if !seenPriority[li.ID] {
+			orderedInclusion = append(orderedInclusion, li)
+		}
+	}
+	inclusionLists = orderedInclusion
+
 	// Load suppression lists (always include ALL suppression lists)
-	var exclusionLists []listInfo
+	var rawSuppressionLists []listInfo
 	suppRows, _ := a.db.QueryContext(r.Context(),
 		`SELECT id::text, name FROM mailing_suppression_lists WHERE organization_id = $1 ORDER BY name LIMIT 50`, orgID)
 	if suppRows != nil {
@@ -1067,6 +1093,18 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			var li listInfo
 			suppRows.Scan(&li.ID, &li.Name)
 			li.Type = "suppression_list"
+			rawSuppressionLists = append(rawSuppressionLists, li)
+		}
+	}
+	// Global Suppression MUST be first in exclusions; then rest
+	var exclusionLists []listInfo
+	for _, li := range rawSuppressionLists {
+		if strings.Contains(strings.ToLower(li.Name), "global") {
+			exclusionLists = append(exclusionLists, li)
+		}
+	}
+	for _, li := range rawSuppressionLists {
+		if !strings.Contains(strings.ToLower(li.Name), "global") {
 			exclusionLists = append(exclusionLists, li)
 		}
 	}
@@ -1138,27 +1176,10 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		domainTemplates = allTemplates
 	}
 
-	// Split filtered templates into warmup (newsletter) vs welcome
-	var warmupTemplates, welcomeTemplates []savedTemplate
-	for _, t := range domainTemplates {
-		lower := strings.ToLower(t.Name + " " + t.Folder)
-		if strings.Contains(lower, "welcome") {
-			welcomeTemplates = append(welcomeTemplates, t)
-		} else {
-			warmupTemplates = append(warmupTemplates, t)
-		}
-	}
-	if len(warmupTemplates) == 0 {
-		warmupTemplates = domainTemplates
-	}
-	if len(welcomeTemplates) == 0 {
-		welcomeTemplates = domainTemplates
-	}
-
 	_ = domainPrefix
-	log.Printf("[MarketingAgent] domain=%s isQF=%v templates: %d warmup, %d welcome, lists: %d inclusion", input.SendingDomain, isQFDomain, len(warmupTemplates), len(welcomeTemplates), len(inclusionLists))
+	log.Printf("[MarketingAgent] domain=%s isQF=%v templates: %d, lists: %d inclusion (14d clickers + 7d openers first)", input.SendingDomain, isQFDomain, len(domainTemplates), len(inclusionLists))
 
-	// Generate daily recommendations — two campaigns per day
+	// Generate daily recommendations — single campaign per day
 	created := 0
 	endDate := t.AddDate(0, 1, -1)
 	current := t
@@ -1175,110 +1196,56 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 
 		multiplier := 1.0 + (increasePct/100.0)*float64(dayIndex)
 
-		// CAMPAIGN 1: Warmup — Engaged Data (70% of daily volume)
-		warmupQuotas := map[string]interface{}{}
-		warmupVolume := 0
+		// Single campaign per day — 100% volume, 14D clickers + 7D openers first, Global Suppression always excluded
+		quotas := map[string]interface{}{}
+		volume := 0
 		for isp, base := range currentQuotas {
-			adjusted := int(float64(base) * multiplier * 0.70)
-			warmupQuotas[isp] = adjusted
-			warmupVolume += adjusted
+			adjusted := int(float64(base) * multiplier)
+			quotas[isp] = adjusted
+			volume += adjusted
 		}
-		var wu1TemplateID, wu1TemplateName, wu1Subject, wu1PreviewText string
-		if len(warmupTemplates) > 0 {
-			tmpl := warmupTemplates[dayIndex%len(warmupTemplates)]
-			wu1TemplateID = tmpl.ID
-			wu1TemplateName = tmpl.Name
-			wu1Subject = tmpl.Subject
-			wu1PreviewText = tmpl.PreviewText
+		var tmplID, tmplName, subj, preview string
+		if len(domainTemplates) > 0 {
+			t := domainTemplates[dayIndex%len(domainTemplates)]
+			tmplID = t.ID
+			tmplName = t.Name
+			subj = t.Subject
+			preview = t.PreviewText
 		}
-		if wu1PreviewText == "" && len(previewTextPool) > 0 {
-			wu1PreviewText = previewTextPool[dayIndex%len(previewTextPool)]
+		if preview == "" && len(previewTextPool) > 0 {
+			preview = previewTextPool[dayIndex%len(previewTextPool)]
 		}
-		warmupName := input.SendingDomain + " — Warmup Engaged — " + current.Format("Jan 2")
-		warmupCfg, _ := json.Marshal(map[string]interface{}{
+		campaignName := input.SendingDomain + " — " + current.Format("Jan 2")
+		cfg, _ := json.Marshal(map[string]interface{}{
 			"sending_domain":        input.SendingDomain,
-			"isp_quotas":            warmupQuotas,
-			"name":                  warmupName,
+			"isp_quotas":            quotas,
+			"name":                  campaignName,
 			"scheduled_date":        current.Format("2006-01-02"),
-			"scheduled_time":        warmupTime,
+			"scheduled_time":        scheduleTime,
 			"from_name":             fromName,
 			"from_email":            fromEmail,
-			"subject":               wu1Subject,
-			"preview_text":          wu1PreviewText,
-			"template_id":           wu1TemplateID,
-			"template_name":         wu1TemplateName,
+			"subject":               subj,
+			"preview_text":          preview,
+			"template_id":           tmplID,
+			"template_name":         tmplName,
 			"wave_interval_minutes": histWaveInterval,
 			"throttle_per_wave":     histThrottlePerWave,
 			"audience_priority":     audiencePriority,
 			"inclusion_lists":       inclusionLists,
 			"exclusion_lists":       exclusionLists,
-			"campaign_type":         "warmup_engaged",
+			"campaign_type":         "general_send",
 		})
 		_, err := a.db.ExecContext(r.Context(),
 			`INSERT INTO agent_campaign_recommendations
 			 (organization_id, sending_domain, scheduled_date, scheduled_time,
 			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-			orgID, input.SendingDomain, current.Format("2006-01-02"), warmupTime,
-			warmupName, string(warmupCfg),
-			fmt.Sprintf("Warmup campaign targeting engaged audience (openers, clickers) — 70%% of daily volume. Builds ISP reputation with high-engagement data. Day %d of warmup, %.0f%% cumulative volume increase.", dayIndex+1, increasePct*float64(dayIndex)),
-			strategy, warmupVolume)
+			orgID, input.SendingDomain, current.Format("2006-01-02"), scheduleTime,
+			campaignName, string(cfg),
+			fmt.Sprintf("Single campaign — 14D clickers and 7D openers prioritized ahead of lists. Global Suppression always excluded. Day %d, %.0f%% cumulative volume increase.", dayIndex+1, increasePct*float64(dayIndex)),
+			strategy, volume)
 		if err != nil {
-			log.Printf("[MarketingAgent] forecast insert error (warmup): %v", err)
-		} else {
-			created++
-		}
-
-		// CAMPAIGN 2: Welcome Series — New Data (30% of daily volume)
-		welcomeQuotas := map[string]interface{}{}
-		welcomeVolume := 0
-		for isp, base := range currentQuotas {
-			adjusted := int(float64(base) * multiplier * 0.30)
-			welcomeQuotas[isp] = adjusted
-			welcomeVolume += adjusted
-		}
-		var wlTemplateID, wlTemplateName, wlSubject, wlPreviewText string
-		if len(welcomeTemplates) > 0 {
-			tmpl := welcomeTemplates[dayIndex%len(welcomeTemplates)]
-			wlTemplateID = tmpl.ID
-			wlTemplateName = tmpl.Name
-			wlSubject = tmpl.Subject
-			wlPreviewText = tmpl.PreviewText
-		}
-		if wlPreviewText == "" && len(previewTextPool) > 0 {
-			wlPreviewText = previewTextPool[(dayIndex+1)%len(previewTextPool)]
-		}
-		welcomeName := input.SendingDomain + " — Welcome Series — " + current.Format("Jan 2")
-		welcomeCfg, _ := json.Marshal(map[string]interface{}{
-			"sending_domain":        input.SendingDomain,
-			"isp_quotas":            welcomeQuotas,
-			"name":                  welcomeName,
-			"scheduled_date":        current.Format("2006-01-02"),
-			"scheduled_time":        welcomeTime,
-			"from_name":             fromName,
-			"from_email":            fromEmail,
-			"subject":               wlSubject,
-			"preview_text":          wlPreviewText,
-			"template_id":           wlTemplateID,
-			"template_name":         wlTemplateName,
-			"wave_interval_minutes": histWaveInterval,
-			"throttle_per_wave":     histThrottlePerWave,
-			"audience_priority":     newDataPriority,
-			"inclusion_lists":       inclusionLists,
-			"exclusion_lists":       exclusionLists,
-			"campaign_type":         "welcome_series",
-		})
-		_, err = a.db.ExecContext(r.Context(),
-			`INSERT INTO agent_campaign_recommendations
-			 (organization_id, sending_domain, scheduled_date, scheduled_time,
-			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-			orgID, input.SendingDomain, current.Format("2006-01-02"), welcomeTime,
-			welcomeName, string(welcomeCfg),
-			fmt.Sprintf("Welcome series targeting new subscribers and cold data — 30%% of daily volume. Introduces fresh recipients at controlled pace. Day %d of warmup.", dayIndex+1),
-			strategy, welcomeVolume)
-		if err != nil {
-			log.Printf("[MarketingAgent] forecast insert error (welcome): %v", err)
+			log.Printf("[MarketingAgent] forecast insert error: %v", err)
 		} else {
 			created++
 		}
@@ -1290,7 +1257,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":                  "generated",
 		"recommendations_created": created,
-		"templates_assigned":      len(warmupTemplates) + len(welcomeTemplates),
+		"templates_assigned":      len(domainTemplates),
 		"sending_domain":          input.SendingDomain,
 		"strategy":                strategy,
 		"month":                   input.Month,
