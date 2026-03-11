@@ -279,6 +279,10 @@ func isEventField(field string) bool {
 // BuildSegmentWhereClause builds a SQL WHERE clause from segment conditions.
 // Returns the clause string (without "WHERE") and positional args.
 // Callers can prefix their own SELECT and append this.
+//
+// If a condition has field="sending_domain", it is extracted and used to scope
+// all event subqueries and time-relative subscriber fields (last_open_at,
+// last_click_at) through mailing_tracking_events.sending_domain.
 func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionInput) (string, []interface{}) {
 	whereClauses := []string{"status IN ('active','confirmed')"}
 	args := []interface{}{}
@@ -290,9 +294,33 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 		argNum++
 	}
 
+	// Extract sending_domain filter if present — used to scope event subqueries
+	var domainFilter string
+	var filtered []SegmentConditionInput
 	for _, c := range conditions {
+		if c.Field == "sending_domain" {
+			domainFilter = c.Value
+		} else {
+			filtered = append(filtered, c)
+		}
+	}
+
+	for _, c := range filtered {
 		if isEventField(c.Field) {
-			clause, newArgs, newArgNum := buildEventWhereClause(c, argNum)
+			clause, newArgs, newArgNum := buildEventWhereClause(c, argNum, domainFilter)
+			if clause != "" {
+				whereClauses = append(whereClauses, clause)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			}
+			continue
+		}
+
+		// When sending_domain is set, convert subscriber-level engagement
+		// fields into domain-scoped event subqueries instead of using the
+		// global denormalized column on mailing_subscribers.
+		if domainFilter != "" && isDomainScopableField(c.Field, c.Operator) {
+			clause, newArgs, newArgNum := buildDomainScopedFieldClause(c, argNum, domainFilter)
 			if clause != "" {
 				whereClauses = append(whereClauses, clause)
 				args = append(args, newArgs...)
@@ -348,9 +376,9 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 			clause = fmt.Sprintf("(%s IS NULL OR %s = '')", dbField, dbField)
 		case "is_not_empty", "is_not_null":
 			clause = fmt.Sprintf("(%s IS NOT NULL AND %s != '')", dbField, dbField)
-	case "in_last_days", "within_last":
-		clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, c.Value)
-	case "more_than_days_ago":
+		case "in_last_days", "within_last":
+			clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", dbField, c.Value)
+		case "more_than_days_ago":
 			clause = fmt.Sprintf("%s < NOW() - INTERVAL '%s days'", dbField, c.Value)
 		default:
 			continue
@@ -363,54 +391,108 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 	return strings.Join(whereClauses, " AND "), args
 }
 
+// isDomainScopableField returns true for subscriber fields that should be
+// converted to domain-scoped event subqueries when sending_domain is set.
+func isDomainScopableField(field, operator string) bool {
+	if field != "last_open_at" && field != "last_click_at" {
+		return false
+	}
+	switch operator {
+	case "in_last_days", "within_last", "more_than_days_ago":
+		return true
+	}
+	return false
+}
+
+// buildDomainScopedFieldClause converts last_open_at/last_click_at subscriber
+// fields into EXISTS subqueries against mailing_tracking_events filtered by
+// sending_domain, so engagement is scoped to a specific sending domain.
+func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain string) (string, []interface{}, int) {
+	eventType := "opened"
+	if c.Field == "last_click_at" {
+		eventType = "clicked"
+	}
+
+	switch c.Operator {
+	case "in_last_days", "within_last":
+		clause := fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+			  AND e.event_at >= NOW() - INTERVAL '%s days'
+			  AND e.sending_domain = $%d
+		)`, argNum, c.Value, argNum+1)
+		return clause, []interface{}{eventType, domain}, argNum + 2
+	case "more_than_days_ago":
+		clause := fmt.Sprintf(`NOT EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = $%d
+			  AND e.event_at >= NOW() - INTERVAL '%s days'
+			  AND e.sending_domain = $%d
+		)`, argNum, c.Value, argNum+1)
+		return clause, []interface{}{eventType, domain}, argNum + 2
+	}
+	return "", nil, argNum
+}
+
 // buildEventWhereClause generates an EXISTS/NOT EXISTS subquery against
 // mailing_tracking_events for event-based segment conditions.
-func buildEventWhereClause(c SegmentConditionInput, argNum int) (string, []interface{}, int) {
+// domainFilter, when non-empty, adds AND e.sending_domain = $N to scope by sending domain.
+func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter string) (string, []interface{}, int) {
 	eventType := trackingEventTypeMap[c.Field]
 	var args []interface{}
 
+	domainClause := ""
+	addDomain := func() {
+		if domainFilter != "" {
+			domainClause = fmt.Sprintf(" AND e.sending_domain = $%d", argNum+1)
+			args = append(args, domainFilter)
+		}
+	}
+
 	switch c.Operator {
 	case "equals", "is":
-		// "has this event" → EXISTS
 		args = append(args, eventType)
+		addDomain()
 		clause := fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
-			  AND e.event_type = $%d
-		)`, argNum)
-		return clause, args, argNum + 1
+			  AND e.event_type = $%d%s
+		)`, argNum, domainClause)
+		return clause, args, argNum + len(args)
 
 	case "not_equals", "is_not":
-		// "does not have this event" → NOT EXISTS
 		args = append(args, eventType)
+		addDomain()
 		clause := fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
-			  AND e.event_type = $%d
-		)`, argNum)
-		return clause, args, argNum + 1
+			  AND e.event_type = $%d%s
+		)`, argNum, domainClause)
+		return clause, args, argNum + len(args)
 
-	case "in_last_days":
-		// "event occurred in last N days" → EXISTS with time filter
+	case "in_last_days", "within_last":
 		args = append(args, eventType)
+		addDomain()
 		clause := fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
-			  AND e.event_at >= NOW() - INTERVAL '%s days'
-		)`, argNum, c.Value)
-		return clause, args, argNum + 1
+			  AND e.event_at >= NOW() - INTERVAL '%s days'%s
+		)`, argNum, c.Value, domainClause)
+		return clause, args, argNum + len(args)
 
 	case "not_in_last_days", "more_than_days_ago":
-		// "event did NOT occur in last N days" → NOT EXISTS with time filter
 		args = append(args, eventType)
+		addDomain()
 		clause := fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
-			  AND e.event_at >= NOW() - INTERVAL '%s days'
-		)`, argNum, c.Value)
-		return clause, args, argNum + 1
+			  AND e.event_at >= NOW() - INTERVAL '%s days'%s
+		)`, argNum, c.Value, domainClause)
+		return clause, args, argNum + len(args)
 
 	default:
 		return "", nil, argNum
