@@ -309,6 +309,20 @@ func getAgentTools() []agentToolDef {
 		{
 			Type: "function",
 			Function: agentToolFuncDef{
+				Name:        "delete_recommendation",
+				Description: "Delete a single campaign recommendation by ID. Use when the user wants to remove a specific recommendation without clearing the entire calendar.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"recommendation_id"},
+					"properties": map[string]interface{}{
+						"recommendation_id": prop("string", "The recommendation UUID to delete."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
 				Name:        "clear_forecasts",
 				Description: "Delete all pending campaign recommendations (forecasts) for the organization. Use when the user wants to clear the calendar and regenerate, or remove all generated forecasts.",
 				Parameters: map[string]interface{}{

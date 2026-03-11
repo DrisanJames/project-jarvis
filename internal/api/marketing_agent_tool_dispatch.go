@@ -63,6 +63,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolGenerateTemplate(ctx, orgID, args)
 	case "deploy_approved_campaign":
 		result, action = a.toolDeployApprovedCampaign(ctx, orgID, args)
+	case "delete_recommendation":
+		result, action = a.toolDeleteRecommendation(ctx, orgID, args)
 	case "clear_forecasts":
 		result, action = a.toolClearForecasts(ctx, orgID, args)
 	default:
@@ -350,6 +352,27 @@ func (a *EmailMarketingAgent) toolListSuppressionLists(ctx context.Context, orgI
 		lists = []map[string]interface{}{}
 	}
 	return map[string]interface{}{"suppression_lists": lists, "count": len(lists)}
+}
+
+func (a *EmailMarketingAgent) toolDeleteRecommendation(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	recID, _ := args["recommendation_id"].(string)
+	if recID == "" {
+		return map[string]string{"error": "recommendation_id is required"}, ""
+	}
+	result, err := a.db.ExecContext(ctx,
+		`DELETE FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`, recID, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}, ""
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return map[string]string{"error": "recommendation not found or already deleted"}, ""
+	}
+	return map[string]interface{}{
+		"status":  "deleted",
+		"id":      recID,
+		"message": "Recommendation deleted",
+	}, "delete_recommendation"
 }
 
 func (a *EmailMarketingAgent) toolClearForecasts(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
