@@ -71,6 +71,8 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolDeleteRecommendation(ctx, orgID, args)
 	case "clear_forecasts":
 		result, action = a.toolClearForecasts(ctx, orgID, args)
+	case "compute_isp_quotas":
+		result = a.toolComputeISPQuotas(ctx, orgID, args)
 	default:
 		result = map[string]string{"error": "unknown tool: " + name}
 	}
@@ -1278,4 +1280,215 @@ func (a *EmailMarketingAgent) toolDeployApprovedCampaign(ctx context.Context, or
 		"recommendation_id": recID,
 		"message":           "Campaign has been queued for deployment through the PMTA wave pipeline.",
 	}, fmt.Sprintf("Deployed recommendation %s", recID)
+}
+
+// ComputeISPQuotas computes risk-adjusted ISP quota distribution for a target volume.
+// Reusable by both the EDITH tool and the REST endpoint.
+func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domain string, targetVolume int) map[string]interface{} {
+	end := time.Now()
+	start := end.Add(-3 * 24 * time.Hour)
+
+	domSubquery := `SELECT t.*, LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2))) as dom
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
+		WHERE t.event_at >= $1 AND t.event_at <= $2`
+	subArgs := []interface{}{start, end}
+	if domain != "" {
+		domSubquery += fmt.Sprintf(` AND LOWER(COALESCE(NULLIF(t.sending_domain,''),'unknown')) = LOWER($%d)`, len(subArgs)+1)
+		subArgs = append(subArgs, domain)
+	}
+
+	q := fmt.Sprintf(`SELECT %s as isp,
+		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		SUM(CASE WHEN d.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
+		SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
+		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens
+	FROM (%s) d
+	GROUP BY isp`, ispDomainCaseSQL, domSubquery)
+
+	rows, err := a.db.QueryContext(ctx, q, subArgs...)
+	if err != nil {
+		return map[string]interface{}{"error": "query failed: " + err.Error()}
+	}
+	defer rows.Close()
+
+	type ispMetric struct {
+		ISP          string
+		Sent         int
+		Delivered    int
+		HardBounces  int
+		SoftBounces  int
+		Deferred     int
+		Complaints   int
+		Opens        int
+		RiskScore    int
+		Rec          string
+		BounceRate   float64
+		DeferralRate float64
+		ComplaintRate float64
+		OpenRate     float64
+	}
+	var metrics []ispMetric
+	for rows.Next() {
+		var m ispMetric
+		rows.Scan(&m.ISP, &m.Sent, &m.Delivered, &m.HardBounces, &m.SoftBounces, &m.Deferred, &m.Complaints, &m.Opens)
+		if m.ISP == "other" || m.Sent == 0 {
+			continue
+		}
+		m.BounceRate = math.Round(float64(m.HardBounces+m.SoftBounces)/float64(m.Sent)*10000) / 100
+		m.DeferralRate = math.Round(float64(m.Deferred)/float64(m.Sent)*10000) / 100
+		m.ComplaintRate = math.Round(float64(m.Complaints)/float64(m.Sent)*10000) / 100
+		m.OpenRate = math.Round(float64(m.Opens)/float64(m.Sent)*10000) / 100
+
+		normBounce := math.Min(m.BounceRate/5.0, 1.0)
+		normDeferral := math.Min(m.DeferralRate/10.0, 1.0)
+		normComplaint := math.Min(m.ComplaintRate/0.1, 1.0)
+		m.RiskScore = int(math.Round(math.Min(100, normBounce*35+normDeferral*35+normComplaint*30)))
+
+		switch {
+		case m.RiskScore > 80:
+			m.Rec = "PAUSE"
+		case m.RiskScore > 60:
+			m.Rec = "DECREASE"
+		case m.RiskScore > 40:
+			m.Rec = "CAUTION"
+		case m.RiskScore > 20:
+			m.Rec = "MAINTAIN"
+		default:
+			m.Rec = "INCREASE"
+		}
+		metrics = append(metrics, m)
+	}
+
+	baseQuotas := map[string]int{}
+	quotaRows, _ := a.db.QueryContext(ctx, `
+		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
+		JOIN mailing_campaigns c ON p.campaign_id = c.id
+		WHERE c.organization_id::text = $1
+		  AND c.status IN ('completed','sent','scheduled','sending')
+		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
+		LIMIT 100`, orgID)
+	if quotaRows != nil {
+		defer quotaRows.Close()
+		for quotaRows.Next() {
+			var isp string
+			var quota int
+			quotaRows.Scan(&isp, &quota)
+			if _, seen := baseQuotas[isp]; !seen {
+				baseQuotas[isp] = quota
+			}
+		}
+	}
+
+	allISPs := []string{"gmail", "yahoo", "microsoft", "apple", "comcast", "att", "cox", "charter"}
+
+	metricByISP := map[string]*ispMetric{}
+	for i := range metrics {
+		metricByISP[metrics[i].ISP] = &metrics[i]
+	}
+
+	rawWeights := map[string]float64{}
+	var totalWeight float64
+	var healthDetails []map[string]interface{}
+	var adjustments []string
+
+	for _, isp := range allISPs {
+		base := float64(baseQuotas[isp])
+		if base == 0 {
+			base = 50
+		}
+		var multiplier float64
+		rec := "MAINTAIN"
+		var riskScore int
+		var bounceRate, deferralRate, complaintRate, openRate float64
+
+		if m, ok := metricByISP[isp]; ok {
+			riskScore = m.RiskScore
+			rec = m.Rec
+			bounceRate = m.BounceRate
+			deferralRate = m.DeferralRate
+			complaintRate = m.ComplaintRate
+			openRate = m.OpenRate
+		}
+
+		switch rec {
+		case "PAUSE":
+			multiplier = 0
+		case "DECREASE":
+			multiplier = 0.65
+		case "CAUTION":
+			multiplier = 0.85
+		case "MAINTAIN":
+			multiplier = 1.0
+		case "INCREASE":
+			multiplier = 1.25
+		default:
+			multiplier = 1.0
+		}
+
+		weight := base * multiplier
+		rawWeights[isp] = weight
+		totalWeight += weight
+
+		healthDetails = append(healthDetails, map[string]interface{}{
+			"isp": isp, "label": ispLabels[isp],
+			"risk_score": riskScore, "recommendation": rec,
+			"bounce_rate": bounceRate, "deferral_rate": deferralRate,
+			"complaint_rate": complaintRate, "open_rate": openRate,
+			"base_quota": int(base), "multiplier": multiplier,
+		})
+
+		if rec != "MAINTAIN" {
+			adjustments = append(adjustments, fmt.Sprintf("%s: %s (multiplier %.2f)", isp, rec, multiplier))
+		}
+	}
+
+	quotas := map[string]interface{}{}
+	computedTotal := 0
+	if totalWeight > 0 {
+		for _, isp := range allISPs {
+			w := rawWeights[isp]
+			if w == 0 {
+				quotas[isp] = 0
+				continue
+			}
+			q := int(math.Round(float64(targetVolume) * w / totalWeight))
+			if q < 25 {
+				q = 25
+			}
+			quotas[isp] = q
+			computedTotal += q
+		}
+	} else {
+		share := targetVolume / len(allISPs)
+		for _, isp := range allISPs {
+			quotas[isp] = share
+			computedTotal += share
+		}
+	}
+
+	return map[string]interface{}{
+		"sending_domain":      domain,
+		"target_volume":       targetVolume,
+		"computed_volume":     computedTotal,
+		"isp_quotas":          quotas,
+		"isp_health":          healthDetails,
+		"adjustments_applied": adjustments,
+		"data_window_days":    3,
+	}
+}
+
+func (a *EmailMarketingAgent) toolComputeISPQuotas(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	domain, _ := args["sending_domain"].(string)
+	targetVolume := 0
+	if v, ok := args["target_volume"].(float64); ok {
+		targetVolume = int(v)
+	}
+	if domain == "" || targetVolume <= 0 {
+		return map[string]string{"error": "sending_domain and target_volume (>0) are required"}
+	}
+	return a.ComputeISPQuotas(ctx, orgID, domain, targetVolume)
 }

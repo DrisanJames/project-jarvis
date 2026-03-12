@@ -373,5 +373,20 @@ func getAgentTools() []agentToolDef {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "compute_isp_quotas",
+				Description: "Compute a risk-adjusted ISP quota distribution for a target send volume. Analyzes the last 3 days of ISP-level bounce, deferral, and complaint data, then distributes volume proportionally with risk-based adjustments (PAUSE/DECREASE/CAUTION/MAINTAIN/INCREASE). Use this before create_recommendation to get data-driven ISP quotas.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"sending_domain", "target_volume"},
+					"properties": map[string]interface{}{
+						"sending_domain": prop("string", "The sending domain to compute quotas for (e.g. em.discountblog.com)."),
+						"target_volume":  prop("integer", "The total target send volume to distribute across ISPs."),
+					},
+				},
+			},
+		},
 	}
 }

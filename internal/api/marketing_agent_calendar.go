@@ -1440,3 +1440,117 @@ func (a *EmailMarketingAgent) HandleCancelTomorrowCampaigns(w http.ResponseWrite
 		"message":  fmt.Sprintf("Cancelled %d campaigns scheduled for %s", cancelled, tomorrow),
 	})
 }
+
+// HandleComputeQuotas exposes ComputeISPQuotas as a REST endpoint.
+// GET /api/mailing/agent/calendar/compute-quotas?domain=...&volume=...
+func (a *EmailMarketingAgent) HandleComputeQuotas(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	domain := r.URL.Query().Get("domain")
+	volumeStr := r.URL.Query().Get("volume")
+	if domain == "" || volumeStr == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "domain and volume query params are required"})
+		return
+	}
+	var volume int
+	fmt.Sscanf(volumeStr, "%d", &volume)
+	if volume <= 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "volume must be a positive integer"})
+		return
+	}
+	result := a.ComputeISPQuotas(r.Context(), orgID, domain, volume)
+	respondJSON(w, http.StatusOK, result)
+}
+
+// HandleCreateRecommendation creates a campaign recommendation directly via REST.
+// POST /api/mailing/agent/calendar/recommendations
+func (a *EmailMarketingAgent) HandleCreateRecommendation(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	domain, _ := body["sending_domain"].(string)
+	dateStr, _ := body["scheduled_date"].(string)
+	timeStr, _ := body["scheduled_time"].(string)
+	name, _ := body["campaign_name"].(string)
+	reasoning, _ := body["reasoning"].(string)
+
+	if domain == "" || dateStr == "" || name == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending_domain, scheduled_date, and campaign_name are required"})
+		return
+	}
+	if timeStr == "" {
+		timeStr = "13:00"
+	}
+
+	campaignConfig := map[string]interface{}{
+		"sending_domain": domain,
+		"name":           name,
+		"scheduled_date": dateStr,
+		"scheduled_time": timeStr,
+	}
+
+	setIfPresent := func(key, argKey string) {
+		if v, ok := body[argKey]; ok && v != nil {
+			campaignConfig[key] = v
+		}
+	}
+	setIfPresent("isp_quotas", "isp_quotas")
+	setIfPresent("inclusion_lists", "inclusion_lists")
+	setIfPresent("exclusion_lists", "exclusion_lists")
+	setIfPresent("template_id", "template_id")
+	setIfPresent("subject", "subject")
+	setIfPresent("preview_text", "preview_text")
+	setIfPresent("from_name", "from_name")
+	setIfPresent("from_email", "from_email")
+	setIfPresent("audience_priority", "audience_priority")
+	if v, ok := body["wave_interval_minutes"].(float64); ok {
+		campaignConfig["wave_interval_minutes"] = int(v)
+	}
+	if v, ok := body["throttle_per_wave"].(float64); ok {
+		campaignConfig["throttle_per_wave"] = int(v)
+	}
+
+	configJSON, _ := json.Marshal(campaignConfig)
+
+	totalVolume := 0
+	if quotas, ok := body["isp_quotas"].(map[string]interface{}); ok {
+		for _, v := range quotas {
+			if n, ok := v.(float64); ok {
+				totalVolume += int(n)
+			}
+		}
+	}
+
+	var strategy string
+	a.db.QueryRowContext(r.Context(),
+		`SELECT strategy FROM agent_domain_strategies WHERE organization_id = $1 AND sending_domain = $2`,
+		orgID, domain).Scan(&strategy)
+
+	var id string
+	err := a.db.QueryRowContext(r.Context(),
+		`INSERT INTO agent_campaign_recommendations
+		 (organization_id, sending_domain, scheduled_date, scheduled_time, campaign_name,
+		  campaign_config, reasoning, strategy, projected_volume, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+		 RETURNING id::text`,
+		orgID, domain, dateStr, timeStr, name, string(configJSON), reasoning, strategy, totalVolume,
+	).Scan(&id)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"status":          "created",
+		"id":              id,
+		"campaign_name":   name,
+		"scheduled_date":  dateStr,
+		"scheduled_time":  timeStr,
+		"projected_volume": totalVolume,
+		"approval_status": "pending",
+	})
+}

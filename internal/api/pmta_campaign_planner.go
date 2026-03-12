@@ -938,7 +938,7 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 // waveSanityCheck validates the normalized wave plan meets minimum throttling
 // requirements. Called after normalizePMTACampaignInput + buildPMTAWaveSpecs.
 func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
-	const smallISPThreshold = 100
+	const smallISPThreshold = 500
 	var issues []string
 	for _, plan := range plans {
 		isp := plan.ISP
