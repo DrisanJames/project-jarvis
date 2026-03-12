@@ -1207,6 +1207,29 @@ func runStartupMigrations(db *sql.DB) {
 		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
 		{"reset_orphaned_sending_v2", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE status = 'sending' AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))`},
 		{"unstick_locked_queue_items", `UPDATE mailing_campaign_queue SET status = 'queued', worker_id = NULL, locked_at = NULL WHERE status = 'sending' AND locked_at < NOW() - INTERVAL '10 minutes'`},
+		// Seed IP pools and warmup IPs (originally in migration 030, may not exist in production RDS)
+		{"seed_warmup_pool", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'warmup-pool', 'First 4 IPs — IP warmup rotation', 'warmup', 'active')
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+		{"seed_default_pool", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'default-pool', 'All 16 IPs — production sending', 'dedicated', 'active')
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+		{"seed_warmup_ips", `DO $$
+		DECLARE
+			org_id UUID := '00000000-0000-0000-0000-000000000001';
+			wp_id UUID;
+		BEGIN
+			SELECT id INTO wp_id FROM mailing_ip_pools WHERE organization_id = org_id AND name = 'warmup-pool';
+			IF wp_id IS NOT NULL THEN
+				INSERT INTO mailing_ip_addresses (organization_id, ip_address, hostname, pool_id, acquisition_type, hosting_provider, cidr_block, status, warmup_stage, warmup_day, warmup_daily_limit, rdns_verified, reputation_score)
+				VALUES
+					(org_id, '15.204.22.176', 'mta1.mail.projectjarvis.io', wp_id, 'purchased', 'OVH', '15.204.22.176/28', 'warmup', 'warming', 1, 200, true, 50.0),
+					(org_id, '15.204.22.177', 'mta2.mail.projectjarvis.io', wp_id, 'purchased', 'OVH', '15.204.22.176/28', 'warmup', 'warming', 1, 200, true, 50.0),
+					(org_id, '15.204.22.178', 'mta3.mail.projectjarvis.io', wp_id, 'purchased', 'OVH', '15.204.22.176/28', 'warmup', 'warming', 1, 200, true, 50.0),
+					(org_id, '15.204.22.179', 'mta4.mail.projectjarvis.io', wp_id, 'purchased', 'OVH', '15.204.22.176/28', 'warmup', 'warming', 1, 200, true, 50.0)
+				ON CONFLICT DO NOTHING;
+			END IF;
+		END $$`},
 		// Ensure api_endpoint column exists before referencing it
 		{"add_api_endpoint_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS api_endpoint VARCHAR(500)`},
 		// One-time fix: profiles seeded with wrong host 178.128.215.13 → correct OVH PMTA server
