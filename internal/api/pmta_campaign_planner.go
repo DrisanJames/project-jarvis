@@ -913,18 +913,19 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		})
 	}
 
-	// 5. PMTA server is reachable (SMTP port check)
+	// 5. PMTA server is reachable (SMTP port check — use profile's smtp_port, not hardcoded 25)
 	var smtpHost string
+	var smtpPort int
 	db.QueryRowContext(ctx, `
-		SELECT smtp_host FROM mailing_sending_profiles
-		WHERE id = $1`, profileID.String).Scan(&smtpHost)
+		SELECT smtp_host, COALESCE(smtp_port, 587) FROM mailing_sending_profiles
+		WHERE id = $1`, profileID.String).Scan(&smtpHost, &smtpPort)
 	if smtpHost != "" {
-		conn, dialErr := net.DialTimeout("tcp", smtpHost+":25", 5*time.Second)
+		addr := fmt.Sprintf("%s:%d", smtpHost, smtpPort)
+		conn, dialErr := net.DialTimeout("tcp", addr, 5*time.Second)
 		if dialErr != nil {
-			res.OK = false
-			res.Errors = append(res.Errors, preflightError{
+			res.Warnings = append(res.Warnings, preflightError{
 				Check:   "pmta_reachable",
-				Message: fmt.Sprintf("PMTA SMTP unreachable at %s:25 — %v", smtpHost, dialErr),
+				Message: fmt.Sprintf("PMTA SMTP unreachable at %s — %v (may be expected from ECS)", addr, dialErr),
 			})
 		} else {
 			conn.Close()
