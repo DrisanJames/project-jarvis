@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"fmt"
 	"log"
 	"net"
@@ -67,6 +68,9 @@ func extractHost(dsn string) string {
 	}
 	return rest
 }
+
+//go:embed embed/suppress_besmed_bounces.sql
+var besmedSuppressionSQL string
 
 func main() {
 	log.Println("╔════════════════════════════════════════════════════════════╗")
@@ -1209,8 +1213,8 @@ func runStartupMigrations(db *sql.DB) {
 		{"unstick_locked_queue_items", `UPDATE mailing_campaign_queue SET status = 'queued', worker_id = NULL, locked_at = NULL WHERE status = 'sending' AND locked_at < NOW() - INTERVAL '10 minutes'`},
 		// Seed IP pools and warmup IPs (originally in migration 030, may not exist in production RDS)
 		{"seed_warmup_pool", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status)
-			VALUES ('00000000-0000-0000-0000-000000000001', 'warmup-pool', 'First 4 IPs — IP warmup rotation', 'warmup', 'active')
-			ON CONFLICT (organization_id, name) DO NOTHING`},
+			VALUES ('00000000-0000-0000-0000-000000000001', 'warmup-pool', '4 IPs for warmup rotation (.177-.180)', 'warmup', 'active')
+			ON CONFLICT (organization_id, name) DO UPDATE SET description = '4 IPs for warmup rotation (.177-.180)', updated_at = NOW()`},
 		{"seed_default_pool", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status)
 			VALUES ('00000000-0000-0000-0000-000000000001', 'default-pool', 'All 16 IPs — production sending', 'dedicated', 'active')
 			ON CONFLICT (organization_id, name) DO NOTHING`},
@@ -1431,6 +1435,19 @@ func runStartupMigrations(db *sql.DB) {
 		}
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors", ok, fail)
+
+	// One-time bulk suppression import: besmed attacker bounces (59,155 emails)
+	var besmedCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM mailing_global_suppressions WHERE source = 'pmta_attack_besmed_20260312'`).Scan(&besmedCount); err == nil && besmedCount == 0 {
+		log.Println("[StartupMigration] Importing besmed attacker bounce suppressions (59,155 emails)...")
+		if _, err := db.Exec(besmedSuppressionSQL); err != nil {
+			log.Printf("[StartupMigration] besmed_suppression_import: ERROR %v", err)
+		} else {
+			log.Println("[StartupMigration] besmed_suppression_import: OK")
+		}
+	} else if besmedCount > 0 {
+		log.Printf("[StartupMigration] besmed_suppression_import: already loaded (%d entries)", besmedCount)
+	}
 }
 
 // runAdminMigrations connects with the RDS master user to run DDL that the
@@ -1557,6 +1574,19 @@ func runAdminMigrations() {
 			CREATE INDEX IF NOT EXISTS idx_queue_plan_id ON mailing_campaign_queue(isp_plan_id);
 			CREATE INDEX IF NOT EXISTS idx_queue_campaign_wave_schedule ON mailing_campaign_queue(campaign_id, wave_id, scheduled_at)
 		`},
+		{"cold_storage_176", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused', reputation_score = 0, updated_at = NOW() WHERE ip_address = '15.204.22.176'`},
+		{"seed_warmup_ip_180", `DO $$
+		DECLARE
+			org_id UUID := '00000000-0000-0000-0000-000000000001';
+			wp_id UUID;
+		BEGIN
+			SELECT id INTO wp_id FROM mailing_ip_pools WHERE organization_id = org_id AND name = 'warmup-pool';
+			IF wp_id IS NOT NULL THEN
+				INSERT INTO mailing_ip_addresses (organization_id, ip_address, hostname, pool_id, acquisition_type, hosting_provider, cidr_block, status, warmup_stage, warmup_day, warmup_daily_limit, rdns_verified, reputation_score)
+				VALUES (org_id, '15.204.22.180', 'mta5.mail.projectjarvis.io', wp_id, 'purchased', 'OVH', '15.204.22.176/28', 'warmup', 'warming', 1, 200, true, 50.0)
+				ON CONFLICT DO NOTHING;
+			END IF;
+		END $$`},
 	}
 
 	var ok, fail int
