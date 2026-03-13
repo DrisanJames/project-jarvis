@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
@@ -80,9 +81,18 @@ func (s *PMTACampaignService) HandleWaveContentTest(w http.ResponseWriter, r *ht
 
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		for _, cfgPath := range []string{"config/config.yaml", "/app/config/config.yaml"} {
+			if cfg, err := config.Load(cfgPath); err == nil && cfg.OpenAI.APIKey != "" {
+				openaiKey = cfg.OpenAI.APIKey
+				log.Printf("[wave-content-test] loaded OpenAI key from %s", cfgPath)
+				break
+			}
+		}
+	}
 	if anthropicKey == "" && openaiKey == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "no AI API key configured (need ANTHROPIC_API_KEY or OPENAI_API_KEY)",
+			"error": "no AI API key configured (need ANTHROPIC_API_KEY or OPENAI_API_KEY env var, or openai.api_key in config.yaml)",
 		})
 		return
 	}

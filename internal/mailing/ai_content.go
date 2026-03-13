@@ -40,7 +40,7 @@ func NewAIContentService(db *sql.DB, anthropicKey, openaiKey string) *AIContentS
 		openaiKey:    openaiKey,
 		defaultModel: model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 200 * time.Second,
 		},
 	}
 }
