@@ -545,3 +545,137 @@ func (s *AIContentService) callOpenAIForTemplates(ctx context.Context, prompt st
 
 	return variations, nil
 }
+
+// callClaudeRaw sends a prompt to Claude and returns the raw text response.
+func (s *AIContentService) callClaudeRaw(ctx context.Context, prompt string) (string, error) {
+	reqBody := map[string]interface{}{
+		"model":      "claude-opus-4-6",
+		"max_tokens": 32000,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	body, _ := json.Marshal(reqBody)
+
+	genCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(genCtx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("x-api-key", s.anthropicKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("anthropic request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("anthropic error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var anthropicResp struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+		return "", fmt.Errorf("failed to parse anthropic response: %w", err)
+	}
+	if len(anthropicResp.Content) == 0 {
+		return "", fmt.Errorf("no content in anthropic response")
+	}
+
+	raw := strings.TrimSpace(anthropicResp.Content[0].Text)
+	if strings.HasPrefix(raw, "```json") {
+		raw = strings.TrimPrefix(raw, "```json")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	} else if strings.HasPrefix(raw, "```") {
+		raw = strings.TrimPrefix(raw, "```")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	}
+
+	return raw, nil
+}
+
+// callOpenAIRaw sends a prompt to OpenAI and returns the raw text response.
+func (s *AIContentService) callOpenAIRaw(ctx context.Context, prompt string) (string, error) {
+	reqBody := map[string]interface{}{
+		"model": "gpt-5.2",
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You are an expert email designer and deliverability engineer. Always respond with valid JSON only — no markdown, no code fences, no explanation.",
+			},
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"temperature":           0.8,
+		"max_completion_tokens": 32000,
+	}
+
+	body, _ := json.Marshal(reqBody)
+
+	genCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(genCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.openaiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openai request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("openai error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var openAIResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &openAIResp); err != nil {
+		return "", fmt.Errorf("failed to parse openai response: %w", err)
+	}
+	if len(openAIResp.Choices) == 0 {
+		return "", fmt.Errorf("no choices in openai response")
+	}
+
+	raw := strings.TrimSpace(openAIResp.Choices[0].Message.Content)
+	if strings.HasPrefix(raw, "```json") {
+		raw = strings.TrimPrefix(raw, "```json")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	} else if strings.HasPrefix(raw, "```") {
+		raw = strings.TrimPrefix(raw, "```")
+		raw = strings.TrimSuffix(raw, "```")
+		raw = strings.TrimSpace(raw)
+	}
+
+	return raw, nil
+}
+
+// ScrapeBrandIntelligence is the public accessor for brand intelligence scraping.
+func (s *AIContentService) ScrapeBrandIntelligence(ctx context.Context, domain string) *BrandIntelligence {
+	return s.scrapeBrandIntelligence(ctx, domain)
+}

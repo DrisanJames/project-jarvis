@@ -1587,6 +1587,24 @@ func runAdminMigrations() {
 				ON CONFLICT DO NOTHING;
 			END IF;
 		END $$`},
+
+		{"fix_profiles_to_warmup_pool", `UPDATE mailing_sending_profiles SET ip_pool = 'warmup-pool', updated_at = NOW() WHERE vendor_type = 'pmta' AND ip_pool != 'warmup-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'`},
+
+		{"fix_cold_176_ensure", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused', reputation_score = 0, updated_at = NOW() WHERE ip_address = '15.204.22.176' AND status != 'cold'`},
+
+		{"fix_warmup_ips_177_179_pool", `DO $$
+		DECLARE
+			org_id UUID := '00000000-0000-0000-0000-000000000001';
+			wp_id UUID;
+		BEGIN
+			SELECT id INTO wp_id FROM mailing_ip_pools WHERE organization_id = org_id AND name = 'warmup-pool';
+			IF wp_id IS NOT NULL THEN
+				UPDATE mailing_ip_addresses SET pool_id = wp_id, updated_at = NOW()
+				WHERE ip_address IN ('15.204.22.177', '15.204.22.178', '15.204.22.179', '15.204.22.180')
+				  AND organization_id = org_id
+				  AND pool_id != wp_id;
+			END IF;
+		END $$`},
 	}
 
 	var ok, fail int
