@@ -128,7 +128,7 @@ func (h *throttleAnalyticsHandler) queryRecentDecisions(r *http.Request) []throt
 	}
 	defer rows.Close()
 
-	var entries []throttleDecisionEntry
+	entries := make([]throttleDecisionEntry, 0)
 	for rows.Next() {
 		var (
 			isp, action, result string
@@ -167,7 +167,7 @@ func (h *throttleAnalyticsHandler) buildConvictions() []throttleConvictionEntry 
 		return []throttleConvictionEntry{}
 	}
 
-	var entries []throttleConvictionEntry
+	entries := make([]throttleConvictionEntry, 0)
 	for _, isp := range engine.AllISPs() {
 		recent := h.convictionStore.RecallRecent(isp, engine.AgentThrottle, 10)
 		for i := len(recent) - 1; i >= 0; i-- {

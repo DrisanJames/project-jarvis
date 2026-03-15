@@ -158,9 +158,13 @@ export const ThrottleAnalytics: React.FC = () => {
     );
   }
 
-  const sortedRates = [...data.live_rates].sort((a, b) => a.isp.localeCompare(b.isp));
+  const liveRates = data.live_rates ?? [];
+  const recentDecisions = data.recent_decisions ?? [];
+  const convictions = data.convictions ?? [];
 
-  const convictionsByISP = data.convictions.reduce<Record<string, ThrottleConviction[]>>((acc, c) => {
+  const sortedRates = [...liveRates].sort((a, b) => a.isp.localeCompare(b.isp));
+
+  const convictionsByISP = convictions.reduce<Record<string, ThrottleConviction[]>>((acc, c) => {
     (acc[c.isp] = acc[c.isp] || []).push(c);
     return acc;
   }, {});
@@ -218,14 +222,14 @@ export const ThrottleAnalytics: React.FC = () => {
           <FontAwesomeIcon icon={faHistory} />
           <h2>Decision Timeline</h2>
         </div>
-        <span className="ta-count-badge">{data.recent_decisions.length} recent</span>
+        <span className="ta-count-badge">{recentDecisions.length} recent</span>
       </div>
 
-      {data.recent_decisions.length === 0 ? (
+      {recentDecisions.length === 0 ? (
         <div className="ta-empty-section">No throttle decisions recorded yet.</div>
       ) : (
         <div className="ta-timeline">
-          {data.recent_decisions.map((d, i) => {
+          {recentDecisions.map((d, i) => {
             const meta = ACTION_META[d.action] || { label: d.action, color: '#6b7280', icon: faHistory };
             const ispColor = ISP_COLORS[d.isp] || '#64748b';
             const displayName = ISP_DISPLAY[d.isp] || d.isp;
@@ -262,10 +266,10 @@ export const ThrottleAnalytics: React.FC = () => {
           <FontAwesomeIcon icon={faBrain} />
           <h2>Throttle Conviction Memory</h2>
         </div>
-        <span className="ta-count-badge">{data.convictions.length} convictions</span>
+        <span className="ta-count-badge">{convictions.length} convictions</span>
       </div>
 
-      {data.convictions.length === 0 ? (
+      {convictions.length === 0 ? (
         <div className="ta-empty-section">No throttle convictions recorded yet.</div>
       ) : (
         <div className="ta-convictions">
