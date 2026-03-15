@@ -107,8 +107,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		"content":         rfc822.String(),
 	}
 
-	// Explicit header takes highest precedence (set by campaign builder with
-	// the profile's ip_pool value which maps to a PMTA virtual-mta-pool).
+	var selectedIPID string
 	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
 		payload["vmta"] = vmta
 		log.Printf("[PMTA-API] Routing %s via explicit VMTA header: %s", msg.Email, vmta)
@@ -121,7 +120,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		if err == nil {
 			vmta := vmtaShortName(ip.Hostname)
 			payload["vmta"] = vmta
-			log.Printf("[PMTA-API] Routing %s via VMTA %s (IP %s)", msg.Email, vmta, ip.Hostname)
+			selectedIPID = ip.ID
 		} else {
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}
@@ -153,8 +152,24 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		return nil, fmt.Errorf("PMTA API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
+	if selectedIPID != "" {
+		go s.updateIPCounters(selectedIPID)
+	}
+
 	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", msg.Email, injectURL, messageID, resp.StatusCode)
 	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now()}, nil
+}
+
+func (s *PMTAAPISender) updateIPCounters(ipID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s.db.ExecContext(ctx, `UPDATE mailing_ip_addresses SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW() WHERE id = $1`, ipID)
+	s.db.ExecContext(ctx, `
+		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, actual_sent)
+		VALUES (gen_random_uuid(), $1, CURRENT_DATE, 1)
+		ON CONFLICT (ip_id, date) DO UPDATE SET actual_sent = mailing_ip_warmup_log.actual_sent + 1
+	`, ipID)
 }
 
 func quotedprintableEncode(s string) string {

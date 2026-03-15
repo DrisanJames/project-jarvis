@@ -60,6 +60,7 @@ type SendWorkerPool struct {
 	sesSender       ESPSender
 	mailgunSender   ESPSender
 	sendgridSender  ESPSender
+	pmtaSender      ESPSender
 
 	// Global suppression hub (single source of truth)
 	globalHub        GlobalSuppressionChecker
@@ -209,6 +210,10 @@ func (p *SendWorkerPool) SetESPSenders(sparkpost, ses, mailgun, sendgrid ESPSend
 	p.sendgridSender = sendgrid
 }
 
+func (p *SendWorkerPool) SetPMTASender(sender ESPSender) {
+	p.pmtaSender = sender
+}
+
 // SetTrackingConfig configures tracking pixel/click/unsubscribe injection.
 func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID string) {
 	p.trackingURL = trackingURL
@@ -286,7 +291,14 @@ func (p *SendWorkerPool) Start() {
 	// Start heartbeat
 	go p.heartbeatLoop()
 
-	// Start workers
+	// Start ISP-proportional dispatch coordinator (single goroutine)
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.ispDispatchLoop()
+	}()
+
+	// Start workers (handle non-ISP-quota campaigns via flat claiming)
 	for i := 0; i < p.numWorkers; i++ {
 		p.wg.Add(1)
 		go p.worker(i)
@@ -356,12 +368,13 @@ func (p *SendWorkerPool) worker(workerNum int) {
 	}
 }
 
-// claimBatch claims a batch of queue items
+// claimBatch claims a batch of queue items. If the campaign has ISP quotas
+// with a batch plan, it claims proportionally per ISP (ISP-balanced sending).
+// Otherwise it falls back to a flat LIMIT claim for backward compatibility.
 func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	// Use the claim function from the database
 	rows, err := p.db.QueryContext(ctx, `
 		WITH claimed AS (
 			UPDATE mailing_campaign_queue
@@ -376,6 +389,8 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 				  AND camp.status = 'sending'
 				  AND q.scheduled_at <= NOW()
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
+				  AND (camp.esp_quotas IS NULL
+				       OR NOT (camp.esp_quotas ? 'isp_quotas'))
 				ORDER BY q.priority DESC, q.scheduled_at ASC
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED
@@ -423,6 +438,310 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 	}
 	defer rows.Close()
 
+	return p.scanQueueRows(rows)
+}
+
+// claimISPForOne claims up to `count` queued items for a specific campaign+ISP.
+func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp string, count int) ([]QueueItem, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		WITH claimed AS (
+			UPDATE mailing_campaign_queue
+			SET status = 'sending', worker_id = $1, locked_at = NOW()
+			WHERE id IN (
+				SELECT q.id FROM mailing_campaign_queue q
+				JOIN mailing_campaigns camp ON camp.id = q.campaign_id
+				WHERE q.campaign_id = $2
+				  AND q.recipient_isp = $3
+				  AND q.status = 'queued'
+				  AND camp.status = 'sending'
+				  AND q.scheduled_at <= NOW()
+				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
+				ORDER BY q.priority DESC, q.scheduled_at ASC
+				LIMIT $4
+				FOR UPDATE SKIP LOCKED
+			)
+			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content
+		)
+		SELECT
+			c.id, c.campaign_id, c.subscriber_id,
+			s.email,
+			COALESCE(c.subject, ''), COALESCE(c.html_content, ''), COALESCE(c.plain_content, ''),
+			COALESCE(camp.preview_text, ''),
+			COALESCE(camp.from_name, ''), COALESCE(camp.from_email, ''), COALESCE(camp.reply_to, ''),
+			COALESCE(camp.sending_profile_id::text, ''), COALESCE(sp.vendor_type, 'ses'),
+			COALESCE(s.first_name, ''), COALESCE(s.last_name, ''),
+			s.custom_fields, COALESCE(s.engagement_score, 0),
+			COALESCE(s.total_emails_received, 0), COALESCE(s.total_opens, 0), COALESCE(s.total_clicks, 0),
+			s.last_open_at, s.last_click_at, s.last_email_at,
+			s.optimal_send_hour_utc, COALESCE(s.timezone, ''),
+			COALESCE(s.status, 'confirmed'), COALESCE(s.source, ''),
+			COALESCE(s.subscribed_at, s.created_at), COALESCE(camp.name, '')
+		FROM claimed c
+		JOIN mailing_subscribers s ON s.id = c.subscriber_id
+		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
+		LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
+	`, p.workerID, campaignID, isp, count)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return p.scanQueueRows(rows)
+}
+
+// claimISPBatch claims items proportionally across ISPs for a single campaign.
+// Claims are issued concurrently — one goroutine per ISP.
+func (p *SendWorkerPool) claimISPBatch(campaignID string, batchCounts map[string]int) ([]QueueItem, error) {
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
+	type ispResult struct {
+		isp   string
+		items []QueueItem
+	}
+	ch := make(chan ispResult, len(batchCounts))
+	var wg sync.WaitGroup
+
+	for isp, count := range batchCounts {
+		if count <= 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(isp string, count int) {
+			defer wg.Done()
+			items, err := p.claimISPForOne(ctx, campaignID, isp, count)
+			if err != nil {
+				log.Printf("[ISPDispatch] claim error campaign=%s isp=%s: %v", campaignID, isp, err)
+				return
+			}
+			ch <- ispResult{isp: isp, items: items}
+		}(isp, count)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	var allItems []QueueItem
+	for res := range ch {
+		allItems = append(allItems, res.items...)
+	}
+	return allItems, nil
+}
+
+// ---------------------------------------------------------------------------
+// ISP-Proportional Campaign Dispatcher
+// ---------------------------------------------------------------------------
+
+// ispCampaignState tracks the batch plan and remaining quotas for one campaign.
+type ispCampaignState struct {
+	campaignID string
+	plan       map[string]int // per-ISP per-batch target (from ComputeBatchPlan)
+	remaining  map[string]int // per-ISP queued items left (from DB, refreshed each cycle)
+}
+
+// ispDispatchLoop is a single coordinator goroutine that discovers ISP-quota
+// campaigns, computes proportional batch plans, claims items concurrently
+// across ISPs, and fans claimed items out to a bounded worker pool.
+func (p *SendWorkerPool) ispDispatchLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	states := make(map[string]*ispCampaignState)
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.refreshISPCampaigns(states)
+			p.dispatchISPBatches(states)
+		}
+	}
+}
+
+// refreshISPCampaigns discovers sending campaigns with ISP quotas, initializes
+// batch plans, and queries the DB for actual remaining queued counts per ISP
+// (surviving server restarts). Removes campaigns no longer sending.
+func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState) {
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(esp_quotas::text, '{}')
+		FROM mailing_campaigns
+		WHERE status = 'sending'
+		  AND esp_quotas IS NOT NULL
+		  AND esp_quotas ? 'isp_quotas'
+	`)
+	if err != nil {
+		log.Printf("[ISPDispatch] Error querying ISP campaigns: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	activeCampaigns := make(map[string]bool)
+	for rows.Next() {
+		var campID, quotasJSON string
+		if err := rows.Scan(&campID, &quotasJSON); err != nil {
+			continue
+		}
+		activeCampaigns[campID] = true
+
+		if _, exists := states[campID]; exists {
+			p.refreshRemainingFromDB(ctx, states[campID])
+			continue
+		}
+
+		var qCfg struct {
+			ISPQuotas []struct {
+				ISP    string `json:"isp"`
+				Volume int    `json:"volume"`
+			} `json:"isp_quotas"`
+		}
+		if err := json.Unmarshal([]byte(quotasJSON), &qCfg); err != nil || len(qCfg.ISPQuotas) == 0 {
+			continue
+		}
+
+		quotas := make(map[string]int, len(qCfg.ISPQuotas))
+		for _, q := range qCfg.ISPQuotas {
+			if q.Volume > 0 {
+				quotas[q.ISP] = q.Volume
+			}
+		}
+		if len(quotas) == 0 {
+			continue
+		}
+
+		totalItems := 0
+		for _, v := range quotas {
+			totalItems += v
+		}
+		numBatches := (totalItems + p.batchSize - 1) / p.batchSize
+		if numBatches < 1 {
+			numBatches = 1
+		}
+
+		state := &ispCampaignState{
+			campaignID: campID,
+			plan:       ComputeBatchPlan(quotas, numBatches),
+			remaining:  make(map[string]int, len(quotas)),
+		}
+		p.refreshRemainingFromDB(ctx, state)
+
+		states[campID] = state
+		log.Printf("[ISPDispatch] Tracking campaign %s: quotas=%v plan=%v remaining=%v batches=%d",
+			campID, quotas, state.plan, state.remaining, numBatches)
+	}
+
+	for campID := range states {
+		if !activeCampaigns[campID] {
+			log.Printf("[ISPDispatch] Campaign %s no longer sending, removing state", campID)
+			delete(states, campID)
+		}
+	}
+}
+
+// refreshRemainingFromDB queries the actual queued item counts per ISP from
+// the database, making the dispatcher resilient to server restarts.
+func (p *SendWorkerPool) refreshRemainingFromDB(ctx context.Context, state *ispCampaignState) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT COALESCE(recipient_isp, 'other'), COUNT(*)
+		FROM mailing_campaign_queue
+		WHERE campaign_id = $1
+		  AND status = 'queued'
+		GROUP BY recipient_isp
+	`, state.campaignID)
+	if err != nil {
+		log.Printf("[ISPDispatch] Error refreshing remaining for %s: %v", state.campaignID, err)
+		return
+	}
+	defer rows.Close()
+
+	fresh := make(map[string]int)
+	for rows.Next() {
+		var isp string
+		var count int
+		if err := rows.Scan(&isp, &count); err != nil {
+			continue
+		}
+		fresh[isp] = count
+	}
+
+	for isp := range state.plan {
+		state.remaining[isp] = fresh[isp]
+	}
+	state.remaining["other"] = fresh["other"]
+}
+
+// dispatchISPBatches runs one batch cycle for every tracked ISP-quota campaign.
+// Claimed items are processed concurrently using a bounded goroutine pool.
+func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState) {
+	for campID, state := range states {
+		select {
+		case <-p.ctx.Done():
+			return
+		default:
+		}
+
+		batchCounts := AssembleBatch(state.plan, state.remaining)
+		if otherRemaining := state.remaining["other"]; otherRemaining > 0 {
+			batchCounts["other"] = otherRemaining
+		}
+		if BatchTotal(batchCounts) == 0 {
+			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing", campID)
+			delete(states, campID)
+			continue
+		}
+
+		items, err := p.claimISPBatch(campID, batchCounts)
+		if err != nil {
+			log.Printf("[ISPDispatch] Claim error for campaign %s: %v", campID, err)
+			continue
+		}
+
+		if len(items) == 0 {
+			continue
+		}
+
+		actualCounts := make(map[string]int)
+		for _, item := range items {
+			actualCounts[ClassifySubscriberISP(item.Email)]++
+		}
+		log.Printf("[ISPDispatch] Campaign %s: claimed %d items (plan=%v actual=%v)",
+			campID, len(items), batchCounts, actualCounts)
+
+		p.processItemsConcurrently(items)
+	}
+}
+
+// processItemsConcurrently fans items out to a bounded set of goroutines,
+// matching the parallelism the flat workers use.
+func (p *SendWorkerPool) processItemsConcurrently(items []QueueItem) {
+	sem := make(chan struct{}, p.numWorkers)
+	var wg sync.WaitGroup
+
+	for _, item := range items {
+		select {
+		case <-p.ctx.Done():
+			break
+		default:
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(it QueueItem) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := p.processItem(it); err != nil {
+				log.Printf("[ISPDispatch] Error processing item %s: %v", it.ID, err)
+			}
+		}(item)
+	}
+	wg.Wait()
+}
+
+func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 	var items []QueueItem
 	for rows.Next() {
 		var item QueueItem
@@ -466,7 +785,6 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 		item.ESPType = espType
 		items = append(items, item)
 	}
-
 	return items, nil
 }
 
@@ -588,8 +906,10 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		sender = p.mailgunSender
 	case "sendgrid":
 		sender = p.sendgridSender
+	case "pmta":
+		sender = p.pmtaSender
 	default:
-		sender = p.sesSender // Default to SES
+		sender = p.sesSender
 	}
 
 	if sender == nil {
@@ -605,6 +925,8 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		if err != nil {
 			errMsg = err.Error()
 		}
+		log.Printf("[SendWorkerPool] SEND FAILED campaign=%s email=%s esp=%s err=%s",
+			item.CampaignID, logger.RedactEmail(item.Email), item.ESPType, errMsg)
 
 		p.recordBounce(ctx, item, errMsg)
 		return p.markFailed(ctx, item.ID, errMsg)
@@ -751,10 +1073,10 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 
 	_, dbErr := p.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, recipient_domain)
-		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7, $8)
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain)
+		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7)
 	`, uuid.New(), p.orgID, item.CampaignID, item.SubscriberID,
-		bounceType, errMsg, sendingDomain, recipientDomain)
+		bounceType, errMsg, sendingDomain)
 	if dbErr != nil {
 		log.Printf("[SendWorkerPool] bounce tracking insert error: %v", dbErr)
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/financial"
 	"github.com/ignite/sparkpost-monitor/internal/intelligence"
 	"github.com/ignite/sparkpost-monitor/internal/kanban"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/mailgun"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
@@ -308,6 +309,7 @@ func main() {
 				sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10)
 				profileSender := worker.NewProfileBasedSender(mailingDB)
 				sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
+				sendWorkerPool.SetPMTASender(profileSender)
 
 				trackURL := os.Getenv("TRACKING_URL")
 				if trackURL == "" {
@@ -342,7 +344,6 @@ func main() {
 				}
 
 				sendWorkerPool.Start()
-				log.Printf("SendWorkerPool: Starting 10 workers (batch_size=100)")
 
 				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
 				queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
@@ -358,6 +359,41 @@ func main() {
 				segRefresh := worker.NewSegmentRefreshWorker(mailingDB, 4*time.Hour)
 				segRefresh.Start(ctx)
 				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 4h)")
+
+				// Start List Refresh Worker (updates subscriber_count and mailed_to on lists)
+				listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
+				listRefresh.Start(ctx)
+				log.Println("List Refresh Worker started (updates list counts every 1h)")
+
+				// Start Content Refresh Worker (pre-generates wave email content nightly)
+				contentRefresh := worker.NewContentRefreshWorker(mailingDB, 24*time.Hour)
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "discountblog", BlogDomain: "discountblog.com",
+					SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
+					CampaignType: "newsletter",
+					Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. First-person storytelling. You say things like "My wife and I tried this..." and "Here's what actually worked for our family." Pull specific numbers from the articles — dollar amounts, percentages, timeframes. Never generic. Every sentence should teach or reveal something useful. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. Think: personal finance blog meets friendly text message.`,
+					Audience: `Budget-conscious families, young professionals figuring out adulting, and savvy deal hunters. They're busy, skeptical of hype, and want actionable advice — not listicles. They read Discount Blog because it feels real, not manufactured.`,
+					HTMLTemplate: api.DiscountBlogHTMLTemplate,
+				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "quizfiesta", BlogDomain: "quizfiesta.com",
+					SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
+					CampaignType: "trivia",
+					Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. Write like an arcade machine that gained sentience and got really into hyping people up. Short punchy sentences. Direct challenges to the reader. Arcade/gaming lingo: "INSERT COIN", "GAME OVER", "player", "high score", "streak", "level up." Competitive but encouraging — you want them to play, not feel bad. Use ALL CAPS sparingly for emphasis on key words (one per paragraph max). Think: the text on an arcade cabinet's attract screen mixed with a friend trash-talking you at game night.`,
+					Audience: `Trivia lovers, casual gamers, friend groups who want game night content, and competitive players chasing leaderboard spots. They're on their phone, they have 2 minutes, and you need to get them excited enough to tap PLAY.`,
+					HTMLTemplate: api.QuizFiestaHTMLTemplate,
+					FallbackContent: []mailing.BlogExcerpt{
+						{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty. How high can you score?", URL: "https://quizfiesta.com/play"},
+						{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last. Stack streak bonuses for massive multipliers. Current record: 47 questions.", URL: "https://quizfiesta.com/play"},
+						{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out. Every second wasted is points lost.", URL: "https://quizfiesta.com/play"},
+						{Title: "AI Challenge — A.P.E.X. Is Watching", Excerpt: "Race the machine through 20 levels. Our AI adapts to your skill in real-time. It studies your weaknesses.", URL: "https://quizfiesta.com/play"},
+						{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles where every millisecond matters.", URL: "https://quizfiesta.com/play"},
+						{Title: "Party Mode — Up to 8 Players. Total Chaos.", Excerpt: "Create a room. Share the code. Jackbox-style trivia with friends. Perfect for game night.", URL: "https://quizfiesta.com/play"},
+						{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 average 94% accuracy. Where do you rank?", URL: "https://quizfiesta.com/leaderboard"},
+					},
+				})
+				contentRefresh.Start(ctx)
+				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 
 				// Start S3 Data Normalizer (imports from jvc-email-data bucket)
 				datanormCfg := datanorm.Config{
@@ -1423,6 +1459,26 @@ func runStartupMigrations(db *sql.DB) {
 		`},
 		{"add_is_machine_open_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_machine_open BOOLEAN DEFAULT FALSE`},
 		{"add_idx_mte_machine_open", `CREATE INDEX IF NOT EXISTS idx_mte_machine_open ON mailing_tracking_events (campaign_id, is_machine_open) WHERE event_type = 'opened' AND is_machine_open = TRUE`},
+
+		{"create_wave_content_cache", `CREATE TABLE IF NOT EXISTS mailing_wave_content_cache (
+			id            SERIAL PRIMARY KEY,
+			brand_key     TEXT NOT NULL,
+			wave_index    INT NOT NULL,
+			subject       TEXT NOT NULL,
+			preview_text  TEXT NOT NULL DEFAULT '',
+			from_name     TEXT NOT NULL DEFAULT '',
+			html_content  TEXT NOT NULL,
+			diagnostics   JSONB,
+			generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			used_at       TIMESTAMPTZ,
+			version       TEXT NOT NULL DEFAULT ''
+		)`},
+		{"idx_wave_cache_brand_unused", `CREATE INDEX IF NOT EXISTS idx_wave_cache_brand_unused ON mailing_wave_content_cache (brand_key, generated_at DESC) WHERE used_at IS NULL`},
+
+		{"add_list_subscriber_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS subscriber_count INT DEFAULT 0`},
+		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},
+		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},
+		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
 	}
 
 	var ok, fail int
@@ -1447,6 +1503,12 @@ func runStartupMigrations(db *sql.DB) {
 		}
 	} else if besmedCount > 0 {
 		log.Printf("[StartupMigration] besmed_suppression_import: already loaded (%d entries)", besmedCount)
+	}
+
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`); err != nil {
+		log.Printf("[StartupMigration] idx_campaign_queue_recipient_isp: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] idx_campaign_queue_recipient_isp: OK")
 	}
 }
 
@@ -1591,6 +1653,15 @@ func runAdminMigrations() {
 		{"fix_profiles_to_warmup_pool", `UPDATE mailing_sending_profiles SET ip_pool = 'warmup-pool', updated_at = NOW() WHERE vendor_type = 'pmta' AND ip_pool != 'warmup-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'`},
 
 		{"fix_cold_176_ensure", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused', reputation_score = 0, updated_at = NOW() WHERE ip_address = '15.204.22.176' AND status != 'cold'`},
+		{"bump_warmup_limits_day4", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1500 WHERE ip_address IN ('15.204.22.177','15.204.22.178','15.204.22.179','15.204.22.180') AND warmup_daily_limit < 1500`},
+		{"bump_warmup_limits_day4b", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000 WHERE status IN ('active','warmup') AND warmup_daily_limit < 5000`},
+		{"bump_warmup_limits_null", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000 WHERE status IN ('active','warmup') AND warmup_daily_limit IS NULL`},
+		{"force_warmup_5000_all", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000 WHERE warmup_daily_limit != 5000 OR warmup_daily_limit IS NULL`},
+		{"nuke_warmup_limits_v2", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000`},
+		{"nuke_warmup_log_today", `DELETE FROM mailing_ip_warmup_log WHERE date = CURRENT_DATE`},
+		{"nuke_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold' WHERE hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%'`},
+
+		{"idx_queue_recipient_isp", `CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`},
 
 		{"fix_warmup_ips_177_179_pool", `DO $$
 		DECLARE

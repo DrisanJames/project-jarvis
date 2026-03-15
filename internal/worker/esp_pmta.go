@@ -94,10 +94,16 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	if len(ips) > 0 {
 		p.ips = ips
 		p.loadedAt = time.Now()
+		for _, ip := range ips {
+			log.Printf("[vmtaPool] Loaded IP %s status=%s limit=%d sent=%d", ip.Hostname, ip.Status, ip.WarmupDailyLimit, ip.TodaySent)
+		}
+	} else {
+		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s", profileID)
 	}
 }
 
 // next returns the next available IP, enforcing warmup daily limits.
+// IPs with status "cold" are always skipped (e.g., blacklisted mta1).
 func (p *vmtaPool) next() (vmtaEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -109,12 +115,15 @@ func (p *vmtaPool) next() (vmtaEntry, error) {
 	for attempts := 0; attempts < len(p.ips); attempts++ {
 		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
 		ip := p.ips[idx]
-		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
+		if ip.Status == "cold" {
+			continue
+		}
+		if strings.Contains(ip.Hostname, "mta1") {
 			continue
 		}
 		return ip, nil
 	}
-	return vmtaEntry{}, fmt.Errorf("all IPs exhausted warmup daily limits")
+	return vmtaEntry{}, fmt.Errorf("all IPs exhausted or excluded")
 }
 
 // =============================================================================

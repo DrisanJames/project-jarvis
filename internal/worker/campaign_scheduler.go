@@ -977,6 +977,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		"id", "campaign_id", "subscriber_id",
 		"subject", "html_content", "plain_content",
 		"status", "priority", "scheduled_at", "created_at",
+		"recipient_isp",
 	))
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare COPY: %w", err)
@@ -1026,19 +1027,16 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		}
 		seenEmails[emailKey] = true
 
+		recipientISP := ClassifySubscriberISP(sub.Email)
+
 		// Enforce per-ISP quota caps
 		if len(quotaMap) > 0 {
-			atIdx := strings.LastIndex(emailKey, "@")
-			if atIdx >= 0 {
-				domain := emailKey[atIdx+1:]
-				isp := classifyEmailISP(domain)
-				if maxVol, hasQuota := quotaMap[isp]; hasQuota {
-					if ispCounts[isp] >= maxVol {
-						continue
-					}
+			if maxVol, hasQuota := quotaMap[recipientISP]; hasQuota {
+				if ispCounts[recipientISP] >= maxVol {
+					continue
 				}
-				ispCounts[isp]++
 			}
+			ispCounts[recipientISP]++
 		}
 		// Check for cancel/pause every EnqueueBatchSize rows
 		if i > 0 && i%EnqueueBatchSize == 0 {
@@ -1082,6 +1080,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			uuid.New(), campaign.ID, sub.ID,
 			subject, htmlContent, textContent,
 			"queued", effectivePriority, scheduledAt, now,
+			recipientISP,
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] COPY row error for subscriber %s: %v", sub.ID, err)
@@ -1462,22 +1461,8 @@ type espQuotaConfig struct {
 	RandomizeAudience bool `json:"randomize_audience"`
 }
 
-// schedulerISPMap maps common email domains to ISP identifiers for quota enforcement.
-var schedulerISPMap = map[string]string{
-	"gmail.com": "gmail", "googlemail.com": "gmail",
-	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
-	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo", "yahoo.co.uk": "yahoo", "aol.com": "yahoo",
-	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
-	"comcast.net": "comcast", "xfinity.com": "comcast",
-	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
-	"cox.net":     "cox",
-	"charter.net": "charter", "spectrum.net": "charter",
-	"verizon.net": "verizon",
-}
-
+// classifyEmailISP is kept as a thin alias for backward compatibility with
+// any code that calls it by domain string. New code should use ClassifySubscriberISP.
 func classifyEmailISP(domain string) string {
-	if isp, ok := schedulerISPMap[strings.ToLower(domain)]; ok {
-		return isp
-	}
-	return "other"
+	return ClassifySubscriberISP("x@" + domain)
 }
