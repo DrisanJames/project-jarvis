@@ -80,6 +80,28 @@ func (f *AgentFactory) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// SetRateRegistry injects the shared rate registry into every ThrottleAgent.
+// Must be called after Initialize().
+func (f *AgentFactory) SetRateRegistry(registry *ISPRateRegistry) {
+	for _, agentsByType := range f.agents {
+		if ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent); ok {
+			ta.SetRateRegistry(registry)
+		}
+	}
+}
+
+// GetConfigs returns a map of ISP -> ISPConfig for all initialized agents.
+// Used by the wiring code to seed the ISPRateRegistry with initial rates.
+func (f *AgentFactory) GetConfigs() map[ISP]ISPConfig {
+	configs := make(map[ISP]ISPConfig)
+	for isp, agentsByType := range f.agents {
+		if ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent); ok {
+			configs[isp] = ta.Config
+		}
+	}
+	return configs
+}
+
 // GetAgent returns a specific agent by ISP and type.
 func (f *AgentFactory) GetAgent(isp ISP, at AgentType) Agent {
 	if m, ok := f.agents[isp]; ok {

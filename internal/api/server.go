@@ -11,6 +11,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/agent"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
 	"github.com/ignite/sparkpost-monitor/internal/config"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/redis/go-redis/v9"
@@ -38,6 +39,10 @@ type Server struct {
 	mailingSvc     *MailingService
 	// Global suppression hub — exported so main.go can wire it to the send worker pool
 	GlobalHub      interface{ IsSuppressed(email string) bool }
+	// ISP rate registry — shared between engine agents and send worker pool
+	rateRegistry    *engine.ISPRateRegistry
+	ispConfigs      map[engine.ISP]engine.ISPConfig
+	convictionStore *engine.ConvictionStore
 	// S3 data normalizer for operational API
 	dataNormHandler *DataNormHandler
 }
@@ -111,4 +116,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Handler returns the HTTP handler for testing
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+// GetRateRegistry returns the ISP rate registry created during engine startup.
+// Returns nil if the engine has not been initialized yet.
+func (s *Server) GetRateRegistry() *engine.ISPRateRegistry {
+	return s.rateRegistry
 }

@@ -48,9 +48,10 @@ type BrandIntelligence struct {
 
 // BlogExcerpt holds a scraped blog post summary.
 type BlogExcerpt struct {
-	Title   string `json:"title"`
-	Excerpt string `json:"excerpt"`
-	URL     string `json:"url"`
+	Title    string `json:"title"`
+	Excerpt  string `json:"excerpt"`
+	URL      string `json:"url"`
+	FullText string `json:"full_text,omitempty"`
 }
 
 // GenerateEmailTemplates produces 5 HTML email template variations using AI.
@@ -676,6 +677,234 @@ func (s *AIContentService) callOpenAIRaw(ctx context.Context, prompt string) (st
 }
 
 // ScrapeBrandIntelligence is the public accessor for brand intelligence scraping.
+// It scrapes the homepage first, then tries common blog paths if not enough posts
+// were found, then deep-scrapes the top articles for full body text.
 func (s *AIContentService) ScrapeBrandIntelligence(ctx context.Context, domain string) *BrandIntelligence {
-	return s.scrapeBrandIntelligence(ctx, domain)
+	brand := s.scrapeBrandIntelligence(ctx, domain)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	if len(brand.BlogPosts) < 3 {
+		blogPaths := []string{"/blog", "/posts", "/articles", "/news"}
+		for _, path := range blogPaths {
+			blogURL := "https://" + domain + path
+			req, err := http.NewRequestWithContext(ctx, "GET", blogURL, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("User-Agent", "JarvisBot/1.0 (brand-intelligence)")
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				continue
+			}
+			bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+			resp.Body.Close()
+			if err != nil {
+				continue
+			}
+			html := string(bodyBytes)
+
+			allLinks := extractAllBlogLinks(html, domain)
+			posts := extractBlogExcerptsWithLinks(html, domain, allLinks)
+			if len(posts) == 0 {
+				posts = extractCardPostsWithLinks(html, domain, allLinks)
+			}
+			if len(posts) > len(brand.BlogPosts) {
+				brand.BlogPosts = posts
+				log.Printf("brand scrape: found %d posts from %s%s", len(posts), domain, path)
+				break
+			}
+		}
+	}
+
+	deepScrapeCount := 5
+	if len(brand.BlogPosts) < deepScrapeCount {
+		deepScrapeCount = len(brand.BlogPosts)
+	}
+	scraped := 0
+	for i := 0; i < len(brand.BlogPosts) && scraped < deepScrapeCount; i++ {
+		if brand.BlogPosts[i].URL == "" {
+			continue
+		}
+		fullText := scrapeFullArticle(ctx, client, brand.BlogPosts[i].URL)
+		if fullText != "" {
+			brand.BlogPosts[i].FullText = fullText
+			scraped++
+			log.Printf("brand scrape: deep-scraped %s (%d words)", brand.BlogPosts[i].URL, len(strings.Fields(fullText)))
+		}
+	}
+
+	return brand
+}
+
+// extractAllBlogLinks collects every /blog/... href from a page and maps slug→full URL.
+// This solves the problem where <a> tags wrap cards rather than appearing inside them.
+func extractAllBlogLinks(html, domain string) map[string]string {
+	linkRe := regexp.MustCompile(`(?i)href=["'](/(?:blog|posts|articles)/[^"'#?]+)["']`)
+	matches := linkRe.FindAllStringSubmatch(html, 100)
+	links := map[string]string{}
+	for _, m := range matches {
+		path := m[1]
+		if strings.Contains(path, "/category/") || strings.Contains(path, "/tag/") {
+			continue
+		}
+		slug := path[strings.LastIndex(path, "/")+1:]
+		links[slug] = "https://" + domain + path
+	}
+	return links
+}
+
+// matchTitleToLink tries to find a URL for a blog post title by matching slugified
+// words against the collected link slugs.
+func matchTitleToLink(title string, linkMap map[string]string) string {
+	titleLower := strings.ToLower(title)
+	for slug, url := range linkMap {
+		slugLower := strings.ToLower(strings.ReplaceAll(slug, "-", " "))
+		words := strings.Fields(slugLower)
+		if len(words) < 2 {
+			continue
+		}
+		matchCount := 0
+		for _, w := range words {
+			if len(w) > 3 && strings.Contains(titleLower, w) {
+				matchCount++
+			}
+		}
+		if matchCount >= len(words)/2 && matchCount >= 2 {
+			return url
+		}
+	}
+	return ""
+}
+
+// extractBlogExcerptsWithLinks is like extractBlogExcerpts but uses the global
+// link map to resolve URLs when the <article> itself doesn't contain an href.
+func extractBlogExcerptsWithLinks(html, domain string, linkMap map[string]string) []BlogExcerpt {
+	posts := extractBlogExcerpts(html, domain)
+	for i := range posts {
+		if posts[i].URL == "" {
+			posts[i].URL = matchTitleToLink(posts[i].Title, linkMap)
+		}
+	}
+	return posts
+}
+
+// extractCardPostsWithLinks is like extractCardPosts but uses the global link
+// map to resolve URLs when cards don't contain direct hrefs.
+func extractCardPostsWithLinks(html, domain string, linkMap map[string]string) []BlogExcerpt {
+	var posts []BlogExcerpt
+	seen := map[string]bool{}
+
+	cardRe := regexp.MustCompile(`(?is)<(?:article|div)[^>]*class="[^"]*card[^"]*"[^>]*>(.*?)</(?:article|div)>`)
+	cards := cardRe.FindAllStringSubmatch(html, 20)
+	for _, c := range cards {
+		if len(c) < 2 {
+			continue
+		}
+		title := extractMetaOrTag(c[1], "h3")
+		if title == "" {
+			title = extractMetaOrTag(c[1], "h2")
+		}
+		if title == "" || seen[title] {
+			continue
+		}
+		seen[title] = true
+
+		pRe := regexp.MustCompile(`(?is)<p[^>]*>(.*?)</p>`)
+		pMatch := pRe.FindStringSubmatch(c[1])
+		excerpt := ""
+		if len(pMatch) > 1 {
+			tagRe := regexp.MustCompile(`<[^>]+>`)
+			excerpt = strings.TrimSpace(tagRe.ReplaceAllString(pMatch[1], ""))
+		}
+
+		link := matchTitleToLink(title, linkMap)
+
+		posts = append(posts, BlogExcerpt{Title: title, Excerpt: excerpt, URL: link})
+		if len(posts) >= 10 {
+			break
+		}
+	}
+	return posts
+}
+
+// scrapeFullArticle fetches a blog post URL, extracts the article body text
+// (filtering out sidebar/widget noise), and returns ~800 words.
+func scrapeFullArticle(ctx context.Context, client *http.Client, articleURL string) string {
+	req, err := http.NewRequestWithContext(ctx, "GET", articleURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "JarvisBot/1.0 (brand-intelligence)")
+
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return ""
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return ""
+	}
+	html := string(bodyBytes)
+
+	reScript := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	html = reScript.ReplaceAllString(html, "")
+	reStyle := regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	html = reStyle.ReplaceAllString(html, "")
+	reNav := regexp.MustCompile(`(?is)<(?:nav|header|footer|aside)[^>]*>.*?</(?:nav|header|footer|aside)>`)
+	html = reNav.ReplaceAllString(html, "")
+
+	articleRe := regexp.MustCompile(`(?is)<article[^>]*>(.*?)</article>`)
+	articleMatch := articleRe.FindStringSubmatch(html)
+	if len(articleMatch) > 1 {
+		html = articleMatch[1]
+	}
+
+	tagRe := regexp.MustCompile(`<[^>]+>`)
+	decodeHTML := func(text string) string {
+		text = strings.ReplaceAll(text, "&amp;", "&")
+		text = strings.ReplaceAll(text, "&lt;", "<")
+		text = strings.ReplaceAll(text, "&gt;", ">")
+		text = strings.ReplaceAll(text, "&quot;", `"`)
+		text = strings.ReplaceAll(text, "&#39;", "'")
+		text = strings.ReplaceAll(text, "&#x27;", "'")
+		text = strings.ReplaceAll(text, "&nbsp;", " ")
+		return text
+	}
+
+	priceRe := regexp.MustCompile(`\$\d+\.\d{2}`)
+
+	var paragraphs []string
+	pRe := regexp.MustCompile(`(?is)<p[^>]*>(.*?)</p>`)
+	pMatches := pRe.FindAllStringSubmatch(html, 80)
+	for _, m := range pMatches {
+		text := strings.TrimSpace(tagRe.ReplaceAllString(m[1], ""))
+		text = decodeHTML(text)
+		if len(text) < 40 {
+			continue
+		}
+		if priceRe.FindString(text) != "" && len(priceRe.FindAllString(text, -1)) >= 2 {
+			continue
+		}
+		if strings.Contains(text, "Free Shipping") || strings.Contains(text, "w/ S&S") || strings.Contains(text, "reg $") {
+			continue
+		}
+		paragraphs = append(paragraphs, text)
+	}
+
+	fullText := strings.Join(paragraphs, "\n\n")
+
+	words := strings.Fields(fullText)
+	if len(words) > 800 {
+		fullText = strings.Join(words[:800], " ") + "..."
+	}
+
+	return fullText
 }

@@ -1,11 +1,10 @@
 module github.com/ignite/sparkpost-monitor
 
-go 1.24.0
-
-toolchain go1.24.13
+go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/aws/aws-sdk-go-v2 v1.41.2
 	github.com/aws/aws-sdk-go-v2/config v1.28.5
@@ -18,17 +17,22 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.46.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.68.0
 	github.com/aws/aws-sdk-go-v2/service/sesv2 v1.37.0
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.22
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/go-chi/cors v1.2.1
 	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.10.9
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/osteele/liquid v1.7.0
 	github.com/redis/go-redis/v9 v9.17.3
 	github.com/snowflakedb/gosnowflake v1.14.0
 	github.com/stretchr/testify v1.10.0
+	golang.org/x/crypto v0.46.0
 	golang.org/x/image v0.35.0
 	golang.org/x/oauth2 v0.26.0
+	golang.org/x/text v0.33.0
+	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -40,7 +44,6 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.1.2 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.0.0 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
-	github.com/PuerkitoBio/goquery v1.11.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/apache/arrow-go/v18 v18.4.0 // indirect
@@ -58,8 +61,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.18.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.0.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.22 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.6 // indirect
@@ -77,7 +78,6 @@ require (
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/gsterjov/go-libsecret v0.0.0-20161001094733-a6f4afe4910c // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
@@ -96,7 +96,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
@@ -104,7 +103,6 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/telemetry v0.0.0-20251203150158-8fff8a5912fc // indirect
 	golang.org/x/term v0.38.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

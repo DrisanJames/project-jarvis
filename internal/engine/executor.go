@@ -42,16 +42,14 @@ func NewExecutor(host string, port int, user, sshKeyPath string) *Executor {
 }
 
 // Execute processes a decision and sends the appropriate PMTA command.
+// Destructive actions (disable, quarantine, pause, halt) are suppressed
+// in throttle-only mode -- rate control is handled at the application level
+// by ISPRateRegistry.
 func (e *Executor) Execute(ctx context.Context, d Decision) error {
 	switch d.ActionTaken {
-	case "disable_source_ip":
-		return e.disableSource(ctx, d.TargetValue, string(d.ISP))
-	case "quarantine_ip":
-		return e.disableSource(ctx, d.TargetValue, string(d.ISP))
-	case "pause_isp_queues":
-		return e.pauseQueues(ctx, d.ISP)
-	case "emergency_halt":
-		return e.emergencyHalt(ctx, d.ISP)
+	case "disable_source_ip", "quarantine_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
+		log.Printf("[executor] SUPPRESSED action %s for ISP %s (throttle-only mode)", d.ActionTaken, d.ISP)
+		return nil
 	case "deprioritize_ip":
 		return e.deprioritizeIP(ctx, d.TargetValue, d.ISP)
 	case "reprioritize_ip":
@@ -62,8 +60,6 @@ func (e *Executor) Execute(ctx context.Context, d Decision) error {
 		return e.setNormalMode(ctx, d.ISP)
 	case "snap_to_stable_rate":
 		return e.triggerReload(ctx)
-	case "pause_warmup":
-		return e.pauseQueues(ctx, d.ISP)
 	case "advance_warmup_day":
 		return e.triggerReload(ctx)
 	default:

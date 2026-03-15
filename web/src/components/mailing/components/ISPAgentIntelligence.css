@@ -94,6 +94,48 @@
   cursor: not-allowed;
 }
 
+/* ─── Sub-Tab Bar ──────────────────────────────────────────────────────── */
+.ia-subtab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 4px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.05);
+  width: fit-content;
+}
+
+.ia-subtab-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(180,210,240,0.55);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.ia-subtab-btn:hover {
+  color: rgba(180,210,240,0.8);
+  background: rgba(255,255,255,0.04);
+}
+
+.ia-subtab-active {
+  background: rgba(0,200,255,0.12);
+  color: #00e5ff;
+}
+
+.ia-subtab-active:hover {
+  background: rgba(0,200,255,0.16);
+  color: #00e5ff;
+}
+
 /* ─── Summary Bar ───────────────────────────────────────────────────────── */
 .ia-summary-bar {
   display: grid;

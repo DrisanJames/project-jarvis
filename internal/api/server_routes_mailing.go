@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -588,6 +589,16 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			agentFactory := engine.NewAgentFactory(db, engineOrgID, engineMemory, suppressionStore, convictionStore)
 			_ = agentFactory.Initialize(context.Background())
 
+			rateRegistry := engine.NewISPRateRegistry()
+			for isp, cfg := range agentFactory.GetConfigs() {
+				rateRegistry.SetRate(isp, float64(cfg.MaxMsgRate))
+			}
+			agentFactory.SetRateRegistry(rateRegistry)
+			s.rateRegistry = rateRegistry
+			s.ispConfigs = agentFactory.GetConfigs()
+			s.convictionStore = convictionStore
+			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates", len(agentFactory.GetConfigs()))
+
 			pmtaHost := os.Getenv("PMTA_SSH_HOST")
 			pmtaSSHPort := 22
 			pmtaSSHUser := os.Getenv("PMTA_SSH_USER")
@@ -647,6 +658,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			engineAPI := NewEngineService(db, orchestrator, suppressionStore, convictionStore, signalProcessor, ruleStore, engineOrgID)
 			engineAPI.RegisterRoutes(r)
+
+			r.Get("/engine/throttle-analytics", (&throttleAnalyticsHandler{
+				registry:        s.rateRegistry,
+				configs:         s.ispConfigs,
+				db:              db,
+				convictionStore: convictionStore,
+				orgID:           engineOrgID,
+			}).ServeHTTP)
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)

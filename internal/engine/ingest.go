@@ -451,7 +451,7 @@ func (ing *Ingestor) StartPolling(ctx context.Context) {
 func (ing *Ingestor) pollPMTAStatus(ctx context.Context) {
 	endpoints := []string{"status", "queues", "vmtas", "domains"}
 	for _, ep := range endpoints {
-		url := fmt.Sprintf("https://%s:%d/%s?format=json", ing.pmtaHost, ing.pmtaPort, ep)
+		url := fmt.Sprintf("http://%s:%d/%s?format=json", ing.pmtaHost, ing.pmtaPort, ep)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			continue

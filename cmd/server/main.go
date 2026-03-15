@@ -343,6 +343,11 @@ func main() {
 					sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
 				}
 
+				if rr := server.GetRateRegistry(); rr != nil {
+					sendWorkerPool.SetRateRegistry(rr)
+					log.Println("ISP rate registry wired to send worker pool")
+				}
+
 				sendWorkerPool.Start()
 
 				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)

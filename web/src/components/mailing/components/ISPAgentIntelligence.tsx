@@ -7,10 +7,11 @@ import {
   faDatabase, faNetworkWired, faShieldAlt, faCheck, faTimes,
   faStar, faMinus, faBolt, faGraduationCap,
   faLightbulb, faPaperPlane, faBullhorn, faPlay, faPause,
-  faInfoCircle, faChevronDown
+  faInfoCircle, faChevronDown, faTachometerAlt
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { ThrottleAnalytics } from './ThrottleAnalytics';
 import './ISPAgentIntelligence.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -270,6 +271,7 @@ const getKnowledgeDepth = (agent: ISPAgent): { score: number; label: string; col
 
 export const ISPAgentIntelligence: React.FC = () => {
   const { organization } = useAuth();
+  const [subTab, setSubTab] = useState<'intelligence' | 'traffic'>('intelligence');
   const [agents, setAgents] = useState<ISPAgent[]>([]);
   const [summary, setSummary] = useState<AgentSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -405,11 +407,33 @@ export const ISPAgentIntelligence: React.FC = () => {
             <p>Specialized AI agents learning the behavior of every ISP</p>
           </div>
         </div>
-        <button className="ia-refresh-btn ig-btn-glow ig-ripple" onClick={() => { fetchAgents(); fetchManagedAgents(); }} disabled={loading || loadingManaged}>
-          <FontAwesomeIcon icon={faSyncAlt} spin={loading || loadingManaged} /> Refresh
+        {subTab === 'intelligence' && (
+          <button className="ia-refresh-btn ig-btn-glow ig-ripple" onClick={() => { fetchAgents(); fetchManagedAgents(); }} disabled={loading || loadingManaged}>
+            <FontAwesomeIcon icon={faSyncAlt} spin={loading || loadingManaged} /> Refresh
+          </button>
+        )}
+      </div>
+
+      {/* ─── Sub-Tab Toggle ────────────────────────────────────────────── */}
+      <div className="ia-subtab-bar">
+        <button
+          className={`ia-subtab-btn ${subTab === 'intelligence' ? 'ia-subtab-active' : ''}`}
+          onClick={() => setSubTab('intelligence')}
+        >
+          <FontAwesomeIcon icon={faRobot} /> Agent Intelligence
+        </button>
+        <button
+          className={`ia-subtab-btn ${subTab === 'traffic' ? 'ia-subtab-active' : ''}`}
+          onClick={() => setSubTab('traffic')}
+        >
+          <FontAwesomeIcon icon={faTachometerAlt} /> Traffic Algorithm
         </button>
       </div>
 
+      {subTab === 'traffic' ? (
+        <ThrottleAnalytics />
+      ) : (
+      <>
       {/* ─── Summary Stats ──────────────────────────────────────────────── */}
       {summary && (
         <div className="ia-summary-bar ig-stagger">
@@ -1204,6 +1228,8 @@ export const ISPAgentIntelligence: React.FC = () => {
             </div>
           )}
         </div>
+      )}
+      </>
       )}
     </div>
   );

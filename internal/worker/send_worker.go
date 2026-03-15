@@ -73,6 +73,15 @@ type SendWorkerPool struct {
 
 	profileTrackingDomainCache map[string]string // profileID -> resolved tracking base URL
 	ptdMu                      sync.RWMutex
+
+	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
+	rateRegistry interface{ AllowN(isp string, n int) int }
+}
+
+// SetRateRegistry injects the ISP rate limiter. The dispatch loop
+// checks AllowN before claiming batches to enforce per-ISP rate limits.
+func (p *SendWorkerPool) SetRateRegistry(r interface{ AllowN(isp string, n int) int }) {
+	p.rateRegistry = r
 }
 
 // ESPSender interface for sending via different ESPs
@@ -692,6 +701,23 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing", campID)
 			delete(states, campID)
 			continue
+		}
+
+		if p.rateRegistry != nil {
+			for isp, count := range batchCounts {
+				if count <= 0 {
+					continue
+				}
+				allowed := p.rateRegistry.AllowN(isp, count)
+				if allowed == 0 {
+					delete(batchCounts, isp)
+				} else {
+					batchCounts[isp] = allowed
+				}
+			}
+			if BatchTotal(batchCounts) == 0 {
+				continue
+			}
 		}
 
 		items, err := p.claimISPBatch(campID, batchCounts)

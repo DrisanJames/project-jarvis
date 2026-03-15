@@ -1,0 +1,405 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Throttle Analytics – ISP Rate Control Visibility
+   Dark theme matching the Mailing Platform design system
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ta-container {
+  padding: 0;
+}
+
+.ta-loading,
+.ta-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 200px;
+  color: rgba(180, 210, 240, 0.65);
+  font-size: 14px;
+}
+
+/* ─── Section Headers ──────────────────────────────────────────────────── */
+.ta-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.ta-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 15px;
+}
+
+.ta-section-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.ta-section-title svg {
+  color: #00e5ff;
+  font-size: 16px;
+}
+
+.ta-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ta-updated {
+  font-size: 12px;
+  color: rgba(180, 210, 240, 0.5);
+}
+
+.ta-refresh-btn {
+  background: rgba(0, 200, 255, 0.1);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 200, 255, 0.2);
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ta-refresh-btn:hover:not(:disabled) {
+  background: rgba(0, 200, 255, 0.18);
+  border-color: rgba(0, 200, 255, 0.35);
+}
+
+.ta-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ta-count-badge {
+  font-size: 12px;
+  color: rgba(180, 210, 240, 0.5);
+  background: rgba(100, 116, 139, 0.15);
+  padding: 3px 10px;
+  border-radius: 10px;
+}
+
+.ta-empty-section {
+  padding: 24px;
+  text-align: center;
+  color: rgba(180, 210, 240, 0.4);
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ─── Live Rate Gauges ─────────────────────────────────────────────────── */
+.ta-gauges-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.ta-gauge-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 16px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.ta-gauge-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ta-gauge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.ta-gauge-isp {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.ta-gauge-pct {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.ta-gauge-bar-bg {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ta-gauge-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease, background 0.3s;
+}
+
+.ta-gauge-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(180, 210, 240, 0.7);
+}
+
+.ta-gauge-max {
+  color: rgba(180, 210, 240, 0.4);
+}
+
+/* ─── Decision Timeline ────────────────────────────────────────────────── */
+.ta-timeline {
+  position: relative;
+  padding-left: 20px;
+  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.ta-timeline::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ta-timeline::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ta-timeline::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.ta-timeline-entry {
+  position: relative;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  transition: background 0.2s;
+}
+
+.ta-timeline-entry:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ta-timeline-dot {
+  position: absolute;
+  left: -26px;
+  top: 16px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #0a0f1a;
+}
+
+.ta-timeline-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.ta-isp-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid;
+  letter-spacing: 0.3px;
+}
+
+.ta-action-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.ta-timeline-time {
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.4);
+  margin-left: auto;
+}
+
+.ta-timeline-metrics {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: rgba(180, 210, 240, 0.6);
+  flex-wrap: wrap;
+}
+
+.ta-timeline-metrics strong {
+  color: rgba(224, 230, 240, 0.9);
+}
+
+.ta-recovering-badge {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ─── Conviction Memory ────────────────────────────────────────────────── */
+.ta-convictions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ta-conviction-group {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ta-conviction-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  color: #e0e6f0;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  transition: background 0.2s;
+}
+
+.ta-conviction-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ta-chevron {
+  color: rgba(180, 210, 240, 0.4);
+  font-size: 11px;
+  width: 12px;
+}
+
+.ta-conviction-isp {
+  font-weight: 700;
+}
+
+.ta-verdict-counts {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.ta-will-count {
+  color: #10b981;
+}
+
+.ta-wont-count {
+  color: #ef4444;
+}
+
+.ta-conviction-total {
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.4);
+  min-width: 60px;
+  text-align: right;
+}
+
+.ta-conviction-list {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.ta-conviction-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ta-conviction-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.ta-conviction-entry {
+  padding: 12px 16px 12px 38px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.ta-conviction-entry:last-child {
+  border-bottom: none;
+}
+
+.ta-conviction-verdict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.ta-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.ta-verdict-will {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.ta-verdict-wont {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.ta-conviction-time {
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.4);
+}
+
+.ta-conviction-statement {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(180, 210, 240, 0.7);
+  word-break: break-word;
+}
+
+.ta-conviction-ctx {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.45);
+  flex-wrap: wrap;
+}

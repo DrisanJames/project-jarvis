@@ -21,9 +21,10 @@ import (
 // 20% non-MPP."
 type ThrottleAgent struct {
 	BaseAgent
-	memory      *MemoryStore
-	convictions *ConvictionStore
-	alertCh     chan<- Decision
+	memory       *MemoryStore
+	convictions  *ConvictionStore
+	alertCh      chan<- Decision
+	rateRegistry *ISPRateRegistry
 
 	mu              sync.Mutex
 	currentRateAdj  float64
@@ -113,6 +114,9 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 			a.SetCooldown(30 * time.Minute)
 
 			newRate := int(float64(a.originalRate) * a.currentRateAdj)
+			if a.rateRegistry != nil {
+				a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
+			}
 			decisions = append(decisions, Decision{
 				ISP:         a.ID.ISP,
 				AgentType:   AgentThrottle,
@@ -124,7 +128,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 				}),
 				TargetType:  "isp",
 				TargetValue: string(a.ID.ISP),
-				Result:      "pending",
+				Result:      "applied",
 				CreatedAt:   now,
 			})
 
@@ -155,6 +159,9 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 			a.lastBackoffAt = now
 
 			newRate := int(float64(a.originalRate) * a.currentRateAdj)
+			if a.rateRegistry != nil {
+				a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
+			}
 			action := "reduce_rate"
 
 			if deferralRate > 40 {
@@ -173,7 +180,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 				}),
 				TargetType:  "isp",
 				TargetValue: string(a.ID.ISP),
-				Result:      "pending",
+				Result:      "applied",
 				CreatedAt:   now,
 			})
 
@@ -211,6 +218,9 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 		newAdj := math.Min(a.currentRateAdj*1.10, 1.0)
 		a.currentRateAdj = newAdj
 		newRate := int(float64(a.originalRate) * newAdj)
+		if a.rateRegistry != nil {
+			a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
+		}
 
 		if newAdj >= 1.0 {
 			a.backoffCount = 0
@@ -229,7 +239,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 			}),
 			TargetType:  "isp",
 			TargetValue: string(a.ID.ISP),
-			Result:      "pending",
+			Result:      "applied",
 			CreatedAt:   now,
 		})
 
@@ -330,6 +340,12 @@ func (a *ThrottleAgent) MatchesDeferralCode(diagnostic string) bool {
 		}
 	}
 	return false
+}
+
+// SetRateRegistry injects the shared rate registry so Evaluate can
+// push rate changes to the application-level limiter.
+func (a *ThrottleAgent) SetRateRegistry(r *ISPRateRegistry) {
+	a.rateRegistry = r
 }
 
 // GetEffectiveRate returns the current adjusted sending rate.
