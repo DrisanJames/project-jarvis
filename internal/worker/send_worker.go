@@ -951,10 +951,16 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		if err != nil {
 			errMsg = err.Error()
 		}
-		log.Printf("[SendWorkerPool] SEND FAILED campaign=%s email=%s esp=%s err=%s",
-			item.CampaignID, logger.RedactEmail(item.Email), item.ESPType, errMsg)
 
-		p.recordBounce(ctx, item, errMsg)
+		if isTransportError(errMsg) {
+			log.Printf("[SendWorkerPool] TRANSPORT ERROR campaign=%s email=%s esp=%s err=%s",
+				item.CampaignID, logger.RedactEmail(item.Email), item.ESPType, errMsg)
+		} else {
+			log.Printf("[SendWorkerPool] ISP REJECT campaign=%s email=%s esp=%s err=%s",
+				item.CampaignID, logger.RedactEmail(item.Email), item.ESPType, errMsg)
+			p.recordBounce(ctx, item, errMsg)
+		}
+
 		return p.markFailed(ctx, item.ID, errMsg)
 	}
 
@@ -1124,6 +1130,42 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 				logger.RedactEmail(item.Email), suppressErr)
 		}
 	}
+}
+
+// isTransportError returns true when the error is an infrastructure/network
+// failure (the message was never presented to any ISP) as opposed to an
+// actual recipient rejection. Transport errors should be retried without
+// inflating bounce counters.
+func isTransportError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	transportIndicators := []string{
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"i/o timeout",
+		"no such host",
+		"no route to host",
+		"network is unreachable",
+		"dial tcp",
+		"dial udp",
+		"tls handshake",
+		"eof",
+		"broken pipe",
+		"context deadline exceeded",
+		"context canceled",
+		"http2",
+		"server misbehaving",
+		"marshal pmta payload",
+		"create pmta request",
+		"pmta api request to",
+		"no sender configured",
+	}
+	for _, ind := range transportIndicators {
+		if strings.Contains(lower, ind) {
+			return true
+		}
+	}
+	return false
 }
 
 // classifySendError determines hard vs soft bounce from SMTP error text.
