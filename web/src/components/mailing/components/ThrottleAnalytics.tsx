@@ -5,6 +5,7 @@ import {
   faBrain, faArrowDown, faArrowUp, faExchangeAlt,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faChevronDown, faChevronRight,
+  faUsers, faToggleOn, faToggleOff,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import './ThrottleAnalytics.css';
@@ -45,6 +46,32 @@ interface ThrottleAnalyticsData {
   recent_decisions: ThrottleDecision[];
   convictions: ThrottleConviction[];
   updated_at: string;
+}
+
+interface AudienceISP {
+  isp: string;
+  display_name: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  complaints: number;
+  unsubscribes: number;
+  open_rate: number;
+  click_rate: number;
+  new_engaged: number;
+  churned: number;
+  introduction_rate: number;
+  churn_rate: number;
+}
+
+interface AudienceAnalyticsData {
+  date: string;
+  exclude_mpp: boolean;
+  isps: AudienceISP[];
+  totals: AudienceISP;
 }
 
 const ISP_COLORS: Record<string, string> = {
@@ -109,6 +136,9 @@ export const ThrottleAnalytics: React.FC = () => {
   const [data, setData] = useState<ThrottleAnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedISPs, setExpandedISPs] = useState<Set<string>>(new Set());
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [excludeMPP, setExcludeMPP] = useState(false);
+  const [audienceData, setAudienceData] = useState<AudienceAnalyticsData | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -126,12 +156,26 @@ export const ThrottleAnalytics: React.FC = () => {
     }
   }, [organization?.id]);
 
+  const fetchAudience = useCallback(async () => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (organization?.id) headers['X-Organization-ID'] = organization.id;
+      const params = new URLSearchParams({ date: selectedDate });
+      if (excludeMPP) params.set('exclude_mpp', 'true');
+      const res = await fetch(`/api/mailing/engine/audience-analytics?${params}`, { headers });
+      if (res.ok) setAudienceData(await res.json());
+    } catch (err) {
+      console.error('Failed to load audience analytics:', err);
+    }
+  }, [organization?.id, selectedDate, excludeMPP]);
+
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchAudience(); }, [fetchAudience]);
 
   useEffect(() => {
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(() => { fetchData(); fetchAudience(); }, 30000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, fetchAudience]);
 
   const toggleISP = (isp: string) => {
     setExpandedISPs(prev => {
@@ -171,6 +215,26 @@ export const ThrottleAnalytics: React.FC = () => {
 
   return (
     <div className="ta-container">
+      {/* Controls Bar */}
+      <div className="ta-controls-bar">
+        <div className="ta-control-group">
+          <label className="ta-control-label">Date</label>
+          <input
+            type="date"
+            className="ta-date-input"
+            value={selectedDate}
+            onChange={e => setSelectedDate(e.target.value)}
+          />
+        </div>
+        <button
+          className={`ta-mpp-toggle ${excludeMPP ? 'ta-mpp-active' : ''}`}
+          onClick={() => setExcludeMPP(prev => !prev)}
+        >
+          <FontAwesomeIcon icon={excludeMPP ? faToggleOn : faToggleOff} />
+          {excludeMPP ? ' MPP Opens Excluded' : ' Including MPP Opens'}
+        </button>
+      </div>
+
       {/* Header */}
       <div className="ta-section-header">
         <div className="ta-section-title">
@@ -215,6 +279,74 @@ export const ThrottleAnalytics: React.FC = () => {
           );
         })}
       </div>
+
+      {/* Audience Health by ISP */}
+      <div className="ta-section-header" style={{ marginTop: 32 }}>
+        <div className="ta-section-title">
+          <FontAwesomeIcon icon={faUsers} />
+          <h2>Audience Health by ISP</h2>
+        </div>
+        <span className="ta-count-badge">{selectedDate}</span>
+      </div>
+
+      {!audienceData || audienceData.isps.length === 0 ? (
+        <div className="ta-empty-section">No audience data for {selectedDate}.</div>
+      ) : (
+        <div className="ta-audience-table-wrap">
+          <table className="ta-audience-table">
+            <thead>
+              <tr>
+                <th>ISP</th>
+                <th>Sent</th>
+                <th>Delivered</th>
+                <th>Opens</th>
+                <th>Clicks</th>
+                <th>Open %</th>
+                <th>Click %</th>
+                <th className="ta-col-intro">New Engaged</th>
+                <th className="ta-col-intro">Intro %</th>
+                <th className="ta-col-churn">Churned</th>
+                <th className="ta-col-churn">Churn %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {audienceData.isps.map(row => {
+                const color = ISP_COLORS[row.isp] || '#64748b';
+                return (
+                  <tr key={row.isp}>
+                    <td style={{ color, fontWeight: 600 }}>{row.display_name}</td>
+                    <td>{row.sent.toLocaleString()}</td>
+                    <td>{row.delivered.toLocaleString()}</td>
+                    <td>{row.opens.toLocaleString()}</td>
+                    <td>{row.clicks.toLocaleString()}</td>
+                    <td>{row.open_rate.toFixed(1)}%</td>
+                    <td>{row.click_rate.toFixed(1)}%</td>
+                    <td className="ta-col-intro">{row.new_engaged.toLocaleString()}</td>
+                    <td className="ta-col-intro">{row.introduction_rate.toFixed(1)}%</td>
+                    <td className="ta-col-churn">{row.churned.toLocaleString()}</td>
+                    <td className="ta-col-churn">{row.churn_rate.toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="ta-audience-totals">
+                <td>Total</td>
+                <td>{audienceData.totals.sent.toLocaleString()}</td>
+                <td>{audienceData.totals.delivered.toLocaleString()}</td>
+                <td>{audienceData.totals.opens.toLocaleString()}</td>
+                <td>{audienceData.totals.clicks.toLocaleString()}</td>
+                <td>{audienceData.totals.open_rate.toFixed(1)}%</td>
+                <td>{audienceData.totals.click_rate.toFixed(1)}%</td>
+                <td className="ta-col-intro">{audienceData.totals.new_engaged.toLocaleString()}</td>
+                <td className="ta-col-intro">{audienceData.totals.introduction_rate.toFixed(1)}%</td>
+                <td className="ta-col-churn">{audienceData.totals.churned.toLocaleString()}</td>
+                <td className="ta-col-churn">{audienceData.totals.churn_rate.toFixed(1)}%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
 
       {/* Decision Timeline */}
       <div className="ta-section-header" style={{ marginTop: 32 }}>

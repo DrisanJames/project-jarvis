@@ -667,6 +667,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				orgID:           engineOrgID,
 			}).ServeHTTP)
 
+			r.Get("/engine/audience-analytics", (&throttleAnalyticsHandler{
+				registry:        s.rateRegistry,
+				configs:         s.ispConfigs,
+				db:              db,
+				convictionStore: convictionStore,
+				orgID:           engineOrgID,
+			}).handleAudienceAnalytics)
+
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			pmtaCampaignAPI.RegisterRoutes(r)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 type throttleAnalyticsHandler struct {
@@ -56,6 +57,32 @@ type throttleAnalyticsResponse struct {
 	RecentDecisions []throttleDecisionEntry   `json:"recent_decisions"`
 	Convictions     []throttleConvictionEntry `json:"convictions"`
 	UpdatedAt       time.Time                 `json:"updated_at"`
+}
+
+type audienceISPEntry struct {
+	ISP              string  `json:"isp"`
+	DisplayName      string  `json:"display_name"`
+	Sent             int     `json:"sent"`
+	Delivered        int     `json:"delivered"`
+	Opens            int     `json:"opens"`
+	Clicks           int     `json:"clicks"`
+	HardBounces      int     `json:"hard_bounces"`
+	SoftBounces      int     `json:"soft_bounces"`
+	Complaints       int     `json:"complaints"`
+	Unsubscribes     int     `json:"unsubscribes"`
+	OpenRate         float64 `json:"open_rate"`
+	ClickRate        float64 `json:"click_rate"`
+	NewEngaged       int     `json:"new_engaged"`
+	Churned          int     `json:"churned"`
+	IntroductionRate float64 `json:"introduction_rate"`
+	ChurnRate        float64 `json:"churn_rate"`
+}
+
+type audienceAnalyticsResponse struct {
+	Date       string             `json:"date"`
+	ExcludeMPP bool               `json:"exclude_mpp"`
+	ISPs       []audienceISPEntry `json:"isps"`
+	Totals     audienceISPEntry   `json:"totals"`
 }
 
 func (h *throttleAnalyticsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +213,210 @@ func (h *throttleAnalyticsHandler) buildConvictions() []throttleConvictionEntry 
 	}
 
 	return entries
+}
+
+var ispDisplayNames = map[string]string{
+	"gmail":     "Gmail",
+	"yahoo":     "Yahoo",
+	"microsoft": "Microsoft",
+	"apple":     "Apple",
+	"comcast":   "Comcast",
+	"charter":   "Charter",
+	"att":       "AT&T",
+	"cox":       "Cox",
+	"other":     "Other ISPs",
+}
+
+func (h *throttleAnalyticsHandler) handleAudienceAnalytics(w http.ResponseWriter, r *http.Request) {
+	dateStr := r.URL.Query().Get("date")
+	if dateStr == "" {
+		dateStr = time.Now().Format("2006-01-02")
+	}
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
+
+	if h.db == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(audienceAnalyticsResponse{
+			Date: dateStr, ExcludeMPP: excludeMPP,
+			ISPs: []audienceISPEntry{}, Totals: audienceISPEntry{},
+		})
+		return
+	}
+
+	ctx := r.Context()
+	ispMap := make(map[string]*audienceISPEntry)
+
+	getEntry := func(domain string) *audienceISPEntry {
+		group := isp.GroupFromDomain(domain)
+		if e, ok := ispMap[group]; ok {
+			return e
+		}
+		dn := ispDisplayNames[group]
+		if dn == "" {
+			dn = group
+		}
+		e := &audienceISPEntry{ISP: group, DisplayName: dn}
+		ispMap[group] = e
+		return e
+	}
+
+	// Query 1: daily volume by domain
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT COALESCE(t.recipient_domain, LOWER(SPLIT_PART(s.email, '@', 2)), '') AS domain,
+		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'opened'
+		            AND ($2::boolean = FALSE OR COALESCE(t.is_machine_open, FALSE) = FALSE)
+		            THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'bounced' AND COALESCE(t.bounce_type, '') = 'hard' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type IN ('bounced', 'deferred')
+		            AND COALESCE(t.bounce_type, '') != 'hard' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END)
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_subscribers s ON s.id = t.subscriber_id
+		WHERE DATE(t.event_at) = $1::date
+		  AND t.organization_id = $3::uuid
+		GROUP BY domain`, dateStr, excludeMPP, h.orgID)
+	if err != nil {
+		log.Printf("[audience-analytics] volume query error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var domain string
+		var sent, delivered, opens, clicks, hardB, softB, complaints, unsubs int
+		if err := rows.Scan(&domain, &sent, &delivered, &opens, &clicks, &hardB, &softB, &complaints, &unsubs); err != nil {
+			log.Printf("[audience-analytics] scan error: %v", err)
+			continue
+		}
+		e := getEntry(domain)
+		e.Sent += sent
+		e.Delivered += delivered
+		e.Opens += opens
+		e.Clicks += clicks
+		e.HardBounces += hardB
+		e.SoftBounces += softB
+		e.Complaints += complaints
+		e.Unsubscribes += unsubs
+	}
+
+	// Query 2: new engaged (introduction) by domain
+	rows2, err := h.db.QueryContext(ctx, `
+		SELECT sub.domain, COUNT(DISTINCT sub.subscriber_id)
+		FROM (
+		    SELECT t.subscriber_id,
+		           COALESCE(t.recipient_domain, LOWER(SPLIT_PART(s.email, '@', 2)), '') AS domain
+		    FROM mailing_tracking_events t
+		    LEFT JOIN mailing_subscribers s ON s.id = t.subscriber_id
+		    WHERE t.event_type IN ('opened', 'clicked')
+		      AND t.subscriber_id IS NOT NULL
+		      AND t.organization_id = $2::uuid
+		      AND ($3::boolean = FALSE OR t.event_type != 'opened' OR COALESCE(t.is_machine_open, FALSE) = FALSE)
+		    GROUP BY t.subscriber_id, COALESCE(t.recipient_domain, LOWER(SPLIT_PART(s.email, '@', 2)), '')
+		    HAVING DATE(MIN(t.event_at)) = $1::date
+		) sub
+		GROUP BY sub.domain`, dateStr, h.orgID, excludeMPP)
+	if err != nil {
+		log.Printf("[audience-analytics] introduction query error: %v", err)
+	} else {
+		defer rows2.Close()
+		for rows2.Next() {
+			var domain string
+			var cnt int
+			if err := rows2.Scan(&domain, &cnt); err != nil {
+				continue
+			}
+			getEntry(domain).NewEngaged += cnt
+		}
+	}
+
+	// Query 3: churned by domain
+	rows3, err := h.db.QueryContext(ctx, `
+		SELECT COALESCE(t.recipient_domain, LOWER(SPLIT_PART(s.email, '@', 2)), ''),
+		       COUNT(DISTINCT t.subscriber_id)
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_subscribers s ON s.id = t.subscriber_id
+		WHERE t.event_type IN ('bounced', 'complained', 'unsubscribed')
+		  AND (t.event_type != 'bounced' OR COALESCE(t.bounce_type, '') = 'hard')
+		  AND t.subscriber_id IS NOT NULL
+		  AND DATE(t.event_at) = $1::date
+		  AND t.organization_id = $2::uuid
+		GROUP BY COALESCE(t.recipient_domain, LOWER(SPLIT_PART(s.email, '@', 2)), '')`,
+		dateStr, h.orgID)
+	if err != nil {
+		log.Printf("[audience-analytics] churn query error: %v", err)
+	} else {
+		defer rows3.Close()
+		for rows3.Next() {
+			var domain string
+			var cnt int
+			if err := rows3.Scan(&domain, &cnt); err != nil {
+				continue
+			}
+			getEntry(domain).Churned += cnt
+		}
+	}
+
+	// Compute rates and build sorted slice
+	var totals audienceISPEntry
+	totals.ISP = "total"
+	totals.DisplayName = "Total"
+
+	ordered := make([]audienceISPEntry, 0, len(ispMap))
+	for _, group := range isp.KnownGroups() {
+		if e, ok := ispMap[group]; ok {
+			e.OpenRate = calcPct(e.Opens, e.Delivered)
+			e.ClickRate = calcPct(e.Clicks, e.Delivered)
+			e.IntroductionRate = calcPct(e.NewEngaged, e.Delivered)
+			e.ChurnRate = calcPct(e.Churned, e.Delivered)
+			ordered = append(ordered, *e)
+			accumulateTotals(&totals, e)
+		}
+	}
+	if e, ok := ispMap["other"]; ok {
+		e.OpenRate = calcPct(e.Opens, e.Delivered)
+		e.ClickRate = calcPct(e.Clicks, e.Delivered)
+		e.IntroductionRate = calcPct(e.NewEngaged, e.Delivered)
+		e.ChurnRate = calcPct(e.Churned, e.Delivered)
+		ordered = append(ordered, *e)
+		accumulateTotals(&totals, e)
+	}
+
+	totals.OpenRate = calcPct(totals.Opens, totals.Delivered)
+	totals.ClickRate = calcPct(totals.Clicks, totals.Delivered)
+	totals.IntroductionRate = calcPct(totals.NewEngaged, totals.Delivered)
+	totals.ChurnRate = calcPct(totals.Churned, totals.Delivered)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(audienceAnalyticsResponse{
+		Date:       dateStr,
+		ExcludeMPP: excludeMPP,
+		ISPs:       ordered,
+		Totals:     totals,
+	})
+}
+
+func calcPct(num, denom int) float64 {
+	if denom == 0 {
+		return 0
+	}
+	return math.Round(float64(num)/float64(denom)*10000) / 100
+}
+
+func accumulateTotals(totals, e *audienceISPEntry) {
+	totals.Sent += e.Sent
+	totals.Delivered += e.Delivered
+	totals.Opens += e.Opens
+	totals.Clicks += e.Clicks
+	totals.HardBounces += e.HardBounces
+	totals.SoftBounces += e.SoftBounces
+	totals.Complaints += e.Complaints
+	totals.Unsubscribes += e.Unsubscribes
+	totals.NewEngaged += e.NewEngaged
+	totals.Churned += e.Churned
 }
 
 func jsonFloat(m map[string]interface{}, key string) float64 {
