@@ -3,11 +3,14 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 type campaignVariant struct {
@@ -97,29 +100,30 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		return 0, tx.Commit()
 	}
 
-	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML sql.NullString
+	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML, campaignName sql.NullString
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(subject, ''), COALESCE(html_content, '')
+		SELECT COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(subject, ''),
+		       COALESCE(html_content, ''), COALESCE(name, '')
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML); err != nil {
+	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML, &campaignName); err != nil {
 		return 0, err
 	}
 
-	// Try cached AI-generated wave content first (unique content per wave).
-	// Brand key is derived from from_email: "hello@em.discountblog.com" → "discountblog"
+	// Campaign's own html_content is ALWAYS the authoritative template.
+	// We fetch editorial copy from the cache and re-render it into the campaign's template.
 	brandKey := deriveBrandKey(campaignFromEmail.String)
+	campType := detectCampaignType(campaignName.String)
+
 	var variants []campaignVariant
 	if brandKey != "" {
-		cached, cacheErr := GetUnusedWave(ctx, db, brandKey)
+		cached, cacheErr := GetUnusedWaveByType(ctx, db, brandKey, campType)
 		if cacheErr == nil && cached != nil {
-			log.Printf("[wave-dispatch] using cached wave content for brand=%s wave=%d subject=%q",
-				brandKey, cached.WaveIndex, cached.Subject)
-			variants = []campaignVariant{{
-				VariantName: "cached",
-				FromName:    coalesceWaveValue(cached.FromName, campaignFromName.String),
-				Subject:     coalesceWaveValue(cached.Subject, campaignSubject.String),
-				HTMLContent: coalesceWaveValue(cached.HTMLContent, campaignHTML.String),
-			}}
+			variant := buildVariantFromEditorial(cached, campaignFromName.String, campaignSubject.String, campaignHTML.String, brandKey)
+			log.Printf("[wave-dispatch] editorial merged into campaign template brand=%s type=%s wave=%d subject=%q",
+				brandKey, campType, cached.Variation.WaveIndex, variant.Subject)
+			variants = []campaignVariant{variant}
+		} else {
+			log.Printf("[wave-dispatch] no cached editorial for brand=%s type=%s: %v — using campaign content as-is", brandKey, campType, cacheErr)
 		}
 	}
 
@@ -291,4 +295,57 @@ func deriveBrandKey(fromEmail string) string {
 		return domain[:dot]
 	}
 	return domain
+}
+
+// detectCampaignType infers the campaign type from its name.
+func detectCampaignType(name string) string {
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "welcome") {
+		return "welcome"
+	}
+	if strings.Contains(lower, "trivia") || strings.Contains(lower, "quiz") {
+		return "trivia"
+	}
+	return "newsletter"
+}
+
+// buildVariantFromEditorial takes cached editorial JSON and re-renders it into
+// the campaign's own HTML template. If editorial JSON is available and the
+// campaign HTML has placeholders, the editorial is merged in. Otherwise, only
+// the subject/preview are varied.
+func buildVariantFromEditorial(cached *CachedWaveContent, fallbackFromName, fallbackSubject, campaignHTML, brandKey string) campaignVariant {
+	subject := coalesceWaveValue(cached.Variation.Subject, fallbackSubject)
+	fromName := coalesceWaveValue(cached.Variation.FromName, fallbackFromName)
+
+	htmlOut := campaignHTML
+	if len(cached.EditorialJSON) > 0 && hasPlaceholders(campaignHTML) {
+		var editorial mailing.WaveEditorialContent
+		if err := json.Unmarshal(cached.EditorialJSON, &editorial); err == nil {
+			req := mailing.WaveContentRequest{
+				HTMLTemplate: campaignHTML,
+				BrandName:    brandKey,
+			}
+			rendered := mailing.TemplateFillWithVariation([]mailing.WaveEditorialContent{editorial}, req)
+			if len(rendered) > 0 {
+				htmlOut = rendered[0].HTMLContent
+				subject = coalesceWaveValue(rendered[0].Subject, subject)
+			}
+		} else {
+			log.Printf("[wave-dispatch] failed to parse editorial JSON: %v", err)
+		}
+	} else if len(cached.EditorialJSON) == 0 && hasPlaceholders(campaignHTML) {
+		log.Printf("[wave-dispatch] campaign has placeholders but no editorial JSON — using cached rendered HTML")
+		htmlOut = cached.Variation.HTMLContent
+	}
+
+	return campaignVariant{
+		VariantName: fmt.Sprintf("wave-%d", cached.Variation.WaveIndex),
+		FromName:    fromName,
+		Subject:     subject,
+		HTMLContent: htmlOut,
+	}
+}
+
+func hasPlaceholders(html string) bool {
+	return strings.Contains(html, "{{INTRO}}") || strings.Contains(html, "{{ARTICLE_1_HEADLINE}}")
 }

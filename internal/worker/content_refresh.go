@@ -152,7 +152,7 @@ func (w *ContentRefreshWorker) refreshBrand(ctx context.Context, key string, b C
 	log.Printf("[content-refresh] %s: scraped %d posts (%d with full text), fallback=%v",
 		b.BrandName, scrapeReport.PostsFound, scrapeReport.PostsWithFullText, usedFallback)
 
-	numWaves := 5
+	numWaves := 10
 	req := mailing.WaveContentRequest{
 		SendingDomain: b.SendingDomain,
 		BrandName:     b.BrandName,
@@ -166,21 +166,27 @@ func (w *ContentRefreshWorker) refreshBrand(ctx context.Context, key string, b C
 		ContentPool:   contentPool,
 	}
 
-	variations, report, err := waveGen.Generate(ctx, req)
-	if report != nil {
-		report.ScrapeReport = scrapeReport
+	result, err := waveGen.GenerateFull(ctx, req)
+	if result != nil && result.Report != nil {
+		result.Report.ScrapeReport = scrapeReport
 	}
 	if err != nil {
 		log.Printf("[content-refresh] %s generation failed: %v", b.BrandName, err)
 		return
 	}
 
-	// Validate and store
 	stored := 0
-	for _, v := range variations {
+	for i, v := range result.Variations {
 		wr := mailing.ValidateWave(v, key, contentPool)
 		if len(wr.Issues) > 0 {
 			log.Printf("[content-refresh] %s wave %d has %d issues, storing anyway", b.BrandName, v.WaveIndex, len(wr.Issues))
+		}
+
+		// Serialize the raw editorial for this wave so it can be re-rendered
+		// into any campaign template at dispatch time.
+		var editorialJSON []byte
+		if i < len(result.Editorial) {
+			editorialJSON, _ = json.Marshal(result.Editorial[i])
 		}
 
 		diagJSON, _ := json.Marshal(map[string]interface{}{
@@ -190,56 +196,82 @@ func (w *ContentRefreshWorker) refreshBrand(ctx context.Context, key string, b C
 			"version":        mailing.GeneratorVersion,
 		})
 
-		_, err := w.db.ExecContext(ctx, `
+		_, dbErr := w.db.ExecContext(ctx, `
 			INSERT INTO mailing_wave_content_cache
-				(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, version)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, key, v.WaveIndex, v.Subject, v.PreviewText, v.FromName, v.HTMLContent, diagJSON, mailing.GeneratorVersion)
-		if err != nil {
-			log.Printf("[content-refresh] failed to store wave %d for %s: %v", v.WaveIndex, b.BrandName, err)
+				(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, version, campaign_type, editorial_json)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, key, v.WaveIndex, v.Subject, v.PreviewText, v.FromName, v.HTMLContent, diagJSON, mailing.GeneratorVersion, b.CampaignType, editorialJSON)
+		if dbErr != nil {
+			log.Printf("[content-refresh] failed to store wave %d for %s: %v", v.WaveIndex, b.BrandName, dbErr)
 			continue
 		}
 		stored++
 	}
 
-	log.Printf("[content-refresh] %s: stored %d/%d waves", b.BrandName, stored, len(variations))
+	log.Printf("[content-refresh] %s: stored %d/%d waves", b.BrandName, stored, len(result.Variations))
 
-	// Clean up old unused cache entries (keep latest 15 per brand)
+	// Clean up old unused cache entries (keep latest 20 per brand+type)
 	w.db.ExecContext(ctx, `
 		DELETE FROM mailing_wave_content_cache
-		WHERE brand_key = $1 AND used_at IS NULL
+		WHERE brand_key = $1 AND campaign_type = $2 AND used_at IS NULL
 		  AND id NOT IN (
 			SELECT id FROM mailing_wave_content_cache
-			WHERE brand_key = $1 AND used_at IS NULL
-			ORDER BY generated_at DESC LIMIT 15
+			WHERE brand_key = $1 AND campaign_type = $2 AND used_at IS NULL
+			ORDER BY generated_at DESC LIMIT 20
 		  )
-	`, key)
+	`, key, b.CampaignType)
 
-	if report != nil {
-		mailing.LogReport(report)
+	if result.Report != nil {
+		mailing.LogReport(result.Report)
 	}
+}
+
+// CachedWaveContent holds a cached wave entry including the raw editorial JSON
+// for re-rendering into a different campaign template at dispatch time.
+type CachedWaveContent struct {
+	Variation     mailing.WaveVariation
+	EditorialJSON []byte // raw JSON of mailing.WaveEditorialContent
 }
 
 // GetUnusedWave fetches and marks-as-used the next available cached wave for a brand.
 func GetUnusedWave(ctx context.Context, db *sql.DB, brandKey string) (*mailing.WaveVariation, error) {
-	var v mailing.WaveVariation
-	var diagJSON sql.NullString
-	err := db.QueryRowContext(ctx, `
+	cached, err := GetUnusedWaveByType(ctx, db, brandKey, "")
+	if err != nil {
+		return nil, err
+	}
+	return &cached.Variation, nil
+}
+
+// GetUnusedWaveByType fetches and marks-as-used a cached wave matching brand+type.
+// If campaignType is empty, it matches any type (backward compatible).
+func GetUnusedWaveByType(ctx context.Context, db *sql.DB, brandKey, campaignType string) (*CachedWaveContent, error) {
+	var c CachedWaveContent
+	var diagJSON, editJSON sql.NullString
+
+	query := `
 		UPDATE mailing_wave_content_cache
 		SET used_at = NOW()
 		WHERE id = (
 			SELECT id FROM mailing_wave_content_cache
 			WHERE brand_key = $1 AND used_at IS NULL
+			  AND ($2::text = '' OR campaign_type = $2)
 			ORDER BY generated_at DESC
 			LIMIT 1
 		)
-		RETURNING wave_index, subject, preview_text, from_name, html_content, diagnostics
-	`, brandKey).Scan(&v.WaveIndex, &v.Subject, &v.PreviewText, &v.FromName, &v.HTMLContent, &diagJSON)
+		RETURNING wave_index, subject, preview_text, from_name, html_content, diagnostics, editorial_json
+	`
+	err := db.QueryRowContext(ctx, query, brandKey, campaignType).Scan(
+		&c.Variation.WaveIndex, &c.Variation.Subject, &c.Variation.PreviewText,
+		&c.Variation.FromName, &c.Variation.HTMLContent, &diagJSON, &editJSON,
+	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no cached content for brand %q", brandKey)
+		return nil, fmt.Errorf("no cached content for brand=%q type=%q", brandKey, campaignType)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	if editJSON.Valid {
+		c.EditorialJSON = []byte(editJSON.String)
+	}
+	return &c, nil
 }

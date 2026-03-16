@@ -71,9 +71,30 @@ func (g *WaveContentGenerator) BuildPrompt(req WaveContentRequest) string {
 	return g.buildEditorialPrompt(req)
 }
 
+// GenerateResult bundles both the rendered variations and the raw editorial content
+// so callers can store the editorial JSON separately for later template re-rendering.
+type GenerateResult struct {
+	Variations []WaveVariation
+	Editorial  []WaveEditorialContent
+	Report     *GenerationReport
+}
+
 // Generate runs the full two-phase pipeline: editorial writing then HTML rendering.
-// Returns variations and a diagnostic report for review.
+// Returns variations, raw editorial, and a diagnostic report.
 func (g *WaveContentGenerator) Generate(ctx context.Context, req WaveContentRequest) ([]WaveVariation, *GenerationReport, error) {
+	res, err := g.GenerateFull(ctx, req)
+	if err != nil {
+		if res != nil {
+			return nil, res.Report, err
+		}
+		return nil, nil, err
+	}
+	return res.Variations, res.Report, nil
+}
+
+// GenerateFull runs the two-phase pipeline and returns the full result including
+// raw editorial content for storage alongside rendered HTML.
+func (g *WaveContentGenerator) GenerateFull(ctx context.Context, req WaveContentRequest) (*GenerateResult, error) {
 	report := &GenerationReport{
 		Brand:     req.BrandName,
 		StartedAt: time.Now(),
@@ -91,7 +112,7 @@ func (g *WaveContentGenerator) Generate(ctx context.Context, req WaveContentRequ
 		report.FinishedAt = time.Now()
 		report.TotalDurationMs = time.Since(report.StartedAt).Milliseconds()
 		LogReport(report)
-		return nil, report, fmt.Errorf("Phase 1 (editorial) failed: %w", err)
+		return &GenerateResult{Report: report}, fmt.Errorf("Phase 1 (editorial) failed: %w", err)
 	}
 	log.Printf("[wave-gen] Phase 1 complete: got %d editorial wave(s) in %dms", len(editorial), report.Phase1Report.DurationMs)
 
@@ -106,7 +127,7 @@ func (g *WaveContentGenerator) Generate(ctx context.Context, req WaveContentRequ
 		report.FinishedAt = time.Now()
 		report.TotalDurationMs = time.Since(report.StartedAt).Milliseconds()
 		LogReport(report)
-		return nil, report, fmt.Errorf("Phase 2 (template fill) failed: %w", err)
+		return &GenerateResult{Editorial: editorial, Report: report}, fmt.Errorf("Phase 2 (template fill) failed: %w", err)
 	}
 	log.Printf("[wave-gen] Phase 2 complete: got %d variation(s) in %dms (template fill, no AI)", len(variations), report.Phase2Report.DurationMs)
 
@@ -114,7 +135,11 @@ func (g *WaveContentGenerator) Generate(ctx context.Context, req WaveContentRequ
 	report.TotalDurationMs = time.Since(report.StartedAt).Milliseconds()
 	LogReport(report)
 
-	return variations, report, nil
+	return &GenerateResult{
+		Variations: variations,
+		Editorial:  editorial,
+		Report:     report,
+	}, nil
 }
 
 func (g *WaveContentGenerator) activeModel() string {
@@ -137,6 +162,14 @@ func (g *WaveContentGenerator) GenerateFromPrompt(ctx context.Context, prompt st
 // ---------------------------------------------------------------------------
 
 func (g *WaveContentGenerator) buildEditorialPrompt(req WaveContentRequest) string {
+	ct := strings.ToLower(req.CampaignType)
+	if ct == "welcome" {
+		return g.buildWelcomeEditorialPrompt(req)
+	}
+	return g.buildNewsletterEditorialPrompt(req)
+}
+
+func (g *WaveContentGenerator) buildNewsletterEditorialPrompt(req WaveContentRequest) string {
 	brand := req.BrandInfo
 	if brand == nil {
 		brand = &BrandIntelligence{Domain: req.SendingDomain, Colors: []string{}}
@@ -144,7 +177,6 @@ func (g *WaveContentGenerator) buildEditorialPrompt(req WaveContentRequest) stri
 
 	var sb strings.Builder
 
-	// Voice is the entire personality definition — put it front and center
 	if req.Voice != "" {
 		sb.WriteString(fmt.Sprintf("YOUR IDENTITY:\n%s\n\n", req.Voice))
 	}
@@ -228,6 +260,95 @@ Respond with ONLY this JSON array (no markdown, no explanation, no code fences):
 	return sb.String()
 }
 
+func (g *WaveContentGenerator) buildWelcomeEditorialPrompt(req WaveContentRequest) string {
+	brand := req.BrandInfo
+	if brand == nil {
+		brand = &BrandIntelligence{Domain: req.SendingDomain, Colors: []string{}}
+	}
+
+	var sb strings.Builder
+
+	if req.Voice != "" {
+		sb.WriteString(fmt.Sprintf("YOUR IDENTITY:\n%s\n\n", req.Voice))
+	}
+	if req.Audience != "" {
+		sb.WriteString(fmt.Sprintf("WHO YOU'RE WRITING TO:\n%s\n\n", req.Audience))
+	}
+
+	sb.WriteString(fmt.Sprintf("You must write %d WELCOME email variations for \"%s\". These go to brand-new subscribers who have never received an email from us. Each variation is sent to a different slice of new subscribers, so they MUST be meaningfully different — different angle, different hook, different subject line.\n\n", req.NumWaves, coalesce(req.BrandName, brand.Title)))
+
+	pool := req.ContentPool
+	if len(pool) == 0 {
+		pool = brand.BlogPosts
+	}
+	if len(pool) > 0 {
+		sb.WriteString("=== BRAND CONTENT (reference for what the brand offers — weave naturally) ===\n\n")
+		for i, p := range pool {
+			sb.WriteString(fmt.Sprintf("--- [%d] %s ---\n", i+1, p.Title))
+			if p.URL != "" {
+				sb.WriteString(fmt.Sprintf("URL: %s\n", p.URL))
+			}
+			if p.Excerpt != "" {
+				sb.WriteString(fmt.Sprintf("%s\n", p.Excerpt))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString(`=== WELCOME EMAIL STANDARDS ===
+
+THE INTRO must make the subscriber feel like joining was a great decision. NOT generic "Thanks for subscribing!" — instead, lead with a specific benefit, a surprising fact, or a direct promise of what they'll get. Make them glad they signed up.
+
+ARTICLE SECTIONS should highlight the brand's best content — think of it as a "greatest hits" tour. Each section should:
+- Feature a genuinely useful or interesting piece of content the brand has published
+- Explain WHY this specific piece matters and what they'll learn/save/gain
+- Be 2-4 sentences of substance
+- End with a specific CTA that drives them to the content
+
+CTA TEXT must promise a specific outcome. NOT "Read more" — instead: "See how to save $200/month", "Take the 60-second quiz", "Get the starter guide."
+
+THE CLOSING should set expectations (what they'll receive, how often) and feel warm and personal.
+
+SUBJECT LINES must create excitement about joining. Reference a specific benefit. "Your weekly newsletter" is garbage. "{{ first_name | default: "Hey" }}, here's your $3,500 Disney savings plan" is good. Keep under 60 chars.
+
+PREVIEW TEXT complements the subject — adds a second reason to open. Never repeats the subject. Keep under 90 chars.
+
+=== PERSONALIZATION ===
+- Use {{ first_name | default: "there" }} for the subscriber's name
+- Use {{ first_name }} in at least one subject line across the waves
+
+=== OUTPUT FORMAT ===
+Respond with ONLY this JSON array (no markdown, no explanation, no code fences):
+[
+`)
+
+	for i := 0; i < req.NumWaves; i++ {
+		comma := ","
+		if i == req.NumWaves-1 {
+			comma = ""
+		}
+		sb.WriteString(fmt.Sprintf(`  {
+    "wave_index": %d,
+    "subject": "exciting welcome subject, under 60 chars",
+    "preview_text": "complements subject, under 90 chars",
+    "intro": "2-3 sentences — make them glad they subscribed",
+    "article_sections": [
+      {
+        "headline": "compelling content highlight",
+        "summary": "2-4 sentences of real value from the brand",
+        "cta_text": "specific action — NOT 'read more'",
+        "url": "real URL from brand content"
+      }
+    ],
+    "closing_line": "warm sign-off that sets expectations"
+  }%s
+`, i, comma))
+	}
+	sb.WriteString("]\n")
+
+	return sb.String()
+}
+
 func (g *WaveContentGenerator) generateEditorial(ctx context.Context, req WaveContentRequest) ([]WaveEditorialContent, error) {
 	prompt := g.buildEditorialPrompt(req)
 	var editorial []WaveEditorialContent
@@ -293,14 +414,14 @@ func (g *WaveContentGenerator) renderHTML(_ context.Context, editorial []WaveEdi
 	if req.HTMLTemplate == "" {
 		return nil, fmt.Errorf("no HTML template provided — cannot render")
 	}
-	return templateFillWithVariation(editorial, req), nil
+	return TemplateFillWithVariation(editorial, req), nil
 }
 
-// templateFillWithVariation fills the HTML template with editorial content and
+// TemplateFillWithVariation fills the HTML template with editorial content and
 // applies per-wave CSS micro-variations for anti-fingerprinting. The layout and
 // design stay pixel-perfect; only padding nudges, tiny color shifts, and
 // structural HTML comments change between waves.
-func templateFillWithVariation(editorial []WaveEditorialContent, req WaveContentRequest) []WaveVariation {
+func TemplateFillWithVariation(editorial []WaveEditorialContent, req WaveContentRequest) []WaveVariation {
 	fromName := coalesce(req.BrandName, "Newsletter")
 	brandKey := brandKeyFromName(req.BrandName)
 	var variations []WaveVariation

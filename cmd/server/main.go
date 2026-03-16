@@ -397,6 +397,28 @@ func main() {
 						{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 average 94% accuracy. Where do you rank?", URL: "https://quizfiesta.com/leaderboard"},
 					},
 				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "discountblog", BlogDomain: "discountblog.com",
+					SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
+					CampaignType: "welcome",
+					Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. First-person storytelling. Warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate.`,
+					Audience: `Brand-new subscribers who just signed up. They're curious but uncommitted — this is the first impression. They need to see immediate value and understand what they'll get by staying subscribed.`,
+					HTMLTemplate: api.DiscountBlogWelcomeHTMLTemplate,
+				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "quizfiesta", BlogDomain: "quizfiesta.com",
+					SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
+					CampaignType: "welcome",
+					Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. Short punchy sentences. Arcade/gaming lingo. Competitive but encouraging — you want them to play, not feel bad.`,
+					Audience: `Brand-new players who just signed up. They've never played before. Get them excited to try their first game — make them feel like they've entered an arcade.`,
+					HTMLTemplate: api.QuizFiestaWelcomeHTMLTemplate,
+					FallbackContent: []mailing.BlogExcerpt{
+						{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
+						{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last.", URL: "https://quizfiesta.com/play"},
+						{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out.", URL: "https://quizfiesta.com/play"},
+						{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
+					},
+				})
 				contentRefresh.Start(ctx)
 				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 
@@ -1491,6 +1513,9 @@ func runStartupMigrations(db *sql.DB) {
 			version       TEXT NOT NULL DEFAULT ''
 		)`},
 		{"idx_wave_cache_brand_unused", `CREATE INDEX IF NOT EXISTS idx_wave_cache_brand_unused ON mailing_wave_content_cache (brand_key, generated_at DESC) WHERE used_at IS NULL`},
+		{"add_cache_campaign_type", `ALTER TABLE mailing_wave_content_cache ADD COLUMN IF NOT EXISTS campaign_type TEXT NOT NULL DEFAULT 'newsletter'`},
+		{"add_cache_editorial_json", `ALTER TABLE mailing_wave_content_cache ADD COLUMN IF NOT EXISTS editorial_json JSONB`},
+		{"idx_wave_cache_brand_type_unused", `CREATE INDEX IF NOT EXISTS idx_wave_cache_brand_type_unused ON mailing_wave_content_cache (brand_key, campaign_type, generated_at DESC) WHERE used_at IS NULL`},
 
 		{"add_list_subscriber_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS subscriber_count INT DEFAULT 0`},
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},

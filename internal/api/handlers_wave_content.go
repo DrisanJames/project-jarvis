@@ -136,6 +136,36 @@ LAYOUT RULES:
 				{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 are averaging 94% accuracy. Where do you rank among the arcade's finest?", URL: "https://quizfiesta.com/leaderboard"},
 			},
 		},
+		"discountblog-welcome": {
+			Key:           "discountblog",
+			SendingDomain: "em.discountblog.com",
+			SESFromDomain: "m.discountblog.com",
+			BlogDomain:    "discountblog.com",
+			BrandName:     "Discount Blog",
+			FromName:      "Jamie @ Discount Blog",
+			CampaignType:  "welcome",
+			HTMLTemplate:  DiscountBlogWelcomeHTMLTemplate,
+			Voice:         `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money. Warm, honest, slightly conspiratorial. NOT salesy, NOT clickbaity, NOT corporate.`,
+			Audience:      `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression.`,
+		},
+		"quizfiesta-welcome": {
+			Key:           "quizfiesta",
+			SendingDomain: "em.quizfiesta.com",
+			SESFromDomain: "m.quizfiesta.com",
+			BlogDomain:    "quizfiesta.com",
+			BrandName:     "QuizFiesta",
+			FromName:      "QuizFiesta Team",
+			CampaignType:  "welcome",
+			HTMLTemplate:  QuizFiestaWelcomeHTMLTemplate,
+			Voice:         `You are the voice of QuizFiesta — a retro-arcade trivia platform. Short punchy sentences. Arcade/gaming lingo. Competitive but encouraging.`,
+			Audience:      `Brand-new players who just signed up. Get them excited to try their first game.`,
+			FallbackContent: []mailing.BlogExcerpt{
+				{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
+				{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last.", URL: "https://quizfiesta.com/play"},
+				{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out.", URL: "https://quizfiesta.com/play"},
+				{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
+			},
+		},
 	}
 }
 
@@ -515,18 +545,24 @@ func (s *PMTACampaignService) HandleRefreshWaveCache(w http.ResponseWriter, r *h
 			ContentPool:   contentPool,
 		}
 
-		variations, report, err := waveGen.Generate(ctx, req)
-		if err != nil {
+		result, genErr := waveGen.GenerateFull(ctx, req)
+		if genErr != nil {
 			results = append(results, map[string]interface{}{
 				"brand": b.BrandName,
-				"error": err.Error(),
+				"error": genErr.Error(),
 			})
 			continue
 		}
 
 		stored := 0
-		for _, v := range variations {
+		for i, v := range result.Variations {
 			wr := mailing.ValidateWave(v, b.Key, contentPool)
+
+			var editorialJSON []byte
+			if i < len(result.Editorial) {
+				editorialJSON, _ = json.Marshal(result.Editorial[i])
+			}
+
 			diagJSON, _ := json.Marshal(map[string]interface{}{
 				"wave_report":    wr,
 				"template_match": wr.TemplateMatch,
@@ -535,9 +571,9 @@ func (s *PMTACampaignService) HandleRefreshWaveCache(w http.ResponseWriter, r *h
 
 			_, dbErr := s.db.ExecContext(ctx, `
 				INSERT INTO mailing_wave_content_cache
-					(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, version)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			`, b.Key, v.WaveIndex, v.Subject, v.PreviewText, v.FromName, v.HTMLContent, diagJSON, mailing.GeneratorVersion)
+					(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, version, campaign_type, editorial_json)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			`, b.Key, v.WaveIndex, v.Subject, v.PreviewText, v.FromName, v.HTMLContent, diagJSON, mailing.GeneratorVersion, b.CampaignType, editorialJSON)
 			if dbErr != nil {
 				log.Printf("[wave-cache-refresh] failed to store wave %d for %s: %v", v.WaveIndex, b.BrandName, dbErr)
 				continue
@@ -548,16 +584,17 @@ func (s *PMTACampaignService) HandleRefreshWaveCache(w http.ResponseWriter, r *h
 
 		entry := map[string]interface{}{
 			"brand":   b.BrandName,
+			"type":    b.CampaignType,
 			"stored":  stored,
-			"total":   len(variations),
+			"total":   len(result.Variations),
 		}
-		if report != nil {
-			entry["editorial_model"] = report.Phase1Report.Model
-			entry["html_model"] = report.Phase2Report.Model
-			entry["duration_ms"] = report.TotalDurationMs
+		if result.Report != nil {
+			entry["editorial_model"] = result.Report.Phase1Report.Model
+			entry["html_model"] = result.Report.Phase2Report.Model
+			entry["duration_ms"] = result.Report.TotalDurationMs
 		}
 		results = append(results, entry)
-		log.Printf("[wave-cache-refresh] %s: stored %d/%d waves", b.BrandName, stored, len(variations))
+		log.Printf("[wave-cache-refresh] %s (%s): stored %d/%d waves", b.BrandName, b.CampaignType, stored, len(result.Variations))
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
