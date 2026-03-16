@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,17 +97,38 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		return 0, tx.Commit()
 	}
 
-	var campaignFromName, campaignSubject, campaignHTML sql.NullString
+	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML sql.NullString
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(from_name, ''), COALESCE(subject, ''), COALESCE(html_content, '')
+		SELECT COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(subject, ''), COALESCE(html_content, '')
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&campaignFromName, &campaignSubject, &campaignHTML); err != nil {
+	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML); err != nil {
 		return 0, err
 	}
 
-	variants, err := loadCampaignVariantsForWave(ctx, tx, campaignID.String(), campaignFromName.String, campaignSubject.String, campaignHTML.String)
-	if err != nil {
-		return 0, err
+	// Try cached AI-generated wave content first (unique content per wave).
+	// Brand key is derived from from_email: "hello@em.discountblog.com" → "discountblog"
+	brandKey := deriveBrandKey(campaignFromEmail.String)
+	var variants []campaignVariant
+	if brandKey != "" {
+		cached, cacheErr := GetUnusedWave(ctx, db, brandKey)
+		if cacheErr == nil && cached != nil {
+			log.Printf("[wave-dispatch] using cached wave content for brand=%s wave=%d subject=%q",
+				brandKey, cached.WaveIndex, cached.Subject)
+			variants = []campaignVariant{{
+				VariantName: "cached",
+				FromName:    coalesceWaveValue(cached.FromName, campaignFromName.String),
+				Subject:     coalesceWaveValue(cached.Subject, campaignSubject.String),
+				HTMLContent: coalesceWaveValue(cached.HTMLContent, campaignHTML.String),
+			}}
+		}
+	}
+
+	if len(variants) == 0 {
+		var loadErr error
+		variants, loadErr = loadCampaignVariantsForWave(ctx, tx, campaignID.String(), campaignFromName.String, campaignSubject.String, campaignHTML.String)
+		if loadErr != nil {
+			return 0, loadErr
+		}
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -250,4 +273,22 @@ func coalesceWaveValue(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// deriveBrandKey extracts the brand key from a from_email address.
+// "hello@em.discountblog.com" → "discountblog"
+// "hello@em.quizfiesta.com"   → "quizfiesta"
+func deriveBrandKey(fromEmail string) string {
+	at := strings.LastIndex(fromEmail, "@")
+	if at < 0 {
+		return ""
+	}
+	domain := strings.ToLower(fromEmail[at+1:])
+	domain = strings.TrimPrefix(domain, "em.")
+	domain = strings.TrimPrefix(domain, "m.")
+	dot := strings.Index(domain, ".")
+	if dot > 0 {
+		return domain[:dot]
+	}
+	return domain
 }

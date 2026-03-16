@@ -45,6 +45,7 @@ aws ecr get-login-password "${AWS_ARGS[@]}" | docker login --username AWS --pass
 
 echo "Building immutable image..."
 docker build \
+  --platform linux/amd64 \
   --build-arg VERSION="$GIT_SHA" \
   --build-arg GIT_SHA="$GIT_SHA" \
   --build-arg BUILD_TIME="$BUILD_TIME" \

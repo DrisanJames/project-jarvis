@@ -88,6 +88,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 		cr.Get("/wave-content-test", s.HandleWaveContentTest)
 		cr.Get("/wave-content-cache", s.HandleWaveContentCache)
+		cr.Post("/refresh-wave-cache", s.HandleRefreshWaveCache)
 		cr.Post("/deploy-cached-waves", s.HandleDeployCachedWaves)
 		cr.Get("/pipeline-health", s.HandlePipelineHealth)
 		cr.Get("/diag", s.HandlePMTADiag)

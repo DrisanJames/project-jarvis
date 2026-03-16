@@ -433,6 +433,140 @@ func (s *PMTACampaignService) HandleWaveContentCache(w http.ResponseWriter, r *h
 	})
 }
 
+// HandleRefreshWaveCache triggers an immediate content generation cycle for one
+// or all brands and stores the results in mailing_wave_content_cache. Use this
+// to pre-populate the cache before campaigns fire.
+//
+// Query params:
+//
+//	brand  — "discountblog", "quizfiesta", or "all" (default: all)
+//	waves  — number of waves to generate per brand (default: 5)
+func (s *PMTACampaignService) HandleRefreshWaveCache(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	brandFilter := r.URL.Query().Get("brand")
+	if brandFilter == "" {
+		brandFilter = "all"
+	}
+	numWaves := 5
+	if nw := r.URL.Query().Get("waves"); nw != "" {
+		if v, err := strconv.Atoi(nw); err == nil && v > 0 && v <= 10 {
+			numWaves = v
+		}
+	}
+
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		for _, cfgPath := range []string{"config/config.yaml", "/app/config/config.yaml"} {
+			if cfg, err := config.Load(cfgPath); err == nil && cfg.OpenAI.APIKey != "" {
+				openaiKey = cfg.OpenAI.APIKey
+				break
+			}
+		}
+	}
+	if anthropicKey == "" && openaiKey == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "no AI API key configured",
+		})
+		return
+	}
+
+	aiSvc := mailing.NewAIContentService(s.db, anthropicKey, openaiKey)
+	waveGen := mailing.NewWaveContentGenerator(aiSvc)
+	brands := knownBrands()
+
+	var selectedBrands []brandConfig
+	if brandFilter == "all" {
+		for _, b := range brands {
+			selectedBrands = append(selectedBrands, b)
+		}
+	} else {
+		b, ok := brands[brandFilter]
+		if !ok {
+			respondJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("unknown brand %q", brandFilter),
+			})
+			return
+		}
+		selectedBrands = []brandConfig{b}
+	}
+
+	var results []map[string]interface{}
+	totalStored := 0
+
+	for _, b := range selectedBrands {
+		log.Printf("[wave-cache-refresh] generating %d waves for %s", numWaves, b.BrandName)
+		brand := aiSvc.ScrapeBrandIntelligence(ctx, b.BlogDomain)
+		contentPool := brand.BlogPosts
+		if len(contentPool) < 3 && len(b.FallbackContent) > 0 {
+			contentPool = b.FallbackContent
+		}
+
+		req := mailing.WaveContentRequest{
+			SendingDomain: b.SendingDomain,
+			BrandName:     b.BrandName,
+			NumWaves:      numWaves,
+			CampaignType:  b.CampaignType,
+			Voice:         b.Voice,
+			Audience:      b.Audience,
+			DesignSystem:  b.DesignSystem,
+			HTMLTemplate:  b.HTMLTemplate,
+			BrandInfo:     brand,
+			ContentPool:   contentPool,
+		}
+
+		variations, report, err := waveGen.Generate(ctx, req)
+		if err != nil {
+			results = append(results, map[string]interface{}{
+				"brand": b.BrandName,
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		stored := 0
+		for _, v := range variations {
+			wr := mailing.ValidateWave(v, b.Key, contentPool)
+			diagJSON, _ := json.Marshal(map[string]interface{}{
+				"wave_report":    wr,
+				"template_match": wr.TemplateMatch,
+				"version":        mailing.GeneratorVersion,
+			})
+
+			_, dbErr := s.db.ExecContext(ctx, `
+				INSERT INTO mailing_wave_content_cache
+					(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, version)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`, b.Key, v.WaveIndex, v.Subject, v.PreviewText, v.FromName, v.HTMLContent, diagJSON, mailing.GeneratorVersion)
+			if dbErr != nil {
+				log.Printf("[wave-cache-refresh] failed to store wave %d for %s: %v", v.WaveIndex, b.BrandName, dbErr)
+				continue
+			}
+			stored++
+		}
+		totalStored += stored
+
+		entry := map[string]interface{}{
+			"brand":   b.BrandName,
+			"stored":  stored,
+			"total":   len(variations),
+		}
+		if report != nil {
+			entry["editorial_model"] = report.Phase1Report.Model
+			entry["html_model"] = report.Phase2Report.Model
+			entry["duration_ms"] = report.TotalDurationMs
+		}
+		results = append(results, entry)
+		log.Printf("[wave-cache-refresh] %s: stored %d/%d waves", b.BrandName, stored, len(variations))
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"message":      fmt.Sprintf("Generated and cached %d waves across %d brands", totalStored, len(selectedBrands)),
+		"total_stored": totalStored,
+		"brands":       results,
+	})
+}
+
 // HandleDeployCachedWaves pulls pre-generated content from the wave cache and
 // creates real PMTA ISP wave campaigns targeting the specified list. This is the
 // production path for daily warmup sends.

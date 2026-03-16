@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var testScheduledAt = time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+
 func testScheduler(db *sql.DB, rdb *redis.Client) *PMTAWaveScheduler {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	return &PMTAWaveScheduler{
