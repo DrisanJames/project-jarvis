@@ -1464,7 +1464,7 @@ func runStartupMigrations(db *sql.DB) {
 		`},
 		{"add_is_machine_open_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_machine_open BOOLEAN DEFAULT FALSE`},
 		{"add_idx_mte_machine_open", `CREATE INDEX IF NOT EXISTS idx_mte_machine_open ON mailing_tracking_events (campaign_id, is_machine_open) WHERE event_type = 'opened' AND is_machine_open = TRUE`},
-		{"backfill_mpp_opens_120s", `
+		{"backfill_mpp_opens_120s_v2", `
 			UPDATE mailing_tracking_events o
 			SET is_machine_open = TRUE
 			FROM mailing_tracking_events d
@@ -1473,8 +1473,7 @@ func runStartupMigrations(db *sql.DB) {
 			  AND d.event_type = 'delivered'
 			  AND o.subscriber_id = d.subscriber_id
 			  AND o.campaign_id = d.campaign_id
-			  AND o.event_at >= d.event_at
-			  AND o.event_at <= d.event_at + INTERVAL '120 seconds'
+			  AND ABS(EXTRACT(EPOCH FROM (o.event_at - d.event_at))) <= 120
 		`},
 
 		{"create_wave_content_cache", `CREATE TABLE IF NOT EXISTS mailing_wave_content_cache (

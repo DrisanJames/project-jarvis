@@ -85,16 +85,22 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
-	// MPP detection: open fired within 120s of delivery is almost certainly Apple Mail Privacy Protection
+	// MPP detection: open within 120s of delivery or sent event
 	isMachineOpen := false
-	var deliveredAt time.Time
+	var refAt time.Time
 	err = svc.db.QueryRowContext(ctx, `
 		SELECT event_at FROM mailing_tracking_events
-		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'delivered'
-		ORDER BY event_at DESC LIMIT 1
-	`, subscriberID, campaignID).Scan(&deliveredAt)
-	if err == nil && time.Since(deliveredAt) <= 120*time.Second {
-		isMachineOpen = true
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type IN ('delivered','sent')
+		ORDER BY event_type = 'delivered' DESC, event_at DESC LIMIT 1
+	`, subscriberID, campaignID).Scan(&refAt)
+	if err == nil {
+		gap := time.Since(refAt)
+		if gap < 0 {
+			gap = -gap
+		}
+		if gap <= 120*time.Second {
+			isMachineOpen = true
+		}
 	}
 
 	if _, err := svc.db.ExecContext(ctx, `
@@ -108,7 +114,7 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	}
 
 	if isMachineOpen {
-		log.Printf("TRACK OPEN MPP: campaign=%s subscriber=%s delta=%v", campaignID, subscriberID, time.Since(deliveredAt))
+		log.Printf("TRACK OPEN MPP: campaign=%s subscriber=%s delta=%v", campaignID, subscriberID, time.Since(refAt))
 	}
 
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1 WHERE id = $1`, campaignID)
