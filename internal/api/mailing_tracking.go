@@ -85,7 +85,7 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
-	// MPP detection: check if delivery happened within the last 30 seconds
+	// MPP detection: open fired within 120s of delivery is almost certainly Apple Mail Privacy Protection
 	isMachineOpen := false
 	var deliveredAt time.Time
 	err = svc.db.QueryRowContext(ctx, `
@@ -93,7 +93,7 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'delivered'
 		ORDER BY event_at DESC LIMIT 1
 	`, subscriberID, campaignID).Scan(&deliveredAt)
-	if err == nil && time.Since(deliveredAt) <= 30*time.Second {
+	if err == nil && time.Since(deliveredAt) <= 120*time.Second {
 		isMachineOpen = true
 	}
 

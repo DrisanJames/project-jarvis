@@ -110,7 +110,7 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	var email string
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
-	// MPP detection: check if delivery happened within 30 seconds of this open
+	// MPP detection: open fired within 120s of delivery is almost certainly Apple Mail Privacy Protection
 	isMachineOpen := false
 	var deliveredAt time.Time
 	if err := c.db.QueryRowContext(ctx, `
@@ -118,7 +118,7 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'delivered'
 		ORDER BY event_at DESC LIMIT 1
 	`, subscriberID, campaignID).Scan(&deliveredAt); err == nil {
-		if evt.Timestamp.Sub(deliveredAt) <= 30*time.Second {
+		if evt.Timestamp.Sub(deliveredAt) <= 120*time.Second {
 			isMachineOpen = true
 		}
 	}
