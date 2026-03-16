@@ -1338,6 +1338,64 @@ func runStartupMigrations(db *sql.DB) {
 				WHERE domain = 'm.discountblog.com'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
+		// --- em.historythinking.com (PMTA direct) ---
+		// DNS records configured via GoDaddy API 2026-03-16:
+		//   A:     em.historythinking.com → 15.204.101.125
+		//   SPF:   em.historythinking.com TXT "v=spf1 ip4:15.204.22.176/28 -all"
+		//   DKIM:  dkim._domainkey.em.historythinking.com TXT "v=DKIM1; k=rsa; p=..."
+		//   DMARC: _dmarc.em.historythinking.com TXT "v=DMARC1; p=quarantine; adkim=r; aspf=r; pct=100"
+		//   MX:    em.historythinking.com MX 10 em.historythinking.com
+		{"seed_pmta_historythinking_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'HistoryThinking PMTA', 'pmta', 'History Thinking', 'hello@em.historythinking.com', 'reply@em.historythinking.com',
+				'em.historythinking.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.historythinking.com',
+				3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'em.historythinking.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_historythinking_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'em.historythinking.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'em.historythinking.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		// --- em.myownhealth.net (PMTA direct) ---
+		// DNS records configured via GoDaddy API 2026-03-16:
+		//   A:     em.myownhealth.net → 15.204.101.125
+		//   SPF:   em.myownhealth.net TXT "v=spf1 ip4:15.204.22.176/28 -all"
+		//   DKIM:  dkim._domainkey.em.myownhealth.net TXT "v=DKIM1; k=rsa; p=..."
+		//   DMARC: _dmarc.em.myownhealth.net TXT "v=DMARC1; p=quarantine; adkim=r; aspf=r; pct=100"
+		//   MX:    em.myownhealth.net MX 10 em.myownhealth.net
+		{"seed_pmta_myownhealth_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'MyOwnHealth PMTA', 'pmta', 'My Own Health', 'hello@em.myownhealth.net', 'reply@em.myownhealth.net',
+				'em.myownhealth.net', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.myownhealth.net',
+				3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'em.myownhealth.net'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_myownhealth_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'em.myownhealth.net', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'em.myownhealth.net'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
 		// Fix list_ids that contain list names instead of UUIDs (campaigns stuck as scheduled)
 		{"fix_list_ids_names_to_uuids", `
 			UPDATE mailing_campaigns c
