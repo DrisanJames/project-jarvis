@@ -85,22 +85,16 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.onTrackingEvent(campaignID.String(), "open", email, isp)
 	}
 
-	// MPP detection: open within 120s of delivery or sent event
+	// MPP detection: open within 120s of the sent event (sent timestamp is reliable; delivered is batch-delayed)
 	isMachineOpen := false
 	var refAt time.Time
 	err = svc.db.QueryRowContext(ctx, `
 		SELECT event_at FROM mailing_tracking_events
-		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type IN ('delivered','sent')
-		ORDER BY event_type = 'delivered' DESC, event_at DESC LIMIT 1
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'sent'
+		ORDER BY event_at DESC LIMIT 1
 	`, subscriberID, campaignID).Scan(&refAt)
-	if err == nil {
-		gap := time.Since(refAt)
-		if gap < 0 {
-			gap = -gap
-		}
-		if gap <= 120*time.Second {
-			isMachineOpen = true
-		}
+	if err == nil && time.Since(refAt) <= 120*time.Second {
+		isMachineOpen = true
 	}
 
 	if _, err := svc.db.ExecContext(ctx, `

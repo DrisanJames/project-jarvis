@@ -110,19 +110,15 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	var email string
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
-	// MPP detection: open within 120s of delivery or sent event (bidirectional — DB order can vary)
+	// MPP detection: open within 120s of the sent event (sent timestamp is reliable; delivered is batch-delayed)
 	isMachineOpen := false
 	var refAt time.Time
 	if err := c.db.QueryRowContext(ctx, `
 		SELECT event_at FROM mailing_tracking_events
-		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type IN ('delivered','sent')
-		ORDER BY event_type = 'delivered' DESC, event_at DESC LIMIT 1
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'sent'
+		ORDER BY event_at DESC LIMIT 1
 	`, subscriberID, campaignID).Scan(&refAt); err == nil {
-		gap := evt.Timestamp.Sub(refAt)
-		if gap < 0 {
-			gap = -gap
-		}
-		if gap <= 120*time.Second {
+		if evt.Timestamp.Sub(refAt) <= 120*time.Second {
 			isMachineOpen = true
 		}
 	}
