@@ -1579,6 +1579,8 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},
 		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},
 		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
+
+		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
 	}
 
 	var ok, fail int
