@@ -182,6 +182,12 @@ type QueueItem struct {
 
 	// Campaign metadata for template context
 	CampaignName string
+
+	// Offer lifecycle attribution
+	OfferID       uuid.UUID
+	CreativeID    uuid.UUID
+	SubjectLineID uuid.UUID
+	FromNameID    uuid.UUID
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -404,7 +410,7 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED
 			)
-			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content
+			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id
 		)
 		SELECT 
 			c.id,
@@ -435,7 +441,11 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 			COALESCE(s.status, 'confirmed'),
 			COALESCE(s.source, ''),
 			COALESCE(s.subscribed_at, s.created_at),
-			COALESCE(camp.name, '')
+			COALESCE(camp.name, ''),
+			COALESCE(c.offer_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.creative_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.subject_line_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -469,7 +479,7 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 				LIMIT $4
 				FOR UPDATE SKIP LOCKED
 			)
-			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content
+			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id
 		)
 		SELECT
 			c.id, c.campaign_id, c.subscriber_id,
@@ -484,7 +494,11 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 			s.last_open_at, s.last_click_at, s.last_email_at,
 			s.optimal_send_hour_utc, COALESCE(s.timezone, ''),
 			COALESCE(s.status, 'confirmed'), COALESCE(s.source, ''),
-			COALESCE(s.subscribed_at, s.created_at), COALESCE(camp.name, '')
+			COALESCE(s.subscribed_at, s.created_at), COALESCE(camp.name, ''),
+			COALESCE(c.offer_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.creative_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.subject_line_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -802,6 +816,10 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 			&item.SubscriberSource,
 			&item.SubscribedAt,
 			&item.CampaignName,
+			&item.OfferID,
+			&item.CreativeID,
+			&item.SubjectLineID,
+			&item.FromNameID,
 		)
 		if err != nil {
 			log.Printf("SendWorkerPool: scan error: %v", err)
@@ -849,6 +867,44 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 
+	// Offer-level suppression — skip subscribers who already converted on this offer
+	if item.OfferID != uuid.Nil {
+		var offerSuppressed bool
+		p.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
+			item.OfferID, item.SubscriberID).Scan(&offerSuppressed)
+		if offerSuppressed {
+			atomic.AddInt64(&p.totalSkipped, 1)
+			return p.markSkipped(ctx, item.ID, "offer_suppressed")
+		}
+	}
+
+	// Offer content override: use creative HTML, subject line, from name if assigned
+	if item.CreativeID != uuid.Nil {
+		var creativeHTML string
+		if err := p.db.QueryRowContext(ctx,
+			`SELECT html_content FROM mailing_offer_creatives WHERE id=$1`,
+			item.CreativeID).Scan(&creativeHTML); err == nil && creativeHTML != "" {
+			item.HTMLContent = creativeHTML
+		}
+	}
+	if item.SubjectLineID != uuid.Nil {
+		var subjectText string
+		if err := p.db.QueryRowContext(ctx,
+			`SELECT subject_line FROM mailing_offer_subject_lines WHERE id=$1`,
+			item.SubjectLineID).Scan(&subjectText); err == nil && subjectText != "" {
+			item.Subject = subjectText
+		}
+	}
+	if item.FromNameID != uuid.Nil {
+		var fromNameText string
+		if err := p.db.QueryRowContext(ctx,
+			`SELECT from_name FROM mailing_offer_from_names WHERE id=$1`,
+			item.FromNameID).Scan(&fromNameText); err == nil && fromNameText != "" {
+			item.FromName = fromNameText
+		}
+	}
+
 	// ── Personalization: full Liquid template engine with all subscriber data ──
 	renderCtx := p.buildRenderContext(item)
 	templateSvc := mailing.NewTemplateService()
@@ -862,7 +918,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		htmlContent = injectPreviewText(htmlContent, previewText)
 	}
 
-	htmlContent = replaceTrackingMergeTags(htmlContent, item.CampaignID.String(), item.SubscriberID.String())
+	htmlContent = replaceTrackingMergeTags(htmlContent, item.CampaignID.String(), item.SubscriberID.String(), item.CreativeID.String())
 
 	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
@@ -1245,12 +1301,17 @@ func getHostname() string {
 // replaceTrackingMergeTags replaces Everflow tracking link merge tags at send time.
 // {{DATE_MMDDYYYY}} -> current date in mmddYYYY format
 // {{MAILING_ID}} -> the campaign/mailing ID (subscriber-specific for tracking)
-func replaceTrackingMergeTags(html string, campaignID string, subscriberID string) string {
+func replaceTrackingMergeTags(html string, campaignID string, subscriberID string, creativeID ...string) string {
 	now := time.Now()
 	dateStr := fmt.Sprintf("%02d%02d%d", now.Month(), now.Day(), now.Year())
 
 	html = strings.ReplaceAll(html, "{{DATE_MMDDYYYY}}", dateStr)
 	html = strings.ReplaceAll(html, "{{MAILING_ID}}", subscriberID)
+	html = strings.ReplaceAll(html, "{{SUBSCRIBER_ID}}", subscriberID)
+	html = strings.ReplaceAll(html, "{{CAMPAIGN_ID}}", campaignID)
+	if len(creativeID) > 0 && creativeID[0] != "" {
+		html = strings.ReplaceAll(html, "{{CREATIVE_ID}}", creativeID[0])
+	}
 
 	return html
 }

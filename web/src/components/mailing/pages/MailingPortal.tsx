@@ -4,7 +4,7 @@ import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer,
-  /* faArrowLeft, */ faFire, faGlobe,
+  /* faArrowLeft, */ faFire, faGlobe, faStore,
   faSpinner, faRocket, faShieldAlt, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
@@ -24,7 +24,7 @@ const JourneyCenter = lazy(() => import('../components/JourneyCenter').then(m =>
 const MissionControl = lazy(() => import('../components/MissionControl').then(m => ({ default: m.MissionControl })));
 const DomainCenter = lazy(() => import('../components/DomainCenter').then(m => ({ default: m.DomainCenter })));
 const AnalyticsCenter = lazy(() => import('../components/AnalyticsCenter').then(m => ({ default: m.AnalyticsCenter })));
-const OfferCenter = lazy(() => import('../components/OfferCenter').then(m => ({ default: m.OfferCenter })));
+const OfferManagement = lazy(() => import('../components/OfferManagement').then(m => ({ default: m.OfferManagement })));
 const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(m => ({ default: m.JarvisDashboard })));
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
@@ -66,6 +66,7 @@ const tabs: Tab[] = [
   { id: 'profiles', label: 'Inbox Intel', icon: faBrain, description: 'Per-recipient intelligence' },
   { id: 'sending-plans', label: 'AI Plans', icon: faRobot, description: 'ISP-specific AI agents & intelligence' },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
+  { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
@@ -83,11 +84,6 @@ export const MailingPortal: React.FC = () => {
   // we switch to Campaign Center and pass the selected offer through.
   const [pendingOffer, setPendingOffer] = useState<{ offerId: string; offerName: string } | null>(null);
   const [copilotOpen, setCopilotOpen] = useState(false);
-
-  const handleUseOffer = (offerId: string, offerName: string) => {
-    setPendingOffer({ offerId, offerName });
-    setActiveTab('campaign-center');
-  };
 
   // Clear pending offer when leaving campaign-center
   const handleTabChange = (tab: TabId) => {
@@ -145,7 +141,7 @@ export const MailingPortal: React.FC = () => {
       case 'delivery-servers':
         return <DeliveryServersManager />;
       case 'offers':
-        return <OfferCenter onUseOffer={handleUseOffer} />;
+        return <OfferManagement />;
       case 'automations':
         return <AutomationsManager />;
       case 'ab-tests':

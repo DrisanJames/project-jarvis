@@ -85,6 +85,11 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
 		s.router.Post("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)
 
+		// Everflow conversion postback — public (called by Everflow servers)
+		efPostback := NewEverflowPostbackHandler(db)
+		s.router.Post("/api/mailing/everflow/postback", efPostback.HandlePostback)
+		s.router.Get("/api/mailing/everflow/postback", efPostback.HandlePostback)
+
 		// Public preferences page — redirects to frontend or serves minimal page
 		s.router.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
 			sid := r.URL.Query().Get("sid")

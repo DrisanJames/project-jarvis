@@ -422,6 +422,11 @@ func main() {
 				contentRefresh.Start(ctx)
 				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 
+				// Start Offer Suppression Worker (fatigue suppression + performance rollups nightly)
+				offerSuppWorker := worker.NewOfferSuppressionWorker(mailingDB, 24*time.Hour)
+				offerSuppWorker.Start(ctx)
+				log.Println("Offer Suppression Worker started (fatigue suppression + performance rollups every 24h)")
+
 				// Start S3 Data Normalizer (imports from jvc-email-data bucket)
 				datanormCfg := datanorm.Config{
 					Bucket:     cfg.DataNorm.S3Bucket,
@@ -453,6 +458,7 @@ func main() {
 					<-ctx.Done()
 					campaignScheduler.Stop()
 					sendWorkerPool.Stop()
+					offerSuppWorker.Stop()
 					if trackingConsumer != nil {
 						trackingConsumer.Stop()
 					}
@@ -1583,6 +1589,149 @@ func runStartupMigrations(db *sql.DB) {
 		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
 		{"drop_ip_status_check", `ALTER TABLE mailing_ip_addresses DROP CONSTRAINT IF EXISTS mailing_ip_addresses_status_check`},
 		{"startup_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused' WHERE (hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%') AND status != 'cold'`},
+
+		{"create_offer_verticals", `CREATE TABLE IF NOT EXISTS mailing_offer_verticals (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			description TEXT DEFAULT '',
+			sort_order INT DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offer_verticals_org_name", `CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_verticals_org_name ON mailing_offer_verticals(organization_id, name)`},
+
+		{"create_offers", `CREATE TABLE IF NOT EXISTS mailing_offers (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			vertical_id UUID REFERENCES mailing_offer_verticals(id) ON DELETE SET NULL,
+			brand_name VARCHAR(255) DEFAULT '',
+			name VARCHAR(255) NOT NULL,
+			description TEXT DEFAULT '',
+			everflow_offer_id VARCHAR(50) DEFAULT '',
+			everflow_creative_id VARCHAR(50) DEFAULT '',
+			tracking_link_template TEXT DEFAULT '',
+			optizmo_link TEXT DEFAULT '',
+			web_property VARCHAR(50) DEFAULT '',
+			landing_page_slug VARCHAR(255) DEFAULT '',
+			landing_page_url TEXT DEFAULT '',
+			landing_page_html TEXT DEFAULT '',
+			original_html_creative TEXT DEFAULT '',
+			payout DECIMAL(10,2) DEFAULT 0,
+			payout_type VARCHAR(20) DEFAULT '',
+			optizmo_status VARCHAR(20) DEFAULT 'not_scrubbed',
+			optizmo_last_scrubbed_at TIMESTAMPTZ,
+			status VARCHAR(20) DEFAULT 'draft',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offers_org", `CREATE INDEX IF NOT EXISTS idx_offers_org ON mailing_offers(organization_id)`},
+		{"idx_offers_vertical", `CREATE INDEX IF NOT EXISTS idx_offers_vertical ON mailing_offers(vertical_id)`},
+		{"idx_offers_status", `CREATE INDEX IF NOT EXISTS idx_offers_status ON mailing_offers(status)`},
+
+		{"create_offer_subject_lines", `CREATE TABLE IF NOT EXISTS mailing_offer_subject_lines (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			subject_line TEXT NOT NULL,
+			status VARCHAR(20) DEFAULT 'draft',
+			performance_score DECIMAL(5,2) DEFAULT 0,
+			total_sends INT DEFAULT 0,
+			total_opens INT DEFAULT 0,
+			open_rate DECIMAL(5,4) DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offer_subjects_offer", `CREATE INDEX IF NOT EXISTS idx_offer_subjects_offer ON mailing_offer_subject_lines(offer_id)`},
+
+		{"create_offer_from_names", `CREATE TABLE IF NOT EXISTS mailing_offer_from_names (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			from_name VARCHAR(255) NOT NULL,
+			status VARCHAR(20) DEFAULT 'draft',
+			performance_score DECIMAL(5,2) DEFAULT 0,
+			total_sends INT DEFAULT 0,
+			total_opens INT DEFAULT 0,
+			complaint_rate DECIMAL(5,4) DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offer_from_names_offer", `CREATE INDEX IF NOT EXISTS idx_offer_from_names_offer ON mailing_offer_from_names(offer_id)`},
+
+		{"create_offer_creatives", `CREATE TABLE IF NOT EXISTS mailing_offer_creatives (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			version INT DEFAULT 1,
+			html_content TEXT NOT NULL DEFAULT '',
+			subject_line_id UUID REFERENCES mailing_offer_subject_lines(id) ON DELETE SET NULL,
+			from_name_id UUID REFERENCES mailing_offer_from_names(id) ON DELETE SET NULL,
+			status VARCHAR(20) DEFAULT 'generated',
+			approval_notes TEXT DEFAULT '',
+			total_sends INT DEFAULT 0,
+			total_clicks INT DEFAULT 0,
+			total_opens INT DEFAULT 0,
+			total_conversions INT DEFAULT 0,
+			click_rate DECIMAL(5,4) DEFAULT 0,
+			open_rate DECIMAL(5,4) DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offer_creatives_offer", `CREATE INDEX IF NOT EXISTS idx_offer_creatives_offer ON mailing_offer_creatives(offer_id)`},
+
+		{"create_offer_suppressions", `CREATE TABLE IF NOT EXISTS mailing_offer_suppressions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			subscriber_id UUID NOT NULL,
+			email_hash VARCHAR(32) DEFAULT '',
+			reason VARCHAR(50) DEFAULT '',
+			source VARCHAR(50) DEFAULT '',
+			everflow_conversion_id VARCHAR(255) DEFAULT '',
+			suppressed_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_offer_suppressions_offer_sub", `CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_suppressions_offer_sub ON mailing_offer_suppressions(offer_id, subscriber_id)`},
+		{"idx_offer_suppressions_hash", `CREATE INDEX IF NOT EXISTS idx_offer_suppressions_hash ON mailing_offer_suppressions(offer_id, email_hash)`},
+
+		{"create_offer_deployments", `CREATE TABLE IF NOT EXISTS mailing_offer_deployments (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			campaign_id UUID,
+			creative_id UUID,
+			subject_line_id UUID,
+			from_name_id UUID,
+			audience_list_ids JSONB DEFAULT '[]',
+			deployed_at TIMESTAMPTZ DEFAULT NOW(),
+			total_sent INT DEFAULT 0,
+			total_conversions INT DEFAULT 0,
+			revenue DECIMAL(12,2) DEFAULT 0
+		)`},
+		{"idx_offer_deployments_offer", `CREATE INDEX IF NOT EXISTS idx_offer_deployments_offer ON mailing_offer_deployments(offer_id)`},
+
+		{"create_optizmo_scrub_jobs", `CREATE TABLE IF NOT EXISTS mailing_optizmo_scrub_jobs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			audience_file_path TEXT DEFAULT '',
+			audience_count INT DEFAULT 0,
+			result_file_path TEXT DEFAULT '',
+			suppressed_count INT DEFAULT 0,
+			status VARCHAR(20) DEFAULT 'pending',
+			error_message TEXT DEFAULT '',
+			requested_at TIMESTAMPTZ DEFAULT NOW(),
+			started_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ
+		)`},
+		{"idx_optizmo_scrub_jobs_offer", `CREATE INDEX IF NOT EXISTS idx_optizmo_scrub_jobs_offer ON mailing_optizmo_scrub_jobs(offer_id)`},
+
+		{"add_campaign_queue_offer_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS offer_id UUID`},
+		{"add_campaign_queue_creative_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS creative_id UUID`},
+		{"add_campaign_queue_subject_line_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
+		{"add_campaign_queue_from_name_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS from_name_id UUID`},
+
+		{"add_tracking_events_offer_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS offer_id UUID`},
+		{"add_tracking_events_creative_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS creative_id UUID`},
+		{"add_tracking_events_subject_line_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
+		{"add_tracking_events_from_name_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS from_name_id UUID`},
+
+		{"add_campaigns_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS offer_id UUID`},
 	}
 
 	var ok, fail int

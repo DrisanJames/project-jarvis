@@ -73,6 +73,61 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
 	r.Post("/offer-center/creatives", och.HandleSaveCreative)
 	r.Delete("/offer-center/creatives/{creativeId}", och.HandleDeleteCreative)
 	r.Get("/offer-center/performance", och.HandleGetOfferPerformance)
+
+	// --- Phase 1B: Offer Lifecycle CRUD ---
+
+	// Verticals
+	r.Get("/offer-center/verticals", och.HandleListVerticals)
+	r.Post("/offer-center/verticals", och.HandleCreateVertical)
+	r.Put("/offer-center/verticals/{id}", och.HandleUpdateVertical)
+	r.Delete("/offer-center/verticals/{id}", och.HandleDeleteVertical)
+
+	// Offer tree (registered before /offers/{id} so chi doesn't match "tree" as {id})
+	r.Get("/offer-center/offers/tree", och.HandleGetOfferTree)
+
+	// Offers CRUD
+	r.Get("/offer-center/offers", och.HandleListOffers)
+	r.Post("/offer-center/offers", och.HandleCreateOffer)
+	r.Get("/offer-center/offers/{id}", och.HandleGetOffer)
+	r.Put("/offer-center/offers/{id}", och.HandleUpdateOffer)
+	r.Delete("/offer-center/offers/{id}", och.HandleDeleteOffer)
+
+	// Subject Lines
+	r.Get("/offer-center/offers/{id}/subjects", och.HandleListSubjectLines)
+	r.Post("/offer-center/offers/{id}/subjects", och.HandleCreateSubjectLine)
+	r.Put("/offer-center/offers/{id}/subjects/{sid}", och.HandleUpdateSubjectLine)
+	r.Delete("/offer-center/offers/{id}/subjects/{sid}", och.HandleDeleteSubjectLine)
+
+	// From Names
+	r.Get("/offer-center/offers/{id}/from-names", och.HandleListFromNames)
+	r.Post("/offer-center/offers/{id}/from-names", och.HandleCreateFromName)
+	r.Put("/offer-center/offers/{id}/from-names/{fid}", och.HandleUpdateFromName)
+	r.Delete("/offer-center/offers/{id}/from-names/{fid}", och.HandleDeleteFromName)
+
+	// Offer Creatives (mailing_offer_creatives, not mailing_creative_library)
+	r.Get("/offer-center/offers/{id}/creatives", och.HandleListOfferCreatives)
+	r.Post("/offer-center/offers/{id}/creatives", och.HandleCreateOfferCreative)
+	r.Put("/offer-center/offers/{id}/creatives/{cid}", och.HandleUpdateOfferCreative)
+	r.Delete("/offer-center/offers/{id}/creatives/{cid}", och.HandleDeleteOfferCreative)
+
+	// Deployments
+	r.Get("/offer-center/offers/{id}/deployments", och.HandleListOfferDeployments)
+
+	// --- Landing Page Generation (Phase 5A) ---
+	lpHandlers := &LandingPageHandlers{db: db}
+	r.Post("/offer-center/offers/{id}/landing-page/generate", lpHandlers.HandleGenerateLandingPage)
+
+	// --- Optizmo List Scrub Management ---
+	optizmo := &OptizmoHandlers{db: db}
+	r.Post("/offer-center/offers/{id}/optizmo/request-scrub", optizmo.HandleRequestScrub)
+	r.Post("/offer-center/offers/{id}/optizmo/import-result", optizmo.HandleImportScrubResult)
+	r.Get("/offer-center/offers/{id}/optizmo/status", optizmo.HandleGetScrubStatus)
+
+	// Per-offer performance
+	r.Get("/offer-center/offers/{id}/performance", och.HandleGetOfferDetailPerformance)
+	r.Get("/offer-center/offers/{id}/creatives/{cid}/performance", och.HandleGetCreativePerformance)
+	r.Get("/offer-center/offers/{id}/subjects/{sid}/performance", och.HandleGetSubjectPerformance)
+	r.Get("/offer-center/offers/{id}/from-names/{fid}/performance", och.HandleGetFromNamePerformance)
 }
 
 // ---------------------------------------------------------------------------

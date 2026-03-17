@@ -108,6 +108,19 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		log.Printf("TRACK OPEN DB ERROR: %v", err)
 	}
 
+	// Stamp offer attribution from campaign queue
+	if campaignID != uuid.Nil && subscriberID != uuid.Nil {
+		svc.db.ExecContext(ctx, `
+			UPDATE mailing_tracking_events te
+			SET offer_id = q.offer_id, creative_id = q.creative_id,
+				subject_line_id = q.subject_line_id, from_name_id = q.from_name_id
+			FROM mailing_campaign_queue q
+			WHERE q.campaign_id = $1 AND q.subscriber_id = $2
+			  AND te.campaign_id = $1 AND te.subscriber_id = $2
+			  AND te.offer_id IS NULL AND q.offer_id IS NOT NULL
+		`, campaignID, subscriberID)
+	}
+
 	if isMachineOpen {
 		log.Printf("TRACK OPEN MPP: campaign=%s subscriber=%s delta=%v", campaignID, subscriberID, time.Since(refAt))
 	}
@@ -183,6 +196,19 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 		FROM mailing_campaigns c WHERE c.id = $3
 	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
 		log.Printf("TRACK CLICK DB ERROR: %v", err)
+	}
+
+	// Stamp offer attribution from campaign queue
+	if campaignID != uuid.Nil && subscriberID != uuid.Nil {
+		svc.db.ExecContext(ctx, `
+			UPDATE mailing_tracking_events te
+			SET offer_id = q.offer_id, creative_id = q.creative_id,
+				subject_line_id = q.subject_line_id, from_name_id = q.from_name_id
+			FROM mailing_campaign_queue q
+			WHERE q.campaign_id = $1 AND q.subscriber_id = $2
+			  AND te.campaign_id = $1 AND te.subscriber_id = $2
+			  AND te.offer_id IS NULL AND q.offer_id IS NOT NULL
+		`, campaignID, subscriberID)
 	}
 
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1 WHERE id = $1`, campaignID)

@@ -91,6 +91,7 @@ type ScheduledCampaign struct {
 	ListIDs                []string // from list_ids JSONB (PMTA wizard multi-list path)
 	SuppressionListIDs     []string // from suppression_list_ids JSONB
 	ISPQuotasJSON          string   // raw JSONB from isp_quotas column
+	OfferID                uuid.UUID
 }
 
 // NewCampaignScheduler creates a new campaign scheduler
@@ -377,7 +378,8 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			max_recipients, COALESCE(ai_send_time_optimization, false),
 			COALESCE(list_ids::text, '[]'),
 			COALESCE(suppression_list_ids::text, '[]'),
-			COALESCE(esp_quotas::text, '{}')
+			COALESCE(esp_quotas::text, '{}'),
+			COALESCE(offer_id, '00000000-0000-0000-0000-000000000000')
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
 		  %s
@@ -407,6 +409,7 @@ func (cs *CampaignScheduler) processReadyCampaigns() {
 			&c.MaxRecipients, &c.AISendTimeOptimization,
 			&listIDsJSON, &suppListIDsJSON,
 			&c.ISPQuotasJSON,
+			&c.OfferID,
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] Error scanning campaign: %v", err)
@@ -978,6 +981,7 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 		"subject", "html_content", "plain_content",
 		"status", "priority", "scheduled_at", "created_at",
 		"recipient_isp",
+		"offer_id", "creative_id", "subject_line_id", "from_name_id",
 	))
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare COPY: %w", err)
@@ -1016,6 +1020,40 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 	}
 	ispCounts := make(map[string]int)
 
+	// Load approved offer creatives, subject lines, and from names for round-robin
+	var offerCreatives []uuid.UUID
+	var offerSubjects []uuid.UUID
+	var offerFromNames []uuid.UUID
+	if campaign.OfferID != uuid.Nil {
+		rows, _ := cs.db.QueryContext(ctx, `SELECT id FROM mailing_offer_creatives WHERE offer_id=$1 AND status='approved'`, campaign.OfferID)
+		if rows != nil {
+			for rows.Next() {
+				var id uuid.UUID
+				rows.Scan(&id)
+				offerCreatives = append(offerCreatives, id)
+			}
+			rows.Close()
+		}
+		rows, _ = cs.db.QueryContext(ctx, `SELECT id FROM mailing_offer_subject_lines WHERE offer_id=$1 AND status='approved'`, campaign.OfferID)
+		if rows != nil {
+			for rows.Next() {
+				var id uuid.UUID
+				rows.Scan(&id)
+				offerSubjects = append(offerSubjects, id)
+			}
+			rows.Close()
+		}
+		rows, _ = cs.db.QueryContext(ctx, `SELECT id FROM mailing_offer_from_names WHERE offer_id=$1 AND status='approved'`, campaign.OfferID)
+		if rows != nil {
+			for rows.Next() {
+				var id uuid.UUID
+				rows.Scan(&id)
+				offerFromNames = append(offerFromNames, id)
+			}
+			rows.Close()
+		}
+	}
+
 	queued := 0
 	variantIdx := 0
 	seenEmails := make(map[string]bool, len(subscribers))
@@ -1026,6 +1064,17 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			continue
 		}
 		seenEmails[emailKey] = true
+
+		// Offer-level suppression — skip subscribers who already converted
+		if campaign.OfferID != uuid.Nil {
+			var offerSuppressed bool
+			cs.db.QueryRowContext(ctx,
+				`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
+				campaign.OfferID, sub.ID).Scan(&offerSuppressed)
+			if offerSuppressed {
+				continue
+			}
+		}
 
 		recipientISP := ClassifySubscriberISP(sub.Email)
 
@@ -1075,12 +1124,24 @@ func (cs *CampaignScheduler) enqueueSubscribers(ctx context.Context, campaign Sc
 			variantIdx++
 		}
 
+		var creativeID, subjectID, fromNameID uuid.UUID
+		if len(offerCreatives) > 0 {
+			creativeID = offerCreatives[i%len(offerCreatives)]
+		}
+		if len(offerSubjects) > 0 {
+			subjectID = offerSubjects[i%len(offerSubjects)]
+		}
+		if len(offerFromNames) > 0 {
+			fromNameID = offerFromNames[i%len(offerFromNames)]
+		}
+
 		effectivePriority := priority + sub.Priority
 		_, err := stmt.Exec(
 			uuid.New(), campaign.ID, sub.ID,
 			subject, htmlContent, textContent,
 			"queued", effectivePriority, scheduledAt, now,
 			recipientISP,
+			nilUUID(campaign.OfferID), nilUUID(creativeID), nilUUID(subjectID), nilUUID(fromNameID),
 		)
 		if err != nil {
 			log.Printf("[CampaignScheduler] COPY row error for subscriber %s: %v", sub.ID, err)
@@ -1449,6 +1510,13 @@ func CanPauseCampaign(status string) (bool, string) {
 // newContext creates a new context for the scheduler (exposed for testing)
 func (cs *CampaignScheduler) newContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
+}
+
+func nilUUID(id uuid.UUID) interface{} {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
 }
 
 // espQuotaConfig is the parsed form of the esp_quotas JSONB column,
