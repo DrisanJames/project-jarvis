@@ -125,9 +125,8 @@ interface OfferPerformance {
 }
 
 interface OptizmoStatus {
-  offer_id: string;
-  status: string;
-  last_scrubbed_at: string | null;
+  optizmo_status: string | null;
+  optizmo_last_scrubbed_at: string | null;
   jobs: OptizmoJob[];
 }
 
@@ -136,13 +135,20 @@ interface OptizmoJob {
   status: string;
   requested_at: string;
   completed_at: string | null;
-  records_processed: number;
-  records_suppressed: number;
+  audience_count: number;
+  suppressed_count: number;
 }
 
 type DetailTab = 'overview' | 'subjects' | 'from-names' | 'creatives' | 'landing-page' | 'compliance' | 'performance' | 'deploy';
 
 const API = '/api/mailing/offer-center';
+
+const WEB_PROPERTIES = [
+  { key: 'discountblog', label: 'DiscountBlog (discountblog.com)' },
+  { key: 'quizfiesta', label: 'QuizFiesta (quizfiesta.com)' },
+  { key: 'historythinking', label: 'History Thinking (historythinking.com)' },
+  { key: 'myownhealth', label: 'My Own Health (myownhealth.net)' },
+];
 
 const detailTabs: { id: DetailTab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -609,7 +615,17 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
         {field('Offer Name', 'name')}
         {field('Brand Name', 'brand_name')}
         {field('Description', 'description')}
-        {field('Web Property', 'web_property')}
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 3 }}>Web Property</label>
+          <select
+            value={form.web_property ?? ''}
+            onChange={e => setForm(prev => ({ ...prev, web_property: e.target.value }))}
+            style={inputStyle}
+          >
+            <option value="">Select web property…</option>
+            {WEB_PROPERTIES.map(wp => <option key={wp.key} value={wp.key}>{wp.label}</option>)}
+          </select>
+        </div>
         {field('Everflow Offer ID', 'everflow_offer_id')}
         {field('Everflow Creative ID', 'everflow_creative_id')}
         {field('Tracking Link Template', 'tracking_link_template')}
@@ -659,17 +675,24 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
   const [newSubject, setNewSubject] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [bulkAdding, setBulkAdding] = useState(false);
 
   const addSubject = async () => {
     if (!newSubject.trim()) return;
+    const lines = newSubject.split('\n').map(l => l.trim()).filter(Boolean);
+    setBulkAdding(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/subjects`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject_line: newSubject.trim(), status: 'draft' }),
-      });
-      if (res.ok) { setNewSubject(''); onRefresh(); }
+      for (const line of lines) {
+        await fetch(`${API}/offers/${offerId}/subjects`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject_line: line, status: 'draft' }),
+        });
+      }
+      setNewSubject('');
+      onRefresh();
     } catch { /* swallow */ }
+    setBulkAdding(false);
   };
 
   const updateSubject = async (sid: string, payload: { subject_line?: string; status?: string }) => {
@@ -692,15 +715,17 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        <input
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'flex-start' }}>
+        <textarea
           value={newSubject}
           onChange={e => setNewSubject(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addSubject()}
-          placeholder="New subject line…"
-          style={{ ...inputStyle, flex: 1 }}
+          placeholder="Paste subject lines (one per line) or type a single one…"
+          rows={newSubject.includes('\n') ? 4 : 1}
+          style={{ ...inputStyle, flex: 1, resize: 'vertical', fontFamily: 'inherit' }}
         />
-        <button style={btnPrimary} onClick={addSubject}>Add Subject</button>
+        <button style={btnPrimary} onClick={addSubject} disabled={bulkAdding}>
+          {bulkAdding ? 'Adding…' : newSubject.includes('\n') ? `Add ${newSubject.split('\n').filter(l => l.trim()).length} Subjects` : 'Add Subject'}
+        </button>
       </div>
 
       <table className="offer-mgmt-table">
@@ -764,17 +789,24 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
   const [newFromName, setNewFromName] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [bulkAdding, setBulkAdding] = useState(false);
 
   const addFromName = async () => {
     if (!newFromName.trim()) return;
+    const lines = newFromName.split('\n').map(l => l.trim()).filter(Boolean);
+    setBulkAdding(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/from-names`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from_name: newFromName.trim(), status: 'draft' }),
-      });
-      if (res.ok) { setNewFromName(''); onRefresh(); }
+      for (const line of lines) {
+        await fetch(`${API}/offers/${offerId}/from-names`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from_name: line, status: 'draft' }),
+        });
+      }
+      setNewFromName('');
+      onRefresh();
     } catch { /* swallow */ }
+    setBulkAdding(false);
   };
 
   const updateFromName = async (fid: string, payload: { from_name?: string; status?: string }) => {
@@ -797,15 +829,17 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        <input
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'flex-start' }}>
+        <textarea
           value={newFromName}
           onChange={e => setNewFromName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addFromName()}
-          placeholder="New from name…"
-          style={{ ...inputStyle, flex: 1 }}
+          placeholder="Paste from names (one per line) or type a single one…"
+          rows={newFromName.includes('\n') ? 4 : 1}
+          style={{ ...inputStyle, flex: 1, resize: 'vertical', fontFamily: 'inherit' }}
         />
-        <button style={btnPrimary} onClick={addFromName}>Add From Name</button>
+        <button style={btnPrimary} onClick={addFromName} disabled={bulkAdding}>
+          {bulkAdding ? 'Adding…' : newFromName.includes('\n') ? `Add ${newFromName.split('\n').filter(l => l.trim()).length} Names` : 'Add From Name'}
+        </button>
       </div>
 
       <table className="offer-mgmt-table">
@@ -1042,7 +1076,7 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
     setRequesting(false);
   };
 
-  const scrubStatus = optizmoStatus?.status || 'not_scrubbed';
+  const scrubStatus = optizmoStatus?.optizmo_status || 'not_scrubbed';
 
   return (
     <div>
@@ -1053,10 +1087,10 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Scrub Status</div>
           <span className={statusBadgeClass(scrubStatus)} style={{ fontSize: 13 }}>{scrubStatus.replace(/_/g, ' ')}</span>
         </div>
-        {optizmoStatus?.last_scrubbed_at && (
+        {optizmoStatus?.optizmo_last_scrubbed_at && (
           <div style={{ marginLeft: 24 }}>
             <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Last Scrubbed</div>
-            <div style={{ fontSize: 13, color: '#e0e6f0' }}>{new Date(optizmoStatus.last_scrubbed_at).toLocaleDateString()}</div>
+            <div style={{ fontSize: 13, color: '#e0e6f0' }}>{new Date(optizmoStatus.optizmo_last_scrubbed_at).toLocaleDateString()}</div>
           </div>
         )}
         <div style={{ marginLeft: 'auto' }}>
@@ -1101,8 +1135,8 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                   <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
                   <td>{new Date(j.requested_at).toLocaleDateString()}</td>
                   <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
-                  <td>{j.records_processed.toLocaleString()}</td>
-                  <td>{j.records_suppressed.toLocaleString()}</td>
+                  <td>{(j.audience_count ?? 0).toLocaleString()}</td>
+                  <td>{(j.suppressed_count ?? 0).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -1187,7 +1221,7 @@ const DeployTab: React.FC<{
   const approvedSubjects = subjects.filter(s => s.status === 'approved');
   const approvedFromNames = fromNames.filter(f => f.status === 'approved');
   const approvedCreatives = creatives.filter(c => c.status === 'approved');
-  const isCompliant = optizmoStatus?.status === 'scrubbed';
+  const isCompliant = optizmoStatus?.optizmo_status === 'scrubbed';
 
   const canDeploy = selectedCreative && selectedSubject && selectedFromName && isCompliant;
 
@@ -1234,7 +1268,7 @@ const DeployTab: React.FC<{
             {isCompliant ? '✓ Compliance gate passed' : '✗ Compliance gate failed — scrub required'}
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
-            Optizmo status: {optizmoStatus?.status?.replace(/_/g, ' ') || 'unknown'}
+            Optizmo status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
           </div>
         </div>
 
@@ -1322,7 +1356,17 @@ const NewOfferModal: React.FC<{
             </select>
           </div>
           {field('Brand Name *', 'brand_name')}
-          {field('Web Property', 'web_property', { placeholder: 'e.g. discountblog.com' })}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 3 }}>Web Property</label>
+            <select
+              value={form.web_property}
+              onChange={e => setForm(prev => ({ ...prev, web_property: e.target.value }))}
+              style={inputStyle}
+            >
+              <option value="">Select web property…</option>
+              {WEB_PROPERTIES.map(wp => <option key={wp.key} value={wp.key}>{wp.label}</option>)}
+            </select>
+          </div>
           {field('Everflow Offer ID', 'everflow_offer_id')}
           {field('Everflow Creative ID', 'everflow_creative_id')}
           {field('Tracking Link Template', 'tracking_link_template')}
