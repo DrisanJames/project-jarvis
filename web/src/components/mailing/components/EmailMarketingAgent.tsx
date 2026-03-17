@@ -7,7 +7,7 @@ import {
   faEdit, faSave, faArrowLeft, faBolt, faClock,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.5';
+const PAGE_VERSION = '1.6';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -339,7 +339,8 @@ const ActiveSendsPanel: React.FC = () => {
                   { label: 'Delivered', value: c.delivered_count, color: '#22c55e' },
                   { label: 'Opens', value: c.open_count, color: '#3b82f6' },
                   { label: 'Clicks', value: c.click_count, color: '#8b5cf6' },
-                  { label: 'Bounced', value: c.bounce_count, color: c.bounce_count > 0 ? '#f59e0b' : '#475569' },
+                  { label: 'Hard Bounce', value: c.hard_bounce_count, color: c.hard_bounce_count > 0 ? '#ef4444' : '#475569' },
+                  { label: 'Soft Bounce', value: c.soft_bounce_count, color: c.soft_bounce_count > 0 ? '#f59e0b' : '#475569' },
                   { label: 'Complaints', value: c.complaint_count, color: c.complaint_count > 0 ? '#ef4444' : '#475569' },
                 ].map(m => (
                   <span key={m.label} style={{ fontSize: 10, color: '#64748b' }}>
