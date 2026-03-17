@@ -19,7 +19,7 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "1.3"
+	VersionAnalyticsOverview       = "2.0"
 	VersionISPPerformance          = "1.1"
 	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "1.0"
@@ -257,45 +257,24 @@ func (s *AdvancedMailingService) HandleCampaignByDevice(w http.ResponseWriter, r
 func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start, end := parseAnalyticsRange(r)
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
-	// Aggregate from mailing_campaigns (only columns guaranteed to exist)
-	var totalSent, totalOpens, totalClicks, totalBounces, totalComplaints, totalDelivered int
+	m, err := ComputeMetrics(ctx, s.db, MetricsFilter{
+		StartDate:  start,
+		EndDate:    end,
+		ExcludeMPP: excludeMPP,
+	})
+	if err != nil {
+		log.Printf("[analytics-overview] ComputeMetrics error: %v", err)
+	}
+
 	var totalRevenue float64
 	s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(delivered_count),0),
-		       COALESCE(SUM(open_count),0), COALESCE(SUM(click_count),0),
-		       COALESCE(SUM(bounce_count),0),
-		       COALESCE(SUM(complaint_count),0), COALESCE(SUM(revenue),0)
+		SELECT COALESCE(SUM(revenue),0)
 		FROM mailing_campaigns
 		WHERE COALESCE(started_at, created_at) >= $1
 		  AND COALESCE(started_at, created_at) <= $2
-	`, start, end).Scan(&totalSent, &totalDelivered, &totalOpens, &totalClicks,
-		&totalBounces, &totalComplaints, &totalRevenue)
-
-	// Hard/soft bounce split from tracking events (reliable regardless of schema)
-	var totalHardBounce, totalSoftBounce int
-	s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END), 0)
-		FROM mailing_tracking_events
-		WHERE event_at >= $1 AND event_at <= $2
-	`, start, end).Scan(&totalHardBounce, &totalSoftBounce)
-
-	// If events don't have split data but campaigns do, fall back to campaign totals
-	if totalHardBounce+totalSoftBounce == 0 && totalBounces > 0 {
-		totalHardBounce = totalBounces
-	}
-
-	openRate, clickRate, bounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0
-	hardBounceRate, softBounceRate := 0.0, 0.0
-	if totalSent > 0 {
-		openRate = float64(totalOpens) / float64(totalSent) * 100
-		clickRate = float64(totalClicks) / float64(totalSent) * 100
-		bounceRate = float64(totalBounces) / float64(totalSent) * 100
-		hardBounceRate = float64(totalHardBounce) / float64(totalSent) * 100
-		softBounceRate = float64(totalSoftBounce) / float64(totalSent) * 100
-		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
-	}
+	`, start, end).Scan(&totalRevenue)
 
 	gran := trendGranularity(start, end)
 	truncFn := "DATE(event_at)"
@@ -307,6 +286,11 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	case "hour":
 		truncFn = "DATE_TRUNC('hour', event_at)"
 		dateFmt = "2006-01-02T15:04"
+	}
+
+	mppTrendClause := ""
+	if excludeMPP {
+		mppTrendClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
 	}
 
 	trendArgs := []interface{}{start, end}
@@ -321,7 +305,7 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		SELECT %s as bucket,
 		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
 		       SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
 		       SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
@@ -331,7 +315,7 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		FROM mailing_tracking_events
 		WHERE %s
 		GROUP BY %s ORDER BY bucket
-	`, truncFn, trendWhere, truncFn), trendArgs...)
+	`, truncFn, mppTrendClause, trendWhere, truncFn), trendArgs...)
 	defer rows.Close()
 
 	var trend []map[string]interface{}
@@ -349,7 +333,6 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		trend = []map[string]interface{}{}
 	}
 
-	// Available sending domains for chart filter
 	var domains []string
 	domRows, _ := s.db.QueryContext(ctx, `
 		SELECT DISTINCT COALESCE(NULLIF(LOWER(SPLIT_PART(from_email, '@', 2)), ''), 'unknown')
@@ -370,19 +353,20 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version": VersionAnalyticsOverview,
+		"exclude_mpp": excludeMPP,
 		"range":       map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
 		"granularity": gran,
 		"totals": map[string]interface{}{
-			"sent": totalSent, "delivered": totalDelivered,
-			"opens": totalOpens, "clicks": totalClicks,
-			"bounces": totalBounces, "hard_bounces": totalHardBounce, "soft_bounces": totalSoftBounce,
-			"complaints": totalComplaints, "revenue": totalRevenue,
+			"sent": m.Sent, "delivered": m.Delivered,
+			"opens": m.Opens, "clicks": m.Clicks,
+			"bounces": m.HardBounces + m.SoftBounces, "hard_bounces": m.HardBounces, "soft_bounces": m.SoftBounces,
+			"complaints": m.Complaints, "revenue": totalRevenue,
 		},
 		"rates": map[string]interface{}{
-			"open_rate": math.Round(openRate*100) / 100, "click_rate": math.Round(clickRate*100) / 100,
-			"bounce_rate": math.Round(bounceRate*100) / 100,
-			"hard_bounce_rate": math.Round(hardBounceRate*100) / 100, "soft_bounce_rate": math.Round(softBounceRate*100) / 100,
-			"complaint_rate": math.Round(complaintRate*1000) / 1000,
+			"open_rate": m.OpenRate, "click_rate": m.ClickRate,
+			"bounce_rate":      metricsRound2(float64(m.HardBounces+m.SoftBounces) / math.Max(float64(m.Sent), 1) * 100),
+			"hard_bounce_rate": m.HardBounceRate, "soft_bounce_rate": m.SoftBounceRate,
+			"complaint_rate": m.ComplaintRate, "delivery_rate": m.DeliveryRate,
 		},
 		"daily_trend":     trend,
 		"sending_domains": domains,
@@ -395,70 +379,79 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start, end := parseAnalyticsRange(r)
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, status, sent_count, open_count, click_count, bounce_count,
-			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE bounce_count END,
-			   CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
-			   complaint_count, revenue,
-			   created_at, COALESCE(started_at, created_at), COALESCE(completed_at, created_at)
-		FROM mailing_campaigns
-		WHERE sent_count > 0
-		  AND COALESCE(started_at, created_at) >= $1
-		  AND COALESCE(started_at, created_at) <= $2
-		ORDER BY COALESCE(started_at, created_at) DESC
+	mppClause := ""
+	if excludeMPP {
+		mppClause = "AND COALESCE(t.is_machine_open, FALSE) = FALSE"
+	}
+
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT c.id, c.name, c.status, c.revenue,
+			c.created_at, COALESCE(c.started_at, c.created_at), COALESCE(c.completed_at, c.created_at),
+			COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END), 0)
+		FROM mailing_campaigns c
+		JOIN mailing_tracking_events t ON t.campaign_id = c.id
+		WHERE COALESCE(c.started_at, c.created_at) >= $1
+		  AND COALESCE(c.started_at, c.created_at) <= $2
+		GROUP BY c.id, c.name, c.status, c.revenue, c.created_at, c.started_at, c.completed_at
+		HAVING SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) > 0
+		ORDER BY COALESCE(c.started_at, c.created_at) DESC
 		LIMIT 50
-	`, start, end)
+	`, mppClause, hardBounceSQL, hardBounceSQL), start, end)
 	if err != nil {
+		log.Printf("[campaign-comparison] query error: %v", err)
 		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
-	
+
 	var campaigns []map[string]interface{}
 	for rows.Next() {
 		var id uuid.UUID
 		var name, status string
-		var sent, opens, clicks, bounces, hardBounces, softBounces, complaints int
 		var revenue float64
 		var created, started, completed time.Time
-		
-		rows.Scan(&id, &name, &status, &sent, &opens, &clicks, &bounces, &hardBounces, &softBounces, &complaints, &revenue, &created, &started, &completed)
-		
-		openRate, clickRate, hardBounceRate, softBounceRate := 0.0, 0.0, 0.0, 0.0
-		if sent > 0 {
-			openRate = float64(opens) / float64(sent) * 100
-			clickRate = float64(clicks) / float64(sent) * 100
-			hardBounceRate = float64(hardBounces) / float64(sent) * 100
-			softBounceRate = float64(softBounces) / float64(sent) * 100
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
+
+		rows.Scan(&id, &name, &status, &revenue, &created, &started, &completed,
+			&sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints)
+
+		openRate, clickRate := 0.0, 0.0
+		if delivered > 0 {
+			openRate = metricsRound2(float64(opens) / float64(delivered) * 100)
+			clickRate = metricsRound2(float64(clicks) / float64(delivered) * 100)
 		}
-		
+		hardBounceRate, softBounceRate := 0.0, 0.0
+		if sent > 0 {
+			hardBounceRate = metricsRound2(float64(hardBounces) / float64(sent) * 100)
+			softBounceRate = metricsRound2(float64(softBounces) / float64(sent) * 100)
+		}
+
 		campaigns = append(campaigns, map[string]interface{}{
-			"id":                id.String(),
-			"name":              name,
-			"status":            status,
-			"sent":              sent,
-			"opens":             opens,
-			"clicks":            clicks,
-			"bounces":           bounces,
-			"hard_bounces":      hardBounces,
-			"soft_bounces":      softBounces,
-			"complaints":        complaints,
-			"revenue":           revenue,
-			"open_rate":         math.Round(openRate*100) / 100,
-			"click_rate":        math.Round(clickRate*100) / 100,
-			"hard_bounce_rate":  math.Round(hardBounceRate*100) / 100,
-			"soft_bounce_rate":  math.Round(softBounceRate*100) / 100,
-			"created_at":        created,
-			"started_at":        started,
-			"completed_at":      completed,
+			"id": id.String(), "name": name, "status": status,
+			"sent": sent, "delivered": delivered, "opens": opens, "clicks": clicks,
+			"bounces": hardBounces + softBounces, "hard_bounces": hardBounces, "soft_bounces": softBounces,
+			"complaints": complaints, "revenue": revenue,
+			"open_rate": openRate, "click_rate": clickRate,
+			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate,
+			"created_at": created, "started_at": started, "completed_at": completed,
 		})
 	}
-	if campaigns == nil { campaigns = []map[string]interface{}{} }
-	
+	if campaigns == nil {
+		campaigns = []map[string]interface{}{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version": VersionCampaignComparison,
+		"exclude_mpp": excludeMPP,
 		"campaigns":   campaigns,
 		"total":       len(campaigns),
 	})
@@ -467,11 +460,15 @@ func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter,
 // HandleTopPerformers returns top performing campaigns
 func (s *AdvancedMailingService) HandleTopPerformers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	metric := r.URL.Query().Get("metric") // open_rate, click_rate, revenue
-	if metric == "" { metric = "open_rate" }
-	limit := r.URL.Query().Get("limit")
-	if limit == "" { limit = "10" }
-	
+	metric := r.URL.Query().Get("metric")
+	if metric == "" {
+		metric = "open_rate"
+	}
+	limitInt := 10
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 50 {
+		limitInt = v
+	}
+
 	var orderBy string
 	switch metric {
 	case "open_rate":
@@ -485,16 +482,16 @@ func (s *AdvancedMailingService) HandleTopPerformers(w http.ResponseWriter, r *h
 	default:
 		orderBy = "open_count DESC"
 	}
-	
+
 	query := fmt.Sprintf(`
 		SELECT id, name, sent_count, open_count, click_count, revenue
 		FROM mailing_campaigns
 		WHERE sent_count > 0
 		ORDER BY %s
-		LIMIT %s
-	`, orderBy, limit)
-	
-	rows, _ := s.db.QueryContext(ctx, query)
+		LIMIT $1
+	`, orderBy)
+
+	rows, _ := s.db.QueryContext(ctx, query, limitInt)
 	defer rows.Close()
 	
 	var topCampaigns []map[string]interface{}
@@ -673,23 +670,15 @@ func (s *AdvancedMailingService) HandleEngagementReport(w http.ResponseWriter, r
 func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start, end := parseAnalyticsRange(r)
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
-	var totalSent, totalDelivered, totalBounced, totalComplaints int
-	s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(delivered_count),0),
-		       COALESCE(SUM(bounce_count),0), COALESCE(SUM(complaint_count),0)
-		FROM mailing_campaigns
-		WHERE COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2
-	`, start, end).Scan(&totalSent, &totalDelivered, &totalBounced, &totalComplaints)
-	if totalDelivered == 0 && totalSent > totalBounced {
-		totalDelivered = totalSent - totalBounced
-	}
-
-	deliveryRate, bounceRate, complaintRate := 0.0, 0.0, 0.0
-	if totalSent > 0 {
-		deliveryRate = float64(totalDelivered) / float64(totalSent) * 100
-		bounceRate = float64(totalBounced) / float64(totalSent) * 100
-		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
+	m, err := ComputeMetrics(ctx, s.db, MetricsFilter{
+		StartDate:  start,
+		EndDate:    end,
+		ExcludeMPP: excludeMPP,
+	})
+	if err != nil {
+		log.Printf("[deliverability-report] ComputeMetrics error: %v", err)
 	}
 
 	rows, _ := s.db.QueryContext(ctx, `
@@ -718,18 +707,28 @@ func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWrite
 	var suppressionCount int
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions").Scan(&suppressionCount)
 
+	totalBounced := m.HardBounces + m.SoftBounces
+	bounceRate := 0.0
+	if m.Sent > 0 {
+		bounceRate = metricsRound2(float64(totalBounced) / float64(m.Sent) * 100)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version": VersionDeliverabilityReport,
+		"exclude_mpp": excludeMPP,
 		"range":       map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
 		"totals": map[string]int{
-			"sent": totalSent, "delivered": totalDelivered,
-			"bounced": totalBounced, "complaints": totalComplaints,
+			"sent": m.Sent, "delivered": m.Delivered,
+			"bounced": totalBounced, "hard_bounces": m.HardBounces, "soft_bounces": m.SoftBounces,
+			"complaints": m.Complaints,
 		},
 		"rates": map[string]float64{
-			"delivery_rate":  math.Round(deliveryRate*100) / 100,
-			"bounce_rate":    math.Round(bounceRate*100) / 100,
-			"complaint_rate": math.Round(complaintRate*1000) / 1000,
+			"delivery_rate":    m.DeliveryRate,
+			"bounce_rate":      bounceRate,
+			"hard_bounce_rate": m.HardBounceRate,
+			"soft_bounce_rate": m.SoftBounceRate,
+			"complaint_rate":   m.ComplaintRate,
 		},
 		"bounce_breakdown":    bounceBreakdown,
 		"global_suppressions": suppressionCount,
@@ -1694,6 +1693,7 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 	ctx := r.Context()
 	start, end := parseAnalyticsRange(r)
 	ispParam := r.URL.Query().Get("isp")
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
 	domSubquery := `SELECT t.*, LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2))) as dom
 		FROM mailing_tracking_events t
@@ -1705,6 +1705,11 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		if !ok {
 			http.Error(w, `{"error":"unknown isp"}`, http.StatusBadRequest)
 			return
+		}
+
+		mppClause := ""
+		if excludeMPP {
+			mppClause = "AND COALESCE(d.is_machine_open, FALSE) = FALSE"
 		}
 
 		gran := trendGranularity(start, end)
@@ -1722,14 +1727,14 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		q := fmt.Sprintf(`SELECT %s as bucket,
 			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			SUM(CASE WHEN d.event_type = 'opened' %s THEN 1 ELSE 0 END) as opens,
 			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
 			SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce') THEN 1 ELSE 0 END) as hard_bounces,
 			SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
 			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM (%s) d
 		WHERE d.dom IN %s
-		GROUP BY bucket ORDER BY bucket`, truncFn, domSubquery, domains)
+		GROUP BY bucket ORDER BY bucket`, truncFn, mppClause, domSubquery, domains)
 
 		rows, err := s.db.QueryContext(ctx, q, start, end)
 		if err != nil {
@@ -1761,13 +1766,16 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 			trend = []map[string]interface{}{}
 		}
 
-		openRate, clickRate, hardBounceRate, softBounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0, 0.0
+		openRate, clickRate := 0.0, 0.0
+		if tDel > 0 {
+			openRate = metricsRound2(float64(tOpens) / float64(tDel) * 100)
+			clickRate = metricsRound2(float64(tClicks) / float64(tDel) * 100)
+		}
+		hardBounceRate, softBounceRate, complaintRate := 0.0, 0.0, 0.0
 		if tSent > 0 {
-			openRate = math.Round(float64(tOpens)/float64(tSent)*10000) / 100
-			clickRate = math.Round(float64(tClicks)/float64(tSent)*10000) / 100
-			hardBounceRate = math.Round(float64(tHardBounces)/float64(tSent)*10000) / 100
-			softBounceRate = math.Round(float64(tSoftBounces)/float64(tSent)*10000) / 100
-			complaintRate = math.Round(float64(tComplaints)/float64(tSent)*10000) / 100
+			hardBounceRate = metricsRound2(float64(tHardBounces) / float64(tSent) * 100)
+			softBounceRate = metricsRound2(float64(tSoftBounces) / float64(tSent) * 100)
+			complaintRate = metricsRound3(float64(tComplaints) / float64(tSent) * 100)
 		}
 
 		label := ispLabels[ispParam]
@@ -1778,6 +1786,7 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"api_version": VersionISPPerformance,
+			"exclude_mpp": excludeMPP,
 			"isp":         ispParam,
 			"label":       label,
 			"granularity":  gran,
@@ -1792,51 +1801,28 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 		return
 	}
 
-	q := fmt.Sprintf(`SELECT %s as isp,
-		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN d.subscriber_id END) as opens,
-		COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN d.subscriber_id END) as clicks,
-		SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce') THEN 1 ELSE 0 END) as hard_bounces,
-		SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
-		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
-	FROM (%s) d
-	GROUP BY isp ORDER BY sent DESC`, ispDomainCaseSQL, domSubquery)
-
-	rows, err := s.db.QueryContext(ctx, q, start, end)
+	ispResults, err := ComputeMetricsByISP(ctx, s.db, MetricsFilter{
+		StartDate:  start,
+		EndDate:    end,
+		ExcludeMPP: excludeMPP,
+	})
 	if err != nil {
-		log.Printf("[ISPPerformance summary] query error: %v", err)
+		log.Printf("[ISPPerformance summary] ComputeMetricsByISP error: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
 		return
 	}
-	defer rows.Close()
 
 	var isps []map[string]interface{}
-	for rows.Next() {
-		var isp string
-		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
-		rows.Scan(&isp, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints)
-
-		openRate, clickRate, hardBounceRate, softBounceRate, complaintRate := 0.0, 0.0, 0.0, 0.0, 0.0
-		if sent > 0 {
-			openRate = math.Round(float64(opens)/float64(sent)*10000) / 100
-			clickRate = math.Round(float64(clicks)/float64(sent)*10000) / 100
-			hardBounceRate = math.Round(float64(hardBounces)/float64(sent)*10000) / 100
-			softBounceRate = math.Round(float64(softBounces)/float64(sent)*10000) / 100
-			complaintRate = math.Round(float64(complaints)/float64(sent)*10000) / 100
-		}
-
-		label := ispLabels[isp]
-		if label == "" {
-			label = isp
-		}
-
+	for _, r := range ispResults {
 		isps = append(isps, map[string]interface{}{
-			"isp": isp, "label": label,
-			"sent": sent, "delivered": delivered, "opens": opens,
-			"clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
-			"open_rate": openRate, "click_rate": clickRate,
-			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate, "complaint_rate": complaintRate,
+			"isp": r.ISP, "label": r.DisplayName,
+			"sent": r.Metrics.Sent, "delivered": r.Metrics.Delivered,
+			"opens": r.Metrics.Opens, "clicks": r.Metrics.Clicks,
+			"hard_bounces": r.Metrics.HardBounces, "soft_bounces": r.Metrics.SoftBounces,
+			"complaints": r.Metrics.Complaints,
+			"open_rate": r.Metrics.OpenRate, "click_rate": r.Metrics.ClickRate,
+			"hard_bounce_rate": r.Metrics.HardBounceRate, "soft_bounce_rate": r.Metrics.SoftBounceRate,
+			"complaint_rate": r.Metrics.ComplaintRate,
 		})
 	}
 	if isps == nil {
@@ -1846,6 +1832,7 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version": VersionISPPerformance,
+		"exclude_mpp": excludeMPP,
 		"isps":        isps,
 	})
 }
