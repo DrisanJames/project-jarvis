@@ -315,8 +315,8 @@ func buildDomainScopedClause(c segCondition, argNum int, domain string) (string,
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
 			  AND e.event_at >= NOW() - INTERVAL '%s days'
-			  AND e.sending_domain = $%d
-		)`, argNum, c.Value, argNum+1)
+			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)
+		)`, argNum, c.Value, argNum+1, argNum+1)
 		return clause, []interface{}{eventType, domain}, argNum + 2
 	case "more_than_days_ago":
 		clause := fmt.Sprintf(`NOT EXISTS (
@@ -324,8 +324,8 @@ func buildDomainScopedClause(c segCondition, argNum int, domain string) (string,
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
 			  AND e.event_at >= NOW() - INTERVAL '%s days'
-			  AND e.sending_domain = $%d
-		)`, argNum, c.Value, argNum+1)
+			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)
+		)`, argNum, c.Value, argNum+1, argNum+1)
 		return clause, []interface{}{eventType, domain}, argNum + 2
 	}
 	return "", nil, argNum
@@ -347,7 +347,7 @@ func buildEventClause(evType, operator, value string, argNum int, domainFilter s
 	addDomain := func() {
 		if domainFilter != "" {
 			args = append(args, domainFilter)
-			domainClause = fmt.Sprintf(" AND e.sending_domain = $%d", argNum+1)
+			domainClause = fmt.Sprintf(" AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)", argNum+1, argNum+1)
 		}
 	}
 
