@@ -9,37 +9,75 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 )
 
-// LandingPageHandlers manages AI-generated landing pages for offers.
 type LandingPageHandlers struct {
 	db *sql.DB
 }
 
 // ---------------------------------------------------------------------------
-// Types
+// Structured content types — these map to the Next.js ReviewArticle model
 // ---------------------------------------------------------------------------
 
-// AILandingPageResult is the structured response from OpenAI for a listicle.
-type AILandingPageResult struct {
-	Title              string              `json:"title"`
-	MetaDescription    string              `json:"meta_description"`
-	HTMLContent        string              `json:"html_content"`
-	ComparisonProducts []ComparisonProduct `json:"comparison_products"`
-	Category           string              `json:"category"`
+type ReviewSection struct {
+	Heading  string `json:"heading"`
+	Content  string `json:"content"`
+	ImageURL string `json:"imageUrl,omitempty"`
+	ImageAlt string `json:"imageAlt,omitempty"`
 }
 
-// ComparisonProduct represents one product in the comparison listicle.
-type ComparisonProduct struct {
-	Name       string  `json:"name"`
-	Rank       int     `json:"rank"`
-	Rating     float64 `json:"rating"`
-	CTAUrl     string  `json:"cta_url"`
-	IsPromoted bool    `json:"is_promoted"`
+type FeatureRating struct {
+	Name        string  `json:"name"`
+	Rating      float64 `json:"rating"`
+	Description string  `json:"description"`
+}
+
+type ReviewProduct struct {
+	Name       string   `json:"name"`
+	Rank       int      `json:"rank"`
+	Rating     float64  `json:"rating"`
+	ImageURL   string   `json:"imageUrl"`
+	Badge      string   `json:"badge"`
+	QuickTake  string   `json:"quickTake"`
+	KeyFeature string   `json:"keyFeature"`
+	Pros       []string `json:"pros"`
+	Cons       []string `json:"cons"`
+	CTAUrl     string   `json:"ctaUrl"`
+	CTAText    string   `json:"ctaText"`
+	IsPromoted bool     `json:"isPromoted"`
+}
+
+type ReviewVerdict struct {
+	Summary        string `json:"summary"`
+	Recommendation string `json:"recommendation"`
+}
+
+type ReviewFAQ struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+type StructuredReviewContent struct {
+	Title           string          `json:"title"`
+	Subtitle        string          `json:"subtitle"`
+	MetaDescription string          `json:"meta_description"`
+	HeroImageURL    string          `json:"hero_image_url"`
+	Category        string          `json:"category"`
+	OverallRating   float64         `json:"overall_rating"`
+	QuickVerdict    string          `json:"quick_verdict"`
+	Sections        []ReviewSection `json:"sections"`
+	Features        []FeatureRating `json:"features"`
+	Pros            []string        `json:"pros"`
+	Cons            []string        `json:"cons"`
+	Products        []ReviewProduct `json:"products"`
+	Verdict         ReviewVerdict   `json:"verdict"`
+	FAQ             []ReviewFAQ     `json:"faq"`
+	AuthorBio       string          `json:"author_bio"`
 }
 
 // ---------------------------------------------------------------------------
@@ -83,15 +121,16 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 	}
 
 	slug := generateSlug(name)
+	productImageURL := extractProductImage(htmlCreative)
 
-	aiResult, err := generateLandingPageContent(name, description, htmlCreative, trackingLink, kit)
+	review, err := generateStructuredReview(name, description, htmlCreative, trackingLink, productImageURL, kit)
 	if err != nil {
 		log.Printf("[LandingPage] AI generation error for offer %s: %v", offerID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to generate landing page: "+err.Error())
 		return
 	}
 
-	liveURL, err := postToNextJS(kit, slug, aiResult)
+	liveURL, err := postStructuredReview(kit, slug, review)
 	if err != nil {
 		log.Printf("[LandingPage] POST to Next.js failed for offer %s: %v", offerID, err)
 		respondError(w, http.StatusBadGateway, fmt.Sprintf("AI content generated but failed to publish to %s: %v", kit.SiteDomain, err))
@@ -101,11 +140,12 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 		liveURL = fmt.Sprintf("https://%s/reviews/%s", kit.SiteDomain, slug)
 	}
 
+	reviewJSON, _ := json.Marshal(review)
 	_, err = h.db.ExecContext(ctx, `
 		UPDATE mailing_offers
 		SET landing_page_slug=$1, landing_page_url=$2, landing_page_html=$3, updated_at=NOW()
 		WHERE id=$4
-	`, slug, liveURL, aiResult.HTMLContent, offerID)
+	`, slug, liveURL, string(reviewJSON), offerID)
 	if err != nil {
 		log.Printf("[LandingPage] db error updating offer %s: %v", offerID, err)
 	}
@@ -113,15 +153,13 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"slug":         slug,
 		"url":          liveURL,
-		"title":        aiResult.Title,
+		"title":        review.Title,
 		"web_property": webProperty,
 	})
 }
 
 // ---------------------------------------------------------------------------
 // HandleRepublishLandingPage — POST /offer-center/offers/{id}/landing-page/republish
-// Re-POSTs the already-stored landing page HTML to the Next.js site without
-// calling OpenAI again.
 // ---------------------------------------------------------------------------
 
 func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, r *http.Request) {
@@ -133,11 +171,11 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 
 	ctx := r.Context()
 
-	var name, webProperty, slug, htmlContent string
+	var name, webProperty, slug, storedJSON string
 	err := h.db.QueryRowContext(ctx, `
 		SELECT name, COALESCE(web_property,''), COALESCE(landing_page_slug,''), COALESCE(landing_page_html,'')
 		FROM mailing_offers WHERE id=$1
-	`, offerID).Scan(&name, &webProperty, &slug, &htmlContent)
+	`, offerID).Scan(&name, &webProperty, &slug, &storedJSON)
 	if err == sql.ErrNoRows {
 		respondError(w, http.StatusNotFound, "offer not found")
 		return
@@ -148,7 +186,7 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 		return
 	}
 
-	if htmlContent == "" {
+	if storedJSON == "" {
 		respondError(w, http.StatusBadRequest, "no landing page content stored — generate one first")
 		return
 	}
@@ -166,14 +204,17 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 		return
 	}
 
-	aiResult := &AILandingPageResult{
-		Title:           name,
-		MetaDescription: fmt.Sprintf("Review of %s", name),
-		HTMLContent:     htmlContent,
-		Category:        "Reviews",
+	// Try to parse as structured review first; fall back to legacy HTML
+	var review StructuredReviewContent
+	if err := json.Unmarshal([]byte(storedJSON), &review); err != nil || review.Title == "" {
+		review = StructuredReviewContent{
+			Title:           name,
+			MetaDescription: fmt.Sprintf("Review of %s", name),
+			Category:        "Reviews",
+		}
 	}
 
-	liveURL, err := postToNextJS(kit, slug, aiResult)
+	liveURL, err := postStructuredReview(kit, slug, &review)
 	if err != nil {
 		log.Printf("[LandingPage] republish POST to Next.js failed for offer %s: %v", offerID, err)
 		respondError(w, http.StatusBadGateway, fmt.Sprintf("Failed to publish to %s: %v", kit.SiteDomain, err))
@@ -199,52 +240,28 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 }
 
 // ---------------------------------------------------------------------------
-// AI content generation (OpenAI)
+// AI Structured Review Generation
 // ---------------------------------------------------------------------------
 
-func generateLandingPageContent(offerName, description, htmlCreative, trackingLink string, kit BrandKit) (*AILandingPageResult, error) {
+func generateStructuredReview(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) (*StructuredReviewContent, error) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
 
-	prompt := fmt.Sprintf(`You are a content writer for %s (%s). %s
-
-Generate a product review/comparison listicle article. The article should compare the promoted product to 2-3 real alternatives in the same category.
-
-Promoted Product: %s
-Description: %s
-
-Requirements:
-1. Title: SEO-friendly, includes the year (2026)
-2. Article body: HTML formatted listicle. The promoted product must be ranked #1 with "Best Overall" badge, 4.8-5.0 rating, and the strongest persuasive copy.
-3. Include 2-3 competing products ranked #2, #3 etc. with slightly lower ratings (4.2-4.6).
-4. Each product section should have: name, rating (stars), pros/cons list, brief review (2-3 sentences), and a CTA button.
-5. The CTA button for the promoted product links to: %s (this will have tracking parameters appended)
-6. CTA buttons for competitors should link to "#" with text "Check Price"
-7. Write in the brand voice: %s
-8. HTML should use clean semantic markup, no inline styles except for rating stars and badges.
-9. Add data-everflow="true" attribute to the promoted product's CTA link.
-
-Return a JSON object with these fields:
-- title: string (article title)
-- meta_description: string (155 chars max)
-- html_content: string (the article body HTML — not a full page, just the article content)
-- comparison_products: array of { name, rank, rating, cta_url, is_promoted }
-- category: string (what category this belongs to, e.g. "Finance", "Health", "Shopping")
-
-IMPORTANT: Return ONLY the JSON object, no markdown code fences.`,
-		kit.SiteName, kit.Tagline, kit.Voice,
-		offerName, description, trackingLink, kit.Voice)
+	prompt := buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL, kit)
 
 	reqBody := map[string]interface{}{
 		"model": "gpt-4o",
 		"messages": []map[string]string{
-			{"role": "system", "content": "You are a professional content writer. Output valid JSON only."},
+			{"role": "system", "content": `You are an expert product reviewer and comparison writer. You write thorough, persuasive, evidence-based reviews that help real consumers make purchasing decisions. Your reviews read like professional publications (Wirecutter, CNET, Tom's Guide).
+
+You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation, just the JSON object.`},
 			{"role": "user", "content": prompt},
 		},
-		"temperature": 0.7,
-		"max_tokens":  4000,
+		"temperature":    0.7,
+		"max_tokens":     8000,
+		"response_format": map[string]string{"type": "json_object"},
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -259,7 +276,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown code fences.`,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 180 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI request failed: %v", err)
@@ -292,32 +309,155 @@ IMPORTANT: Return ONLY the JSON object, no markdown code fences.`,
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
 
-	var result AILandingPageResult
+	var result StructuredReviewContent
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response: %v\nraw content: %.500s", err, content)
+		return nil, fmt.Errorf("failed to parse AI response: %v\nraw content: %.800s", err, content)
 	}
 
 	return &result, nil
 }
 
+func buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) string {
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, `You are writing a comprehensive product review article for %s (%s — "%s").
+
+BRAND VOICE: %s
+
+PRODUCT TO REVIEW: %s
+`, kit.SiteName, kit.SiteDomain, kit.Tagline, kit.Voice, offerName)
+
+	if description != "" {
+		fmt.Fprintf(&sb, "PRODUCT DESCRIPTION: %s\n", description)
+	}
+
+	if htmlCreative != "" {
+		plainText := stripHTMLTags(htmlCreative)
+		if len(plainText) > 1500 {
+			plainText = plainText[:1500]
+		}
+		fmt.Fprintf(&sb, "\nPRODUCT CREATIVE COPY (extracted from email creative):\n%s\n", plainText)
+	}
+
+	if productImageURL != "" {
+		fmt.Fprintf(&sb, "\nPRODUCT IMAGE URL (use this for the promoted product): %s\n", productImageURL)
+	}
+
+	if trackingLink != "" {
+		fmt.Fprintf(&sb, "\nTRACKING LINK (use as the CTA URL for the promoted product): %s\n", trackingLink)
+	}
+
+	sb.WriteString(`
+TASK: Generate a comprehensive, persuasive product comparison review. The article must read like a professional publication — the kind that would convince a skeptical consumer to buy. NOT a generic listicle.
+
+CONTENT REQUIREMENTS:
+1. TITLE: Engaging, SEO-optimized headline with current year. Not generic — should hook the reader.
+2. SUBTITLE: A compelling one-liner that promises value to the reader.
+3. QUICK VERDICT: 2-3 sentences summarizing your recommendation. Lead with the conclusion.
+4. IN-DEPTH SECTIONS (4-6 sections): Each should be a substantial paragraph (150+ words). Cover:
+   - What the product actually does and who it's for
+   - Real-world usage scenarios and value proposition
+   - How it compares to alternatives in specific ways (price, features, reliability)
+   - Any notable experience details, pricing tiers, or special deals
+   - Why it stands out (or doesn't)
+   Content should use <p> tags for paragraphs and can include <strong>, <em>, <ul>/<li> for emphasis.
+5. FEATURE RATINGS: 5-7 specific features rated 1-5 with one-sentence explanations.
+6. PROS/CONS: 5-6 specific, substantive pros. 3-4 honest cons (builds credibility).
+7. COMPARISON PRODUCTS: The promoted product ranked #1 plus 2-3 real competing alternatives.
+   - Each product needs: specific pros (4-5), specific cons (3-4), a detailed quickTake (2-3 sentences), a keyFeature highlight
+   - Promoted product: rating 4.7-4.9, badge "Best Overall"
+   - Competitors: real products/services in the same category, ratings 3.8-4.4
+   - Competitor CTA URLs should be "#"
+8. VERDICT: A compelling final summary + clear recommendation statement.
+9. FAQ: 5-6 realistic questions a consumer would ask, with helpful 2-3 sentence answers.
+10. AUTHOR BIO: A brief (1-2 sentence) bio for the author in the brand voice.
+
+QUALITY STANDARDS:
+- Write as if you've personally tested the product. Use confident, specific language.
+- NO generic filler like "in today's market" or "in conclusion". Get to the point.
+- Include specific numbers, features, and comparisons where possible.
+- The review should make someone want to click the CTA. It's persuasive but not sleazy.
+- Competitors should be REAL products/services that exist in this category.
+
+`)
+
+	fmt.Fprintf(&sb, `RETURN THIS EXACT JSON STRUCTURE:
+{
+  "title": "string",
+  "subtitle": "string",
+  "meta_description": "string (max 155 chars)",
+  "hero_image_url": "%s",
+  "category": "string (e.g. Telecom, Finance, Health, Shopping)",
+  "overall_rating": 4.8,
+  "quick_verdict": "string (2-3 sentences)",
+  "sections": [
+    {
+      "heading": "string",
+      "content": "string (HTML paragraphs, 150+ words each)"
+    }
+  ],
+  "features": [
+    { "name": "string", "rating": 4.5, "description": "string" }
+  ],
+  "pros": ["string", "string"],
+  "cons": ["string", "string"],
+  "products": [
+    {
+      "name": "string",
+      "rank": 1,
+      "rating": 4.8,
+      "imageUrl": "%s",
+      "badge": "Best Overall",
+      "quickTake": "string (2-3 sentences)",
+      "keyFeature": "string",
+      "pros": ["string"],
+      "cons": ["string"],
+      "ctaUrl": "%s",
+      "ctaText": "Get Best Price →",
+      "isPromoted": true
+    }
+  ],
+  "verdict": {
+    "summary": "string (2-3 sentences)",
+    "recommendation": "string (clear recommendation)"
+  },
+  "faq": [
+    { "question": "string", "answer": "string" }
+  ],
+  "author_bio": "string"
+}`, productImageURL, productImageURL, trackingLink)
+
+	return sb.String()
+}
+
 // ---------------------------------------------------------------------------
-// POST to Next.js site API
+// POST structured review to Next.js
 // ---------------------------------------------------------------------------
 
-func postToNextJS(kit BrandKit, slug string, content *AILandingPageResult) (string, error) {
+func postStructuredReview(kit BrandKit, slug string, review *StructuredReviewContent) (string, error) {
 	if kit.SiteAPIURL == "" {
 		return "", fmt.Errorf("no API URL configured for %s", kit.Key)
 	}
 
 	payload := map[string]interface{}{
-		"slug":                slug,
-		"title":               content.Title,
-		"meta_description":    content.MetaDescription,
-		"html_content":        content.HTMLContent,
-		"comparison_products": content.ComparisonProducts,
-		"category":            content.Category,
-		"author_name":         getAuthorName(kit.Key),
-		"status":              "published",
+		"slug":             slug,
+		"title":            review.Title,
+		"subtitle":         review.Subtitle,
+		"meta_description": review.MetaDescription,
+		"hero_image_url":   review.HeroImageURL,
+		"category":         review.Category,
+		"overall_rating":   review.OverallRating,
+		"quick_verdict":    review.QuickVerdict,
+		"sections":         review.Sections,
+		"features":         review.Features,
+		"pros":             review.Pros,
+		"cons":             review.Cons,
+		"products":         review.Products,
+		"verdict":          review.Verdict,
+		"faq":              review.FAQ,
+		"author_name":      getAuthorName(kit.Key),
+		"author_bio":       review.AuthorBio,
+		"status":           "published",
 	}
 
 	jsonBody, err := json.Marshal(payload)
@@ -356,6 +496,29 @@ func postToNextJS(kit BrandKit, slug string, content *AILandingPageResult) (stri
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+func extractProductImage(htmlCreative string) string {
+	if htmlCreative == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`<img[^>]+src=["']([^"']+)["']`)
+	matches := re.FindAllStringSubmatch(htmlCreative, -1)
+	for _, match := range matches {
+		src := match[1]
+		if strings.Contains(src, "tracking") || strings.Contains(src, "pixel") || strings.Contains(src, "1x1") {
+			continue
+		}
+		return src
+	}
+	return ""
+}
+
+func stripHTMLTags(html string) string {
+	re := regexp.MustCompile(`<[^>]*>`)
+	text := re.ReplaceAllString(html, " ")
+	text = strings.Join(strings.Fields(text), " ")
+	return text
+}
 
 func getAuthorName(key string) string {
 	switch key {
