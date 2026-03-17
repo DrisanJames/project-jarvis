@@ -244,24 +244,24 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 // ---------------------------------------------------------------------------
 
 func generateStructuredReview(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) (*StructuredReviewContent, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY not set")
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
 	}
 
 	prompt := buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL, kit)
 
-	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
-		"messages": []map[string]string{
-			{"role": "system", "content": `You are an expert product reviewer and comparison writer. You write thorough, persuasive, evidence-based reviews that help real consumers make purchasing decisions. Your reviews read like professional publications (Wirecutter, CNET, Tom's Guide).
+	systemPrompt := `You are an expert product reviewer and comparison writer. You write thorough, persuasive, evidence-based reviews that help real consumers make purchasing decisions. Your reviews read like professional publications (Wirecutter, CNET, Tom's Guide).
 
-You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation, just the JSON object.`},
+You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation — output ONLY the raw JSON object.`
+
+	reqBody := map[string]interface{}{
+		"model":      "claude-3-opus-20240229",
+		"max_tokens": 8000,
+		"system":     systemPrompt,
+		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"temperature":    0.7,
-		"max_tokens":     8000,
-		"response_format": map[string]string{"type": "json_object"},
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -269,41 +269,41 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(jsonBody))
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI request failed: %v", err)
+		return nil, fmt.Errorf("Anthropic request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OpenAI returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("Anthropic returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var aiResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		return nil, fmt.Errorf("failed to decode OpenAI response: %v", err)
+		return nil, fmt.Errorf("failed to decode Anthropic response: %v", err)
 	}
 
-	if len(aiResp.Choices) == 0 {
+	if len(aiResp.Content) == 0 {
 		return nil, fmt.Errorf("no AI response received")
 	}
 
-	content := strings.TrimSpace(aiResp.Choices[0].Message.Content)
+	content := strings.TrimSpace(aiResp.Content[0].Text)
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
 	content = strings.TrimSuffix(content, "```")
