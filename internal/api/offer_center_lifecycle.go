@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // =============================================================================
@@ -399,6 +400,10 @@ func (och *OfferCenterHandlers) HandleCreateVertical(w http.ResponseWriter, r *h
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		id, defaultOrgID, req.Name, ocNilIfEmpty(req.Description), req.SortOrder, now, now)
 	if err != nil {
+		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
+			respondError(w, http.StatusConflict, fmt.Sprintf("Vertical '%s' already exists", req.Name))
+			return
+		}
 		log.Printf("ERROR: create vertical: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create vertical")
 		return
@@ -713,6 +718,10 @@ func (och *OfferCenterHandlers) HandleCreateOffer(w http.ResponseWriter, r *http
 		ocNilIfEmpty(req.OriginalHTMLCreative), req.Payout, ocNilIfEmpty(req.PayoutType),
 		req.Status, now, now)
 	if err != nil {
+		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
+			respondError(w, http.StatusConflict, "An offer with these details already exists")
+			return
+		}
 		log.Printf("ERROR: create offer: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create offer")
 		return
