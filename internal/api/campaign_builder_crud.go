@@ -466,7 +466,7 @@ func (cb *CampaignBuilder) HandleUpdateCampaign(w http.ResponseWriter, r *http.R
 		argIdx++
 	}
 	if len(input.ISPQuotas) > 0 {
-		updates = append(updates, fmt.Sprintf("isp_quotas = $%d", argIdx))
+		updates = append(updates, fmt.Sprintf("esp_quotas = $%d", argIdx))
 		args = append(args, string(input.ISPQuotas))
 		argIdx++
 	}
