@@ -1581,6 +1581,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
 
 		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
+		{"startup_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused' WHERE (hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%') AND status != 'cold'`},
 	}
 
 	var ok, fail int
