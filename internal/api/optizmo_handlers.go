@@ -21,6 +21,13 @@ import (
 
 const optizmoScrubDir = "/tmp/optizmo-scrubs"
 
+func optizmoWorkerURL() string {
+	if v := os.Getenv("OPTIZMO_WORKER_URL"); v != "" {
+		return v
+	}
+	return "http://optizmo-worker.ignite.local:8090"
+}
+
 // OptizmoHandlers provides HTTP handlers for Optizmo list scrub management.
 type OptizmoHandlers struct {
 	db *sql.DB
@@ -409,7 +416,7 @@ func fireSidecarTrigger(jobID, offerID, audienceFile, optizmoLink string) {
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post("http://optizmo-worker:8090/scrub", "application/json",
+	resp, err := client.Post(optizmoWorkerURL()+"/scrub", "application/json",
 		strings.NewReader(string(body)))
 	if err != nil {
 		log.Printf("[Optizmo] sidecar trigger failed (non-blocking): %v", err)
