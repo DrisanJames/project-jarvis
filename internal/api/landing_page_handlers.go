@@ -94,6 +94,8 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 	liveURL, err := postToNextJS(kit, slug, aiResult)
 	if err != nil {
 		log.Printf("[LandingPage] POST to Next.js failed for offer %s: %v", offerID, err)
+		respondError(w, http.StatusBadGateway, fmt.Sprintf("AI content generated but failed to publish to %s: %v", kit.SiteDomain, err))
+		return
 	}
 	if liveURL == "" {
 		liveURL = fmt.Sprintf("https://%s/reviews/%s", kit.SiteDomain, slug)
