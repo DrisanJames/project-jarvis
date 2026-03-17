@@ -116,6 +116,7 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
 	// --- Landing Page Generation (Phase 5A) ---
 	lpHandlers := &LandingPageHandlers{db: db}
 	r.Post("/offer-center/offers/{id}/landing-page/generate", lpHandlers.HandleGenerateLandingPage)
+	r.Post("/offer-center/offers/{id}/landing-page/republish", lpHandlers.HandleRepublishLandingPage)
 
 	// --- Optizmo List Scrub Management ---
 	optizmo := &OptizmoHandlers{db: db}

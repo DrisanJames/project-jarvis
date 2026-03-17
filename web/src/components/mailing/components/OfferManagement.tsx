@@ -1012,29 +1012,62 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
 
 const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ offer, onRefresh }) => {
   const [generating, setGenerating] = useState(false);
+  const [republishing, setRepublishing] = useState(false);
+  const [error, setError] = useState('');
 
   const generateLandingPage = async () => {
     setGenerating(true);
+    setError('');
     try {
       const res = await fetch(`${API}/offers/${offer.id}/landing-page/generate`, {
         method: 'POST', credentials: 'include',
       });
-      if (res.ok) onRefresh();
-    } catch { /* swallow */ }
+      if (res.ok) { onRefresh(); }
+      else { const data = await res.json().catch(() => ({})); setError(data.error || `Generation failed (${res.status})`); }
+    } catch { setError('Network error during generation'); }
     setGenerating(false);
+  };
+
+  const republishLandingPage = async () => {
+    setRepublishing(true);
+    setError('');
+    try {
+      const res = await fetch(`${API}/offers/${offer.id}/landing-page/republish`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (res.ok) { onRefresh(); }
+      else { const data = await res.json().catch(() => ({})); setError(data.error || `Republish failed (${res.status})`); }
+    } catch { setError('Network error during republish'); }
+    setRepublishing(false);
   };
 
   return (
     <div>
       <h3 style={sectionTitle}>Landing Page</h3>
 
+      {error && (
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
+
       {offer.landing_page_url ? (
         <div>
-          <div style={{ marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Live URL: </span>
-            <a href={offer.landing_page_url} target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', fontSize: 13 }}>
-              {offer.landing_page_url}
-            </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <div>
+              <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Live URL: </span>
+              <a href={offer.landing_page_url} target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', fontSize: 13 }}>
+                {offer.landing_page_url}
+              </a>
+            </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <button style={{ ...btnGhost, fontSize: 11 }} onClick={republishLandingPage} disabled={republishing}>
+                {republishing ? 'Publishing…' : 'Republish'}
+              </button>
+              <button style={{ ...btnPrimary, fontSize: 11 }} onClick={generateLandingPage} disabled={generating}>
+                {generating ? 'Generating…' : 'Regenerate'}
+              </button>
+            </div>
           </div>
           <div style={{ background: '#0a0f1a', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.06)' }}>
             <iframe
@@ -1049,9 +1082,16 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
         <div style={{ textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.35)' }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>🌐</div>
           <div style={{ marginBottom: 16 }}>No landing page generated yet</div>
-          <button style={{ ...btnPrimary, opacity: generating ? 0.6 : 1 }} onClick={generateLandingPage} disabled={generating}>
-            {generating ? 'Generating…' : 'Generate Landing Page'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+            {offer.landing_page_html && (
+              <button style={{ ...btnGhost, opacity: republishing ? 0.6 : 1 }} onClick={republishLandingPage} disabled={republishing}>
+                {republishing ? 'Publishing…' : 'Publish Stored Content'}
+              </button>
+            )}
+            <button style={{ ...btnPrimary, opacity: generating ? 0.6 : 1 }} onClick={generateLandingPage} disabled={generating}>
+              {generating ? 'Generating…' : 'Generate Landing Page'}
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -119,6 +119,86 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 }
 
 // ---------------------------------------------------------------------------
+// HandleRepublishLandingPage — POST /offer-center/offers/{id}/landing-page/republish
+// Re-POSTs the already-stored landing page HTML to the Next.js site without
+// calling OpenAI again.
+// ---------------------------------------------------------------------------
+
+func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id required")
+		return
+	}
+
+	ctx := r.Context()
+
+	var name, webProperty, slug, htmlContent string
+	err := h.db.QueryRowContext(ctx, `
+		SELECT name, COALESCE(web_property,''), COALESCE(landing_page_slug,''), COALESCE(landing_page_html,'')
+		FROM mailing_offers WHERE id=$1
+	`, offerID).Scan(&name, &webProperty, &slug, &htmlContent)
+	if err == sql.ErrNoRows {
+		respondError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+	if err != nil {
+		log.Printf("[LandingPage] db error loading offer %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "failed to load offer")
+		return
+	}
+
+	if htmlContent == "" {
+		respondError(w, http.StatusBadRequest, "no landing page content stored — generate one first")
+		return
+	}
+	if webProperty == "" {
+		respondError(w, http.StatusBadRequest, "offer must have a web property set")
+		return
+	}
+	if slug == "" {
+		slug = generateSlug(name)
+	}
+
+	kit, ok := GetBrandKit(webProperty)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "unknown web property: "+webProperty)
+		return
+	}
+
+	aiResult := &AILandingPageResult{
+		Title:           name,
+		MetaDescription: fmt.Sprintf("Review of %s", name),
+		HTMLContent:     htmlContent,
+		Category:        "Reviews",
+	}
+
+	liveURL, err := postToNextJS(kit, slug, aiResult)
+	if err != nil {
+		log.Printf("[LandingPage] republish POST to Next.js failed for offer %s: %v", offerID, err)
+		respondError(w, http.StatusBadGateway, fmt.Sprintf("Failed to publish to %s: %v", kit.SiteDomain, err))
+		return
+	}
+	if liveURL == "" {
+		liveURL = fmt.Sprintf("https://%s/reviews/%s", kit.SiteDomain, slug)
+	}
+
+	_, err = h.db.ExecContext(ctx, `
+		UPDATE mailing_offers SET landing_page_url=$1, updated_at=NOW() WHERE id=$2
+	`, liveURL, offerID)
+	if err != nil {
+		log.Printf("[LandingPage] db error updating offer %s: %v", offerID, err)
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"slug":         slug,
+		"url":          liveURL,
+		"web_property": webProperty,
+		"republished":  true,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // AI content generation (OpenAI)
 // ---------------------------------------------------------------------------
 
