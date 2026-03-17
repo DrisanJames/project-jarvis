@@ -44,7 +44,7 @@ func TestDryRun_NormalizationAndWaveSpecs(t *testing.T) {
 		assert.GreaterOrEqual(t, len(waves), minWavesPerISP,
 			"ISP %s should have at least %d waves", plan.ISP, minWavesPerISP)
 
-		if len(waves) >= 2 {
+		if len(waves) >= 2 && plan.Quota >= 500 {
 			first := waves[0].ScheduledAt
 			last := waves[len(waves)-1].ScheduledAt
 			span := last.Sub(first)

@@ -21,7 +21,7 @@ const (
 
 	// Mandatory throttle defaults. Every campaign MUST be spread across a
 	// delivery window — single-wave blasts are never acceptable.
-	defaultThrottleDuration = 4 * time.Hour
+	defaultThrottleDuration = 8 * time.Hour
 	defaultCadenceMinutes   = 15
 	minWavesPerISP          = 4
 )

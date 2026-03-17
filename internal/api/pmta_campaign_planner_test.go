@@ -158,8 +158,9 @@ func TestWaveSanityCheck_Valid(t *testing.T) {
 			{WaveNumber: 1, ScheduledAt: start},
 			{WaveNumber: 2, ScheduledAt: start.Add(1 * time.Hour)},
 			{WaveNumber: 3, ScheduledAt: start.Add(2 * time.Hour)},
-			{WaveNumber: 4, ScheduledAt: start.Add(3 * time.Hour)},
-			{WaveNumber: 5, ScheduledAt: start.Add(4 * time.Hour)},
+			{WaveNumber: 4, ScheduledAt: start.Add(4 * time.Hour)},
+			{WaveNumber: 5, ScheduledAt: start.Add(6 * time.Hour)},
+			{WaveNumber: 6, ScheduledAt: start.Add(8 * time.Hour)},
 		},
 	}
 	err := waveSanityCheck(plans, wavesByISP)
