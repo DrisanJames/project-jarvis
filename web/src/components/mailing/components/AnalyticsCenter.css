@@ -17,6 +17,11 @@
 .ac-range-selector button:hover { color: #c0c4d0; }
 .ac-range-selector button.active { background: rgba(0,200,255,0.12); color: #00e5ff; }
 
+.ac-mpp-toggle { background: rgba(100,116,139,0.12); color: #94a3b8; border: 1px solid rgba(100,116,139,0.2); padding: 8px 14px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; font-family: inherit; white-space: nowrap; }
+.ac-mpp-toggle:hover { background: rgba(100,116,139,0.2); color: #cbd5e1; }
+.ac-mpp-toggle.active { background: rgba(245,158,11,0.12); color: #fbbf24; border-color: rgba(245,158,11,0.25); }
+.ac-mpp-toggle.active:hover { background: rgba(245,158,11,0.18); }
+
 .ac-refresh-btn { background: rgba(0,200,255,0.12); color: #00b0ff; border: 1px solid rgba(0,200,255,0.15); padding: 8px 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; font-family: inherit; }
 .ac-refresh-btn:hover:not(:disabled) { background: rgba(0,200,255,0.18); }
 .ac-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }

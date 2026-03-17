@@ -134,12 +134,15 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 		return err
 	}
 
-	c.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = open_count + 1 WHERE id = $1`, campaignID)
-	c.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE id = $1`, subscriberID)
-	c.db.ExecContext(ctx, `UPDATE mailing_inbox_profiles SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE email = $1`, email)
-	c.updateEngagementScore(ctx, subscriberID)
-
-	log.Printf("PROCESSED OPEN: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
+	if !isMachineOpen {
+		c.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = open_count + 1 WHERE id = $1`, campaignID)
+		c.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE id = $1`, subscriberID)
+		c.db.ExecContext(ctx, `UPDATE mailing_inbox_profiles SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE email = $1`, email)
+		c.updateEngagementScore(ctx, subscriberID)
+		log.Printf("PROCESSED OPEN: campaign=%s subscriber=%s email=%s mpp=false", campaignID, subscriberID, email)
+	} else {
+		log.Printf("PROCESSED OPEN (MPP skipped aggregates): campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
+	}
 	return nil
 }
 

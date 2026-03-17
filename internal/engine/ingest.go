@@ -388,10 +388,11 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 }
 
 // isHardBounceCategory returns true for PMTA bounce categories that indicate
-// a permanent delivery failure. Aligns with routeToGlobalSuppression.
+// a permanent delivery failure. Aligns with routeToGlobalSuppression and ClassifyBounce.
 func isHardBounceCategory(cat string) bool {
 	switch cat {
-	case "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors":
+	case "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host",
+		"routing-errors":
 		return true
 	default:
 		return false

@@ -533,56 +533,60 @@ func (s *AdvancedMailingService) HandleTopPerformers(w http.ResponseWriter, r *h
 	})
 }
 
-// HandleListPerformance returns performance by list
+// HandleListPerformance returns performance by list sourced from tracking events.
 func (s *AdvancedMailingService) HandleListPerformance(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
-	rows, _ := s.db.QueryContext(ctx, `
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
+
+	mppClause := ""
+	if excludeMPP {
+		mppClause = "AND COALESCE(t.is_machine_open, FALSE) = FALSE"
+	}
+
+	rows, _ := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT l.id, l.name, l.subscriber_count,
-			   COUNT(DISTINCT c.id) as campaign_count,
-			   COALESCE(SUM(c.sent_count), 0) as total_sent,
-			   COALESCE(SUM(c.open_count), 0) as total_opens,
-			   COALESCE(SUM(c.click_count), 0) as total_clicks,
-			   COALESCE(SUM(c.revenue), 0) as total_revenue
+			COUNT(DISTINCT t.campaign_id) AS campaign_count,
+			COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0) AS total_sent,
+			COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0) AS total_delivered,
+			COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0) AS total_opens,
+			COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0) AS total_clicks,
+			COALESCE(SUM(DISTINCT c.revenue), 0) AS total_revenue
 		FROM mailing_lists l
 		LEFT JOIN mailing_campaigns c ON c.list_id = l.id
+		LEFT JOIN mailing_tracking_events t ON t.campaign_id = c.id
 		GROUP BY l.id, l.name, l.subscriber_count
 		ORDER BY total_sent DESC
-	`)
+	`, mppClause))
 	defer rows.Close()
-	
+
 	var lists []map[string]interface{}
 	for rows.Next() {
 		var id uuid.UUID
 		var name string
-		var subscriberCount, campaignCount, sent, opens, clicks int
+		var subscriberCount, campaignCount, sent, delivered, opens, clicks int
 		var revenue float64
-		rows.Scan(&id, &name, &subscriberCount, &campaignCount, &sent, &opens, &clicks, &revenue)
-		
-		openRate := 0.0
-		clickRate := 0.0
-		if sent > 0 {
-			openRate = float64(opens) / float64(sent) * 100
-			clickRate = float64(clicks) / float64(sent) * 100
+		rows.Scan(&id, &name, &subscriberCount, &campaignCount, &sent, &delivered, &opens, &clicks, &revenue)
+
+		openRate, clickRate := 0.0, 0.0
+		if delivered > 0 {
+			openRate = metricsRound2(float64(opens) / float64(delivered) * 100)
+			clickRate = metricsRound2(float64(clicks) / float64(delivered) * 100)
 		}
-		
+
 		lists = append(lists, map[string]interface{}{
-			"id":               id.String(),
-			"name":             name,
-			"subscriber_count": subscriberCount,
-			"campaign_count":   campaignCount,
-			"total_sent":       sent,
-			"total_opens":      opens,
-			"total_clicks":     clicks,
-			"total_revenue":    revenue,
-			"avg_open_rate":    math.Round(openRate*100) / 100,
-			"avg_click_rate":   math.Round(clickRate*100) / 100,
+			"id": id.String(), "name": name,
+			"subscriber_count": subscriberCount, "campaign_count": campaignCount,
+			"total_sent": sent, "total_delivered": delivered,
+			"total_opens": opens, "total_clicks": clicks, "total_revenue": revenue,
+			"avg_open_rate": openRate, "avg_click_rate": clickRate,
 		})
 	}
-	if lists == nil { lists = []map[string]interface{}{} }
-	
+	if lists == nil {
+		lists = []map[string]interface{}{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"api_version": VersionListPerformance, "lists": lists})
+	json.NewEncoder(w).Encode(map[string]interface{}{"api_version": VersionListPerformance, "exclude_mpp": excludeMPP, "lists": lists})
 }
 
 // HandleEngagementReport returns subscriber engagement summary
@@ -1183,26 +1187,22 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	daysInt := int(end.Sub(start).Hours() / 24)
 	if daysInt == 0 { daysInt = 1 }
 
-	// Campaign performance over time
-	var totalCampaigns, totalSent, totalOpens, totalClicks, totalBounces, totalComplaints int
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
+	m, metricsErr := ComputeMetrics(ctx, s.db, MetricsFilter{
+		StartDate:  start,
+		EndDate:    end,
+		ExcludeMPP: excludeMPP,
+	})
+	if metricsErr != nil {
+		log.Printf("[historical-metrics] ComputeMetrics error: %v", metricsErr)
+	}
+
+	var totalCampaigns int
 	var totalRevenue float64
 	s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(sent_count),0), COALESCE(SUM(open_count),0), COALESCE(SUM(click_count),0),
-			   COALESCE(SUM(bounce_count),0), COALESCE(SUM(complaint_count),0), COALESCE(SUM(revenue),0)
+		SELECT COUNT(*), COALESCE(SUM(revenue),0)
 		FROM mailing_campaigns WHERE created_at >= $1 AND created_at <= $2
-	`, start, end).Scan(&totalCampaigns, &totalSent, &totalOpens, &totalClicks, &totalBounces, &totalComplaints, &totalRevenue)
-	
-	// Calculate rates
-	openRate := 0.0
-	clickRate := 0.0
-	bounceRate := 0.0
-	complaintRate := 0.0
-	if totalSent > 0 {
-		openRate = float64(totalOpens) / float64(totalSent) * 100
-		clickRate = float64(totalClicks) / float64(totalSent) * 100
-		bounceRate = float64(totalBounces) / float64(totalSent) * 100
-		complaintRate = float64(totalComplaints) / float64(totalSent) * 100
-	}
+	`, start, end).Scan(&totalCampaigns, &totalRevenue)
 	
 	// Weekly trends
 	weeklyRows, weeklyErr := s.db.QueryContext(ctx, `
@@ -1397,18 +1397,21 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version": VersionHistoricalMetrics,
 		"period_days": daysInt,
+		"exclude_mpp": excludeMPP,
 		"summary": map[string]interface{}{
 			"total_campaigns":  totalCampaigns,
-			"total_sent":       totalSent,
-			"total_opens":      totalOpens,
-			"total_clicks":     totalClicks,
-			"total_bounces":    totalBounces,
-			"total_complaints": totalComplaints,
+			"total_sent":       m.Sent,
+			"total_delivered":  m.Delivered,
+			"total_opens":      m.Opens,
+			"total_clicks":     m.Clicks,
+			"total_bounces":    m.HardBounces + m.SoftBounces,
+			"total_complaints": m.Complaints,
 			"total_revenue":    totalRevenue,
-			"avg_open_rate":    math.Round(openRate*10) / 10,
-			"avg_click_rate":   math.Round(clickRate*10) / 10,
-			"avg_bounce_rate":  math.Round(bounceRate*100) / 100,
-			"complaint_rate":   math.Round(complaintRate*1000) / 1000,
+			"avg_open_rate":    m.OpenRate,
+			"avg_click_rate":   m.ClickRate,
+			"avg_bounce_rate":  m.HardBounceRate,
+			"complaint_rate":   m.ComplaintRate,
+			"delivery_rate":    m.DeliveryRate,
 		},
 		"weekly_trends":       weeklyTrends,
 		"top_campaigns":       topCampaigns,

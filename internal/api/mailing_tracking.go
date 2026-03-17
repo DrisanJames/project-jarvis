@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -446,9 +447,11 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 	campaignID := chi.URLParam(r, "campaignId")
 	eventType := r.URL.Query().Get("type") // opened, clicked, bounced, complained, unsubscribed
-	limit := r.URL.Query().Get("limit")
-	if limit == "" { limit = "100" }
-	
+	limitInt := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limitInt = v
+	}
+
 	query := `
 		SELECT e.id, COALESCE(s.email, ''), e.event_type,
 		       e.event_at, e.ip_address, e.user_agent, e.device_type, e.link_url
@@ -457,13 +460,15 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 		WHERE e.campaign_id = $1
 	`
 	args := []interface{}{campaignID}
-	
+
 	if eventType != "" {
 		query += " AND e.event_type = $2"
 		args = append(args, eventType)
 	}
-	
-	query += " ORDER BY e.event_at DESC LIMIT " + limit
+
+	nextArg := len(args) + 1
+	query += fmt.Sprintf(" ORDER BY e.event_at DESC LIMIT $%d", nextArg)
+	args = append(args, limitInt)
 	
 	rows, err := svc.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -489,30 +494,32 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 	}
 	if events == nil { events = []map[string]interface{}{} }
 	
-	// Get summary counts
-	var sentCount, openCount, clickCount, hardBounceCount, softBounceCount, complaintCount, unsubCount int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'sent'", campaignID).Scan(&sentCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'opened'", campaignID).Scan(&openCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'clicked'", campaignID).Scan(&clickCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type IN ('hard_bounce', 'bounced')", campaignID).Scan(&hardBounceCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'soft_bounce'", campaignID).Scan(&softBounceCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'complained'", campaignID).Scan(&complaintCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_tracking_events WHERE campaign_id = $1 AND event_type = 'unsubscribed'", campaignID).Scan(&unsubCount)
-	
+	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
+	summary, _ := ComputeMetrics(ctx, svc.db, MetricsFilter{
+		CampaignID: campaignID,
+		ExcludeMPP: excludeMPP,
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"campaign_id": campaignID,
-		"events": events,
+		"exclude_mpp": excludeMPP,
+		"events":      events,
 		"summary": map[string]interface{}{
-			"sent":         sentCount,
-			"opened":       openCount,
-			"clicked":      clickCount,
-			"hard_bounced": hardBounceCount,
-			"soft_bounced": softBounceCount,
-			"complained":   complaintCount,
-			"unsubscribed": unsubCount,
-			"open_rate":    calculateRate(openCount, sentCount),
-			"click_rate":   calculateRate(clickCount, sentCount),
+			"sent":            summary.Sent,
+			"delivered":       summary.Delivered,
+			"opened":          summary.Opens,
+			"clicked":         summary.Clicks,
+			"hard_bounced":    summary.HardBounces,
+			"soft_bounced":    summary.SoftBounces,
+			"complained":      summary.Complaints,
+			"unsubscribed":    summary.Unsubscribes,
+			"open_rate":       summary.OpenRate,
+			"click_rate":      summary.ClickRate,
+			"hard_bounce_rate": summary.HardBounceRate,
+			"soft_bounce_rate": summary.SoftBounceRate,
+			"complaint_rate":  summary.ComplaintRate,
+			"delivery_rate":   summary.DeliveryRate,
 		},
 	})
 }

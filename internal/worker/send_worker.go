@@ -971,7 +971,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	}
 
 	// Update campaign sent count and subscriber email count
-	p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'sent_count', 1)`, item.CampaignID)
+	p.db.ExecContext(ctx, `UPDATE mailing_campaigns SET sent_count = COALESCE(sent_count, 0) + 1, updated_at = NOW() WHERE id = $1`, item.CampaignID)
 	p.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_emails_received = COALESCE(total_emails_received, 0) + 1, updated_at = NOW() WHERE id = $1`, item.SubscriberID)
 
 	return nil
@@ -1113,11 +1113,11 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 		log.Printf("[SendWorkerPool] bounce tracking insert error: %v", dbErr)
 	}
 
-	p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'bounce_count', 1)`, item.CampaignID)
+	p.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, item.CampaignID)
 	if bounceType == "hard" {
-		p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'hard_bounce_count', 1)`, item.CampaignID)
+		p.db.ExecContext(ctx, `UPDATE mailing_campaigns SET hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1 WHERE id = $1`, item.CampaignID)
 	} else {
-		p.db.ExecContext(ctx, `SELECT update_campaign_stat($1, 'soft_bounce_count', 1)`, item.CampaignID)
+		p.db.ExecContext(ctx, `UPDATE mailing_campaigns SET soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1 WHERE id = $1`, item.CampaignID)
 	}
 
 	if bounceType == "hard" && p.globalSuppressor != nil {

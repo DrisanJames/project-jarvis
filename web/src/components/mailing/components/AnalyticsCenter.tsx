@@ -25,7 +25,7 @@ interface OverviewData {
     hard_bounces: number; soft_bounces: number;
     complaints: number; revenue: number;
   };
-  rates: { open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
+  rates: { open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number; delivery_rate?: number; unsubscribe_rate?: number; deferral_rate?: number; bounce_rate?: number };
   daily_trend: { date: string; sent: number; delivered: number; opens: number; clicks: number; hard_bounces: number; soft_bounces: number; complaints: number; deferred: number; unsubscribes: number }[];
   granularity: string;
   range: { start: string; end: string };
@@ -40,10 +40,11 @@ interface EngagementData {
 }
 
 interface DeliverabilityData {
-  totals: { sent: number; delivered: number; hard_bounced: number; soft_bounced: number; complaints: number };
-  rates: { delivery_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
+  totals: { sent: number; delivered: number; bounced?: number; hard_bounces?: number; soft_bounces?: number; hard_bounced?: number; soft_bounced?: number; complaints: number };
+  rates: { delivery_rate: number; bounce_rate?: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
   bounce_breakdown: { type: string; count: number }[];
   global_suppressions: number;
+  exclude_mpp?: boolean;
   api_version?: string;
 }
 
@@ -138,7 +139,7 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
-const PAGE_VERSION = '1.7';
+const PAGE_VERSION = '2.0';
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
@@ -254,6 +255,9 @@ export const AnalyticsCenter: React.FC = () => {
   const [ispGranularity, setIspGranularity] = useState<string>('day');
   const [ispTrendLoading, setIspTrendLoading] = useState(false);
 
+  // MPP filtering toggle
+  const [excludeMPP, setExcludeMPP] = useState(false);
+
   // Deployment verification: track API versions from responses
   const [apiVersions, setApiVersions] = useState<Record<string, string>>({});
 
@@ -264,7 +268,8 @@ export const AnalyticsCenter: React.FC = () => {
       const daysMap: Record<TimeRange, string> = {
         '1h': '1', '24h': '1', 'today': '1', '7': '7', '14': '14', '30': '30', '90': '90',
       };
-      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}`;
+      const mppParam = excludeMPP ? '&exclude_mpp=true' : '';
+      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}${mppParam}`;
       const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes, ispRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
         orgFetch(`/api/mailing/reports/engagement${qp}`, orgId),
@@ -316,7 +321,7 @@ export const AnalyticsCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [range, orgId, dateRange.startDate, dateRange.endDate, dateRange.type]);
+  }, [range, orgId, dateRange.startDate, dateRange.endDate, dateRange.type, excludeMPP]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -327,7 +332,8 @@ export const AnalyticsCenter: React.FC = () => {
       setIspTrendLoading(true);
       try {
         const { startDate, endDate } = computeDateRange(range);
-        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&isp=${selectedISP}`;
+        const mppP = excludeMPP ? '&exclude_mpp=true' : '';
+        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&isp=${selectedISP}${mppP}`;
         const res = await orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId);
         const data = await res.json();
         if (!cancelled) {
@@ -443,6 +449,14 @@ export const AnalyticsCenter: React.FC = () => {
               </button>
             ))}
           </div>
+          <button
+            className={`ac-mpp-toggle ${excludeMPP ? 'active' : ''}`}
+            onClick={() => setExcludeMPP(prev => !prev)}
+            title="Exclude Apple Mail Privacy Protection (MPP) opens from metrics"
+          >
+            <FontAwesomeIcon icon={faShieldAlt} />
+            {excludeMPP ? ' MPP Excluded' : ' Include MPP'}
+          </button>
           <button className="ac-refresh-btn ig-btn-glow ig-ripple" onClick={fetchAll} disabled={loading}>
             <FontAwesomeIcon icon={faSyncAlt} spin={loading} /> Refresh
           </button>
