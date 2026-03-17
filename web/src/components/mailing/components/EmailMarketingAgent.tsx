@@ -4,10 +4,10 @@ import {
   faRobot, faCalendarAlt, faCogs, faComments, faPaperPlane,
   faSpinner, faPlus, faTrash, faCheck, faTimes,
   faChartLine, faArrowUp, faSyncAlt, faHistory,
-  faEdit, faSave, faArrowLeft,
+  faEdit, faSave, faArrowLeft, faBolt, faClock,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.4';
+const PAGE_VERSION = '1.5';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -214,6 +214,144 @@ const AgentChat: React.FC = () => {
           </button>
         </form>
       </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACTIVE SENDS PANEL
+// ═══════════════════════════════════════════════════════════════════════════
+interface SendingCampaign {
+  id: string; name: string; status: string; from_email: string; subject: string;
+  sent_count: number; total_recipients: number; delivered_count: number;
+  open_count: number; click_count: number; bounce_count: number;
+  hard_bounce_count: number; soft_bounce_count: number; complaint_count: number;
+  started_at: string; scheduled_at: string; completed_at?: string;
+  profile_name: string; vendor: string;
+}
+
+const POLL_INTERVAL = 10_000;
+const MAX_SEND_HOURS = 8;
+
+const ActiveSendsPanel: React.FC = () => {
+  const [campaigns, setCampaigns] = useState<SendingCampaign[]>([]);
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+
+  const fetchSending = useCallback(async () => {
+    try {
+      const res = await fetch('/api/mailing/campaigns?status=sending');
+      if (!res.ok) return;
+      const json = await res.json();
+      setCampaigns(json.data ?? []);
+      setLastRefresh(new Date());
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => {
+    fetchSending();
+    const id = setInterval(fetchSending, POLL_INTERVAL);
+    return () => clearInterval(id);
+  }, [fetchSending]);
+
+  if (campaigns.length === 0) return null;
+
+  const now = Date.now();
+
+  return (
+    <div style={{ marginBottom: 20, padding: 16, background: 'linear-gradient(135deg, #0d1220 0%, #111827 100%)', borderRadius: 12, border: '1px solid rgba(99,102,241,0.15)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 8px rgba(34,197,94,0.6)', animation: 'pulse 2s infinite' }} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', letterSpacing: 0.5, textTransform: 'uppercase' as const }}>Live Sends</span>
+          <span style={{ fontSize: 11, color: '#64748b', fontWeight: 500 }}>({campaigns.length})</span>
+        </div>
+        <div style={{ fontSize: 10, color: '#475569', display: 'flex', alignItems: 'center', gap: 5 }}>
+          <FontAwesomeIcon icon={faSyncAlt} style={{ fontSize: 9 }} />
+          {lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {campaigns.map(c => {
+          const pct = c.total_recipients > 0 ? Math.min(100, (c.sent_count / c.total_recipients) * 100) : 0;
+          const startMs = c.started_at ? new Date(c.started_at).getTime() : now;
+          const elapsedMs = now - startMs;
+          const elapsedH = elapsedMs / 3_600_000;
+          const rate = elapsedH > 0.01 ? c.sent_count / elapsedH : 0;
+          const remaining = Math.max(0, c.total_recipients - c.sent_count);
+          const etaMs = rate > 0 ? now + (remaining / rate) * 3_600_000 : startMs + MAX_SEND_HOURS * 3_600_000;
+          const cappedEta = Math.min(etaMs, startMs + MAX_SEND_HOURS * 3_600_000);
+          const etaStr = new Date(cappedEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+          const elapsedStr = elapsedH < 1 ? `${Math.round(elapsedH * 60)}m` : `${elapsedH.toFixed(1)}h`;
+
+          return (
+            <div key={c.id} style={{ padding: 12, background: '#0a0e1a', borderRadius: 10, border: '1px solid rgba(99,102,241,0.08)' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                  <FontAwesomeIcon icon={faBolt} style={{ color: '#6366f1', fontSize: 11, flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{c.name}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 10 }}>
+                  <span style={{ fontSize: 10, color: '#94a3b8' }}>{c.from_email}</span>
+                  <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: 'rgba(99,102,241,0.1)', color: '#818cf8', fontWeight: 600 }}>{c.profile_name}</span>
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ flex: 1, height: 6, background: '#1e293b', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${pct}%`, height: '100%', borderRadius: 3,
+                    background: pct >= 100 ? '#22c55e' : 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+                    transition: 'width 0.6s ease',
+                  }} />
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc', flexShrink: 0, minWidth: 110, textAlign: 'right' as const }}>
+                  {c.sent_count.toLocaleString()} / {c.total_recipients.toLocaleString()}
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: pct >= 100 ? '#22c55e' : '#e2e8f0', flexShrink: 0, minWidth: 42, textAlign: 'right' as const }}>
+                  {pct.toFixed(0)}%
+                </span>
+              </div>
+
+              {/* Timing + rate */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <FontAwesomeIcon icon={faClock} style={{ fontSize: 9 }} />
+                  Started {new Date(c.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })}
+                </span>
+                <span style={{ fontSize: 10, color: '#64748b' }}>
+                  Elapsed: <strong style={{ color: '#94a3b8' }}>{elapsedStr}</strong>
+                </span>
+                <span style={{ fontSize: 10, color: '#64748b' }}>
+                  ETA: <strong style={{ color: '#94a3b8' }}>{etaStr}</strong>
+                </span>
+                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 'auto' }}>
+                  <FontAwesomeIcon icon={faArrowUp} style={{ fontSize: 8, marginRight: 3 }} />
+                  <strong style={{ color: '#a5b4fc' }}>{Math.round(rate).toLocaleString()}</strong> msgs/hr
+                </span>
+              </div>
+
+              {/* Metrics */}
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Delivered', value: c.delivered_count, color: '#22c55e' },
+                  { label: 'Opens', value: c.open_count, color: '#3b82f6' },
+                  { label: 'Clicks', value: c.click_count, color: '#8b5cf6' },
+                  { label: 'Bounced', value: c.bounce_count, color: c.bounce_count > 0 ? '#f59e0b' : '#475569' },
+                  { label: 'Complaints', value: c.complaint_count, color: c.complaint_count > 0 ? '#ef4444' : '#475569' },
+                ].map(m => (
+                  <span key={m.label} style={{ fontSize: 10, color: '#64748b' }}>
+                    {m.label}: <strong style={{ color: m.value > 0 ? m.color : '#475569' }}>{m.value.toLocaleString()}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }`}</style>
     </div>
   );
 };
@@ -493,6 +631,7 @@ const AgentCalendar: React.FC = () => {
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+      <ActiveSendsPanel />
       {/* Controls */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
         <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)} style={{ padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13 }}>
