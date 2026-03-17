@@ -171,6 +171,7 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 	var scheduledAt, startedAt, completedAt sql.NullTime
 	var maxRecipients sql.NullInt64
 	var listIDsJSON, suppressionListIDsJSON, suppressionSegmentIDsJSON, espQuotasJSON sql.NullString
+	var executionMode, ispQuotasJSON sql.NullString
 	
 	err := cb.db.QueryRowContext(ctx, `
 		SELECT c.id, c.name, c.subject, COALESCE(c.preview_text, ''),
@@ -192,7 +193,9 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 			   COALESCE(c.suppression_segment_ids::text, '[]'),
 			   COALESCE(c.esp_quotas::text, '[]'),
 			   COALESCE(c.throttle_rate_per_minute, 0),
-			   COALESCE(c.throttle_duration_hours, 0)
+			   COALESCE(c.throttle_duration_hours, 0),
+			   c.execution_mode,
+			   c.esp_quotas::text
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles p ON c.sending_profile_id = p.id
 		LEFT JOIN mailing_lists l ON c.list_id = l.id
@@ -214,6 +217,7 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 		&campaign.ListName, &campaign.SegmentName,
 		&listIDsJSON, &suppressionListIDsJSON, &suppressionSegmentIDsJSON, &espQuotasJSON,
 		&campaign.ThrottleRatePerMinute, &campaign.ThrottleDurationHours,
+		&executionMode, &ispQuotasJSON,
 	)
 	
 	if err != nil {
@@ -260,6 +264,12 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 	}
 	if espQuotasJSON.Valid && espQuotasJSON.String != "" && espQuotasJSON.String != "[]" {
 		json.Unmarshal([]byte(espQuotasJSON.String), &campaign.ESPQuotas)
+	}
+	if executionMode.Valid {
+		campaign.ExecutionMode = executionMode.String
+	}
+	if ispQuotasJSON.Valid && ispQuotasJSON.String != "" && ispQuotasJSON.String != "{}" {
+		campaign.ISPQuotas = json.RawMessage(ispQuotasJSON.String)
 	}
 	
 	// Build segment_ids array from segment_id for backward compatibility

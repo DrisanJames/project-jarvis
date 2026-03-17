@@ -102,6 +102,10 @@ type Campaign struct {
 	SendType         string     `json:"send_type"`
 	ScheduledAt      *time.Time `json:"scheduled_at,omitempty"`
 	
+	// PMTA ISP wave dispatch
+	ExecutionMode string          `json:"execution_mode,omitempty"`
+	ISPQuotas     json.RawMessage `json:"isp_quotas,omitempty"`
+
 	// Throttling
 	ThrottleSpeed         string `json:"throttle_speed"`
 	ThrottleRatePerMinute int    `json:"throttle_rate_per_minute,omitempty"`
