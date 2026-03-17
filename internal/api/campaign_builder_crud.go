@@ -465,6 +465,16 @@ func (cb *CampaignBuilder) HandleUpdateCampaign(w http.ResponseWriter, r *http.R
 		args = append(args, *input.FromEmail)
 		argIdx++
 	}
+	if len(input.ISPQuotas) > 0 {
+		updates = append(updates, fmt.Sprintf("isp_quotas = $%d", argIdx))
+		args = append(args, string(input.ISPQuotas))
+		argIdx++
+	}
+	if input.ExecutionMode != "" {
+		updates = append(updates, fmt.Sprintf("execution_mode = $%d", argIdx))
+		args = append(args, input.ExecutionMode)
+		argIdx++
+	}
 	
 	updates = append(updates, "updated_at = NOW()")
 	

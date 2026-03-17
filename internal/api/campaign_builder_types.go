@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ESPQuota represents quota allocation for a single ESP
 type ESPQuota struct {
@@ -59,6 +62,10 @@ type CampaignInput struct {
 	SendByTimezone bool   `json:"send_by_timezone,omitempty"` // Send at local time
 	TimezoneField  string `json:"timezone_field,omitempty"`   // Which field has timezone
 	
+	// ISP-level quotas for PMTA wave dispatch
+	ISPQuotas     json.RawMessage `json:"isp_quotas,omitempty"`
+	ExecutionMode string          `json:"execution_mode,omitempty"`
+
 	// Tags for organization
 	Tags []string `json:"tags,omitempty"`
 	
