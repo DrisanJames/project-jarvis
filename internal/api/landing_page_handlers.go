@@ -256,7 +256,7 @@ func generateStructuredReview(offerName, description, htmlCreative, trackingLink
 You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation — output ONLY the raw JSON object.`
 
 	reqBody := map[string]interface{}{
-		"model":      "claude-3-opus-20240229",
+		"model":      "claude-opus-4-20250514",
 		"max_tokens": 8000,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
