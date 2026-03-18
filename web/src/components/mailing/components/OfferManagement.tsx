@@ -140,7 +140,25 @@ interface OptizmoJob {
   suppressed_count: number;
 }
 
-type DetailTab = 'overview' | 'subjects' | 'from-names' | 'creatives' | 'landing-page' | 'compliance' | 'performance' | 'deploy';
+type DetailTab = 'overview' | 'subjects' | 'from-names' | 'creatives' | 'assets' | 'landing-page' | 'compliance' | 'performance' | 'deploy';
+
+interface CreativeAssetRecord {
+  id: string;
+  offer_id: string;
+  hosted_image_id: string;
+  asset_role: string;
+  label: string;
+  width: number;
+  height: number;
+  cdn_url: string;
+  cdn_url_medium?: string;
+  cdn_url_thumbnail?: string;
+  original_filename: string;
+  file_size: number;
+  mime_type: string;
+  sort_order: number;
+  created_at: string;
+}
 
 const API = '/api/mailing/offer-center';
 
@@ -156,6 +174,7 @@ const detailTabs: { id: DetailTab; label: string }[] = [
   { id: 'subjects', label: 'Subjects' },
   { id: 'from-names', label: 'From Names' },
   { id: 'creatives', label: 'Creatives' },
+  { id: 'assets', label: 'Assets' },
   { id: 'landing-page', label: 'Landing Page' },
   { id: 'compliance', label: 'Compliance' },
   { id: 'performance', label: 'Performance' },
@@ -530,6 +549,7 @@ export const OfferManagement: React.FC = () => {
         {activeTab === 'subjects' && <SubjectsTab offerId={offer.id} subjects={subjects} onRefresh={() => fetchSubjects(offer.id)} />}
         {activeTab === 'from-names' && <FromNamesTab offerId={offer.id} fromNames={fromNames} onRefresh={() => fetchFromNames(offer.id)} />}
         {activeTab === 'creatives' && <CreativesTab offerId={offer.id} creatives={creatives} onRefresh={() => fetchCreatives(offer.id)} />}
+        {activeTab === 'assets' && <AssetsTab offerId={offer.id} />}
         {activeTab === 'landing-page' && <LandingPageTab offer={offer} onRefresh={() => selectedOfferId && fetchOffer(selectedOfferId)} />}
         {activeTab === 'compliance' && <ComplianceTab offerId={offer.id} optizmoStatus={optizmoStatus} onRefresh={() => fetchOptizmoStatus(offer.id)} />}
         {activeTab === 'performance' && <PerformanceTab performance={performance} deployments={deployments} />}
@@ -1171,6 +1191,250 @@ const CreativePreviewModal: React.FC<{
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TAB: CREATIVE ASSETS (Zip upload, individual upload, CDN grid)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ROLE_CATEGORIES: Record<string, { label: string; color: string }> = {
+  email_hero: { label: 'Email', color: '#6366f1' },
+  email_header: { label: 'Email', color: '#6366f1' },
+  email_content: { label: 'Email', color: '#6366f1' },
+  landing_hero: { label: 'Landing Page', color: '#8b5cf6' },
+  landing_banner: { label: 'Landing Page', color: '#8b5cf6' },
+  landing_billboard: { label: 'Landing Page', color: '#8b5cf6' },
+  mobile_interstitial: { label: 'Mobile', color: '#ec4899' },
+  mobile_banner: { label: 'Mobile', color: '#ec4899' },
+  content_block: { label: 'Content', color: '#14b8a6' },
+  thumbnail: { label: 'Other', color: '#64748b' },
+  sidebar: { label: 'Other', color: '#64748b' },
+  banner: { label: 'Other', color: '#64748b' },
+  content: { label: 'Other', color: '#64748b' },
+};
+
+const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
+  const [assets, setAssets] = useState<CreativeAssetRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const zipInputRef = React.useRef<HTMLInputElement>(null);
+
+  const fetchAssets = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/assets`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setAssets(data.assets || []);
+      }
+    } catch { /* swallow */ }
+    setLoading(false);
+  }, [offerId]);
+
+  useEffect(() => { fetchAssets(); }, [fetchAssets]);
+
+  const uploadFiles = async (files: FileList | File[]) => {
+    setUploading(true);
+    setUploadProgress(`Uploading 0/${files.length}…`);
+    let done = 0;
+    for (const file of Array.from(files)) {
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        await fetch(`${API}/offers/${offerId}/assets`, {
+          method: 'POST', credentials: 'include', body: fd,
+        });
+      } catch { /* skip failed */ }
+      done++;
+      setUploadProgress(`Uploading ${done}/${files.length}…`);
+    }
+    setUploadProgress('');
+    setUploading(false);
+    fetchAssets();
+  };
+
+  const uploadZip = async (file: File) => {
+    setUploading(true);
+    setUploadProgress('Extracting & uploading zip bundle…');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/assets/upload-zip`, {
+        method: 'POST', credentials: 'include', body: fd,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUploadProgress(`Done — ${data.uploaded} images uploaded${data.text_extracted ? `, ${data.text_extracted} text files extracted` : ''}${data.errors ? `, ${data.errors} errors` : ''}`);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setUploadProgress(`Error: ${data.error || res.statusText}`);
+      }
+    } catch {
+      setUploadProgress('Network error during zip upload');
+    }
+    setUploading(false);
+    fetchAssets();
+  };
+
+  const deleteAsset = async (assetId: string) => {
+    try {
+      await fetch(`${API}/offers/${offerId}/assets/${assetId}`, {
+        method: 'DELETE', credentials: 'include',
+      });
+      setAssets(prev => prev.filter(a => a.id !== assetId));
+    } catch { /* swallow */ }
+  };
+
+  const copyUrl = (id: string, url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer.files;
+    if (!files.length) return;
+    if (files.length === 1 && files[0].name.toLowerCase().endsWith('.zip')) {
+      uploadZip(files[0]);
+    } else {
+      uploadFiles(files);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) uploadFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  const handleZipSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) uploadZip(e.target.files[0]);
+    e.target.value = '';
+  };
+
+  const grouped = assets.reduce<Record<string, CreativeAssetRecord[]>>((acc, a) => {
+    const cat = ROLE_CATEGORIES[a.asset_role]?.label || 'Other';
+    (acc[cat] ??= []).push(a);
+    return acc;
+  }, {});
+
+  const formatBytes = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
+
+  if (loading) return <div style={{ color: 'rgba(255,255,255,0.4)', padding: 24 }}>Loading assets…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Upload zone */}
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        style={{
+          border: `2px dashed ${dragOver ? '#6366f1' : 'rgba(255,255,255,0.12)'}`,
+          borderRadius: 10,
+          padding: 24,
+          textAlign: 'center',
+          background: dragOver ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)',
+          transition: 'all 0.2s',
+        }}
+      >
+        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)', marginBottom: 12 }}>
+          Drop images or a <strong>.zip bundle</strong> here
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFileSelect} />
+          <button style={btnPrimary} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            Upload Images
+          </button>
+          <input ref={zipInputRef} type="file" accept=".zip" hidden onChange={handleZipSelect} />
+          <button
+            style={{ ...btnPrimary, background: 'linear-gradient(135deg, #8b5cf6, #6366f1)' }}
+            onClick={() => zipInputRef.current?.click()}
+            disabled={uploading}
+          >
+            Upload Zip Bundle
+          </button>
+        </div>
+        {(uploading || uploadProgress) && (
+          <div style={{ marginTop: 10, fontSize: 12, color: uploadProgress.startsWith('Error') ? '#ef4444' : '#f59e0b' }}>
+            {uploadProgress || 'Processing…'}
+          </div>
+        )}
+      </div>
+
+      {/* Asset grid grouped by category */}
+      {assets.length === 0 ? (
+        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.3)', padding: 40 }}>
+          No creative assets yet — upload images or a zip bundle above
+        </div>
+      ) : (
+        Object.entries(grouped).map(([category, items]) => (
+          <div key={category}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.65)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              {category} ({items.length})
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
+              {items.map(a => {
+                const thumb = a.cdn_url_thumbnail || a.cdn_url_medium || a.cdn_url;
+                const roleInfo = ROLE_CATEGORIES[a.asset_role] || { label: 'Other', color: '#64748b' };
+                return (
+                  <div key={a.id} style={{
+                    background: 'rgba(255,255,255,0.04)',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                  }}>
+                    <div style={{
+                      height: 130,
+                      background: `url(${thumb}) center/contain no-repeat`,
+                      backgroundColor: 'rgba(0,0,0,0.3)',
+                    }} />
+                    <div style={{ padding: '8px 10px' }}>
+                      <div style={{
+                        fontSize: 11, fontWeight: 600,
+                        color: roleInfo.color,
+                        background: `${roleInfo.color}18`,
+                        display: 'inline-block',
+                        padding: '1px 6px',
+                        borderRadius: 4,
+                        marginBottom: 4,
+                      }}>
+                        {a.asset_role.replace(/_/g, ' ')}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', marginBottom: 2 }}>
+                        {a.width}×{a.height} · {formatBytes(a.file_size)}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {a.original_filename}
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                        <button
+                          style={{ ...btnGhost, fontSize: 10, padding: '2px 6px' }}
+                          onClick={() => copyUrl(a.id, a.cdn_url)}
+                        >
+                          {copiedId === a.id ? '✓ Copied' : 'Copy URL'}
+                        </button>
+                        <button
+                          style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }}
+                          onClick={() => deleteAsset(a.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TAB: LANDING PAGE
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1593,6 +1857,27 @@ const NewOfferModal: React.FC<{
     original_html_creative: '', status: 'draft',
   });
   const [submitting, setSubmitting] = useState(false);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipStatus, setZipStatus] = useState('');
+
+  const uploadZipForOffer = async (offerId: string, file: File) => {
+    setZipStatus('Uploading zip bundle…');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/assets/upload-zip`, {
+        method: 'POST', credentials: 'include', body: fd,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setZipStatus(`Uploaded ${data.uploaded} images${data.text_extracted ? `, ${data.text_extracted} text files` : ''}`);
+      } else {
+        setZipStatus('Zip upload failed');
+      }
+    } catch {
+      setZipStatus('Network error');
+    }
+  };
 
   const handleSubmit = async () => {
     if (!form.name.trim() || !form.brand_name.trim()) return;
@@ -1608,6 +1893,9 @@ const NewOfferModal: React.FC<{
       if (res.ok) {
         const data = await res.json();
         const newId = data.offer?.id || data.id;
+        if (zipFile && newId) {
+          await uploadZipForOffer(newId, zipFile);
+        }
         onCreated(newId);
       }
     } catch { /* swallow */ }
@@ -1684,6 +1972,44 @@ const NewOfferModal: React.FC<{
             placeholder="Paste HTML creative here…"
             style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
           />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 3 }}>Creative Assets Bundle (optional .zip)</label>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '8px 12px',
+            border: '1px dashed rgba(255,255,255,0.12)',
+            borderRadius: 6,
+            background: 'rgba(255,255,255,0.02)',
+          }}>
+            <input
+              type="file"
+              accept=".zip"
+              onChange={e => {
+                const f = e.target.files?.[0] || null;
+                setZipFile(f);
+                setZipStatus(f ? `Selected: ${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : '');
+              }}
+              style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}
+            />
+            {zipFile && (
+              <button
+                style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#ef4444' }}
+                onClick={() => { setZipFile(null); setZipStatus(''); }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {zipStatus && (
+            <div style={{ marginTop: 4, fontSize: 11, color: zipStatus.startsWith('Error') || zipStatus.includes('failed') ? '#ef4444' : 'rgba(255,255,255,0.5)' }}>
+              {zipStatus}
+            </div>
+          )}
+          <div style={{ marginTop: 3, fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>
+            Images will be extracted, uploaded to CDN, and auto-classified. Text files (ad copy, taglines) will also be extracted.
+          </div>
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

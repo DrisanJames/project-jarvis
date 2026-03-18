@@ -389,6 +389,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			
 			// === OFFER CENTER (Network Intelligence, Creative Library, AI Suggestions) ===
 			RegisterOfferCenterRoutes(r, db, s.handlers)
+			RegisterOfferCreativeAssetRoutes(r, db, s.s3Client, s.imageBucket, s.cdnDomain, s.awsRegion)
 			
 			// === AGENT CONFIGURATION WIZARD (AI-Driven Campaign Setup) ===
 			RegisterAgentWizardRoutes(r, db, s.handlers)
