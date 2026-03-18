@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 // HandleSendTestEmail sends a test email through the selected ESP profile
@@ -84,40 +85,35 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		SMTPPort    int
 		SMTPUser    *string
 		SMTPPass    *string
+		PoolPrefix  *string
 	}
 
 	profileQuery := `
 		SELECT id, vendor_type, from_name, from_email, reply_email, 
-			   api_key, api_endpoint, smtp_host, smtp_port, smtp_username, smtp_password
+			   api_key, api_endpoint, smtp_host, smtp_port, smtp_username, smtp_password,
+			   pool_prefix
 		FROM mailing_sending_profiles 
 		WHERE status = 'active'
 	`
 
-	if input.SendingProfileID != nil && *input.SendingProfileID != "" {
-		// Use specified profile
-		profileQuery += " AND id = $1"
-		err := svc.db.QueryRowContext(ctx, profileQuery, *input.SendingProfileID).Scan(
+	scanProfile := func(row *sql.Row) error {
+		return row.Scan(
 			&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
 			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
+			&profile.PoolPrefix,
 		)
+	}
+
+	if input.SendingProfileID != nil && *input.SendingProfileID != "" {
+		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND id = $1", *input.SendingProfileID))
 		if err != nil {
 			http.Error(w, `{"error":"sending profile not found or inactive"}`, http.StatusBadRequest)
 			return
 		}
 	} else {
-		// Use default profile, fall back to any active profile
-		defaultQuery := profileQuery + " AND is_default = true LIMIT 1"
-		err := svc.db.QueryRowContext(ctx, defaultQuery).Scan(
-			&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
-			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-		)
+		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND is_default = true LIMIT 1"))
 		if err != nil {
-			// No default — try any active profile (prefer PMTA/SMTP over API-based)
-			fallbackQuery := profileQuery + " ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1"
-			err = svc.db.QueryRowContext(ctx, fallbackQuery).Scan(
-				&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
-				&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			)
+			err = scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1"))
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -186,8 +182,18 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		result, err = svc.sendViaSendGrid(ctx, apiKey, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
 
 	case "pmta":
+		// Determine ISP-aware VMTA pool from profile's pool_prefix + recipient ISP
+		var pmtaExtraHeaders map[string]string
+		if profile.PoolPrefix != nil && *profile.PoolPrefix != "" {
+			recipientISP := worker.ClassifySubscriberISP(input.To)
+			ispSuffix := worker.ISPPoolSuffix(recipientISP)
+			vmtaPool := fmt.Sprintf("%s-%s-pool", *profile.PoolPrefix, ispSuffix)
+			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": vmtaPool}
+			log.Printf("[SendTest] Routing via VMTA pool %s (recipient ISP: %s)", vmtaPool, recipientISP)
+		}
+
 		if profile.APIEndpoint != nil && *profile.APIEndpoint != "" {
-			result, err = svc.sendViaPMTAAPI(ctx, *profile.APIEndpoint, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
+			result, err = svc.sendViaPMTAAPI(ctx, *profile.APIEndpoint, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent, pmtaExtraHeaders)
 		} else {
 			host := ""
 			if profile.SMTPHost != nil {
