@@ -36,7 +36,7 @@ func NewProfileBasedSender(db *sql.DB) *ProfileBasedSender {
 // Send looks up the sending profile for the message, creates the
 // appropriate ESP sender, and delegates delivery.
 func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	var vendorType, apiKey, apiSecret, sendingDomain, region string
+	var vendorType, apiKey, apiSecret, sendingDomain, region, poolPrefix string
 	var smtpHost, smtpUsername, smtpPassword sql.NullString
 	var smtpPort sql.NullInt64
 
@@ -47,10 +47,11 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 			   COALESCE(sending_domain, ''),
 			   COALESCE(api_endpoint, 'us-east-1'),
 			   smtp_host, smtp_port,
-			   smtp_username, smtp_password
+			   smtp_username, smtp_password,
+			   COALESCE(pool_prefix, '')
 		FROM mailing_sending_profiles
 		WHERE id = $1
-	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword)
+	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix)
 
 	if err != nil {
 		log.Printf("[ProfileBasedSender] No profile %s, looking for default", msg.ProfileID)
@@ -61,11 +62,12 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 				   COALESCE(sending_domain, ''),
 				   COALESCE(api_endpoint, 'us-east-1'),
 				   smtp_host, smtp_port,
-				   smtp_username, smtp_password
+				   smtp_username, smtp_password,
+				   COALESCE(pool_prefix, '')
 			FROM mailing_sending_profiles
 			WHERE is_default = true AND status = 'active'
 			LIMIT 1
-		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword)
+		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix)
 		if err != nil {
 			return nil, fmt.Errorf("no sending profile found and no default configured")
 		}
@@ -111,21 +113,21 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		if host != "" && apiURL != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
 				return &pmtaComboSender{
-					apiSender:  NewPMTAAPISender(apiURL, s.db),
-					smtpSender: NewPMTASender(host, port, user, pass, s.db),
+					apiSender:  NewPMTAAPISender(apiURL, s.db, poolPrefix),
+					smtpSender: NewPMTASender(host, port, user, pass, s.db, poolPrefix),
 				}
 			}).Send(ctx, msg)
 		}
 		// SMTP only (no HTTP API endpoint configured)
 		if host != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
-				return NewPMTASender(host, port, user, pass, s.db)
+				return NewPMTASender(host, port, user, pass, s.db, poolPrefix)
 			}).Send(ctx, msg)
 		}
 		// HTTP API only (no SMTP host)
 		if apiURL != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
-				return NewPMTAAPISender(apiURL, s.db)
+				return NewPMTAAPISender(apiURL, s.db, poolPrefix)
 			}).Send(ctx, msg)
 		}
 		return nil, fmt.Errorf("profile %s: no SMTP host or API endpoint for PMTA", msg.ProfileID)

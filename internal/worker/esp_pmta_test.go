@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVMTAShortName(t *testing.T) {
@@ -30,7 +32,6 @@ func TestVMTAShortName(t *testing.T) {
 }
 
 func TestVMTAShortName_ValidationRules(t *testing.T) {
-	// VMTA names that would cause PMTA misconfiguration
 	badHostnames := []struct {
 		hostname string
 		reason   string
@@ -45,4 +46,165 @@ func TestVMTAShortName_ValidationRules(t *testing.T) {
 			t.Logf("WARNING: hostname %q produces short VMTA %q — %s", tc.hostname, vmta, tc.reason)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// vmtaPool.next() — ISP-aware selection
+// ---------------------------------------------------------------------------
+
+func buildTestPool(groups map[string][]vmtaEntry, flatIPs []vmtaEntry, prefix string) *vmtaPool {
+	idxMap := make(map[string]*uint64, len(groups))
+	for k := range groups {
+		v := uint64(0)
+		idxMap[k] = &v
+	}
+	return &vmtaPool{
+		mu:         sync.RWMutex{},
+		ips:        flatIPs,
+		ispGroups:  groups,
+		ispIdx:     idxMap,
+		poolPrefix: prefix,
+	}
+}
+
+func TestVMTAPoolNext_ISPSpecificSelection(t *testing.T) {
+	gmailIPs := []vmtaEntry{
+		{ID: "gm1", Hostname: "mta-db-gm1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+		{ID: "gm2", Hostname: "mta-db-gm2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+	}
+	yahooIPs := []vmtaEntry{
+		{ID: "yh1", Hostname: "mta-db-yh1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gn1", Hostname: "mta-db-gn1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+	}
+
+	allIPs := append(append(gmailIPs, yahooIPs...), generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"gmail":   gmailIPs,
+		"yahoo":   yahooIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("gmail")
+	require.NoError(t, err)
+	assert.Contains(t, ip.ID, "gm", "gmail ISP should route to gmail IPs")
+
+	ip, err = pool.next("yahoo")
+	require.NoError(t, err)
+	assert.Equal(t, "yh1", ip.ID)
+}
+
+func TestVMTAPoolNext_FallbackToGeneral(t *testing.T) {
+	generalIPs := []vmtaEntry{
+		{ID: "gn1", Hostname: "mta-db-gn1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+	}
+
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"general": generalIPs,
+	}, generalIPs, "db")
+
+	ip, err := pool.next("verizon")
+	require.NoError(t, err)
+	assert.Equal(t, "gn1", ip.ID, "unmapped ISP should fall back to general pool")
+}
+
+func TestVMTAPoolNext_WarmupLimitEnforcement(t *testing.T) {
+	gmailIPs := []vmtaEntry{
+		{ID: "gm1", Hostname: "mta-db-gm1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+		{ID: "gm2", Hostname: "mta-db-gm2", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 49},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gn1", Hostname: "mta-db-gn1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 10},
+	}
+
+	allIPs := append(gmailIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"gmail":   gmailIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("gmail")
+	require.NoError(t, err)
+	assert.Equal(t, "gm2", ip.ID, "should skip gm1 (at limit) and select gm2 (under limit)")
+}
+
+func TestVMTAPoolNext_AllISPExhausted_FallsBackToGeneral(t *testing.T) {
+	gmailIPs := []vmtaEntry{
+		{ID: "gm1", Hostname: "mta-db-gm1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gn1", Hostname: "mta-db-gn1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 10},
+	}
+
+	allIPs := append(gmailIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"gmail":   gmailIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("gmail")
+	require.NoError(t, err)
+	assert.Equal(t, "gn1", ip.ID, "when all gmail IPs exhausted, should fall to general")
+}
+
+func TestVMTAPoolNext_AllExhausted_ReturnsError(t *testing.T) {
+	gmailIPs := []vmtaEntry{
+		{ID: "gm1", Hostname: "mta-db-gm1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gn1", Hostname: "mta-db-gn1", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+	}
+
+	allIPs := append(gmailIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"gmail":   gmailIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	_, err := pool.next("gmail")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all IPs exhausted")
+}
+
+func TestVMTAPoolNext_RoundRobin(t *testing.T) {
+	gmailIPs := []vmtaEntry{
+		{ID: "gm1", Hostname: "mta-db-gm1", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gm2", Hostname: "mta-db-gm2", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gm3", Hostname: "mta-db-gm3", Status: "active", WarmupDailyLimit: 10000},
+	}
+
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"gmail": gmailIPs,
+	}, gmailIPs, "db")
+
+	seen := map[string]int{}
+	for i := 0; i < 9; i++ {
+		ip, err := pool.next("gmail")
+		require.NoError(t, err)
+		seen[ip.ID]++
+	}
+	assert.Equal(t, 3, seen["gm1"], "round-robin should distribute evenly")
+	assert.Equal(t, 3, seen["gm2"])
+	assert.Equal(t, 3, seen["gm3"])
+}
+
+func TestVMTAPoolNext_LegacyNoISPGroups(t *testing.T) {
+	flatIPs := []vmtaEntry{
+		{ID: "ip1", Hostname: "mta2.mail.projectjarvis.io", Status: "warmup", WarmupDailyLimit: 10000, TodaySent: 0},
+		{ID: "ip2", Hostname: "mta3.mail.projectjarvis.io", Status: "warmup", WarmupDailyLimit: 10000, TodaySent: 0},
+	}
+
+	pool := buildTestPool(map[string][]vmtaEntry{}, flatIPs, "")
+
+	ip, err := pool.next("gmail")
+	require.NoError(t, err)
+	assert.Contains(t, []string{"ip1", "ip2"}, ip.ID, "legacy path should return from flat list")
+}
+
+func TestVMTAPoolNext_EmptyPool(t *testing.T) {
+	pool := buildTestPool(map[string][]vmtaEntry{}, nil, "db")
+	_, err := pool.next("gmail")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no IPs in pool")
 }

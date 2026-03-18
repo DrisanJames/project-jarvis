@@ -27,7 +27,7 @@ type PMTAAPISender struct {
 }
 
 // NewPMTAAPISender creates a PMTA API sender.
-func NewPMTAAPISender(apiEndpoint string, db *sql.DB) *PMTAAPISender {
+func NewPMTAAPISender(apiEndpoint string, db *sql.DB, poolPrefix string) *PMTAAPISender {
 	return &PMTAAPISender{
 		apiEndpoint: apiEndpoint,
 		db:          db,
@@ -37,7 +37,7 @@ func NewPMTAAPISender(apiEndpoint string, db *sql.DB) *PMTAAPISender {
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		},
-		ipPool: newVMTAPool(db),
+		ipPool: newVMTAPool(db, poolPrefix),
 	}
 }
 
@@ -113,7 +113,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		log.Printf("[PMTA-API] Routing %s via explicit VMTA header: %s", msg.Email, vmta)
 	} else if s.ipPool != nil && msg.ProfileID != "" {
 		s.ipPool.refresh(ctx, msg.ProfileID)
-		ip, err := s.ipPool.next()
+		ip, err := s.ipPool.next(msg.RecipientISP)
 		if err != nil && len(s.ipPool.ips) > 0 {
 			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", err)
 		}

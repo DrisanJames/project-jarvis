@@ -21,7 +21,7 @@ func TestPMTAAPISender_WithVMTA(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := NewPMTAAPISender(server.URL, nil)
+	sender := NewPMTAAPISender(server.URL, nil, "")
 
 	msg := &EmailMessage{
 		Email:       "user@gmail.com",
@@ -55,7 +55,7 @@ func TestPMTAAPISender_WithoutVMTA_RejectsDefaultPool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := NewPMTAAPISender(server.URL, nil)
+	sender := NewPMTAAPISender(server.URL, nil, "")
 
 	msg := &EmailMessage{
 		Email:       "user@gmail.com",
@@ -86,7 +86,7 @@ func TestPMTAAPISender_EnvelopeSender(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := NewPMTAAPISender(server.URL, nil)
+	sender := NewPMTAAPISender(server.URL, nil, "")
 	msg := &EmailMessage{
 		Email:       "recipient@gmail.com",
 		FromName:    "Sender",
@@ -121,7 +121,7 @@ func TestPMTAAPISender_ContentContainsRFC822Headers(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := NewPMTAAPISender(server.URL, nil)
+	sender := NewPMTAAPISender(server.URL, nil, "")
 	msg := &EmailMessage{
 		Email:       "test@gmail.com",
 		FromName:    "RFC Test",
@@ -166,7 +166,7 @@ func TestPMTAAPISender_RecipientsField(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := NewPMTAAPISender(server.URL, nil)
+	sender := NewPMTAAPISender(server.URL, nil, "")
 	msg := &EmailMessage{
 		Email:       "target@yahoo.com",
 		FromName:    "Test",

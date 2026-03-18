@@ -5,9 +5,11 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -797,15 +799,15 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 	res := preflightResult{OK: true}
 
 	// 1. Sending profile exists with an IP pool
-	var profileID, ipPool sql.NullString
+	var profileID, ipPool, poolPrefix sql.NullString
 	err := db.QueryRowContext(ctx, `
-		SELECT id::text, ip_pool
+		SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND vendor_type = 'pmta'
 		  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
 		  AND status = 'active'
 		ORDER BY created_at DESC LIMIT 1
-	`, orgID, sendingDomain).Scan(&profileID, &ipPool)
+	`, orgID, sendingDomain).Scan(&profileID, &ipPool, &poolPrefix)
 	if err != nil || !profileID.Valid {
 		res.OK = false
 		res.Errors = append(res.Errors, preflightError{
@@ -814,39 +816,60 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		})
 		return res
 	}
-	if !ipPool.Valid || strings.TrimSpace(ipPool.String) == "" {
+	if (!ipPool.Valid || strings.TrimSpace(ipPool.String) == "") && (!poolPrefix.Valid || strings.TrimSpace(poolPrefix.String) == "") {
 		res.OK = false
 		res.Errors = append(res.Errors, preflightError{
 			Check:   "ip_pool",
-			Message: fmt.Sprintf("sending profile %s has no IP pool assigned", profileID.String),
+			Message: fmt.Sprintf("sending profile %s has no IP pool or pool_prefix assigned", profileID.String),
 		})
 		return res
 	}
 
 	// 2. IP pool has active IPs with valid VMTA names
-	rows, qErr := db.QueryContext(ctx, `
-		SELECT ip.hostname, ip.status
-		FROM mailing_ip_addresses ip
-		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-		WHERE pool.name = $1
-		  AND ip.status IN ('active', 'warmup')
-		  AND pool.status = 'active'
-	`, ipPool.String)
+	var poolQuery string
+	var poolArg interface{}
+	pfx := ""
+	if poolPrefix.Valid {
+		pfx = strings.TrimSpace(poolPrefix.String)
+	}
+	if pfx != "" {
+		poolQuery = `
+			SELECT ip.hostname, ip.status, pool.name
+			FROM mailing_ip_addresses ip
+			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+			WHERE pool.name LIKE $1 || '-%'
+			  AND ip.status IN ('active', 'warmup')
+			  AND pool.status = 'active'`
+		poolArg = pfx
+	} else {
+		poolQuery = `
+			SELECT ip.hostname, ip.status, pool.name
+			FROM mailing_ip_addresses ip
+			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+			WHERE pool.name = $1
+			  AND ip.status IN ('active', 'warmup')
+			  AND pool.status = 'active'`
+		poolArg = ipPool.String
+	}
+
+	rows, qErr := db.QueryContext(ctx, poolQuery, poolArg)
 	if qErr != nil {
 		res.OK = false
 		res.Errors = append(res.Errors, preflightError{
 			Check:   "ip_pool_query",
-			Message: fmt.Sprintf("failed to query IP pool %s: %v", ipPool.String, qErr),
+			Message: fmt.Sprintf("failed to query IP pools for prefix=%s pool=%s: %v", pfx, ipPool.String, qErr),
 		})
 		return res
 	}
 	defer rows.Close()
 
 	activeIPs := 0
+	ispPoolsWithIPs := make(map[string]bool)
 	for rows.Next() {
-		var hostname, status string
-		rows.Scan(&hostname, &status)
+		var hostname, status, poolName string
+		rows.Scan(&hostname, &status, &poolName)
 		activeIPs++
+		ispPoolsWithIPs[poolName] = true
 		vmta := hostname
 		if dotIdx := strings.Index(vmta, "."); dotIdx > 0 {
 			vmta = vmta[:dotIdx]
@@ -859,12 +882,22 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		}
 	}
 	if activeIPs == 0 {
+		poolDesc := ipPool.String
+		if pfx != "" {
+			poolDesc = pfx + "-*"
+		}
 		res.OK = false
 		res.Errors = append(res.Errors, preflightError{
 			Check:   "ip_pool_empty",
-			Message: fmt.Sprintf("IP pool %s has zero active/warmup IPs", ipPool.String),
+			Message: fmt.Sprintf("IP pools matching %s have zero active/warmup IPs", poolDesc),
 		})
 		return res
+	}
+	if pfx != "" && len(ispPoolsWithIPs) < 9 {
+		res.Warnings = append(res.Warnings, preflightError{
+			Check:   "isp_pool_coverage",
+			Message: fmt.Sprintf("only %d of 9 ISP pools have active IPs for prefix %s", len(ispPoolsWithIPs), pfx),
+		})
 	}
 
 	// 3. DKIM DNS record exists
@@ -920,7 +953,7 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		SELECT smtp_host, COALESCE(smtp_port, 587) FROM mailing_sending_profiles
 		WHERE id = $1`, profileID.String).Scan(&smtpHost, &smtpPort)
 	if smtpHost != "" {
-		addr := fmt.Sprintf("%s:%d", smtpHost, smtpPort)
+		addr := net.JoinHostPort(smtpHost, fmt.Sprintf("%d", smtpPort))
 		conn, dialErr := net.DialTimeout("tcp", addr, 5*time.Second)
 		if dialErr != nil {
 			res.Warnings = append(res.Warnings, preflightError{
@@ -933,6 +966,21 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 	}
 
 	return res
+}
+
+// HandlePreflightCheck exposes the infrastructure readiness check as a GET endpoint.
+func (s *Server) HandlePreflightCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "domain parameter required"})
+		return
+	}
+	orgID := getOrganizationID(r)
+	result := preflightDeployCheck(r.Context(), s.mailingDB, orgID, domain)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 // waveSanityCheck validates the normalized wave plan meets minimum throttling

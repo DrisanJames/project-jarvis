@@ -1,6 +1,8 @@
 package worker
 
-import "strings"
+import (
+	"strings"
+)
 
 // ISP domain classification map — single source of truth for the entire
 // send pipeline. Used by both the enqueue path (to tag queue items) and
@@ -33,6 +35,44 @@ func ClassifySubscriberISP(email string) string {
 		return isp
 	}
 	return "other"
+}
+
+// ispToPoolSuffix maps Go ISP classification names to PMTA pool name suffixes.
+// ISPs with dedicated classification but no per-ISP pool route to "general".
+var ispToPoolSuffix = map[string]string{
+	"gmail":     "gmail",
+	"yahoo":     "yahoo",
+	"microsoft": "msft",
+	"apple":     "apple",
+	"comcast":   "comcast",
+	"att":       "att",
+	"cox":       "cox",
+	"charter":   "charter",
+}
+
+// ISPPoolSuffix returns the PMTA pool name suffix for a given ISP classification.
+// For example, ISPPoolSuffix("microsoft") returns "msft".
+// Unmapped ISPs (verizon, protonmail, zoho, other, etc.) return "general".
+func ISPPoolSuffix(isp string) string {
+	if suffix, ok := ispToPoolSuffix[isp]; ok {
+		return suffix
+	}
+	return "general"
+}
+
+// extractPoolSuffix parses the ISP suffix from a pool name.
+// "db-gmail-pool" → "gmail", "ht-msft-pool" → "msft".
+// Returns "" for legacy pools like "warmup-pool" that don't follow the prefix-isp-pool pattern.
+func extractPoolSuffix(poolName string) string {
+	if !strings.HasSuffix(poolName, "-pool") {
+		return ""
+	}
+	trimmed := strings.TrimSuffix(poolName, "-pool")
+	dashIdx := strings.Index(trimmed, "-")
+	if dashIdx < 0 || dashIdx >= len(trimmed)-1 {
+		return ""
+	}
+	return trimmed[dashIdx+1:]
 }
 
 // ComputeBatchPlan divides ISP quotas evenly across a fixed number of

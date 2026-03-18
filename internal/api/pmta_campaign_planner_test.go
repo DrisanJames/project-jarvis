@@ -94,7 +94,7 @@ func TestPreflightDeployCheck_NoProfile(t *testing.T) {
 
 	mock.ExpectQuery("SELECT id::text, ip_pool").
 		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}))
 
 	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
 	assert.False(t, res.OK)
@@ -109,7 +109,7 @@ func TestPreflightDeployCheck_EmptyIPPool(t *testing.T) {
 
 	mock.ExpectQuery("SELECT id::text, ip_pool").
 		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}).AddRow("profile-1", ""))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "", ""))
 
 	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
 	assert.False(t, res.OK)
@@ -124,13 +124,59 @@ func TestPreflightDeployCheck_NoActiveIPs(t *testing.T) {
 
 	mock.ExpectQuery("SELECT id::text, ip_pool").
 		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool"}).AddRow("profile-1", "warmup-pool"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "warmup-pool", ""))
 
 	mock.ExpectQuery("SELECT ip.hostname, ip.status").
 		WithArgs("warmup-pool").
-		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status"}))
+		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}))
 
 	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
+	assert.False(t, res.OK)
+	require.Len(t, res.Errors, 1)
+	assert.Equal(t, "ip_pool_empty", res.Errors[0].Check)
+}
+
+func TestPreflightDeployCheck_WithPoolPrefix(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT id::text, ip_pool").
+		WithArgs("org-1", "em.discountblog.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "db-gmail-pool", "db"))
+
+	mock.ExpectQuery("SELECT ip.hostname, ip.status").
+		WithArgs("db").
+		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}).
+			AddRow("mta-db-gm1.mail.em.discountblog.com", "warmup", "db-gmail-pool").
+			AddRow("mta-db-yh1.mail.em.discountblog.com", "warmup", "db-yahoo-pool"))
+
+	// DNS lookups will fail in test but produce warnings, not errors — except DKIM
+	res := preflightDeployCheck(context.Background(), db, "org-1", "em.discountblog.com")
+	// The result may have DKIM/SPF failures but the IP pool check should pass
+	hasIPPoolError := false
+	for _, e := range res.Errors {
+		if e.Check == "ip_pool_empty" {
+			hasIPPoolError = true
+		}
+	}
+	assert.False(t, hasIPPoolError, "pool_prefix path should find IPs across ISP sub-pools")
+}
+
+func TestPreflightDeployCheck_PoolPrefixNoIPs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT id::text, ip_pool").
+		WithArgs("org-1", "em.discountblog.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "db-gmail-pool", "db"))
+
+	mock.ExpectQuery("SELECT ip.hostname, ip.status").
+		WithArgs("db").
+		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}))
+
+	res := preflightDeployCheck(context.Background(), db, "org-1", "em.discountblog.com")
 	assert.False(t, res.OK)
 	require.Len(t, res.Errors, 1)
 	assert.Equal(t, "ip_pool_empty", res.Errors[0].Check)

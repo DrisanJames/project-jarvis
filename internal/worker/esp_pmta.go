@@ -32,18 +32,24 @@ type vmtaEntry struct {
 }
 
 type vmtaPool struct {
-	mu       sync.RWMutex
-	ips      []vmtaEntry
-	idx      uint64
-	loadedAt time.Time
-	ttl      time.Duration
-	db       *sql.DB
+	mu         sync.RWMutex
+	ips        []vmtaEntry                // all IPs (fallback for legacy profiles)
+	ispGroups  map[string][]vmtaEntry     // keyed by pool suffix: "gmail", "yahoo", etc.
+	idx        uint64
+	ispIdx     map[string]*uint64         // per-ISP round-robin counters
+	loadedAt   time.Time
+	ttl        time.Duration
+	db         *sql.DB
+	poolPrefix string                     // set at construction from profile's pool_prefix
 }
 
-func newVMTAPool(db *sql.DB) *vmtaPool {
+func newVMTAPool(db *sql.DB, poolPrefix string) *vmtaPool {
 	return &vmtaPool{
-		db:  db,
-		ttl: 30 * time.Second,
+		db:         db,
+		ttl:        30 * time.Second,
+		poolPrefix: poolPrefix,
+		ispGroups:  make(map[string][]vmtaEntry),
+		ispIdx:     make(map[string]*uint64),
 	}
 }
 
@@ -59,71 +65,128 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Double-check after acquiring write lock
 	if time.Since(p.loadedAt) < p.ttl && len(p.ips) > 0 {
 		return
 	}
 
-	rows, err := p.db.QueryContext(ctx, `
-		SELECT ip.id, ip.hostname, ip.status,
-		       COALESCE(ip.warmup_daily_limit, 50),
-		       COALESCE(wl.actual_sent, 0)
-		FROM mailing_ip_addresses ip
-		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-		JOIN mailing_sending_profiles sp ON sp.ip_pool = pool.name
-		LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
-		WHERE sp.id = $1
-		  AND ip.status IN ('active', 'warmup')
-		  AND pool.status = 'active'
-		ORDER BY ip.last_sent_at ASC NULLS FIRST
-	`, profileID)
+	var rows *sql.Rows
+	var err error
+	if p.poolPrefix != "" {
+		rows, err = p.db.QueryContext(ctx, `
+			SELECT ip.id, ip.hostname, ip.status,
+			       COALESCE(ip.warmup_daily_limit, 50),
+			       COALESCE(wl.actual_sent, 0),
+			       pool.name AS pool_name
+			FROM mailing_ip_addresses ip
+			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+			LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
+			WHERE pool.name LIKE $1 || '-%'
+			  AND ip.status IN ('active', 'warmup')
+			  AND pool.status = 'active'
+			  AND pool.organization_id = (SELECT organization_id FROM mailing_sending_profiles WHERE id = $2)
+			ORDER BY ip.last_sent_at ASC NULLS FIRST
+		`, p.poolPrefix, profileID)
+	} else {
+		rows, err = p.db.QueryContext(ctx, `
+			SELECT ip.id, ip.hostname, ip.status,
+			       COALESCE(ip.warmup_daily_limit, 50),
+			       COALESCE(wl.actual_sent, 0),
+			       pool.name AS pool_name
+			FROM mailing_ip_addresses ip
+			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+			JOIN mailing_sending_profiles sp ON sp.ip_pool = pool.name
+			LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
+			WHERE sp.id = $1
+			  AND ip.status IN ('active', 'warmup')
+			  AND pool.status = 'active'
+			ORDER BY ip.last_sent_at ASC NULLS FIRST
+		`, profileID)
+	}
 	if err != nil {
 		log.Printf("[vmtaPool] refresh error: %v", err)
 		return
 	}
 	defer rows.Close()
 
-	var ips []vmtaEntry
+	var allIPs []vmtaEntry
+	groups := make(map[string][]vmtaEntry)
 	for rows.Next() {
 		var e vmtaEntry
-		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent); err != nil {
+		var poolName string
+		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent, &poolName); err != nil {
 			continue
 		}
-		ips = append(ips, e)
-	}
-	if len(ips) > 0 {
-		p.ips = ips
-		p.loadedAt = time.Now()
-		for _, ip := range ips {
-			log.Printf("[vmtaPool] Loaded IP %s status=%s limit=%d sent=%d", ip.Hostname, ip.Status, ip.WarmupDailyLimit, ip.TodaySent)
+		allIPs = append(allIPs, e)
+		suffix := extractPoolSuffix(poolName)
+		if suffix != "" {
+			groups[suffix] = append(groups[suffix], e)
 		}
+	}
+	if len(allIPs) > 0 {
+		p.ips = allIPs
+		p.ispGroups = groups
+		idxMap := make(map[string]*uint64, len(groups))
+		for k := range groups {
+			v := uint64(0)
+			idxMap[k] = &v
+		}
+		p.ispIdx = idxMap
+		p.loadedAt = time.Now()
+		log.Printf("[vmtaPool] Loaded %d IPs across %d ISP groups (prefix=%s)", len(allIPs), len(groups), p.poolPrefix)
 	} else {
-		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s", profileID)
+		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s)", profileID, p.poolPrefix)
 	}
 }
 
-// next returns the next available IP, enforcing warmup daily limits.
-// IPs with status "cold" are always skipped (e.g., blacklisted mta1).
-func (p *vmtaPool) next() (vmtaEntry, error) {
+// next returns the next available IP for the given recipient ISP,
+// enforcing warmup daily limits. Falls back to general pool then flat list.
+func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if len(p.ips) == 0 {
-		return vmtaEntry{}, fmt.Errorf("no IPs in pool")
+		return vmtaEntry{}, fmt.Errorf("no IPs in pool (poolPrefix=%s)", p.poolPrefix)
 	}
 
+	poolSuffix := ISPPoolSuffix(recipientISP)
+
+	if group, ok := p.ispGroups[poolSuffix]; ok && len(group) > 0 {
+		counter := p.ispIdx[poolSuffix]
+		for attempts := 0; attempts < len(group); attempts++ {
+			idx := atomic.AddUint64(counter, 1) % uint64(len(group))
+			ip := group[idx]
+			if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
+				continue
+			}
+			return ip, nil
+		}
+	}
+
+	if poolSuffix != "general" {
+		if general, ok := p.ispGroups["general"]; ok && len(general) > 0 {
+			counter := p.ispIdx["general"]
+			for attempts := 0; attempts < len(general); attempts++ {
+				idx := atomic.AddUint64(counter, 1) % uint64(len(general))
+				ip := general[idx]
+				if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
+					continue
+				}
+				return ip, nil
+			}
+		}
+	}
+
+	// Last resort: any available IP from the flat list (covers legacy profiles)
 	for attempts := 0; attempts < len(p.ips); attempts++ {
 		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
 		ip := p.ips[idx]
-		if ip.Status == "cold" {
-			continue
-		}
-		if strings.Contains(ip.Hostname, "mta1") {
+		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 			continue
 		}
 		return ip, nil
 	}
-	return vmtaEntry{}, fmt.Errorf("all IPs exhausted or excluded")
+
+	return vmtaEntry{}, fmt.Errorf("all IPs exhausted (ISP=%s, poolPrefix=%s)", recipientISP, p.poolPrefix)
 }
 
 // =============================================================================
@@ -243,7 +306,7 @@ type PMTASender struct {
 	ipPool   *vmtaPool
 }
 
-func NewPMTASender(smtpHost string, smtpPort int, username, password string, db *sql.DB) *PMTASender {
+func NewPMTASender(smtpHost string, smtpPort int, username, password string, db *sql.DB, poolPrefix string) *PMTASender {
 	return &PMTASender{
 		smtpHost: smtpHost,
 		smtpPort: smtpPort,
@@ -252,7 +315,7 @@ func NewPMTASender(smtpHost string, smtpPort int, username, password string, db 
 		db:       db,
 		client:   &http.Client{Timeout: 30 * time.Second},
 		connPool: newSMTPPool(smtpHost, smtpPort, username, password, 20),
-		ipPool:   newVMTAPool(db),
+		ipPool:   newVMTAPool(db, poolPrefix),
 	}
 }
 
@@ -261,24 +324,17 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		return nil, fmt.Errorf("PMTA SMTP host not configured")
 	}
 
-	// Refresh VMTA cache, then select next IP via round-robin
+	// Refresh VMTA cache, then select next IP via ISP-aware round-robin
 	s.ipPool.refresh(ctx, msg.ProfileID)
 	vmtaName := ""
 	ipID := ""
-	ip, vmtaErr := s.ipPool.next()
+	ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
 	if vmtaErr != nil {
 		if len(s.ipPool.ips) > 0 {
 			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
 		}
-		// NEVER fall back to default-pool — it uses the server IP which
-		// must not be used for campaign delivery. Fail hard so the queue
-		// item is retried after IPs are configured.
 		return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 	} else {
-		// PMTA VMTA names are the short prefix of the hostname
-		// (e.g. "mta1" from "mta1.mail.projectjarvis.io"). The full
-		// hostname does NOT match any <virtual-mta> directive and
-		// silently falls back to the server IP.
 		vmtaName = vmtaShortName(ip.Hostname)
 		ipID = ip.ID
 	}
@@ -431,11 +487,10 @@ func (s *PMTASender) updateIPCounters(ipID string) {
 		log.Printf("[PMTA] Failed to update IP counters for %s: %v", ipID, err)
 	}
 
-	// Also update warmup log so checkThresholds and daily limit enforcement stay in sync
 	_, err = s.db.ExecContext(ctx, `
-		UPDATE mailing_ip_warmup_log
-		SET actual_sent = actual_sent + 1
-		WHERE ip_id = $1 AND date = CURRENT_DATE
+		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, actual_sent)
+		VALUES (gen_random_uuid(), $1, CURRENT_DATE, 1)
+		ON CONFLICT (ip_id, date) DO UPDATE SET actual_sent = mailing_ip_warmup_log.actual_sent + 1
 	`, ipID)
 	if err != nil {
 		log.Printf("[PMTA] Failed to update warmup log for %s: %v", ipID, err)

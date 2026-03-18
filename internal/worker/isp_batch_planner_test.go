@@ -62,6 +62,63 @@ func TestClassifySubscriberISP(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ISPPoolSuffix
+// ---------------------------------------------------------------------------
+
+func TestISPPoolSuffix(t *testing.T) {
+	tests := []struct {
+		isp  string
+		want string
+	}{
+		{"gmail", "gmail"},
+		{"yahoo", "yahoo"},
+		{"microsoft", "msft"},
+		{"apple", "apple"},
+		{"comcast", "comcast"},
+		{"att", "att"},
+		{"cox", "cox"},
+		{"charter", "charter"},
+		{"verizon", "general"},
+		{"protonmail", "general"},
+		{"zoho", "general"},
+		{"other", "general"},
+		{"", "general"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.isp, func(t *testing.T) {
+			assert.Equal(t, tt.want, ISPPoolSuffix(tt.isp))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractPoolSuffix
+// ---------------------------------------------------------------------------
+
+func TestExtractPoolSuffix(t *testing.T) {
+	tests := []struct {
+		poolName string
+		want     string
+	}{
+		{"db-gmail-pool", "gmail"},
+		{"ht-msft-pool", "msft"},
+		{"qf-general-pool", "general"},
+		{"mh-yahoo-pool", "yahoo"},
+		{"db-att-pool", "att"},
+		{"warmup-pool", ""},
+		{"default-pool", ""},
+		{"", ""},
+		{"nopool", ""},
+		{"single-pool", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.poolName, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractPoolSuffix(tt.poolName))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ComputeBatchPlan
 // ---------------------------------------------------------------------------
 

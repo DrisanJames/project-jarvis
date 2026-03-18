@@ -191,6 +191,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Sending Plans
 			r.Get("/sending-plans", svc.HandleGetSendingPlans)
 			r.Get("/delivery-servers", svc.HandleGetDeliveryServers)
+
+			// Infrastructure preflight check
+			r.Get("/preflight", s.HandlePreflightCheck)
 			
 			// ISP Agent Intelligence
 			r.Get("/isp-agents", svc.HandleGetISPAgents)

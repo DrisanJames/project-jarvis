@@ -104,6 +104,7 @@ type EmailMessage struct {
 	PreviewText  string // Pre-header text (injected as hidden span before <body> content)
 	ProfileID    string
 	ESPType      string
+	RecipientISP string // ISP classification for VMTA pool routing (e.g. "gmail", "yahoo")
 	Metadata     map[string]interface{}
 	Headers      map[string]string // Custom SMTP headers (List-Unsubscribe, X-Job, etc.)
 }
@@ -974,6 +975,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		PreviewText:  previewText,
 		ProfileID:    item.ProfileID,
 		ESPType:      item.ESPType,
+		RecipientISP: ClassifySubscriberISP(item.Email),
 		Headers:      headers,
 	}
 

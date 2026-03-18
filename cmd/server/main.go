@@ -1749,6 +1749,178 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_tracking_events_from_name_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS from_name_id UUID`},
 
 		{"add_campaigns_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS offer_id UUID`},
+
+		// =====================================================================
+		// Phase 6: Two-PMTA Multi-Server Infrastructure
+		// =====================================================================
+
+		// Step 6.1: Add pool_prefix column for ISP-aware pool routing
+		{"add_pool_prefix_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS pool_prefix TEXT DEFAULT ''`},
+
+		// Step 6.2: Seed PMTA servers
+		{"seed_pmta_server_a", `INSERT INTO mailing_pmta_servers (id, organization_id, name, host, smtp_port, mgmt_port, mgmt_api_key, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'PMTA Server A (OVH Original)', '15.204.101.125', 587, 19000, '', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_pmta_servers WHERE host = '15.204.101.125')`},
+		{"seed_pmta_server_b", `INSERT INTO mailing_pmta_servers (id, organization_id, name, host, smtp_port, mgmt_port, mgmt_api_key, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'PMTA Server B (OVH New)', '15.204.107.107', 587, 19000, '', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_pmta_servers WHERE host = '15.204.107.107')`},
+
+		// Step 6.3: Seed 36 ISP sub-pools (9 ISPs x 4 domains)
+		{"seed_pool_db_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-gmail-pool', 'DiscountBlog Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-yahoo-pool', 'DiscountBlog Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-msft-pool', 'DiscountBlog Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-apple-pool', 'DiscountBlog Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-comcast-pool', 'DiscountBlog Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-att-pool', 'DiscountBlog ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-cox-pool', 'DiscountBlog Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-charter-pool', 'DiscountBlog Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-general-pool', 'DiscountBlog General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-gmail-pool', 'QuizFiesta Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-yahoo-pool', 'QuizFiesta Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-msft-pool', 'QuizFiesta Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-apple-pool', 'QuizFiesta Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-comcast-pool', 'QuizFiesta Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-att-pool', 'QuizFiesta ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-cox-pool', 'QuizFiesta Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-charter-pool', 'QuizFiesta Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-general-pool', 'QuizFiesta General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-gmail-pool', 'HistoryThinking Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-yahoo-pool', 'HistoryThinking Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-msft-pool', 'HistoryThinking Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-apple-pool', 'HistoryThinking Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-comcast-pool', 'HistoryThinking Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-att-pool', 'HistoryThinking ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-cox-pool', 'HistoryThinking Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-charter-pool', 'HistoryThinking Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-general-pool', 'HistoryThinking General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-gmail-pool', 'MyOwnHealth Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-yahoo-pool', 'MyOwnHealth Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-msft-pool', 'MyOwnHealth Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-apple-pool', 'MyOwnHealth Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-comcast-pool', 'MyOwnHealth Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-att-pool', 'MyOwnHealth ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-cox-pool', 'MyOwnHealth Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-charter-pool', 'MyOwnHealth Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-general-pool', 'MyOwnHealth General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		// Step 6.4: Pause mta1 (.176) which is SBL-listed
+		{"phase6_pause_mta1", `UPDATE mailing_ip_addresses SET status = 'paused', updated_at = NOW() WHERE ip_address = '15.204.22.176'::inet AND status NOT IN ('paused', 'cold')`},
+
+		// Step 6.4b: Seed /28 warm IPs into ISP sub-pools and all /25 IPs
+		{"phase6_seed_all_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+    server_id_val UUID;
+    vmta_num INT;
+    ip_octet INT;
+    ip_text TEXT;
+    full_hostname TEXT;
+    i INT;
+BEGIN
+    -- /28 warm IPs: reassign from warmup-pool to ISP sub-pools
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('15.204.22.177', 'mta-db-gm1.mail.em.discountblog.com', 'db-gmail-pool', '15.204.101.125'),
+            ('15.204.22.178', 'mta-db-yh1.mail.em.discountblog.com', 'db-yahoo-pool', '15.204.101.125'),
+            ('15.204.22.179', 'mta-qf-gm1.mail.em.quizfiesta.com', 'qf-gmail-pool', '15.204.101.125'),
+            ('15.204.22.180', 'mta-qf-yh1.mail.em.quizfiesta.com', 'qf-yahoo-pool', '15.204.101.125'),
+            ('15.204.22.181', 'mta-db-ms1.mail.em.discountblog.com', 'db-msft-pool', '15.204.101.125'),
+            ('15.204.22.182', 'mta-qf-ms1.mail.em.quizfiesta.com', 'qf-msft-pool', '15.204.101.125'),
+            ('15.204.22.183', 'mta-db-ap1.mail.em.discountblog.com', 'db-apple-pool', '15.204.101.125'),
+            ('15.204.22.184', 'mta-qf-ap1.mail.em.quizfiesta.com', 'qf-apple-pool', '15.204.101.125'),
+            ('15.204.22.185', 'mta-db-cc1.mail.em.discountblog.com', 'db-comcast-pool', '15.204.101.125'),
+            ('15.204.22.186', 'mta-qf-cc1.mail.em.quizfiesta.com', 'qf-comcast-pool', '15.204.101.125'),
+            ('15.204.22.187', 'mta-db-at1.mail.em.discountblog.com', 'db-att-pool', '15.204.101.125'),
+            ('15.204.22.188', 'mta-qf-at1.mail.em.quizfiesta.com', 'qf-att-pool', '15.204.101.125'),
+            ('15.204.22.189', 'mta-db-cx1.mail.em.discountblog.com', 'db-cox-pool', '15.204.101.125'),
+            ('15.204.22.190', 'mta-qf-ch1.mail.em.quizfiesta.com', 'qf-charter-pool', '15.204.101.125'),
+            ('15.204.22.191', 'mta-db-gn1.mail.em.discountblog.com', 'db-general-pool', '15.204.101.125')
+        ) AS t(ip_addr, hostname, pool_name, server_host)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = rec.server_host;
+        INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+            warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+            cidr_block, rdns_verified, reputation_score, created_at, updated_at)
+        VALUES (gen_random_uuid(), org_id, rec.ip_addr::inet, rec.hostname, 'warmup', pool_id_val, server_id_val,
+            'warming', 1, 10000, NOW(), 'OVH', 'purchased', '15.204.22.176/28', true, 50.0, NOW(), NOW())
+        ON CONFLICT (ip_address) DO UPDATE SET
+            pool_id = pool_id_val, pmta_server_id = server_id_val, hostname = rec.hostname,
+            status = CASE WHEN mailing_ip_addresses.status = 'paused' THEN 'paused' ELSE 'warmup' END,
+            warmup_started_at = COALESCE(mailing_ip_addresses.warmup_started_at, NOW()), updated_at = NOW();
+    END LOOP;
+
+    -- /25 IPs: algorithmically generated from canonical block definitions
+    -- (start_octet, count, prefix, isp_code, pool_suffix, mail_domain, server_host, cidr, vmta_start_num)
+    FOR rec IN
+        SELECT * FROM (VALUES
+            (0,7,'db','gm','gmail','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (7,7,'db','yh','yahoo','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (14,7,'db','ms','msft','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (21,6,'db','ap','apple','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (27,6,'db','cc','comcast','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (33,6,'db','at','att','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (39,6,'db','cx','cox','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (45,6,'db','ch','charter','em.discountblog.com','15.204.101.125','144.225.178.0/25',1),
+            (51,5,'db','gn','general','em.discountblog.com','15.204.101.125','144.225.178.0/25',2),
+            (64,7,'qf','gm','gmail','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (71,7,'qf','yh','yahoo','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (78,7,'qf','ms','msft','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (85,6,'qf','ap','apple','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (91,6,'qf','cc','comcast','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (97,6,'qf','at','att','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (103,7,'qf','cx','cox','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',1),
+            (110,5,'qf','ch','charter','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',2),
+            (115,6,'qf','gn','general','em.quizfiesta.com','15.204.101.125','144.225.178.0/25',1),
+            (128,8,'ht','gm','gmail','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (136,8,'ht','yh','yahoo','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (144,8,'ht','ms','msft','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (152,7,'ht','ap','apple','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (159,7,'ht','cc','comcast','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (166,7,'ht','at','att','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (173,7,'ht','cx','cox','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (180,6,'ht','ch','charter','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (186,6,'ht','gn','general','em.historythinking.com','15.204.107.107','144.225.178.128/25',1),
+            (192,8,'mh','gm','gmail','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (200,8,'mh','yh','yahoo','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (208,8,'mh','ms','msft','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (216,7,'mh','ap','apple','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (223,7,'mh','cc','comcast','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (230,7,'mh','at','att','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (237,7,'mh','cx','cox','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (244,6,'mh','ch','charter','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1),
+            (250,6,'mh','gn','general','em.myownhealth.net','15.204.107.107','144.225.178.128/25',1)
+        ) AS t(start_octet, ip_count, prefix, isp_code, pool_suffix, mail_domain, server_host, cidr, vmta_start)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools
+            WHERE name = rec.prefix || '-' || rec.pool_suffix || '-pool' AND organization_id = org_id;
+        SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = rec.server_host;
+        vmta_num := rec.vmta_start;
+        FOR i IN 0..rec.ip_count-1 LOOP
+            ip_octet := rec.start_octet + i;
+            ip_text := '144.225.178.' || ip_octet;
+            full_hostname := 'mta-' || rec.prefix || '-' || rec.isp_code || vmta_num || '.mail.' || rec.mail_domain;
+            INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+                warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+                cidr_block, rdns_verified, created_at, updated_at)
+            VALUES (gen_random_uuid(), org_id, ip_text::inet, full_hostname, 'warmup', pool_id_val, server_id_val,
+                'warming', 1, 50, NOW(), 'ovh', 'leased', rec.cidr, false, NOW(), NOW())
+            ON CONFLICT (ip_address) DO UPDATE SET
+                pool_id = pool_id_val, pmta_server_id = server_id_val, hostname = full_hostname,
+                warmup_started_at = COALESCE(mailing_ip_addresses.warmup_started_at, NOW()), updated_at = NOW();
+            vmta_num := vmta_num + 1;
+        END LOOP;
+    END LOOP;
+END $$`},
+
+		// Step 6.5: Update sending profiles for multi-PMTA
+		{"phase6_ht_mh_to_server_b", `UPDATE mailing_sending_profiles SET smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain IN ('em.historythinking.com', 'em.myownhealth.net') AND vendor_type = 'pmta' AND smtp_host = '15.204.101.125'`},
+		{"phase6_pool_prefix_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
+		{"phase6_pool_prefix_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
+		{"phase6_pool_prefix_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
+		{"phase6_pool_prefix_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
+		{"phase6_ip_pool_db", `UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
+		{"phase6_ip_pool_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
+		{"phase6_ip_pool_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
+		{"phase6_ip_pool_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 	}
 
 	var ok, fail int
@@ -1946,6 +2118,66 @@ func runAdminMigrations() {
 				  AND pool_id != wp_id;
 			END IF;
 		END $$`},
+
+		// =====================================================================
+		// Phase 6 Overrides: Re-establish ISP-aware state after legacy fixes
+		// The migrations above (fix_profiles_to_warmup_pool, nuke_warmup_limits_v2,
+		// fix_warmup_ips_177_179_pool) predate Phase 6 and undo its changes.
+		// These overrides run last to ensure Phase 6 state is authoritative.
+		// =====================================================================
+
+		{"phase6_final_ip_pool_profiles", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool != 'qf-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool != 'ht-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool != 'mh-gmail-pool';
+END $$`},
+
+		{"phase6_final_pool_prefix", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'db');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'qf');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'ht');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'mh');
+END $$`},
+
+		{"phase6_final_25_warmup_limits", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 50 WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND status = 'warmup' AND warmup_daily_limit != 50`},
+
+		{"phase6_final_28_reassign", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('15.204.22.177', 'db-gmail-pool'),
+            ('15.204.22.178', 'db-yahoo-pool'),
+            ('15.204.22.179', 'qf-gmail-pool'),
+            ('15.204.22.180', 'qf-yahoo-pool'),
+            ('15.204.22.181', 'db-msft-pool'),
+            ('15.204.22.182', 'qf-msft-pool'),
+            ('15.204.22.183', 'db-apple-pool'),
+            ('15.204.22.184', 'qf-apple-pool'),
+            ('15.204.22.185', 'db-comcast-pool'),
+            ('15.204.22.186', 'qf-comcast-pool'),
+            ('15.204.22.187', 'db-att-pool'),
+            ('15.204.22.188', 'qf-att-pool'),
+            ('15.204.22.189', 'db-cox-pool'),
+            ('15.204.22.190', 'qf-charter-pool'),
+            ('15.204.22.191', 'db-general-pool')
+        ) AS t(ip_addr, pool_name)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+            WHERE ip_address = rec.ip_addr::inet AND pool_id != pool_id_val;
+        END IF;
+    END LOOP;
+END $$`},
+
+		{"phase6_final_176_paused", `UPDATE mailing_ip_addresses SET status = 'paused', updated_at = NOW() WHERE ip_address = '15.204.22.176'::inet AND status NOT IN ('paused')`},
 	}
 
 	var ok, fail int
