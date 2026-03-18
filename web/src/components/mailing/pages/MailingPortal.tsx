@@ -75,10 +75,19 @@ const tabs: Tab[] = [
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
 
+interface VersionInfo {
+  version: string;
+  git_sha: string;
+  build_time: string;
+  go_version: string;
+  deployed_at: string;
+}
+
 export const MailingPortal: React.FC = () => {
   const { organization } = useAuth();
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [realTimeStats, setRealTimeStats] = useState<any>(null);
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
 
   // Cross-component offer state — when user clicks "Use This Offer" in Offer Center,
   // we switch to Campaign Center and pass the selected offer through.
@@ -108,9 +117,17 @@ export const MailingPortal: React.FC = () => {
         .catch(() => {});
     };
     fetchStats();
-    const interval = setInterval(fetchStats, 30000); // Refresh every 30s
+    const interval = setInterval(fetchStats, 30000);
     return () => clearInterval(interval);
   }, [organization]);
+
+  // Fetch version info once on mount
+  useEffect(() => {
+    fetch('/api/mailing/version', { credentials: 'include' })
+      .then(res => res.json())
+      .then(data => setVersionInfo(data))
+      .catch(() => {});
+  }, []);
 
   const renderContent = () => {
     switch (activeTab) {
@@ -232,11 +249,27 @@ export const MailingPortal: React.FC = () => {
             <span className={`status-dot ${realTimeStats?.pmta_connected ? 'active' : ''}`}></span>
             <span>{realTimeStats?.pmta_connected ? `PMTA Connected (${realTimeStats.pmta_server_count})` : realTimeStats ? 'PMTA Offline' : 'Connecting...'}</span>
           </div>
-          {/* Back to Analytics hidden — PMTA-only mode. Uncomment to restore.
-          <button className="back-to-analytics" onClick={() => window.location.href = '/'}>
-            <FontAwesomeIcon icon={faArrowLeft} /> Back to Analytics Platform
-          </button>
-          */}
+          {versionInfo && (
+            <div className="sidebar-version-info">
+              <div className="version-row">
+                <span className="version-label">Platform</span>
+                <span className="version-value">{versionInfo.version || 'dev'}</span>
+              </div>
+              <div className="version-row">
+                <span className="version-label">Build</span>
+                <span className="version-value">{versionInfo.git_sha ? versionInfo.git_sha.slice(0, 7) : '—'}</span>
+              </div>
+              <div className="version-row">
+                <span className="version-label">Deployed</span>
+                <span className="version-value">
+                  {versionInfo.deployed_at
+                    ? new Date(versionInfo.deployed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+                      new Date(versionInfo.deployed_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </aside>
 

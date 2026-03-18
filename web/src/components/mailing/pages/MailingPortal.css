@@ -640,7 +640,9 @@
   .sidebar-header .subtitle,
   .nav-label,
   .quick-stats,
-  .analytics-link {
+  .analytics-link,
+  .connection-status,
+  .sidebar-version-info {
     display: none;
   }
   
@@ -725,6 +727,35 @@
 @keyframes statusPulse {
   0%, 100% { box-shadow: 0 0 6px rgba(0, 229, 255, 0.6), 0 0 12px rgba(0, 229, 255, 0.2); }
   50% { box-shadow: 0 0 8px rgba(0, 229, 255, 0.8), 0 0 20px rgba(0, 229, 255, 0.35); }
+}
+
+/* Sidebar Version Info */
+.sidebar-version-info {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.version-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.version-label {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 600;
+}
+
+.version-value {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-weight: 500;
 }
 
 /* Loading State */

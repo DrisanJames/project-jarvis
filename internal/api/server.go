@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/ignite/sparkpost-monitor/internal/agent"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
@@ -28,6 +30,7 @@ type Server struct {
 	router       *chi.Mux
 	apiRouter    chi.Router // sub-router for /api (carries auth middleware)
 	mailingDB    *sql.DB
+	startedAt    time.Time
 	// Image CDN configuration
 	s3Client     *s3.Client
 	imageBucket  string
@@ -64,6 +67,7 @@ func NewServer(
 		handlers:  handlers,
 		router:    router,
 		apiRouter: apiRouter,
+		startedAt: time.Now(),
 	}
 }
 
@@ -86,6 +90,7 @@ func NewServerWithAuth(
 		authManager: authManager,
 		router:      router,
 		apiRouter:   apiRouter,
+		startedAt:   time.Now(),
 	}
 }
 
@@ -122,4 +127,17 @@ func (s *Server) Handler() http.Handler {
 // Returns nil if the engine has not been initialized yet.
 func (s *Server) GetRateRegistry() *engine.ISPRateRegistry {
 	return s.rateRegistry
+}
+
+// HandleVersion returns build info and deployment timestamp for the UI sidebar.
+func (s *Server) HandleVersion(w http.ResponseWriter, r *http.Request) {
+	bi := buildinfo.Current()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"version":     bi.Version,
+		"git_sha":     bi.GitSHA,
+		"build_time":  bi.BuildTime,
+		"go_version":  bi.GoVersion,
+		"deployed_at": s.startedAt.UTC().Format(time.RFC3339),
+	})
 }

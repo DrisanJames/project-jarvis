@@ -139,6 +139,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/site-pixel/traffic/stream", siteEventsHandler.HandleSiteTrafficStream)
 			r.Get("/site-pixel/domains", siteEventsHandler.HandleGetTrackedDomains)
 
+			// Platform info
+			r.Get("/version", s.HandleVersion)
+
 			// Core CRUD
 			r.Get("/dashboard", svc.HandleDashboard)
 			r.Get("/lists", svc.HandleGetLists)
