@@ -73,6 +73,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build-image.outputs.image_digest }}
           IMAGE_TAG: ${{ steps.build-image.outputs.image_tag }}
           BUILD_TIME: ${{ steps.build-meta.outputs.build_time }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           CURRENT_TASK_DEF=$(aws ecs describe-services \
             --cluster "$ECS_CLUSTER" \

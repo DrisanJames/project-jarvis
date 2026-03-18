@@ -93,31 +93,43 @@ func ensureAgentTables(db *sql.DB) {
 }
 
 // EmailMarketingAgent is a standalone AI email marketing strategist agent.
+// Prefers Anthropic Claude when ANTHROPIC_API_KEY is set; falls back to OpenAI.
 type EmailMarketingAgent struct {
-	db         *sql.DB
-	openAIKey  string
-	model      string
-	httpClient *http.Client
-	pmtaSvc    *PMTACampaignService
-	segAPI     *SegmentationAPI
-	aiContent  *mailing.AIContentService
+	db            *sql.DB
+	openAIKey     string
+	anthropicKey  string
+	model         string
+	useAnthropic  bool
+	httpClient    *http.Client
+	pmtaSvc       *PMTACampaignService
+	segAPI        *SegmentationAPI
+	aiContent     *mailing.AIContentService
 }
 
 func NewEmailMarketingAgent(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACampaignService, segAPI *SegmentationAPI) *EmailMarketingAgent {
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	useAnthropic := anthropicKey != ""
+
 	model := cfg.Model
-	if model == "" {
+	if useAnthropic {
+		model = "claude-sonnet-4-20250514"
+		log.Printf("[MarketingAgent] Using Anthropic Claude (%s)", model)
+	} else if model == "" {
 		model = "gpt-4.1"
 	}
+
 	return &EmailMarketingAgent{
-		db:        db,
-		openAIKey: cfg.APIKey,
-		model:     model,
+		db:           db,
+		openAIKey:    cfg.APIKey,
+		anthropicKey: anthropicKey,
+		model:        model,
+		useAnthropic: useAnthropic,
 		httpClient: &http.Client{
 			Timeout: 180 * time.Second,
 		},
 		pmtaSvc:   pmtaSvc,
 		segAPI:    segAPI,
-		aiContent: mailing.NewAIContentService(db, os.Getenv("ANTHROPIC_API_KEY"), cfg.APIKey),
+		aiContent: mailing.NewAIContentService(db, anthropicKey, cfg.APIKey),
 	}
 }
 
@@ -190,7 +202,7 @@ type agentOpenAIResp struct {
 // ---------------------------------------------------------------------------
 
 func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request) {
-	if a.openAIKey == "" {
+	if a.anthropicKey == "" && a.openAIKey == "" {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "AI not configured"})
 		return
 	}
@@ -282,9 +294,10 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 	memories := a.loadMemories(ctx, orgID)
 	strategies := a.loadDomainStrategies(ctx, orgID)
 
-	// ── Build OpenAI messages ────────────────────────────────────────────
+	// ── Build messages ──────────────────────────────────────────────────
+	systemPrompt := buildAgentSystemPrompt(memories, strategies)
 	messages := []agentOpenAIMsg{
-		{Role: "system", Content: buildAgentSystemPrompt(memories, strategies)},
+		{Role: "system", Content: systemPrompt},
 	}
 	messages = append(messages, history...)
 	messages = append(messages, agentOpenAIMsg{Role: "user", Content: req.Message})
@@ -292,13 +305,7 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 	// Persist user message
 	a.persistMessage(ctx, convoID, "user", req.Message, nil, "")
 
-	openaiReq := agentOpenAIReq{
-		Model:               a.model,
-		Messages:            messages,
-		Tools:               getAgentTools(),
-		Temperature:         0.3,
-		MaxCompletionTokens: 8000,
-	}
+	tools := getAgentTools()
 
 	// ── Tool-calling loop ────────────────────────────────────────────────
 	var actionsTaken []string
@@ -306,9 +313,22 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 	var assistantContent string
 
 	for i := 0; i < 15; i++ {
-		resp, err := a.callAgentOpenAI(ctx, openaiReq)
+		var resp *agentOpenAIResp
+		var err error
+		if a.useAnthropic {
+			resp, err = a.callClaude(ctx, systemPrompt, messages, tools)
+		} else {
+			openaiReq := agentOpenAIReq{
+				Model:               a.model,
+				Messages:            messages,
+				Tools:               tools,
+				Temperature:         0.3,
+				MaxCompletionTokens: 8000,
+			}
+			resp, err = a.callAgentOpenAI(ctx, openaiReq)
+		}
 		if err != nil {
-			log.Printf("[MarketingAgent] OpenAI error: %v", err)
+			log.Printf("[MarketingAgent] LLM error: %v", err)
 			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "AI service error"})
 			return
 		}
@@ -320,11 +340,10 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 		choice := resp.Choices[0]
 
 		if choice.FinishReason == "tool_calls" && len(choice.Message.ToolCalls) > 0 {
-			// Persist the assistant tool-call message
 			tcJSON, _ := json.Marshal(choice.Message.ToolCalls)
 			a.persistMessage(ctx, convoID, "assistant", "", tcJSON, "")
 
-			openaiReq.Messages = append(openaiReq.Messages, choice.Message)
+			messages = append(messages, choice.Message)
 			for _, tc := range choice.Message.ToolCalls {
 				result, action := a.executeAgentTool(ctx, orgID, tc.Function.Name, tc.Function.Arguments)
 				if action != "" {
@@ -336,7 +355,7 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 
 				a.persistMessage(ctx, convoID, "tool", result, nil, tc.ID)
 
-				openaiReq.Messages = append(openaiReq.Messages, agentOpenAIMsg{
+				messages = append(messages, agentOpenAIMsg{
 					Role:       "tool",
 					Content:    result,
 					ToolCallID: tc.ID,
@@ -572,6 +591,183 @@ func (a *EmailMarketingAgent) callAgentOpenAI(ctx context.Context, req agentOpen
 		return nil, fmt.Errorf("OpenAI: %s", result.Error.Message)
 	}
 	return &result, nil
+}
+
+// ---------------------------------------------------------------------------
+// callClaude — POST to Anthropic Messages API, returning normalized response
+// ---------------------------------------------------------------------------
+
+func (a *EmailMarketingAgent) callClaude(ctx context.Context, systemPrompt string, msgs []agentOpenAIMsg, tools []agentToolDef) (*agentOpenAIResp, error) {
+	// Convert tools to Anthropic format
+	type claudeTool struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		InputSchema interface{} `json:"input_schema"`
+	}
+	var cTools []claudeTool
+	for _, t := range tools {
+		cTools = append(cTools, claudeTool{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			InputSchema: t.Function.Parameters,
+		})
+	}
+
+	// Convert messages: skip system (goes in separate field), convert tool results
+	type contentBlock struct {
+		Type      string      `json:"type"`
+		Text      string      `json:"text,omitempty"`
+		ID        string      `json:"id,omitempty"`
+		Name      string      `json:"name,omitempty"`
+		Input     interface{} `json:"input,omitempty"`
+		ToolUseID string      `json:"tool_use_id,omitempty"`
+		Content   string      `json:"content,omitempty"`
+	}
+	type claudeMsg struct {
+		Role    string      `json:"role"`
+		Content interface{} `json:"content"` // string or []contentBlock
+	}
+
+	var cMsgs []claudeMsg
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			var blocks []contentBlock
+			if m.Content != "" {
+				blocks = append(blocks, contentBlock{Type: "text", Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				var input interface{}
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+				if input == nil {
+					input = map[string]interface{}{}
+				}
+				blocks = append(blocks, contentBlock{Type: "tool_use", ID: tc.ID, Name: tc.Function.Name, Input: input})
+			}
+			cMsgs = append(cMsgs, claudeMsg{Role: "assistant", Content: blocks})
+			continue
+		}
+
+		if m.Role == "tool" {
+			// Anthropic: tool results are user messages with tool_result content blocks
+			block := contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}
+			// Merge consecutive tool results into one user message
+			if len(cMsgs) > 0 {
+				last := &cMsgs[len(cMsgs)-1]
+				if last.Role == "user" {
+					if blocks, ok := last.Content.([]contentBlock); ok {
+						last.Content = append(blocks, block)
+						continue
+					}
+				}
+			}
+			cMsgs = append(cMsgs, claudeMsg{Role: "user", Content: []contentBlock{block}})
+			continue
+		}
+
+		cMsgs = append(cMsgs, claudeMsg{Role: m.Role, Content: m.Content})
+	}
+
+	reqBody := map[string]interface{}{
+		"model":      a.model,
+		"max_tokens": 8000,
+		"system":     systemPrompt,
+		"messages":   cMsgs,
+		"tools":      cTools,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal claude request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", a.anthropicKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("claude API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Anthropic response
+	var claudeResp struct {
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text,omitempty"`
+			ID    string          `json:"id,omitempty"`
+			Name  string          `json:"name,omitempty"`
+			Input json.RawMessage `json:"input,omitempty"`
+		} `json:"content"`
+		StopReason string `json:"stop_reason"`
+		Error      *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &claudeResp); err != nil {
+		return nil, fmt.Errorf("parse claude response: %w (body: %s)", err, string(respBody[:min(len(respBody), 500)]))
+	}
+	if claudeResp.Error != nil {
+		return nil, fmt.Errorf("claude: %s", claudeResp.Error.Message)
+	}
+
+	// Normalize to agentOpenAIResp format
+	normalized := &agentOpenAIResp{}
+	var textContent string
+	var toolCalls []agentToolCall
+
+	for _, block := range claudeResp.Content {
+		switch block.Type {
+		case "text":
+			textContent += block.Text
+		case "tool_use":
+			args := string(block.Input)
+			if args == "" || args == "null" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, agentToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: agentFunctionCall{
+					Name:      block.Name,
+					Arguments: args,
+				},
+			})
+		}
+	}
+
+	finishReason := "stop"
+	if claudeResp.StopReason == "tool_use" {
+		finishReason = "tool_calls"
+	}
+
+	normalized.Choices = append(normalized.Choices, struct {
+		Message      agentOpenAIMsg `json:"message"`
+		FinishReason string         `json:"finish_reason"`
+	}{
+		Message: agentOpenAIMsg{
+			Role:      "assistant",
+			Content:   textContent,
+			ToolCalls: toolCalls,
+		},
+		FinishReason: finishReason,
+	})
+
+	return normalized, nil
 }
 
 // ---------------------------------------------------------------------------
