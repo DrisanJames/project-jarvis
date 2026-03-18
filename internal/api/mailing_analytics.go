@@ -147,8 +147,8 @@ func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r
 		SELECT DATE_TRUNC('hour', event_time) as hour,
 			   SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 			   SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			   SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
-			   SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces
+			   SUM(CASE WHEN event_type = 'bounced' AND ` + HardBounceSQL("mailing_tracking_events") + ` THEN 1 ELSE 0 END) as hard_bounces,
+			   SUM(CASE WHEN event_type = 'bounced' AND NOT (` + HardBounceSQL("mailing_tracking_events") + `) THEN 1 ELSE 0 END) as soft_bounces
 		FROM mailing_tracking_events
 		WHERE campaign_id = $1
 		GROUP BY DATE_TRUNC('hour', event_time)
@@ -182,8 +182,8 @@ func (s *AdvancedMailingService) HandleCampaignByDomain(w http.ResponseWriter, r
 		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN t.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND ` + HardBounceSQL("t") + ` THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (` + HardBounceSQL("t") + `) THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM mailing_tracking_events t
 		JOIN mailing_subscribers s ON s.id = t.subscriber_id
@@ -307,8 +307,8 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN event_type = 'bounced' AND ` + HardBounceSQL("mailing_tracking_events") + ` THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN event_type = 'bounced' AND NOT (` + HardBounceSQL("mailing_tracking_events") + `) THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubscribes
@@ -682,9 +682,9 @@ func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWrite
 	}
 
 	rows, _ := s.db.QueryContext(ctx, `
-		SELECT COALESCE(bounce_type, event_type) as type, COUNT(*) as count
+		SELECT COALESCE(NULLIF(bounce_type,''), 'unknown') as type, COUNT(*) as count
 		FROM mailing_tracking_events
-		WHERE event_type IN ('hard_bounce', 'soft_bounce', 'bounced')
+		WHERE event_type = 'bounced'
 		  AND event_at >= $1 AND event_at <= $2
 		GROUP BY COALESCE(bounce_type, event_type)
 		ORDER BY count DESC
@@ -807,10 +807,10 @@ func (s *AdvancedMailingService) infraLevel1(ctx context.Context, start, end tim
 
 	evtQuery := fmt.Sprintf(`
 		SELECT COALESCE(NULLIF(t.sending_domain, ''), 'unknown') as entity,
-		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id END) as opens,
-		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id END) as clicks,
-		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'bounced') THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND ` + HardBounceSQL("t") + ` THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (` + HardBounceSQL("t") + `) THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
 		FROM mailing_tracking_events t
@@ -1007,10 +1007,10 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 		SELECT %s as entity,
 		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		       COUNT(DISTINCT CASE WHEN t.event_type = 'opened' THEN t.subscriber_id ELSE NULL END) as opens,
-		       COUNT(DISTINCT CASE WHEN t.event_type = 'clicked' THEN t.subscriber_id ELSE NULL END) as clicks,
-		       SUM(CASE WHEN t.event_type IN ('hard_bounce', 'bounced') THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND ` + HardBounceSQL("t") + ` THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (` + HardBounceSQL("t") + `) THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
 		       SUM(CASE WHEN t.event_type IN ('deferred', 'deferral') THEN 1 ELSE 0 END) as deferred
 		FROM %s
@@ -1729,8 +1729,8 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 			SUM(CASE WHEN d.event_type = 'opened' %s THEN 1 ELSE 0 END) as opens,
 			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			SUM(CASE WHEN d.event_type IN ('bounced','hard_bounce') THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+			SUM(CASE WHEN d.event_type = 'bounced' AND ` + HardBounceSQL("d") + ` THEN 1 ELSE 0 END) as hard_bounces,
+			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (` + HardBounceSQL("d") + `) THEN 1 ELSE 0 END) as soft_bounces,
 			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM (%s) d
 		WHERE d.dom IN %s
@@ -1883,8 +1883,8 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	dailyQ := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at) as day,
 		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		SUM(CASE WHEN d.event_type = 'hard_bounce' OR (d.event_type = 'bounced' AND COALESCE(d.bounce_type,'') IN ('bad-mailbox','bad-domain','no-answer-from-host','inactive-mailbox','policy-related','routing-errors','bad-connection')) THEN 1 ELSE 0 END) as hard_bounces,
-		SUM(CASE WHEN d.event_type = 'soft_bounce' OR d.event_type = 'soft_bounced' OR (d.event_type = 'bounced' AND COALESCE(d.bounce_type,'') NOT IN ('bad-mailbox','bad-domain','no-answer-from-host','inactive-mailbox','policy-related','routing-errors','bad-connection')) THEN 1 ELSE 0 END) as soft_bounces,
+		SUM(CASE WHEN d.event_type = 'bounced' AND ` + HardBounceSQL("d") + ` THEN 1 ELSE 0 END) as hard_bounces,
+		SUM(CASE WHEN d.event_type = 'bounced' AND NOT (` + HardBounceSQL("d") + `) THEN 1 ELSE 0 END) as soft_bounces,
 		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complained,
 		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
@@ -1921,7 +1921,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	// 2. Bounce category breakdown per ISP
 	catQ := fmt.Sprintf(`SELECT %s as isp, COALESCE(NULLIF(d.bounce_type,''), 'unknown') as category, COUNT(*) as cnt
 	FROM (%s) d
-	WHERE d.event_type IN ('bounced','hard_bounce','soft_bounce')
+	WHERE d.event_type = 'bounced'
 	GROUP BY isp, category`, ispDomainCaseSQL, domSubquery)
 
 	catRows, _ := s.db.QueryContext(ctx, catQ, subqueryArgs...)

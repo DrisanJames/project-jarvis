@@ -202,8 +202,8 @@ func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
 }
 
 func TestIsHardBounceCategory(t *testing.T) {
-	hard := []string{"bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors"}
-	soft := []string{"quota-issues", "spam-related", "policy-related", "protocol-errors", "content-related", "other", ""}
+	hard := []string{"hard", "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors", "policy-related", "bad-connection"}
+	soft := []string{"quota-issues", "spam-related", "protocol-errors", "content-related", "other", ""}
 
 	for _, cat := range hard {
 		assert.True(t, isHardBounceCategory(cat), "category %q should be hard", cat)

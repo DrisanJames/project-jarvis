@@ -205,10 +205,36 @@ func (r *MetricsResult) computeRates() {
 	}
 }
 
+// HardBounceCategories is the canonical list of bounce_type values that
+// indicate a permanent delivery failure. Used by metrics.go, engine/ingest.go,
+// and all analytics handlers. Any change here propagates everywhere.
+var HardBounceCategories = []string{
+	"hard", "bad-mailbox", "bad-domain", "inactive-mailbox",
+	"no-answer-from-host", "routing-errors", "policy-related", "bad-connection",
+}
+
+// IsHardBounceCategory returns true if the given PMTA bounce category
+// represents a permanent (hard) bounce.
+func IsHardBounceCategory(cat string) bool {
+	for _, c := range HardBounceCategories {
+		if c == cat {
+			return true
+		}
+	}
+	return false
+}
+
 // hardBounceSQL matches both the send_worker format ("hard") and the PMTA
 // ingest format (raw PMTA categories). This ensures ComputeMetrics correctly
 // classifies bounces regardless of which write path created the record.
-const hardBounceSQL = `COALESCE(t.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors')`
+var hardBounceSQL = `COALESCE(t.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
+
+// HardBounceSQL returns the canonical SQL fragment for identifying hard bounces
+// in mailing_tracking_events. Use this instead of hardcoding bounce_type lists.
+// The alias parameter is the table alias (e.g. "t", "d", "te").
+func HardBounceSQL(alias string) string {
+	return `COALESCE(` + alias + `.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
+}
 
 // ── Query building helpers ───────────────────────────────────────────────────
 

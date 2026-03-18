@@ -242,8 +242,8 @@ func (a *EmailMarketingAgent) toolListCampaigns(ctx context.Context, orgID strin
 	q := `SELECT id, name, status, COALESCE(from_email,''),
 	             sent_count, COALESCE(open_count,0), COALESCE(click_count,0),
 	             COALESCE(bounce_count,0),
-	             CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END,
-	             CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
+	             COALESCE(hard_bounce_count,0),
+	             COALESCE(soft_bounce_count,0),
 	             COALESCE(complaint_count,0),
 	             scheduled_at, created_at
 	      FROM mailing_campaigns WHERE organization_id = $1`
@@ -300,8 +300,8 @@ func (a *EmailMarketingAgent) toolGetCampaignDetails(ctx context.Context, orgID 
 		`SELECT id, name, status, COALESCE(from_email,''), sent_count,
 		        COALESCE(open_count,0), COALESCE(click_count,0),
 		        COALESCE(bounce_count,0),
-		        CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END,
-		        CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
+		        COALESCE(hard_bounce_count,0),
+		        COALESCE(soft_bounce_count,0),
 		        COALESCE(complaint_count,0),
 		        pmta_config::text, scheduled_at, created_at
 		 FROM mailing_campaigns WHERE id::text LIKE $1 AND organization_id = $2`,

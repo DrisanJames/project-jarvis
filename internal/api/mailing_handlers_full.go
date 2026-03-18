@@ -261,13 +261,22 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	`).Scan(&totalSubs, &totalLists)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
 
-	var totalSent, totalOpens, totalClicks int
+	// Use ComputeMetrics for consistent performance stats (last 30 days by default)
+	perfStart := time.Now().AddDate(0, 0, -30)
+	perfMetrics, _ := ComputeMetrics(ctx, svc.db, MetricsFilter{
+		StartDate: perfStart,
+		EndDate:   time.Now(),
+	})
+	totalSent := perfMetrics.Sent
+	totalOpens := perfMetrics.Opens
+	totalClicks := perfMetrics.Clicks
+
 	var totalRevenue float64
 	svc.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(sent_count),0), COALESCE(SUM(open_count),0), 
-			   COALESCE(SUM(click_count),0), COALESCE(SUM(revenue),0)
+		SELECT COALESCE(SUM(revenue),0)
 		FROM mailing_campaigns
-	`).Scan(&totalSent, &totalOpens, &totalClicks, &totalRevenue)
+		WHERE COALESCE(started_at, created_at) >= $1
+	`, perfStart).Scan(&totalRevenue)
 
 	var suppressed int
 	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressed); err != nil {
@@ -334,20 +343,21 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	dashboard["daily_utilization"] = dailyUtilization
 	dashboard["daily_remaining"] = dailyCapacity - dailySentToday
 
-	openRate := 0.0
-	clickRate := 0.0
-	if totalSent > 0 {
-		openRate = float64(totalOpens) / float64(totalSent)
-		clickRate = float64(totalClicks) / float64(totalSent)
-	}
-
 	dashboard["performance"] = map[string]interface{}{
-		"total_sent":    totalSent,
-		"total_opens":   totalOpens,
-		"total_clicks":  totalClicks,
-		"total_revenue": totalRevenue,
-		"open_rate":     openRate,
-		"click_rate":    clickRate,
+		"total_sent":       totalSent,
+		"total_opens":      totalOpens,
+		"total_clicks":     totalClicks,
+		"total_revenue":    totalRevenue,
+		"open_rate":        perfMetrics.OpenRate / 100, // frontend expects 0-1 range
+		"click_rate":       perfMetrics.ClickRate / 100,
+		"hard_bounces":     perfMetrics.HardBounces,
+		"soft_bounces":     perfMetrics.SoftBounces,
+		"complaints":       perfMetrics.Complaints,
+		"delivered":        perfMetrics.Delivered,
+		"hard_bounce_rate": perfMetrics.HardBounceRate,
+		"soft_bounce_rate": perfMetrics.SoftBounceRate,
+		"complaint_rate":   perfMetrics.ComplaintRate,
+		"delivery_rate":    perfMetrics.DeliveryRate,
 	}
 
 	var recentCampaigns []map[string]interface{}
