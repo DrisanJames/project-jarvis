@@ -904,6 +904,30 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
   const [showUpload, setShowUpload] = useState(false);
   const [htmlContent, setHtmlContent] = useState('');
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState('');
+  const [genResult, setGenResult] = useState('');
+
+  const generateCreatives = async () => {
+    setGenerating(true);
+    setGenError('');
+    setGenResult('');
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/creatives/generate`, {
+        method: 'POST', credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setGenResult(`Generated ${data.generated ?? 0} creatives`);
+        onRefresh();
+      } else {
+        setGenError(data.error || `Generation failed (${res.status})`);
+      }
+    } catch {
+      setGenError('Network error during generation');
+    }
+    setGenerating(false);
+  };
 
   const uploadCreative = async () => {
     if (!htmlContent.trim()) return;
@@ -930,11 +954,30 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        <button style={btnPrimary} onClick={() => setShowUpload(!showUpload)}>
-          {showUpload ? 'Cancel' : 'Upload Creative'}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
+        <button
+          style={{ ...btnPrimary, background: generating ? '#6366f1' : '#818cf8', opacity: generating ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
+          onClick={generateCreatives}
+          disabled={generating}
+        >
+          {generating ? 'Generating ~10 Creatives…' : 'Generate Creatives'}
         </button>
+        <button style={btnGhost} onClick={() => setShowUpload(!showUpload)}>
+          {showUpload ? 'Cancel' : 'Upload Manual'}
+        </button>
+        {generating && (
+          <span style={{ fontSize: 11, color: '#f59e0b' }}>This may take 1-2 minutes</span>
+        )}
+        {genResult && !generating && (
+          <span style={{ fontSize: 11, color: '#22c55e' }}>{genResult}</span>
+        )}
       </div>
+
+      {genError && (
+        <div style={{ padding: 10, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
+          {genError}
+        </div>
+      )}
 
       {showUpload && (
         <div style={{ background: '#0d1526', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14, marginBottom: 14 }}>
@@ -954,10 +997,13 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
       <div className="offer-mgmt-cards">
         {creatives.map(c => (
           <div key={c.id} className="offer-mgmt-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>v{c.version}</span>
               <span className={statusBadgeClass(c.status)}>{c.status}</span>
             </div>
+            {c.approval_notes && (
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.3 }}>{c.approval_notes}</div>
+            )}
 
             {c.html_content && (
               <div style={{ background: '#0a0f1a', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>

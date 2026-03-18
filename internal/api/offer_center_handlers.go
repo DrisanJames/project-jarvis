@@ -107,6 +107,7 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
 	// Offer Creatives (mailing_offer_creatives, not mailing_creative_library)
 	r.Get("/offer-center/offers/{id}/creatives", och.HandleListOfferCreatives)
 	r.Post("/offer-center/offers/{id}/creatives", och.HandleCreateOfferCreative)
+	r.Post("/offer-center/offers/{id}/creatives/generate", och.HandleGenerateCreatives)
 	r.Put("/offer-center/offers/{id}/creatives/{cid}", och.HandleUpdateOfferCreative)
 	r.Delete("/offer-center/offers/{id}/creatives/{cid}", och.HandleDeleteOfferCreative)
 
