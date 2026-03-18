@@ -603,6 +603,7 @@ type PMTAISPScheduleInput struct {
 // PMTACampaignInput is the deploy payload for creating a PMTA-routed campaign.
 type PMTACampaignInput struct {
 	CampaignID        string                 `json:"campaign_id,omitempty"`
+	OfferID           string                 `json:"offer_id,omitempty"`
 	Name              string                 `json:"name"`
 	TargetISPs        []ISP                  `json:"target_isps"`
 	SendingDomain     string                 `json:"sending_domain"`

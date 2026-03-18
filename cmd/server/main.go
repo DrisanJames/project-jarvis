@@ -185,7 +185,7 @@ func main() {
 
 			// Initialize Image CDN S3 client before registering routes
 			{
-				imgBucket := os.Getenv("IGNITE_S3_BUCKET")
+				imgBucket := os.Getenv("JARVIS_S3_BUCKET")
 				if imgBucket == "" && cfg.Storage.S3Bucket != "" {
 					imgBucket = cfg.Storage.S3Bucket
 				}
@@ -679,10 +679,10 @@ func main() {
 	// Check for S3 storage configuration (preferred) or fall back to local
 	var knowledgeBase *agent.KnowledgeBase
 
-	s3Bucket := os.Getenv("IGNITE_S3_BUCKET")
-	s3Prefix := os.Getenv("IGNITE_S3_PREFIX")
-	s3EncKey := os.Getenv("IGNITE_S3_ENCRYPTION_KEY") // Base64-encoded 32-byte AES-256 key
-	useAWSOnly := os.Getenv("IGNITE_USE_AWS_ONLY") == "true"
+	s3Bucket := os.Getenv("JARVIS_S3_BUCKET")
+	s3Prefix := os.Getenv("JARVIS_S3_PREFIX")
+	s3EncKey := os.Getenv("JARVIS_S3_ENCRYPTION_KEY") // Base64-encoded 32-byte AES-256 key
+	useAWSOnly := os.Getenv("JARVIS_USE_AWS_ONLY") == "true"
 
 	// Use S3 bucket from config if available
 	if s3Bucket == "" && cfg.Storage.S3Bucket != "" {
@@ -1737,6 +1737,7 @@ func runStartupMigrations(db *sql.DB) {
 			completed_at TIMESTAMPTZ
 		)`},
 		{"idx_optizmo_scrub_jobs_offer", `CREATE INDEX IF NOT EXISTS idx_optizmo_scrub_jobs_offer ON mailing_optizmo_scrub_jobs(offer_id)`},
+		{"add_scrub_jobs_file_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS file_count INT DEFAULT 0`},
 
 		{"add_campaign_queue_offer_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS offer_id UUID`},
 		{"add_campaign_queue_creative_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS creative_id UUID`},
@@ -1993,6 +1994,89 @@ END $$`},
 				)
 			WHERE total_sends > 0
 		`},
+
+		// Image CDN: hosted images storage
+		{"create_mailing_hosted_images", `CREATE TABLE IF NOT EXISTS mailing_hosted_images (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			org_id TEXT NOT NULL,
+			filename TEXT NOT NULL DEFAULT '',
+			original_filename TEXT NOT NULL DEFAULT '',
+			content_type TEXT NOT NULL DEFAULT '',
+			size BIGINT DEFAULT 0,
+			width INT DEFAULT 0,
+			height INT DEFAULT 0,
+			s3_key TEXT NOT NULL DEFAULT '',
+			s3_key_thumbnail TEXT DEFAULT '',
+			s3_key_medium TEXT DEFAULT '',
+			s3_key_large TEXT DEFAULT '',
+			cdn_url TEXT NOT NULL DEFAULT '',
+			cdn_url_thumbnail TEXT DEFAULT '',
+			cdn_url_medium TEXT DEFAULT '',
+			cdn_url_large TEXT DEFAULT '',
+			checksum TEXT DEFAULT '',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+
+		// Image CDN: per-domain CloudFront distributions
+		{"create_mailing_image_domains", `CREATE TABLE IF NOT EXISTS mailing_image_domains (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			org_id TEXT NOT NULL,
+			domain TEXT NOT NULL,
+			verified BOOLEAN DEFAULT false,
+			verification_token TEXT DEFAULT '',
+			verification_method TEXT DEFAULT 'dns_txt',
+			ssl_status TEXT DEFAULT 'pending',
+			s3_bucket TEXT DEFAULT '',
+			cloudfront_distribution_id TEXT DEFAULT '',
+			cloudfront_domain TEXT DEFAULT '',
+			acm_cert_arn TEXT DEFAULT '',
+			last_verified_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+
+		// Offer creative assets: links hosted images to offers with placement metadata
+		{"create_mailing_offer_creative_assets", `CREATE TABLE IF NOT EXISTS mailing_offer_creative_assets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			offer_id UUID NOT NULL REFERENCES mailing_offers(id) ON DELETE CASCADE,
+			hosted_image_id UUID NOT NULL REFERENCES mailing_hosted_images(id) ON DELETE CASCADE,
+			asset_role VARCHAR(50) NOT NULL DEFAULT 'content',
+			label TEXT NOT NULL DEFAULT '',
+			width INT NOT NULL DEFAULT 0,
+			height INT NOT NULL DEFAULT 0,
+			cdn_url TEXT NOT NULL DEFAULT '',
+			cdn_url_medium TEXT DEFAULT '',
+			cdn_url_thumbnail TEXT DEFAULT '',
+			original_filename TEXT NOT NULL DEFAULT '',
+			file_size BIGINT DEFAULT 0,
+			mime_type VARCHAR(50) DEFAULT '',
+			sort_order INT DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(offer_id, hosted_image_id)
+		)`},
+		{"idx_offer_creative_assets_offer", `CREATE INDEX IF NOT EXISTS idx_offer_creative_assets_offer ON mailing_offer_creative_assets(offer_id)`},
+
+		// Approved ad copy and taglines storage for offers
+		{"add_offers_approved_ad_copy", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS approved_ad_copy TEXT DEFAULT ''`},
+		{"add_offers_approved_taglines", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS approved_taglines TEXT DEFAULT ''`},
+
+		// Seed image domains for each sending domain (idempotent via ON CONFLICT)
+		{"seed_img_domain_projectjarvis", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
+			VALUES ('d0000000-0000-0000-0001-000000000001', '00000000-0000-0000-0000-000000000001', 'img.projectjarvis.io', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			ON CONFLICT (id) DO NOTHING`},
+		{"seed_img_domain_quizfiesta", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
+			VALUES ('d0000000-0000-0000-0001-000000000002', '00000000-0000-0000-0000-000000000001', 'img.quizfiesta.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			ON CONFLICT (id) DO NOTHING`},
+		{"seed_img_domain_discountblog", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
+			VALUES ('d0000000-0000-0000-0001-000000000003', '00000000-0000-0000-0000-000000000001', 'img.discountblog.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			ON CONFLICT (id) DO NOTHING`},
+		{"seed_img_domain_historythinking", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
+			VALUES ('d0000000-0000-0000-0001-000000000004', '00000000-0000-0000-0000-000000000001', 'img.historythinking.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			ON CONFLICT (id) DO NOTHING`},
+		{"seed_img_domain_myownhealth", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
+			VALUES ('d0000000-0000-0000-0001-000000000005', '00000000-0000-0000-0000-000000000001', 'img.myownhealth.net', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			ON CONFLICT (id) DO NOTHING`},
 	}
 
 	var ok, fail int

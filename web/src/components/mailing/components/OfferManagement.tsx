@@ -136,6 +136,7 @@ interface OptizmoJob {
   error_message?: string;
   requested_at: string;
   completed_at: string | null;
+  file_count: number;
   audience_count: number;
   suppressed_count: number;
 }
@@ -1578,7 +1579,7 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
       });
       const data = await res.json();
       if (res.ok) {
-        setUploadMsg(`Imported: ${(data.suppressed_count ?? 0).toLocaleString()} suppressed out of ${(data.hashes_uploaded ?? 0).toLocaleString()} hashes`);
+        setUploadMsg(`File: ${(data.file_count ?? 0).toLocaleString()} entries | Audience: ${(data.audience_scanned ?? 0).toLocaleString()} | Suppressed: ${(data.suppressed_count ?? 0).toLocaleString()}`);
         onRefresh();
       } else {
         setUploadMsg(`Error: ${data.error || 'upload failed'}`);
@@ -1680,7 +1681,8 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                 <th>Status</th>
                 <th>Requested</th>
                 <th>Completed</th>
-                <th>Records</th>
+                <th>File Entries</th>
+                <th>Audience Scanned</th>
                 <th>Suppressed</th>
                 <th>Error</th>
               </tr>
@@ -1691,8 +1693,9 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                   <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
                   <td>{new Date(j.requested_at).toLocaleDateString()}</td>
                   <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
+                  <td>{(j.file_count ?? 0).toLocaleString()}</td>
                   <td>{(j.audience_count ?? 0).toLocaleString()}</td>
-                  <td>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                  <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
                   <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
                 </tr>
               ))}

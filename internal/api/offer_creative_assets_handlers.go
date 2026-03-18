@@ -123,7 +123,7 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadAsset(w http.ResponseWriter, r
 	ctx := r.Context()
 
 	if h.imageCDN == nil {
-		respondError(w, http.StatusServiceUnavailable, "Image CDN not configured — set IGNITE_S3_BUCKET")
+		respondError(w, http.StatusServiceUnavailable, "Image CDN not configured — set JARVIS_S3_BUCKET")
 		return
 	}
 
@@ -220,7 +220,7 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadZipBundle(w http.ResponseWrite
 	ctx := r.Context()
 
 	if h.imageCDN == nil {
-		respondError(w, http.StatusServiceUnavailable, "Image CDN not configured — set IGNITE_S3_BUCKET")
+		respondError(w, http.StatusServiceUnavailable, "Image CDN not configured — set JARVIS_S3_BUCKET")
 		return
 	}
 
@@ -484,8 +484,37 @@ func LoadOfferAssets(db *sql.DB, offerID string) ([]CreativeAsset, error) {
 	return assets, nil
 }
 
-// BuildAssetPromptSection generates a prompt section describing available image assets
-func BuildAssetPromptSection(assets []CreativeAsset) string {
+// ResolveImageDomain looks up a verified img.{domain} from mailing_image_domains for the org.
+// Falls back to the default IMAGE_CDN_DOMAIN env var if no verified domain exists.
+func ResolveImageDomain(db *sql.DB, orgID string) string {
+	var domain string
+	err := db.QueryRow(`
+		SELECT domain FROM mailing_image_domains
+		WHERE org_id = $1 AND verified = true
+		ORDER BY created_at ASC LIMIT 1
+	`, orgID).Scan(&domain)
+	if err == nil && domain != "" {
+		return domain
+	}
+	return ""
+}
+
+// rewriteCDNURL replaces the host in a CDN/S3 URL with the given image domain.
+// Handles both https://{cdn-or-s3-host}/images/... and bare S3 URLs.
+func rewriteCDNURL(originalURL, imageDomain string) string {
+	if imageDomain == "" || originalURL == "" {
+		return originalURL
+	}
+	idx := strings.Index(originalURL, "/images/")
+	if idx < 0 {
+		return originalURL
+	}
+	return "https://" + imageDomain + originalURL[idx:]
+}
+
+// BuildAssetPromptSection generates a prompt section describing available image assets.
+// If imageDomain is non-empty, all CDN URLs are rewritten to use that domain.
+func BuildAssetPromptSection(assets []CreativeAsset, imageDomain string) string {
 	if len(assets) == 0 {
 		return ""
 	}
@@ -511,8 +540,9 @@ func BuildAssetPromptSection(assets []CreativeAsset) string {
 	sb.WriteString("These are high-quality, professionally designed brand images. Use them to create a rich visual experience.\n\n")
 
 	for _, a := range sorted {
+		url := rewriteCDNURL(a.CDNURL, imageDomain)
 		fmt.Fprintf(&sb, "  - %s | %dx%d | Role: %s\n    URL: %s\n",
-			a.Label, a.Width, a.Height, a.AssetRole, a.CDNURL)
+			a.Label, a.Width, a.Height, a.AssetRole, url)
 	}
 
 	sb.WriteString(`

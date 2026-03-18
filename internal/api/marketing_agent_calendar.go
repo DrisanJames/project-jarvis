@@ -436,8 +436,12 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		}
 	}
 
+	// Extract offer context if this recommendation is for an offer campaign
+	cfgOfferID, _ := cfg["offer_id"].(string)
+
 	// Build the full PMTACampaignInput
 	deployInput := engine.PMTACampaignInput{
+		OfferID:       cfgOfferID,
 		Name:          campaignName,
 		TargetISPs:    targetISPs,
 		SendingDomain: sendingDomain,
@@ -507,6 +511,13 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 	if err := tx.Commit(); err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "commit failed: " + err.Error()})
 		return
+	}
+
+	// Link the offer to the created campaign so future audience plans check offer suppressions
+	if cfgOfferID != "" {
+		a.db.ExecContext(ctx,
+			`UPDATE mailing_campaigns SET offer_id = $1::uuid WHERE id = $2::uuid AND (offer_id IS NULL OR offer_id = '00000000-0000-0000-0000-000000000000')`,
+			cfgOfferID, result.CampaignID)
 	}
 
 	// Mark recommendation as approved and link to the deployed campaign

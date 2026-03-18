@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -27,6 +28,22 @@ const (
 	defaultCadenceMinutes   = 15
 	minWavesPerISP          = 4
 )
+
+// resolveOfferID looks up the offer_id linked to a campaign. Returns "" if
+// the campaign has no offer or the ID is empty/invalid.
+func resolveOfferID(ctx context.Context, db dbQuerier, campaignID string) string {
+	if campaignID == "" {
+		return ""
+	}
+	var oid sql.NullString
+	err := db.QueryRowContext(ctx,
+		`SELECT offer_id::text FROM mailing_campaigns WHERE id = $1 AND offer_id IS NOT NULL`,
+		campaignID).Scan(&oid)
+	if err != nil || !oid.Valid || oid.String == "" || oid.String == "00000000-0000-0000-0000-000000000000" {
+		return ""
+	}
+	return oid.String
+}
 
 // dbQuerier abstracts the common query methods shared by *sql.DB and *sql.Conn
 // so that callers can pass a dedicated connection with custom session settings
@@ -380,6 +397,29 @@ func planPMTAAudience(
 	normalized pmtaNormalizedCampaign,
 	suppMatcher *SuppressionMatcher,
 ) (pmtaAudiencePlan, error) {
+	// Resolve offer ID: explicit field takes precedence, otherwise look up from the campaign record
+	offerID := input.OfferID
+	if offerID == "" {
+		offerID = resolveOfferID(ctx, db, input.CampaignID)
+	}
+	offerSuppSet := make(map[string]bool)
+	if offerID != "" {
+		osRows, osErr := db.QueryContext(ctx,
+			`SELECT subscriber_id::text FROM mailing_offer_suppressions WHERE offer_id = $1`, offerID)
+		if osErr == nil {
+			defer osRows.Close()
+			for osRows.Next() {
+				var sid string
+				if osRows.Scan(&sid) == nil {
+					offerSuppSet[sid] = true
+				}
+			}
+		}
+		if len(offerSuppSet) > 0 {
+			log.Printf("[PlanAudience] loaded %d offer-level suppressions for offer %s", len(offerSuppSet), offerID)
+		}
+	}
+
 	globalSuppSet := make(map[string]bool)
 	gsRows, gsErr := db.QueryContext(ctx, "SELECT md5_hash FROM mailing_global_suppressions")
 	if gsErr == nil {
@@ -434,6 +474,9 @@ func planPMTAAudience(
 			return false
 		}
 		seenEmails[emailLower] = true
+		if offerSuppSet[subID] {
+			return false
+		}
 		hash := md5.Sum([]byte(emailLower))
 		md5Hex := hex.EncodeToString(hash[:])
 		if globalSuppSet[md5Hex] {

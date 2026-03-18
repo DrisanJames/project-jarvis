@@ -120,8 +120,23 @@ aws ecs update-service \
   --force-new-deployment \
   "${AWS_ARGS[@]}" >/dev/null
 
-echo "Waiting for ECS service stability..."
+LOG_GROUP="/ecs/ignite-upside-down"
+echo "Waiting for ECS service stability (tailing $LOG_GROUP)..."
+aws logs tail "$LOG_GROUP" --follow --since 1m "${AWS_ARGS[@]}" &
+LOG_TAIL_PID=$!
+
+set +e
 aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" "${AWS_ARGS[@]}"
+WAIT_EXIT=$?
+set -e
+
+kill "$LOG_TAIL_PID" 2>/dev/null || true
+wait "$LOG_TAIL_PID" 2>/dev/null || true
+
+if [ "$WAIT_EXIT" -ne 0 ]; then
+  echo "ECS service failed to stabilize." >&2
+  exit 1
+fi
 
 AWS_REGION="$AWS_REGION" \
 AWS_PROFILE="$AWS_PROFILE" \
