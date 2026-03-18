@@ -75,6 +75,10 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 		return
 	}
 
+	// Clean up stale placeholders from previous failed/stuck runs
+	och.db.ExecContext(ctx,
+		`DELETE FROM mailing_offer_creatives WHERE offer_id=$1 AND status IN ('generating','failed') AND version=0`, offerID)
+
 	// Mark generation in progress via a placeholder row
 	jobID := uuid.New().String()
 	och.db.ExecContext(ctx,
