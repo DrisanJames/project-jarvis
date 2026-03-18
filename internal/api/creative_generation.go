@@ -93,7 +93,7 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 
 	reqBody := map[string]interface{}{
 		"model":      "claude-sonnet-4-6",
-		"max_tokens": 16000,
+		"max_tokens": 64000,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
@@ -154,10 +154,20 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
 
+	// If the response was truncated, try to salvage partial JSON by closing the array
+	if !strings.HasSuffix(content, "}") {
+		if idx := strings.LastIndex(content, "}"); idx > 0 {
+			content = content[:idx+1]
+			if !strings.HasSuffix(strings.TrimSpace(content), "]}") {
+				content = strings.TrimSpace(content) + "]}"
+			}
+		}
+	}
+
 	var result CreativeGenerationResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		log.Printf("[CreativeGen] parse error: %v\nraw: %.1000s", err, content)
-		respondError(w, http.StatusInternalServerError, "failed to parse AI response")
+		log.Printf("[CreativeGen] parse error: %v\nraw start: %.500s\nraw end: %.500s", err, content[:min(500, len(content))], content[max(0, len(content)-500):])
+		respondError(w, http.StatusInternalServerError, "failed to parse AI response — retry may help")
 		return
 	}
 
