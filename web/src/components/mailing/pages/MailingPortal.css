@@ -756,6 +756,11 @@
   color: rgba(255, 255, 255, 0.7);
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 /* Loading State */

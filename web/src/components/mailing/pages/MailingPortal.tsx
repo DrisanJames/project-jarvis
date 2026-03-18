@@ -252,12 +252,16 @@ export const MailingPortal: React.FC = () => {
           {versionInfo && (
             <div className="sidebar-version-info">
               <div className="version-row">
-                <span className="version-label">Platform</span>
-                <span className="version-value">{versionInfo.version || 'dev'}</span>
+                <span className="version-label">Version</span>
+                <span className="version-value">
+                  {versionInfo.git_sha
+                    ? versionInfo.git_sha.slice(0, 7)
+                    : versionInfo.version || 'dev'}
+                </span>
               </div>
               <div className="version-row">
-                <span className="version-label">Build</span>
-                <span className="version-value">{versionInfo.git_sha ? versionInfo.git_sha.slice(0, 7) : '—'}</span>
+                <span className="version-label">Runtime</span>
+                <span className="version-value">{versionInfo.go_version || '—'}</span>
               </div>
               <div className="version-row">
                 <span className="version-label">Deployed</span>
