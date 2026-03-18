@@ -2340,6 +2340,131 @@ BEGIN
 END $$`},
 
 		{"phase6_final_176_paused", `UPDATE mailing_ip_addresses SET status = 'paused', updated_at = NOW() WHERE ip_address = '15.204.22.176'::inet AND status NOT IN ('paused')`},
+
+		// ========================================================================
+		// Phase 7: Shared pools for test campaigns
+		// ========================================================================
+
+		// 7.1: Create shared-a pool on Server A (15 /28 OVH IPs)
+		{"phase7_pool_shared_a", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status, created_at, updated_at)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'shared-a', 'Shared /28 OVH IPs on Server A (15.204.22.177-.191)', 'shared', 'active', NOW(), NOW())
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+
+		// 7.2: Create shared-b pool on Server B (16 new OVH IPs)
+		{"phase7_pool_shared_b", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status, created_at, updated_at)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'shared-b', 'Shared /28 OVH IPs on Server B (15.204.38.160-.175)', 'shared', 'active', NOW(), NOW())
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+
+		// 7.3: Move Server A /28 IPs to shared-a pool and update hostnames to mta-a-shrd naming
+		{"phase7_move_ips_to_shared_a", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+    rec RECORD;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'shared-a' AND organization_id = org_id;
+    IF pool_id_val IS NULL THEN RAISE NOTICE 'shared-a pool not found'; RETURN; END IF;
+
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('15.204.22.177', 'mta-a-shrd1.mail.shared-a'),
+            ('15.204.22.178', 'mta-a-shrd2.mail.shared-a'),
+            ('15.204.22.179', 'mta-a-shrd3.mail.shared-a'),
+            ('15.204.22.180', 'mta-a-shrd4.mail.shared-a'),
+            ('15.204.22.181', 'mta-a-shrd5.mail.shared-a'),
+            ('15.204.22.182', 'mta-a-shrd6.mail.shared-a'),
+            ('15.204.22.183', 'mta-a-shrd7.mail.shared-a'),
+            ('15.204.22.184', 'mta-a-shrd8.mail.shared-a'),
+            ('15.204.22.185', 'mta-a-shrd9.mail.shared-a'),
+            ('15.204.22.186', 'mta-a-shrd10.mail.shared-a'),
+            ('15.204.22.187', 'mta-a-shrd11.mail.shared-a'),
+            ('15.204.22.188', 'mta-a-shrd12.mail.shared-a'),
+            ('15.204.22.189', 'mta-a-shrd13.mail.shared-a'),
+            ('15.204.22.190', 'mta-a-shrd14.mail.shared-a'),
+            ('15.204.22.191', 'mta-a-shrd15.mail.shared-a')
+        ) AS t(ip_addr, new_hostname)
+    LOOP
+        UPDATE mailing_ip_addresses
+        SET pool_id = pool_id_val, hostname = rec.new_hostname, updated_at = NOW()
+        WHERE ip_address = rec.ip_addr::inet;
+    END LOOP;
+END $$`},
+
+		// 7.4: Seed Server B /28 IPs into shared-b pool
+		{"phase7_seed_shared_b_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+    server_id_val UUID;
+    i INT;
+    ip_text TEXT;
+    hostname_val TEXT;
+    shrd_num INT;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'shared-b' AND organization_id = org_id;
+    SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = '15.204.107.107';
+    IF pool_id_val IS NULL OR server_id_val IS NULL THEN RAISE NOTICE 'shared-b pool or server B not found'; RETURN; END IF;
+
+    FOR i IN 0..15 LOOP
+        ip_text := '15.204.38.' || (160 + i);
+        shrd_num := i + 1;
+        IF shrd_num <= 8 THEN
+            hostname_val := 'mta-b-shrd' || shrd_num || '.mail.em.historythinking.com';
+        ELSE
+            hostname_val := 'mta-b-shrd' || shrd_num || '.mail.em.myownhealth.net';
+        END IF;
+
+        INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+            warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+            cidr_block, rdns_verified, reputation_score, created_at, updated_at)
+        VALUES (gen_random_uuid(), org_id, ip_text::inet, hostname_val, 'warmup', pool_id_val, server_id_val,
+            'warming', 1, 10000, NOW(), 'OVH', 'purchased', '15.204.38.160/28', false, 50.0, NOW(), NOW())
+        ON CONFLICT (ip_address) DO UPDATE SET
+            pool_id = pool_id_val, pmta_server_id = server_id_val, hostname = hostname_val,
+            warmup_started_at = COALESCE(mailing_ip_addresses.warmup_started_at, NOW()), updated_at = NOW();
+    END LOOP;
+END $$`},
+
+		// 7.5: Create test sending profiles for shared pools
+		{"phase7_profile_test_db_shared", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Test DB Shared', 'pmta', 'DiscountBlog', 'hello@em.discountblog.com', 'reply@em.discountblog.com',
+				'em.discountblog.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.discountblog.com',
+				3200, 25000, 'shared-a', '', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test DB Shared')`},
+
+		{"phase7_profile_test_qf_shared", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Test QF Shared', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com',
+				'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.quizfiesta.com',
+				3200, 25000, 'shared-a', '', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test QF Shared')`},
+
+		{"phase7_profile_test_ht_shared", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Test HT Shared', 'pmta', 'History Thinking', 'hello@em.historythinking.com', 'reply@em.historythinking.com',
+				'em.historythinking.com', '15.204.107.107', 587, 'http://15.204.107.107:19099', 'trk.em.historythinking.com',
+				3200, 25000, 'shared-b', '', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test HT Shared')`},
+
+		{"phase7_profile_test_mh_shared", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Test MH Shared', 'pmta', 'My Own Health', 'hello@em.myownhealth.net', 'reply@em.myownhealth.net',
+				'em.myownhealth.net', '15.204.107.107', 587, 'http://15.204.107.107:19099', 'trk.em.myownhealth.net',
+				3200, 25000, 'shared-b', '', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test MH Shared')`},
 	}
 
 	var ok, fail int
