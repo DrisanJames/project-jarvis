@@ -121,7 +121,7 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 
 	reqBody := map[string]interface{}{
 		"model":      "claude-sonnet-4-6",
-		"max_tokens": 64000,
+		"max_tokens": 32000,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
@@ -180,22 +180,55 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
 
-	// Salvage truncated JSON
-	if !strings.HasSuffix(content, "}") {
-		if idx := strings.LastIndex(content, "}"); idx > 0 {
-			content = content[:idx+1]
-			if !strings.HasSuffix(strings.TrimSpace(content), "]}") {
-				content = strings.TrimSpace(content) + "]}"
-			}
-		}
-	}
-
+	// Salvage truncated JSON by finding the last complete creative object
 	var result CreativeGenerationResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		log.Printf("[CreativeGen] parse error: %v\nraw start: %.500s\nraw end: %.500s",
-			err, content[:min(500, len(content))], content[max(0, len(content)-500):])
-		fail("failed to parse AI response")
-		return
+		// Try to find the array start and extract valid creatives
+		arrStart := strings.Index(content, `"creatives"`)
+		if arrStart == -1 {
+			log.Printf("[CreativeGen] parse error (no creatives key): %v\nraw start: %.500s", err, content[:min(500, len(content))])
+			fail("failed to parse AI response")
+			return
+		}
+
+		bracketStart := strings.Index(content[arrStart:], "[")
+		if bracketStart == -1 {
+			log.Printf("[CreativeGen] parse error (no array): %v", err)
+			fail("failed to parse AI response")
+			return
+		}
+		arrContent := content[arrStart+bracketStart:]
+
+		// Find each complete creative object by tracking brace depth
+		var creatives []GeneratedCreative
+		depth := 0
+		objStart := -1
+		for i, ch := range arrContent {
+			if ch == '{' {
+				if depth == 0 {
+					objStart = i
+				}
+				depth++
+			} else if ch == '}' {
+				depth--
+				if depth == 0 && objStart >= 0 {
+					var gc GeneratedCreative
+					if e2 := json.Unmarshal([]byte(arrContent[objStart:i+1]), &gc); e2 == nil && gc.HTML != "" {
+						creatives = append(creatives, gc)
+					}
+					objStart = -1
+				}
+			}
+		}
+
+		if len(creatives) == 0 {
+			log.Printf("[CreativeGen] parse error: extracted 0 valid creatives\nraw start: %.500s\nraw end: %.500s",
+				content[:min(500, len(content))], content[max(0, len(content)-500):])
+			fail("failed to parse AI response")
+			return
+		}
+		log.Printf("[CreativeGen] recovered %d creatives from partial JSON", len(creatives))
+		result.Creatives = creatives
 	}
 
 	if len(result.Creatives) == 0 {
@@ -330,6 +363,8 @@ RETURN THIS JSON:
     }
   ]
 }
+
+IMPORTANT: Keep each HTML email compact — no extra whitespace, no unnecessary comments, minimize attribute repetition. Each email should be 3-6KB. Focus on CONTENT quality, not code verbosity.
 
 Generate EXACTLY 10 creatives. Each html must be a complete <!DOCTYPE html> email document.
 `, kit.SiteName, kit.SiteName, trackingLink)
