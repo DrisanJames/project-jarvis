@@ -903,7 +903,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
 const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRefresh: () => void }> = ({ offerId, creatives, onRefresh }) => {
   const [showUpload, setShowUpload] = useState(false);
   const [htmlContent, setHtmlContent] = useState('');
-  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewCreative, setPreviewCreative] = useState<OfferCreative | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState('');
   const [genResult, setGenResult] = useState('');
@@ -1025,22 +1025,16 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
             )}
 
             {c.html_content && (
-              <div style={{ background: '#0a0f1a', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
-                {previewId === c.id ? (
-                  <iframe
-                    srcDoc={c.html_content}
-                    title={`Creative v${c.version}`}
-                    style={{ width: '100%', height: 300, border: 'none' }}
-                    sandbox="allow-same-origin"
-                  />
-                ) : (
-                  <iframe
-                    srcDoc={c.html_content}
-                    title={`Creative v${c.version}`}
-                    style={{ width: '100%', height: 150, border: 'none', pointerEvents: 'none' }}
-                    sandbox="allow-same-origin"
-                  />
-                )}
+              <div
+                style={{ background: '#0a0f1a', borderRadius: 6, overflow: 'hidden', marginBottom: 8, cursor: 'pointer' }}
+                onClick={() => setPreviewCreative(c)}
+              >
+                <iframe
+                  srcDoc={c.html_content}
+                  title={`Creative v${c.version}`}
+                  style={{ width: '100%', height: 150, border: 'none', pointerEvents: 'none' }}
+                  sandbox="allow-same-origin"
+                />
               </div>
             )}
 
@@ -1052,9 +1046,9 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
             </div>
 
             <div style={{ display: 'flex', gap: 4 }}>
-              <button style={btnGhost} onClick={() => setPreviewId(previewId === c.id ? null : c.id)}>
-                {previewId === c.id ? 'Collapse' : 'Preview'}
-              </button>
+              {c.html_content && (
+                <button style={btnGhost} onClick={() => setPreviewCreative(c)}>Preview</button>
+              )}
               {c.status !== 'approved' && (
                 <button style={{ ...btnGhost, color: '#22c55e', borderColor: 'rgba(34,197,94,0.2)' }} onClick={() => updateCreativeStatus(c.id, 'approved')}>Approve</button>
               )}
@@ -1067,6 +1061,110 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
         {creatives.length === 0 && (
           <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'rgba(255,255,255,0.35)', padding: 40 }}>No creatives yet</div>
         )}
+      </div>
+
+      {previewCreative && (
+        <CreativePreviewModal
+          creative={previewCreative}
+          onClose={() => setPreviewCreative(null)}
+          onApprove={() => { updateCreativeStatus(previewCreative.id, 'approved'); setPreviewCreative(null); }}
+          onReject={() => { updateCreativeStatus(previewCreative.id, 'rejected'); setPreviewCreative(null); }}
+        />
+      )}
+    </div>
+  );
+};
+
+// ─── Creative Preview Modal ─────────────────────────────────────────────
+
+const CreativePreviewModal: React.FC<{
+  creative: OfferCreative;
+  onClose: () => void;
+  onApprove: () => void;
+  onReject: () => void;
+}> = ({ creative, onClose, onApprove, onReject }) => {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div className="offer-mgmt-modal-overlay" onClick={onClose}>
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12,
+          width: 720, maxWidth: '95vw', maxHeight: '95vh', display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#e0e6f0' }}>Creative v{creative.version}</span>
+            <span className={statusBadgeClass(creative.status)}>{creative.status}</span>
+          </div>
+          <button
+            style={{ background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.5)', fontSize: 20, cursor: 'pointer', padding: '0 4px', fontFamily: 'inherit' }}
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Notes & Stats */}
+        {(creative.approval_notes || creative.total_sends > 0) && (
+          <div style={{ padding: '10px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            {creative.approval_notes && (
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4 }}>{creative.approval_notes}</div>
+            )}
+            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.45)', marginLeft: 'auto' }}>
+              <span>Sends: {creative.total_sends.toLocaleString()}</span>
+              <span>Opens: {(creative.open_rate * 100).toFixed(1)}%</span>
+              <span>Clicks: {(creative.click_rate * 100).toFixed(1)}%</span>
+              <span>Conv: {creative.total_conversions}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Email Preview */}
+        <div style={{ flex: 1, overflow: 'auto', background: '#2a2a3e', padding: '20px 0', display: 'flex', justifyContent: 'center' }}>
+          {creative.html_content ? (
+            <iframe
+              srcDoc={creative.html_content}
+              title={`Creative v${creative.version} Preview`}
+              style={{ width: 600, minHeight: 800, border: 'none', background: '#fff', borderRadius: 4, display: 'block' }}
+              sandbox="allow-same-origin"
+              onLoad={e => {
+                try {
+                  const iframe = e.target as HTMLIFrameElement;
+                  const body = iframe.contentDocument?.body;
+                  if (body) iframe.style.height = Math.max(800, body.scrollHeight + 40) + 'px';
+                } catch { /* cross-origin guard */ }
+              }}
+            />
+          ) : (
+            <div style={{ color: 'rgba(255,255,255,0.35)', padding: 40 }}>No HTML content</div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div style={{
+          padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0,
+        }}>
+          {creative.status !== 'approved' && (
+            <button style={{ ...btnPrimary, background: '#22c55e' }} onClick={onApprove}>Approve</button>
+          )}
+          {creative.status !== 'rejected' && (
+            <button style={{ ...btnPrimary, background: '#ef4444' }} onClick={onReject}>Reject</button>
+          )}
+          <button style={btnGhost} onClick={onClose}>Close</button>
+        </div>
       </div>
     </div>
   );
