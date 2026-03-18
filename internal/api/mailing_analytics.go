@@ -681,15 +681,20 @@ func (s *AdvancedMailingService) HandleDeliverabilityReport(w http.ResponseWrite
 		log.Printf("[deliverability-report] ComputeMetrics error: %v", err)
 	}
 
-	rows, _ := s.db.QueryContext(ctx, `
+	rows, qErr := s.db.QueryContext(ctx, `
 		SELECT COALESCE(NULLIF(bounce_type,''), 'unknown') as type, COUNT(*) as count
 		FROM mailing_tracking_events
 		WHERE event_type = 'bounced'
 		  AND event_at >= $1 AND event_at <= $2
-		GROUP BY COALESCE(bounce_type, event_type)
+		GROUP BY COALESCE(NULLIF(bounce_type,''), 'unknown')
 		ORDER BY count DESC
 	`, start, end)
-	defer rows.Close()
+	if qErr != nil {
+		log.Printf("[deliverability-report] bounce breakdown query error: %v", qErr)
+	}
+	if rows != nil {
+		defer rows.Close()
+	}
 
 	var bounceBreakdown []map[string]interface{}
 	for rows.Next() {
