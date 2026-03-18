@@ -6,27 +6,16 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
-
-const optizmoScrubDir = "/tmp/optizmo-scrubs"
-
-func optizmoWorkerURL() string {
-	if v := os.Getenv("OPTIZMO_WORKER_URL"); v != "" {
-		return v
-	}
-	return "http://optizmo-worker.ignite.local:8090"
-}
 
 // OptizmoHandlers provides HTTP handlers for Optizmo list scrub management.
 type OptizmoHandlers struct {
@@ -56,6 +45,10 @@ type ScrubStatusResponse struct {
 
 // ---------------------------------------------------------------------------
 // HandleRequestScrub — POST /offer-center/offers/{id}/optizmo/request-scrub
+//
+// Downloads the Optizmo suppression list from the offer's optizmo_link,
+// matches subscriber MD5 hashes against it, inserts suppressions, and
+// marks the job complete — all inline (async goroutine for the heavy work).
 // ---------------------------------------------------------------------------
 
 func (h *OptizmoHandlers) HandleRequestScrub(w http.ResponseWriter, r *http.Request) {
@@ -82,88 +75,211 @@ func (h *OptizmoHandlers) HandleRequestScrub(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	rows, err := h.db.QueryContext(ctx,
-		`SELECT LOWER(TRIM(email)) FROM mailing_subscribers
-		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
-	if err != nil {
-		log.Printf("[Optizmo] error querying subscribers: %v", err)
-		respondError(w, http.StatusInternalServerError, "failed to query subscribers")
-		return
+	link := ""
+	if optizmoLink.Valid {
+		link = strings.TrimSpace(optizmoLink.String)
 	}
-	defer rows.Close()
-
-	if err := os.MkdirAll(optizmoScrubDir, 0755); err != nil {
-		log.Printf("[Optizmo] error creating scrub directory: %v", err)
-		respondError(w, http.StatusInternalServerError, "failed to create scrub directory")
+	if link == "" {
+		respondError(w, http.StatusBadRequest, "offer has no Optizmo link configured")
 		return
 	}
 
 	jobID := uuid.New().String()
-	filePath := fmt.Sprintf("%s/%s.csv", optizmoScrubDir, jobID)
-
-	f, err := os.Create(filePath)
-	if err != nil {
-		log.Printf("[Optizmo] error creating audience file %s: %v", filePath, err)
-		respondError(w, http.StatusInternalServerError, "failed to create audience file")
-		return
-	}
-	defer f.Close()
-
-	writer := bufio.NewWriter(f)
-	var audienceCount int
-
-	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
-			log.Printf("[Optizmo] error scanning subscriber row: %v", err)
-			continue
-		}
-		hash := md5Hash(email)
-		fmt.Fprintln(writer, hash)
-		audienceCount++
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("[Optizmo] row iteration error: %v", err)
-	}
-	if err := writer.Flush(); err != nil {
-		log.Printf("[Optizmo] error flushing audience file: %v", err)
-		respondError(w, http.StatusInternalServerError, "failed to write audience file")
-		return
-	}
-
 	now := time.Now()
 	_, err = h.db.ExecContext(ctx,
 		`INSERT INTO mailing_optizmo_scrub_jobs
 			(id, offer_id, audience_file_path, audience_count, status, requested_at)
-		 VALUES ($1, $2, $3, $4, 'pending', $5)`,
-		jobID, offerID, filePath, audienceCount, now)
+		 VALUES ($1, $2, '', 0, 'pending', $3)`,
+		jobID, offerID, now)
 	if err != nil {
 		log.Printf("[Optizmo] error creating scrub job: %v", err)
 		respondError(w, http.StatusInternalServerError, "failed to create scrub job")
 		return
 	}
 
-	_, err = h.db.ExecContext(ctx,
+	_, _ = h.db.ExecContext(ctx,
 		`UPDATE mailing_offers SET optizmo_status = 'scrub_pending', updated_at = NOW() WHERE id = $1`,
 		offerID)
-	if err != nil {
-		log.Printf("[Optizmo] error updating offer status: %v", err)
-	}
 
-	link := ""
-	if optizmoLink.Valid {
-		link = optizmoLink.String
-	}
-	go fireSidecarTrigger(jobID, offerID, filePath, link)
+	log.Printf("[Optizmo] scrub requested for offer %s — job %s, downloading from %s", offerID, jobID, link)
 
-	log.Printf("[Optizmo] scrub requested for offer %s — job %s, %d subscribers", offerID, jobID, audienceCount)
+	go h.runInlineScrub(jobID, offerID, link)
 
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"job_id":         jobID,
-		"audience_count": audienceCount,
-		"audience_file":  filePath,
-		"status":         "pending",
+		"job_id": jobID,
+		"status": "pending",
 	})
+}
+
+// runInlineScrub downloads the Optizmo suppression list, matches against
+// subscribers, inserts suppressions, and finalizes the job+offer status.
+func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, optizmoLink string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	fail := func(msg string) {
+		log.Printf("[Optizmo] scrub job %s FAILED: %s", jobID, msg)
+		h.db.ExecContext(ctx,
+			`UPDATE mailing_optizmo_scrub_jobs
+			 SET status = 'failed', error_message = $1, completed_at = NOW()
+			 WHERE id = $2`, msg, jobID)
+		h.db.ExecContext(ctx,
+			`UPDATE mailing_offers SET optizmo_status = 'scrub_failed', updated_at = NOW()
+			 WHERE id = $1`, offerID)
+	}
+
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET status = 'processing', started_at = NOW() WHERE id = $1`, jobID)
+
+	// Download suppression list from Optizmo
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Get(optizmoLink)
+	if err != nil {
+		fail(fmt.Sprintf("failed to download Optizmo list: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		fail(fmt.Sprintf("Optizmo returned HTTP %d: %s", resp.StatusCode, string(bodySnippet)))
+		return
+	}
+
+	suppressedHashes := make(map[string]bool)
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			suppressedHashes[strings.ToLower(line)] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fail(fmt.Sprintf("error reading Optizmo response: %v", err))
+		return
+	}
+
+	log.Printf("[Optizmo] job %s: downloaded %d suppression hashes from Optizmo", jobID, len(suppressedHashes))
+
+	if len(suppressedHashes) == 0 {
+		h.db.ExecContext(ctx,
+			`UPDATE mailing_optizmo_scrub_jobs
+			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW()
+			 WHERE id = $1`, jobID)
+		h.db.ExecContext(ctx,
+			`UPDATE mailing_offers SET optizmo_status = 'scrubbed', optizmo_last_scrubbed_at = NOW(), updated_at = NOW()
+			 WHERE id = $1`, offerID)
+		log.Printf("[Optizmo] job %s: Optizmo list was empty — offer marked scrubbed (no suppressions needed)", jobID)
+		return
+	}
+
+	// Query subscribers and match against Optizmo hashes
+	subRows, err := h.db.QueryContext(ctx,
+		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
+		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
+	if err != nil {
+		fail(fmt.Sprintf("failed to query subscribers: %v", err))
+		return
+	}
+	defer subRows.Close()
+
+	type matchedSub struct {
+		ID    string
+		Email string
+	}
+	var matches []matchedSub
+	var audienceCount int
+
+	for subRows.Next() {
+		var subID, email string
+		if err := subRows.Scan(&subID, &email); err != nil {
+			continue
+		}
+		audienceCount++
+		if suppressedHashes[md5Hash(email)] {
+			matches = append(matches, matchedSub{ID: subID, Email: email})
+		}
+	}
+
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET audience_count = $1 WHERE id = $2`,
+		audienceCount, jobID)
+
+	suppressedCount := 0
+	for _, m := range matches {
+		emailHash := md5Hash(m.Email)
+		_, err := h.db.ExecContext(ctx,
+			`INSERT INTO mailing_offer_suppressions
+				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+			 VALUES ($1, $2, $3, $4, 'optizmo', 'optizmo_scrub', NOW())
+			 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
+			defaultOrgID, offerID, m.ID, emailHash)
+		if err != nil {
+			log.Printf("[Optizmo] error inserting suppression for subscriber %s: %v", m.ID, err)
+			continue
+		}
+		suppressedCount++
+	}
+
+	now := time.Now()
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs
+		 SET status = 'completed', suppressed_count = $1, completed_at = $2
+		 WHERE id = $3`, suppressedCount, now, jobID)
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_offers
+		 SET optizmo_status = 'scrubbed', optizmo_last_scrubbed_at = $1, updated_at = NOW()
+		 WHERE id = $2`, now, offerID)
+
+	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d matched, %d suppressed",
+		jobID, audienceCount, len(matches), suppressedCount)
+}
+
+// ---------------------------------------------------------------------------
+// HandleCancelScrub — POST /offer-center/offers/{id}/optizmo/cancel-scrub
+// Resets a stuck scrub_pending state back to not_scrubbed and marks pending
+// jobs as cancelled.
+// ---------------------------------------------------------------------------
+
+func (h *OptizmoHandlers) HandleCancelScrub(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+
+	ctx := r.Context()
+
+	var currentStatus sql.NullString
+	err := h.db.QueryRowContext(ctx,
+		`SELECT optizmo_status FROM mailing_offers WHERE id = $1`, offerID,
+	).Scan(&currentStatus)
+	if err == sql.ErrNoRows {
+		respondError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to query offer")
+		return
+	}
+
+	status := ""
+	if currentStatus.Valid {
+		status = currentStatus.String
+	}
+	if status != "scrub_pending" && status != "scrub_failed" {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot cancel scrub in state '%s'", status))
+		return
+	}
+
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET status = 'cancelled', completed_at = NOW()
+		 WHERE offer_id = $1 AND status IN ('pending', 'processing')`, offerID)
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_offers SET optizmo_status = 'not_scrubbed', updated_at = NOW() WHERE id = $1`, offerID)
+
+	log.Printf("[Optizmo] scrub cancelled for offer %s", offerID)
+	respondJSON(w, http.StatusOK, map[string]string{"status": "not_scrubbed"})
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +506,9 @@ func (h *OptizmoHandlers) CheckOfferCompliance(ctx context.Context, offerID uuid
 	if status.String == "scrub_pending" {
 		return false, "Optizmo scrub is still in progress"
 	}
+	if status.String == "scrub_failed" {
+		return false, "Optizmo scrub failed — retry or cancel before deploying"
+	}
 	return true, ""
 }
 
@@ -400,29 +519,4 @@ func (h *OptizmoHandlers) CheckOfferCompliance(ctx context.Context, offerID uuid
 func md5Hash(s string) string {
 	h := md5.Sum([]byte(s))
 	return hex.EncodeToString(h[:])
-}
-
-func fireSidecarTrigger(jobID, offerID, audienceFile, optizmoLink string) {
-	payload := map[string]string{
-		"job_id":        jobID,
-		"offer_id":      offerID,
-		"audience_file": audienceFile,
-		"optizmo_link":  optizmoLink,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("[Optizmo] error marshaling sidecar payload: %v", err)
-		return
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(optizmoWorkerURL()+"/scrub", "application/json",
-		strings.NewReader(string(body)))
-	if err != nil {
-		log.Printf("[Optizmo] sidecar trigger failed (non-blocking): %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	log.Printf("[Optizmo] sidecar trigger sent for job %s — status %d", jobID, resp.StatusCode)
 }

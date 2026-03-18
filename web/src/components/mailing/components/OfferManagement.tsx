@@ -133,6 +133,7 @@ interface OptizmoStatus {
 interface OptizmoJob {
   id: string;
   status: string;
+  error_message?: string;
   requested_at: string;
   completed_at: string | null;
   audience_count: number;
@@ -193,8 +194,8 @@ const sectionTitle: React.CSSProperties = {
 function statusColor(s: string): string {
   switch (s) {
     case 'active': case 'approved': case 'scrubbed': return '#22c55e';
-    case 'draft': case 'pending': case 'scrub_pending': return '#f59e0b';
-    case 'paused': case 'rejected': return '#ef4444';
+    case 'draft': case 'pending': case 'scrub_pending': case 'processing': return '#f59e0b';
+    case 'paused': case 'rejected': case 'failed': case 'scrub_failed': case 'cancelled': return '#ef4444';
     default: return '#94a3b8';
   }
 }
@@ -1104,6 +1105,16 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
 
 const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | null; onRefresh: () => void }> = ({ offerId, optizmoStatus, onRefresh }) => {
   const [requesting, setRequesting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState('');
+
+  useEffect(() => {
+    const scrubStatus = optizmoStatus?.optizmo_status || 'not_scrubbed';
+    if (scrubStatus !== 'scrub_pending') return;
+    const interval = setInterval(onRefresh, 5000);
+    return () => clearInterval(interval);
+  }, [optizmoStatus?.optizmo_status, onRefresh]);
 
   const requestScrub = async () => {
     setRequesting(true);
@@ -1116,7 +1127,47 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
     setRequesting(false);
   };
 
+  const cancelScrub = async () => {
+    setCancelling(true);
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/optizmo/cancel-scrub`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (res.ok) onRefresh();
+    } catch { /* swallow */ }
+    setCancelling(false);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadMsg('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API}/offers/${offerId}/optizmo/import-result`, {
+        method: 'POST', credentials: 'include', body: form,
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUploadMsg(`Imported: ${(data.suppressed_count ?? 0).toLocaleString()} suppressed out of ${(data.hashes_uploaded ?? 0).toLocaleString()} hashes`);
+        onRefresh();
+      } else {
+        setUploadMsg(`Error: ${data.error || 'upload failed'}`);
+      }
+    } catch {
+      setUploadMsg('Network error during upload');
+    }
+    setUploading(false);
+    e.target.value = '';
+  };
+
   const scrubStatus = optizmoStatus?.optizmo_status || 'not_scrubbed';
+  const isPending = scrubStatus === 'scrub_pending';
+  const isFailed = scrubStatus === 'scrub_failed';
+  const canCancel = isPending || isFailed;
+  const canRequest = !isPending && scrubStatus !== 'scrubbed';
 
   return (
     <div>
@@ -1133,28 +1184,65 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
             <div style={{ fontSize: 13, color: '#e0e6f0' }}>{new Date(optizmoStatus.optizmo_last_scrubbed_at).toLocaleDateString()}</div>
           </div>
         )}
-        <div style={{ marginLeft: 'auto' }}>
-          <button
-            style={{ ...btnPrimary, opacity: requesting ? 0.6 : 1 }}
-            onClick={requestScrub}
-            disabled={requesting || scrubStatus === 'scrub_pending'}
-          >
-            {requesting ? 'Requesting…' : scrubStatus === 'scrub_pending' ? 'Scrub In Progress' : 'Request Scrub'}
-          </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {canCancel && (
+            <button
+              style={{ ...btnPrimary, background: '#dc2626', opacity: cancelling ? 0.6 : 1 }}
+              onClick={cancelScrub}
+              disabled={cancelling}
+            >
+              {cancelling ? 'Cancelling…' : 'Cancel Scrub'}
+            </button>
+          )}
+          {canRequest && (
+            <button
+              style={{ ...btnPrimary, opacity: requesting ? 0.6 : 1 }}
+              onClick={requestScrub}
+              disabled={requesting}
+            >
+              {requesting ? 'Requesting…' : isFailed ? 'Retry Scrub' : 'Request Scrub'}
+            </button>
+          )}
+          {isPending && (
+            <span style={{ fontSize: 12, color: '#f59e0b', alignSelf: 'center' }}>Processing…</span>
+          )}
         </div>
       </div>
 
       {scrubStatus === 'scrubbed' && (
         <div style={{ padding: 12, background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 8, fontSize: 13, color: '#22c55e', marginBottom: 16 }}>
-          ✓ This offer has been scrubbed and is compliant for deployment
+          This offer has been scrubbed and is compliant for deployment
         </div>
       )}
 
       {scrubStatus === 'not_scrubbed' && (
         <div style={{ padding: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, fontSize: 13, color: '#f59e0b', marginBottom: 16 }}>
-          ⚠ This offer has not been scrubbed — request a scrub before deploying
+          This offer has not been scrubbed — request a scrub before deploying
         </div>
       )}
+
+      {isFailed && (
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+          Scrub failed — {optizmoStatus?.jobs?.[0]?.error_message || 'check the Optizmo link and try again'}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 20, padding: 16, background: '#0d1526', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginBottom: 8 }}>Manual Import (upload Optizmo suppression hash file)</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <input
+            type="file"
+            accept=".csv,.txt"
+            onChange={handleFileUpload}
+            disabled={uploading}
+            style={{ fontSize: 12, color: '#e0e6f0' }}
+          />
+          {uploading && <span style={{ fontSize: 12, color: '#f59e0b' }}>Uploading…</span>}
+        </div>
+        {uploadMsg && (
+          <div style={{ marginTop: 8, fontSize: 12, color: uploadMsg.startsWith('Error') ? '#ef4444' : '#22c55e' }}>{uploadMsg}</div>
+        )}
+      </div>
 
       {optizmoStatus?.jobs && optizmoStatus.jobs.length > 0 && (
         <div>
@@ -1167,6 +1255,7 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                 <th>Completed</th>
                 <th>Records</th>
                 <th>Suppressed</th>
+                <th>Error</th>
               </tr>
             </thead>
             <tbody>
@@ -1177,6 +1266,7 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                   <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
                   <td>{(j.audience_count ?? 0).toLocaleString()}</td>
                   <td>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                  <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
                 </tr>
               ))}
             </tbody>

@@ -246,17 +246,21 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 func generateStructuredReview(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) (*StructuredReviewContent, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set — add it to GitHub Secrets and redeploy")
 	}
 
 	prompt := buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL, kit)
 
-	systemPrompt := `You are an expert product reviewer and comparison writer. You write thorough, persuasive, evidence-based reviews that help real consumers make purchasing decisions. Your reviews read like professional publications (Wirecutter, CNET, Tom's Guide).
+	systemPrompt := fmt.Sprintf(`You are the lead editorial writer for %s (%s — "%s").
 
-You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation — output ONLY the raw JSON object.`
+Your writing voice: %s
+
+You produce premium, SEO-optimized listicle articles that rival Wirecutter, CNET, and Tom's Guide. Each article is a ranked list of products/services with rich detail, honest analysis, and compelling calls to action. You write from first-person editorial authority — you have tested these products and stand behind your rankings.
+
+You MUST return valid JSON matching the exact schema provided. No markdown fences, no explanation — output ONLY the raw JSON object.`, kit.SiteName, kit.SiteDomain, kit.Tagline, kit.Voice)
 
 	reqBody := map[string]interface{}{
-		"model":      "claude-opus-4-20250514",
+		"model":      "claude-sonnet-4-6",
 		"max_tokens": 8000,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
@@ -320,12 +324,13 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 func buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) string {
 	var sb strings.Builder
 
-	fmt.Fprintf(&sb, `You are writing a comprehensive product review article for %s (%s — "%s").
+	fmt.Fprintf(&sb, `PUBLICATION: %s (%s)
+TAGLINE: "%s"
+BRAND COLORS: primary %s, secondary %s, accent %s
+BRAND FONTS: headings in %s, body in %s
 
-BRAND VOICE: %s
-
-PRODUCT TO REVIEW: %s
-`, kit.SiteName, kit.SiteDomain, kit.Tagline, kit.Voice, offerName)
+PROMOTED PRODUCT: %s
+`, kit.SiteName, kit.SiteDomain, kit.Tagline, kit.PrimaryColor, kit.SecondaryColor, kit.AccentColor, kit.HeadingFont, kit.BodyFont, offerName)
 
 	if description != "" {
 		fmt.Fprintf(&sb, "PRODUCT DESCRIPTION: %s\n", description)
@@ -340,46 +345,74 @@ PRODUCT TO REVIEW: %s
 	}
 
 	if productImageURL != "" {
-		fmt.Fprintf(&sb, "\nPRODUCT IMAGE URL (use this for the promoted product): %s\n", productImageURL)
+		fmt.Fprintf(&sb, "\nPRODUCT IMAGE URL: %s\n", productImageURL)
 	}
 
 	if trackingLink != "" {
-		fmt.Fprintf(&sb, "\nTRACKING LINK (use as the CTA URL for the promoted product): %s\n", trackingLink)
+		fmt.Fprintf(&sb, "\nPROMOTED CTA URL: %s\n", trackingLink)
 	}
 
-	sb.WriteString(`
-TASK: Generate a comprehensive, persuasive product comparison review. The article must read like a professional publication — the kind that would convince a skeptical consumer to buy. NOT a generic listicle.
+	fmt.Fprintf(&sb, `
+TASK: Write a rich, ranked listicle for %s. Format: "Top 5 Best [Category] in 2026" style.
+The promoted product is #1. The remaining 4 are REAL competing products/services in the same space.
 
-CONTENT REQUIREMENTS:
-1. TITLE: Engaging, SEO-optimized headline with current year. Not generic — should hook the reader.
-2. SUBTITLE: A compelling one-liner that promises value to the reader.
-3. QUICK VERDICT: 2-3 sentences summarizing your recommendation. Lead with the conclusion.
-4. IN-DEPTH SECTIONS (4-6 sections): Each should be a substantial paragraph (150+ words). Cover:
-   - What the product actually does and who it's for
-   - Real-world usage scenarios and value proposition
-   - How it compares to alternatives in specific ways (price, features, reliability)
-   - Any notable experience details, pricing tiers, or special deals
-   - Why it stands out (or doesn't)
-   Content should use <p> tags for paragraphs and can include <strong>, <em>, <ul>/<li> for emphasis.
-5. FEATURE RATINGS: 5-7 specific features rated 1-5 with one-sentence explanations.
-6. PROS/CONS: 5-6 specific, substantive pros. 3-4 honest cons (builds credibility).
-7. COMPARISON PRODUCTS: The promoted product ranked #1 plus 2-3 real competing alternatives.
-   - Each product needs: specific pros (4-5), specific cons (3-4), a detailed quickTake (2-3 sentences), a keyFeature highlight
-   - Promoted product: rating 4.7-4.9, badge "Best Overall"
-   - Competitors: real products/services in the same category, ratings 3.8-4.4
-   - Competitor CTA URLs should be "#"
-8. VERDICT: A compelling final summary + clear recommendation statement.
-9. FAQ: 5-6 realistic questions a consumer would ask, with helpful 2-3 sentence answers.
-10. AUTHOR BIO: A brief (1-2 sentence) bio for the author in the brand voice.
+This must read like a premium editorial — authoritative, detailed, and persuasive. Not a thin affiliate list.
 
-QUALITY STANDARDS:
-- Write as if you've personally tested the product. Use confident, specific language.
-- NO generic filler like "in today's market" or "in conclusion". Get to the point.
-- Include specific numbers, features, and comparisons where possible.
-- The review should make someone want to click the CTA. It's persuasive but not sleazy.
-- Competitors should be REAL products/services that exist in this category.
+LISTICLE REQUIREMENTS:
 
-`)
+1. TITLE: "Top 5 Best [Specific Category] in 2026" or "[Number] Best [Category] — [Year] Expert Picks". Must include the year. Hook the reader.
+
+2. SUBTITLE: One line that promises value. Example: "We tested 12 services so you don't have to."
+
+3. QUICK VERDICT: 2-3 sentences. Name the #1 pick and say why. Lead with the conclusion. Be specific.
+
+4. SECTIONS (5-6 editorial sections, each 150-250 words of HTML):
+   - Section 1: Introduce the category — why this matters to the reader right now
+   - Section 2: How we evaluated — criteria, methodology, what we looked for
+   - Section 3: Deep dive on the #1 pick — usage experience, standout features, real value
+   - Section 4: The runner-up — honest comparison, where it wins and loses vs #1
+   - Section 5: Budget / alternative pick — for readers with different priorities
+   - Section 6: Final thoughts — who should buy what
+   HTML content should use <p>, <strong>, <em>, <ul>/<li> tags. Write with confidence and specificity.
+
+5. FEATURE RATINGS: 6-8 specific, measurable features. Rate each 1.0-5.0 with a one-sentence verdict.
+
+6. PROS (6-7 specific): Substantive, not generic. Reference real features, numbers, or experiences.
+   CONS (3-4 honest): Builds reader trust. Mention genuine trade-offs.
+
+7. PRODUCTS (exactly 5, ranked #1 through #5):
+   The promoted product is ALWAYS rank #1 with isPromoted=true.
+   Ranks 2-5 are REAL competing products/services that actually exist.
+
+   For EVERY product:
+   - name: Full product/service name
+   - rank: 1-5
+   - rating: #1 gets 4.7-4.9, others distributed 3.6-4.5
+   - imageUrl: Use the product image URL for #1, empty string for others
+   - badge: #1="Editor's Choice", #2="Runner-Up", #3="Best Value", #4/#5 contextual
+   - quickTake: 3-4 sentences of honest editorial opinion
+   - keyFeature: One standout feature in a short phrase
+   - pros: 4-5 specific pros
+   - cons: 3-4 specific cons
+   - ctaUrl: Use the promoted CTA URL for #1, "#" for others
+   - ctaText: Action-oriented, e.g. "Get Best Price →", "Try Free →", "See Latest Deal →"
+   - isPromoted: true only for #1
+
+8. VERDICT: 3-4 sentences summarizing the list + a clear one-sentence recommendation.
+
+9. FAQ: 6 realistic consumer questions with 2-3 sentence expert answers. Include questions about price, alternatives, "is it worth it", compatibility, returns/guarantees.
+
+10. AUTHOR BIO: 1-2 sentences written in the %s brand voice. Reference the publication by name.
+
+QUALITY RULES:
+- Write with editorial authority. You tested these. You have opinions.
+- Specific numbers and feature names > vague praise.
+- NO phrases: "in today's market", "in conclusion", "it's worth noting", "whether you're a..."
+- Competitors must be REAL products/services a consumer could actually buy.
+- The listicle should make the reader want to click the #1 pick's CTA. Persuasive but not pushy.
+- Reference %s and its editorial standards throughout.
+
+`, kit.SiteName, kit.SiteName, kit.SiteName)
 
 	fmt.Fprintf(&sb, `RETURN THIS EXACT JSON STRUCTURE:
 {
@@ -407,8 +440,8 @@ QUALITY STANDARDS:
       "rank": 1,
       "rating": 4.8,
       "imageUrl": "%s",
-      "badge": "Best Overall",
-      "quickTake": "string (2-3 sentences)",
+      "badge": "Editor's Choice",
+      "quickTake": "string (3-4 sentences)",
       "keyFeature": "string",
       "pros": ["string"],
       "cons": ["string"],
@@ -418,7 +451,7 @@ QUALITY STANDARDS:
     }
   ],
   "verdict": {
-    "summary": "string (2-3 sentences)",
+    "summary": "string (3-4 sentences)",
     "recommendation": "string (clear recommendation)"
   },
   "faq": [
