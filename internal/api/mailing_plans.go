@@ -201,6 +201,8 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 		TotalOpens        int                    `json:"total_opens"`
 		TotalClicks       int                    `json:"total_clicks"`
 		TotalBounces      int                    `json:"total_bounces"`
+		TotalHardBounces  int                    `json:"total_hard_bounces"`
+		TotalSoftBounces  int                    `json:"total_soft_bounces"`
 		TotalComplaints   int                    `json:"total_complaints"`
 		AvgEngagement     float64                `json:"avg_engagement"`
 		AvgOpenRate       float64                `json:"avg_open_rate"`
@@ -304,8 +306,10 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			TotalOpens:        totalOpens,
 			TotalClicks:       totalClicks,
 			TotalBounces:      totalBounces,
+			TotalHardBounces:  totalBounces,
+			TotalSoftBounces:  0,
 			TotalComplaints:   totalComplaints,
-			AvgEngagement:     avgEngagement,
+			AvgEngagement:     avgEngagement * 100,
 			AvgOpenRate:       openRate,
 			AvgClickRate:      clickRate,
 			DataPointsTotal:   dataPoints,
@@ -314,11 +318,13 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			LearningDays:      learningDays,
 			LearningFreqHours: learningFreq,
 			LearningSources: map[string]int{
-				"sends":      totalSends,
-				"opens":      totalOpens,
-				"clicks":     totalClicks,
-				"bounces":    totalBounces,
-				"complaints": totalComplaints,
+				"sends":        totalSends,
+				"opens":        totalOpens,
+				"clicks":       totalClicks,
+				"bounces":      totalBounces,
+				"hard_bounces": totalBounces,
+				"soft_bounces": 0,
+				"complaints":   totalComplaints,
 			},
 			Knowledge: map[string]interface{}{
 				"optimal_send_hour": int(avgBestHour),

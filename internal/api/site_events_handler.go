@@ -155,12 +155,41 @@ func (h *SiteEventsHandler) HandleSiteEvent(w http.ResponseWriter, r *http.Reque
 	meta["referrer"] = payload.Referrer
 	meta["domain"] = payload.Domain
 	meta["user_agent"] = ua
-	meta["ip"] = r.RemoteAddr
+	meta["ip"] = extractIPFromRemoteAddr(r.RemoteAddr)
+
+	// Resolve subscriber identity from SID
+	var subscriberEmail string
+	var subscriberUUID *string
+	if payload.SID != "" {
+		var email string
+		err := h.db.QueryRowContext(r.Context(),
+			`SELECT email FROM mailing_subscribers WHERE id = $1`, payload.SID).Scan(&email)
+		if err == nil && email != "" {
+			subscriberEmail = email
+			subscriberUUID = &payload.SID
+			meta["subscriber_email"] = email
+			meta["subscriber_id"] = payload.SID
+		}
+	}
+	if payload.CID != "" {
+		meta["campaign_id"] = payload.CID
+	}
 
 	emailHash := siteEventHash(visitorID)
-	err := h.eventWriter.WriteEvent(r.Context(), emailHash, payload.EventType, nil, nil, "site", meta, true)
-	if err != nil {
-		log.Printf("[SitePixel] write error: %v", err)
+
+	// Write to subscriber_events with identity columns
+	ip := extractIPFromRemoteAddr(r.RemoteAddr)
+	_, writeErr := h.db.ExecContext(r.Context(),
+		`INSERT INTO subscriber_events (email_hash, event_type, campaign_id, source, metadata, event_at, subscriber_id, subscriber_email, ip_address, user_agent)
+		 VALUES ($1, $2, $3, 'site', $4, NOW(), $5, $6, $7, $8)`,
+		emailHash, payload.EventType,
+		nullUUID(payload.CID),
+		metaJSON(meta),
+		nullUUID(safeDeref(subscriberUUID)),
+		nullString(subscriberEmail),
+		ip, ua)
+	if writeErr != nil {
+		log.Printf("[SitePixel] write error: %v", writeErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -194,6 +223,8 @@ func (h *SiteEventsHandler) HandleSiteEventBeacon(w http.ResponseWriter, r *http
 	setCORSHeaders(w, r)
 
 	eid := r.URL.Query().Get("eid")
+	sid := r.URL.Query().Get("sid")
+	cid := r.URL.Query().Get("cid")
 	eventType := r.URL.Query().Get("event_type")
 	if eventType == "" {
 		eventType = "page_view"
@@ -201,6 +232,8 @@ func (h *SiteEventsHandler) HandleSiteEventBeacon(w http.ResponseWriter, r *http
 	domain := r.URL.Query().Get("d")
 	pagePath := r.URL.Query().Get("p")
 	pageTitle := r.URL.Query().Get("t")
+	ip := extractIPFromRemoteAddr(r.RemoteAddr)
+	ua := r.UserAgent()
 
 	if eid != "" {
 		emailHash := siteEventHash(eid)
@@ -208,10 +241,34 @@ func (h *SiteEventsHandler) HandleSiteEventBeacon(w http.ResponseWriter, r *http
 			"page_url":   pagePath,
 			"page_title": pageTitle,
 			"domain":     domain,
-			"ip":         r.RemoteAddr,
-			"user_agent": r.UserAgent(),
+			"ip":         ip,
+			"user_agent": ua,
 		}
-		h.eventWriter.WriteEvent(r.Context(), emailHash, eventType, nil, nil, "site_beacon", metadata, true)
+
+		var subscriberEmail string
+		var subscriberUUID *string
+		if sid != "" {
+			var email string
+			if h.db.QueryRowContext(r.Context(), `SELECT email FROM mailing_subscribers WHERE id = $1`, sid).Scan(&email) == nil && email != "" {
+				subscriberEmail = email
+				subscriberUUID = &sid
+				metadata["subscriber_email"] = email
+				metadata["subscriber_id"] = sid
+			}
+		}
+		if cid != "" {
+			metadata["campaign_id"] = cid
+		}
+
+		h.db.ExecContext(r.Context(),
+			`INSERT INTO subscriber_events (email_hash, event_type, campaign_id, source, metadata, event_at, subscriber_id, subscriber_email, ip_address, user_agent)
+			 VALUES ($1, $2, $3, 'site_beacon', $4, NOW(), $5, $6, $7, $8)`,
+			emailHash, eventType,
+			nullUUID(cid),
+			metaJSON(metadata),
+			nullUUID(safeDeref(subscriberUUID)),
+			nullString(subscriberEmail),
+			ip, ua)
 
 		h.activeMu.Lock()
 		h.activeBuf[eid] = time.Now()
@@ -475,6 +532,89 @@ func (h *SiteEventsHandler) broadcastSSE(eventType, domain, pagePath, pageTitle 
 	}
 }
 
+// HandleGetIdentifiedVisitors returns visitors with known subscriber identity.
+// GET /api/mailing/site-pixel/visitors?range=24h&domain=discountblog.com
+func (h *SiteEventsHandler) HandleGetIdentifiedVisitors(w http.ResponseWriter, r *http.Request) {
+	timeRange := r.URL.Query().Get("range")
+	if timeRange == "" {
+		timeRange = "24h"
+	}
+	domain := r.URL.Query().Get("domain")
+
+	var interval string
+	switch timeRange {
+	case "1h":
+		interval = "1 hour"
+	case "24h":
+		interval = "24 hours"
+	case "7d":
+		interval = "7 days"
+	case "30d":
+		interval = "30 days"
+	default:
+		interval = "24 hours"
+	}
+
+	type identifiedVisitor struct {
+		Email     string `json:"email"`
+		SubID     string `json:"subscriber_id"`
+		PageURL   string `json:"page_url"`
+		PageTitle string `json:"page_title"`
+		Domain    string `json:"domain"`
+		IP        string `json:"ip_address"`
+		UserAgent string `json:"user_agent"`
+		EventAt   string `json:"event_at"`
+		EventType string `json:"event_type"`
+	}
+
+	var visitors []identifiedVisitor
+	query := `
+		SELECT COALESCE(subscriber_email,''),
+		       COALESCE(subscriber_id::text,''),
+		       COALESCE(metadata->>'page_url',''),
+		       COALESCE(metadata->>'page_title',''),
+		       COALESCE(metadata->>'domain',''),
+		       COALESCE(ip_address,''),
+		       COALESCE(user_agent,''),
+		       event_at::text,
+		       event_type
+		FROM subscriber_events
+		WHERE source IN ('site','site_beacon')
+		  AND subscriber_email IS NOT NULL AND subscriber_email != ''
+		  AND event_at > NOW() - $1::interval`
+
+	args := []interface{}{interval}
+	if domain != "" {
+		query += ` AND metadata->>'domain' = $2`
+		args = append(args, domain)
+	}
+	query += ` ORDER BY event_at DESC LIMIT 200`
+
+	rows, err := h.db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		log.Printf("[SitePixel] visitors query error: %v", err)
+		respondJSON(w, http.StatusOK, map[string]interface{}{"visitors": []identifiedVisitor{}})
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var v identifiedVisitor
+		rows.Scan(&v.Email, &v.SubID, &v.PageURL, &v.PageTitle, &v.Domain, &v.IP, &v.UserAgent, &v.EventAt, &v.EventType)
+		visitors = append(visitors, v)
+	}
+	if visitors == nil {
+		visitors = []identifiedVisitor{}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"visitors":   visitors,
+		"total":      len(visitors),
+		"time_range": timeRange,
+		"domain":     domain,
+	})
+}
+
 // HandleGetTrackedDomains returns domains that have been sending pixel events.
 func (h *SiteEventsHandler) HandleGetTrackedDomains(w http.ResponseWriter, r *http.Request) {
 	type domainInfo struct {
@@ -518,9 +658,15 @@ func generateTrackingSnippet(domain, apiBase string) string {
   var API='%s/api/v1/site-events';
   var BEACON='%s/api/v1/site-events/beacon';
   var D='%s';
+  var CK='_jv_track';
+  function gp(n){return new URLSearchParams(location.search).get(n)}
+  var urlSid=gp('sid'),urlEid=gp('eid'),urlCid=gp('cid');
+  if(urlSid&&urlEid&&urlCid){document.cookie=CK+'='+urlEid+'|'+urlCid+'|'+urlSid+';path=/;max-age=2592000;SameSite=Lax'}
+  function getTrack(){var c=document.cookie.split('; ').find(function(c){return c.startsWith(CK+'=')});if(!c)return null;var p=c.split('=')[1].split('|');return p.length>=3?{eid:p[0],cid:p[1],sid:p[2]}:null}
   function uid(){try{var k='_jv_uid',v=localStorage.getItem(k);if(v)return v;v='jv_'+Math.random().toString(36).substr(2,12)+Date.now().toString(36);localStorage.setItem(k,v);return v}catch(e){return 'jv_'+Math.random().toString(36).substr(2,12)}}
   function send(evt,meta){
-    var data=JSON.stringify({eid:uid(),event_type:evt,page_url:location.pathname+location.search,page_title:document.title,referrer:document.referrer,domain:D,metadata:meta||{}});
+    var t=getTrack()||{};
+    var data=JSON.stringify({eid:t.eid||uid(),cid:t.cid||'',sid:t.sid||'',event_type:evt,page_url:location.pathname+location.search,page_title:document.title,referrer:document.referrer,domain:D,metadata:meta||{}});
     if(navigator.sendBeacon){navigator.sendBeacon(API,new Blob([data],{type:'application/json'}))}
     else{var x=new XMLHttpRequest();x.open('POST',API,true);x.setRequestHeader('Content-Type','application/json');x.send(data)}
   }
@@ -533,7 +679,8 @@ func generateTrackingSnippet(domain, apiBase string) string {
   }
   if(document.visibilityState!==undefined){document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden')sendEngagement()})}
   window.addEventListener('beforeunload',sendEngagement);
-  var img=new Image();img.src=BEACON+'?eid='+encodeURIComponent(uid())+'&d='+encodeURIComponent(D)+'&p='+encodeURIComponent(location.pathname)+'&t='+encodeURIComponent(document.title);
+  var t=getTrack()||{};
+  var img=new Image();img.src=BEACON+'?eid='+encodeURIComponent(t.eid||uid())+'&sid='+encodeURIComponent(t.sid||'')+'&cid='+encodeURIComponent(t.cid||'')+'&d='+encodeURIComponent(D)+'&p='+encodeURIComponent(location.pathname)+'&t='+encodeURIComponent(document.title);
 })();
 </script>`, domain, apiBase, apiBase, domain)
 }
@@ -573,4 +720,19 @@ func isBot(ua string) bool {
 		}
 	}
 	return false
+}
+
+func metaJSON(meta map[string]interface{}) []byte {
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
+}
+
+func safeDeref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

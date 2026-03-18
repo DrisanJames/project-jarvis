@@ -2,11 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faChartLine, faEnvelope, faEye, faMousePointer,
-  faExclamationTriangle, faBan, faDollarSign, faRobot,
-  faBrain,   faShieldAlt, faCalendarAlt, faClock,
-  faSyncAlt, faSpinner, faArrowUp, faArrowDown,
-  faDatabase, faBolt,
-  faTrophy, faUsers, faChartPie
+  faExclamationTriangle, faBan, faDollarSign,
+  faShieldAlt,
+  faSyncAlt, faSpinner,
+  faDatabase,
+  faTrophy,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -191,17 +191,6 @@ const fmtCurrency = (n: number): string => {
 
 const pct = (n: number | undefined | null): string => (n == null || isNaN(n)) ? '0.0%' : n.toFixed(1) + '%';
 
-const timeAgo = (s?: string): string => {
-  if (!s) return 'Never';
-  const d = Date.now() - new Date(s).getTime();
-  const m = Math.floor(d / 60000);
-  if (m < 1) return 'Just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-};
-
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const AnalyticsCenter: React.FC = () => {
@@ -226,15 +215,15 @@ export const AnalyticsCenter: React.FC = () => {
 
   // Data
   const [overview, setOverview] = useState<OverviewData | null>(null);
-  const [engagement, setEngagement] = useState<EngagementData | null>(null);
+  const [_engagement, setEngagement] = useState<EngagementData | null>(null);
   const [deliverability, setDeliverability] = useState<DeliverabilityData | null>(null);
   const [revenue, setRevenue] = useState<RevenueData | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignData | null>(null);
-  const [profileStats, setProfileStats] = useState<ProfileStats | null>(null);
-  const [agentSummary, setAgentSummary] = useState<ISPAgentSummary | null>(null);
-  const [agents, setAgents] = useState<ISPAgent[]>([]);
-  const [optimalSend, setOptimalSend] = useState<OptimalSend | null>(null);
-  const [dashData, setDashData] = useState<any>(null);
+  const [_profileStats, setProfileStats] = useState<ProfileStats | null>(null);
+  const [_agentSummary, setAgentSummary] = useState<ISPAgentSummary | null>(null);
+  const [_agents, setAgents] = useState<ISPAgent[]>([]);
+  const [_optimalSend, setOptimalSend] = useState<OptimalSend | null>(null);
+  const [_dashData, setDashData] = useState<any>(null);
 
   // Infrastructure Breakdown state
   const [infraData, setInfraData] = useState<InfraRow[]>([]);
@@ -406,22 +395,6 @@ export const AnalyticsCenter: React.FC = () => {
   const trend = overview?.daily_trend || [];
   const granularity = overview?.granularity || 'day';
 
-  // AI knowledge depth across all agents
-  const totalKnowledge = agents.reduce((sum, a) => {
-    let score = 0;
-    if (a.data_points_total > 100) score += 25;
-    else if (a.data_points_total > 50) score += 20;
-    else if (a.data_points_total > 10) score += 15;
-    else if (a.data_points_total > 0) score += 5;
-    if (a.status === 'active') score += 20;
-    else if (a.status === 'idle') score += 10;
-    if (a.learning_days > 30) score += 20;
-    else if (a.learning_days > 7) score += 15;
-    else if (a.learning_days > 1) score += 10;
-    return sum + Math.min(100, score);
-  }, 0);
-  const avgKnowledge = agents.length > 0 ? Math.round(totalKnowledge / agents.length) : 0;
-
   return (
     <div className="ac-container ig-scan-line">
       {/* ─── Header ─────────────────────────────────────────────────────── */}
@@ -531,7 +504,7 @@ export const AnalyticsCenter: React.FC = () => {
 
           {/* ─── ISP Performance Cards ─────────────────────────────────── */}
           <div className="ac-card ig-card-hover" style={{ gridColumn: '1 / -1' }}>
-            <h3><FontAwesomeIcon icon={faChartPie} /> Performance by ISP</h3>
+            <h3><FontAwesomeIcon icon={faChartLine} /> Performance by ISP</h3>
             {ispCards.length === 0 ? (
               <div className="ac-empty-mini">No ISP data available for this period.</div>
             ) : (
@@ -658,10 +631,8 @@ export const AnalyticsCenter: React.FC = () => {
             )}
           </div>
 
-          {/* ─── Two-Column Layout ──────────────────────────────────────── */}
-          <div className="ac-two-col ig-fade-in">
-            {/* LEFT COLUMN */}
-            <div className="ac-col-left">
+          {/* ─── Main Content (full-width) ────────────────────────────── */}
+          <div className="ac-main-content ig-fade-in">
 
               {/* Daily Trend Chart */}
               <div className="ac-card ig-card-hover">
@@ -951,303 +922,6 @@ export const AnalyticsCenter: React.FC = () => {
                   </div>
                 )}
               </div>
-            </div>
-
-            {/* RIGHT COLUMN */}
-            <div className="ac-col-right">
-
-              {/* AI Intelligence Overview */}
-              <div className="ac-card ac-ai-card ig-card-hover ig-fade-in">
-                <h3><FontAwesomeIcon icon={faBrain} /> AI Intelligence</h3>
-                <div className="ac-ai-hero">
-                  <div className="ac-ai-ring" style={{ '--ai-pct': `${avgKnowledge}%`, '--ai-color': avgKnowledge >= 60 ? '#10b981' : avgKnowledge >= 30 ? '#f59e0b' : '#ef4444' } as React.CSSProperties}>
-                    <span className="ac-ai-ring-val">{avgKnowledge}</span>
-                    <span className="ac-ai-ring-lbl">Avg Knowledge</span>
-                  </div>
-                  <div className="ac-ai-stats">
-                    <div className="ac-ai-stat">
-                      <FontAwesomeIcon icon={faRobot} />
-                      <span className="ac-ai-sv">{agentSummary?.total_agents || 0}</span>
-                      <span className="ac-ai-sl">ISP Agents</span>
-                    </div>
-                    <div className="ac-ai-stat">
-                      <FontAwesomeIcon icon={faBolt} />
-                      <span className="ac-ai-sv">{agentSummary?.active_agents || 0}</span>
-                      <span className="ac-ai-sl">Active</span>
-                    </div>
-                    <div className="ac-ai-stat">
-                      <FontAwesomeIcon icon={faBrain} />
-                      <span className="ac-ai-sv">{fmt(profileStats?.total_profiles || 0)}</span>
-                      <span className="ac-ai-sl">Profiles</span>
-                    </div>
-                    <div className="ac-ai-stat">
-                      <FontAwesomeIcon icon={faDatabase} />
-                      <span className="ac-ai-sv">{fmt(agentSummary?.total_data_points || 0)}</span>
-                      <span className="ac-ai-sl">Data Pts</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="ac-ai-last-learn">
-                  <FontAwesomeIcon icon={faClock} /> Last system learning: <strong>{timeAgo(agentSummary?.last_system_learning)}</strong>
-                </div>
-
-                {/* ISP Agent Mini Cards */}
-                {agents.length > 0 && (
-                  <div className="ac-agent-list">
-                    {agents.slice(0, 5).map(a => (
-                      <div key={a.domain} className="ac-agent-mini">
-                        <div className="ac-agent-mini-header">
-                          <span className="ac-agent-mini-name">{a.isp}</span>
-                          <span className={`ac-agent-mini-status ac-st-${a.status}`}>{a.status}</span>
-                        </div>
-                        <div className="ac-agent-mini-stats">
-                          <span>{a.profiles_count} profiles</span>
-                          <span>{fmt(a.data_points_total)} pts</span>
-                          <span>{a.learning_days}d learning</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Engagement Distribution */}
-              <div className="ac-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faUsers} /> Engagement Distribution</h3>
-                {(() => {
-                  const dist = engagement?.distribution || profileStats?.tier_distribution || { high: 0, medium: 0, low: 0, none: 0 };
-                  // Normalize: profileStats uses 'inactive', engagement uses 'none'
-                  const h = dist.high || 0;
-                  const m = dist.medium || 0;
-                  const l = dist.low || 0;
-                  const n = (dist as any).none || (dist as any).inactive || 0;
-                  const total = h + m + l + n || 1;
-                  return (
-                    <div className="ac-engage-dist">
-                      <div className="ac-engage-bar-full">
-                        <div className="ac-engage-seg ac-seg-high" style={{ width: `${(h / total) * 100}%` }} title={`High: ${h}`} />
-                        <div className="ac-engage-seg ac-seg-med" style={{ width: `${(m / total) * 100}%` }} title={`Medium: ${m}`} />
-                        <div className="ac-engage-seg ac-seg-low" style={{ width: `${(l / total) * 100}%` }} title={`Low: ${l}`} />
-                        <div className="ac-engage-seg ac-seg-none" style={{ width: `${(n / total) * 100}%` }} title={`Inactive: ${n}`} />
-                      </div>
-                      <div className="ac-engage-legend">
-                        <span><span className="ac-legend-dot ac-seg-high" /> High ({h})</span>
-                        <span><span className="ac-legend-dot ac-seg-med" /> Medium ({m})</span>
-                        <span><span className="ac-legend-dot ac-seg-low" /> Low ({l})</span>
-                        <span><span className="ac-legend-dot ac-seg-none" /> Inactive ({n})</span>
-                      </div>
-                      <div className="ac-engage-avg">
-                        Avg Engagement Score: <strong>{(profileStats?.avg_engagement || 0).toFixed(1)}</strong>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div className="ac-card ac-cap-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faEnvelope} /> PMTA Daily Cap</h3>
-                {(() => {
-                  const cap = dashData?.daily_capacity || 0;
-                  const used = dashData?.daily_used || 0;
-                  const util = dashData?.daily_utilization || 0;
-                  const remaining = dashData?.daily_remaining || 0;
-                  const status = util > 90 ? 'critical' : util > 70 ? 'warning' : 'healthy';
-                  return (
-                    <div className="ac-cap-content">
-                      <div className="ac-cap-hero">
-                        <div className="ac-cap-ring" style={{
-                          '--cap-pct': `${Math.min(util, 100)}%`,
-                          '--cap-color': status === 'critical' ? '#ef4444' : status === 'warning' ? '#f59e0b' : '#10b981'
-                        } as React.CSSProperties}>
-                          <span className="ac-cap-ring-val">{util.toFixed(0)}%</span>
-                          <span className="ac-cap-ring-lbl">Used</span>
-                        </div>
-                        <div className="ac-cap-stats">
-                          <div className="ac-cap-stat">
-                            <span className="ac-cap-sv">{fmt(used)}</span>
-                            <span className="ac-cap-sl">Sent Today</span>
-                          </div>
-                          <div className="ac-cap-stat">
-                            <span className="ac-cap-sv">{fmt(cap)}</span>
-                            <span className="ac-cap-sl">Daily Cap</span>
-                          </div>
-                          <div className="ac-cap-stat">
-                            <span className="ac-cap-sv ac-cap-remaining">{fmt(remaining)}</span>
-                            <span className="ac-cap-sl">Remaining</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="ac-cap-bar-wrap">
-                        <div className="ac-cap-bar">
-                          <div className={`ac-cap-fill ac-cap-${status} ig-progress-fill`} style={{ width: `${Math.min(util, 100)}%` }} />
-                        </div>
-                        <div className="ac-cap-labels">
-                          <span>0</span>
-                          <span>{fmt(cap)}</span>
-                        </div>
-                      </div>
-                      {util < 50 && cap > 0 && (
-                        <div className="ac-cap-alert ac-cap-under">
-                          PMTA is underutilized. You have capacity for {fmt(remaining)} more emails today.
-                        </div>
-                      )}
-                      {util > 90 && (
-                        <div className="ac-cap-alert ac-cap-near">
-                          Approaching daily cap. Consider throttling or scheduling remaining sends for tomorrow.
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* ISP Agent Performance */}
-              <div className="ac-card ac-agent-perf-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faRobot} /> ISP Agent Performance</h3>
-                <div className="ac-agent-perf-stats">
-                  <div className="ac-agent-perf-stat">
-                    <span className="ac-agent-perf-val">{agentSummary?.total_agents || agents.length}</span>
-                    <span className="ac-agent-perf-lbl">Total Agents</span>
-                  </div>
-                  <div className="ac-agent-perf-stat">
-                    <span className="ac-agent-perf-val">{agentSummary?.active_agents || agents.filter(a => a.status === 'active').length}</span>
-                    <span className="ac-agent-perf-lbl">Active</span>
-                  </div>
-                  <div className="ac-agent-perf-stat">
-                    <span className="ac-agent-perf-val">{fmt(agents.reduce((s, a) => s + a.data_points_total, 0))}</span>
-                    <span className="ac-agent-perf-lbl">Total Sends</span>
-                  </div>
-                  <div className="ac-agent-perf-stat">
-                    <span className="ac-agent-perf-val">{agents.length > 0 ? (agents.reduce((s, a) => s + a.avg_engagement, 0) / agents.length).toFixed(1) : '0'}%</span>
-                    <span className="ac-agent-perf-lbl">Avg Engagement</span>
-                  </div>
-                </div>
-                {agents.length > 0 && (
-                  <div className="ac-agent-perf-chart">
-                    <h4>Per-ISP Send Volume</h4>
-                    {(() => {
-                      const maxPts = Math.max(...agents.map(a => a.data_points_total), 1);
-                      return agents.slice(0, 8).map(a => (
-                        <div key={a.isp_key} className="ac-agent-perf-bar-row">
-                          <span className="ac-agent-perf-bar-label">{a.isp}</span>
-                          <div className="ac-agent-perf-bar-track">
-                            <div
-                              className={`ac-agent-perf-bar-fill ac-st-${a.status} ig-progress-fill`}
-                              style={{ width: `${(a.data_points_total / maxPts) * 100}%` }}
-                            />
-                          </div>
-                          <span className="ac-agent-perf-bar-val">{fmt(a.data_points_total)}</span>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                )}
-                {agents.length === 0 && (
-                  <div className="ac-empty-mini">No ISP agent data available yet.</div>
-                )}
-              </div>
-
-              {/* Optimal Send Time */}
-              <div className="ac-card ac-optimal-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faCalendarAlt} /> AI Optimal Send Time</h3>
-                {optimalSend ? (
-                  <div className="ac-optimal">
-                    <div className="ac-optimal-time">
-                      <div className="ac-optimal-day">{optimalSend.optimal_day_name}</div>
-                      <div className="ac-optimal-hour">{optimalSend.optimal_hour}:00</div>
-                    </div>
-                    <div className="ac-optimal-conf">
-                      <span>Confidence</span>
-                      <div className="ac-conf-bar">
-                        <div className="ig-progress-fill" style={{ width: `${(optimalSend.confidence || 0) * 100}%` }} />
-                      </div>
-                      <span className="ac-conf-pct">{((optimalSend.confidence || 0) * 100).toFixed(0)}%</span>
-                    </div>
-                    {optimalSend.reasoning && optimalSend.reasoning.length > 0 && (
-                      <ul className="ac-reasoning">
-                        {optimalSend.reasoning.map((r, i) => <li key={i}>{r}</li>)}
-                      </ul>
-                    )}
-                  </div>
-                ) : (
-                  <div className="ac-empty-mini">Not enough data to determine optimal send time.</div>
-                )}
-              </div>
-
-              {/* Revenue by Campaign */}
-              <div className="ac-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faDollarSign} /> Top Revenue Campaigns</h3>
-                {!revenue?.top_revenue_campaigns?.length ? (
-                  <div className="ac-empty-mini">No revenue data yet.</div>
-                ) : (
-                  <div className="ac-rev-list">
-                    {revenue.top_revenue_campaigns.slice(0, 5).map((c, i) => (
-                      <div key={i} className="ac-rev-item">
-                        <span className="ac-rev-rank">#{i + 1}</span>
-                        <div className="ac-rev-body">
-                          <span className="ac-rev-name">{c.name}</span>
-                          <span className="ac-rev-meta">{fmt(c.sent)} sent &middot; {fmtCurrency(c.revenue_per_email)}/email</span>
-                        </div>
-                        <span className="ac-rev-amount">{fmtCurrency(c.revenue)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* ISP Distribution */}
-              {profileStats?.isp_distribution && Object.keys(profileStats.isp_distribution).length > 0 && (
-                <div className="ac-card ig-card-hover">
-                  <h3><FontAwesomeIcon icon={faChartPie} /> ISP Distribution</h3>
-                  <div className="ac-isp-dist">
-                    {Object.entries(profileStats.isp_distribution)
-                      .sort(([, a], [, b]) => (b as number) - (a as number))
-                      .slice(0, 8)
-                      .map(([domain, count]) => {
-                        const maxCount = Math.max(...Object.values(profileStats.isp_distribution));
-                        return (
-                          <div key={domain} className="ac-isp-row">
-                            <span className="ac-isp-name">{domain}</span>
-                            <div className="ac-isp-bar-bg">
-                              <div className="ac-isp-bar-fill ig-progress-fill" style={{ width: `${((count as number) / maxCount) * 100}%` }} />
-                            </div>
-                            <span className="ac-isp-count">{count as number}</span>
-                          </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
-              {/* Industry Benchmarks */}
-              <div className="ac-card ac-bench-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faChartLine} /> Your Performance vs Industry</h3>
-                <div className="ac-bench-grid">
-                  {[
-                    { label: 'Open Rate', yours: rates.open_rate, bench: 20, unit: '%' },
-                    { label: 'Click Rate', yours: rates.click_rate, bench: 3, unit: '%' },
-                    { label: 'Hard Bounce Rate', yours: rates.hard_bounce_rate, bench: 1, unit: '%', inverse: true },
-                    { label: 'Soft Bounce Rate', yours: rates.soft_bounce_rate, bench: 1, unit: '%', inverse: true },
-                    { label: 'Complaint Rate', yours: rates.complaint_rate, bench: 0.1, unit: '%', inverse: true },
-                  ].map((b, i) => {
-                    const better = b.inverse ? b.yours < b.bench : b.yours > b.bench;
-                    return (
-                      <div key={i} className="ac-bench-item">
-                        <span className="ac-bench-label">{b.label}</span>
-                        <div className="ac-bench-compare">
-                          <span className={`ac-bench-yours ${better ? 'ac-good' : 'ac-bad'}`}>
-                            {b.yours.toFixed(b.unit === '%' && b.yours < 1 ? 2 : 1)}{b.unit}
-                            {better ? <FontAwesomeIcon icon={faArrowUp} /> : <FontAwesomeIcon icon={faArrowDown} />}
-                          </span>
-                          <span className="ac-bench-vs">vs</span>
-                          <span className="ac-bench-industry">{b.bench}{b.unit}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
           </div>
         </>
       )}

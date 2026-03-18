@@ -352,8 +352,14 @@ HTML TEMPLATE REQUIREMENTS:
 - All images must have alt text
 - Use <!--[if mso]> conditionals for Outlook button rendering
 
-For the CTA URL, use: %s
-Replace {mailing_id}, {subscriber_id}, {campaign_id} with the literal placeholder text — they're replaced at send time.
+For the CTA URL, use exactly: %s
+This URL may contain merge tags that get replaced at send time. Keep these EXACT placeholders as-is in the URL:
+- {{DATE_MMDDYYYY}} — replaced with the send date
+- {{MAILING_ID}} — replaced with the mailing/subscriber ID
+- {{SUBSCRIBER_ID}} — replaced with the subscriber ID
+- {{CAMPAIGN_ID}} — replaced with the campaign ID
+- {{CREATIVE_ID}} — replaced with the creative ID
+Do NOT change, remove, or re-encode these placeholders. Copy the CTA URL verbatim into every email's CTA button href.
 
 RETURN THIS JSON:
 {

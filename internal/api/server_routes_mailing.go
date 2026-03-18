@@ -138,6 +138,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/site-pixel/traffic", siteEventsHandler.HandleGetSiteTraffic)
 			r.Get("/site-pixel/traffic/stream", siteEventsHandler.HandleSiteTrafficStream)
 			r.Get("/site-pixel/domains", siteEventsHandler.HandleGetTrackedDomains)
+			r.Get("/site-pixel/visitors", siteEventsHandler.HandleGetIdentifiedVisitors)
 
 			// Platform info
 			r.Get("/version", s.HandleVersion)

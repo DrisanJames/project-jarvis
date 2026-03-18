@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -136,11 +137,13 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
 		domain = strings.ToLower(email[atIdx+1:])
 	}
+	eHash := emailHash(email)
 	svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_opens, last_open_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 		ON CONFLICT (email_hash) DO UPDATE SET total_opens = mailing_inbox_profiles.total_opens + 1, last_open_at = NOW(), updated_at = NOW()
-	`, emailHash(email), email, domain, isp)
+	`, eHash, email, domain, isp)
+	svc.recomputeInboxProfileScore(ctx, eHash)
 
 	svc.updateEngagementScore(ctx, subscriberID)
 	svc.updateISPAgent(ctx, campaignID, isp, "open")
@@ -222,16 +225,48 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
 		clickDomain = strings.ToLower(email[atIdx+1:])
 	}
+	clickEHash := emailHash(email)
 	svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_clicks, last_click_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 		ON CONFLICT (email_hash) DO UPDATE SET total_clicks = mailing_inbox_profiles.total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
-	`, emailHash(email), email, clickDomain, isp)
+	`, clickEHash, email, clickDomain, isp)
+	svc.recomputeInboxProfileScore(ctx, clickEHash)
 
 	svc.updateEngagementScore(ctx, subscriberID)
 	svc.updateISPAgent(ctx, campaignID, isp, "click")
 
-	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
+	redirectURL := enrichOwnedDomainURL(originalURL, subscriberID, emailID, campaignID)
+	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+}
+
+var ownedDomains = []string{
+	"discountblog.com", "quizfiesta.com", "historythinking.com",
+	"myownhealth.net", "getmecoupons.net",
+}
+
+func enrichOwnedDomainURL(rawURL string, subscriberID, emailID, campaignID uuid.UUID) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	host := strings.ToLower(u.Hostname())
+	owned := false
+	for _, d := range ownedDomains {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set("sid", subscriberID.String())
+	q.Set("eid", emailID.String())
+	q.Set("cid", campaignID.String())
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // HandleTrackUnsubscribe records an unsubscribe event and feeds the single
@@ -387,6 +422,45 @@ func extractISP(email string) string {
 	default:
 		return domain
 	}
+}
+
+// recomputeInboxProfileScore recalculates engagement_score (0–1 scale) for an
+// inbox profile based on its own counters: open rate, click rate, and recency.
+func (svc *MailingService) recomputeInboxProfileScore(ctx context.Context, eHash string) {
+	var totalSends, totalOpens, totalClicks int
+	var lastOpen *time.Time
+	err := svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(total_sends,0), COALESCE(total_opens,0), COALESCE(total_clicks,0), last_open_at
+		FROM mailing_inbox_profiles WHERE email_hash = $1
+	`, eHash).Scan(&totalSends, &totalOpens, &totalClicks, &lastOpen)
+	if err != nil {
+		return
+	}
+	if totalSends == 0 {
+		return
+	}
+
+	openRate := float64(totalOpens) / float64(totalSends)
+	clickRate := float64(totalClicks) / float64(totalSends)
+	score := (openRate * 0.6) + (clickRate * 0.4)
+
+	if lastOpen != nil {
+		daysSince := time.Since(*lastOpen).Hours() / 24
+		if daysSince < 7 {
+			score += 0.20
+		} else if daysSince < 30 {
+			score += 0.10
+		}
+	}
+
+	if score > 1.0 {
+		score = 1.0
+	}
+
+	svc.db.ExecContext(ctx, `
+		UPDATE mailing_inbox_profiles SET engagement_score = $2, updated_at = NOW()
+		WHERE email_hash = $1
+	`, eHash, score)
 }
 
 // updateISPAgent upserts ISP agent metrics when tracking events occur.

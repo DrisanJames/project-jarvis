@@ -1921,6 +1921,78 @@ END $$`},
 		{"phase6_ip_pool_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
+
+		{"create_subscriber_events", `CREATE TABLE IF NOT EXISTS subscriber_events (
+			id BIGSERIAL PRIMARY KEY,
+			email_hash VARCHAR(64) NOT NULL,
+			event_type VARCHAR(50) NOT NULL DEFAULT 'page_view',
+			campaign_id UUID,
+			variant_id UUID,
+			source VARCHAR(50) DEFAULT 'site',
+			metadata JSONB DEFAULT '{}',
+			event_at TIMESTAMPTZ DEFAULT NOW(),
+			subscriber_id UUID,
+			subscriber_email VARCHAR(255),
+			ip_address VARCHAR(45),
+			user_agent TEXT
+		)`},
+		{"idx_sub_events_hash", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_hash ON subscriber_events(email_hash)`},
+		{"idx_sub_events_type", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_type ON subscriber_events(event_type)`},
+		{"idx_sub_events_at", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_at ON subscriber_events(event_at)`},
+		{"idx_sub_events_source", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_source ON subscriber_events(source)`},
+		{"idx_sub_events_domain", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_domain ON subscriber_events((metadata->>'domain'))`},
+		{"idx_sub_events_subscriber", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_subscriber ON subscriber_events(subscriber_id)`},
+		{"add_sub_events_identity_cols", `DO $$
+		BEGIN
+			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS subscriber_id UUID;
+			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS subscriber_email VARCHAR(255);
+			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45);
+			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS user_agent TEXT;
+		EXCEPTION WHEN OTHERS THEN NULL;
+		END $$`},
+		{"grant_subscriber_events", `GRANT ALL ON TABLE subscriber_events TO ignite; GRANT ALL ON SEQUENCE subscriber_events_id_seq TO ignite`},
+
+		{"purge_besmed_tracking_events", `DELETE FROM mailing_tracking_events WHERE LOWER(sending_domain) LIKE '%besmed%'`},
+		{"purge_besmed_queue", `DELETE FROM mailing_campaign_queue WHERE campaign_id IN (SELECT id FROM mailing_campaigns WHERE LOWER(from_email) LIKE '%besmed%')`},
+		{"purge_besmed_campaigns", `DELETE FROM mailing_campaigns WHERE LOWER(from_email) LIKE '%besmed%'`},
+		{"purge_besmed_sending_profiles", `DELETE FROM mailing_sending_profiles WHERE LOWER(sending_domain) LIKE '%besmed%'`},
+
+		{"ensure_pgcrypto", `CREATE EXTENSION IF NOT EXISTS pgcrypto`},
+
+		{"backfill_inbox_profile_counts_v1", `
+			UPDATE mailing_inbox_profiles p SET
+				total_sends = COALESCE(agg.delivered, 0),
+				total_bounces = COALESCE(agg.bounced, 0),
+				total_complaints = COALESCE(agg.complained, 0),
+				updated_at = NOW()
+			FROM (
+				SELECT LOWER(s.email) as email,
+					COUNT(*) FILTER (WHERE e.event_type = 'delivered') as delivered,
+					COUNT(*) FILTER (WHERE e.event_type = 'bounced') as bounced,
+					COUNT(*) FILTER (WHERE e.event_type = 'complained') as complained
+				FROM mailing_tracking_events e
+				JOIN mailing_subscribers s ON e.subscriber_id = s.id
+				WHERE s.email IS NOT NULL
+				GROUP BY LOWER(s.email)
+			) agg
+			WHERE LOWER(p.email) = agg.email
+		`},
+
+		{"backfill_inbox_profile_engagement_v1", `
+			UPDATE mailing_inbox_profiles SET
+				engagement_score = LEAST(
+					CASE WHEN COALESCE(total_sends, 0) = 0 THEN 0.50
+					ELSE
+						(CAST(COALESCE(total_opens, 0) AS FLOAT) / total_sends * 0.6) +
+						(CAST(COALESCE(total_clicks, 0) AS FLOAT) / total_sends * 0.4) +
+						CASE WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '7 days' THEN 0.20
+							 WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '30 days' THEN 0.10
+							 ELSE 0 END
+					END,
+					1.0
+				)
+			WHERE total_sends > 0
+		`},
 	}
 
 	var ok, fail int

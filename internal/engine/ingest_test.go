@@ -81,38 +81,49 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
 			// Expect campaign counter update (varies by event type)
-			switch tc.wantEventType {
-			case "delivered":
-				mock.ExpectExec("UPDATE mailing_campaigns SET delivered_count").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec("UPDATE mailing_ip_addresses SET total_delivered").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
-					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-			case "bounced":
-				mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				// soft_bounce_count because default BounceCat is empty (not a hard category)
-				mock.ExpectExec("UPDATE mailing_campaigns SET soft_bounce_count").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec("UPDATE mailing_ip_addresses SET total_bounced").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
-					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-			case "complained":
-				mock.ExpectExec("UPDATE mailing_campaigns SET complaint_count").
-					WithArgs(sqlmock.AnyArg()).
-					WillReturnResult(sqlmock.NewResult(0, 1))
-			case "deferred":
-				// No campaign counter update expected.
-			}
+		switch tc.wantEventType {
+		case "delivered":
+			mock.ExpectExec("UPDATE mailing_campaigns SET delivered_count").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("UPDATE mailing_ip_addresses SET total_delivered").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+				WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT COALESCE").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+		case "bounced":
+			mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("UPDATE mailing_campaigns SET soft_bounce_count").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("UPDATE mailing_ip_addresses SET total_bounced").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+				WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT COALESCE").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+		case "complained":
+			mock.ExpectExec("UPDATE mailing_campaigns SET complaint_count").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+				WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT COALESCE").
+				WithArgs(sqlmock.AnyArg()).
+				WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+		case "deferred":
+			// No campaign counter update expected.
+		}
 
 			ing.persistToDB(rec, ISP("comcast"))
 
@@ -195,7 +206,10 @@ func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
 	mock.ExpectExec("UPDATE mailing_ip_addresses SET total_bounced").
 		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
 
 	ing.persistToDB(rec, ISP("gmail"))
 	assert.NoError(t, mock.ExpectationsWereMet())

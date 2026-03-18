@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/google/uuid"
 )
+
+func ingestEmailHash(email string) string {
+	h := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return fmt.Sprintf("%x", h)
+}
 
 // campaignRecorder abstracts campaign event recording for testability.
 type campaignRecorder interface {
@@ -365,26 +371,74 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		}
 	}
 
-	// Enrich inbox profiles with delivery/bounce data.
-	if eventType == "delivered" || eventType == "bounced" {
+	// Enrich inbox profiles with delivery/bounce/complaint data.
+	if eventType == "delivered" || eventType == "bounced" || eventType == "complained" {
 		domain := ""
 		if parts := strings.SplitN(recipientEmail, "@", 2); len(parts) == 2 {
 			domain = parts[1]
 		}
-		if eventType == "delivered" {
+		eHash := ingestEmailHash(recipientEmail)
+		switch eventType {
+		case "delivered":
 			ing.db.ExecContext(ctx, `
-				INSERT INTO mailing_inbox_profiles (id, email, domain, total_sent, last_sent_at, created_at, updated_at)
-				VALUES (gen_random_uuid(), $1, $2, 1, NOW(), NOW(), NOW())
-				ON CONFLICT (email) DO UPDATE SET total_sent = mailing_inbox_profiles.total_sent + 1, last_sent_at = NOW(), updated_at = NOW()
-			`, recipientEmail, domain)
-		} else {
+				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_sends, last_send_at, first_seen_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), NOW())
+				ON CONFLICT (email_hash) DO UPDATE SET
+					total_sends = COALESCE(mailing_inbox_profiles.total_sends, 0) + 1,
+					last_send_at = NOW(), updated_at = NOW()
+			`, eHash, recipientEmail, domain)
+		case "bounced":
 			ing.db.ExecContext(ctx, `
-				INSERT INTO mailing_inbox_profiles (id, email, domain, total_bounces, last_bounce_at, created_at, updated_at)
-				VALUES (gen_random_uuid(), $1, $2, 1, NOW(), NOW(), NOW())
-				ON CONFLICT (email) DO UPDATE SET total_bounces = COALESCE(mailing_inbox_profiles.total_bounces, 0) + 1, last_bounce_at = NOW(), updated_at = NOW()
-			`, recipientEmail, domain)
+				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_bounces, last_bounce_at, first_seen_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), NOW())
+				ON CONFLICT (email_hash) DO UPDATE SET
+					total_bounces = COALESCE(mailing_inbox_profiles.total_bounces, 0) + 1,
+					last_bounce_at = NOW(), updated_at = NOW()
+			`, eHash, recipientEmail, domain)
+		case "complained":
+			ing.db.ExecContext(ctx, `
+				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_complaints, first_seen_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
+				ON CONFLICT (email_hash) DO UPDATE SET
+					total_complaints = COALESCE(mailing_inbox_profiles.total_complaints, 0) + 1,
+					updated_at = NOW()
+			`, eHash, recipientEmail, domain)
+		}
+		ing.recomputeProfileScore(ctx, eHash)
+	}
+}
+
+func (ing *Ingestor) recomputeProfileScore(ctx context.Context, eHash string) {
+	var totalSends, totalOpens, totalClicks int
+	var lastOpen *time.Time
+	err := ing.db.QueryRowContext(ctx, `
+		SELECT COALESCE(total_sends,0), COALESCE(total_opens,0), COALESCE(total_clicks,0), last_open_at
+		FROM mailing_inbox_profiles WHERE email_hash = $1
+	`, eHash).Scan(&totalSends, &totalOpens, &totalClicks, &lastOpen)
+	if err != nil || totalSends == 0 {
+		return
+	}
+
+	openRate := float64(totalOpens) / float64(totalSends)
+	clickRate := float64(totalClicks) / float64(totalSends)
+	score := (openRate * 0.6) + (clickRate * 0.4)
+
+	if lastOpen != nil {
+		daysSince := time.Since(*lastOpen).Hours() / 24
+		if daysSince < 7 {
+			score += 0.20
+		} else if daysSince < 30 {
+			score += 0.10
 		}
 	}
+	if score > 1.0 {
+		score = 1.0
+	}
+
+	ing.db.ExecContext(ctx, `
+		UPDATE mailing_inbox_profiles SET engagement_score = $2, updated_at = NOW()
+		WHERE email_hash = $1
+	`, eHash, score)
 }
 
 // isHardBounceCategory returns true for PMTA bounce categories that indicate

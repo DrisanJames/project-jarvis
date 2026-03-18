@@ -48,6 +48,7 @@
 /* ─── Two-Column Layout ─────────────────────────────────────────────────── */
 .ac-two-col { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 20px; }
 .ac-col-left, .ac-col-right { display: flex; flex-direction: column; gap: 20px; }
+.ac-main-content { display: flex; flex-direction: column; gap: 20px; }
 
 /* ─── Generic Card ──────────────────────────────────────────────────────── */
 .ac-card { background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 14px; padding: 20px; transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease; }

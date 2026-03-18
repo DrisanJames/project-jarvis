@@ -157,11 +157,10 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 			clickRate = float64(totalClicks) / float64(totalSent) * 100
 		}
 
-		// Determine tier
 		engagementTier := "inactive"
-		if score >= 70 {
+		if score >= 0.70 {
 			engagementTier = "high"
-		} else if score >= 40 {
+		} else if score >= 0.40 {
 			engagementTier = "medium"
 		} else if score > 0 {
 			engagementTier = "low"
@@ -189,7 +188,7 @@ func (svc *MailingService) HandleGetProfiles(w http.ResponseWriter, r *http.Requ
 			"total_clicks":     totalClicks,
 			"total_bounces":    totalBounces,
 			"total_complaints": totalComplaints,
-			"engagement_score": score,
+			"engagement_score": round2(score * 100),
 			"engagement_tier":  engagementTier,
 			"engagement_trend": trend,
 			"best_send_hour":   bestHour,
@@ -264,9 +263,9 @@ func (svc *MailingService) HandleGetProfileStats(w http.ResponseWriter, r *http.
 
 	// Tier distribution
 	var highCount, medCount, lowCount, inactiveCount int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score >= 70").Scan(&highCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score >= 40 AND engagement_score < 70").Scan(&medCount)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score > 0 AND engagement_score < 40").Scan(&lowCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score >= 0.70").Scan(&highCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score >= 0.40 AND engagement_score < 0.70").Scan(&medCount)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score > 0 AND engagement_score < 0.40").Scan(&lowCount)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE engagement_score = 0").Scan(&inactiveCount)
 
 	// Recently active (opened in last 30 days)
@@ -275,7 +274,7 @@ func (svc *MailingService) HandleGetProfileStats(w http.ResponseWriter, r *http.
 
 	// Total sends/opens/clicks across all profiles
 	var totalSent, totalOpens, totalClicks int
-	svc.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_sent),0), COALESCE(SUM(total_opens),0), COALESCE(SUM(total_clicks),0) FROM mailing_inbox_profiles").Scan(&totalSent, &totalOpens, &totalClicks)
+	svc.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_sends),0), COALESCE(SUM(total_opens),0), COALESCE(SUM(total_clicks),0) FROM mailing_inbox_profiles").Scan(&totalSent, &totalOpens, &totalClicks)
 
 	// ISP distribution (top 10)
 	ispRows, _ := svc.db.QueryContext(ctx, `
@@ -308,7 +307,7 @@ func (svc *MailingService) HandleGetProfileStats(w http.ResponseWriter, r *http.
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"total_profiles":   total,
 		"recently_active":  recentlyActive,
-		"avg_engagement":   round2(avgEngagement),
+		"avg_engagement":   round2(avgEngagement * 100),
 		"avg_open_rate":    round2(avgOpenRate),
 		"new_this_week":    newProfilesWeek,
 		"total_sends":      totalSent,
@@ -341,9 +340,10 @@ func (svc *MailingService) HandleGetProfile(w http.ResponseWriter, r *http.Reque
 	var lastSent, lastOpen, lastClick *time.Time
 
 	err := svc.db.QueryRowContext(ctx, `
-		SELECT domain, total_sent, total_opens, total_clicks, COALESCE(total_bounces,0), COALESCE(total_complaints,0),
-			   engagement_score, best_send_hour, best_send_day,
-			   last_sent_at, last_open_at, last_click_at
+		SELECT domain, COALESCE(total_sends,0), COALESCE(total_opens,0), COALESCE(total_clicks,0),
+			   COALESCE(total_bounces,0), COALESCE(total_complaints,0),
+			   COALESCE(engagement_score,0), COALESCE(optimal_send_hour,10), COALESCE(optimal_send_day,2),
+			   last_send_at, last_open_at, last_click_at
 		FROM mailing_inbox_profiles WHERE email = $1
 	`, emailLower).Scan(&domain, &totalSent, &totalOpens, &totalClicks, &totalBounces, &totalComplaints,
 		&score, &bestHour, &bestDay, &lastSent, &lastOpen, &lastClick)
@@ -372,11 +372,10 @@ func (svc *MailingService) HandleGetProfile(w http.ResponseWriter, r *http.Reque
 		clickToOpenRate = float64(totalClicks) / float64(totalOpens) * 100
 	}
 	
-	// Determine engagement tier
 	var engagementTier string
-	if score >= 70 {
+	if score >= 0.70 {
 		engagementTier = "high"
-	} else if score >= 40 {
+	} else if score >= 0.40 {
 		engagementTier = "medium"
 	} else if score > 0 {
 		engagementTier = "low"
@@ -401,7 +400,7 @@ func (svc *MailingService) HandleGetProfile(w http.ResponseWriter, r *http.Reque
 		"email":              emailLower,
 		"domain":             domain,
 		"engagement_tier":    engagementTier,
-		"engagement_score":   score,
+		"engagement_score":   round2(score * 100),
 		"metrics": map[string]interface{}{
 			"total_sent":        totalSent,
 			"total_opens":       totalOpens,
@@ -457,10 +456,10 @@ func (svc *MailingService) HandleGetProfile(w http.ResponseWriter, r *http.Reque
 
 	// Generate AI recommendations
 	recs := []string{}
-	if score >= 70 {
+	if score >= 0.70 {
 		recs = append(recs, "🌟 High value subscriber - prioritize for exclusive offers and early access")
 		recs = append(recs, "Consider for VIP segment and loyalty programs")
-	} else if score >= 40 {
+	} else if score >= 0.40 {
 		recs = append(recs, "📊 Active subscriber - maintain regular engagement cadence")
 		recs = append(recs, "Test personalized subject lines to boost opens")
 	} else if score > 0 {

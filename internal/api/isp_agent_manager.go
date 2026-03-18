@@ -143,13 +143,13 @@ func (m *ISPAgentManager) HandleListAgents(w http.ResponseWriter, r *http.Reques
 		var avgProfileEngagement sql.NullFloat64
 		var lastLearning sql.NullTime
 		err = m.db.QueryRowContext(ctx,
-			`SELECT COUNT(*), AVG(engagement_score), MAX(last_activity_at) FROM mailing_inbox_profiles WHERE domain = $1`,
+			`SELECT COUNT(*), AVG(engagement_score), MAX(updated_at) FROM mailing_inbox_profiles WHERE domain = $1`,
 			a.Domain,
 		).Scan(&profileCount, &avgProfileEngagement, &lastLearning)
 		if err == nil {
 			a.ProfileCount = profileCount
 			if avgProfileEngagement.Valid {
-				a.AvgProfileEngage = avgProfileEngagement.Float64
+				a.AvgProfileEngage = avgProfileEngagement.Float64 * 100
 			}
 			if lastLearning.Valid {
 				a.LastLearningAt = &lastLearning.Time

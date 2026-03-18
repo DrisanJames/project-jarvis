@@ -2414,16 +2414,14 @@ export const CampaignPortal: React.FC<{
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
 
-  // Fetch dashboard stats
-  const fetchDashboardStats = useCallback(async () => {
-    setLoading(true);
+  // Fetch dashboard stats — background=true skips loading spinner for seamless polling
+  const fetchDashboardStats = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     try {
-      // Fetch campaigns
       const campaignsRes = await orgFetch(`${API_BASE}/campaigns`, organization?.id);
       const campaignsData = await campaignsRes.json();
       const allCampaigns: Campaign[] = campaignsData.data || campaignsData.campaigns || [];
 
-      // Calculate stats
       const stats: DashboardStats = {
         total_campaigns: allCampaigns.length,
         draft_count: allCampaigns.filter(c => c.status === 'draft').length,
@@ -2463,7 +2461,6 @@ export const CampaignPortal: React.FC<{
           .slice(0, 5),
       };
 
-      // Calculate average rates
       const completedWithSent = allCampaigns.filter(c => c.sent_count > 0);
       if (completedWithSent.length > 0) {
         stats.avg_open_rate = (stats.total_opens / stats.total_sent) * 100;
@@ -2478,7 +2475,7 @@ export const CampaignPortal: React.FC<{
     } catch (err) {
       console.error('Failed to fetch dashboard stats:', err);
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, []);
 
@@ -2537,17 +2534,17 @@ export const CampaignPortal: React.FC<{
     fetchDashboardStats();
   }, [fetchDashboardStats]);
   
-  // Auto-refresh for sending/scheduled campaigns (separate effect to avoid dependency loop)
+  // Auto-refresh for sending/scheduled campaigns — background mode preserves UI state
   useEffect(() => {
     const hasSendingCampaigns = campaigns.some(c => c.status === 'sending' || c.status === 'scheduled');
     if (!hasSendingCampaigns) return;
     
     const interval = setInterval(() => {
-      fetchDashboardStats();
+      fetchDashboardStats(true);
     }, 15000);
     
     return () => clearInterval(interval);
-  }, [campaigns.length, fetchDashboardStats]); // Only re-run when campaign count changes
+  }, [campaigns.length, fetchDashboardStats]);
 
   // Handle view campaign
   const handleViewCampaign = (id: string) => {
@@ -2578,7 +2575,7 @@ export const CampaignPortal: React.FC<{
           </button>
           <button 
             className="refresh-btn" 
-            onClick={fetchDashboardStats}
+            onClick={() => fetchDashboardStats(false)}
             disabled={loading}
           >
             <FontAwesomeIcon icon={faSync} spin={loading} /> Refresh
@@ -2632,7 +2629,7 @@ export const CampaignPortal: React.FC<{
             onSearchChange={setSearch}
             onViewCampaign={handleViewCampaign}
             onAction={handleAction}
-            onRefresh={fetchDashboardStats}
+            onRefresh={() => fetchDashboardStats(false)}
           />
         )}
 

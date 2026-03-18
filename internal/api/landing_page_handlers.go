@@ -123,7 +123,9 @@ func (h *LandingPageHandlers) HandleGenerateLandingPage(w http.ResponseWriter, r
 	slug := generateSlug(name)
 	productImageURL := extractProductImage(htmlCreative)
 
-	review, err := generateStructuredReview(name, description, htmlCreative, trackingLink, productImageURL, kit)
+	landerInfo := scrapeLanderPage(trackingLink)
+
+	review, err := generateStructuredReview(name, description, htmlCreative, trackingLink, productImageURL, kit, landerInfo)
 	if err != nil {
 		log.Printf("[LandingPage] AI generation error for offer %s: %v", offerID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to generate landing page: "+err.Error())
@@ -243,13 +245,13 @@ func (h *LandingPageHandlers) HandleRepublishLandingPage(w http.ResponseWriter, 
 // AI Structured Review Generation
 // ---------------------------------------------------------------------------
 
-func generateStructuredReview(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) (*StructuredReviewContent, error) {
+func generateStructuredReview(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit, landerInfo *LanderPageInfo) (*StructuredReviewContent, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set — add it to GitHub Secrets and redeploy")
 	}
 
-	prompt := buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL, kit)
+	prompt := buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL, kit, landerInfo)
 
 	systemPrompt := fmt.Sprintf(`You are the lead editorial writer for %s (%s — "%s").
 
@@ -321,7 +323,7 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 	return &result, nil
 }
 
-func buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit) string {
+func buildReviewPrompt(offerName, description, htmlCreative, trackingLink, productImageURL string, kit BrandKit, landerInfo *LanderPageInfo) string {
 	var sb strings.Builder
 
 	fmt.Fprintf(&sb, `PUBLICATION: %s (%s)
@@ -350,6 +352,33 @@ PROMOTED PRODUCT: %s
 
 	if trackingLink != "" {
 		fmt.Fprintf(&sb, "\nPROMOTED CTA URL: %s\n", trackingLink)
+	}
+
+	if landerInfo != nil && landerInfo.Found {
+		fmt.Fprintf(&sb, "\n--- LANDER PAGE INTELLIGENCE (scraped from the conversion URL) ---\n")
+		if landerInfo.FinalURL != "" {
+			fmt.Fprintf(&sb, "LANDER URL: %s\n", landerInfo.FinalURL)
+		}
+		if landerInfo.Title != "" {
+			fmt.Fprintf(&sb, "LANDER TITLE: %s\n", landerInfo.Title)
+		}
+		if landerInfo.MetaDescription != "" {
+			fmt.Fprintf(&sb, "LANDER META DESCRIPTION: %s\n", landerInfo.MetaDescription)
+		}
+		if len(landerInfo.LogoURLs) > 0 {
+			fmt.Fprintf(&sb, "BRAND LOGOS FOUND: %s\n", strings.Join(landerInfo.LogoURLs, ", "))
+		}
+		if landerInfo.CompanyName != "" {
+			fmt.Fprintf(&sb, "COMPANY NAME: %s\n", landerInfo.CompanyName)
+		}
+		if len(landerInfo.Headlines) > 0 {
+			fmt.Fprintf(&sb, "KEY HEADLINES: %s\n", strings.Join(landerInfo.Headlines, " | "))
+		}
+		if landerInfo.BodySnippet != "" {
+			fmt.Fprintf(&sb, "LANDER BODY EXCERPT:\n%s\n", landerInfo.BodySnippet)
+		}
+		fmt.Fprintf(&sb, "--- END LANDER INTELLIGENCE ---\n")
+		fmt.Fprintf(&sb, "\nIMPORTANT: Use the lander page intelligence above to write an accurate, detailed review. Reference actual brand names, features, pricing, and value propositions from the lander. If logo URLs were found, use them for product #1's imageUrl.\n")
 	}
 
 	fmt.Fprintf(&sb, `
@@ -419,7 +448,7 @@ QUALITY RULES:
   "title": "string",
   "subtitle": "string",
   "meta_description": "string (max 155 chars)",
-  "hero_image_url": "%s",
+  "hero_image_url": "",
   "category": "string (e.g. Telecom, Finance, Health, Shopping)",
   "overall_rating": 4.8,
   "quick_verdict": "string (2-3 sentences)",
@@ -458,7 +487,7 @@ QUALITY RULES:
     { "question": "string", "answer": "string" }
   ],
   "author_bio": "string"
-}`, productImageURL, productImageURL, trackingLink)
+}`, productImageURL, trackingLink)
 
 	return sb.String()
 }
@@ -566,6 +595,128 @@ func getAuthorName(key string) string {
 	default:
 		return "Staff Writer"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Lander Page Scraper — follows the conversion URL and extracts branding intel
+// ---------------------------------------------------------------------------
+
+type LanderPageInfo struct {
+	Found           bool
+	FinalURL        string
+	Title           string
+	MetaDescription string
+	LogoURLs        []string
+	CompanyName     string
+	Headlines       []string
+	BodySnippet     string
+}
+
+func scrapeLanderPage(trackingLink string) *LanderPageInfo {
+	if trackingLink == "" {
+		return nil
+	}
+
+	cleanURL := trackingLink
+	for _, tag := range []string{"{{DATE_MMDDYYYY}}", "{{MAILING_ID}}", "{{SUBSCRIBER_ID}}", "{{CAMPAIGN_ID}}", "{{CREATIVE_ID}}"} {
+		cleanURL = strings.ReplaceAll(cleanURL, tag, "test")
+	}
+
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest("GET", cleanURL, nil)
+	if err != nil {
+		log.Printf("[LanderScrape] failed to create request for %s: %v", cleanURL, err)
+		return nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[LanderScrape] request failed for %s: %v", cleanURL, err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[LanderScrape] non-200 response (%d) from %s", resp.StatusCode, cleanURL)
+		return nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		log.Printf("[LanderScrape] error reading body from %s: %v", cleanURL, err)
+		return nil
+	}
+
+	html := string(body)
+	info := &LanderPageInfo{
+		Found:    true,
+		FinalURL: resp.Request.URL.String(),
+	}
+
+	if m := regexp.MustCompile(`<title[^>]*>([^<]+)</title>`).FindStringSubmatch(html); len(m) > 1 {
+		info.Title = strings.TrimSpace(m[1])
+	}
+
+	if m := regexp.MustCompile(`<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']`).FindStringSubmatch(html); len(m) > 1 {
+		info.MetaDescription = strings.TrimSpace(m[1])
+	}
+	if info.MetaDescription == "" {
+		if m := regexp.MustCompile(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']`).FindStringSubmatch(html); len(m) > 1 {
+			info.MetaDescription = strings.TrimSpace(m[1])
+		}
+	}
+
+	logoRe := regexp.MustCompile(`<img[^>]+src=["']([^"']+)["'][^>]*>`)
+	for _, m := range logoRe.FindAllStringSubmatch(html, -1) {
+		src := m[1]
+		tag := strings.ToLower(m[0])
+		if strings.Contains(tag, "logo") || strings.Contains(src, "logo") ||
+			strings.Contains(tag, "brand") || strings.Contains(src, "brand") {
+			if !strings.HasPrefix(src, "http") {
+				if strings.HasPrefix(src, "//") {
+					src = "https:" + src
+				} else if strings.HasPrefix(src, "/") {
+					src = resp.Request.URL.Scheme + "://" + resp.Request.URL.Host + src
+				}
+			}
+			info.LogoURLs = append(info.LogoURLs, src)
+		}
+	}
+
+	ogSiteName := regexp.MustCompile(`<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']`)
+	if m := ogSiteName.FindStringSubmatch(html); len(m) > 1 {
+		info.CompanyName = strings.TrimSpace(m[1])
+	}
+
+	headlineRe := regexp.MustCompile(`<h[1-3][^>]*>([^<]+)</h[1-3]>`)
+	for _, m := range headlineRe.FindAllStringSubmatch(html, 5) {
+		h := strings.TrimSpace(m[1])
+		if h != "" && len(h) > 5 {
+			info.Headlines = append(info.Headlines, h)
+		}
+	}
+
+	bodyText := stripHTMLTags(html)
+	if len(bodyText) > 1500 {
+		bodyText = bodyText[:1500]
+	}
+	info.BodySnippet = bodyText
+
+	log.Printf("[LanderScrape] scraped %s: title=%q, company=%q, logos=%d, headlines=%d",
+		info.FinalURL, info.Title, info.CompanyName, len(info.LogoURLs), len(info.Headlines))
+
+	return info
 }
 
 func generateSlug(name string) string {

@@ -4,8 +4,8 @@ import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer,
-  /* faArrowLeft, */ faFire, faGlobe, faStore,
-  faSpinner, faRocket, faShieldAlt, faEye,
+  /* faArrowLeft, */ faGlobe, faStore,
+  faSpinner, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -40,37 +40,29 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents';
 
 interface Tab {
   id: TabId;
   label: string;
   icon: IconDefinition;
   description: string;
+  childIds?: TabId[];
 }
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
-  { id: 'pmta-wizard', label: 'Campaign Manager', icon: faRocket, description: 'ISP-native campaign builder with wave scheduling' },
-  { id: 'marketing-agent', label: 'Marketing Agent', icon: faPaperPlane, description: 'AI strategist — warmup planning, calendar forecasts & campaign automation' },
-  { id: 'consciousness', label: 'Consciousness', icon: faBrain, description: 'AI beliefs, philosophies & campaign intelligence' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns' },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns', childIds: ['campaign-center', 'pmta-wizard', 'marketing-agent'] },
   { id: 'journey-center', label: 'Journey Center', icon: faRoute, description: 'Monitor & manage automated journeys' },
   { id: 'lists', label: 'Lists & Segments', icon: faListUl, description: 'Manage lists, segments & subscribers' },
-  // Automations hidden — functionality handled via Journey Center
-  { id: 'mission-control', label: 'Mission Control', icon: faFire, description: 'Live campaign monitoring & agent decisions' },
-  // A/B Tests hidden — functionality lives within Campaign Center
-  // { id: 'ab-tests', label: 'A/B Tests', icon: faFlask, description: 'Test subject lines & content' },
-  { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Blocked email addresses' },
-  { id: 'global-suppression', label: 'Global Suppression', icon: faShieldAlt, description: 'Single source of truth — MD5 hashed, ISP-agnostic' },
-  { id: 'profiles', label: 'Inbox Intel', icon: faBrain, description: 'Per-recipient intelligence' },
-  { id: 'sending-plans', label: 'AI Plans', icon: faRobot, description: 'ISP-specific AI agents & intelligence' },
+  { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
+  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
-  { id: 'jarvis', label: 'Jarvis AI', icon: faRobot, description: 'Autonomous AI campaign orchestrator & monitoring' },
+  { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
@@ -136,19 +128,21 @@ export const MailingPortal: React.FC = () => {
       case 'lists':
         return <ListPortal />;
       case 'campaign-center':
-        return <CampaignPortal initialOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} />;
+      case 'pmta-wizard':
+      case 'marketing-agent':
+        return <CampaignCenterSection activeSubTab={activeTab} onSubTabChange={setActiveTab} pendingOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} copilotOpen={copilotOpen} setCopilotOpen={setCopilotOpen} />;
       case 'journey-center':
         return <JourneyCenter />;
       case 'sending-plans':
-        return <ISPAgentIntelligence />;
+      case 'profiles':
+      case 'jarvis':
+      case 'ai-agents':
+        return <AIAgentsSection activeSubTab={activeTab === 'ai-agents' ? 'sending-plans' : activeTab} onSubTabChange={setActiveTab} />;
       case 'domain-center':
         return <DomainCenter />;
       case 'suppressions':
-        return <SuppressionPortal />;
       case 'global-suppression':
-        return <GlobalSuppressionDashboard />;
-      case 'profiles':
-        return <InboxProfiles />;
+        return <SuppressionsSection activeSubTab={activeTab} onSubTabChange={setActiveTab} />;
       case 'send':
         return <SendTestEmail />;
       case 'analytics':
@@ -165,34 +159,6 @@ export const MailingPortal: React.FC = () => {
         return <ABTestsManager />;
       case 'mission-control':
         return <MissionControl />;
-      case 'jarvis':
-        return <JarvisDashboard />;
-      case 'pmta-wizard':
-        return (
-          <>
-            <PMTACampaignWizard onClose={() => handleTabChange('dashboard')} />
-            <button
-              onClick={() => setCopilotOpen(true)}
-              title="Campaign Copilot"
-              style={{
-                position: 'fixed', bottom: 24, right: 24, zIndex: 9990,
-                width: 52, height: 52, borderRadius: 14,
-                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-                border: 'none', color: '#fff', cursor: 'pointer',
-                boxShadow: '0 4px 20px rgba(99,102,241,0.4)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 20, fontWeight: 700, transition: 'transform 0.15s',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.08)')}
-              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
-            >AI</button>
-            <Suspense fallback={null}>
-              <CampaignCopilotPanel isOpen={copilotOpen} onClose={() => setCopilotOpen(false)} />
-            </Suspense>
-          </>
-        );
-      case 'marketing-agent':
-        return <EmailMarketingAgentPanel />;
       case 'consciousness':
         return <ConsciousnessDashboard />;
       case 'data-import':
@@ -204,7 +170,12 @@ export const MailingPortal: React.FC = () => {
     }
   };
 
-  const currentTab = tabs.find(t => t.id === activeTab);
+  const resolveCurrentTab = (): Tab | undefined => {
+    const direct = tabs.find(t => t.id === activeTab);
+    if (direct) return direct;
+    return tabs.find(t => t.childIds?.includes(activeTab));
+  };
+  const currentTab = resolveCurrentTab();
 
   return (
     <ToastProvider>
@@ -221,17 +192,22 @@ export const MailingPortal: React.FC = () => {
         </div>
 
         <nav className="sidebar-nav">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => handleTabChange(tab.id)}
-              title={tab.description}
-            >
-              <span className="nav-icon"><FontAwesomeIcon icon={tab.icon} /></span>
-              <span className="nav-label">{tab.label}</span>
-            </button>
-          ))}
+          {tabs.map((tab) => {
+            const isActive = tab.childIds
+              ? tab.childIds.includes(activeTab) || activeTab === tab.id
+              : activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                className={`nav-item ${isActive ? 'active' : ''}`}
+                onClick={() => handleTabChange(tab.id)}
+                title={tab.description}
+              >
+                <span className="nav-icon"><FontAwesomeIcon icon={tab.icon} /></span>
+                <span className="nav-label">{tab.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <div className="sidebar-footer">
@@ -1183,12 +1159,110 @@ const TemplatesManager: React.FC = () => {
   );
 };
 
+// ─── Section Sub-Navigation Style ──────────────────────────────────────────
+const subNavStyle: React.CSSProperties = {
+  display: 'flex', gap: 4, marginBottom: 20, padding: '4px',
+  background: 'rgba(0,200,255,0.04)', borderRadius: 10, border: '1px solid rgba(0,200,255,0.08)',
+  width: 'fit-content',
+};
+const subNavBtnStyle = (active: boolean): React.CSSProperties => ({
+  padding: '8px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
+  fontSize: 13, fontWeight: active ? 700 : 500, transition: 'all 0.15s',
+  background: active ? '#00b0ff' : 'transparent',
+  color: active ? '#0a0f1a' : 'rgba(180,210,240,0.75)',
+});
+
+// ─── Suppressions Section ──────────────────────────────────────────────────
+const SuppressionsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId) => void }> = ({ activeSubTab, onSubTabChange }) => {
+  const subTab = activeSubTab === 'global-suppression' ? 'global-suppression' : 'suppressions';
+  return (
+    <div>
+      <div style={subNavStyle}>
+        <button style={subNavBtnStyle(subTab === 'suppressions')} onClick={() => onSubTabChange('suppressions')}>Dashboard</button>
+        <button style={subNavBtnStyle(subTab === 'global-suppression')} onClick={() => onSubTabChange('global-suppression')}>Global Suppression Hub</button>
+      </div>
+      <Suspense fallback={<ChunkLoader />}>
+        {subTab === 'global-suppression' ? <GlobalSuppressionDashboard /> : <SuppressionPortal />}
+      </Suspense>
+    </div>
+  );
+};
+
+// ─── Campaign Center Section ───────────────────────────────────────────────
+const CampaignCenterSection: React.FC<{
+  activeSubTab: TabId;
+  onSubTabChange: (t: TabId) => void;
+  pendingOffer: { offerId: string; offerName: string } | null;
+  onOfferConsumed: () => void;
+  copilotOpen: boolean;
+  setCopilotOpen: (v: boolean) => void;
+}> = ({ activeSubTab, onSubTabChange, pendingOffer, onOfferConsumed, copilotOpen, setCopilotOpen }) => {
+  const subTab = (['pmta-wizard', 'marketing-agent'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
+  return (
+    <div>
+      <div style={subNavStyle}>
+        <button style={subNavBtnStyle(subTab === 'campaign-center')} onClick={() => onSubTabChange('campaign-center')}>Dashboard</button>
+        <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
+        <button style={subNavBtnStyle(subTab === 'marketing-agent')} onClick={() => onSubTabChange('marketing-agent')}>Marketing Agent</button>
+      </div>
+      <Suspense fallback={<ChunkLoader />}>
+        {subTab === 'pmta-wizard' ? (
+          <>
+            <PMTACampaignWizard onClose={() => onSubTabChange('campaign-center')} />
+            <button
+              onClick={() => setCopilotOpen(true)}
+              title="Campaign Copilot"
+              style={{
+                position: 'fixed', bottom: 24, right: 24, zIndex: 9990,
+                width: 52, height: 52, borderRadius: 14,
+                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                border: 'none', color: '#fff', cursor: 'pointer',
+                boxShadow: '0 4px 20px rgba(99,102,241,0.4)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 20, fontWeight: 700, transition: 'transform 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.08)')}
+              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+            >AI</button>
+            <Suspense fallback={null}>
+              <CampaignCopilotPanel isOpen={copilotOpen} onClose={() => setCopilotOpen(false)} />
+            </Suspense>
+          </>
+        ) : subTab === 'marketing-agent' ? (
+          <EmailMarketingAgentPanel />
+        ) : (
+          <CampaignPortal initialOffer={pendingOffer} onOfferConsumed={onOfferConsumed} />
+        )}
+      </Suspense>
+    </div>
+  );
+};
+
+// ─── AI Agents Section ─────────────────────────────────────────────────────
+const AIAgentsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId) => void }> = ({ activeSubTab, onSubTabChange }) => {
+  const subTab = (['profiles', 'jarvis'].includes(activeSubTab)) ? activeSubTab : 'sending-plans';
+  return (
+    <div>
+      <div style={subNavStyle}>
+        <button style={subNavBtnStyle(subTab === 'sending-plans')} onClick={() => onSubTabChange('sending-plans')}>AI Plans</button>
+        <button style={subNavBtnStyle(subTab === 'profiles')} onClick={() => onSubTabChange('profiles')}>Inbox Intel</button>
+        <button style={subNavBtnStyle(subTab === 'jarvis')} onClick={() => onSubTabChange('jarvis')}>Jarvis</button>
+      </div>
+      <Suspense fallback={<ChunkLoader />}>
+        {subTab === 'profiles' ? <InboxProfiles /> : subTab === 'jarvis' ? <JarvisDashboard /> : <ISPAgentIntelligence />}
+      </Suspense>
+    </div>
+  );
+};
+
 // ─── Site Traffic Dashboard ────────────────────────────────────────────────
+const PAGE_VERSION_SITE_TRAFFIC = '2.0';
 const SiteTrafficDashboard: React.FC = () => {
   const { organization } = useAuth();
   const orgId = organization?.id || '';
   const [traffic, setTraffic] = useState<any>(null);
   const [domains, setDomains] = useState<any[]>([]);
+  const [visitors, setVisitors] = useState<any[]>([]);
   const [selectedDomain, setSelectedDomain] = useState('');
   const [timeRange, setTimeRange] = useState('24h');
   const [snippet, setSnippet] = useState('');
@@ -1196,6 +1270,7 @@ const SiteTrafficDashboard: React.FC = () => {
   const [showSnippet, setShowSnippet] = useState(false);
   const [liveEvents, setLiveEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview'|'visitors'>('visitors');
 
   const fetchTraffic = React.useCallback(async () => {
     try {
@@ -1223,8 +1298,23 @@ const SiteTrafficDashboard: React.FC = () => {
     } catch {}
   }, [orgId]);
 
+  const fetchVisitors = React.useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ range: timeRange });
+      if (selectedDomain) params.set('domain', selectedDomain);
+      const res = await fetch(`/api/mailing/site-pixel/visitors?${params}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setVisitors(d.visitors || []);
+      }
+    } catch {}
+  }, [orgId, selectedDomain, timeRange]);
+
   useEffect(() => { fetchDomains(); }, [fetchDomains]);
-  useEffect(() => { fetchTraffic(); const iv = setInterval(fetchTraffic, 15000); return () => clearInterval(iv); }, [fetchTraffic]);
+  useEffect(() => { fetchTraffic(); fetchVisitors(); const iv = setInterval(() => { fetchTraffic(); fetchVisitors(); }, 15000); return () => clearInterval(iv); }, [fetchTraffic, fetchVisitors]);
 
   useEffect(() => {
     const es = new EventSource('/api/mailing/site-pixel/traffic/stream');
@@ -1258,12 +1348,35 @@ const SiteTrafficDashboard: React.FC = () => {
   const cardStyle: React.CSSProperties = { background: '#0d1526', borderRadius: 10, padding: '16px 20px', border: '1px solid rgba(0,200,255,0.08)' };
   const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e0e6f0', lineHeight: 1 };
   const labelStyle: React.CSSProperties = { fontSize: 11, color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginTop: 4 };
+  const tabBtnStyle = (active: boolean): React.CSSProperties => ({
+    background: active ? '#00b0ff' : 'transparent', color: active ? '#0a0f1a' : '#e0e6f0',
+    border: active ? 'none' : '1px solid rgba(0,200,255,0.15)', borderRadius: 8,
+    padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontWeight: active ? 700 : 500,
+  });
+
+  const parseUA = (ua: string) => {
+    if (!ua) return { browser: '—', os: '—' };
+    let browser = '—', os = '—';
+    if (ua.includes('Chrome') && !ua.includes('Edg')) browser = 'Chrome';
+    else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
+    else if (ua.includes('Firefox')) browser = 'Firefox';
+    else if (ua.includes('Edg')) browser = 'Edge';
+    if (ua.includes('Windows')) os = 'Windows';
+    else if (ua.includes('Mac OS')) os = 'macOS';
+    else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
+    else if (ua.includes('Android')) os = 'Android';
+    else if (ua.includes('Linux')) os = 'Linux';
+    return { browser, os };
+  };
+
+  const identifiedCount = visitors.length;
+  const uniqueEmails = new Set(visitors.map(v => v.email)).size;
 
   return (
     <div className="manager-page">
       <div className="page-explanation">
         <h3>Site Traffic Intelligence</h3>
-        <p>Real-time visitor tracking from your owned content sites. Install the pixel on any domain to see live traffic, top pages, and visitor engagement flowing into Jarvis.</p>
+        <p>Track identified email subscribers as they browse your owned sites. See exactly who clicked through from email, what pages they viewed, and their device details.</p>
       </div>
 
       {/* Controls */}
@@ -1275,7 +1388,7 @@ const SiteTrafficDashboard: React.FC = () => {
         </select>
         {['1h','24h','7d','30d'].map(r => (
           <button key={r} onClick={() => setTimeRange(r)}
-            style={{ background: timeRange === r ? '#00b0ff' : '#0a0f1a', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer' }}>
+            style={{ background: timeRange === r ? '#00b0ff' : '#0a0f1a', color: timeRange === r ? '#0a0f1a' : '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontWeight: timeRange === r ? 700 : 400 }}>
             {r === '1h' ? '1 Hour' : r === '24h' ? '24 Hours' : r === '7d' ? '7 Days' : '30 Days'}
           </button>
         ))}
@@ -1315,7 +1428,7 @@ const SiteTrafficDashboard: React.FC = () => {
       ) : (
         <>
           {/* Stats Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
             <div style={{ ...cardStyle, borderLeft: '3px solid #00b894' }}>
               <div style={{ ...statStyle, color: '#00b894' }}>{traffic?.active_visitors ?? 0}</div>
               <div style={labelStyle}>Active Now</div>
@@ -1328,69 +1441,143 @@ const SiteTrafficDashboard: React.FC = () => {
               <div style={statStyle}>{(traffic?.unique_visitors ?? 0).toLocaleString()}</div>
               <div style={labelStyle}>Unique Visitors</div>
             </div>
+            <div style={{ ...cardStyle, borderLeft: '3px solid #f59e0b' }}>
+              <div style={{ ...statStyle, color: '#f59e0b' }}>{uniqueEmails}</div>
+              <div style={labelStyle}>Identified Subscribers</div>
+            </div>
             <div style={cardStyle}>
               <div style={statStyle}>{domains.length}</div>
               <div style={labelStyle}>Tracked Domains</div>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-            {/* Top Pages */}
-            <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Top Pages</h4>
-              {(traffic?.top_pages || []).length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No page view data yet. Install the pixel to start tracking.</p>}
-              {(traffic?.top_pages || []).slice(0, 10).map((p: any, i: number) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 12 }}>
-                  <span style={{ color: '#00e5ff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
-                </div>
-              ))}
-            </div>
+          {/* Tab switcher */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <button style={tabBtnStyle(activeTab === 'visitors')} onClick={() => setActiveTab('visitors')}>Identified Visitors</button>
+            <button style={tabBtnStyle(activeTab === 'overview')} onClick={() => setActiveTab('overview')}>Overview</button>
+          </div>
 
-            {/* Live Event Feed */}
+          {activeTab === 'visitors' && (
             <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>
-                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#00b894', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
-                Live Event Feed
+              <h4 style={{ margin: '0 0 14px', fontSize: 14, color: '#e0e6f0' }}>
+                Identified Email Subscribers ({identifiedCount} events)
               </h4>
-              {liveEvents.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>Waiting for events... Install the pixel to see real-time traffic.</p>}
-              <div style={{ maxHeight: 280, overflow: 'auto' }}>
-                {liveEvents.map((evt, i) => (
-                  <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 11 }}>
-                    <span style={{ color: '#00b0ff', marginRight: 8 }}>{evt.event_type}</span>
-                    <span style={{ color: '#e0e6f0' }}>{evt.page_url || evt.page_title || '/'}</span>
-                    <span style={{ color: '#4b5563', float: 'right' }}>{evt.domain}</span>
-                  </div>
-                ))}
-              </div>
+              {visitors.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#64748b' }}>
+                  <p style={{ fontSize: 14, marginBottom: 8 }}>No identified visitors yet.</p>
+                  <p style={{ fontSize: 12 }}>When email subscribers click through to your sites, their visits will appear here with full identity — email, pages viewed, IP address, and device info.</p>
+                </div>
+              ) : (
+                <div style={{ overflow: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid rgba(0,200,255,0.12)' }}>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Subscriber</th>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Page Viewed</th>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Domain</th>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Device</th>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>IP</th>
+                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visitors.map((v: any, i: number) => {
+                        const { browser, os } = parseUA(v.user_agent);
+                        return (
+                          <tr key={i} style={{ borderBottom: '1px solid rgba(0,200,255,0.06)' }}>
+                            <td style={{ padding: '10px 8px' }}>
+                              <div style={{ color: '#00e5ff', fontWeight: 600, fontSize: 12 }}>{v.email}</div>
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
+                              <div style={{ color: '#e0e6f0', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.page_url}>
+                                {v.page_title || v.page_url || '/'}
+                              </div>
+                              {v.page_title && v.page_url && (
+                                <div style={{ color: '#4b5563', fontSize: 10, marginTop: 2 }}>{v.page_url}</div>
+                              )}
+                            </td>
+                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)' }}>{v.domain || '—'}</td>
+                            <td style={{ padding: '10px 8px' }}>
+                              <span style={{ color: '#e0e6f0' }}>{browser}</span>
+                              <span style={{ color: '#4b5563', marginLeft: 4 }}>/ {os}</span>
+                            </td>
+                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', fontSize: 11 }}>{v.ip_address || '—'}</td>
+                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                              {v.event_at ? new Date(v.event_at).toLocaleString() : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
-          {/* Tracked Domains Table */}
-          <div style={cardStyle}>
-            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Tracked Domains (24h)</h4>
-            {domains.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No domains reporting yet.</p>}
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
-                  <th style={{ textAlign: 'left', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Domain</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Page Views</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Unique Visitors</th>
-                  <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Last Seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {domains.map((d: any, i: number) => (
-                  <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
-                    <td style={{ padding: 8, color: '#00e5ff' }}>{d.domain}</td>
-                    <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
-                    <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
-                    <td style={{ padding: 8, color: 'rgba(180,210,240,0.65)', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {activeTab === 'overview' && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                {/* Top Pages */}
+                <div style={cardStyle}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Top Pages</h4>
+                  {(traffic?.top_pages || []).length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No page view data yet. Install the pixel to start tracking.</p>}
+                  {(traffic?.top_pages || []).slice(0, 10).map((p: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 12 }}>
+                      <span style={{ color: '#00e5ff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
+                      <span style={{ color: 'rgba(180,210,240,0.65)', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Live Event Feed */}
+                <div style={cardStyle}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>
+                    <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#00b894', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
+                    Live Event Feed
+                  </h4>
+                  {liveEvents.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>Waiting for events... Install the pixel to see real-time traffic.</p>}
+                  <div style={{ maxHeight: 280, overflow: 'auto' }}>
+                    {liveEvents.map((evt, i) => (
+                      <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 11 }}>
+                        <span style={{ color: '#00b0ff', marginRight: 8 }}>{evt.event_type}</span>
+                        <span style={{ color: '#e0e6f0' }}>{evt.page_url || evt.page_title || '/'}</span>
+                        <span style={{ color: '#4b5563', float: 'right' }}>{evt.domain}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Tracked Domains Table */}
+              <div style={cardStyle}>
+                <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Tracked Domains (24h)</h4>
+                {domains.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No domains reporting yet.</p>}
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+                      <th style={{ textAlign: 'left', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Domain</th>
+                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Page Views</th>
+                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Unique Visitors</th>
+                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Last Seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {domains.map((d: any, i: number) => (
+                      <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+                        <td style={{ padding: 8, color: '#00e5ff' }}>{d.domain}</td>
+                        <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
+                        <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
+                        <td style={{ padding: 8, color: 'rgba(180,210,240,0.65)', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          <div style={{ textAlign: 'right', fontSize: 10, color: '#374151', marginTop: 8 }}>v{PAGE_VERSION_SITE_TRAFFIC}</div>
         </>
       )}
     </div>
