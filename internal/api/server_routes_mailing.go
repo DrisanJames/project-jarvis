@@ -603,14 +603,18 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			_ = agentFactory.Initialize(context.Background())
 
 			rateRegistry := engine.NewISPRateRegistry()
+			configRates := make(map[engine.ISP]float64)
 			for isp, cfg := range agentFactory.GetConfigs() {
 				rateRegistry.SetRate(isp, float64(cfg.MaxMsgRate))
+				configRates[isp] = float64(cfg.MaxMsgRate)
 			}
+			rateRegistry.SetDB(db)
+			restored := rateRegistry.RestoreFromDB(configRates)
 			agentFactory.SetRateRegistry(rateRegistry)
 			s.rateRegistry = rateRegistry
 			s.ispConfigs = agentFactory.GetConfigs()
 			s.convictionStore = convictionStore
-			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates", len(agentFactory.GetConfigs()))
+			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates (%d restored from DB)", len(agentFactory.GetConfigs()), restored)
 
 			pmtaHost := os.Getenv("PMTA_SSH_HOST")
 			pmtaSSHPort := 22

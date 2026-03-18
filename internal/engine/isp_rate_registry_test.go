@@ -128,3 +128,24 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRestoreFromDB_NilDB(t *testing.T) {
+	r := NewISPRateRegistry()
+	r.SetRate(ISPGmail, 500)
+	restored := r.RestoreFromDB(map[ISP]float64{ISPGmail: 500})
+	if restored != 0 {
+		t.Errorf("RestoreFromDB with nil DB should return 0, got %d", restored)
+	}
+	if r.GetRate(ISPGmail) != 500 {
+		t.Errorf("rate should remain unchanged at 500, got %.0f", r.GetRate(ISPGmail))
+	}
+}
+
+func TestSetDB_NilDB_NoWritePanic(t *testing.T) {
+	r := NewISPRateRegistry()
+	r.SetRate(ISPGmail, 500)
+	r.SetRate(ISPGmail, 250)
+	if r.GetRate(ISPGmail) != 250 {
+		t.Errorf("rate should be 250 without DB, got %.0f", r.GetRate(ISPGmail))
+	}
+}

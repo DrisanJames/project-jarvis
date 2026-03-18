@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -140,23 +141,21 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		FROM mailing_campaigns WHERE id = $1
 	`, id).Scan(&sent, &delivered, &opens, &clicks, &bounces, &complaints, &unsubscribes)
 
-	// Hard/soft bounce split from tracking events (resilient to missing columns)
 	var hardBounces, softBounces int
-	cb.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END), 0)
+	cb.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0)
 		FROM mailing_tracking_events WHERE campaign_id = $1
-	`, id).Scan(&hardBounces, &softBounces)
+	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id).Scan(&hardBounces, &softBounces)
 
-	// ISP/domain breakdown via subscriber JOIN (email column may not exist on tracking_events)
-	domainRows, _ := cb.db.QueryContext(ctx, `
+	domainRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(SPLIT_PART(s.email, '@', 2), 'unknown') as domain,
 		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN t.event_type = 'hard_bounce' THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces,
 		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
 		FROM mailing_tracking_events t
 		JOIN mailing_subscribers s ON s.id = t.subscriber_id
@@ -164,7 +163,7 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		GROUP BY SPLIT_PART(s.email, '@', 2)
 		ORDER BY sent DESC
 		LIMIT 50
-	`, id)
+	`, HardBounceSQL("t"), HardBounceSQL("t")), id)
 	var domainBreakdown []map[string]interface{}
 	if domainRows != nil {
 		defer domainRows.Close()
@@ -314,20 +313,19 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		ispBreakdown = []map[string]interface{}{}
 	}
 
-	// Hourly timeline
-	timeRows, _ := cb.db.QueryContext(ctx, `
+	timeRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT DATE_TRUNC('hour', event_at) as hour,
 		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
 		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN event_type = 'soft_bounce' THEN 1 ELSE 0 END) as soft_bounces
+		       SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
+		       SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces
 		FROM mailing_tracking_events
 		WHERE campaign_id = $1
 		GROUP BY DATE_TRUNC('hour', event_at)
 		ORDER BY hour
-	`, id)
+	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id)
 	var timeline []map[string]interface{}
 	if timeRows != nil {
 		defer timeRows.Close()
@@ -358,8 +356,8 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		"soft_bounces":     softBounces,
 		"complaints":       complaints,
 		"unsubscribes":     unsubscribes,
-		"open_rate":         calcRate(opens, sent),
-		"click_rate":        calcRate(clicks, sent),
+		"open_rate":         calcRate(opens, delivered),
+		"click_rate":        calcRate(clicks, delivered),
 		"bounce_rate":       calcRate(bounces, sent),
 		"hard_bounce_rate":  calcRate(hardBounces, sent),
 		"soft_bounce_rate":  calcRate(softBounces, sent),

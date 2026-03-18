@@ -1213,9 +1213,11 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 		SELECT DATE_TRUNC('week', created_at) as week,
 			   COUNT(*) as campaigns,
 			   COALESCE(SUM(sent_count),0) as sent,
+			   COALESCE(SUM(delivered_count),0) as delivered,
 			   COALESCE(SUM(open_count),0) as opens,
 			   COALESCE(SUM(click_count),0) as clicks,
-			   COALESCE(SUM(bounce_count),0) as bounces,
+			   COALESCE(SUM(hard_bounce_count),0) as hard_bounces,
+			   COALESCE(SUM(soft_bounce_count),0) as soft_bounces,
 			   COALESCE(SUM(complaint_count),0) as complaints,
 			   COALESCE(SUM(revenue),0) as revenue
 		FROM mailing_campaigns
@@ -1231,19 +1233,32 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 	var weeklyTrends []map[string]interface{}
 	for weeklyRows != nil && weeklyRows.Next() {
 		var week time.Time
-		var campaigns, sent, opens, clicks, bounces, complaints int
+		var campaigns, sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
 		var rev float64
-		weeklyRows.Scan(&week, &campaigns, &sent, &opens, &clicks, &bounces, &complaints, &rev)
+		weeklyRows.Scan(&week, &campaigns, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints, &rev)
 		weekOR := 0.0
 		weekCR := 0.0
+		if delivered > 0 {
+			weekOR = float64(opens) / float64(delivered) * 100
+			weekCR = float64(clicks) / float64(delivered) * 100
+		}
+		weekHBR := 0.0
+		weekSBR := 0.0
 		if sent > 0 {
-			weekOR = float64(opens) / float64(sent) * 100
-			weekCR = float64(clicks) / float64(sent) * 100
+			weekHBR = float64(hardBounces) / float64(sent) * 100
+			weekSBR = float64(softBounces) / float64(sent) * 100
 		}
 		weeklyTrends = append(weeklyTrends, map[string]interface{}{
-			"week": week.Format("2006-01-02"), "campaigns": campaigns, "sent": sent,
-			"opens": opens, "clicks": clicks, "open_rate": math.Round(weekOR*10)/10,
-			"click_rate": math.Round(weekCR*10)/10, "revenue": rev,
+			"week": week.Format("2006-01-02"), "campaigns": campaigns,
+			"sent": sent, "delivered": delivered,
+			"opens": opens, "clicks": clicks,
+			"hard_bounces": hardBounces, "soft_bounces": softBounces,
+			"complaints": complaints,
+			"open_rate": math.Round(weekOR*10) / 10,
+			"click_rate": math.Round(weekCR*10) / 10,
+			"hard_bounce_rate": math.Round(weekHBR*10) / 10,
+			"soft_bounce_rate": math.Round(weekSBR*10) / 10,
+			"revenue": rev,
 		})
 	}
 	if weeklyTrends == nil { weeklyTrends = []map[string]interface{}{} }
@@ -1413,9 +1428,11 @@ func (s *AdvancedMailingService) HandleGetHistoricalMetrics(w http.ResponseWrite
 			"total_revenue":    totalRevenue,
 			"avg_open_rate":    m.OpenRate,
 			"avg_click_rate":   m.ClickRate,
-			"avg_bounce_rate":  m.HardBounceRate,
-			"complaint_rate":   m.ComplaintRate,
-			"delivery_rate":    m.DeliveryRate,
+			"avg_bounce_rate":       m.HardBounceRate + m.SoftBounceRate,
+			"avg_hard_bounce_rate":  m.HardBounceRate,
+			"avg_soft_bounce_rate":  m.SoftBounceRate,
+			"complaint_rate":        m.ComplaintRate,
+			"delivery_rate":         m.DeliveryRate,
 		},
 		"weekly_trends":       weeklyTrends,
 		"top_campaigns":       topCampaigns,
@@ -1433,7 +1450,7 @@ func (s *AdvancedMailingService) HandleGetLLMLearningData(w http.ResponseWriter,
 	
 	// Get comprehensive learning dataset
 	var totalCampaigns, totalSubscribers, totalEvents int
-	var avgOpenRate, avgClickRate, avgBounceRate, avgComplaintRate float64
+	var avgOpenRate, avgClickRate, avgHardBounceRate, avgSoftBounceRate, avgComplaintRate float64
 	
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers").Scan(&totalSubscribers)
@@ -1442,12 +1459,13 @@ func (s *AdvancedMailingService) HandleGetLLMLearningData(w http.ResponseWriter,
 	// Calculate averages from recent campaigns
 	s.db.QueryRowContext(ctx, `
 		SELECT 
-			COALESCE(AVG(open_count::float / NULLIF(sent_count,0)), 0),
-			COALESCE(AVG(click_count::float / NULLIF(sent_count,0)), 0),
-			COALESCE(AVG(bounce_count::float / NULLIF(sent_count,0)), 0),
+			COALESCE(AVG(open_count::float / NULLIF(delivered_count,0)), 0),
+			COALESCE(AVG(click_count::float / NULLIF(delivered_count,0)), 0),
+			COALESCE(AVG(hard_bounce_count::float / NULLIF(sent_count,0)), 0),
+			COALESCE(AVG(soft_bounce_count::float / NULLIF(sent_count,0)), 0),
 			COALESCE(AVG(complaint_count::float / NULLIF(sent_count,0)), 0)
 		FROM mailing_campaigns WHERE sent_count > 0
-	`).Scan(&avgOpenRate, &avgClickRate, &avgBounceRate, &avgComplaintRate)
+	`).Scan(&avgOpenRate, &avgClickRate, &avgHardBounceRate, &avgSoftBounceRate, &avgComplaintRate)
 	
 	// Best send times learned from data
 	var bestHour int
@@ -1541,7 +1559,8 @@ Data Points: %d campaigns, %d subscribers, %d events
 KEY METRICS (Baseline):
 - Average Open Rate: %.1f%%
 - Average Click Rate: %.2f%%
-- Average Bounce Rate: %.2f%%
+- Average Hard Bounce Rate: %.2f%%
+- Average Soft Bounce Rate: %.2f%%
 - Complaint Rate: %.3f%%
 
 OPTIMAL TIMING (Learned):
@@ -1555,7 +1574,7 @@ ENGAGEMENT DISTRIBUTION:
 
 These metrics should inform all future campaign decisions and recommendations.
 `, totalCampaigns, totalSubscribers, totalEvents,
-		avgOpenRate*100, avgClickRate*100, avgBounceRate*100, avgComplaintRate*100,
+		avgOpenRate*100, avgClickRate*100, avgHardBounceRate*100, avgSoftBounceRate*100, avgComplaintRate*100,
 		bestHour, bestDay,
 		highEngaged, medEngaged, lowEngaged)
 	
@@ -1563,13 +1582,15 @@ These metrics should inform all future campaign decisions and recommendations.
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"learning_context": learningSummary,
 		"metrics": map[string]interface{}{
-			"total_campaigns":    totalCampaigns,
-			"total_subscribers":  totalSubscribers,
-			"total_events":       totalEvents,
-			"avg_open_rate":      math.Round(avgOpenRate*1000) / 10,
-			"avg_click_rate":     math.Round(avgClickRate*1000) / 10,
-			"avg_bounce_rate":    math.Round(avgBounceRate*1000) / 10,
-			"complaint_rate":     math.Round(avgComplaintRate*10000) / 100,
+			"total_campaigns":         totalCampaigns,
+			"total_subscribers":       totalSubscribers,
+			"total_events":            totalEvents,
+			"avg_open_rate":           math.Round(avgOpenRate*1000) / 10,
+			"avg_click_rate":          math.Round(avgClickRate*1000) / 10,
+			"avg_bounce_rate":         math.Round((avgHardBounceRate+avgSoftBounceRate)*1000) / 10,
+			"avg_hard_bounce_rate":    math.Round(avgHardBounceRate*1000) / 10,
+			"avg_soft_bounce_rate":    math.Round(avgSoftBounceRate*1000) / 10,
+			"complaint_rate":          math.Round(avgComplaintRate*10000) / 100,
 		},
 		"learned_patterns": map[string]interface{}{
 			"best_send_hour":     bestHour,

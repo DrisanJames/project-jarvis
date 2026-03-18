@@ -391,10 +391,9 @@ func TestCampaignScheduler_DetectCompletion(t *testing.T) {
 			"id", "sent", "failed", "skipped", "pending", "total",
 		}).AddRow(campaignID, 95, 5, 0, 0, 100))
 
-	// Mock: update campaign to completed_with_errors
-	// Args order: $1=campaignID, $2=finalStatus, $3=sent
+	// Code uses "sent" when any items succeeded, "cancelled" when all failed
 	mock.ExpectExec("UPDATE mailing_campaigns").
-		WithArgs(sqlmock.AnyArg(), "completed_with_errors", 95).
+		WithArgs(sqlmock.AnyArg(), "sent", 95).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	scheduler.checkCompletedCampaigns()
@@ -412,21 +411,19 @@ func TestCampaignScheduler_StatusDetermination(t *testing.T) {
 		total      int
 		wantStatus string
 	}{
-		{"all sent", 100, 0, 100, "completed"},
-		{"all failed", 0, 100, 100, "failed"},
-		{"mixed", 90, 10, 100, "completed_with_errors"},
-		{"mostly sent", 99, 1, 100, "completed_with_errors"},
+		{"all sent", 100, 0, 100, "sent"},
+		{"all failed", 0, 100, 100, "cancelled"},
+		{"mixed - mostly sent", 90, 10, 100, "sent"},
+		{"mixed - mostly failed", 1, 99, 100, "sent"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var status string
-			if tt.failed > 0 && tt.sent > 0 {
-				status = "completed_with_errors"
-			} else if tt.failed == tt.total {
-				status = "failed"
+			if tt.failed == tt.total {
+				status = "cancelled"
 			} else {
-				status = "completed"
+				status = "sent"
 			}
 
 			if status != tt.wantStatus {

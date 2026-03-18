@@ -48,22 +48,26 @@ type LiveSnapshot struct {
 }
 
 type LiveFunnel struct {
-	TotalSent      int     `json:"total_sent"`
-	TotalDelivered int     `json:"total_delivered"`
-	TotalOpened    int     `json:"total_opened"`
-	TotalClicked   int     `json:"total_clicked"`
-	TotalConverted int     `json:"total_converted"`
-	TotalRevenue   float64 `json:"total_revenue"`
-	TotalBounced   int     `json:"total_bounced"`
-	TotalComplaints int    `json:"total_complaints"`
-	TotalSkipped   int     `json:"total_skipped"`
-	DeliveryRate   float64 `json:"delivery_rate"`
-	OpenRate       float64 `json:"open_rate"`
-	ClickRate      float64 `json:"click_rate"`
-	BounceRate     float64 `json:"bounce_rate"`
-	ComplaintRate  float64 `json:"complaint_rate"`
-	ConversionRate float64 `json:"conversion_rate"`
-	ClickToConvert float64 `json:"click_to_convert"`
+	TotalSent        int     `json:"total_sent"`
+	TotalDelivered   int     `json:"total_delivered"`
+	TotalOpened      int     `json:"total_opened"`
+	TotalClicked     int     `json:"total_clicked"`
+	TotalConverted   int     `json:"total_converted"`
+	TotalRevenue     float64 `json:"total_revenue"`
+	TotalBounced     int     `json:"total_bounced"`
+	TotalHardBounced int     `json:"total_hard_bounced"`
+	TotalSoftBounced int     `json:"total_soft_bounced"`
+	TotalComplaints  int     `json:"total_complaints"`
+	TotalSkipped     int     `json:"total_skipped"`
+	DeliveryRate     float64 `json:"delivery_rate"`
+	OpenRate         float64 `json:"open_rate"`
+	ClickRate        float64 `json:"click_rate"`
+	BounceRate       float64 `json:"bounce_rate"`
+	HardBounceRate   float64 `json:"hard_bounce_rate"`
+	SoftBounceRate   float64 `json:"soft_bounce_rate"`
+	ComplaintRate    float64 `json:"complaint_rate"`
+	ConversionRate   float64 `json:"conversion_rate"`
+	ClickToConvert   float64 `json:"click_to_convert"`
 }
 
 type LiveEvent struct {
@@ -114,18 +118,20 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 
 	// Load campaign stats
 	var (
-		name        string
-		status      string
-		subject     string
-		totalRecip  int
-		sentCount   int
-		delivered   int
-		openCount   int
-		clickCount  int
-		bounceCount int
+		name           string
+		status         string
+		subject        string
+		totalRecip     int
+		sentCount      int
+		delivered      int
+		openCount      int
+		clickCount     int
+		bounceCount    int
+		hardBounceCount int
+		softBounceCount int
 		complaintCount int
-		revenue     float64
-		startedAt   sql.NullTime
+		revenue        float64
+		startedAt      sql.NullTime
 	)
 
 	err := h.db.QueryRowContext(ctx, `
@@ -134,13 +140,15 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 			COALESCE(total_recipients, 0), COALESCE(sent_count, 0),
 			COALESCE(delivered_count, 0), COALESCE(open_count, 0),
 			COALESCE(click_count, 0), COALESCE(bounce_count, 0),
+			COALESCE(hard_bounce_count, 0), COALESCE(soft_bounce_count, 0),
 			COALESCE(complaint_count, 0), COALESCE(revenue, 0),
 			started_at
 		FROM mailing_campaigns WHERE id = $1
 	`, campaignID).Scan(
 		&name, &status, &subject,
 		&totalRecip, &sentCount, &delivered, &openCount,
-		&clickCount, &bounceCount, &complaintCount, &revenue,
+		&clickCount, &bounceCount, &hardBounceCount, &softBounceCount,
+		&complaintCount, &revenue,
 		&startedAt,
 	)
 
@@ -151,21 +159,27 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 
 	// Calculate rates
 	funnel := LiveFunnel{
-		TotalSent:       sentCount,
-		TotalDelivered:  delivered,
-		TotalOpened:     openCount,
-		TotalClicked:    clickCount,
-		TotalBounced:    bounceCount,
-		TotalComplaints: complaintCount,
-		TotalRevenue:    revenue,
+		TotalSent:        sentCount,
+		TotalDelivered:   delivered,
+		TotalOpened:      openCount,
+		TotalClicked:     clickCount,
+		TotalBounced:     bounceCount,
+		TotalHardBounced: hardBounceCount,
+		TotalSoftBounced: softBounceCount,
+		TotalComplaints:  complaintCount,
+		TotalRevenue:     revenue,
 	}
 
 	if sentCount > 0 {
 		funnel.DeliveryRate = float64(delivered) / float64(sentCount) * 100
-		funnel.OpenRate = float64(openCount) / float64(sentCount) * 100
-		funnel.ClickRate = float64(clickCount) / float64(sentCount) * 100
 		funnel.BounceRate = float64(bounceCount) / float64(sentCount) * 100
+		funnel.HardBounceRate = float64(hardBounceCount) / float64(sentCount) * 100
+		funnel.SoftBounceRate = float64(softBounceCount) / float64(sentCount) * 100
 		funnel.ComplaintRate = float64(complaintCount) / float64(sentCount) * 100
+	}
+	if delivered > 0 {
+		funnel.OpenRate = float64(openCount) / float64(delivered) * 100
+		funnel.ClickRate = float64(clickCount) / float64(delivered) * 100
 	}
 	if openCount > 0 {
 		funnel.ClickToConvert = float64(clickCount) / float64(openCount) * 100

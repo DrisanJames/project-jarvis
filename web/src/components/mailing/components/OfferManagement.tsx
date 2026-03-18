@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useToast } from '../shared/ToastSystem';
 import './OfferManagement.css';
 
 const PAGE_VERSION = '1.0';
@@ -229,6 +230,7 @@ function statusBadgeClass(s: string): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const OfferManagement: React.FC = () => {
+  const { addToast } = useToast();
   const [tree, setTree] = useState<TreeVertical[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
   const [offer, setOffer] = useState<Offer | null>(null);
@@ -267,7 +269,9 @@ export const OfferManagement: React.FC = () => {
           setExpandedBrands(allBrands);
         }
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load offer tree' });
+    }
     setTreeLoading(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -279,51 +283,65 @@ export const OfferManagement: React.FC = () => {
         const data = await res.json();
         setOffer(data.offer || data);
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load offer details' });
+    }
     setDetailLoading(false);
-  }, []);
+  }, [addToast]);
 
   const fetchSubjects = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/subjects`, { credentials: 'include' });
       if (res.ok) setSubjects(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load subject lines' });
+    }
+  }, [addToast]);
 
   const fetchFromNames = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/from-names`, { credentials: 'include' });
       if (res.ok) setFromNames(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load from names' });
+    }
+  }, [addToast]);
 
   const fetchCreatives = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/creatives`, { credentials: 'include' });
       if (res.ok) setCreatives(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load creatives' });
+    }
+  }, [addToast]);
 
   const fetchDeployments = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/deployments`, { credentials: 'include' });
       if (res.ok) setDeployments(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load deployments' });
+    }
+  }, [addToast]);
 
   const fetchPerformance = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/performance`, { credentials: 'include' });
       if (res.ok) setPerformance(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load performance data' });
+    }
+  }, [addToast]);
 
   const fetchOptizmoStatus = useCallback(async (id: string) => {
     try {
       const res = await fetch(`${API}/offers/${id}/optizmo/status`, { credentials: 'include' });
       if (res.ok) setOptizmoStatus(await res.json());
-    } catch { /* swallow */ }
-  }, []);
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load Optizmo status' });
+    }
+  }, [addToast]);
 
   useEffect(() => { fetchTree(); }, [fetchTree]);
 
@@ -375,8 +393,12 @@ export const OfferManagement: React.FC = () => {
         setNewVerticalName('');
         setShowNewVerticalInput(false);
         fetchTree();
+      } else {
+        addToast({ type: 'error', title: 'Failed to create vertical' });
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to create vertical', message: 'Network error' });
+    }
   };
 
   // ─── Filtered Tree ─────────────────────────────────────────────────────
@@ -584,6 +606,7 @@ export const OfferManagement: React.FC = () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ offer, onSave }) => {
+  const { addToast } = useToast();
   const [form, setForm] = useState({ ...offer });
   const [saving, setSaving] = useState(false);
 
@@ -614,8 +637,13 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
       if (res.ok) {
         const data = await res.json();
         onSave(data.offer || data);
+        addToast({ type: 'success', title: 'Offer saved' });
+      } else {
+        addToast({ type: 'error', title: 'Failed to save offer' });
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to save offer', message: 'Network error' });
+    }
     setSaving(false);
   };
 
@@ -694,6 +722,7 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefresh: () => void }> = ({ offerId, subjects, onRefresh }) => {
+  const { addToast } = useToast();
   const [newSubject, setNewSubject] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -705,15 +734,20 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
     setBulkAdding(true);
     try {
       for (const line of lines) {
-        await fetch(`${API}/offers/${offerId}/subjects`, {
+        const res = await fetch(`${API}/offers/${offerId}/subjects`, {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subject_line: line, status: 'draft' }),
         });
+        if (!res.ok) {
+          addToast({ type: 'error', title: 'Failed to add subject line', message: line });
+        }
       }
       setNewSubject('');
       onRefresh();
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to add subject lines', message: 'Network error' });
+    }
     setBulkAdding(false);
   };
 
@@ -725,14 +759,20 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
         body: JSON.stringify(payload),
       });
       if (res.ok) { setEditId(null); onRefresh(); }
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to update subject line' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to update subject line', message: 'Network error' });
+    }
   };
 
   const deleteSubject = async (sid: string) => {
     try {
-      await fetch(`${API}/offers/${offerId}/subjects/${sid}`, { method: 'DELETE', credentials: 'include' });
-      onRefresh();
-    } catch { /* swallow */ }
+      const res = await fetch(`${API}/offers/${offerId}/subjects/${sid}`, { method: 'DELETE', credentials: 'include' });
+      if (res.ok) { onRefresh(); }
+      else { addToast({ type: 'error', title: 'Failed to delete subject line' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to delete subject line', message: 'Network error' });
+    }
   };
 
   return (
@@ -808,6 +848,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
 // ═══════════════════════════════════════════════════════════════════════════
 
 const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh: () => void }> = ({ offerId, fromNames, onRefresh }) => {
+  const { addToast } = useToast();
   const [newFromName, setNewFromName] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -819,15 +860,20 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
     setBulkAdding(true);
     try {
       for (const line of lines) {
-        await fetch(`${API}/offers/${offerId}/from-names`, {
+        const res = await fetch(`${API}/offers/${offerId}/from-names`, {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ from_name: line, status: 'draft' }),
         });
+        if (!res.ok) {
+          addToast({ type: 'error', title: 'Failed to add from name', message: line });
+        }
       }
       setNewFromName('');
       onRefresh();
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to add from names', message: 'Network error' });
+    }
     setBulkAdding(false);
   };
 
@@ -839,14 +885,20 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
         body: JSON.stringify(payload),
       });
       if (res.ok) { setEditId(null); onRefresh(); }
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to update from name' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to update from name', message: 'Network error' });
+    }
   };
 
   const deleteFromName = async (fid: string) => {
     try {
-      await fetch(`${API}/offers/${offerId}/from-names/${fid}`, { method: 'DELETE', credentials: 'include' });
-      onRefresh();
-    } catch { /* swallow */ }
+      const res = await fetch(`${API}/offers/${offerId}/from-names/${fid}`, { method: 'DELETE', credentials: 'include' });
+      if (res.ok) { onRefresh(); }
+      else { addToast({ type: 'error', title: 'Failed to delete from name' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to delete from name', message: 'Network error' });
+    }
   };
 
   return (
@@ -922,6 +974,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
 // ═══════════════════════════════════════════════════════════════════════════
 
 const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRefresh: () => void }> = ({ offerId, creatives, onRefresh }) => {
+  const { addToast } = useToast();
   const [showUpload, setShowUpload] = useState(false);
   const [htmlContent, setHtmlContent] = useState('');
   const [previewCreative, setPreviewCreative] = useState<OfferCreative | null>(null);
@@ -978,7 +1031,10 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
         body: JSON.stringify({ html_content: htmlContent, status: 'draft' }),
       });
       if (res.ok) { setHtmlContent(''); setShowUpload(false); onRefresh(); }
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to upload creative' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to upload creative', message: 'Network error' });
+    }
   };
 
   const updateCreativeStatus = async (cid: string, status: string) => {
@@ -989,7 +1045,10 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
         body: JSON.stringify({ status }),
       });
       if (res.ok) onRefresh();
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to update creative status' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to update creative status', message: 'Network error' });
+    }
   };
 
   return (
@@ -1212,6 +1271,7 @@ const ROLE_CATEGORIES: Record<string, { label: string; color: string }> = {
 };
 
 const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
+  const { addToast } = useToast();
   const [assets, setAssets] = useState<CreativeAssetRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -1228,9 +1288,11 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
         const data = await res.json();
         setAssets(data.assets || []);
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'warning', title: 'Failed to load assets' });
+    }
     setLoading(false);
-  }, [offerId]);
+  }, [offerId, addToast]);
 
   useEffect(() => { fetchAssets(); }, [fetchAssets]);
 
@@ -1245,7 +1307,9 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
         await fetch(`${API}/offers/${offerId}/assets`, {
           method: 'POST', credentials: 'include', body: fd,
         });
-      } catch { /* skip failed */ }
+      } catch {
+        addToast({ type: 'error', title: 'Failed to upload file', message: file.name });
+      }
       done++;
       setUploadProgress(`Uploading ${done}/${files.length}…`);
     }
@@ -1279,11 +1343,14 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
   const deleteAsset = async (assetId: string) => {
     try {
-      await fetch(`${API}/offers/${offerId}/assets/${assetId}`, {
+      const res = await fetch(`${API}/offers/${offerId}/assets/${assetId}`, {
         method: 'DELETE', credentials: 'include',
       });
-      setAssets(prev => prev.filter(a => a.id !== assetId));
-    } catch { /* swallow */ }
+      if (res.ok) { setAssets(prev => prev.filter(a => a.id !== assetId)); }
+      else { addToast({ type: 'error', title: 'Failed to delete asset' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to delete asset', message: 'Network error' });
+    }
   };
 
   const copyUrl = (id: string, url: string) => {
@@ -1532,6 +1599,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
 // ═══════════════════════════════════════════════════════════════════════════
 
 const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | null; onRefresh: () => void }> = ({ offerId, optizmoStatus, onRefresh }) => {
+  const { addToast } = useToast();
   const [requesting, setRequesting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -1551,7 +1619,10 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
         method: 'POST', credentials: 'include',
       });
       if (res.ok) onRefresh();
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to request scrub' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to request scrub', message: 'Network error' });
+    }
     setRequesting(false);
   };
 
@@ -1562,7 +1633,10 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
         method: 'POST', credentials: 'include',
       });
       if (res.ok) onRefresh();
-    } catch { /* swallow */ }
+      else { addToast({ type: 'error', title: 'Failed to cancel scrub' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to cancel scrub', message: 'Network error' });
+    }
     setCancelling(false);
   };
 
@@ -1853,6 +1927,7 @@ const NewOfferModal: React.FC<{
   onClose: () => void;
   onCreated: (id: string) => void;
 }> = ({ verticals, onClose, onCreated }) => {
+  const { addToast } = useToast();
   const [form, setForm] = useState({
     name: '', vertical_id: '', brand_name: '', web_property: '',
     everflow_offer_id: '', everflow_creative_id: '', tracking_link_template: '',
@@ -1900,8 +1975,13 @@ const NewOfferModal: React.FC<{
           await uploadZipForOffer(newId, zipFile);
         }
         onCreated(newId);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        addToast({ type: 'error', title: 'Failed to create offer', message: (data as { error?: string }).error || `Server returned ${res.status}` });
       }
-    } catch { /* swallow */ }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to create offer', message: 'Network error' });
+    }
     setSubmitting(false);
   };
 

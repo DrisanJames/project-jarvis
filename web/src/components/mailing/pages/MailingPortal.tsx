@@ -1324,7 +1324,7 @@ const SiteTrafficDashboard: React.FC = () => {
         if (evt.type === 'event') {
           setLiveEvents(prev => [evt, ...prev].slice(0, 50));
         }
-        if (evt.active_visitors !== undefined && traffic) {
+        if (evt.active_visitors !== undefined) {
           setTraffic((prev: any) => prev ? { ...prev, active_visitors: evt.active_visitors } : prev);
         }
       } catch {}

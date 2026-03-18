@@ -709,8 +709,14 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 		}
 
 		batchCounts := AssembleBatch(state.plan, state.remaining)
-		if otherRemaining := state.remaining["other"]; otherRemaining > 0 {
-			batchCounts["other"] = otherRemaining
+		if _, inPlan := state.plan["other"]; !inPlan {
+			if otherRem := state.remaining["other"]; otherRem > 0 {
+				cap := p.batchSize
+				if otherRem < cap {
+					cap = otherRem
+				}
+				batchCounts["other"] = cap
+			}
 		}
 		if BatchTotal(batchCounts) == 0 {
 			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing", campID)

@@ -19,12 +19,6 @@ func newTestCampaignBuilder(t *testing.T) (*CampaignBuilder, sqlmock.Sqlmock) {
 	return &CampaignBuilder{db: db}, mock
 }
 
-func withURLParam(r *http.Request, key, val string) *http.Request {
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add(key, val)
-	return r.WithContext(r.Context())
-}
-
 // ─── HandleCampaignStats: Bounce Classification Tests ─────────────────────────
 
 func TestCampaignStats_BounceClassification(t *testing.T) {

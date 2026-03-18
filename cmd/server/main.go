@@ -1581,6 +1581,12 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_cache_editorial_json", `ALTER TABLE mailing_wave_content_cache ADD COLUMN IF NOT EXISTS editorial_json JSONB`},
 		{"idx_wave_cache_brand_type_unused", `CREATE INDEX IF NOT EXISTS idx_wave_cache_brand_type_unused ON mailing_wave_content_cache (brand_key, campaign_type, generated_at DESC) WHERE used_at IS NULL`},
 
+		{"create_isp_throttle_state", `CREATE TABLE IF NOT EXISTS mailing_isp_throttle_state (
+			isp          TEXT PRIMARY KEY,
+			msgs_per_hour DOUBLE PRECISION NOT NULL,
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+
 		{"add_list_subscriber_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS subscriber_count INT DEFAULT 0`},
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},
 		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},

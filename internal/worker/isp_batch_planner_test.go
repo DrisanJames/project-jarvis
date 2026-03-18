@@ -467,6 +467,34 @@ func TestLifecycle_MultiISPNonDivisible(t *testing.T) {
 	}
 }
 
+func TestAssembleBatch_OtherInPlan(t *testing.T) {
+	// When "other" is an explicit target ISP, AssembleBatch must cap it
+	// the same way it caps every other ISP — no special treatment.
+	plan := map[string]int{"gmail": 10, "other": 5}
+	remaining := map[string]int{"gmail": 100, "other": 500}
+
+	batch := AssembleBatch(plan, remaining)
+
+	assert.Equal(t, 10, batch["gmail"])
+	assert.Equal(t, 5, batch["other"],
+		"other must be capped at per-batch target, not the full remaining count")
+}
+
+func TestAssembleBatch_OtherNotInPlan(t *testing.T) {
+	// When "other" is NOT in the plan, AssembleBatch returns nothing for it.
+	// The caller (dispatchISPBatches) is responsible for injecting a capped
+	// value — this test documents AssembleBatch's behavior in isolation.
+	plan := map[string]int{"gmail": 10, "yahoo": 5}
+	remaining := map[string]int{"gmail": 100, "yahoo": 50, "other": 300}
+
+	batch := AssembleBatch(plan, remaining)
+
+	assert.Equal(t, 10, batch["gmail"])
+	assert.Equal(t, 5, batch["yahoo"])
+	_, hasOther := batch["other"]
+	assert.False(t, hasOther, "AssembleBatch must not inject ISPs absent from the plan")
+}
+
 func TestBatchTotal(t *testing.T) {
 	assert.Equal(t, 0, BatchTotal(map[string]int{}))
 	assert.Equal(t, 10, BatchTotal(map[string]int{"gmail": 10}))
