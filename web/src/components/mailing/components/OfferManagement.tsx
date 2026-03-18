@@ -908,6 +908,27 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
   const [genError, setGenError] = useState('');
   const [genResult, setGenResult] = useState('');
 
+  const isGenerating = generating || creatives.some(c => c.status === 'generating');
+
+  useEffect(() => {
+    if (!isGenerating) return;
+    const interval = setInterval(() => onRefresh(), 8000);
+    return () => clearInterval(interval);
+  }, [isGenerating, onRefresh]);
+
+  useEffect(() => {
+    if (generating && !creatives.some(c => c.status === 'generating') && creatives.some(c => c.status === 'generated')) {
+      const genCount = creatives.filter(c => c.status === 'generated').length;
+      setGenResult(`Generated ${genCount} creatives`);
+      setGenerating(false);
+    }
+    if (generating && creatives.some(c => c.status === 'failed' && c.approval_notes?.includes('Generation failed'))) {
+      const failedNote = creatives.find(c => c.status === 'failed')?.approval_notes || 'Unknown error';
+      setGenError(failedNote);
+      setGenerating(false);
+    }
+  }, [creatives, generating]);
+
   const generateCreatives = async () => {
     setGenerating(true);
     setGenError('');
@@ -917,16 +938,14 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
         method: 'POST', credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setGenResult(`Generated ${data.generated ?? 0} creatives`);
-        onRefresh();
-      } else {
+      if (!res.ok) {
         setGenError(data.error || `Generation failed (${res.status})`);
+        setGenerating(false);
       }
     } catch {
       setGenError('Network error during generation');
+      setGenerating(false);
     }
-    setGenerating(false);
   };
 
   const uploadCreative = async () => {
@@ -956,19 +975,19 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
         <button
-          style={{ ...btnPrimary, background: generating ? '#6366f1' : '#818cf8', opacity: generating ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
+          style={{ ...btnPrimary, background: isGenerating ? '#6366f1' : '#818cf8', opacity: isGenerating ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
           onClick={generateCreatives}
-          disabled={generating}
+          disabled={isGenerating}
         >
-          {generating ? 'Generating ~10 Creatives…' : 'Generate Creatives'}
+          {isGenerating ? 'Generating ~10 Creatives…' : 'Generate Creatives'}
         </button>
         <button style={btnGhost} onClick={() => setShowUpload(!showUpload)}>
           {showUpload ? 'Cancel' : 'Upload Manual'}
         </button>
-        {generating && (
-          <span style={{ fontSize: 11, color: '#f59e0b' }}>This may take 1-2 minutes</span>
+        {isGenerating && (
+          <span style={{ fontSize: 11, color: '#f59e0b' }}>AI is crafting your emails — this takes 1-2 minutes</span>
         )}
-        {genResult && !generating && (
+        {genResult && !isGenerating && (
           <span style={{ fontSize: 11, color: '#22c55e' }}>{genResult}</span>
         )}
       </div>
@@ -995,7 +1014,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
       )}
 
       <div className="offer-mgmt-cards">
-        {creatives.map(c => (
+        {creatives.filter(c => c.status !== 'generating').map(c => (
           <div key={c.id} className="offer-mgmt-card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>v{c.version}</span>

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -30,9 +31,8 @@ type CreativeGenerationResult struct {
 }
 
 // HandleGenerateCreatives — POST /offer-center/offers/{id}/creatives/generate
-// Analyzes the offer's original image creative, researches the product, and
-// generates ~10 text-heavy HTML email creatives with proper branding and
-// personalization tags.
+// Kicks off async creative generation. Returns immediately with status.
+// The frontend polls GET /creatives to see when they appear.
 func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r *http.Request) {
 	offerID := chi.URLParam(r, "id")
 	if offerID == "" {
@@ -75,9 +75,37 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 		return
 	}
 
+	// Mark generation in progress via a placeholder row
+	jobID := uuid.New().String()
+	och.db.ExecContext(ctx,
+		`INSERT INTO mailing_offer_creatives
+		 (id, offer_id, version, html_content, status, approval_notes, created_at, updated_at)
+		 VALUES ($1, $2, 0, '', 'generating', 'AI generation in progress…', $3, $3)`,
+		jobID, offerID, time.Now())
+
+	// Fire async generation
+	go och.runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink, apiKey, kit)
+
+	respondJSON(w, http.StatusAccepted, map[string]interface{}{
+		"status":  "generating",
+		"message": "Creative generation started — poll the creatives list for results",
+		"job_id":  jobID,
+	})
+}
+
+func (och *OfferCenterHandlers) runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink, apiKey string, kit BrandKit) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	fail := func(msg string) {
+		log.Printf("[CreativeGen] job %s FAILED: %s", jobID, msg)
+		och.db.ExecContext(ctx,
+			`UPDATE mailing_offer_creatives SET status='failed', approval_notes=$1, updated_at=NOW() WHERE id=$2`,
+			"Generation failed: "+msg, jobID)
+	}
+
 	creativeCopy := extractCreativeCopy(htmlCreative)
 	productImage := extractProductImage(htmlCreative)
-
 	prompt := buildCreativeGenerationPrompt(name, description, creativeCopy, trackingLink, productImage, kit)
 
 	systemPrompt := fmt.Sprintf(`You are the head email marketing creative director for %s (%s — "%s").
@@ -102,34 +130,32 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to marshal AI request")
+		fail(fmt.Sprintf("marshal error: %v", err))
 		return
 	}
 
-	log.Printf("[CreativeGen] generating creatives for offer %s (%s on %s)", offerID, name, kit.SiteName)
+	log.Printf("[CreativeGen] job %s: calling Anthropic for offer %s (%s)", jobID, offerID, name)
 
-	req2, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to create AI request")
+		fail(fmt.Sprintf("request creation error: %v", err))
 		return
 	}
-	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("x-api-key", apiKey)
-	req2.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 300 * time.Second}
-	resp, err := client.Do(req2)
+	client := &http.Client{Timeout: 8 * time.Minute}
+	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[CreativeGen] Anthropic request failed: %v", err)
-		respondError(w, http.StatusBadGateway, "AI generation request failed")
+		fail(fmt.Sprintf("Anthropic request failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[CreativeGen] Anthropic returned %d: %s", resp.StatusCode, string(body))
-		respondError(w, http.StatusBadGateway, fmt.Sprintf("AI service returned %d", resp.StatusCode))
+		fail(fmt.Sprintf("Anthropic returned %d: %s", resp.StatusCode, string(body[:min(500, len(body))])))
 		return
 	}
 
@@ -140,11 +166,11 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 		} `json:"content"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to decode AI response")
+		fail(fmt.Sprintf("decode error: %v", err))
 		return
 	}
 	if len(aiResp.Content) == 0 {
-		respondError(w, http.StatusInternalServerError, "empty AI response")
+		fail("empty AI response")
 		return
 	}
 
@@ -154,7 +180,7 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
 
-	// If the response was truncated, try to salvage partial JSON by closing the array
+	// Salvage truncated JSON
 	if !strings.HasSuffix(content, "}") {
 		if idx := strings.LastIndex(content, "}"); idx > 0 {
 			content = content[:idx+1]
@@ -166,51 +192,39 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 
 	var result CreativeGenerationResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		log.Printf("[CreativeGen] parse error: %v\nraw start: %.500s\nraw end: %.500s", err, content[:min(500, len(content))], content[max(0, len(content)-500):])
-		respondError(w, http.StatusInternalServerError, "failed to parse AI response — retry may help")
+		log.Printf("[CreativeGen] parse error: %v\nraw start: %.500s\nraw end: %.500s",
+			err, content[:min(500, len(content))], content[max(0, len(content)-500):])
+		fail("failed to parse AI response")
 		return
 	}
 
 	if len(result.Creatives) == 0 {
-		respondError(w, http.StatusInternalServerError, "AI returned no creatives")
+		fail("AI returned no creatives")
 		return
 	}
 
-	var inserted []map[string]interface{}
+	count := 0
 	for i, c := range result.Creatives {
 		id := uuid.New().String()
 		now := time.Now()
 
-		var version int
-		err := och.db.QueryRowContext(ctx,
+		_, err := och.db.ExecContext(ctx,
 			`INSERT INTO mailing_offer_creatives
 			 (id, offer_id, version, html_content, status, approval_notes, created_at, updated_at)
 			 VALUES ($1, $2, COALESCE((SELECT MAX(version) FROM mailing_offer_creatives WHERE offer_id = $2), 0) + 1,
-			         $3, 'generated', $4, $5, $6)
-			 RETURNING version`,
-			id, offerID, c.HTML, fmt.Sprintf("[%s] %s", c.VariantName, c.Angle), now, now).Scan(&version)
+			         $3, 'generated', $4, $5, $6)`,
+			id, offerID, c.HTML, fmt.Sprintf("[%s] %s", c.VariantName, c.Angle), now, now)
 		if err != nil {
 			log.Printf("[CreativeGen] error inserting creative %d: %v", i+1, err)
 			continue
 		}
-
-		inserted = append(inserted, map[string]interface{}{
-			"id":           id,
-			"version":      version,
-			"variant_name": c.VariantName,
-			"angle":        c.Angle,
-			"subject_line": c.SubjectLine,
-			"pre_header":   c.PreHeader,
-			"status":       "generated",
-		})
+		count++
 	}
 
-	log.Printf("[CreativeGen] generated %d creatives for offer %s", len(inserted), offerID)
+	// Remove the placeholder row
+	och.db.ExecContext(ctx, `DELETE FROM mailing_offer_creatives WHERE id=$1`, jobID)
 
-	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"generated": len(inserted),
-		"creatives": inserted,
-	})
+	log.Printf("[CreativeGen] job %s complete: generated %d creatives for offer %s", jobID, count, offerID)
 }
 
 func extractCreativeCopy(htmlCreative string) string {
