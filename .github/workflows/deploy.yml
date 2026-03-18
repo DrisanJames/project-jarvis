@@ -115,7 +115,7 @@ jobs:
               --task-definition $TASK_DEF_ARN \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[subnet-06b263d3ff15bc126,subnet-0b34236379abe1b57,subnet-0620259e81b20cf7f],securityGroups=[sg-0c423b3225f0c9479],assignPublicIp=ENABLED}" \
+              --network-configuration "awsvpcConfiguration={subnets=[subnet-0a2ced5cc0bb9575f,subnet-0b36b56c12bc1cb3b],securityGroups=[sg-0c423b3225f0c9479],assignPublicIp=DISABLED}" \
               --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:us-west-2:146361001621:targetgroup/ignite-tg/1b54a22da9086ffb,containerName=ignite-server,containerPort=8080"
           else
             echo "Updating existing ECS service..."
