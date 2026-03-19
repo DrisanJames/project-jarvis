@@ -121,6 +121,12 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 			vmta := vmtaShortName(ip.Hostname)
 			payload["vmta"] = vmta
 			selectedIPID = ip.ID
+			profShort := msg.ProfileID
+			if len(profShort) > 8 {
+				profShort = profShort[:8]
+			}
+			log.Printf("[PMTA-API] Routing %s → VMTA=%s (profile=%s, ISP=%s, poolPrefix=%s)",
+				msg.Email, vmta, profShort, msg.RecipientISP, s.ipPool.poolPrefix)
 		} else {
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}

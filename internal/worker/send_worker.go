@@ -384,15 +384,26 @@ func (p *SendWorkerPool) worker(workerNum int) {
 	}
 }
 
-// claimBatch claims a batch of queue items. If the campaign has ISP quotas
-// with a batch plan, it claims proportionally per ISP (ISP-balanced sending).
-// Otherwise it falls back to a flat LIMIT claim for backward compatibility.
+// claimBatch claims a batch of queue items with domain-level staggering.
+// For each sending domain, only the earliest-scheduled active campaign gets
+// items claimed per cycle. This prevents multiple campaigns on the same domain
+// from flooding ISPs simultaneously. Falls back to flat claiming if no profile
+// is set.
 func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	rows, err := p.db.QueryContext(ctx, `
-		WITH claimed AS (
+		WITH active_campaigns AS (
+			SELECT DISTINCT ON (COALESCE(sp.sending_domain, camp.id::text))
+				camp.id AS campaign_id
+			FROM mailing_campaigns camp
+			LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
+			WHERE camp.status = 'sending'
+			  AND (camp.esp_quotas IS NULL OR NOT (camp.esp_quotas ? 'isp_quotas'))
+			ORDER BY COALESCE(sp.sending_domain, camp.id::text), camp.scheduled_at ASC
+		),
+		claimed AS (
 			UPDATE mailing_campaign_queue
 			SET 
 				status = 'sending',
@@ -400,13 +411,10 @@ func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
 				locked_at = NOW()
 			WHERE id IN (
 				SELECT q.id FROM mailing_campaign_queue q
-				JOIN mailing_campaigns camp ON camp.id = q.campaign_id
+				JOIN active_campaigns ac ON ac.campaign_id = q.campaign_id
 				WHERE q.status = 'queued'
-				  AND camp.status = 'sending'
 				  AND q.scheduled_at <= NOW()
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
-				  AND (camp.esp_quotas IS NULL
-				       OR NOT (camp.esp_quotas ? 'isp_quotas'))
 				ORDER BY q.priority DESC, q.scheduled_at ASC
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED
@@ -1242,6 +1250,11 @@ func isTransportError(errMsg string) bool {
 		"create pmta request",
 		"pmta api request to",
 		"no sender configured",
+		"all ips exhausted",
+		"deferring send",
+		"no sending ips configured",
+		"refusing to send via default-pool",
+		"no vmta routing available",
 	}
 	for _, ind := range transportIndicators {
 		if strings.Contains(lower, ind) {

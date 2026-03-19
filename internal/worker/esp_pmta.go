@@ -132,7 +132,19 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		}
 		p.ispIdx = idxMap
 		p.loadedAt = time.Now()
-		log.Printf("[vmtaPool] Loaded %d IPs across %d ISP groups (prefix=%s)", len(allIPs), len(groups), p.poolPrefix)
+		hostSample := make([]string, 0, 3)
+		for i, e := range allIPs {
+			if i >= 3 {
+				break
+			}
+			hostSample = append(hostSample, e.Hostname)
+		}
+		ispKeys := make([]string, 0, len(groups))
+		for k := range groups {
+			ispKeys = append(ispKeys, fmt.Sprintf("%s(%d)", k, len(groups[k])))
+		}
+		log.Printf("[vmtaPool] Loaded %d IPs across %d ISP groups (prefix=%s, sample=%v, groups=%v)",
+			len(allIPs), len(groups), p.poolPrefix, hostSample, ispKeys)
 	} else {
 		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s)", profileID, p.poolPrefix)
 	}
@@ -150,6 +162,16 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 
 	poolSuffix := ISPPoolSuffix(recipientISP)
 
+	selectIP := func(source string, ip vmtaEntry) (vmtaEntry, error) {
+		idShort := ip.ID
+		if len(idShort) > 8 {
+			idShort = idShort[:8]
+		}
+		log.Printf("[vmtaPool] Selected VMTA=%s IP=%s ISP=%s poolPrefix=%s source=%s sent=%d/%d",
+			vmtaShortName(ip.Hostname), idShort, recipientISP, p.poolPrefix, source, ip.TodaySent, ip.WarmupDailyLimit)
+		return ip, nil
+	}
+
 	if group, ok := p.ispGroups[poolSuffix]; ok && len(group) > 0 {
 		counter := p.ispIdx[poolSuffix]
 		for attempts := 0; attempts < len(group); attempts++ {
@@ -158,7 +180,7 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 			if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 				continue
 			}
-			return ip, nil
+			return selectIP("isp-group:"+poolSuffix, ip)
 		}
 	}
 
@@ -171,21 +193,21 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 				if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 					continue
 				}
-				return ip, nil
+				return selectIP("general-fallback", ip)
 			}
 		}
 	}
 
-	// Last resort: any available IP from the flat list (covers legacy profiles)
 	for attempts := 0; attempts < len(p.ips); attempts++ {
 		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
 		ip := p.ips[idx]
 		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 			continue
 		}
-		return ip, nil
+		return selectIP("flat-list-fallback", ip)
 	}
 
+	log.Printf("[vmtaPool] EXHAUSTED all %d IPs (ISP=%s, poolPrefix=%s)", len(p.ips), recipientISP, p.poolPrefix)
 	return vmtaEntry{}, fmt.Errorf("all IPs exhausted (ISP=%s, poolPrefix=%s)", recipientISP, p.poolPrefix)
 }
 
@@ -337,6 +359,12 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	} else {
 		vmtaName = vmtaShortName(ip.Hostname)
 		ipID = ip.ID
+		profShort := msg.ProfileID
+		if len(profShort) > 8 {
+			profShort = profShort[:8]
+		}
+		log.Printf("[PMTA-SMTP] Routing %s → VMTA=%s (profile=%s, ISP=%s, poolPrefix=%s)",
+			msg.Email, vmtaName, profShort, msg.RecipientISP, s.ipPool.poolPrefix)
 	}
 
 	msgDomain := "mail.projectjarvis.io"

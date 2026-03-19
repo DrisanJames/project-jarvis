@@ -2223,6 +2223,26 @@ END $$`},
 		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
 		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
 		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
+
+		// 7.5: Force-correct shared-a pool assignment (plain SQL, no PL/pgSQL)
+		{"phase7_force_shared_a", `UPDATE mailing_ip_addresses
+SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'shared-a' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+    updated_at = NOW()
+WHERE ip_address IN ('15.204.22.177'::inet,'15.204.22.178'::inet,'15.204.22.179'::inet,'15.204.22.180'::inet,
+    '15.204.22.181'::inet,'15.204.22.182'::inet,'15.204.22.183'::inet,'15.204.22.184'::inet,
+    '15.204.22.185'::inet,'15.204.22.186'::inet,'15.204.22.187'::inet,'15.204.22.188'::inet,
+    '15.204.22.189'::inet,'15.204.22.190'::inet,'15.204.22.191'::inet)
+AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'shared-a' AND organization_id = '00000000-0000-0000-0000-000000000001'))`},
+
+		// 7.6: Force-correct shared-b pool assignment (plain SQL, no PL/pgSQL)
+		{"phase7_force_shared_b", `UPDATE mailing_ip_addresses
+SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'shared-b' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+    updated_at = NOW()
+WHERE ip_address IN ('15.204.38.160'::inet,'15.204.38.161'::inet,'15.204.38.162'::inet,'15.204.38.163'::inet,
+    '15.204.38.164'::inet,'15.204.38.165'::inet,'15.204.38.166'::inet,'15.204.38.167'::inet,
+    '15.204.38.168'::inet,'15.204.38.169'::inet,'15.204.38.170'::inet,'15.204.38.171'::inet,
+    '15.204.38.172'::inet,'15.204.38.173'::inet,'15.204.38.174'::inet,'15.204.38.175'::inet)
+AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'shared-b' AND organization_id = '00000000-0000-0000-0000-000000000001'))`},
 	}
 
 	var ok, fail int
@@ -2235,6 +2255,40 @@ END $$`},
 		}
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors", ok, fail)
+
+	// Diagnostic: log pool assignments for OVH IPs to verify routing
+	poolRows, poolErr := db.Query(`
+		SELECT ip.ip_address::text, ip.hostname, pool.name as pool_name, ip.status, COALESCE(ip.warmup_daily_limit, 0)
+		FROM mailing_ip_addresses ip
+		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+		WHERE ip.ip_address::text LIKE '15.204.22.%' OR ip.ip_address::text LIKE '15.204.38.%'
+		ORDER BY ip.ip_address`)
+	if poolErr == nil {
+		defer poolRows.Close()
+		log.Println("[PoolDiag] === OVH IP Pool Assignments ===")
+		for poolRows.Next() {
+			var ipAddr, hostname, poolName, status string
+			var warmupLimit int
+			if err := poolRows.Scan(&ipAddr, &hostname, &poolName, &status, &warmupLimit); err == nil {
+				log.Printf("[PoolDiag] %s → pool=%s vmta=%s status=%s limit=%d", ipAddr, poolName, vmtaShort(hostname), status, warmupLimit)
+			}
+		}
+	}
+	// Also log sending profile routing
+	profRows, profErr := db.Query(`
+		SELECT name, sending_domain, COALESCE(ip_pool, ''), COALESCE(pool_prefix, ''), status
+		FROM mailing_sending_profiles WHERE vendor_type = 'pmta' AND status = 'active'
+		ORDER BY sending_domain`)
+	if profErr == nil {
+		defer profRows.Close()
+		log.Println("[PoolDiag] === PMTA Sending Profile Routing ===")
+		for profRows.Next() {
+			var name, domain, ipPool, poolPrefix, status string
+			if err := profRows.Scan(&name, &domain, &ipPool, &poolPrefix, &status); err == nil {
+				log.Printf("[PoolDiag] profile=%s domain=%s ip_pool=%s pool_prefix='%s' status=%s", name, domain, ipPool, poolPrefix, status)
+			}
+		}
+	}
 
 	// One-time bulk suppression import: besmed attacker bounces (59,155 emails)
 	var besmedCount int
@@ -2623,4 +2677,11 @@ END $$`},
 		}
 	}
 	log.Printf("[AdminMigration] Complete: %d OK, %d errors", ok, fail)
+}
+
+func vmtaShort(hostname string) string {
+	if idx := strings.Index(hostname, "."); idx > 0 {
+		return hostname[:idx]
+	}
+	return hostname
 }
