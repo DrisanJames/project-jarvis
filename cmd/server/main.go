@@ -1613,6 +1613,48 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
 
+		{"sync_bounced_to_global_supp", `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+			SELECT gen_random_uuid(), s.organization_id, s.email, MD5(LOWER(TRIM(s.email))), 'hard_bounce', 'status_sync', NOW()
+			FROM mailing_subscribers s
+			WHERE s.status = 'bounced'
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_global_suppressions g
+				WHERE g.organization_id = s.organization_id AND g.md5_hash = MD5(LOWER(TRIM(s.email)))
+			)
+			ON CONFLICT (organization_id, md5_hash) DO NOTHING
+		`},
+		{"sync_complained_to_global_supp", `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+			SELECT gen_random_uuid(), s.organization_id, s.email, MD5(LOWER(TRIM(s.email))), 'complaint', 'status_sync', NOW()
+			FROM mailing_subscribers s
+			WHERE s.status = 'complained'
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_global_suppressions g
+				WHERE g.organization_id = s.organization_id AND g.md5_hash = MD5(LOWER(TRIM(s.email)))
+			)
+			ON CONFLICT (organization_id, md5_hash) DO NOTHING
+		`},
+		{"sync_bot_clickers_to_global_supp", `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
+			SELECT DISTINCT gen_random_uuid(), s.organization_id, s.email, MD5(LOWER(TRIM(s.email))), 'bot_clicker', 'status_sync', NOW()
+			FROM mailing_subscribers s
+			WHERE s.status = 'confirmed'
+			AND EXISTS (
+				SELECT 1 FROM mailing_tracking_events e
+				WHERE e.subscriber_id = s.id AND e.event_type = 'opened' AND e.is_machine_open = TRUE
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_tracking_events e2
+				WHERE e2.subscriber_id = s.id AND e2.event_type = 'opened' AND (e2.is_machine_open = FALSE OR e2.is_machine_open IS NULL)
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_global_suppressions g
+				WHERE g.organization_id = s.organization_id AND g.md5_hash = MD5(LOWER(TRIM(s.email)))
+			)
+			ON CONFLICT (organization_id, md5_hash) DO NOTHING
+		`},
+
 		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
 		{"drop_ip_status_check", `ALTER TABLE mailing_ip_addresses DROP CONSTRAINT IF EXISTS mailing_ip_addresses_status_check`},
 		{"startup_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold', warmup_stage = 'paused' WHERE (hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%') AND status != 'cold'`},
