@@ -1060,8 +1060,9 @@ func (s *Server) HandlePreflightCheck(w http.ResponseWriter, r *http.Request) {
 // waveSanityCheck validates the normalized wave plan meets minimum throttling
 // requirements. Called after normalizePMTACampaignInput + buildPMTAWaveSpecs.
 //
-// The minimum span is proportional to quota: larger volumes need more spread.
-// For quota=0 (unlimited), the full defaultThrottleDuration applies.
+// The minimum span is proportional to the actual recipient count (sum of
+// PlannedRecipients across waves), not the quota. The quota is the warmup
+// ceiling and can be much larger than the actual list size for a given ISP.
 func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
 	const smallISPThreshold = 500
 	var issues []string
@@ -1071,8 +1072,12 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 		if len(waves) == 0 {
 			continue
 		}
-		if plan.Quota > 0 && plan.Quota < smallISPThreshold {
-			continue // small ISP quotas don't need full wave throttling
+		actualRecipients := 0
+		for _, w := range waves {
+			actualRecipients += w.PlannedRecipients
+		}
+		if actualRecipients < smallISPThreshold {
+			continue
 		}
 		if len(waves) < minWavesPerISP {
 			issues = append(issues, fmt.Sprintf("ISP %s has only %d waves (min %d)", isp, len(waves), minWavesPerISP))
@@ -1081,9 +1086,9 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 			first := waves[0].ScheduledAt
 			last := waves[len(waves)-1].ScheduledAt
 			span := last.Sub(first)
-			minSpan := minSpanForQuota(plan.Quota)
+			minSpan := minSpanForVolume(actualRecipients)
 			if span < minSpan-15*time.Minute {
-				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v)", isp, span.Round(time.Minute), minSpan.Round(time.Minute)))
+				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v, %d recipients)", isp, span.Round(time.Minute), minSpan.Round(time.Minute), actualRecipients))
 			}
 		}
 	}
@@ -1093,15 +1098,15 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 	return nil
 }
 
-// minSpanForQuota computes the minimum delivery window for a given ISP quota.
-// 100 msgs/hr is the warmup-safe baseline. The result is clamped between
-// 1 hour and defaultThrottleDuration (8h).
-func minSpanForQuota(quota int) time.Duration {
+// minSpanForVolume computes the minimum delivery window for a given recipient
+// count. 100 msgs/hr is the warmup-safe baseline. The result is clamped
+// between 1 hour and defaultThrottleDuration (8h).
+func minSpanForVolume(recipients int) time.Duration {
 	const conservativeHourlyRate = 100
-	if quota <= 0 {
+	if recipients <= 0 {
 		return defaultThrottleDuration
 	}
-	proportional := time.Duration(float64(quota) / float64(conservativeHourlyRate) * float64(time.Hour))
+	proportional := time.Duration(float64(recipients) / float64(conservativeHourlyRate) * float64(time.Hour))
 	if proportional > defaultThrottleDuration {
 		return defaultThrottleDuration
 	}

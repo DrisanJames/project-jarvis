@@ -59,7 +59,8 @@ type SendingProfile struct {
 	CurrentDailyCount  int `json:"current_daily_count"`
 
 	// IP Pool
-	IPPool *string `json:"ip_pool,omitempty"`
+	IPPool     *string `json:"ip_pool,omitempty"`
+	PoolPrefix *string `json:"pool_prefix,omitempty"`
 
 	// Status
 	Status       string `json:"status"` // draft, pending, active, inactive, suspended
@@ -139,7 +140,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			   spf_verified, dkim_verified, dmarc_verified, domain_verified, credentials_verified,
 			   last_verification_at, verification_error,
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
-			   ip_pool, status, is_default,
+			   ip_pool, pool_prefix, status, is_default,
 			   CASE WHEN api_key IS NOT NULL AND api_key != '' THEN true ELSE false END as is_configured,
 			   created_at, updated_at,
 			   smtp_host, COALESCE(smtp_port, 0), smtp_username, api_endpoint
@@ -181,7 +182,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			&p.SPFVerified, &p.DKIMVerified, &p.DMARCVerified, &p.DomainVerified, &p.CredentialsVerified,
 			&p.LastVerificationAt, &p.VerificationError,
 			&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
-			&p.IPPool, &p.Status, &p.IsDefault, &p.IsConfigured, &p.CreatedAt, &p.UpdatedAt,
+			&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.IsConfigured, &p.CreatedAt, &p.UpdatedAt,
 			&p.SMTPHost, &p.SMTPPort, &p.SMTPUsername, &p.APIEndpoint,
 		)
 		if err != nil {
@@ -325,7 +326,7 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 			   spf_verified, dkim_verified, dmarc_verified, domain_verified, credentials_verified,
 			   last_verification_at, verification_error,
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
-			   ip_pool, status, is_default, created_at, updated_at
+			   ip_pool, pool_prefix, status, is_default, created_at, updated_at
 		FROM mailing_sending_profiles WHERE id = $1
 	`, profileID).Scan(
 		&p.ID, &p.OrganizationID, &p.Name, &p.Description, &p.VendorType,
@@ -336,7 +337,7 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 		&p.SPFVerified, &p.DKIMVerified, &p.DMARCVerified, &p.DomainVerified, &p.CredentialsVerified,
 		&p.LastVerificationAt, &p.VerificationError,
 		&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
-		&p.IPPool, &p.Status, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt,
+		&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt,
 	)
 
 	if err == sql.ErrNoRows {

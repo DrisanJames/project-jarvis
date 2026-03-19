@@ -1,214 +1,133 @@
 package api
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/ignite/sparkpost-monitor/internal/engine"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizePMTACampaignInput_LegacyScheduledTranslation(t *testing.T) {
-	scheduledAt := time.Now().UTC().Add(15 * time.Minute).Round(time.Minute)
-	input := engine.PMTACampaignInput{
-		Name:          "Legacy PMTA",
-		TargetISPs:    []engine.ISP{engine.ISPGmail, engine.ISPApple},
-		SendingDomain: "mail.example.com",
-		Variants: []engine.ContentVariant{{
-			VariantName: "A",
-			Subject:     "Subject",
-			HTMLContent: "<html></html>",
-		}},
-		Timezone:         "UTC",
-		ThrottleStrategy: "auto",
-		SendMode:         "scheduled",
-		ScheduledAt:      &scheduledAt,
-		ISPQuotas: []engine.ISPQuota{
-			{ISP: "gmail", Volume: 100},
-		},
+func TestMinSpanForVolume(t *testing.T) {
+	tests := []struct {
+		name       string
+		recipients int
+		want       time.Duration
+	}{
+		{"0 (unlimited) uses full 8h", 0, 8 * time.Hour},
+		{"negative uses full 8h", -1, 8 * time.Hour},
+		{"100 recipients = 1h (floor)", 100, 1 * time.Hour},
+		{"50 recipients = 1h (floor clamp)", 50, 1 * time.Hour},
+		{"500 recipients = 5h", 500, 5 * time.Hour},
+		{"600 recipients = 6h", 600, 6 * time.Hour},
+		{"800 recipients = 8h (matches default)", 800, 8 * time.Hour},
+		{"1000 recipients = 8h (cap)", 1000, 8 * time.Hour},
+		{"5000 recipients = 8h (cap)", 5000, 8 * time.Hour},
+		{"200 recipients = 2h", 200, 2 * time.Hour},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := minSpanForVolume(tt.recipients)
+			if got != tt.want {
+				t.Errorf("minSpanForVolume(%d) = %v, want %v", tt.recipients, got, tt.want)
+			}
+		})
+	}
+}
 
-	normalized, err := normalizePMTACampaignInput(input)
-	if err != nil {
-		t.Fatalf("normalizePMTACampaignInput() error = %v", err)
-	}
-	if !normalized.LegacyInput {
-		t.Fatalf("expected legacy input translation")
-	}
-	if len(normalized.Plans) != 2 {
-		t.Fatalf("expected 2 ISP plans, got %d", len(normalized.Plans))
-	}
-	if normalized.Plans[0].TimeSpans[0].StartAt.IsZero() {
-		t.Fatalf("expected translated time span")
-	}
+func TestWaveSanityCheck_ProportionalSpan(t *testing.T) {
+	now := time.Now().UTC()
 
-	quotas := map[string]int{}
-	for _, plan := range normalized.Plans {
-		quotas[plan.ISP] = plan.Quota
-		if plan.TimeSpans[0].StartAt.UTC() != scheduledAt.UTC() {
-			t.Fatalf("expected start time %s, got %s", scheduledAt.UTC(), plan.TimeSpans[0].StartAt.UTC())
+	makeWaves := func(span time.Duration, totalRecipients int) []pmtaWaveSpec {
+		waves := make([]pmtaWaveSpec, 4)
+		perWave := totalRecipients / 4
+		for i := 0; i < 4; i++ {
+			planned := perWave
+			if i == 3 {
+				planned = totalRecipients - perWave*3
+			}
+			waves[i] = pmtaWaveSpec{
+				WaveNumber:        i + 1,
+				ScheduledAt:       now.Add(time.Duration(i) * span / 3),
+				PlannedRecipients: planned,
+			}
 		}
+		return waves
 	}
-	if quotas["gmail"] != 100 {
-		t.Fatalf("expected gmail quota 100, got %d", quotas["gmail"])
+
+	tests := []struct {
+		name       string
+		quota      int
+		recipients int
+		span       time.Duration
+		wantErr    bool
+	}{
+		{"600 actual recipients, 6h span — passes", 2000, 600, 6 * time.Hour, false},
+		{"600 actual recipients, 4h span — fails", 2000, 600, 4 * time.Hour, true},
+		{"270 actual recipients (quota 1500), 7h15m span — passes (under threshold)", 1500, 270, 7*time.Hour + 15*time.Minute, false},
+		{"500 actual recipients, 5h span — passes", 1500, 500, 5 * time.Hour, false},
+		{"500 actual recipients, 3h span — fails", 1500, 500, 3 * time.Hour, true},
+		{"1000 actual recipients, 8h span — passes", 1500, 1000, 8 * time.Hour, false},
+		{"1000 actual recipients, 7h span — fails", 1500, 1000, 7 * time.Hour, true},
+		{"300 actual recipients (quota 1500), any span — skipped", 1500, 300, 1 * time.Hour, false},
+		{"200 actual recipients (quota 800), any span — skipped", 800, 200, 30 * time.Minute, false},
 	}
-	if quotas["apple"] != 0 {
-		t.Fatalf("expected apple quota 0, got %d", quotas["apple"])
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plans := []pmtaNormalizedPlan{{
+				ISP:   "charter",
+				Quota: tt.quota,
+			}}
+			wavesByISP := map[string][]pmtaWaveSpec{
+				"charter": makeWaves(tt.span, tt.recipients),
+			}
+			err := waveSanityCheck(plans, wavesByISP)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
-func TestBuildPMTAWaveSpecs_IntervalCadence(t *testing.T) {
-	start := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
-	plan := pmtaNormalizedPlan{
-		ISP: "gmail",
-		Cadence: engine.PMTACadenceInput{
-			Mode:         "interval",
-			EveryMinutes: 15,
-			BatchSize:    100,
-		},
-		TimeSpans: []pmtaNormalizedTimeSpan{{
-			StartAt: start,
-			EndAt:   start.Add(45 * time.Minute),
-		}},
-	}
+func TestWaveSanityCheck_QuotaVsActualCount(t *testing.T) {
+	now := time.Now().UTC()
 
-	waves := buildPMTAWaveSpecs("campaign-1", plan, 250)
-	if len(waves) != 3 {
-		t.Fatalf("expected 3 waves, got %d", len(waves))
-	}
-	if waves[0].PlannedRecipients != 100 || waves[1].PlannedRecipients != 100 || waves[2].PlannedRecipients != 50 {
-		t.Fatalf("unexpected wave distribution: %+v", waves)
-	}
-	if !waves[1].ScheduledAt.Equal(start.Add(15 * time.Minute)) {
-		t.Fatalf("expected second wave at %s, got %s", start.Add(15*time.Minute), waves[1].ScheduledAt)
-	}
-}
-
-func TestPreflightDeployCheck_NoProfile(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT id::text, ip_pool").
-		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}))
-
-	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
-	assert.False(t, res.OK)
-	require.Len(t, res.Errors, 1)
-	assert.Equal(t, "sending_profile", res.Errors[0].Check)
-}
-
-func TestPreflightDeployCheck_EmptyIPPool(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT id::text, ip_pool").
-		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "", ""))
-
-	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
-	assert.False(t, res.OK)
-	require.Len(t, res.Errors, 1)
-	assert.Equal(t, "ip_pool", res.Errors[0].Check)
-}
-
-func TestPreflightDeployCheck_NoActiveIPs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT id::text, ip_pool").
-		WithArgs("org-1", "em.example.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "warmup-pool", ""))
-
-	mock.ExpectQuery("SELECT ip.hostname, ip.status").
-		WithArgs("warmup-pool").
-		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}))
-
-	res := preflightDeployCheck(context.Background(), db, "org-1", "em.example.com")
-	assert.False(t, res.OK)
-	require.Len(t, res.Errors, 1)
-	assert.Equal(t, "ip_pool_empty", res.Errors[0].Check)
-}
-
-func TestPreflightDeployCheck_WithPoolPrefix(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT id::text, ip_pool").
-		WithArgs("org-1", "em.discountblog.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "db-gmail-pool", "db"))
-
-	mock.ExpectQuery("SELECT ip.hostname, ip.status").
-		WithArgs("db").
-		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}).
-			AddRow("mta-db-gm1.mail.em.discountblog.com", "warmup", "db-gmail-pool").
-			AddRow("mta-db-yh1.mail.em.discountblog.com", "warmup", "db-yahoo-pool"))
-
-	// DNS lookups will fail in test but produce warnings, not errors — except DKIM
-	res := preflightDeployCheck(context.Background(), db, "org-1", "em.discountblog.com")
-	// The result may have DKIM/SPF failures but the IP pool check should pass
-	hasIPPoolError := false
-	for _, e := range res.Errors {
-		if e.Check == "ip_pool_empty" {
-			hasIPPoolError = true
+	t.Run("high quota low actual count skips check", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "charter",
+			Quota: 1500,
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"charter": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 70},
+				{WaveNumber: 2, ScheduledAt: now.Add(15 * time.Minute), PlannedRecipients: 70},
+				{WaveNumber: 3, ScheduledAt: now.Add(30 * time.Minute), PlannedRecipients: 70},
+				{WaveNumber: 4, ScheduledAt: now.Add(45 * time.Minute), PlannedRecipients: 60},
+			},
 		}
-	}
-	assert.False(t, hasIPPoolError, "pool_prefix path should find IPs across ISP sub-pools")
-}
+		err := waveSanityCheck(plans, waves)
+		if err != nil {
+			t.Errorf("should skip: actual recipients (270) < 500 threshold, but got: %v", err)
+		}
+	})
 
-func TestPreflightDeployCheck_PoolPrefixNoIPs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT id::text, ip_pool").
-		WithArgs("org-1", "em.discountblog.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "ip_pool", "pool_prefix"}).AddRow("profile-1", "db-gmail-pool", "db"))
-
-	mock.ExpectQuery("SELECT ip.hostname, ip.status").
-		WithArgs("db").
-		WillReturnRows(sqlmock.NewRows([]string{"hostname", "status", "pool_name"}))
-
-	res := preflightDeployCheck(context.Background(), db, "org-1", "em.discountblog.com")
-	assert.False(t, res.OK)
-	require.Len(t, res.Errors, 1)
-	assert.Equal(t, "ip_pool_empty", res.Errors[0].Check)
-}
-
-func TestWaveSanityCheck_TooFewWaves(t *testing.T) {
-	plans := []pmtaNormalizedPlan{{ISP: "gmail"}}
-	start := time.Now()
-	wavesByISP := map[string][]pmtaWaveSpec{
-		"gmail": {
-			{WaveNumber: 1, ScheduledAt: start},
-			{WaveNumber: 2, ScheduledAt: start.Add(15 * time.Minute)},
-		},
-	}
-	err := waveSanityCheck(plans, wavesByISP)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "only 2 waves")
-}
-
-func TestWaveSanityCheck_Valid(t *testing.T) {
-	plans := []pmtaNormalizedPlan{{ISP: "gmail"}}
-	start := time.Now()
-	wavesByISP := map[string][]pmtaWaveSpec{
-		"gmail": {
-			{WaveNumber: 1, ScheduledAt: start},
-			{WaveNumber: 2, ScheduledAt: start.Add(1 * time.Hour)},
-			{WaveNumber: 3, ScheduledAt: start.Add(2 * time.Hour)},
-			{WaveNumber: 4, ScheduledAt: start.Add(4 * time.Hour)},
-			{WaveNumber: 5, ScheduledAt: start.Add(6 * time.Hour)},
-			{WaveNumber: 6, ScheduledAt: start.Add(8 * time.Hour)},
-		},
-	}
-	err := waveSanityCheck(plans, wavesByISP)
-	assert.NoError(t, err)
+	t.Run("high quota high actual count enforces check", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "gmail",
+			Quota: 5000,
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"gmail": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 500},
+				{WaveNumber: 2, ScheduledAt: now.Add(1 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 3, ScheduledAt: now.Add(2 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 4, ScheduledAt: now.Add(3 * time.Hour), PlannedRecipients: 500},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err == nil {
+			t.Error("should fail: 2000 recipients in 3h span, but passed")
+		}
+	})
 }

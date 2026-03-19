@@ -1192,16 +1192,22 @@ export const ISPAgentIntelligence: React.FC = () => {
           {/* AI Optimal Send Time */}
           <div className="ia-detail-section ia-optimal-section">
             <h4><FontAwesomeIcon icon={faCalendarAlt} /> Learned Optimal Send Time</h4>
-            <div className="ia-optimal-display">
-              <div className="ia-optimal-item">
-                <FontAwesomeIcon icon={faCalendarAlt} />
-                <span>{dayNames[selectedAgent.knowledge.optimal_send_day % 7]}</span>
+            {selectedAgent.knowledge.optimal_send_hour != null && selectedAgent.knowledge.optimal_send_day != null ? (
+              <div className="ia-optimal-display">
+                <div className="ia-optimal-item">
+                  <FontAwesomeIcon icon={faCalendarAlt} />
+                  <span>{dayNames[selectedAgent.knowledge.optimal_send_day % 7]}</span>
+                </div>
+                <div className="ia-optimal-item">
+                  <FontAwesomeIcon icon={faClock} />
+                  <span>{selectedAgent.knowledge.optimal_send_hour}:00 UTC</span>
+                </div>
               </div>
-              <div className="ia-optimal-item">
-                <FontAwesomeIcon icon={faClock} />
-                <span>{selectedAgent.knowledge.optimal_send_hour}:00 UTC</span>
+            ) : (
+              <div className="ia-optimal-display" style={{ opacity: 0.5 }}>
+                <span>Not yet learned — needs more engagement data</span>
               </div>
-            </div>
+            )}
           </div>
 
           {/* AI Insights */}

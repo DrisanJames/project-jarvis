@@ -158,24 +158,35 @@ func (m *ISPAgentManager) HandleListAgents(w http.ResponseWriter, r *http.Reques
 		}
 
 		// Enrich with live stats from tracking events (last 30 days)
-		var liveSends, liveHardBounces, liveComplaints sql.NullInt64
+		// Use recipient_domain (ISP domain like gmail.com) — NOT sending_domain (our domain)
+		var liveSends, liveOpens, liveClicks, liveHardBounces, liveSoftBounces, liveComplaints sql.NullInt64
 		_ = m.db.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT
 				COUNT(*) FILTER (WHERE event_type = 'delivered'),
+				COUNT(*) FILTER (WHERE event_type = 'opened'),
+				COUNT(*) FILTER (WHERE event_type = 'clicked'),
 				COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+				COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (%s)),
 				COUNT(*) FILTER (WHERE event_type = 'complained')
 			FROM mailing_tracking_events
-			WHERE sending_domain = $1 AND created_at > NOW() - INTERVAL '30 days'`,
+			WHERE LOWER(recipient_domain) = LOWER($1) AND created_at > NOW() - INTERVAL '30 days'`,
+			HardBounceSQL("mailing_tracking_events"),
 			HardBounceSQL("mailing_tracking_events")),
 			a.Domain,
-		).Scan(&liveSends, &liveHardBounces, &liveComplaints)
-		if liveSends.Valid && liveSends.Int64 > 0 {
+		).Scan(&liveSends, &liveOpens, &liveClicks, &liveHardBounces, &liveSoftBounces, &liveComplaints)
+		if liveSends.Valid {
 			a.TotalSends = liveSends.Int64
 		}
-		if liveHardBounces.Valid && liveHardBounces.Int64 > 0 {
+		if liveOpens.Valid {
+			a.TotalOpens = liveOpens.Int64
+		}
+		if liveClicks.Valid {
+			a.TotalClicks = liveClicks.Int64
+		}
+		if liveHardBounces.Valid {
 			a.TotalBounces = liveHardBounces.Int64
 		}
-		if liveComplaints.Valid && liveComplaints.Int64 > 0 {
+		if liveComplaints.Valid {
 			a.TotalComplaints = liveComplaints.Int64
 		}
 
@@ -292,24 +303,38 @@ func (m *ISPAgentManager) HandleGetAgent(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Enrich with live stats from tracking events (last 30 days)
-	var liveSends, liveHardBounces, liveComplaints sql.NullInt64
+	// Use recipient_domain (ISP domain like gmail.com) — NOT sending_domain (our domain)
+	var liveSends, liveOpens, liveClicks, liveHardBounces, liveSoftBounces, liveComplaints sql.NullInt64
 	_ = m.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT
 			COUNT(*) FILTER (WHERE event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE event_type = 'opened'),
+			COUNT(*) FILTER (WHERE event_type = 'clicked'),
 			COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (%s)),
 			COUNT(*) FILTER (WHERE event_type = 'complained')
 		FROM mailing_tracking_events
-		WHERE sending_domain = $1 AND created_at > NOW() - INTERVAL '30 days'`,
+		WHERE LOWER(recipient_domain) = LOWER($1) AND created_at > NOW() - INTERVAL '30 days'`,
+		HardBounceSQL("mailing_tracking_events"),
 		HardBounceSQL("mailing_tracking_events")),
 		domain,
-	).Scan(&liveSends, &liveHardBounces, &liveComplaints)
-	if liveSends.Valid && liveSends.Int64 > 0 {
+	).Scan(&liveSends, &liveOpens, &liveClicks, &liveHardBounces, &liveSoftBounces, &liveComplaints)
+	if liveSends.Valid {
 		agent["total_sends"] = liveSends.Int64
 	}
-	if liveHardBounces.Valid && liveHardBounces.Int64 > 0 {
-		agent["total_bounces"] = liveHardBounces.Int64
+	if liveOpens.Valid {
+		agent["total_opens"] = liveOpens.Int64
 	}
-	if liveComplaints.Valid && liveComplaints.Int64 > 0 {
+	if liveClicks.Valid {
+		agent["total_clicks"] = liveClicks.Int64
+	}
+	if liveHardBounces.Valid {
+		agent["total_hard_bounces"] = liveHardBounces.Int64
+	}
+	if liveSoftBounces.Valid {
+		agent["total_soft_bounces"] = liveSoftBounces.Int64
+	}
+	if liveComplaints.Valid {
 		agent["total_complaints"] = liveComplaints.Int64
 	}
 
@@ -402,7 +427,7 @@ func (m *ISPAgentManager) HandleGetAgent(w http.ResponseWriter, r *http.Request)
 	var avgProfileEngagement sql.NullFloat64
 	var lastLearning sql.NullTime
 	_ = m.db.QueryRowContext(ctx,
-		`SELECT COUNT(*), AVG(engagement_score), MAX(last_activity_at)
+		`SELECT COUNT(*), AVG(engagement_score), MAX(updated_at)
 		FROM mailing_inbox_profiles WHERE domain = $1`, domain,
 	).Scan(&profileCount, &avgProfileEngagement, &lastLearning)
 
@@ -569,7 +594,7 @@ func (m *ISPAgentManager) HandleAgentLearn(w http.ResponseWriter, r *http.Reques
 
 	// Query inbox profiles for the agent's domain: engagement patterns, best hours, bounce rates
 	profileRows, err := m.db.QueryContext(ctx,
-		`SELECT engagement_score, best_send_hour, total_sent, total_opens, total_clicks, total_bounces
+		`SELECT engagement_score, optimal_send_hour, total_sends, total_opens, total_clicks, total_bounces
 		FROM mailing_inbox_profiles WHERE domain = $1`, domain,
 	)
 	if err != nil {
@@ -661,16 +686,48 @@ func (m *ISPAgentManager) HandleAgentLearn(w http.ResponseWriter, r *http.Reques
 		avgEngagement = (totalEngagement / float64(totalProfiles)) * 100
 	}
 
-	// Compute bounce rate and complaint rate from agent-level stats
-	bounceRate := 0.0
-	complaintRate := 0.0
-	if totalSends > 0 {
-		bounceRate = float64(totalBounces) / float64(totalSends)
-		complaintRate = float64(totalComplaints) / float64(totalSends)
+	// Enrich with live stats from tracking events via recipient_domain
+	var liveHardBounces, liveSoftBounces, liveDelivered, liveComplaints sql.NullInt64
+	_ = m.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (%s)),
+			COUNT(*) FILTER (WHERE event_type = 'complained')
+		FROM mailing_tracking_events
+		WHERE LOWER(recipient_domain) = LOWER($1) AND created_at > NOW() - INTERVAL '30 days'`,
+		HardBounceSQL("mailing_tracking_events"),
+		HardBounceSQL("mailing_tracking_events")),
+		domain,
+	).Scan(&liveDelivered, &liveHardBounces, &liveSoftBounces, &liveComplaints)
+
+	liveSendsCount := int64(0)
+	if liveDelivered.Valid {
+		liveSendsCount = liveDelivered.Int64
+	}
+	liveHardCount := int64(0)
+	if liveHardBounces.Valid {
+		liveHardCount = liveHardBounces.Int64
+	}
+	liveSoftCount := int64(0)
+	if liveSoftBounces.Valid {
+		liveSoftCount = liveSoftBounces.Int64
+	}
+	liveComplaintCount := int64(0)
+	if liveComplaints.Valid {
+		liveComplaintCount = liveComplaints.Int64
 	}
 
-	// Determine risk level
-	combinedRate := bounceRate + complaintRate
+	hardBounceRate := 0.0
+	softBounceRate := 0.0
+	complaintRate := 0.0
+	if liveSendsCount > 0 {
+		hardBounceRate = float64(liveHardCount) / float64(liveSendsCount)
+		softBounceRate = float64(liveSoftCount) / float64(liveSendsCount)
+		complaintRate = float64(liveComplaintCount) / float64(liveSendsCount)
+	}
+
+	combinedRate := hardBounceRate + softBounceRate + complaintRate
 	riskLevel := "low"
 	if combinedRate > 0.05 {
 		riskLevel = "high"
@@ -678,21 +735,15 @@ func (m *ISPAgentManager) HandleAgentLearn(w http.ResponseWriter, r *http.Reques
 		riskLevel = "medium"
 	}
 
-	// Content preferences (placeholder values)
-	contentPrefs := map[string]interface{}{
-		"text_open_rate": 0.12,
-		"html_open_rate": 0.18,
-	}
-
 	now := time.Now()
 
 	knowledge := map[string]interface{}{
-		"optimal_hours":       optimalHours,
+		"optimal_send_hours":  optimalHours,
 		"avg_engagement":      avgEngagement,
 		"total_profiles":      totalProfiles,
-		"bounce_rate":         bounceRate,
-		"complaint_rate":      complaintRate,
-		"content_preferences": contentPrefs,
+		"hard_bounce_rate":    hardBounceRate * 100,
+		"soft_bounce_rate":    softBounceRate * 100,
+		"complaint_rate":      complaintRate * 100,
 		"risk_level":          riskLevel,
 		"last_learned_at":     now,
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -160,7 +161,7 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 
 	// Query per-ISP aggregate metrics from inbox profiles
-	// Uses total_sends (017 schema) with COALESCE fallback
+	// AVG(optimal_send_hour/day) returns NULL when no profile has learned data — no fake defaults
 	rows, err := svc.db.QueryContext(ctx, `
 		SELECT 
 			domain,
@@ -173,8 +174,8 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			COALESCE(AVG(engagement_score), 0) as avg_engagement,
 			COALESCE(MAX(updated_at), NOW()) as last_learning,
 			COALESCE(MIN(updated_at), NOW()) as first_learning,
-			COALESCE(AVG(optimal_send_hour), 10) as avg_best_hour,
-			COALESCE(AVG(optimal_send_day), 2) as avg_best_day,
+			AVG(optimal_send_hour) as avg_best_hour,
+			AVG(optimal_send_day) as avg_best_day,
 			COUNT(CASE WHEN engagement_score >= 0.70 THEN 1 END) as high_count,
 			COUNT(CASE WHEN engagement_score >= 0.40 AND engagement_score < 0.70 THEN 1 END) as medium_count,
 			COUNT(CASE WHEN engagement_score > 0 AND engagement_score < 0.40 THEN 1 END) as low_count,
@@ -222,7 +223,8 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 	for rows.Next() {
 		var domain string
 		var profilesCount, totalSends, totalOpens, totalClicks, totalBounces, totalComplaints int
-		var avgEngagement, avgBestHour, avgBestDay float64
+		var avgEngagement float64
+		var avgBestHour, avgBestDay sql.NullFloat64
 		var lastLearning, firstLearning time.Time
 		var highCount, mediumCount, lowCount, inactiveCount, recentOpeners, recentClickers int
 
@@ -238,18 +240,71 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 		isp := detectISP(domain)
 		ispKey := strings.ToLower(strings.ReplaceAll(isp, " ", "_"))
 
-		dataPoints := totalSends + totalOpens + totalClicks + totalBounces + totalComplaints
+		// Enrich with live stats from tracking events via recipient_domain
+		var liveDelivered, liveOpened, liveClicked, liveHard, liveSoft, liveComplained sql.NullInt64
+		_ = svc.db.QueryRowContext(ctx, fmt.Sprintf(`
+			SELECT
+				COUNT(*) FILTER (WHERE event_type = 'delivered'),
+				COUNT(*) FILTER (WHERE event_type = 'opened'),
+				COUNT(*) FILTER (WHERE event_type = 'clicked'),
+				COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+				COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (%s)),
+				COUNT(*) FILTER (WHERE event_type = 'complained')
+			FROM mailing_tracking_events
+			WHERE LOWER(recipient_domain) = LOWER($1) AND created_at > NOW() - INTERVAL '30 days'`,
+			HardBounceSQL("mailing_tracking_events"),
+			HardBounceSQL("mailing_tracking_events")),
+			domain,
+		).Scan(&liveDelivered, &liveOpened, &liveClicked, &liveHard, &liveSoft, &liveComplained)
+
+		liveSendsVal := 0
+		if liveDelivered.Valid && liveDelivered.Int64 > 0 {
+			liveSendsVal = int(liveDelivered.Int64)
+		}
+		liveOpensVal := 0
+		if liveOpened.Valid {
+			liveOpensVal = int(liveOpened.Int64)
+		}
+		liveClicksVal := 0
+		if liveClicked.Valid {
+			liveClicksVal = int(liveClicked.Int64)
+		}
+		hardBounces := 0
+		if liveHard.Valid {
+			hardBounces = int(liveHard.Int64)
+		}
+		softBounces := 0
+		if liveSoft.Valid {
+			softBounces = int(liveSoft.Int64)
+		}
+		liveComplaintsVal := 0
+		if liveComplained.Valid {
+			liveComplaintsVal = int(liveComplained.Int64)
+		}
+
+		effectiveSends := totalSends
+		if liveSendsVal > effectiveSends {
+			effectiveSends = liveSendsVal
+		}
+		effectiveOpens := totalOpens
+		if liveOpensVal > effectiveOpens {
+			effectiveOpens = liveOpensVal
+		}
+		effectiveClicks := totalClicks
+		if liveClicksVal > effectiveClicks {
+			effectiveClicks = liveClicksVal
+		}
+
+		dataPoints := effectiveSends + effectiveOpens + effectiveClicks + hardBounces + softBounces + liveComplaintsVal
 		totalProfiles += profilesCount
 		totalDataPoints += dataPoints
 
-		// Calculate open/click rates
 		var openRate, clickRate float64
-		if totalSends > 0 {
-			openRate = float64(totalOpens) / float64(totalSends) * 100
-			clickRate = float64(totalClicks) / float64(totalSends) * 100
+		if effectiveSends > 0 {
+			openRate = float64(effectiveOpens) / float64(effectiveSends) * 100
+			clickRate = float64(effectiveClicks) / float64(effectiveSends) * 100
 		}
 
-		// Calculate learning frequency
 		learningDays := int(time.Since(firstLearning).Hours() / 24)
 		if learningDays < 1 {
 			learningDays = 1
@@ -259,7 +314,6 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			learningFreq = float64(learningDays*24) / float64(dataPoints)
 		}
 
-		// Determine agent status
 		status := "dormant"
 		hoursSinceLearn := time.Since(lastLearning).Hours()
 		if hoursSinceLearn < 24 {
@@ -270,19 +324,20 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			status = "sleeping"
 		}
 
-		// Build risk factors
 		var riskFactors []string
-		if totalBounces > 0 && totalSends > 0 && float64(totalBounces)/float64(totalSends) > 0.02 {
-			riskFactors = append(riskFactors, "Elevated bounce rate detected")
+		if hardBounces > 0 && effectiveSends > 0 && float64(hardBounces)/float64(effectiveSends) > 0.02 {
+			riskFactors = append(riskFactors, "Elevated hard bounce rate detected")
 		}
-		if totalComplaints > 0 {
+		if softBounces > 0 && effectiveSends > 0 && float64(softBounces)/float64(effectiveSends) > 0.05 {
+			riskFactors = append(riskFactors, "High soft bounce rate — possible throttling")
+		}
+		if liveComplaintsVal > 0 {
 			riskFactors = append(riskFactors, "Spam complaints recorded")
 		}
-		if recentOpeners == 0 && totalSends > 5 {
+		if recentOpeners == 0 && effectiveSends > 5 {
 			riskFactors = append(riskFactors, "No recent opens — engagement declining")
 		}
 
-		// Build insights
 		var insights []string
 		if recentOpeners > 0 {
 			insights = append(insights, fmt.Sprintf("%d profiles opened in last 7 days", recentOpeners))
@@ -290,10 +345,27 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 		if recentClickers > 0 {
 			insights = append(insights, fmt.Sprintf("%d profiles clicked in last 7 days", recentClickers))
 		}
-		if int(avgBestHour) >= 0 {
+		if avgBestHour.Valid && avgBestDay.Valid {
 			dayNames := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
-			bestDay := int(avgBestDay) % 7
-			insights = append(insights, fmt.Sprintf("Best send time: %s at %d:00 UTC", dayNames[bestDay], int(avgBestHour)))
+			bestDay := int(avgBestDay.Float64) % 7
+			insights = append(insights, fmt.Sprintf("Best send time: %s at %d:00 UTC", dayNames[bestDay], int(avgBestHour.Float64)))
+		}
+
+		knowledgeMap := map[string]interface{}{
+			"engagement_tiers": map[string]int{
+				"high": highCount, "medium": mediumCount,
+				"low": lowCount, "inactive": inactiveCount,
+			},
+			"risk_factors":    riskFactors,
+			"insights":        insights,
+			"recent_openers":  recentOpeners,
+			"recent_clickers": recentClickers,
+		}
+		if avgBestHour.Valid {
+			knowledgeMap["optimal_send_hour"] = int(avgBestHour.Float64)
+		}
+		if avgBestDay.Valid {
+			knowledgeMap["optimal_send_day"] = int(avgBestDay.Float64)
 		}
 
 		agent := ISPAgent{
@@ -302,13 +374,13 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			Domain:            domain,
 			Status:            status,
 			ProfilesCount:     profilesCount,
-			TotalSends:        totalSends,
-			TotalOpens:        totalOpens,
-			TotalClicks:       totalClicks,
-			TotalBounces:      totalBounces,
-			TotalHardBounces:  totalBounces,
-			TotalSoftBounces:  0,
-			TotalComplaints:   totalComplaints,
+			TotalSends:        effectiveSends,
+			TotalOpens:        effectiveOpens,
+			TotalClicks:       effectiveClicks,
+			TotalBounces:      hardBounces + softBounces,
+			TotalHardBounces:  hardBounces,
+			TotalSoftBounces:  softBounces,
+			TotalComplaints:   liveComplaintsVal,
 			AvgEngagement:     avgEngagement * 100,
 			AvgOpenRate:       openRate,
 			AvgClickRate:      clickRate,
@@ -318,26 +390,14 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 			LearningDays:      learningDays,
 			LearningFreqHours: learningFreq,
 			LearningSources: map[string]int{
-				"sends":        totalSends,
-				"opens":        totalOpens,
-				"clicks":       totalClicks,
-				"bounces":      totalBounces,
-				"hard_bounces": totalBounces,
-				"soft_bounces": 0,
-				"complaints":   totalComplaints,
+				"sends":        effectiveSends,
+				"opens":        effectiveOpens,
+				"clicks":       effectiveClicks,
+				"hard_bounces": hardBounces,
+				"soft_bounces": softBounces,
+				"complaints":   liveComplaintsVal,
 			},
-			Knowledge: map[string]interface{}{
-				"optimal_send_hour": int(avgBestHour),
-				"optimal_send_day":  int(avgBestDay),
-				"engagement_tiers": map[string]int{
-					"high": highCount, "medium": mediumCount,
-					"low": lowCount, "inactive": inactiveCount,
-				},
-				"risk_factors":    riskFactors,
-				"insights":        insights,
-				"recent_openers":  recentOpeners,
-				"recent_clickers": recentClickers,
-			},
+			Knowledge: knowledgeMap,
 		}
 		agents = append(agents, agent)
 	}

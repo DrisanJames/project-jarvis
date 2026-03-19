@@ -327,9 +327,11 @@ func (cs *ConvictionStore) Stats(isp ISP, at AgentType) (willCount, wontCount in
 
 func (cs *ConvictionStore) persistConvictionToDB(ctx context.Context, c Conviction) {
 	ctxJSON, _ := json.Marshal(c.Context)
-	var outcomeJSON []byte
+	var outcomeStr *string
 	if c.Outcome != nil {
-		outcomeJSON, _ = json.Marshal(c.Outcome)
+		b, _ := json.Marshal(c.Outcome)
+		s := string(b)
+		outcomeStr = &s
 	}
 	_, err := cs.db.ExecContext(ctx,
 		`INSERT INTO mailing_engine_convictions (id, isp, agent_type, agent_id, verdict, statement, effective_rate, micro_context, outcome, created_at)
@@ -337,7 +339,7 @@ func (cs *ConvictionStore) persistConvictionToDB(ctx context.Context, c Convicti
 		 ON CONFLICT DO NOTHING`,
 		c.ID, string(c.ISP), string(c.AgentType), c.AgentID,
 		string(c.Verdict), c.Statement, c.Context.AttemptedRate,
-		ctxJSON, outcomeJSON, c.CreatedAt,
+		string(ctxJSON), outcomeStr, c.CreatedAt,
 	)
 	if err != nil {
 		log.Printf("[conviction] DB persist error: %v", err)
