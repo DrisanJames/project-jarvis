@@ -74,6 +74,7 @@ def main() -> int:
     upsert_env(env_list, "APP_IMAGE_DIGEST", image_digest)
 
     upsert_env(env_list, "JARVIS_S3_BUCKET", "jarvis-image-cdn")
+    upsert_env(env_list, "JARVIS_S3_REGION", "us-west-2")
     upsert_env(env_list, "IMAGE_CDN_DOMAIN", "img.projectjarvis.io")
 
     for var_name in PASSTHROUGH_ENV_VARS:

@@ -363,6 +363,40 @@ func (h *OptizmoHandlers) HandleCancelScrub(w http.ResponseWriter, r *http.Reque
 }
 
 // ---------------------------------------------------------------------------
+// HandleResetScrub — POST /offer-center/offers/{id}/optizmo/reset-scrub
+// Resets the offer back to not_scrubbed from ANY state (including scrubbed)
+// so the scrub can be re-run. Does NOT delete offer suppressions — those
+// remain in mailing_offer_suppressions until the next scrub overwrites them.
+// ---------------------------------------------------------------------------
+
+func (h *OptizmoHandlers) HandleResetScrub(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+
+	ctx := r.Context()
+
+	var exists bool
+	err := h.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM mailing_offers WHERE id = $1)`, offerID).Scan(&exists)
+	if err != nil || !exists {
+		respondError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET status = 'cancelled', completed_at = NOW()
+		 WHERE offer_id = $1 AND status IN ('pending', 'processing')`, offerID)
+	h.db.ExecContext(ctx,
+		`UPDATE mailing_offers SET optizmo_status = 'not_scrubbed', optizmo_last_scrubbed_at = NULL, updated_at = NOW()
+		 WHERE id = $1`, offerID)
+
+	log.Printf("[Optizmo] scrub reset for offer %s — status returned to not_scrubbed", offerID)
+	respondJSON(w, http.StatusOK, map[string]string{"status": "not_scrubbed"})
+}
+
+// ---------------------------------------------------------------------------
 // HandleImportScrubResult — POST /offer-center/offers/{id}/optizmo/import-result
 // ---------------------------------------------------------------------------
 

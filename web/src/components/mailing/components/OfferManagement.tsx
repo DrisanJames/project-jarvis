@@ -1686,6 +1686,7 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
   const { addToast } = useToast();
   const [requesting, setRequesting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState('');
 
@@ -1722,6 +1723,20 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
       addToast({ type: 'error', title: 'Failed to cancel scrub', message: 'Network error' });
     }
     setCancelling(false);
+  };
+
+  const resetScrub = async () => {
+    setResetting(true);
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/optizmo/reset-scrub`, {
+        method: 'POST', credentials: 'include',
+      });
+      if (res.ok) onRefresh();
+      else { addToast({ type: 'error', title: 'Failed to reset scrub' }); }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to reset scrub', message: 'Network error' });
+    }
+    setResetting(false);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1778,6 +1793,15 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
               disabled={cancelling}
             >
               {cancelling ? 'Cancelling…' : 'Cancel Scrub'}
+            </button>
+          )}
+          {scrubStatus === 'scrubbed' && (
+            <button
+              style={{ ...btnPrimary, background: '#6366f1', opacity: resetting ? 0.6 : 1 }}
+              onClick={resetScrub}
+              disabled={resetting}
+            >
+              {resetting ? 'Resetting…' : 'Reset Scrub'}
             </button>
           )}
           {canRequest && (

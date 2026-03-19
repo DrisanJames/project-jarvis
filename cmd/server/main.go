@@ -190,9 +190,12 @@ func main() {
 					imgBucket = cfg.Storage.S3Bucket
 				}
 				if imgBucket != "" {
-					imgRegion := cfg.Storage.AWSRegion
+					imgRegion := os.Getenv("JARVIS_S3_REGION")
 					if imgRegion == "" {
-						imgRegion = "us-east-1"
+						imgRegion = cfg.Storage.AWSRegion
+					}
+					if imgRegion == "" {
+						imgRegion = "us-west-2"
 					}
 					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(imgRegion))
 					if err != nil {
@@ -201,7 +204,7 @@ func main() {
 						imgS3Client := s3.NewFromConfig(awsCfg)
 						imgCDNDomain := os.Getenv("IMAGE_CDN_DOMAIN")
 						server.SetImageCDNConfig(imgS3Client, imgBucket, imgCDNDomain, imgRegion)
-						log.Printf("Image CDN initialized: bucket=%s, cdn=%s", imgBucket, imgCDNDomain)
+						log.Printf("Image CDN initialized: bucket=%s, region=%s, cdn=%s", imgBucket, imgRegion, imgCDNDomain)
 					}
 				}
 			}
@@ -1825,21 +1828,21 @@ BEGIN
     -- /28 warm IPs: reassign from warmup-pool to ISP sub-pools
     FOR rec IN
         SELECT * FROM (VALUES
-            ('15.204.22.177', 'mta-db-gm1.mail.em.discountblog.com', 'db-gmail-pool', '15.204.101.125'),
-            ('15.204.22.178', 'mta-db-yh1.mail.em.discountblog.com', 'db-yahoo-pool', '15.204.101.125'),
-            ('15.204.22.179', 'mta-qf-gm1.mail.em.quizfiesta.com', 'qf-gmail-pool', '15.204.101.125'),
-            ('15.204.22.180', 'mta-qf-yh1.mail.em.quizfiesta.com', 'qf-yahoo-pool', '15.204.101.125'),
-            ('15.204.22.181', 'mta-db-ms1.mail.em.discountblog.com', 'db-msft-pool', '15.204.101.125'),
-            ('15.204.22.182', 'mta-qf-ms1.mail.em.quizfiesta.com', 'qf-msft-pool', '15.204.101.125'),
-            ('15.204.22.183', 'mta-db-ap1.mail.em.discountblog.com', 'db-apple-pool', '15.204.101.125'),
-            ('15.204.22.184', 'mta-qf-ap1.mail.em.quizfiesta.com', 'qf-apple-pool', '15.204.101.125'),
-            ('15.204.22.185', 'mta-db-cc1.mail.em.discountblog.com', 'db-comcast-pool', '15.204.101.125'),
-            ('15.204.22.186', 'mta-qf-cc1.mail.em.quizfiesta.com', 'qf-comcast-pool', '15.204.101.125'),
-            ('15.204.22.187', 'mta-db-at1.mail.em.discountblog.com', 'db-att-pool', '15.204.101.125'),
-            ('15.204.22.188', 'mta-qf-at1.mail.em.quizfiesta.com', 'qf-att-pool', '15.204.101.125'),
-            ('15.204.22.189', 'mta-db-cx1.mail.em.discountblog.com', 'db-cox-pool', '15.204.101.125'),
-            ('15.204.22.190', 'mta-qf-ch1.mail.em.quizfiesta.com', 'qf-charter-pool', '15.204.101.125'),
-            ('15.204.22.191', 'mta-db-gn1.mail.em.discountblog.com', 'db-general-pool', '15.204.101.125')
+            ('15.204.22.177', 'mta-a-shrd1.mail.em.discountblog.com', 'db-gmail-pool', '15.204.101.125'),
+            ('15.204.22.178', 'mta-a-shrd2.mail.em.discountblog.com', 'db-yahoo-pool', '15.204.101.125'),
+            ('15.204.22.179', 'mta-a-shrd3.mail.em.discountblog.com', 'qf-gmail-pool', '15.204.101.125'),
+            ('15.204.22.180', 'mta-a-shrd4.mail.em.discountblog.com', 'qf-yahoo-pool', '15.204.101.125'),
+            ('15.204.22.181', 'mta-a-shrd5.mail.em.discountblog.com', 'db-msft-pool', '15.204.101.125'),
+            ('15.204.22.182', 'mta-a-shrd6.mail.em.discountblog.com', 'qf-msft-pool', '15.204.101.125'),
+            ('15.204.22.183', 'mta-a-shrd7.mail.em.discountblog.com', 'db-apple-pool', '15.204.101.125'),
+            ('15.204.22.184', 'mta-a-shrd8.mail.em.discountblog.com', 'qf-apple-pool', '15.204.101.125'),
+            ('15.204.22.185', 'mta-a-shrd9.mail.em.quizfiesta.com', 'db-comcast-pool', '15.204.101.125'),
+            ('15.204.22.186', 'mta-a-shrd10.mail.em.quizfiesta.com', 'qf-comcast-pool', '15.204.101.125'),
+            ('15.204.22.187', 'mta-a-shrd11.mail.em.quizfiesta.com', 'db-att-pool', '15.204.101.125'),
+            ('15.204.22.188', 'mta-a-shrd12.mail.em.quizfiesta.com', 'qf-att-pool', '15.204.101.125'),
+            ('15.204.22.189', 'mta-a-shrd13.mail.em.quizfiesta.com', 'db-cox-pool', '15.204.101.125'),
+            ('15.204.22.190', 'mta-a-shrd14.mail.em.quizfiesta.com', 'qf-charter-pool', '15.204.101.125'),
+            ('15.204.22.191', 'mta-a-shrd15.mail.em.quizfiesta.com', 'db-general-pool', '15.204.101.125')
         ) AS t(ip_addr, hostname, pool_name, server_host)
     LOOP
         SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
@@ -2107,14 +2110,14 @@ BEGIN
     IF pool_id_val IS NULL THEN RAISE NOTICE 'shared-a pool not found'; RETURN; END IF;
     FOR rec IN
         SELECT * FROM (VALUES
-            ('15.204.22.177','mta-a-shrd1.mail.shared-a'),('15.204.22.178','mta-a-shrd2.mail.shared-a'),
-            ('15.204.22.179','mta-a-shrd3.mail.shared-a'),('15.204.22.180','mta-a-shrd4.mail.shared-a'),
-            ('15.204.22.181','mta-a-shrd5.mail.shared-a'),('15.204.22.182','mta-a-shrd6.mail.shared-a'),
-            ('15.204.22.183','mta-a-shrd7.mail.shared-a'),('15.204.22.184','mta-a-shrd8.mail.shared-a'),
-            ('15.204.22.185','mta-a-shrd9.mail.shared-a'),('15.204.22.186','mta-a-shrd10.mail.shared-a'),
-            ('15.204.22.187','mta-a-shrd11.mail.shared-a'),('15.204.22.188','mta-a-shrd12.mail.shared-a'),
-            ('15.204.22.189','mta-a-shrd13.mail.shared-a'),('15.204.22.190','mta-a-shrd14.mail.shared-a'),
-            ('15.204.22.191','mta-a-shrd15.mail.shared-a')
+            ('15.204.22.177','mta-a-shrd1.mail.em.discountblog.com'),('15.204.22.178','mta-a-shrd2.mail.em.discountblog.com'),
+            ('15.204.22.179','mta-a-shrd3.mail.em.discountblog.com'),('15.204.22.180','mta-a-shrd4.mail.em.discountblog.com'),
+            ('15.204.22.181','mta-a-shrd5.mail.em.discountblog.com'),('15.204.22.182','mta-a-shrd6.mail.em.discountblog.com'),
+            ('15.204.22.183','mta-a-shrd7.mail.em.discountblog.com'),('15.204.22.184','mta-a-shrd8.mail.em.discountblog.com'),
+            ('15.204.22.185','mta-a-shrd9.mail.em.quizfiesta.com'),('15.204.22.186','mta-a-shrd10.mail.em.quizfiesta.com'),
+            ('15.204.22.187','mta-a-shrd11.mail.em.quizfiesta.com'),('15.204.22.188','mta-a-shrd12.mail.em.quizfiesta.com'),
+            ('15.204.22.189','mta-a-shrd13.mail.em.quizfiesta.com'),('15.204.22.190','mta-a-shrd14.mail.em.quizfiesta.com'),
+            ('15.204.22.191','mta-a-shrd15.mail.em.quizfiesta.com')
         ) AS t(ip_addr, new_hostname)
     LOOP
         UPDATE mailing_ip_addresses SET pool_id = pool_id_val, hostname = rec.new_hostname, updated_at = NOW()
@@ -2444,21 +2447,21 @@ BEGIN
 
     FOR rec IN
         SELECT * FROM (VALUES
-            ('15.204.22.177', 'mta-a-shrd1.mail.shared-a'),
-            ('15.204.22.178', 'mta-a-shrd2.mail.shared-a'),
-            ('15.204.22.179', 'mta-a-shrd3.mail.shared-a'),
-            ('15.204.22.180', 'mta-a-shrd4.mail.shared-a'),
-            ('15.204.22.181', 'mta-a-shrd5.mail.shared-a'),
-            ('15.204.22.182', 'mta-a-shrd6.mail.shared-a'),
-            ('15.204.22.183', 'mta-a-shrd7.mail.shared-a'),
-            ('15.204.22.184', 'mta-a-shrd8.mail.shared-a'),
-            ('15.204.22.185', 'mta-a-shrd9.mail.shared-a'),
-            ('15.204.22.186', 'mta-a-shrd10.mail.shared-a'),
-            ('15.204.22.187', 'mta-a-shrd11.mail.shared-a'),
-            ('15.204.22.188', 'mta-a-shrd12.mail.shared-a'),
-            ('15.204.22.189', 'mta-a-shrd13.mail.shared-a'),
-            ('15.204.22.190', 'mta-a-shrd14.mail.shared-a'),
-            ('15.204.22.191', 'mta-a-shrd15.mail.shared-a')
+            ('15.204.22.177', 'mta-a-shrd1.mail.em.discountblog.com'),
+            ('15.204.22.178', 'mta-a-shrd2.mail.em.discountblog.com'),
+            ('15.204.22.179', 'mta-a-shrd3.mail.em.discountblog.com'),
+            ('15.204.22.180', 'mta-a-shrd4.mail.em.discountblog.com'),
+            ('15.204.22.181', 'mta-a-shrd5.mail.em.discountblog.com'),
+            ('15.204.22.182', 'mta-a-shrd6.mail.em.discountblog.com'),
+            ('15.204.22.183', 'mta-a-shrd7.mail.em.discountblog.com'),
+            ('15.204.22.184', 'mta-a-shrd8.mail.em.discountblog.com'),
+            ('15.204.22.185', 'mta-a-shrd9.mail.em.quizfiesta.com'),
+            ('15.204.22.186', 'mta-a-shrd10.mail.em.quizfiesta.com'),
+            ('15.204.22.187', 'mta-a-shrd11.mail.em.quizfiesta.com'),
+            ('15.204.22.188', 'mta-a-shrd12.mail.em.quizfiesta.com'),
+            ('15.204.22.189', 'mta-a-shrd13.mail.em.quizfiesta.com'),
+            ('15.204.22.190', 'mta-a-shrd14.mail.em.quizfiesta.com'),
+            ('15.204.22.191', 'mta-a-shrd15.mail.em.quizfiesta.com')
         ) AS t(ip_addr, new_hostname)
     LOOP
         UPDATE mailing_ip_addresses

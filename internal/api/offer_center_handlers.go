@@ -124,6 +124,7 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
 	r.Post("/offer-center/offers/{id}/optizmo/request-scrub", optizmo.HandleRequestScrub)
 	r.Post("/offer-center/offers/{id}/optizmo/import-result", optizmo.HandleImportScrubResult)
 	r.Post("/offer-center/offers/{id}/optizmo/cancel-scrub", optizmo.HandleCancelScrub)
+	r.Post("/offer-center/offers/{id}/optizmo/reset-scrub", optizmo.HandleResetScrub)
 	r.Get("/offer-center/offers/{id}/optizmo/status", optizmo.HandleGetScrubStatus)
 
 	// Per-offer performance
