@@ -1807,6 +1807,8 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"idx_optizmo_scrub_jobs_offer", `CREATE INDEX IF NOT EXISTS idx_optizmo_scrub_jobs_offer ON mailing_optizmo_scrub_jobs(offer_id)`},
 		{"add_scrub_jobs_file_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS file_count INT DEFAULT 0`},
+		{"add_scrub_jobs_valid_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS valid_md5_count INT DEFAULT 0`},
+		{"add_scrub_jobs_non_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS non_md5_count INT DEFAULT 0`},
 
 		{"add_campaign_queue_offer_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS offer_id UUID`},
 		{"add_campaign_queue_creative_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS creative_id UUID`},

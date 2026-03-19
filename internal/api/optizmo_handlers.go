@@ -35,6 +35,8 @@ type optizmoMatch struct {
 type ScrubJobResponse struct {
 	ID              string     `json:"id"`
 	FileCount       int        `json:"file_count"`
+	ValidMD5Count   int        `json:"valid_md5_count"`
+	NonMD5Count     int        `json:"non_md5_count"`
 	AudienceCount   int        `json:"audience_count"`
 	SuppressedCount int        `json:"suppressed_count"`
 	Status          string     `json:"status"`
@@ -173,6 +175,7 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 
 	suppressedHashes := make(map[string]bool)
 	var fileLineCount, validMD5Count, nonMD5Count int
+	var sampleEntries []string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -186,6 +189,13 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		} else {
 			nonMD5Count++
 		}
+		if len(sampleEntries) < 5 {
+			preview := lower
+			if len(preview) > 8 {
+				preview = preview[:8] + "..."
+			}
+			sampleEntries = append(sampleEntries, preview)
+		}
 		suppressedHashes[lower] = true
 	}
 	if err := scanner.Err(); err != nil {
@@ -195,14 +205,15 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 
 	log.Printf("[Optizmo] job %s: downloaded %d entries (%d valid MD5, %d non-MD5)",
 		jobID, fileLineCount, validMD5Count, nonMD5Count)
+	log.Printf("[Optizmo] job %s: file sample entries: %s", jobID, strings.Join(sampleEntries, ", "))
 	if nonMD5Count > 0 {
 		log.Printf("[Optizmo] WARNING job %s: %d entries are NOT valid MD5 hashes — matching may fail for those entries. Ensure Optizmo download format is set to MD5.",
 			jobID, nonMD5Count)
 	}
 
 	h.db.ExecContext(ctx,
-		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1 WHERE id = $2`,
-		fileLineCount, jobID)
+		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
+		fileLineCount, validMD5Count, nonMD5Count, jobID)
 
 	if len(suppressedHashes) == 0 {
 		h.db.ExecContext(ctx,
@@ -227,6 +238,7 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 
 	var matches []optizmoMatch
 	var audienceCount int
+	var sampleSubHashes []string
 
 	for subRows.Next() {
 		var subID, email string
@@ -235,9 +247,15 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		}
 		audienceCount++
 		emailHash := md5Hash(email)
+		if len(sampleSubHashes) < 5 {
+			sampleSubHashes = append(sampleSubHashes, emailHash[:8]+"...")
+		}
 		if suppressedHashes[emailHash] {
 			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: emailHash})
 		}
+	}
+	if len(sampleSubHashes) > 0 {
+		log.Printf("[Optizmo] job %s: subscriber hash samples: %s", jobID, strings.Join(sampleSubHashes, ", "))
 	}
 
 	h.db.ExecContext(ctx,
@@ -425,14 +443,29 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 	defer file.Close()
 
 	suppressedHashes := make(map[string]bool)
-	var fileLineCount int
+	var fileLineCount, validMD5Count, nonMD5Count int
+	var sampleEntries []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			fileLineCount++
-			suppressedHashes[strings.ToLower(line)] = true
+		if line == "" {
+			continue
 		}
+		lower := strings.ToLower(line)
+		fileLineCount++
+		if isHexMD5(lower) {
+			validMD5Count++
+		} else {
+			nonMD5Count++
+		}
+		if len(sampleEntries) < 5 {
+			preview := lower
+			if len(preview) > 8 {
+				preview = preview[:8] + "..."
+			}
+			sampleEntries = append(sampleEntries, preview)
+		}
+		suppressedHashes[lower] = true
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Optizmo] error reading suppression file: %v", err)
@@ -445,8 +478,13 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		return
 	}
 
-	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique)",
-		offerID, fileLineCount, len(suppressedHashes))
+	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique, %d valid MD5, %d non-MD5)",
+		offerID, fileLineCount, len(suppressedHashes), validMD5Count, nonMD5Count)
+	log.Printf("[Optizmo] import file sample entries: %s", strings.Join(sampleEntries, ", "))
+	if nonMD5Count > 0 {
+		log.Printf("[Optizmo] WARNING import for offer %s: %d entries are NOT valid MD5 hashes — matching will fail for those. Ensure file contains MD5 hashes only.",
+			offerID, nonMD5Count)
+	}
 
 	subRows, err := h.db.QueryContext(ctx,
 		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
@@ -460,6 +498,7 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 
 	var matches []optizmoMatch
 	var audienceCount int
+	var sampleSubHashes []string
 
 	for subRows.Next() {
 		var subID, email string
@@ -468,12 +507,18 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		}
 		audienceCount++
 		hash := md5Hash(email)
+		if len(sampleSubHashes) < 5 {
+			sampleSubHashes = append(sampleSubHashes, hash[:8]+"...")
+		}
 		if suppressedHashes[hash] {
 			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: hash})
 		}
 	}
 	if err := subRows.Err(); err != nil {
 		log.Printf("[Optizmo] row iteration error during matching: %v", err)
+	}
+	if len(sampleSubHashes) > 0 {
+		log.Printf("[Optizmo] import subscriber hash samples: %s", strings.Join(sampleSubHashes, ", "))
 	}
 
 	suppressedCount := 0
@@ -503,9 +548,10 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 	if err == nil && jobID != "" {
 		_, err = h.db.ExecContext(ctx,
 			`UPDATE mailing_optizmo_scrub_jobs
-			 SET status = 'completed', file_count = $1, audience_count = $2, suppressed_count = $3, completed_at = $4
-			 WHERE id = $5`,
-			fileLineCount, audienceCount, suppressedCount, now, jobID)
+			 SET status = 'completed', file_count = $1, audience_count = $2, suppressed_count = $3,
+			     valid_md5_count = $4, non_md5_count = $5, completed_at = $6
+			 WHERE id = $7`,
+			fileLineCount, audienceCount, suppressedCount, validMD5Count, nonMD5Count, now, jobID)
 		if err != nil {
 			log.Printf("[Optizmo] error updating scrub job %s: %v", jobID, err)
 		}
@@ -594,7 +640,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 	}
 
 	rows, err := h.db.QueryContext(ctx,
-		`SELECT id, COALESCE(file_count,0), audience_count, suppressed_count, status,
+		`SELECT id, COALESCE(file_count,0), COALESCE(valid_md5_count,0), COALESCE(non_md5_count,0),
+		        audience_count, suppressed_count, status,
 		        COALESCE(error_message,''), requested_at, started_at, completed_at
 		 FROM mailing_optizmo_scrub_jobs
 		 WHERE offer_id = $1
@@ -611,7 +658,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		var j ScrubJobResponse
 		var startedAt, completedAt sql.NullTime
-		if err := rows.Scan(&j.ID, &j.FileCount, &j.AudienceCount, &j.SuppressedCount, &j.Status,
+		if err := rows.Scan(&j.ID, &j.FileCount, &j.ValidMD5Count, &j.NonMD5Count,
+			&j.AudienceCount, &j.SuppressedCount, &j.Status,
 			&j.ErrorMessage, &j.RequestedAt, &startedAt, &completedAt); err != nil {
 			log.Printf("[Optizmo] error scanning scrub job row: %v", err)
 			continue

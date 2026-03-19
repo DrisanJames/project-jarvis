@@ -138,6 +138,8 @@ interface OptizmoJob {
   requested_at: string;
   completed_at: string | null;
   file_count: number;
+  valid_md5_count: number;
+  non_md5_count: number;
   audience_count: number;
   suppressed_count: number;
 }
@@ -1864,23 +1866,32 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                 <th>Requested</th>
                 <th>Completed</th>
                 <th>File Entries</th>
+                <th>Valid MD5</th>
                 <th>Audience Scanned</th>
                 <th>Suppressed</th>
                 <th>Error</th>
               </tr>
             </thead>
             <tbody>
-              {optizmoStatus.jobs.map(j => (
-                <tr key={j.id}>
-                  <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
-                  <td>{new Date(j.requested_at).toLocaleDateString()}</td>
-                  <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
-                  <td>{(j.file_count ?? 0).toLocaleString()}</td>
-                  <td>{(j.audience_count ?? 0).toLocaleString()}</td>
-                  <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
-                  <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
-                </tr>
-              ))}
+              {optizmoStatus.jobs.map(j => {
+                const validMD5 = j.valid_md5_count ?? 0;
+                const nonMD5 = j.non_md5_count ?? 0;
+                const hasInvalid = nonMD5 > 0;
+                return (
+                  <tr key={j.id}>
+                    <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
+                    <td>{new Date(j.requested_at).toLocaleDateString()}</td>
+                    <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
+                    <td>{(j.file_count ?? 0).toLocaleString()}</td>
+                    <td style={{ color: hasInvalid ? '#ef4444' : '#22c55e', fontWeight: hasInvalid ? 600 : 400 }}>
+                      {validMD5.toLocaleString()}{hasInvalid && <span style={{ color: '#ef4444' }}> / {nonMD5.toLocaleString()} invalid</span>}
+                    </td>
+                    <td>{(j.audience_count ?? 0).toLocaleString()}</td>
+                    <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                    <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
