@@ -2135,20 +2135,52 @@ END $$`},
 
 		// Seed image domains for each sending domain (idempotent via ON CONFLICT)
 		{"seed_img_domain_projectjarvis", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
-			VALUES ('d0000000-0000-0000-0001-000000000001', '00000000-0000-0000-0000-000000000001', 'img.projectjarvis.io', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			VALUES ('d0000000-0000-0000-0001-000000000001', '00000000-0000-0000-0000-000000000001', 'img.projectjarvis.io', true, 'issued', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
 		{"seed_img_domain_quizfiesta", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
-			VALUES ('d0000000-0000-0000-0001-000000000002', '00000000-0000-0000-0000-000000000001', 'img.quizfiesta.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			VALUES ('d0000000-0000-0000-0001-000000000002', '00000000-0000-0000-0000-000000000001', 'img.quizfiesta.com', true, 'issued', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
 		{"seed_img_domain_discountblog", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
-			VALUES ('d0000000-0000-0000-0001-000000000003', '00000000-0000-0000-0000-000000000001', 'img.discountblog.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			VALUES ('d0000000-0000-0000-0001-000000000003', '00000000-0000-0000-0000-000000000001', 'img.discountblog.com', true, 'issued', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
 		{"seed_img_domain_historythinking", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
-			VALUES ('d0000000-0000-0000-0001-000000000004', '00000000-0000-0000-0000-000000000001', 'img.historythinking.com', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			VALUES ('d0000000-0000-0000-0001-000000000004', '00000000-0000-0000-0000-000000000001', 'img.historythinking.com', true, 'issued', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
 		{"seed_img_domain_myownhealth", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
-			VALUES ('d0000000-0000-0000-0001-000000000005', '00000000-0000-0000-0000-000000000001', 'img.myownhealth.net', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
+			VALUES ('d0000000-0000-0000-0001-000000000005', '00000000-0000-0000-0000-000000000001', 'img.myownhealth.net', true, 'issued', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
+
+		// Mark all image domains as verified with CloudFront details (deployed 2026-03-19)
+		{"verify_img_projectjarvis", `UPDATE mailing_image_domains
+			SET verified = true, ssl_status = 'issued',
+			    cloudfront_distribution_id = 'E1Q4ZUVTMC8135', cloudfront_domain = 'd3j30mnhwt8cov.cloudfront.net',
+			    acm_cert_arn = 'arn:aws:acm:us-east-1:146361001621:certificate/14f19cd1-9f0b-40ee-be9e-185b329ecd79',
+			    last_verified_at = NOW(), updated_at = NOW()
+			WHERE domain = 'img.projectjarvis.io' AND verified = false`},
+		{"verify_img_discountblog", `UPDATE mailing_image_domains
+			SET verified = true, ssl_status = 'issued',
+			    cloudfront_distribution_id = 'EIRUDR4162AFE', cloudfront_domain = 'd1gsmudv691ro6.cloudfront.net',
+			    acm_cert_arn = 'arn:aws:acm:us-east-1:146361001621:certificate/4a690e09-e3d5-4e62-a677-72e0bab3062d',
+			    last_verified_at = NOW(), updated_at = NOW()
+			WHERE domain = 'img.discountblog.com' AND verified = false`},
+		{"verify_img_quizfiesta", `UPDATE mailing_image_domains
+			SET verified = true, ssl_status = 'issued',
+			    cloudfront_distribution_id = 'EX9UHM32M77QA', cloudfront_domain = 'd253b1ujl076fp.cloudfront.net',
+			    acm_cert_arn = 'arn:aws:acm:us-east-1:146361001621:certificate/1212bd64-5673-4395-bb55-fad8b6486f36',
+			    last_verified_at = NOW(), updated_at = NOW()
+			WHERE domain = 'img.quizfiesta.com' AND verified = false`},
+		{"verify_img_historythinking", `UPDATE mailing_image_domains
+			SET verified = true, ssl_status = 'issued',
+			    cloudfront_distribution_id = 'E1MIZEFJJJYE48', cloudfront_domain = 'd31ok8yi8usnbc.cloudfront.net',
+			    acm_cert_arn = 'arn:aws:acm:us-east-1:146361001621:certificate/e327f18d-0960-4e25-81f6-c7bbdba53ed5',
+			    last_verified_at = NOW(), updated_at = NOW()
+			WHERE domain = 'img.historythinking.com' AND verified = false`},
+		{"verify_img_myownhealth", `UPDATE mailing_image_domains
+			SET verified = true, ssl_status = 'issued',
+			    cloudfront_distribution_id = 'E2JKJ1EU6CA650', cloudfront_domain = 'd6x9gyfp63ht8.cloudfront.net',
+			    acm_cert_arn = 'arn:aws:acm:us-east-1:146361001621:certificate/11a43487-2731-40fc-91f7-ce6e159b18de',
+			    last_verified_at = NOW(), updated_at = NOW()
+			WHERE domain = 'img.myownhealth.net' AND verified = false`},
 
 		// =====================================================================
 		// Phase 7: Shared OVH pools (must run AFTER Phase 6 IP seeding)
