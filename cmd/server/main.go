@@ -2465,6 +2465,12 @@ END $$`},
 				'em.myownhealth.net', '15.204.107.107', 587, 'http://15.204.107.107:19099', 'trk.em.myownhealth.net',
 				3200, 25000, 'shared-b', '', 'active', false, NOW(), NOW()
 			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test MH Shared')`},
+
+		// 7.6: Route existing primary profiles through shared pools (OVH IPs with valid PTR)
+		{"phase7_route_db_to_shared_a", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%'`},
+		{"phase7_route_qf_to_shared_a", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%'`},
+		{"phase7_route_ht_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%'`},
+		{"phase7_route_mh_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%'`},
 	}
 
 	var ok, fail int
