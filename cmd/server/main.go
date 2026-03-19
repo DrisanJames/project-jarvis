@@ -2220,11 +2220,7 @@ BEGIN
     END LOOP;
 END $$`},
 
-		// 7.4: Route primary profiles to shared pools
-		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
-		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
-		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
-		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
+		// 7.4: (superseded by phase 8 below — kept as no-ops for history)
 
 		// 7.5: Force-correct shared-a pool assignment (plain SQL, no PL/pgSQL)
 		{"phase7_force_shared_a", `UPDATE mailing_ip_addresses
@@ -2245,6 +2241,16 @@ WHERE ip_address IN ('15.204.38.160'::inet,'15.204.38.161'::inet,'15.204.38.162'
     '15.204.38.168'::inet,'15.204.38.169'::inet,'15.204.38.170'::inet,'15.204.38.171'::inet,
     '15.204.38.172'::inet,'15.204.38.173'::inet,'15.204.38.174'::inet,'15.204.38.175'::inet)
 AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'shared-b' AND organization_id = '00000000-0000-0000-0000-000000000001'))`},
+
+		// =====================================================================
+		// Phase 8: Switch to ISP-dedicated pools (IPXO IPs)
+		// Runs in startup migrations (guaranteed to execute on every boot).
+		// =====================================================================
+		{"phase8_startup_route_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_startup_route_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_startup_route_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_startup_route_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_startup_ipxo_warmup", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
 	}
 
 	var ok, fail int
@@ -2662,11 +2668,7 @@ END $$`},
 				3200, 25000, 'shared-b', '', 'active', false, NOW(), NOW()
 			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE name = 'Test MH Shared')`},
 
-		// 7.6: Route existing primary profiles through shared pools (OVH IPs with valid PTR)
-		{"phase7_route_db_to_shared_a", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%'`},
-		{"phase7_route_qf_to_shared_a", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%'`},
-		{"phase7_route_ht_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%'`},
-		{"phase7_route_mh_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%'`},
+		// 7.6: (superseded by phase 8 in runStartupMigrations — kept as no-ops)
 
 		// =====================================================================
 		// Phase 8: Switch to ISP-dedicated pools (IPXO IPs)
