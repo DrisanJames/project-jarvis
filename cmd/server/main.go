@@ -1088,8 +1088,9 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_tracking_is_unique_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`},
 		// Drop restrictive event_type constraint so hard_bounce, soft_bounce, delivered etc. can be stored
 		{"drop_tracking_evt_chk", `ALTER TABLE mailing_tracking_events DROP CONSTRAINT IF EXISTS mailing_tracking_events_event_type_check`},
-		// Ensure inbox profiles has email column
+		// Ensure inbox profiles has email and last_bounce_at columns
 		{"add_inbox_email_col", `ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS email TEXT`},
+		{"add_inbox_last_bounce_col", `ALTER TABLE mailing_inbox_profiles ADD COLUMN IF NOT EXISTS last_bounce_at TIMESTAMPTZ`},
 		{"drop_status_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},

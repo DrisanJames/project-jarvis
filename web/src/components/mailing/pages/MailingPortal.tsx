@@ -349,8 +349,12 @@ const EnhancedDashboard: React.FC = () => {
           </div>
           <div className="system-stats">
             <div className="stat">
-              <span className="stat-value">{dashboard?.inbox_profiles || 0}</span>
-              <span className="stat-label">Profiles Built</span>
+              <span className="stat-value">{(dashboard?.inbox_profiles_today || 0).toLocaleString()}</span>
+              <span className="stat-label">Built Today</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.inbox_profiles || 0).toLocaleString()}</span>
+              <span className="stat-label">Total Profiles</span>
             </div>
           </div>
         </div>
@@ -362,17 +366,19 @@ const EnhancedDashboard: React.FC = () => {
             <span className="status-badge active">Protected</span>
           </div>
           <div className="system-description">
-            <p><strong>Automatic suppression</strong> prevents sending to risky addresses.</p>
-            <ul>
-              <li>Hard bounces auto-blocked</li>
-              <li>Spam complaints auto-blocked</li>
-              <li>Manual suppression lists</li>
-            </ul>
+            <p><strong>Global suppression</strong> prevents sending to risky addresses.</p>
+            <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: '4px 0 0' }}>
+              {(dashboard?.global_suppressions_total || 0).toLocaleString()} total blocked addresses
+            </p>
           </div>
           <div className="system-stats">
             <div className="stat">
-              <span className="stat-value">{dashboard?.total_suppressions || 0}</span>
-              <span className="stat-label">Blocked Addresses</span>
+              <span className="stat-value">{(dashboard?.suppressions_today || 0).toLocaleString()}</span>
+              <span className="stat-label">Added Today</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value" style={{ fontSize: '1.2rem', opacity: 0.7 }}>{(dashboard?.suppressions_yesterday || 0).toLocaleString()}</span>
+              <span className="stat-label">Added Yesterday</span>
             </div>
           </div>
         </div>
@@ -402,7 +408,7 @@ const EnhancedDashboard: React.FC = () => {
 
       {/* Performance Metrics */}
       <div className="metrics-section">
-        <h3><FontAwesomeIcon icon={faChartLine} /> Real-Time Performance</h3>
+        <h3><FontAwesomeIcon icon={faChartLine} /> Today's Performance</h3>
         <div className="metrics-grid">
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
@@ -435,7 +441,7 @@ const EnhancedDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Quick Actions */}
+      {/* Quick Actions - disabled
       <div className="quick-actions">
         <h3><FontAwesomeIcon icon={faBolt} /> Quick Actions</h3>
         <div className="actions-grid">
@@ -469,6 +475,7 @@ const EnhancedDashboard: React.FC = () => {
           </button>
         </div>
       </div>
+      */}
 
       {/* Recent Activity */}
       <div className="recent-activity">

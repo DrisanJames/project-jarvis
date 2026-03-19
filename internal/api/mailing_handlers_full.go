@@ -261,11 +261,12 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	`).Scan(&totalSubs, &totalLists)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
 
-	// Use ComputeMetrics for consistent performance stats (last 30 days by default)
-	perfStart := time.Now().AddDate(0, 0, -30)
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
 	perfMetrics, _ := ComputeMetrics(ctx, svc.db, MetricsFilter{
-		StartDate: perfStart,
-		EndDate:   time.Now(),
+		StartDate: todayStart,
+		EndDate:   now,
 	})
 	totalSent := perfMetrics.Sent
 	totalOpens := perfMetrics.Opens
@@ -276,7 +277,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		SELECT COALESCE(SUM(revenue),0)
 		FROM mailing_campaigns
 		WHERE COALESCE(started_at, created_at) >= $1
-	`, perfStart).Scan(&totalRevenue)
+	`, todayStart).Scan(&totalRevenue)
 
 	var suppressed int
 	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressed); err != nil {
@@ -284,10 +285,20 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	}
 	dashboard["total_suppressions"] = suppressed
 
-	// Count inbox profiles
-	var inboxProfiles int
+	var globalSuppTotal, suppressionsToday, suppressionsYesterday int
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions").Scan(&globalSuppTotal)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions WHERE created_at >= CURRENT_DATE").Scan(&suppressionsToday)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' AND created_at < CURRENT_DATE").Scan(&suppressionsYesterday)
+	dashboard["global_suppressions_total"] = globalSuppTotal
+	dashboard["suppressions_today"] = suppressionsToday
+	dashboard["suppressions_yesterday"] = suppressionsYesterday
+
+	// Count inbox profiles — total + built today (calendar day, not rolling 24h)
+	var inboxProfiles, inboxProfilesToday int
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles").Scan(&inboxProfiles)
+	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE first_seen_at >= CURRENT_DATE").Scan(&inboxProfilesToday)
 	dashboard["inbox_profiles"] = inboxProfiles
+	dashboard["inbox_profiles_today"] = inboxProfilesToday
 
 	// Count active automations
 	var activeAutomations int
@@ -296,14 +307,13 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	}
 	dashboard["active_automations"] = activeAutomations
 
-	// Calculate actual daily sends (emails sent today)
 	var dailySentToday int64
 	svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(sent_count), 0) 
 		FROM mailing_campaigns 
-		WHERE (started_at >= CURRENT_DATE OR (started_at IS NULL AND created_at >= CURRENT_DATE))
+		WHERE (started_at >= $1 OR (started_at IS NULL AND created_at >= $1))
 		  AND status IN ('sending', 'completed', 'sent', 'paused')
-	`).Scan(&dailySentToday)
+	`, todayStart).Scan(&dailySentToday)
 
 	// Get daily capacity from sending profiles (sum of all active profile daily limits)
 	var dailyCapacity int64

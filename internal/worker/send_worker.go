@@ -1134,18 +1134,34 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		FROM mailing_campaigns camp WHERE camp.id = $2
 	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
 
-	// Extract sending domain from the from_email address
+	// Extract sending and recipient domains
 	sendingDomain := ""
 	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
 		sendingDomain = strings.ToLower(item.FromEmail[atIdx+1:])
 	}
+	recipientDomain := ""
+	if atIdx := strings.LastIndex(item.Email, "@"); atIdx >= 0 {
+		recipientDomain = strings.ToLower(item.Email[atIdx+1:])
+	}
 
 	if _, trackErr := p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain)
-		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4
 		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, sendingDomain); trackErr != nil {
+	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
+	}
+
+	// Upsert inbox profile for this recipient
+	if recipientDomain != "" {
+		eHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(item.Email))))
+		p.db.ExecContext(ctx, `
+			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_sends, last_send_at, first_seen_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), NOW())
+			ON CONFLICT (email_hash) DO UPDATE SET
+				total_sends = COALESCE(mailing_inbox_profiles.total_sends, 0) + 1,
+				last_send_at = NOW(), updated_at = NOW()
+		`, eHash, strings.ToLower(item.Email), recipientDomain)
 	}
 
 	return nil
@@ -1196,10 +1212,10 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 
 	_, dbErr := p.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain)
-		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7)
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, recipient_domain)
+		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7, $8)
 	`, uuid.New(), p.orgID, item.CampaignID, item.SubscriberID,
-		bounceType, errMsg, sendingDomain)
+		bounceType, errMsg, sendingDomain, recipientDomain)
 	if dbErr != nil {
 		log.Printf("[SendWorkerPool] bounce tracking insert error: %v", dbErr)
 	}
@@ -1220,6 +1236,18 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 			log.Printf("[SendWorkerPool] global suppress error for %s: %v",
 				logger.RedactEmail(item.Email), suppressErr)
 		}
+	}
+
+	// Upsert inbox profile for bounced recipient
+	if recipientDomain != "" {
+		eHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(item.Email))))
+		p.db.ExecContext(ctx, `
+			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_bounces, last_bounce_at, first_seen_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), NOW())
+			ON CONFLICT (email_hash) DO UPDATE SET
+				total_bounces = COALESCE(mailing_inbox_profiles.total_bounces, 0) + 1,
+				last_bounce_at = NOW(), updated_at = NOW()
+		`, eHash, strings.ToLower(item.Email), recipientDomain)
 	}
 }
 
