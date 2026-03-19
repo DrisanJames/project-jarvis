@@ -174,8 +174,9 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 	}
 
 	suppressedHashes := make(map[string]bool)
+	plaintextEmails := make(map[string]bool)
 	var fileLineCount, validMD5Count, nonMD5Count int
-	var sampleEntries []string
+	var rawSamples []string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -189,14 +190,12 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 			suppressedHashes[lower] = true
 		} else {
 			nonMD5Count++
-			suppressedHashes[md5Hash(lower)] = true
+			cleaned := extractEmail(lower)
+			suppressedHashes[md5Hash(cleaned)] = true
+			plaintextEmails[cleaned] = true
 		}
-		if len(sampleEntries) < 5 {
-			preview := lower
-			if len(preview) > 8 {
-				preview = preview[:8] + "..."
-			}
-			sampleEntries = append(sampleEntries, preview)
+		if len(rawSamples) < 3 {
+			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -206,9 +205,9 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 
 	log.Printf("[Optizmo] job %s: downloaded %d entries (%d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
 		jobID, fileLineCount, validMD5Count, nonMD5Count)
-	log.Printf("[Optizmo] job %s: file sample entries: %s", jobID, strings.Join(sampleEntries, ", "))
+	log.Printf("[Optizmo] job %s: RAW first entries: %s", jobID, strings.Join(rawSamples, " | "))
 	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] job %s: %d plaintext entries auto-converted to MD5 for matching",
+		log.Printf("[Optizmo] job %s: %d plaintext entries auto-converted to MD5 for matching (also stored as plaintext for direct comparison)",
 			jobID, nonMD5Count)
 	}
 
@@ -251,7 +250,7 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		if len(sampleSubHashes) < 5 {
 			sampleSubHashes = append(sampleSubHashes, emailHash[:8]+"...")
 		}
-		if suppressedHashes[emailHash] {
+		if suppressedHashes[emailHash] || plaintextEmails[email] {
 			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: emailHash})
 		}
 	}
@@ -444,8 +443,9 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 	defer file.Close()
 
 	suppressedHashes := make(map[string]bool)
+	plaintextEmails := make(map[string]bool)
 	var fileLineCount, validMD5Count, nonMD5Count int
-	var sampleEntries []string
+	var rawSamples []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -459,14 +459,12 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 			suppressedHashes[lower] = true
 		} else {
 			nonMD5Count++
-			suppressedHashes[md5Hash(lower)] = true
+			cleaned := extractEmail(lower)
+			suppressedHashes[md5Hash(cleaned)] = true
+			plaintextEmails[cleaned] = true
 		}
-		if len(sampleEntries) < 5 {
-			preview := lower
-			if len(preview) > 8 {
-				preview = preview[:8] + "..."
-			}
-			sampleEntries = append(sampleEntries, preview)
+		if len(rawSamples) < 3 {
+			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -480,11 +478,11 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		return
 	}
 
-	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique, %d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
+	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique hashes, %d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
 		offerID, fileLineCount, len(suppressedHashes), validMD5Count, nonMD5Count)
-	log.Printf("[Optizmo] import file sample entries: %s", strings.Join(sampleEntries, ", "))
+	log.Printf("[Optizmo] import RAW first entries: %s", strings.Join(rawSamples, " | "))
 	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] import for offer %s: %d plaintext entries auto-converted to MD5 for matching",
+		log.Printf("[Optizmo] import for offer %s: %d plaintext entries auto-converted to MD5 (also stored as plaintext for direct comparison)",
 			offerID, nonMD5Count)
 	}
 
@@ -512,7 +510,7 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		if len(sampleSubHashes) < 5 {
 			sampleSubHashes = append(sampleSubHashes, hash[:8]+"...")
 		}
-		if suppressedHashes[hash] {
+		if suppressedHashes[hash] || plaintextEmails[email] {
 			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: hash})
 		}
 	}
@@ -724,4 +722,27 @@ func isHexMD5(s string) bool {
 		}
 	}
 	return true
+}
+
+// extractEmail extracts the email address from a line that may contain
+// CSV columns, quotes, or other formatting. Handles common Optizmo formats:
+//   - plain email: user@example.com
+//   - quoted: "user@example.com"
+//   - CSV with email as first column: user@example.com,other,data
+//   - CSV with header-style: email,user@example.com
+//   - tab-delimited: user@example.com\tother
+func extractEmail(line string) string {
+	line = strings.Trim(line, "\"'")
+
+	for _, sep := range []string{",", "\t", "|", ";"} {
+		parts := strings.Split(line, sep)
+		for _, p := range parts {
+			p = strings.TrimSpace(strings.Trim(p, "\"'"))
+			if strings.Contains(p, "@") && strings.Contains(p, ".") {
+				return strings.ToLower(p)
+			}
+		}
+	}
+
+	return strings.ToLower(strings.TrimSpace(line))
 }
