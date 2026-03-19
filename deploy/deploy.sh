@@ -36,6 +36,15 @@ echo "Git SHA: $GIT_SHA"
 echo "Build Time: $BUILD_TIME"
 echo ""
 
+if [ "${SKIP_PRE_DEPLOY:-}" != "1" ]; then
+  "$SCRIPT_DIR/pre-deploy.sh"
+  echo ""
+fi
+
+echo "Pruning Docker build cache to prevent disk-space failures..."
+docker builder prune --filter "until=168h" -f 2>/dev/null || true
+echo ""
+
 echo "Ensuring ECR repository exists..."
 aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" "${AWS_ARGS[@]}" >/dev/null 2>&1 || \
   aws ecr create-repository --repository-name "$ECR_REPOSITORY" "${AWS_ARGS[@]}" >/dev/null

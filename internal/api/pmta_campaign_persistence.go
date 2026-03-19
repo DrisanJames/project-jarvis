@@ -713,11 +713,17 @@ func derivePMTADraftScheduledAt(input engine.PMTACampaignInput) interface{} {
 }
 
 func buildPMTACampaignQuotaPayload(input engine.PMTACampaignInput) map[string]interface{} {
+	quotas := input.ISPQuotas
+	if len(quotas) == 0 && len(input.TargetISPs) > 0 {
+		for _, isp := range input.TargetISPs {
+			quotas = append(quotas, engine.ISPQuota{ISP: string(isp), Volume: 0})
+		}
+	}
 	return map[string]interface{}{
 		"target_isps":        input.TargetISPs,
 		"sending_domain":     input.SendingDomain,
 		"throttle_strategy":  input.ThrottleStrategy,
-		"isp_quotas":         input.ISPQuotas,
+		"isp_quotas":         quotas,
 		"randomize_audience": input.RandomizeAudience,
 		"isp_plans":          input.ISPPlans,
 		"execution_mode":     pmtaExecutionModeWave,

@@ -576,9 +576,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === PMTA MULTI-AGENT GOVERNANCE ENGINE ===
 			engineOrgID := "00000000-0000-0000-0000-000000000001"
-			registry := engine.NewISPRegistry()
+			ispClassifier := engine.NewISPRegistry()
 			signalStore := &engine.DBSignalStore{DB: db}
-			signalProcessor := engine.NewSignalProcessor(signalStore, engineOrgID, registry)
+			signalProcessor := engine.NewSignalProcessor(signalStore, engineOrgID, ispClassifier)
 			suppressionDir := os.Getenv("PMTA_SUPPRESSION_DIR")
 			if suppressionDir == "" {
 				suppressionDir = os.TempDir() + "/pmta-suppressions"
@@ -597,6 +597,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 
 			convictionStore := engine.NewConvictionStore(engineMemory)
+			convictionStore.SetDB(db)
 			convictionStore.LoadAll(context.Background())
 
 			agentFactory := engine.NewAgentFactory(db, engineOrgID, engineMemory, suppressionStore, convictionStore)
@@ -662,7 +663,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				PMTAUser:     pmtaMgmtUser,
 				PMTAPassword: pmtaMgmtPass,
 			}
-			ingestor := engine.NewIngestor(registry, signalProcessor, ingestorCfg)
+			if pmtaMgmtHost == "" {
+				log.Println("[WARNING] PMTA_MGMT_HOST not set — engine signal polling DISABLED. Agents will not receive live data.")
+			} else {
+				log.Printf("[engine] PMTA polling configured: host=%s port=%d", pmtaMgmtHost, pmtaMgmtPort)
+			}
+			ingestor := engine.NewIngestor(ispClassifier, signalProcessor, ingestorCfg)
 			ingestor.SetDB(db)
 
 			decisionStore := &engine.DBDecisionStore{DB: db}

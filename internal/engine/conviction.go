@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -18,6 +20,7 @@ import (
 // at query time across the micro-observations, never at storage time.
 type ConvictionStore struct {
 	memory *MemoryStore
+	db     *sql.DB
 	mu     sync.RWMutex
 
 	// Hot buffer: agentKey -> ring of recent convictions
@@ -78,6 +81,11 @@ func NewConvictionStore(memory *MemoryStore) *ConvictionStore {
 		maxPerAgent: 2000,
 		subscribers: make(map[string]chan Conviction),
 	}
+}
+
+// SetDB enables database-backed conviction persistence as a fallback to S3.
+func (cs *ConvictionStore) SetDB(db *sql.DB) {
+	cs.db = db
 }
 
 // Subscribe registers an SSE client. Returns a read channel and a unique ID.
@@ -212,6 +220,10 @@ func (cs *ConvictionStore) Record(ctx context.Context, c Conviction) {
 		cs.memory.AppendConviction(ctx, c.ISP, c.AgentType, c)
 	}
 
+	if cs.db != nil {
+		cs.persistConvictionToDB(ctx, c)
+	}
+
 	// Fan out to SSE subscribers
 	cs.fanOut(c)
 
@@ -313,6 +325,78 @@ func (cs *ConvictionStore) Stats(isp ISP, at AgentType) (willCount, wontCount in
 	return
 }
 
+func (cs *ConvictionStore) persistConvictionToDB(ctx context.Context, c Conviction) {
+	ctxJSON, _ := json.Marshal(c.Context)
+	var outcomeJSON []byte
+	if c.Outcome != nil {
+		outcomeJSON, _ = json.Marshal(c.Outcome)
+	}
+	_, err := cs.db.ExecContext(ctx,
+		`INSERT INTO mailing_engine_convictions (id, isp, agent_type, agent_id, verdict, statement, effective_rate, micro_context, outcome, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 ON CONFLICT DO NOTHING`,
+		c.ID, string(c.ISP), string(c.AgentType), c.AgentID,
+		string(c.Verdict), c.Statement, c.Context.AttemptedRate,
+		ctxJSON, outcomeJSON, c.CreatedAt,
+	)
+	if err != nil {
+		log.Printf("[conviction] DB persist error: %v", err)
+	}
+}
+
+func (cs *ConvictionStore) loadFromDB(ctx context.Context, isp ISP, at AgentType, limit int) ([]Conviction, error) {
+	if cs.db == nil {
+		return nil, nil
+	}
+	rows, err := cs.db.QueryContext(ctx,
+		`SELECT id, isp, agent_type, agent_id, verdict, statement, effective_rate, micro_context, outcome, created_at
+		 FROM mailing_engine_convictions
+		 WHERE isp = $1 AND agent_type = $2
+		 ORDER BY created_at DESC LIMIT $3`,
+		string(isp), string(at), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query convictions: %w", err)
+	}
+	defer rows.Close()
+
+	var convictions []Conviction
+	for rows.Next() {
+		var (
+			c             Conviction
+			ispStr        string
+			atStr         string
+			effRate       sql.NullFloat64
+			ctxJSON       []byte
+			outcomeJSON   []byte
+		)
+		if err := rows.Scan(&c.ID, &ispStr, &atStr, &c.AgentID, &c.Verdict, &c.Statement, &effRate, &ctxJSON, &outcomeJSON, &c.CreatedAt); err != nil {
+			log.Printf("[conviction] DB scan error: %v", err)
+			continue
+		}
+		c.ISP = ISP(ispStr)
+		c.AgentType = AgentType(atStr)
+		c.LastSeenAt = c.CreatedAt
+		c.Confidence = 1.0
+		c.Corroborations = 1
+		if len(ctxJSON) > 0 {
+			_ = json.Unmarshal(ctxJSON, &c.Context)
+		}
+		if len(outcomeJSON) > 0 {
+			var outcome ConvictionOutcome
+			if json.Unmarshal(outcomeJSON, &outcome) == nil {
+				c.Outcome = &outcome
+			}
+		}
+		convictions = append(convictions, c)
+	}
+	// Reverse so oldest is first (ring expects chronological order)
+	for i, j := 0, len(convictions)-1; i < j; i, j = i+1, j-1 {
+		convictions[i], convictions[j] = convictions[j], convictions[i]
+	}
+	return convictions, nil
+}
+
 // LoadFromS3 hydrates the hot buffer from S3 for a given agent.
 func (cs *ConvictionStore) LoadFromS3(ctx context.Context, isp ISP, at AgentType) error {
 	if cs.memory == nil {
@@ -337,13 +421,41 @@ func (cs *ConvictionStore) LoadFromS3(ctx context.Context, isp ISP, at AgentType
 }
 
 // LoadAll hydrates convictions for all ISP/agent combinations.
+// Tries S3 first; falls back to the DB if S3 is empty or unavailable.
 func (cs *ConvictionStore) LoadAll(ctx context.Context) {
+	totalRestored := 0
 	for _, isp := range AllISPs() {
 		for _, at := range AllAgentTypes() {
 			if err := cs.LoadFromS3(ctx, isp, at); err != nil {
-				log.Printf("[conviction] load error %s/%s: %v", isp, at, err)
+				log.Printf("[conviction] S3 load error %s/%s: %v", isp, at, err)
+			}
+
+			// If S3 didn't produce convictions, try DB fallback
+			r := cs.ring(isp, at)
+			cs.mu.RLock()
+			count := len(r.convictions)
+			cs.mu.RUnlock()
+
+			if count == 0 && cs.db != nil {
+				dbConvictions, err := cs.loadFromDB(ctx, isp, at, cs.maxPerAgent)
+				if err != nil {
+					log.Printf("[conviction] DB load error %s/%s: %v", isp, at, err)
+					continue
+				}
+				if len(dbConvictions) > 0 {
+					cs.mu.Lock()
+					for _, c := range dbConvictions {
+						r.append(c)
+					}
+					cs.mu.Unlock()
+					totalRestored += len(dbConvictions)
+					log.Printf("[conviction] restored %d convictions for %s/%s from DB", len(dbConvictions), isp, at)
+				}
 			}
 		}
+	}
+	if totalRestored > 0 {
+		log.Printf("[conviction] total restored from DB: %d convictions", totalRestored)
 	}
 }
 

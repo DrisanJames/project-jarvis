@@ -634,7 +634,26 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			}
 		}
 		if len(quotas) == 0 {
-			continue
+			// Derive quotas from actual queue distribution when volumes are unset
+			qRows, qErr := p.db.QueryContext(ctx, `
+				SELECT COALESCE(recipient_isp, 'other'), COUNT(*)
+				FROM mailing_campaign_queue
+				WHERE campaign_id = $1 AND status = 'queued'
+				GROUP BY recipient_isp`, campID)
+			if qErr == nil {
+				for qRows.Next() {
+					var isp string
+					var cnt int
+					if qRows.Scan(&isp, &cnt) == nil && cnt > 0 {
+						quotas[isp] = cnt
+					}
+				}
+				qRows.Close()
+			}
+			if len(quotas) == 0 {
+				continue
+			}
+			log.Printf("[ISPDispatch] Auto-derived quotas for campaign %s from queue: %v", campID, quotas)
 		}
 
 		totalItems := 0

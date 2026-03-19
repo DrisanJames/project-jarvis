@@ -363,6 +363,7 @@ const (
 type Conviction struct {
 	ID             string             `json:"id"`
 	AgentType      AgentType          `json:"agent_type"`
+	AgentID        string             `json:"agent_id"`
 	ISP            ISP                `json:"isp"`
 	Verdict        Verdict            `json:"verdict"`
 	Statement      string             `json:"statement"`

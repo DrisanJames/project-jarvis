@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -156,6 +157,28 @@ func (m *ISPAgentManager) HandleListAgents(w http.ResponseWriter, r *http.Reques
 			}
 		}
 
+		// Enrich with live stats from tracking events (last 30 days)
+		var liveSends, liveHardBounces, liveComplaints sql.NullInt64
+		_ = m.db.QueryRowContext(ctx, fmt.Sprintf(`
+			SELECT
+				COUNT(*) FILTER (WHERE event_type = 'delivered'),
+				COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+				COUNT(*) FILTER (WHERE event_type = 'complained')
+			FROM mailing_tracking_events
+			WHERE sending_domain = $1 AND created_at > NOW() - INTERVAL '30 days'`,
+			HardBounceSQL("mailing_tracking_events")),
+			a.Domain,
+		).Scan(&liveSends, &liveHardBounces, &liveComplaints)
+		if liveSends.Valid && liveSends.Int64 > 0 {
+			a.TotalSends = liveSends.Int64
+		}
+		if liveHardBounces.Valid && liveHardBounces.Int64 > 0 {
+			a.TotalBounces = liveHardBounces.Int64
+		}
+		if liveComplaints.Valid && liveComplaints.Int64 > 0 {
+			a.TotalComplaints = liveComplaints.Int64
+		}
+
 		agents = append(agents, a)
 	}
 
@@ -268,6 +291,28 @@ func (m *ISPAgentManager) HandleGetAgent(w http.ResponseWriter, r *http.Request)
 		agent["last_active_at"] = nil
 	}
 
+	// Enrich with live stats from tracking events (last 30 days)
+	var liveSends, liveHardBounces, liveComplaints sql.NullInt64
+	_ = m.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s),
+			COUNT(*) FILTER (WHERE event_type = 'complained')
+		FROM mailing_tracking_events
+		WHERE sending_domain = $1 AND created_at > NOW() - INTERVAL '30 days'`,
+		HardBounceSQL("mailing_tracking_events")),
+		domain,
+	).Scan(&liveSends, &liveHardBounces, &liveComplaints)
+	if liveSends.Valid && liveSends.Int64 > 0 {
+		agent["total_sends"] = liveSends.Int64
+	}
+	if liveHardBounces.Valid && liveHardBounces.Int64 > 0 {
+		agent["total_bounces"] = liveHardBounces.Int64
+	}
+	if liveComplaints.Valid && liveComplaints.Int64 > 0 {
+		agent["total_complaints"] = liveComplaints.Int64
+	}
+
 	// Fetch recent campaigns for this agent (last 10)
 	campRows, err := m.db.QueryContext(ctx,
 		`SELECT id, campaign_id, recipient_count, status, send_window, performance, decisions,
@@ -365,7 +410,7 @@ func (m *ISPAgentManager) HandleGetAgent(w http.ResponseWriter, r *http.Request)
 		"profile_count": profileCount,
 	}
 	if avgProfileEngagement.Valid {
-		profileStats["avg_engagement"] = avgProfileEngagement.Float64
+		profileStats["avg_engagement"] = avgProfileEngagement.Float64 * 100
 	} else {
 		profileStats["avg_engagement"] = 0.0
 	}
@@ -610,10 +655,10 @@ func (m *ISPAgentManager) HandleAgentLearn(w http.ResponseWriter, r *http.Reques
 		optimalHours = append(optimalHours, hourEngList[i].Hour)
 	}
 
-	// Compute avg engagement
+	// Compute avg engagement (scale 0-100 to match HandleListAgents)
 	avgEngagement := 0.0
 	if totalProfiles > 0 {
-		avgEngagement = totalEngagement / float64(totalProfiles)
+		avgEngagement = (totalEngagement / float64(totalProfiles)) * 100
 	}
 
 	// Compute bounce rate and complaint rate from agent-level stats

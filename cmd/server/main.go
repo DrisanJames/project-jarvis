@@ -1420,7 +1420,7 @@ func runStartupMigrations(db *sql.DB) {
 			  AND jsonb_array_length(c.list_ids) > 0
 			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
 		`},
-		{"reset_emergency_agents", `UPDATE mailing_isp_agents SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
+		{"reset_emergency_agents", `UPDATE mailing_engine_agent_state SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
 		{"add_tracking_sending_domain", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255)`},
 		{"add_tracking_sending_ip", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45)`},
 		{"idx_tracking_sending_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_domain ON mailing_tracking_events(sending_domain)`},
@@ -1589,6 +1589,21 @@ func runStartupMigrations(db *sql.DB) {
 			msgs_per_hour DOUBLE PRECISION NOT NULL,
 			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+
+		{"create_engine_convictions", `CREATE TABLE IF NOT EXISTS mailing_engine_convictions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			isp VARCHAR(50) NOT NULL,
+			agent_type VARCHAR(30) NOT NULL,
+			agent_id VARCHAR(100) NOT NULL,
+			verdict VARCHAR(10) NOT NULL,
+			statement TEXT NOT NULL,
+			effective_rate DOUBLE PRECISION,
+			micro_context JSONB NOT NULL DEFAULT '{}',
+			outcome JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_engine_convictions_isp_agent", `CREATE INDEX IF NOT EXISTS idx_engine_convictions_isp_agent ON mailing_engine_convictions(isp, agent_type, created_at DESC)`},
+		{"idx_engine_convictions_created", `CREATE INDEX IF NOT EXISTS idx_engine_convictions_created ON mailing_engine_convictions(created_at DESC)`},
 
 		{"add_list_subscriber_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS subscriber_count INT DEFAULT 0`},
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},

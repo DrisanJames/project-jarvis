@@ -373,9 +373,7 @@ func (l *ISPAgentLearner) runLearningCycle() {
 	}
 
 	if len(agents) == 0 {
-		// Also learn for "general" if no specific agents
-		log.Println("[ISP-Learner] No active agents found, running general industry research...")
-		l.runGeneralResearch(ctx)
+		log.Println("[ISP-Learner] No active agents found — skipping learning cycle")
 		return
 	}
 

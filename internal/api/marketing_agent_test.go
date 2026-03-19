@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
@@ -153,9 +154,12 @@ func TestHandleApproveRecommendation_NotPending(t *testing.T) {
 	agent, mock := newTestAgent(t)
 	defer agent.db.Close()
 
-	mock.ExpectQuery("SELECT status FROM agent_campaign_recommendations").
+	mock.ExpectQuery(`SELECT status, campaign_config`).
 		WithArgs("rec-id", sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("approved"))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"status", "campaign_config", "campaign_name", "strategy",
+			"sending_domain", "scheduled_date", "scheduled_time",
+		}).AddRow("approved", "{}", "Test Campaign", "newsletter", "em.test.com", time.Now(), "13:00"))
 
 	r := chi.NewRouter()
 	r.Post("/recommendations/{id}/approve", agent.HandleApproveRecommendation)
