@@ -393,6 +393,7 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 		"bounce_domain":   "bounce_domain",
 		"tracking_domain": "tracking_domain",
 		"ip_pool":         "ip_pool",
+		"pool_prefix":     "pool_prefix",
 		"hourly_limit":    "hourly_limit",
 		"daily_limit":     "daily_limit",
 		"status":          "status",

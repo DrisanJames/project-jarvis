@@ -2156,10 +2156,10 @@ BEGIN
 END $$`},
 
 		// 7.4: Route primary profiles to shared pools
-		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
-		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
-		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND COALESCE(ip_pool,'') != 'shared-b'`},
-		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND COALESCE(ip_pool,'') != 'shared-b'`},
+		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
 	}
 
 	var ok, fail int
