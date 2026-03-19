@@ -155,6 +155,48 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		input.TextContent = fmt.Sprintf("%s\n\nThis is a test email from IGNITE Mailing Platform.", input.Subject)
 	}
 
+	// ── Liquid template rendering (so test sends match live pipeline) ──
+	now := time.Now()
+	emailLocal := input.To
+	emailDomain := ""
+	if at := strings.LastIndex(input.To, "@"); at >= 0 {
+		emailLocal = input.To[:at]
+		emailDomain = input.To[at+1:]
+	}
+	rc := mailing.RenderContext{
+		"first_name":   "",
+		"last_name":    "",
+		"email":        input.To,
+		"full_name":    "",
+		"email_local":  emailLocal,
+		"email_domain": emailDomain,
+		"system": map[string]interface{}{
+			"current_date":    now.Format("January 2, 2006"),
+			"current_year":    now.Year(),
+			"current_month":   now.Month().String(),
+			"current_day":     now.Day(),
+			"current_weekday": now.Weekday().String(),
+		},
+		"now":   now,
+		"today": now.Format("January 2, 2006"),
+		"year":  now.Year(),
+		"campaign": map[string]interface{}{
+			"name":      input.Subject,
+			"subject":   input.Subject,
+			"from_name": fromName,
+		},
+	}
+	templateSvc := mailing.NewTemplateService()
+	if rendered, err := templateSvc.Render("test-subj:"+input.To, input.Subject, rc); err == nil {
+		input.Subject = rendered
+	}
+	if rendered, err := templateSvc.Render("test-html:"+input.To, input.HTMLContent, rc); err == nil {
+		input.HTMLContent = rendered
+	}
+	if rendered, err := templateSvc.Render("test-text:"+input.To, input.TextContent, rc); err == nil {
+		input.TextContent = rendered
+	}
+
 	// Route to appropriate ESP based on vendor type
 	var result map[string]interface{}
 	var err error
