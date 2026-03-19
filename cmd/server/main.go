@@ -2084,7 +2084,78 @@ END $$`},
 			VALUES ('d0000000-0000-0000-0001-000000000005', '00000000-0000-0000-0000-000000000001', 'img.myownhealth.net', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
 
-		// Phase 7.6: Route primary profiles to shared OVH pools (runs after Phase 6 to override ISP pools)
+		// =====================================================================
+		// Phase 7: Shared OVH pools (must run AFTER Phase 6 IP seeding)
+		// =====================================================================
+
+		// 7.1: Create shared pools
+		{"phase7_startup_create_shared_a", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status, created_at, updated_at)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'shared-a', 'Shared /28 OVH IPs on Server A (15.204.22.177-.191)', 'shared', 'active', NOW(), NOW())
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+		{"phase7_startup_create_shared_b", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status, created_at, updated_at)
+			VALUES ('00000000-0000-0000-0000-000000000001', 'shared-b', 'Shared /28 OVH IPs on Server B (15.204.38.160-.175)', 'shared', 'active', NOW(), NOW())
+			ON CONFLICT (organization_id, name) DO NOTHING`},
+
+		// 7.2: Move Server A /28 OVH IPs to shared-a pool
+		{"phase7_startup_move_ips_shared_a", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+    rec RECORD;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'shared-a' AND organization_id = org_id;
+    IF pool_id_val IS NULL THEN RAISE NOTICE 'shared-a pool not found'; RETURN; END IF;
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('15.204.22.177','mta-a-shrd1.mail.shared-a'),('15.204.22.178','mta-a-shrd2.mail.shared-a'),
+            ('15.204.22.179','mta-a-shrd3.mail.shared-a'),('15.204.22.180','mta-a-shrd4.mail.shared-a'),
+            ('15.204.22.181','mta-a-shrd5.mail.shared-a'),('15.204.22.182','mta-a-shrd6.mail.shared-a'),
+            ('15.204.22.183','mta-a-shrd7.mail.shared-a'),('15.204.22.184','mta-a-shrd8.mail.shared-a'),
+            ('15.204.22.185','mta-a-shrd9.mail.shared-a'),('15.204.22.186','mta-a-shrd10.mail.shared-a'),
+            ('15.204.22.187','mta-a-shrd11.mail.shared-a'),('15.204.22.188','mta-a-shrd12.mail.shared-a'),
+            ('15.204.22.189','mta-a-shrd13.mail.shared-a'),('15.204.22.190','mta-a-shrd14.mail.shared-a'),
+            ('15.204.22.191','mta-a-shrd15.mail.shared-a')
+        ) AS t(ip_addr, new_hostname)
+    LOOP
+        UPDATE mailing_ip_addresses SET pool_id = pool_id_val, hostname = rec.new_hostname, updated_at = NOW()
+        WHERE ip_address = rec.ip_addr::inet;
+    END LOOP;
+END $$`},
+
+		// 7.3: Seed Server B /28 OVH IPs into shared-b pool
+		{"phase7_startup_seed_shared_b", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+    server_id_val UUID;
+    i INT;
+    ip_text TEXT;
+    hostname_val TEXT;
+    shrd_num INT;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'shared-b' AND organization_id = org_id;
+    SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = '15.204.107.107';
+    IF pool_id_val IS NULL OR server_id_val IS NULL THEN RAISE NOTICE 'shared-b pool or server B not found'; RETURN; END IF;
+    FOR i IN 0..15 LOOP
+        ip_text := '15.204.38.' || (160 + i);
+        shrd_num := i + 1;
+        IF shrd_num <= 8 THEN
+            hostname_val := 'mta-b-shrd' || shrd_num || '.mail.em.historythinking.com';
+        ELSE
+            hostname_val := 'mta-b-shrd' || shrd_num || '.mail.em.myownhealth.net';
+        END IF;
+        INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+            warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+            cidr_block, rdns_verified, reputation_score, created_at, updated_at)
+        VALUES (gen_random_uuid(), org_id, ip_text::inet, hostname_val, 'warmup', pool_id_val, server_id_val,
+            'warming', 1, 10000, NOW(), 'OVH', 'purchased', '15.204.38.160/28', false, 50.0, NOW(), NOW())
+        ON CONFLICT (ip_address) DO UPDATE SET
+            pool_id = pool_id_val, pmta_server_id = server_id_val, hostname = hostname_val,
+            warmup_started_at = COALESCE(mailing_ip_addresses.warmup_started_at, NOW()), updated_at = NOW();
+    END LOOP;
+END $$`},
+
+		// 7.4: Route primary profiles to shared pools
 		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
 		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
 		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND COALESCE(ip_pool,'') != 'shared-b'`},
