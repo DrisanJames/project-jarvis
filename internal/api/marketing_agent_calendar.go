@@ -581,6 +581,26 @@ func (a *EmailMarketingAgent) HandleRejectRecommendation(w http.ResponseWriter, 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "rejected", "id": recID})
 }
 
+// HandleDeleteRecommendation permanently deletes a rejected recommendation.
+func (a *EmailMarketingAgent) HandleDeleteRecommendation(w http.ResponseWriter, r *http.Request) {
+	recID := chi.URLParam(r, "id")
+	orgID := getOrgID(r)
+
+	result, err := a.db.ExecContext(r.Context(),
+		`DELETE FROM agent_campaign_recommendations
+		 WHERE id = $1 AND organization_id = $2 AND status = 'rejected'`, recID, orgID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "recommendation not found or not in rejected status"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": recID})
+}
+
 // HandleUnapproveRecommendation reverts an approved recommendation back to pending
 // and cancels the linked campaign if it hasn't started sending.
 func (a *EmailMarketingAgent) HandleUnapproveRecommendation(w http.ResponseWriter, r *http.Request) {

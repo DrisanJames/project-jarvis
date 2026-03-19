@@ -36,7 +36,6 @@ import {
   faList,
   faCalendarCheck,
   faInfoCircle,
-  faPlus,
   faTimes,
   faSave,
   faBullseye,
@@ -309,9 +308,8 @@ const CampaignDashboard: React.FC<{
   stats: DashboardStats | null;
   loading: boolean;
   onViewCampaign: (id: string) => void;
-  onViewAll: () => void;
-  onViewScheduled: () => void;
-}> = ({ stats, loading, onViewCampaign, onViewAll, onViewScheduled }) => {
+  onViewByStatus: (status: StatusFilter) => void;
+}> = ({ stats, loading, onViewCampaign, onViewByStatus }) => {
   if (loading) {
     return (
       <div className="loading-state">
@@ -419,19 +417,19 @@ const CampaignDashboard: React.FC<{
           <h3><FontAwesomeIcon icon={faChartPie} /> Campaign Status</h3>
         </div>
         <div className="status-grid ig-stagger">
-          <div className="status-item status-draft" onClick={onViewAll}>
+          <div className="status-item status-draft" onClick={() => onViewByStatus('draft')} style={{ cursor: 'pointer' }}>
             <div className="status-count"><AnimatedCounter value={stats.draft_count} /></div>
             <div className="status-label">Drafts</div>
           </div>
-          <div className="status-item status-scheduled" onClick={onViewScheduled}>
+          <div className="status-item status-scheduled" onClick={() => onViewByStatus('scheduled')} style={{ cursor: 'pointer' }}>
             <div className="status-count"><AnimatedCounter value={stats.scheduled_count} /></div>
             <div className="status-label">Scheduled</div>
           </div>
-          <div className="status-item status-sending">
+          <div className="status-item status-sending" onClick={() => onViewByStatus('sending')} style={{ cursor: 'pointer' }}>
             <div className="status-count"><AnimatedCounter value={stats.sending_count} /></div>
             <div className="status-label"><span className="ig-pulse-dot" /> Sending</div>
           </div>
-          <div className="status-item status-completed">
+          <div className="status-item status-completed" onClick={() => onViewByStatus('completed')} style={{ cursor: 'pointer' }}>
             <div className="status-count"><AnimatedCounter value={stats.completed_count} /></div>
             <div className="status-label">Completed</div>
           </div>
@@ -442,6 +440,7 @@ const CampaignDashboard: React.FC<{
       <div className="performance-section">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faPercentage} /> Performance Rates</h3>
+          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>All Campaigns · {stats.total_campaigns} total</span>
         </div>
         <div className="rates-grid ig-stagger">
           <RateDisplay rate={stats.avg_open_rate} label="Open Rate" icon={faEnvelopeOpen} color="green" />
@@ -456,6 +455,7 @@ const CampaignDashboard: React.FC<{
       <div className="health-section">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faTachometerAlt} /> Deliverability Health</h3>
+          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>All Campaigns · {stats.total_sent.toLocaleString()} sent</span>
         </div>
         <div className="health-metrics ig-stagger">
           <div className="health-item">
@@ -487,7 +487,7 @@ const CampaignDashboard: React.FC<{
         <div className="dashboard-section">
           <div className="section-header">
             <h3><FontAwesomeIcon icon={faCalendarCheck} /> Upcoming Scheduled</h3>
-            <button className="section-action" onClick={onViewScheduled}>
+            <button className="section-action" onClick={() => onViewByStatus('scheduled')}>
               View All <FontAwesomeIcon icon={faArrowRight} />
             </button>
           </div>
@@ -521,7 +521,7 @@ const CampaignDashboard: React.FC<{
         <div className="dashboard-section">
           <div className="section-header">
             <h3><FontAwesomeIcon icon={faTrophy} /> Top Performers</h3>
-            <button className="section-action" onClick={onViewAll}>
+            <button className="section-action" onClick={() => onViewByStatus('completed')}>
               View All <FontAwesomeIcon icon={faArrowRight} />
             </button>
           </div>
@@ -559,7 +559,7 @@ const CampaignDashboard: React.FC<{
       <div className="recent-section">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faClock} /> Recent Campaigns</h3>
-          <button className="section-action" onClick={onViewAll}>
+          <button className="section-action" onClick={() => onViewByStatus('all')}>
             View All <FontAwesomeIcon icon={faArrowRight} />
           </button>
         </div>
@@ -619,6 +619,14 @@ const CampaignDashboard: React.FC<{
 // CAMPAIGNS LIST VIEW
 // ============================================================================
 
+const COMPLETED_STATUSES = ['sent', 'completed', 'completed_with_errors'];
+
+const matchesStatusFilter = (status: string, filter: StatusFilter): boolean => {
+  if (filter === 'all') return true;
+  if (filter === 'completed') return COMPLETED_STATUSES.includes(status);
+  return status === filter;
+};
+
 const CampaignsList: React.FC<{
   campaigns: Campaign[];
   loading: boolean;
@@ -631,7 +639,7 @@ const CampaignsList: React.FC<{
   onRefresh: () => void;
 }> = ({ campaigns, loading, filter, search, onFilterChange, onSearchChange, onViewCampaign, onAction, onRefresh }) => {
   const filteredCampaigns = campaigns.filter(c => {
-    const matchesFilter = filter === 'all' || c.status === filter;
+    const matchesFilter = matchesStatusFilter(c.status, filter);
     const matchesSearch = search === '' || 
       c.name.toLowerCase().includes(search.toLowerCase()) ||
       c.subject?.toLowerCase().includes(search.toLowerCase());
@@ -652,7 +660,7 @@ const CampaignsList: React.FC<{
               {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
               {f !== 'all' && (
                 <span className="filter-count">
-                  {campaigns.filter(c => c.status === f).length}
+                  {campaigns.filter(c => matchesStatusFilter(c.status, f)).length}
                 </span>
               )}
             </button>
@@ -2418,7 +2426,7 @@ export const CampaignPortal: React.FC<{
   const fetchDashboardStats = useCallback(async (background = false) => {
     if (!background) setLoading(true);
     try {
-      const campaignsRes = await orgFetch(`${API_BASE}/campaigns`, organization?.id);
+      const campaignsRes = await orgFetch(`${API_BASE}/campaigns?limit=200`, organization?.id);
       const campaignsData = await campaignsRes.json();
       const allCampaigns: Campaign[] = campaignsData.data || campaignsData.campaigns || [];
 
@@ -2565,15 +2573,6 @@ export const CampaignPortal: React.FC<{
         </div>
         <div className="header-actions">
           <button 
-            className="create-campaign-btn ig-btn-glow ig-ripple" 
-            onClick={() => {
-              setSelectedCampaign(null);
-              setView('create');
-            }}
-          >
-            <FontAwesomeIcon icon={faPlus} /> New Campaign
-          </button>
-          <button 
             className="refresh-btn" 
             onClick={() => fetchDashboardStats(false)}
             disabled={loading}
@@ -2614,8 +2613,7 @@ export const CampaignPortal: React.FC<{
             stats={dashboardStats}
             loading={loading}
             onViewCampaign={handleViewCampaign}
-            onViewAll={() => setView('campaigns')}
-            onViewScheduled={() => { setView('campaigns'); setFilter('scheduled'); }}
+            onViewByStatus={(status) => { setView('campaigns'); setFilter(status); }}
           />
         )}
 

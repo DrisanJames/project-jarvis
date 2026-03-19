@@ -413,8 +413,8 @@ const EnhancedDashboard: React.FC = () => {
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <div className="metric-content">
-              <span className="metric-value">{dashboard?.performance?.total_sent?.toLocaleString() || 0}</span>
-              <span className="metric-label">Emails Sent</span>
+              <span className="metric-value">{dashboard?.performance?.delivered?.toLocaleString() || 0}</span>
+              <span className="metric-label">Delivered</span>
             </div>
           </div>
           <div className="metric-card">

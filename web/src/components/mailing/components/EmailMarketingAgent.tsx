@@ -394,6 +394,11 @@ const AgentCalendar: React.FC = () => {
   const [listSearch, setListSearch] = useState('');
   const [availableLists, setAvailableLists] = useState<{id: string; name: string}[]>([]);
   const [listSearchType, setListSearchType] = useState<'inclusion' | 'exclusion' | null>(null);
+  const [testSendOpen, setTestSendOpen] = useState(false);
+  const [testSendEmails, setTestSendEmails] = useState('');
+  const [testSending, setTestSending] = useState(false);
+  const [testSendResult, setTestSendResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { loadDomains(); }, []);
   useEffect(() => { if (selectedDomain) loadForecast(); }, [selectedDomain, month]);
@@ -428,6 +433,9 @@ const AgentCalendar: React.FC = () => {
       setTemplateHtml(null);
       setShowTemplatePreview(false);
       setApprovalResult(null);
+      setTestSendOpen(false);
+      setTestSendEmails('');
+      setTestSendResult(null);
       if (cfg.template_id) {
         setTemplateLoading(true);
         fetch(`/api/mailing/templates/${cfg.template_id}`)
@@ -610,6 +618,61 @@ const AgentCalendar: React.FC = () => {
     } catch {} finally { setMiniChatLoading(false); }
   };
 
+  const sendTestEmails = async () => {
+    if (!testSendEmails.trim() || testSending || !selectedRec) return;
+    const emails = testSendEmails
+      .split(/[,\n]+/)
+      .map(e => e.trim().toLowerCase())
+      .filter(e => e && e.includes('@'));
+    if (emails.length === 0) return;
+
+    setTestSending(true);
+    setTestSendResult(null);
+    let sent = 0;
+    const errors: string[] = [];
+
+    for (const email of emails) {
+      try {
+        const resp = await fetch('/api/mailing/send-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: email,
+            subject: editConfig.subject || 'Test Email',
+            from_name: editConfig.from_name || '',
+            from_email: editConfig.from_email || '',
+            html_content: templateHtml || '',
+            sending_domain: selectedRec.sending_domain,
+            preheader: editConfig.preview_text || '',
+          }),
+        });
+        const data = await resp.json();
+        if (data.success !== false && !data.error) {
+          sent++;
+        } else {
+          errors.push(`${email}: ${data.error || data.reason || 'Failed'}`);
+        }
+      } catch (err) {
+        errors.push(`${email}: Network error`);
+      }
+    }
+    setTestSendResult({ sent, failed: errors.length, errors });
+    setTestSending(false);
+  };
+
+  const deleteRecommendation = async (recId: string) => {
+    setDeleting(true);
+    try {
+      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${recId}`, { method: 'DELETE' });
+      if (resp.ok) {
+        setSelectedRec(null);
+        setSelectedDay(null);
+        setCameFromDay(null);
+        await loadForecast();
+      }
+    } catch {} finally { setDeleting(false); }
+  };
+
   const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const today = new Date().toISOString().slice(0, 10);
 
@@ -729,9 +792,16 @@ const AgentCalendar: React.FC = () => {
                     </button>
                   </div>
                 )}
-                <button onClick={() => { setCameFromDay(selectedDay); setSelectedDay(null); setSelectedRec(rec); }} style={{ width: '100%', padding: '6px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 6, color: '#818cf8', cursor: 'pointer', fontSize: 11, fontWeight: 600, marginTop: 8 }}>
-                  View Details <FontAwesomeIcon icon={faEdit} style={{ marginLeft: 4 }} />
-                </button>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <button onClick={() => { setCameFromDay(selectedDay); setSelectedDay(null); setSelectedRec(rec); }} style={{ flex: 1, padding: '6px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 6, color: '#818cf8', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                    View Details <FontAwesomeIcon icon={faEdit} style={{ marginLeft: 4 }} />
+                  </button>
+                  {rec.status === 'rejected' && (
+                    <button onClick={(e) => { e.stopPropagation(); deleteRecommendation(rec.id); }} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: '#ef4444', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                      <FontAwesomeIcon icon={faTrash} />
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -996,7 +1066,52 @@ const AgentCalendar: React.FC = () => {
               </div>
             </div>
 
-            {/* Section 7: Actions */}
+            {/* Section 7: Send Test */}
+            <div>
+              <button
+                onClick={() => { setTestSendOpen(!testSendOpen); setTestSendResult(null); }}
+                style={{ width: '100%', padding: '10px', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 8, color: '#60a5fa', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+              >
+                <FontAwesomeIcon icon={faPaperPlane} /> Send Test
+              </button>
+              {testSendOpen && (
+                <div style={{ marginTop: 8, padding: 12, background: '#111827', borderRadius: 8, border: '1px solid rgba(59,130,246,0.15)' }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Enter email addresses (comma or newline separated):</div>
+                  <textarea
+                    value={testSendEmails}
+                    onChange={e => setTestSendEmails(e.target.value)}
+                    placeholder={"you@example.com\nanother@example.com"}
+                    rows={3}
+                    style={{ width: '100%', padding: '8px 10px', background: '#0d1220', border: '1px solid rgba(59,130,246,0.15)', borderRadius: 6, color: '#e2e8f0', fontSize: 12, resize: 'vertical', outline: 'none', boxSizing: 'border-box' as const, fontFamily: 'inherit' }}
+                  />
+                  {!templateHtml && (
+                    <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4, padding: '4px 8px', background: 'rgba(245,158,11,0.06)', borderRadius: 4, border: '1px solid rgba(245,158,11,0.1)' }}>
+                      No template loaded — assign a template first
+                    </div>
+                  )}
+                  <button
+                    onClick={sendTestEmails}
+                    disabled={testSending || !testSendEmails.trim() || !templateHtml}
+                    style={{ marginTop: 8, width: '100%', padding: '8px', background: 'linear-gradient(135deg, rgba(59,130,246,0.2), rgba(59,130,246,0.1))', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 6, color: '#60a5fa', cursor: 'pointer', fontSize: 12, fontWeight: 600, opacity: testSending || !testSendEmails.trim() || !templateHtml ? 0.5 : 1 }}
+                  >
+                    {testSending ? <><FontAwesomeIcon icon={faSpinner} spin /> Sending...</> : 'Send Test'}
+                  </button>
+                  {testSendResult && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: testSendResult.failed > 0 ? 'rgba(245,158,11,0.06)' : 'rgba(34,197,94,0.06)', border: `1px solid ${testSendResult.failed > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(34,197,94,0.15)'}`, fontSize: 12 }}>
+                      <div style={{ color: '#22c55e', fontWeight: 600 }}>{testSendResult.sent} sent successfully</div>
+                      {testSendResult.failed > 0 && (
+                        <div style={{ color: '#f59e0b', marginTop: 4 }}>
+                          {testSendResult.failed} failed:
+                          {testSendResult.errors.map((e, i) => <div key={i} style={{ fontSize: 11, color: '#94a3b8', marginLeft: 8 }}>{e}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Section 8: Actions */}
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Deploy</div>
               {approvalResult && (
@@ -1033,12 +1148,23 @@ const AgentCalendar: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div style={{ padding: '12px', background: `${statusColor(selectedRec.status)}10`, borderRadius: 8, border: `1px solid ${statusColor(selectedRec.status)}25` }}>
-                  <div style={{ textAlign: 'center' as const }}>
-                    <span style={{ fontSize: 13, color: statusColor(selectedRec.status), fontWeight: 600 }}>
-                      {selectedRec.status === 'approved' ? 'Deployed — Campaign Scheduled' : selectedRec.status === 'rejected' ? 'Rejected' : selectedRec.status === 'executed' ? 'Executed' : selectedRec.status}
-                    </span>
+                <div>
+                  <div style={{ padding: '12px', background: `${statusColor(selectedRec.status)}10`, borderRadius: 8, border: `1px solid ${statusColor(selectedRec.status)}25` }}>
+                    <div style={{ textAlign: 'center' as const }}>
+                      <span style={{ fontSize: 13, color: statusColor(selectedRec.status), fontWeight: 600 }}>
+                        {selectedRec.status === 'approved' ? 'Deployed — Campaign Scheduled' : selectedRec.status === 'rejected' ? 'Rejected' : selectedRec.status === 'executed' ? 'Executed' : selectedRec.status}
+                      </span>
+                    </div>
                   </div>
+                  {selectedRec.status === 'rejected' && (
+                    <button
+                      onClick={() => deleteRecommendation(selectedRec.id)}
+                      disabled={deleting}
+                      style={{ marginTop: 8, width: '100%', padding: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: deleting ? 0.5 : 1 }}
+                    >
+                      <FontAwesomeIcon icon={deleting ? faSpinner : faTrash} spin={deleting} /> {deleting ? 'Deleting...' : 'Delete from Calendar'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -41,6 +41,7 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		HTMLContent      string  `json:"html_content"`
 		TextContent      string  `json:"text_content"`
 		SendingProfileID *string `json:"sending_profile_id"` // Optional: route through specific ESP
+		SendingDomain    string  `json:"sending_domain"`     // Optional: resolve profile by domain
 	}
 	json.NewDecoder(r.Body).Decode(&input)
 
@@ -108,6 +109,12 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND id = $1", *input.SendingProfileID))
 		if err != nil {
 			http.Error(w, `{"error":"sending profile not found or inactive"}`, http.StatusBadRequest)
+			return
+		}
+	} else if input.SendingDomain != "" {
+		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND sending_domain = $1 ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1", input.SendingDomain))
+		if err != nil {
+			http.Error(w, `{"error":"no active sending profile found for domain `+input.SendingDomain+`"}`, http.StatusBadRequest)
 			return
 		}
 	} else {
