@@ -1920,10 +1920,10 @@ END $$`},
 
 		// Step 6.5: Update sending profiles for multi-PMTA
 		{"phase6_ht_mh_to_server_b", `UPDATE mailing_sending_profiles SET smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain IN ('em.historythinking.com', 'em.myownhealth.net') AND vendor_type = 'pmta' AND smtp_host = '15.204.101.125'`},
-		{"phase6_pool_prefix_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
-		{"phase6_pool_prefix_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
-		{"phase6_pool_prefix_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
-		{"phase6_pool_prefix_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '')`},
+		{"phase6_pool_prefix_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
+		{"phase6_pool_prefix_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
+		{"phase6_pool_prefix_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
+		{"phase6_pool_prefix_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
 		{"phase6_ip_pool_db", `UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
@@ -2083,6 +2083,12 @@ END $$`},
 		{"seed_img_domain_myownhealth", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)
 			VALUES ('d0000000-0000-0000-0001-000000000005', '00000000-0000-0000-0000-000000000001', 'img.myownhealth.net', false, 'provisioning', 'jarvis-image-cdn', NOW(), NOW())
 			ON CONFLICT (id) DO NOTHING`},
+
+		// Phase 7.6: Route primary profiles to shared OVH pools (runs after Phase 6 to override ISP pools)
+		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
+		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND COALESCE(ip_pool,'') != 'shared-a'`},
+		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND COALESCE(ip_pool,'') != 'shared-b'`},
+		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND COALESCE(ip_pool,'') != 'shared-b'`},
 	}
 
 	var ok, fail int
