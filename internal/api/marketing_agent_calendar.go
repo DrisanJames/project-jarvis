@@ -976,11 +976,21 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			orgID, input.SendingDomain, startDate, t.AddDate(0, 1, -1).Format("2006-01-02"))
 	}
 
-	// Determine domain affinity: "QF" prefix = quizfiesta, otherwise = discountblog
-	isQFDomain := strings.Contains(strings.ToLower(input.SendingDomain), "quizfiesta")
+	// Determine domain affinity for template matching
+	domainLower := strings.ToLower(input.SendingDomain)
+	isQFDomain := strings.Contains(domainLower, "quizfiesta")
+	isHTDomain := strings.Contains(domainLower, "historythinking")
+	isMHDomain := strings.Contains(domainLower, "myownhealth")
 	domainPrefix := ""
-	if isQFDomain {
+	switch {
+	case isQFDomain:
 		domainPrefix = "qf"
+	case isHTDomain:
+		domainPrefix = "ht"
+	case isMHDomain:
+		domainPrefix = "mh"
+	default:
+		domainPrefix = "db"
 	}
 
 	// Pull from_name, preview_text, schedule time from the most recent sent campaign for this domain
@@ -1003,9 +1013,14 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
 	}
 	if fromName == "" {
-		if isQFDomain {
+		switch {
+		case isQFDomain:
 			fromName = "Quiz Fiesta"
-		} else {
+		case isHTDomain:
+			fromName = "History Thinking"
+		case isMHDomain:
+			fromName = "My Own Health"
+		default:
 			fromName = "Jamie @ Discount Blog"
 		}
 	}
@@ -1131,15 +1146,24 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		return strings.Contains(lower, "test") || strings.Contains(lower, "seed") ||
 			strings.Contains(lower, "s3 import") || strings.Contains(lower, "template test")
 	}
+	listMatchesDomain := func(name string) bool {
+		lower := strings.ToLower(name)
+		switch {
+		case isQFDomain:
+			return strings.HasPrefix(lower, "qf ") || strings.Contains(lower, "quizfiesta")
+		case isHTDomain:
+			return strings.HasPrefix(lower, "ht ") || strings.Contains(lower, "historythinking") || strings.Contains(lower, "history thinking")
+		case isMHDomain:
+			return strings.HasPrefix(lower, "mh ") || strings.Contains(lower, "myownhealth") || strings.Contains(lower, "my own health")
+		default:
+			return strings.HasPrefix(lower, "db ") || strings.Contains(lower, "discountblog") || strings.Contains(lower, "discount blog") ||
+				(!strings.HasPrefix(lower, "qf ") && !strings.HasPrefix(lower, "ht ") && !strings.HasPrefix(lower, "mh "))
+		}
+	}
 	var inclusionLists []listInfo
 	seenNames := map[string]bool{}
 	for _, li := range allLists {
-		lower := strings.ToLower(li.Name)
-		hasQFPrefix := strings.HasPrefix(lower, "qf ")
-		if isQFDomain && !hasQFPrefix {
-			continue
-		}
-		if !isQFDomain && hasQFPrefix {
+		if !listMatchesDomain(li.Name) {
 			continue
 		}
 		if isTestOrSeed(li.Name) {
@@ -1164,11 +1188,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 			continue
 		}
 		lower := strings.ToLower(si.Name)
-		isQFSegment := strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta")
-		if isQFDomain && !isQFSegment && !strings.Contains(lower, "mailed") {
-			continue
-		}
-		if !isQFDomain && isQFSegment {
+		isShared := strings.Contains(lower, "mailed") || strings.Contains(lower, "global") || strings.Contains(lower, "all ")
+		if !isShared && !listMatchesDomain(si.Name) {
 			continue
 		}
 		nameLower := strings.ToLower(strings.TrimSpace(si.Name))
@@ -1292,23 +1313,37 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Filter templates by domain affinity: QF templates for QF domains, non-QF for DB
+	// Filter templates by domain affinity: match by brand prefix in name or folder
 	var domainTemplates []savedTemplate
 	for _, t := range allTemplates {
 		lower := strings.ToLower(t.Name + " " + t.Folder)
-		isQFTemplate := strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta") || strings.Contains(lower, "quizfiesta")
-		if isQFDomain && isQFTemplate {
-			domainTemplates = append(domainTemplates, t)
-		} else if !isQFDomain && !isQFTemplate {
-			domainTemplates = append(domainTemplates, t)
+		switch {
+		case isQFDomain:
+			if strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta") || strings.Contains(lower, "quizfiesta") {
+				domainTemplates = append(domainTemplates, t)
+			}
+		case isHTDomain:
+			if strings.Contains(lower, "ht ") || strings.Contains(lower, "history thinking") || strings.Contains(lower, "historythinking") {
+				domainTemplates = append(domainTemplates, t)
+			}
+		case isMHDomain:
+			if strings.Contains(lower, "mh ") || strings.Contains(lower, "my own health") || strings.Contains(lower, "myownhealth") {
+				domainTemplates = append(domainTemplates, t)
+			}
+		default:
+			isOtherBrand := strings.Contains(lower, "qf") || strings.Contains(lower, "quizfiesta") ||
+				strings.Contains(lower, "ht ") || strings.Contains(lower, "historythinking") ||
+				strings.Contains(lower, "mh ") || strings.Contains(lower, "myownhealth")
+			if !isOtherBrand {
+				domainTemplates = append(domainTemplates, t)
+			}
 		}
 	}
 	if len(domainTemplates) == 0 {
 		domainTemplates = allTemplates
 	}
 
-	_ = domainPrefix
-	log.Printf("[MarketingAgent] domain=%s isQF=%v templates: %d, lists: %d inclusion (14d clickers + 7d openers first)", input.SendingDomain, isQFDomain, len(domainTemplates), len(inclusionLists))
+	log.Printf("[MarketingAgent] domain=%s prefix=%s templates: %d, lists: %d inclusion (14d clickers + 7d openers first)", input.SendingDomain, domainPrefix, len(domainTemplates), len(inclusionLists))
 
 	// Generate daily recommendations — single campaign per day
 	created := 0

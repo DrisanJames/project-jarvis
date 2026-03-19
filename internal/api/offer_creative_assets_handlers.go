@@ -307,8 +307,8 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadZipBundle(w http.ResponseWrite
 			continue
 		}
 
-		if zf.UncompressedSize64 > 50<<20 {
-			uploadErrors = append(uploadErrors, fmt.Sprintf("skipped %s: exceeds 50MB single-file limit", baseName))
+		if zf.UncompressedSize64 > uint64(mailing.MaxFileSizeMB)<<20 {
+			uploadErrors = append(uploadErrors, fmt.Sprintf("skipped %s: exceeds %dMB single-file limit", baseName, mailing.MaxFileSizeMB))
 			continue
 		}
 

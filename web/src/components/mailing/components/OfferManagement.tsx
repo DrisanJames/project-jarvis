@@ -1276,6 +1276,10 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
+  const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'processing' | 'done'>('idle');
+  const [uploadHasErrors, setUploadHasErrors] = useState(false);
+  const [zipErrors, setZipErrors] = useState<string[]>([]);
+  const [showErrors, setShowErrors] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -1298,43 +1302,81 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
   const uploadFiles = async (files: FileList | File[]) => {
     setUploading(true);
+    setZipErrors([]);
+    setShowErrors(false);
+    setUploadHasErrors(false);
+    setUploadPhase('uploading');
     setUploadProgress(`Uploading 0/${files.length}…`);
     let done = 0;
+    let failed = 0;
     for (const file of Array.from(files)) {
       const fd = new FormData();
       fd.append('file', file);
       try {
-        await fetch(`${API}/offers/${offerId}/assets`, {
+        const res = await fetch(`${API}/offers/${offerId}/assets`, {
           method: 'POST', credentials: 'include', body: fd,
         });
+        if (!res.ok) failed++;
       } catch {
+        failed++;
         addToast({ type: 'error', title: 'Failed to upload file', message: file.name });
       }
       done++;
       setUploadProgress(`Uploading ${done}/${files.length}…`);
     }
-    setUploadProgress('');
+    setUploadPhase('done');
+    setUploadHasErrors(failed > 0);
+    const succeeded = done - failed;
+    setUploadProgress(failed > 0
+      ? `Done — ${succeeded} uploaded, ${failed} failed`
+      : `Done — ${succeeded} images uploaded`);
+    if (succeeded > 0) addToast({ type: 'success', title: `${succeeded} images uploaded` });
     setUploading(false);
     fetchAssets();
   };
 
   const uploadZip = async (file: File) => {
     setUploading(true);
-    setUploadProgress('Extracting & uploading zip bundle…');
+    setZipErrors([]);
+    setShowErrors(false);
+    setUploadHasErrors(false);
+    setUploadPhase('uploading');
+    setUploadProgress(`Uploading ${file.name} (${file.size < 1048576 ? (file.size / 1024).toFixed(0) + ' KB' : (file.size / 1048576).toFixed(1) + ' MB'})…`);
     const fd = new FormData();
     fd.append('file', file);
+    // Yield to let React flush the "uploading" phase before the fetch starts
+    await new Promise(r => setTimeout(r, 0));
     try {
+      setUploadPhase('processing');
+      setUploadProgress('Server is extracting & processing images…');
       const res = await fetch(`${API}/offers/${offerId}/assets/upload-zip`, {
         method: 'POST', credentials: 'include', body: fd,
       });
       if (res.ok) {
         const data = await res.json();
-        setUploadProgress(`Done — ${data.uploaded} images uploaded${data.text_extracted ? `, ${data.text_extracted} text files extracted` : ''}${data.errors ? `, ${data.errors} errors` : ''}`);
+        setUploadPhase('done');
+        const hasErrs = (data.errors ?? 0) > 0;
+        setUploadHasErrors(hasErrs);
+        const parts: string[] = [];
+        if (data.uploaded > 0) parts.push(`${data.uploaded} images uploaded`);
+        if (data.text_extracted > 0) parts.push(`${data.text_extracted} text files extracted`);
+        if (data.errors > 0) parts.push(`${data.errors} errors`);
+        setUploadProgress(parts.length > 0 ? `Done — ${parts.join(', ')}` : 'Done — no files processed');
+        if (data.error_details?.length > 0) {
+          setZipErrors(data.error_details);
+        }
+        if (data.uploaded > 0) {
+          addToast({ type: 'success', title: `${data.uploaded} images uploaded` });
+        }
       } else {
         const data = await res.json().catch(() => ({}));
-        setUploadProgress(`Error: ${data.error || res.statusText}`);
+        setUploadPhase('done');
+        setUploadHasErrors(true);
+        setUploadProgress(`Error: ${(data as { error?: string }).error || res.statusText}`);
       }
     } catch {
+      setUploadPhase('done');
+      setUploadHasErrors(true);
       setUploadProgress('Network error during zip upload');
     }
     setUploading(false);
@@ -1425,8 +1467,50 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
           </button>
         </div>
         {(uploading || uploadProgress) && (
-          <div style={{ marginTop: 10, fontSize: 12, color: uploadProgress.startsWith('Error') ? '#ef4444' : '#f59e0b' }}>
-            {uploadProgress || 'Processing…'}
+          <div style={{ marginTop: 14, width: '100%', maxWidth: 420, margin: '14px auto 0' }}>
+            {uploading && (
+              <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', marginBottom: 8 }}>
+                <div style={{
+                  height: '100%', borderRadius: 2,
+                  background: uploadPhase === 'uploading'
+                    ? 'linear-gradient(90deg, #6366f1, #818cf8)'
+                    : 'linear-gradient(90deg, #f59e0b, #fbbf24)',
+                  animation: 'indeterminate-progress 1.5s ease-in-out infinite',
+                  width: '40%',
+                }} />
+              </div>
+            )}
+            <div style={{
+              fontSize: 12,
+              color: uploadPhase === 'done' && uploadHasErrors ? '#ef4444'
+                : uploadPhase === 'done' ? '#22c55e'
+                : '#f59e0b',
+            }}>
+              {uploadProgress || 'Processing…'}
+            </div>
+          </div>
+        )}
+        {zipErrors.length > 0 && (
+          <div style={{ marginTop: 10, width: '100%', maxWidth: 500, margin: '10px auto 0' }}>
+            <button
+              onClick={() => setShowErrors(!showErrors)}
+              style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+            >
+              {showErrors ? 'Hide error details' : `Show ${zipErrors.length} error details`}
+            </button>
+            {showErrors && (
+              <div style={{
+                marginTop: 6, padding: 10, background: 'rgba(239,68,68,0.06)',
+                border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6,
+                maxHeight: 160, overflowY: 'auto', textAlign: 'left',
+              }}>
+                {zipErrors.map((e, i) => (
+                  <div key={i} style={{ fontSize: 11, color: '#ef4444', lineHeight: 1.6, fontFamily: 'monospace' }}>
+                    {e}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
