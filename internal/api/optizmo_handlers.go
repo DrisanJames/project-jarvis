@@ -186,8 +186,10 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		fileLineCount++
 		if isHexMD5(lower) {
 			validMD5Count++
+			suppressedHashes[lower] = true
 		} else {
 			nonMD5Count++
+			suppressedHashes[md5Hash(lower)] = true
 		}
 		if len(sampleEntries) < 5 {
 			preview := lower
@@ -196,18 +198,17 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 			}
 			sampleEntries = append(sampleEntries, preview)
 		}
-		suppressedHashes[lower] = true
 	}
 	if err := scanner.Err(); err != nil {
 		fail(fmt.Sprintf("error reading Optizmo response: %v", err))
 		return
 	}
 
-	log.Printf("[Optizmo] job %s: downloaded %d entries (%d valid MD5, %d non-MD5)",
+	log.Printf("[Optizmo] job %s: downloaded %d entries (%d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
 		jobID, fileLineCount, validMD5Count, nonMD5Count)
 	log.Printf("[Optizmo] job %s: file sample entries: %s", jobID, strings.Join(sampleEntries, ", "))
 	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] WARNING job %s: %d entries are NOT valid MD5 hashes — matching may fail for those entries. Ensure Optizmo download format is set to MD5.",
+		log.Printf("[Optizmo] job %s: %d plaintext entries auto-converted to MD5 for matching",
 			jobID, nonMD5Count)
 	}
 
@@ -455,8 +456,10 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		fileLineCount++
 		if isHexMD5(lower) {
 			validMD5Count++
+			suppressedHashes[lower] = true
 		} else {
 			nonMD5Count++
+			suppressedHashes[md5Hash(lower)] = true
 		}
 		if len(sampleEntries) < 5 {
 			preview := lower
@@ -465,7 +468,6 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 			}
 			sampleEntries = append(sampleEntries, preview)
 		}
-		suppressedHashes[lower] = true
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Optizmo] error reading suppression file: %v", err)
@@ -478,11 +480,11 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		return
 	}
 
-	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique, %d valid MD5, %d non-MD5)",
+	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique, %d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
 		offerID, fileLineCount, len(suppressedHashes), validMD5Count, nonMD5Count)
 	log.Printf("[Optizmo] import file sample entries: %s", strings.Join(sampleEntries, ", "))
 	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] WARNING import for offer %s: %d entries are NOT valid MD5 hashes — matching will fail for those. Ensure file contains MD5 hashes only.",
+		log.Printf("[Optizmo] import for offer %s: %d plaintext entries auto-converted to MD5 for matching",
 			offerID, nonMD5Count)
 	}
 

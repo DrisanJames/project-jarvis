@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -36,6 +37,7 @@ func RegisterOfferCreativeAssetRoutes(r chi.Router, db *sql.DB, s3Client *s3.Cli
 	r.Get("/offer-center/offers/{id}/assets", h.HandleListAssets)
 	r.Post("/offer-center/offers/{id}/assets", h.HandleUploadAsset)
 	r.Post("/offer-center/offers/{id}/assets/upload-zip", h.HandleUploadZipBundle)
+	r.Delete("/offer-center/offers/{id}/assets/all", h.HandleDeleteAllAssets)
 	r.Delete("/offer-center/offers/{id}/assets/{assetId}", h.HandleDeleteAsset)
 }
 
@@ -454,6 +456,27 @@ func (h *OfferCreativeAssetsHandlers) HandleDeleteAsset(w http.ResponseWriter, r
 	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
+// HandleDeleteAllAssets — DELETE /offer-center/offers/{id}/assets/all
+func (h *OfferCreativeAssetsHandlers) HandleDeleteAllAssets(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id required")
+		return
+	}
+	result, err := h.db.ExecContext(r.Context(),
+		`DELETE FROM mailing_offer_creative_assets WHERE offer_id=$1`, offerID)
+	if err != nil {
+		log.Printf("[CreativeAssets] delete all failed for offer %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to delete assets")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"deleted": affected,
+	})
+}
+
 // LoadOfferAssets loads all creative assets for an offer, grouped by role
 func LoadOfferAssets(db *sql.DB, offerID string) ([]CreativeAsset, error) {
 	rows, err := db.Query(`
@@ -497,6 +520,28 @@ func ResolveImageDomain(db *sql.DB, orgID string) string {
 		return domain
 	}
 	return ""
+}
+
+// ResolveImageDomainForBrand checks whether a specific brand image domain has a
+// verified CloudFront distribution. Returns the brand domain if verified, otherwise
+// falls back to IMAGE_CDN_DOMAIN (img.projectjarvis.io) so URLs actually resolve.
+func ResolveImageDomainForBrand(db *sql.DB, brandDomain string) string {
+	if brandDomain == "" {
+		return os.Getenv("IMAGE_CDN_DOMAIN")
+	}
+	var verified bool
+	err := db.QueryRow(`
+		SELECT verified FROM mailing_image_domains
+		WHERE domain = $1 LIMIT 1
+	`, brandDomain).Scan(&verified)
+	if err == nil && verified {
+		return brandDomain
+	}
+	fallback := os.Getenv("IMAGE_CDN_DOMAIN")
+	if fallback != "" {
+		return fallback
+	}
+	return brandDomain
 }
 
 // rewriteCDNURL replaces the host in a CDN/S3 URL with the given image domain.

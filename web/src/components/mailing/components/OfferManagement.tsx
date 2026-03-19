@@ -1413,6 +1413,24 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
     }
   };
 
+  const deleteAllAssets = async () => {
+    if (!confirm(`Delete all ${assets.length} assets? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/assets/all`, {
+        method: 'DELETE', credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAssets([]);
+        addToast({ type: 'success', title: `${data.deleted} assets deleted` });
+      } else {
+        addToast({ type: 'error', title: 'Failed to delete assets' });
+      }
+    } catch {
+      addToast({ type: 'error', title: 'Failed to delete assets', message: 'Network error' });
+    }
+  };
+
   const copyUrl = (id: string, url: string) => {
     navigator.clipboard.writeText(url);
     setCopiedId(id);
@@ -1470,7 +1488,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
         <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)', marginBottom: 12 }}>
           Drop images or a <strong>.zip bundle</strong> here
         </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
           <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFileSelect} />
           <button style={btnPrimary} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
             Upload Images
@@ -1483,6 +1501,15 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
           >
             Upload Zip Bundle
           </button>
+          {assets.length > 0 && (
+            <button
+              style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }}
+              onClick={deleteAllAssets}
+              disabled={uploading}
+            >
+              Delete All ({assets.length})
+            </button>
+          )}
         </div>
         {(uploading || uploadProgress) && (
           <div style={{ marginTop: 14, width: '100%', maxWidth: 420, margin: '14px auto 0' }}>

@@ -71,7 +71,8 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 	}
 
 	assets, _ := LoadOfferAssets(och.db, offerID)
-	assetPrompt := BuildAssetPromptSection(assets, kit.ImageDomain)
+	imageDomain := ResolveImageDomainForBrand(och.db, kit.ImageDomain)
+	assetPrompt := BuildAssetPromptSection(assets, imageDomain)
 
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
