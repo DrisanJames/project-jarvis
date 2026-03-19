@@ -30,11 +30,9 @@ func TestCampaignStats_BounceClassification(t *testing.T) {
 			[]string{"sent", "delivered", "opens", "clicks", "bounces", "complaints", "unsubscribes"},
 		).AddRow(100, 90, 30, 10, 12, 1, 2))
 
-	// 2. Hard/soft bounce split from tracking events using HardBounceSQL.
-	//    The query must use event_type = 'bounced' AND bounce_type IN (...),
-	//    NOT event_type = 'hard_bounce'/'soft_bounce' (which never exist).
+	// 2. Hard/soft bounce + deferred split from tracking events.
 	mock.ExpectQuery(`event_type = 'bounced'`).
-		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft"}).AddRow(8, 4))
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft", "deferred"}).AddRow(8, 4, 15))
 
 	// 3. Domain breakdown
 	mock.ExpectQuery(`SPLIT_PART\(s.email`).
@@ -54,7 +52,7 @@ func TestCampaignStats_BounceClassification(t *testing.T) {
 	// 6. Timeline query: must also use event_type = 'bounced' + HardBounceSQL
 	mock.ExpectQuery(`event_type = 'bounced'`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"hour", "sent", "delivered", "opens", "clicks", "hard", "soft"},
+			[]string{"hour", "sent", "delivered", "deferred", "opens", "clicks", "hard", "soft"},
 		))
 
 	r := chi.NewRouter()
@@ -71,6 +69,7 @@ func TestCampaignStats_BounceClassification(t *testing.T) {
 	// Core assertion: hard/soft bounces are non-zero (the old bug returned 0)
 	assert.Equal(t, float64(8), resp["hard_bounces"], "hard_bounces should be 8, not 0")
 	assert.Equal(t, float64(4), resp["soft_bounces"], "soft_bounces should be 4, not 0")
+	assert.Equal(t, float64(15), resp["deferred"], "deferred count from tracking events")
 	assert.Equal(t, float64(12), resp["bounces"], "combined bounces should be 12")
 
 	// Rate assertions: open_rate and click_rate use delivered as denominator
@@ -97,7 +96,7 @@ func TestCampaignStats_ZeroBounces(t *testing.T) {
 		).AddRow(50, 48, 15, 5, 0, 0, 0))
 
 	mock.ExpectQuery(`event_type = 'bounced'`).
-		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft"}).AddRow(0, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft", "deferred"}).AddRow(0, 0, 0))
 
 	mock.ExpectQuery(`SPLIT_PART\(s.email`).
 		WillReturnRows(sqlmock.NewRows(
@@ -109,7 +108,7 @@ func TestCampaignStats_ZeroBounces(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"plan_id", "planned", "enqueued"}))
 	mock.ExpectQuery(`event_type = 'bounced'`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"hour", "sent", "delivered", "opens", "clicks", "hard", "soft"},
+			[]string{"hour", "sent", "delivered", "deferred", "opens", "clicks", "hard", "soft"},
 		))
 
 	r := chi.NewRouter()
@@ -143,7 +142,7 @@ func TestCampaignStats_RateDenominators(t *testing.T) {
 		).AddRow(200, 100, 50, 20, 10, 2, 1))
 
 	mock.ExpectQuery(`event_type = 'bounced'`).
-		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft"}).AddRow(7, 3))
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft", "deferred"}).AddRow(7, 3, 90))
 
 	mock.ExpectQuery(`SPLIT_PART\(s.email`).
 		WillReturnRows(sqlmock.NewRows(
@@ -155,7 +154,7 @@ func TestCampaignStats_RateDenominators(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"plan_id", "planned", "enqueued"}))
 	mock.ExpectQuery(`event_type = 'bounced'`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"hour", "sent", "delivered", "opens", "clicks", "hard", "soft"},
+			[]string{"hour", "sent", "delivered", "deferred", "opens", "clicks", "hard", "soft"},
 		))
 
 	r := chi.NewRouter()
@@ -198,7 +197,7 @@ func TestCampaignStats_ZeroDelivered_OpenRateIsZero(t *testing.T) {
 		).AddRow(50, 0, 0, 0, 50, 0, 0))
 
 	mock.ExpectQuery(`event_type = 'bounced'`).
-		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft"}).AddRow(40, 10))
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft", "deferred"}).AddRow(40, 10, 0))
 
 	mock.ExpectQuery(`SPLIT_PART\(s.email`).
 		WillReturnRows(sqlmock.NewRows(
@@ -210,7 +209,7 @@ func TestCampaignStats_ZeroDelivered_OpenRateIsZero(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"plan_id", "planned", "enqueued"}))
 	mock.ExpectQuery(`event_type = 'bounced'`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"hour", "sent", "delivered", "opens", "clicks", "hard", "soft"},
+			[]string{"hour", "sent", "delivered", "deferred", "opens", "clicks", "hard", "soft"},
 		))
 
 	r := chi.NewRouter()
@@ -241,7 +240,7 @@ func TestCampaignStats_DomainBreakdown_UsesCanonicalBounceSQL(t *testing.T) {
 		).AddRow(100, 90, 30, 10, 5, 0, 0))
 
 	mock.ExpectQuery(`event_type = 'bounced'`).
-		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft"}).AddRow(3, 2))
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "soft", "deferred"}).AddRow(3, 2, 5))
 
 	// Domain breakdown: the query must use bounce_type classification, not event_type
 	mock.ExpectQuery(`event_type = 'bounced' AND`).
@@ -256,7 +255,7 @@ func TestCampaignStats_DomainBreakdown_UsesCanonicalBounceSQL(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"plan_id", "planned", "enqueued"}))
 	mock.ExpectQuery(`event_type = 'bounced'`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"hour", "sent", "delivered", "opens", "clicks", "hard", "soft"},
+			[]string{"hour", "sent", "delivered", "deferred", "opens", "clicks", "hard", "soft"},
 		))
 
 	r := chi.NewRouter()

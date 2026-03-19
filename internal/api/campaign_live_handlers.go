@@ -50,6 +50,7 @@ type LiveSnapshot struct {
 type LiveFunnel struct {
 	TotalSent        int     `json:"total_sent"`
 	TotalDelivered   int     `json:"total_delivered"`
+	TotalDeferred    int     `json:"total_deferred"`
 	TotalOpened      int     `json:"total_opened"`
 	TotalClicked     int     `json:"total_clicked"`
 	TotalConverted   int     `json:"total_converted"`
@@ -157,10 +158,17 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Calculate rates
+	// Count deferred events from tracking_events (no campaign counter column for this)
+	var deferredCount int
+	h.db.QueryRowContext(ctx, `
+		SELECT COALESCE(COUNT(*), 0) FROM mailing_tracking_events
+		WHERE campaign_id = $1 AND event_type IN ('deferred','deferral')
+	`, campaignID).Scan(&deferredCount)
+
 	funnel := LiveFunnel{
 		TotalSent:        sentCount,
 		TotalDelivered:   delivered,
+		TotalDeferred:    deferredCount,
 		TotalOpened:      openCount,
 		TotalClicked:     clickCount,
 		TotalBounced:     bounceCount,

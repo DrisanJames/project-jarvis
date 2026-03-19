@@ -141,12 +141,13 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		FROM mailing_campaigns WHERE id = $1
 	`, id).Scan(&sent, &delivered, &opens, &clicks, &bounces, &complaints, &unsubscribes)
 
-	var hardBounces, softBounces int
+	var hardBounces, softBounces, deferred int
 	cb.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0)
+		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0)
 		FROM mailing_tracking_events WHERE campaign_id = $1
-	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id).Scan(&hardBounces, &softBounces)
+	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id).Scan(&hardBounces, &softBounces, &deferred)
 
 	domainRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(SPLIT_PART(s.email, '@', 2), 'unknown') as domain,
@@ -317,6 +318,7 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		SELECT DATE_TRUNC('hour', event_at) as hour,
 		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
 		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
 		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
 		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
 		       SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
@@ -331,13 +333,14 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		defer timeRows.Close()
 		for timeRows.Next() {
 			var hour time.Time
-			var ts, td, to, tc, thb, tsb int
-			if err := timeRows.Scan(&hour, &ts, &td, &to, &tc, &thb, &tsb); err != nil {
+			var ts, td, tdef, to, tc, thb, tsb int
+			if err := timeRows.Scan(&hour, &ts, &td, &tdef, &to, &tc, &thb, &tsb); err != nil {
 				continue
 			}
 			timeline = append(timeline, map[string]interface{}{
 				"hour": hour.Format(time.RFC3339), "sent": ts, "delivered": td,
-				"opens": to, "clicks": tc, "hard_bounces": thb, "soft_bounces": tsb,
+				"deferred": tdef, "opens": to, "clicks": tc,
+				"hard_bounces": thb, "soft_bounces": tsb,
 			})
 		}
 	}
@@ -349,6 +352,7 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"sent":             sent,
 		"delivered":        delivered,
+		"deferred":         deferred,
 		"opens":            opens,
 		"clicks":           clicks,
 		"bounces":          bounces,

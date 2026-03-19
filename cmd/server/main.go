@@ -2218,11 +2218,11 @@ BEGIN
     END LOOP;
 END $$`},
 
-		// 7.4: Route primary profiles to ISP-specific dedicated pools via pool_prefix
-		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = '', pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND (COALESCE(pool_prefix,'') != 'db' OR COALESCE(ip_pool,'') != '')`},
-		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = '', pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND (COALESCE(pool_prefix,'') != 'qf' OR COALESCE(ip_pool,'') != '')`},
-		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = '', pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND (COALESCE(pool_prefix,'') != 'ht' OR COALESCE(ip_pool,'') != '')`},
-		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = '', pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND (COALESCE(pool_prefix,'') != 'mh' OR COALESCE(ip_pool,'') != '')`},
+		// 7.4: Route primary profiles to shared pools
+		{"phase7_startup_route_db", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND name LIKE 'DiscountBlog PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%' AND (COALESCE(ip_pool,'') != 'shared-a' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
+		{"phase7_startup_route_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%' AND (COALESCE(ip_pool,'') != 'shared-b' OR COALESCE(pool_prefix,'') != '')`},
 	}
 
 	var ok, fail int

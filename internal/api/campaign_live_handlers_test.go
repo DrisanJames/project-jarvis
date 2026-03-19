@@ -31,20 +31,24 @@ func TestLiveSnapshot_HardSoftBounceSplit(t *testing.T) {
 		).AddRow("Test Campaign", "sending", "Hello", 1000, 800,
 			750, 200, 50, 30, 20, 10, 2, 150.0, nil))
 
-	// 2. Skipped count from campaign_queue
+	// 2. Deferred count from tracking_events
+	mock.ExpectQuery(`deferred`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(45))
+
+	// 3. Skipped count from campaign_queue
 	mock.ExpectQuery(`mailing_campaign_queue`).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
 
-	// 3. Recent tracking events
+	// 4. Recent tracking events
 	mock.ExpectQuery(`mailing_tracking_events`).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "event_type", "email", "event_at"}))
 
-	// 4. AB variants query
+	// 5. AB variants query
 	mock.ExpectQuery(`mailing_ab_variants`).
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"id", "variant_name", "subject", "from_name", "sent", "opens", "clicks", "is_winner"}))
 
-	// 5. Agent decisions query
+	// 6. Agent decisions query
 	mock.ExpectQuery(`mailing_campaign_agent_decisions`).
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"id", "decision_type", "reasoning", "action_taken", "impact", "decided_at"}))
@@ -61,6 +65,10 @@ func TestLiveSnapshot_HardSoftBounceSplit(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 
 	funnel := resp["funnel"].(map[string]interface{})
+
+	// Deferred count
+	assert.Equal(t, float64(45), funnel["total_deferred"],
+		"deferred messages in PMTA queue")
 
 	// Bounce split is present
 	assert.Equal(t, float64(30), funnel["total_bounced"])
@@ -101,6 +109,8 @@ func TestLiveSnapshot_ZeroDelivered_RatesSafe(t *testing.T) {
 		).AddRow("Bounce Campaign", "completed", "Oops", 100, 100,
 			0, 0, 0, 100, 80, 20, 0, 0.0, nil))
 
+	mock.ExpectQuery(`deferred`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`mailing_campaign_queue`).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`mailing_tracking_events`).
