@@ -468,6 +468,9 @@ func planPMTAAudience(
 	seenEmails := make(map[string]bool)
 	selectionRank := 0
 
+	// Async ISP backfill: collect subscriber IDs that need ISP set, flush in background.
+	var ispBackfill []struct{ ID, ISP string }
+
 	qualifyEmail := func(subID, email, sourceType, sourceID string) bool {
 		emailLower := strings.ToLower(strings.TrimSpace(email))
 		if emailLower == "" || seenEmails[emailLower] {
@@ -505,6 +508,7 @@ func planPMTAAudience(
 			SourceID:      sourceID,
 			SelectionRank: selectionRank,
 		})
+		ispBackfill = append(ispBackfill, struct{ ID, ISP string }{subID, isp})
 		return true
 	}
 
@@ -607,6 +611,24 @@ func planPMTAAudience(
 		selectedTotal += len(recipients)
 	}
 
+	// Async backfill: write ISP to subscribers that don't have it set yet.
+	if len(ispBackfill) > 0 {
+		go func() {
+			bgCtx := context.Background()
+			for i := 0; i < len(ispBackfill); i += 500 {
+				end := i + 500
+				if end > len(ispBackfill) {
+					end = len(ispBackfill)
+				}
+				for _, entry := range ispBackfill[i:end] {
+					db.ExecContext(bgCtx,
+						"UPDATE mailing_subscribers SET isp = $1 WHERE id = $2 AND (isp IS NULL OR isp = '')",
+						entry.ISP, entry.ID)
+				}
+			}
+		}()
+	}
+
 	return pmtaAudiencePlan{
 		RecipientsByISP:  selectedByISP,
 		CountsByISP:      countsByISP,
@@ -624,16 +646,25 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 		if err := db.QueryRowContext(ctx,
 			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segmentID,
 		).Scan(&segListID, &conditionsRaw); err != nil {
-			return nil, err
+			log.Printf("[loadExclusionSegmentEmails] segment %s not found, skipping: %v", segmentID, err)
+			continue
 		}
 		var listIDVal interface{}
 		if segListID != nil && *segListID != "" {
 			listIDVal = *segListID
 		}
+
+		raw := strings.TrimSpace(conditionsRaw.String)
+		if (raw == "" || raw == "null" || raw == "[]") && listIDVal == nil {
+			log.Printf("[loadExclusionSegmentEmails] segment %s has no conditions and no list, skipping (would otherwise exclude everything)", segmentID)
+			continue
+		}
+
 		query, args := buildSegmentQuery(conditionsRaw.String, listIDVal)
 		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, err
+			log.Printf("[loadExclusionSegmentEmails] segment %s query error: %v", segmentID, err)
+			continue
 		}
 		for rows.Next() {
 			var subID, email string
@@ -1028,6 +1059,9 @@ func (s *Server) HandlePreflightCheck(w http.ResponseWriter, r *http.Request) {
 
 // waveSanityCheck validates the normalized wave plan meets minimum throttling
 // requirements. Called after normalizePMTACampaignInput + buildPMTAWaveSpecs.
+//
+// The minimum span is proportional to quota: larger volumes need more spread.
+// For quota=0 (unlimited), the full defaultThrottleDuration applies.
 func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
 	const smallISPThreshold = 500
 	var issues []string
@@ -1047,8 +1081,9 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 			first := waves[0].ScheduledAt
 			last := waves[len(waves)-1].ScheduledAt
 			span := last.Sub(first)
-			if span < defaultThrottleDuration-15*time.Minute {
-				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v)", isp, span.Round(time.Minute), defaultThrottleDuration))
+			minSpan := minSpanForQuota(plan.Quota)
+			if span < minSpan-15*time.Minute {
+				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v)", isp, span.Round(time.Minute), minSpan.Round(time.Minute)))
 			}
 		}
 	}
@@ -1056,4 +1091,22 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 		return fmt.Errorf("wave sanity check failed: %s", strings.Join(issues, "; "))
 	}
 	return nil
+}
+
+// minSpanForQuota computes the minimum delivery window for a given ISP quota.
+// 100 msgs/hr is the warmup-safe baseline. The result is clamped between
+// 1 hour and defaultThrottleDuration (8h).
+func minSpanForQuota(quota int) time.Duration {
+	const conservativeHourlyRate = 100
+	if quota <= 0 {
+		return defaultThrottleDuration
+	}
+	proportional := time.Duration(float64(quota) / float64(conservativeHourlyRate) * float64(time.Hour))
+	if proportional > defaultThrottleDuration {
+		return defaultThrottleDuration
+	}
+	if proportional < 1*time.Hour {
+		return 1 * time.Hour
+	}
+	return proportional
 }

@@ -1557,7 +1557,14 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 func buildSegmentQuery(conditionsRaw string, listIDVal interface{}) (string, []interface{}) {
 	raw := strings.TrimSpace(conditionsRaw)
 	if raw == "" || raw == "null" || raw == "[]" {
-		return BuildSegmentSubscriberQuery(listIDVal, nil)
+		// No conditions defined: if a list is bound, return all subscribers in
+		// that list (inclusion use-case). Without a list, return an empty set
+		// so exclusion segments with empty conditions never accidentally
+		// exclude every subscriber in the system.
+		if listIDVal != nil {
+			return BuildSegmentSubscriberQuery(listIDVal, nil)
+		}
+		return "SELECT id::text, email FROM mailing_subscribers WHERE FALSE", nil
 	}
 
 	if raw[0] == '{' {

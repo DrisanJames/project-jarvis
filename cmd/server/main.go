@@ -364,9 +364,9 @@ func main() {
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
 				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts)
-				segRefresh := worker.NewSegmentRefreshWorker(mailingDB, 4*time.Hour)
+				segRefresh := worker.NewSegmentRefreshWorker(mailingDB, 30*time.Minute)
 				segRefresh.Start(ctx)
-				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 4h)")
+				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m)")
 
 				// Start List Refresh Worker (updates subscriber_count and mailed_to on lists)
 				listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
@@ -1609,6 +1609,9 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},
 		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},
 		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
+
+		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
+		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
 
 		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
 		{"drop_ip_status_check", `ALTER TABLE mailing_ip_addresses DROP CONSTRAINT IF EXISTS mailing_ip_addresses_status_check`},
