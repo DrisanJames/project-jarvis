@@ -42,12 +42,13 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 
 	ctx := r.Context()
 
-	var name, description, webProperty, htmlCreative, trackingLink string
+	var name, description, webProperty, htmlCreative, trackingLink, approvedAdCopy, approvedTaglines string
 	err := och.db.QueryRowContext(ctx, `
 		SELECT name, COALESCE(description,''), COALESCE(web_property,''),
-			COALESCE(original_html_creative,''), COALESCE(tracking_link_template,'')
+			COALESCE(original_html_creative,''), COALESCE(tracking_link_template,''),
+			COALESCE(approved_ad_copy,''), COALESCE(approved_taglines,'')
 		FROM mailing_offers WHERE id=$1
-	`, offerID).Scan(&name, &description, &webProperty, &htmlCreative, &trackingLink)
+	`, offerID).Scan(&name, &description, &webProperty, &htmlCreative, &trackingLink, &approvedAdCopy, &approvedTaglines)
 	if err == sql.ErrNoRows {
 		respondError(w, http.StatusNotFound, "offer not found")
 		return
@@ -69,6 +70,9 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 		return
 	}
 
+	assets, _ := LoadOfferAssets(och.db, offerID)
+	assetPrompt := BuildAssetPromptSection(assets, kit.ImageDomain)
+
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		respondError(w, http.StatusInternalServerError, "ANTHROPIC_API_KEY not set — add to GitHub Secrets and redeploy")
@@ -88,7 +92,8 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 		jobID, offerID, time.Now())
 
 	// Fire async generation
-	go och.runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink, apiKey, kit)
+	go och.runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink,
+		approvedAdCopy, approvedTaglines, assetPrompt, apiKey, kit)
 
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{
 		"status":  "generating",
@@ -97,7 +102,7 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 	})
 }
 
-func (och *OfferCenterHandlers) runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink, apiKey string, kit BrandKit) {
+func (och *OfferCenterHandlers) runCreativeGeneration(jobID, offerID, name, description, htmlCreative, trackingLink, approvedAdCopy, approvedTaglines, assetPrompt, apiKey string, kit BrandKit) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -110,13 +115,14 @@ func (och *OfferCenterHandlers) runCreativeGeneration(jobID, offerID, name, desc
 
 	creativeCopy := extractCreativeCopy(htmlCreative)
 	productImage := extractProductImage(htmlCreative)
-	prompt := buildCreativeGenerationPrompt(name, description, creativeCopy, trackingLink, productImage, kit)
+	prompt := buildCreativeGenerationPrompt(name, description, creativeCopy, trackingLink, productImage,
+		approvedAdCopy, approvedTaglines, assetPrompt, kit)
 
 	systemPrompt := fmt.Sprintf(`You are the head email marketing creative director for %s (%s — "%s").
 
 Brand voice: %s
 
-You design high-converting, text-heavy HTML email creatives that feel personal, look clean, and drive action. Every email you write gets opened, read, and clicked — because it feels like a message from a trusted friend, not a corporate blast.
+You design high-converting HTML email creatives in multiple styles — image-rich co-branded, text-heavy editorial, and hybrid layouts. Every email you write gets opened, read, and clicked because it feels authentic to the brand and delivers real value.
 
 Your emails are mobile-first, dark-mode compatible, and render perfectly in Gmail, Outlook, Apple Mail, and Yahoo Mail. You use inline CSS only.
 
@@ -277,7 +283,7 @@ func extractCreativeCopy(htmlCreative string) string {
 	return text
 }
 
-func buildCreativeGenerationPrompt(offerName, description, creativeCopy, trackingLink, productImage string, kit BrandKit) string {
+func buildCreativeGenerationPrompt(offerName, description, creativeCopy, trackingLink, productImage, approvedAdCopy, approvedTaglines, assetPrompt string, kit BrandKit) string {
 	var sb strings.Builder
 
 	fmt.Fprintf(&sb, `BRAND: %s (%s)
@@ -297,7 +303,19 @@ OFFER: %s
 	}
 
 	if creativeCopy != "" {
-		fmt.Fprintf(&sb, "\nORIGINAL CREATIVE COPY (extracted from the image-heavy email — analyze the product language, claims, value props, and tone):\n%s\n", creativeCopy)
+		fmt.Fprintf(&sb, "\nORIGINAL CREATIVE COPY (extracted from the advertiser email — analyze the product language, claims, value props, and tone):\n%s\n", creativeCopy)
+	}
+
+	if approvedAdCopy != "" {
+		copy := approvedAdCopy
+		if len(copy) > 3000 {
+			copy = copy[:3000]
+		}
+		fmt.Fprintf(&sb, "\nAPPROVED AD COPY (use this as the primary selling language — do NOT invent new claims):\n%s\n", copy)
+	}
+
+	if approvedTaglines != "" {
+		fmt.Fprintf(&sb, "\nAPPROVED TAGLINES/SUBJECT LINES (use these as inspiration for subject lines and headers):\n%s\n", approvedTaglines)
 	}
 
 	if productImage != "" {
@@ -308,20 +326,90 @@ OFFER: %s
 		fmt.Fprintf(&sb, "\nCTA TRACKING URL: %s\n", trackingLink)
 	}
 
-	fmt.Fprintf(&sb, `
-TASK: Generate exactly 10 text-heavy HTML email creatives for the offer above.
+	if assetPrompt != "" {
+		sb.WriteString(assetPrompt)
+	}
 
-Each creative must be a complete, production-ready HTML email that:
-- Is primarily TEXT-BASED (not image-heavy) — text does the selling
-- May include the product image once, but the layout is text-driven
-- Uses the %s brand identity (colors, fonts, voice, logo)
-- Feels personal — like a recommendation from a friend
-- Includes personalization merge tags where natural
-- Has a strong, clear CTA button linking to the tracking URL
-- Is mobile-responsive (600px max-width, scales down)
-- Uses only inline CSS (no <style> blocks)
-- Includes an unsubscribe footer
-- Is 100%% email-client compatible (Gmail, Outlook, Apple Mail, Yahoo)
+	hasAssets := assetPrompt != ""
+
+	if hasAssets {
+		fmt.Fprintf(&sb, `
+TASK: Generate exactly 10 HTML email creatives for the offer above, split into THREE TIERS:
+
+═══ TIER 1: CO-BRANDED IMAGE-RICH (variants 1-5) ═══
+These emails showcase the uploaded brand creative assets prominently.
+- Use hero/header images (email_hero, email_header roles) at full width at the top
+- Use content/inline images (email_content, content_block roles) within the body
+- Use the EXACT CDN URLs listed above in <img> tags — do NOT use placeholder URLs
+- Set explicit width and height attributes on every <img> tag
+- Weave in the approved ad copy as the primary selling language
+- Rich visual layout: brand header with logo, hero image, styled product cards, accent-colored CTA button
+- Each of the 5 must use a DIFFERENT persuasion angle:
+  1. "The Personal Pick" — warm recommendation from %s staff, hero image + editorial intro
+  2. "Urgency/FOMO" — limited-time deal with bold imagery, countdown language
+  3. "Social Proof" — reviews/ratings with product imagery
+  4. "Problem → Solution" — pain point intro then product hero with solution
+  5. "Comparison Winner" — side-by-side value proposition with product images
+
+═══ TIER 2: TEXT-HEAVY EDITORIAL (variants 6-7) ═══
+Minimal or no images. Copy-driven, personal voice.
+- At most ONE product image (the smallest available, or none)
+- Feels like a personal email from a friend, not a marketing blast
+- Use approved ad copy and taglines to craft the narrative
+- Each must use a DIFFERENT angle:
+  6. "Quick Hit" — ultra-short, 3-4 sentences with a bold CTA
+  7. "Story" — mini narrative about someone who benefited from this product
+
+═══ TIER 3: HYBRID (variants 8-10) ═══
+Strategic 1-2 image placements with strong text copy.
+- ONE hero or banner image at the top from the uploaded assets
+- Text-driven body paragraphs with approved ad copy woven in
+- Balance between visual appeal and editorial depth
+- Each must use a DIFFERENT angle:
+  8. "FAQ Style" — addresses objections in Q&A format with a product banner
+  9. "VIP/Exclusive" — insider access feel with a premium hero image
+  10. "Money Saver" — savings-focused with a deal banner image
+
+`, kit.SiteName)
+	} else {
+		fmt.Fprintf(&sb, `
+TASK: Generate exactly 10 HTML email creatives for the offer above, split into THREE TIERS:
+
+NOTE: No brand images were uploaded for this offer. Generate ALL creatives as text-driven layouts.
+
+═══ TIER 1: EDITORIAL (variants 1-5) ═══
+Text-driven with strong brand styling (colors, fonts, logo). No stock images.
+- Use the brand identity (colors, fonts, logo) heavily in the layout
+- Each of the 5 must use a DIFFERENT persuasion angle:
+  1. "The Personal Pick" — warm recommendation from %s staff
+  2. "Urgency/FOMO" — limited-time deal, act now
+  3. "Social Proof" — reviews, ratings, what others are saying
+  4. "Problem → Solution" — pain point first, then the product as the fix
+  5. "Comparison Winner" — why this beats the alternatives
+
+═══ TIER 2: MINIMAL (variants 6-7) ═══
+Ultra-clean, plain-text feel. Almost no formatting.
+  6. "Quick Hit" — 3-4 sentences, bold CTA, nothing else
+  7. "Story" — short narrative, friendly tone, single CTA at the end
+
+═══ TIER 3: STRUCTURED (variants 8-10) ═══
+Styled cards, sections, or Q&A blocks — text only, no images.
+  8. "FAQ Style" — addresses objections in Q&A format
+  9. "VIP/Exclusive" — insider access feel, premium styling
+  10. "Money Saver" — savings-focused with deal callouts
+
+`, kit.SiteName)
+	}
+
+	fmt.Fprintf(&sb, `ALL CREATIVES MUST:
+- Use the %s brand identity (colors, fonts, voice, logo)
+- Feel personal — like a recommendation from a trusted friend
+- Include personalization merge tags where natural
+- Have a strong, clear CTA button linking to the tracking URL
+- Be mobile-responsive (600px max-width, scales down)
+- Use only inline CSS (no <style> blocks)
+- Include an unsubscribe footer
+- Be 100%% email-client compatible (Gmail, Outlook, Apple Mail, Yahoo)
 
 PERSONALIZATION TAGS (use naturally — don't force all into every email):
 - {%% if first_name %%}Hi {{ first_name }},{%% else %%}Hey there,{%% endif %%}
@@ -330,43 +418,33 @@ PERSONALIZATION TAGS (use naturally — don't force all into every email):
 - {{ system.current_year }} — current year
 - {{ system.unsubscribe_url }} — unsubscribe link (REQUIRED in footer)
 
-CREATIVE ANGLES — each variant should use a DIFFERENT persuasion strategy:
-1. "The Personal Pick" — warm, conversational recommendation from %s staff
-2. "Urgency/FOMO" — limited-time deal, act now
-3. "Social Proof" — reviews, ratings, what others are saying
-4. "Problem → Solution" — pain point first, then the product as the fix
-5. "Comparison Winner" — why this beats the alternatives
-6. "Money Saver" — focus on savings, value, ROI
-7. "Quick Hit" — ultra-short, punchy, 3-sentence email with bold CTA
-8. "Story" — mini narrative about someone who benefited
-9. "FAQ Style" — addresses objections head-on in Q&A format
-10. "VIP/Exclusive" — makes the reader feel like they're getting insider access
-
 HTML TEMPLATE REQUIREMENTS:
 - Outer table: width 100%%, background #f4f4f4 (light) or #1a1a2e (dark depending on brand)
 - Inner table: max-width 600px, centered
 - Header: brand logo using the LogoHTML provided, styled with brand heading font
-- Body: text-driven content with 16-18px body font, 1.6 line-height, brand body font
-- CTA button: prominent, brand primary color background, white text, border-radius 8px, padding 14px 32px, full-width on mobile
+- Body: 16-18px body font, 1.6 line-height, brand body font
+- CTA button: brand primary color background, white text, border-radius 8px, padding 14px 32px
 - Footer: small text with sender info, unsubscribe link using {{ system.unsubscribe_url }}, physical address
-- All images must have alt text
+- All images must have alt text and explicit width/height attributes
 - Use <!--[if mso]> conditionals for Outlook button rendering
+`, kit.SiteName)
 
+	if trackingLink != "" {
+		fmt.Fprintf(&sb, `
 For the CTA URL, use exactly: %s
-This URL may contain merge tags that get replaced at send time. Keep these EXACT placeholders as-is in the URL:
-- {{DATE_MMDDYYYY}} — replaced with the send date
-- {{MAILING_ID}} — replaced with the mailing/subscriber ID
-- {{SUBSCRIBER_ID}} — replaced with the subscriber ID
-- {{CAMPAIGN_ID}} — replaced with the campaign ID
-- {{CREATIVE_ID}} — replaced with the creative ID
-Do NOT change, remove, or re-encode these placeholders. Copy the CTA URL verbatim into every email's CTA button href.
+This URL may contain merge tags. Keep these EXACT placeholders as-is:
+- {{DATE_MMDDYYYY}}, {{MAILING_ID}}, {{SUBSCRIBER_ID}}, {{CAMPAIGN_ID}}, {{CREATIVE_ID}}
+Do NOT change, remove, or re-encode these placeholders.
+`, trackingLink)
+	}
 
+	sb.WriteString(`
 RETURN THIS JSON:
 {
   "creatives": [
     {
       "variant_name": "The Personal Pick",
-      "angle": "Warm recommendation from Jamie at DiscountBlog",
+      "angle": "Warm recommendation with hero image and editorial intro",
       "subject_line": "string (compelling, 40-60 chars)",
       "pre_header": "string (preview text, 60-90 chars)",
       "html": "string (complete HTML email document)"
@@ -374,10 +452,10 @@ RETURN THIS JSON:
   ]
 }
 
-IMPORTANT: Keep each HTML email compact — no extra whitespace, no unnecessary comments, minimize attribute repetition. Each email should be 3-6KB. Focus on CONTENT quality, not code verbosity.
+IMPORTANT: Keep each HTML email compact — no extra whitespace, no unnecessary comments. Each email should be 3-6KB. Focus on CONTENT quality, not code verbosity.
 
 Generate EXACTLY 10 creatives. Each html must be a complete <!DOCTYPE html> email document.
-`, kit.SiteName, kit.SiteName, trackingLink)
+`)
 
 	return sb.String()
 }

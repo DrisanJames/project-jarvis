@@ -1392,6 +1392,23 @@ func (och *OfferCenterHandlers) HandleDeleteOfferCreative(w http.ResponseWriter,
 	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": cid})
 }
 
+func (och *OfferCenterHandlers) HandleDeleteAllOfferCreatives(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+	result, err := och.db.ExecContext(r.Context(),
+		`DELETE FROM mailing_offer_creatives WHERE offer_id = $1`, offerID)
+	if err != nil {
+		log.Printf("ERROR: delete all creatives for offer %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to delete creatives")
+		return
+	}
+	n, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": n})
+}
+
 // ---------------------------------------------------------------------------
 // DEPLOYMENTS (read-only)
 // ---------------------------------------------------------------------------

@@ -2667,6 +2667,17 @@ END $$`},
 		{"phase7_route_qf_to_shared_a", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-a', pool_prefix = '' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND name LIKE 'QuizFiesta PMTA%'`},
 		{"phase7_route_ht_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND name LIKE 'HistoryThinking PMTA%'`},
 		{"phase7_route_mh_to_shared_b", `UPDATE mailing_sending_profiles SET ip_pool = 'shared-b', pool_prefix = '' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND name LIKE 'MyOwnHealth PMTA%'`},
+
+		// =====================================================================
+		// Phase 8: Switch to ISP-dedicated pools (IPXO IPs)
+		// IPXO PTR/FCrDNS now fully working. Route each domain through its
+		// own ISP-specific pools on the correct PMTA server.
+		// =====================================================================
+		{"phase8_route_db_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_route_qf_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_route_ht_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_route_mh_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
+		{"phase8_ipxo_warmup_1000", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
 	}
 
 	var ok, fail int

@@ -1053,6 +1053,17 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
     }
   };
 
+  const deleteAllCreatives = async () => {
+    if (!confirm(`Delete all ${creatives.length} creatives? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/creatives/all`, {
+        method: 'DELETE', credentials: 'include',
+      });
+      if (res.ok) { onRefresh(); addToast({ type: 'info', title: `Deleted all creatives` }); }
+      else { addToast({ type: 'error', title: 'Failed to delete creatives' }); }
+    } catch { addToast({ type: 'error', title: 'Network error' }); }
+  };
+
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
@@ -1061,11 +1072,16 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
           onClick={generateCreatives}
           disabled={isGenerating}
         >
-          {isGenerating ? 'Generating ~10 Creatives…' : 'Generate Creatives'}
+          {isGenerating ? 'Generating 10 Creatives…' : 'Generate Creatives'}
         </button>
         <button style={btnGhost} onClick={() => setShowUpload(!showUpload)}>
           {showUpload ? 'Cancel' : 'Upload Manual'}
         </button>
+        {creatives.length > 0 && (
+          <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={deleteAllCreatives}>
+            Delete All ({creatives.length})
+          </button>
+        )}
         {isGenerating && (
           <span style={{ fontSize: 11, color: '#f59e0b' }}>AI is crafting your emails — this takes 1-2 minutes</span>
         )}

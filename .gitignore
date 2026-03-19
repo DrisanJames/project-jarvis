@@ -49,3 +49,4 @@ data/
 # Jarvis local config
 .jarvis/
 .cursor/
+fix_exclusion_segments

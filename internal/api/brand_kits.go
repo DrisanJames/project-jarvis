@@ -40,7 +40,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIURL:     "https://discountblog.com/api/reviews",
 		SiteAPIKey:     "",
 		SendingDomain:  "em.discountblog.com",
-		ImageDomain:    "img.em.discountblog.com",
+		ImageDomain:    "img.discountblog.com",
 	},
 	"quizfiesta": {
 		Key:            "quizfiesta",
@@ -57,7 +57,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIURL:     "https://quizfiesta.com/api/reviews",
 		SiteAPIKey:     "",
 		SendingDomain:  "em.quizfiesta.com",
-		ImageDomain:    "img.em.quizfiesta.com",
+		ImageDomain:    "img.quizfiesta.com",
 	},
 	"historythinking": {
 		Key:            "historythinking",
@@ -74,7 +74,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIURL:     "https://historythinking.com/api/reviews",
 		SiteAPIKey:     "",
 		SendingDomain:  "em.historythinking.com",
-		ImageDomain:    "img.em.historythinking.com",
+		ImageDomain:    "img.historythinking.com",
 	},
 	"myownhealth": {
 		Key:            "myownhealth",
@@ -91,7 +91,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIURL:     "https://myownhealth.net/api/reviews",
 		SiteAPIKey:     "",
 		SendingDomain:  "em.myownhealth.net",
-		ImageDomain:    "img.em.myownhealth.net",
+		ImageDomain:    "img.myownhealth.net",
 	},
 }
 
