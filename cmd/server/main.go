@@ -348,7 +348,9 @@ func main() {
 
 				if rr := server.GetRateRegistry(); rr != nil {
 					sendWorkerPool.SetRateRegistry(rr)
-					log.Println("ISP rate registry wired to send worker pool")
+					perIPEnabled := os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
+					sendWorkerPool.SetPerIPRateLimiting(perIPEnabled)
+					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v)", perIPEnabled)
 				}
 
 				sendWorkerPool.Start()
@@ -2304,6 +2306,26 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		{"phase8_startup_route_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_startup_route_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_startup_ipxo_warmup", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
+
+		// Phase 9: ThrottleAgent state persistence
+		{"create_throttle_agent_state", `CREATE TABLE IF NOT EXISTS mailing_engine_throttle_agent_state (
+			isp TEXT PRIMARY KEY,
+			current_rate_adj DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+			original_rate INT NOT NULL DEFAULT 0,
+			last_stable_rate DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+			backoff_count INT NOT NULL DEFAULT 0,
+			in_recovery BOOLEAN NOT NULL DEFAULT FALSE,
+			recovery_started TIMESTAMPTZ,
+			last_backoff_at TIMESTAMPTZ,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"create_ip_throttle_state", `CREATE TABLE IF NOT EXISTS mailing_isp_ip_throttle_state (
+			isp TEXT NOT NULL,
+			ip_hostname TEXT NOT NULL,
+			msgs_per_hour DOUBLE PRECISION NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (isp, ip_hostname)
+		)`},
 	}
 
 	var ok, fail int

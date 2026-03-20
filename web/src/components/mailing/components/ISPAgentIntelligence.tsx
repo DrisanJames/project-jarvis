@@ -129,6 +129,48 @@ interface AgentActivity {
   recent_feed: AgentFeedEntry[];
 }
 
+interface EngineDecision {
+  action: string;
+  action_params: Record<string, unknown>;
+  result: string;
+  created_at: string;
+}
+
+interface EngineConviction {
+  verdict: string;
+  statement: string;
+  created_at: string;
+}
+
+interface EngineIPHealth {
+  vmta: string;
+  bounces_1h: number;
+  delivered_1h: number;
+  complaints_1h: number;
+}
+
+interface EngineData {
+  isp?: string;
+  domain?: string;
+  engine_data?: null;
+  reason?: string;
+  current_rate?: number;
+  config_rate?: number;
+  rate_adjustment?: number;
+  per_ip_rates?: Record<string, number>;
+  per_ip_enabled?: boolean;
+  throttle_state?: {
+    current_rate_adj: number;
+    original_rate: number;
+    backoff_count: number;
+    in_recovery: boolean;
+    updated_at: string;
+  } | null;
+  recent_decisions?: EngineDecision[];
+  active_convictions?: EngineConviction[];
+  ip_health?: EngineIPHealth[];
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const orgFetch = async (url: string, orgId?: string) => {
@@ -286,6 +328,8 @@ export const ISPAgentIntelligence: React.FC = () => {
   const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
   const [loadingActivity, setLoadingActivity] = useState(false);
   const [feedFilter, setFeedFilter] = useState<string>('');
+  const [engineData, setEngineData] = useState<EngineData | null>(null);
+  const [loadingEngine, setLoadingEngine] = useState(false);
 
   const fetchAgents = useCallback(async () => {
     setLoading(true);
@@ -365,19 +409,40 @@ export const ISPAgentIntelligence: React.FC = () => {
     }
   }, [organization]);
 
+  const fetchEngineData = useCallback(async (agentId: string) => {
+    setLoadingEngine(true);
+    try {
+      const res = await orgFetch(`/api/mailing/isp-agents/managed/${agentId}/engine`, organization?.id);
+      const data = await res.json();
+      setEngineData(data);
+    } catch (err) {
+      console.error('Failed to fetch engine data:', err);
+      setEngineData(null);
+    } finally {
+      setLoadingEngine(false);
+    }
+  }, [organization]);
+
   useEffect(() => {
     fetchAgents();
     fetchManagedAgents();
   }, [fetchAgents, fetchManagedAgents]);
 
   useEffect(() => {
-    if (!expandedAgent) return;
+    if (!expandedAgent) {
+      setEngineData(null);
+      return;
+    }
     const agent = managedAgents.find(a => a.id === expandedAgent);
     const interval = (agent?.status === 'sending' || agent?.status === 'adapting') ? 5000 : 30000;
     fetchAgentActivity(expandedAgent);
-    const timer = setInterval(() => fetchAgentActivity(expandedAgent), interval);
+    fetchEngineData(expandedAgent);
+    const timer = setInterval(() => {
+      fetchAgentActivity(expandedAgent);
+      fetchEngineData(expandedAgent);
+    }, interval);
     return () => clearInterval(timer);
-  }, [expandedAgent, managedAgents, fetchAgentActivity]);
+  }, [expandedAgent, managedAgents, fetchAgentActivity, fetchEngineData]);
 
   const filteredAgents = agents.filter(a =>
     !searchFilter ||
@@ -731,6 +796,175 @@ export const ISPAgentIntelligence: React.FC = () => {
                       </button>
                     </div>
                   </div>
+
+                  {/* Engine Status Panel */}
+                  {expandedAgent === agent.id && loadingEngine && !engineData && (
+                    <div className="ia-engine-panel ia-engine-no-mapping" onClick={(e) => e.stopPropagation()}>
+                      <FontAwesomeIcon icon={faSpinner} spin />
+                      <span>Loading engine data...</span>
+                    </div>
+                  )}
+                  {expandedAgent === agent.id && engineData && !engineData.reason && (
+                    <div className="ia-engine-panel" onClick={(e) => e.stopPropagation()}>
+                      <div className="ia-engine-header">
+                        <FontAwesomeIcon icon={faTachometerAlt} />
+                        <span>Engine Status</span>
+                        <span className="ia-engine-isp-badge">{engineData.isp}</span>
+                        {engineData.per_ip_enabled && (
+                          <span className="ia-engine-flag" style={{ background: '#10b98122', color: '#10b981', fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px' }}>
+                            Per-IP Active
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Rate Gauge */}
+                      <div className="ia-engine-rates">
+                        <div className="ia-engine-rate-main">
+                          <span className="ia-engine-rate-value">{Math.round(engineData.current_rate || 0)}</span>
+                          <span className="ia-engine-rate-unit">/hr</span>
+                          <span className="ia-engine-rate-label">Current Rate</span>
+                        </div>
+                        <div className="ia-engine-rate-meta">
+                          <div className="ia-engine-meta-item">
+                            <span className="ia-engine-meta-label">Config</span>
+                            <span className="ia-engine-meta-value">{engineData.config_rate || 0}/hr</span>
+                          </div>
+                          <div className="ia-engine-meta-item">
+                            <span className="ia-engine-meta-label">Adjustment</span>
+                            <span className="ia-engine-meta-value" style={{
+                              color: (engineData.rate_adjustment || 1) < 0.9 ? '#ef4444'
+                                : (engineData.rate_adjustment || 1) < 1.0 ? '#f59e0b' : '#10b981'
+                            }}>
+                              {((engineData.rate_adjustment || 1) * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        </div>
+                        {/* Rate bar */}
+                        <div className="ia-bar-bg" style={{ marginTop: '8px' }}>
+                          <div className="ia-bar-fill" style={{
+                            width: `${Math.min((engineData.rate_adjustment || 1) * 100, 100)}%`,
+                            background: (engineData.rate_adjustment || 1) < 0.5 ? '#ef4444'
+                              : (engineData.rate_adjustment || 1) < 0.9 ? '#f59e0b' : '#10b981',
+                            transition: 'width 0.5s ease'
+                          }} />
+                        </div>
+                      </div>
+
+                      {/* Throttle State */}
+                      {engineData.throttle_state && (
+                        <div className="ia-engine-throttle">
+                          <span className="ia-engine-section-title">Throttle Agent State</span>
+                          <div className="ia-engine-throttle-grid">
+                            <div className="ia-engine-ts-item">
+                              <span className="ia-engine-ts-label">Backoff Steps</span>
+                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.backoff_count > 3 ? '#ef4444' : '#94a3b8' }}>
+                                {engineData.throttle_state.backoff_count}
+                              </span>
+                            </div>
+                            <div className="ia-engine-ts-item">
+                              <span className="ia-engine-ts-label">Recovery</span>
+                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.in_recovery ? '#f59e0b' : '#64748b' }}>
+                                {engineData.throttle_state.in_recovery ? 'Active' : 'No'}
+                              </span>
+                            </div>
+                            <div className="ia-engine-ts-item">
+                              <span className="ia-engine-ts-label">Rate Adj</span>
+                              <span className="ia-engine-ts-value">
+                                {(engineData.throttle_state.current_rate_adj * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Per-IP Rates */}
+                      {engineData.per_ip_rates && Object.keys(engineData.per_ip_rates).length > 0 && (
+                        <div className="ia-engine-ip-rates">
+                          <span className="ia-engine-section-title">Per-IP Rate Allocation</span>
+                          <div className="ia-engine-ip-list">
+                            {Object.entries(engineData.per_ip_rates).sort((a, b) => b[1] - a[1]).map(([ip, rate]) => (
+                              <div key={ip} className="ia-engine-ip-item">
+                                <span className="ia-engine-ip-name">{ip}</span>
+                                <span className="ia-engine-ip-rate">{Math.round(rate)}/hr</span>
+                                <div className="ia-bar-bg" style={{ flex: 1, margin: '0 8px' }}>
+                                  <div className="ia-bar-fill" style={{
+                                    width: `${(engineData.config_rate || 1) > 0 ? Math.min((rate / (engineData.config_rate || 1)) * 100, 100) : 0}%`,
+                                    background: '#00b0ff'
+                                  }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* IP Health */}
+                      {engineData.ip_health && engineData.ip_health.length > 0 && (
+                        <div className="ia-engine-ip-health">
+                          <span className="ia-engine-section-title">IP Health (Last Hour)</span>
+                          <div className="ia-engine-ip-list">
+                            {engineData.ip_health.map((ip) => (
+                              <div key={ip.vmta} className="ia-engine-ip-item">
+                                <span className="ia-engine-ip-name">{ip.vmta}</span>
+                                <span style={{ color: '#10b981', fontSize: '0.75rem' }}>{ip.delivered_1h} delivered</span>
+                                <span style={{ color: '#ef4444', fontSize: '0.75rem' }}>{ip.bounces_1h} bounced</span>
+                                {ip.complaints_1h > 0 && (
+                                  <span style={{ color: '#ec4899', fontSize: '0.75rem' }}>{ip.complaints_1h} complaints</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recent Decisions */}
+                      {engineData.recent_decisions && engineData.recent_decisions.length > 0 && (
+                        <div className="ia-engine-decisions">
+                          <span className="ia-engine-section-title">Recent Throttle Decisions</span>
+                          <div className="ia-engine-decision-list">
+                            {engineData.recent_decisions.slice(0, 5).map((d, i) => (
+                              <div key={i} className="ia-engine-decision-item">
+                                <span className={`ia-engine-decision-action ${
+                                  d.action === 'reduce_rate' || d.action === 'backoff_mode' ? 'ia-engine-dec-red'
+                                  : d.action === 'increase_rate' ? 'ia-engine-dec-green'
+                                  : 'ia-engine-dec-amber'
+                                }`}>
+                                  {d.action.replace(/_/g, ' ')}
+                                </span>
+                                <span className="ia-engine-decision-time">{timeAgo(d.created_at)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Convictions */}
+                      {engineData.active_convictions && engineData.active_convictions.length > 0 && (
+                        <div className="ia-engine-convictions">
+                          <span className="ia-engine-section-title">Recent Convictions</span>
+                          <div className="ia-engine-conviction-list">
+                            {engineData.active_convictions.slice(0, 3).map((c, i) => (
+                              <div key={i} className="ia-engine-conviction-item">
+                                <span className={`ia-engine-verdict ${c.verdict === 'will' ? 'ia-engine-verdict-will' : 'ia-engine-verdict-wont'}`}>
+                                  {c.verdict.toUpperCase()}
+                                </span>
+                                <span className="ia-engine-conviction-text">{c.statement.slice(0, 120)}...</span>
+                                <span className="ia-engine-conviction-time">{timeAgo(c.created_at)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* No Engine Mapping Notice */}
+                  {expandedAgent === agent.id && engineData?.reason === 'no_engine_mapping' && (
+                    <div className="ia-engine-panel ia-engine-no-mapping" onClick={(e) => e.stopPropagation()}>
+                      <FontAwesomeIcon icon={faInfoCircle} />
+                      <span>No engine mapping for this ISP — real-time throttle data unavailable</span>
+                    </div>
+                  )}
 
                   {/* Expanded Activity Feed */}
                   {expandedAgent === agent.id && (

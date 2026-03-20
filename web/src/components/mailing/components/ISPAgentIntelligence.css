@@ -1789,6 +1789,85 @@
   color: #fff;
 }
 
+/* ─── Engine Status Panel ──────────────────────────────────────────────── */
+.ia-engine-panel {
+  margin: 12px 0 0;
+  padding: 16px;
+  background: rgba(0, 176, 255, 0.04);
+  border: 1px solid rgba(0, 176, 255, 0.12);
+  border-radius: 10px;
+}
+.ia-engine-no-mapping {
+  display: flex; align-items: center; gap: 8px;
+  color: rgba(148, 163, 184, 0.7);
+  font-size: 0.82rem;
+  padding: 12px;
+}
+.ia-engine-no-mapping svg { color: #64748b; }
+.ia-engine-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px; font-size: 0.85rem; font-weight: 600; color: #00b0ff;
+}
+.ia-engine-isp-badge {
+  background: rgba(0, 176, 255, 0.12); color: #00b0ff;
+  font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
+}
+.ia-engine-rates { margin-bottom: 12px; }
+.ia-engine-rate-main {
+  display: flex; align-items: baseline; gap: 4px; margin-bottom: 6px;
+}
+.ia-engine-rate-value { font-size: 1.6rem; font-weight: 700; color: #fff; }
+.ia-engine-rate-unit { font-size: 0.8rem; color: #64748b; }
+.ia-engine-rate-label { font-size: 0.7rem; color: #94a3b8; margin-left: 8px; }
+.ia-engine-rate-meta {
+  display: flex; gap: 16px; margin-bottom: 4px;
+}
+.ia-engine-meta-item { display: flex; flex-direction: column; }
+.ia-engine-meta-label { font-size: 0.65rem; color: #64748b; text-transform: uppercase; }
+.ia-engine-meta-value { font-size: 0.85rem; font-weight: 600; color: #cbd5e1; }
+.ia-engine-section-title {
+  display: block; font-size: 0.72rem; font-weight: 600;
+  color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 6px; margin-top: 10px;
+}
+.ia-engine-throttle-grid {
+  display: flex; gap: 16px;
+}
+.ia-engine-ts-item { display: flex; flex-direction: column; }
+.ia-engine-ts-label { font-size: 0.65rem; color: #64748b; }
+.ia-engine-ts-value { font-size: 0.9rem; font-weight: 600; }
+.ia-engine-ip-list { display: flex; flex-direction: column; gap: 4px; }
+.ia-engine-ip-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.78rem; color: #cbd5e1;
+}
+.ia-engine-ip-name { font-weight: 600; min-width: 50px; color: #94a3b8; font-family: monospace; }
+.ia-engine-ip-rate { min-width: 60px; text-align: right; color: #00b0ff; font-weight: 600; }
+.ia-engine-decision-list { display: flex; flex-direction: column; gap: 3px; }
+.ia-engine-decision-item {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.78rem; padding: 3px 0;
+}
+.ia-engine-decision-action {
+  font-weight: 600; text-transform: capitalize;
+}
+.ia-engine-dec-red { color: #ef4444; }
+.ia-engine-dec-green { color: #10b981; }
+.ia-engine-dec-amber { color: #f59e0b; }
+.ia-engine-decision-time { color: #64748b; font-size: 0.7rem; }
+.ia-engine-conviction-list { display: flex; flex-direction: column; gap: 6px; }
+.ia-engine-conviction-item {
+  display: flex; flex-wrap: wrap; gap: 6px; font-size: 0.75rem;
+  padding: 6px 0; border-bottom: 1px solid rgba(100,116,139,0.1);
+}
+.ia-engine-verdict {
+  font-weight: 700; font-size: 0.65rem; padding: 1px 6px; border-radius: 3px;
+}
+.ia-engine-verdict-will { background: rgba(16,185,129,0.15); color: #10b981; }
+.ia-engine-verdict-wont { background: rgba(239,68,68,0.15); color: #ef4444; }
+.ia-engine-conviction-text { color: #94a3b8; flex: 1; min-width: 200px; }
+.ia-engine-conviction-time { color: #64748b; font-size: 0.65rem; white-space: nowrap; }
+
 /* ─── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .ia-summary-bar { grid-template-columns: repeat(3, 1fr); }

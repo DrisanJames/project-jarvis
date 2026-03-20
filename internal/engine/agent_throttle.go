@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -19,12 +21,25 @@ import (
 // Instead it remembers: "On Tuesday Dec 25 at 14:00 UTC, I sent 1000msg/s to
 // Gmail, got 4 deferrals (421-4.7.28), 996 accepted (99.6%), true open rate
 // 20% non-MPP."
+// ThrottleState captures the full internal state of a ThrottleAgent for
+// persistence and restoration. All fields are exported for DB scanning.
+type ThrottleState struct {
+	CurrentRateAdj  float64
+	OriginalRate    int
+	LastStableRate  float64
+	BackoffCount    int
+	InRecovery      bool
+	RecoveryStarted time.Time
+	LastBackoffAt   time.Time
+}
+
 type ThrottleAgent struct {
 	BaseAgent
 	memory       *MemoryStore
 	convictions  *ConvictionStore
 	alertCh      chan<- Decision
 	rateRegistry *ISPRateRegistry
+	db           *sql.DB
 
 	mu              sync.Mutex
 	currentRateAdj  float64
@@ -34,6 +49,8 @@ type ThrottleAgent struct {
 	inRecovery      bool
 	recoveryStarted time.Time
 	lastBackoffAt   time.Time
+
+	lastPersisted ThrottleState // dirty-flag: skip persist when unchanged
 }
 
 // NewThrottleAgent creates a new ISP-scoped throttle agent.
@@ -302,6 +319,10 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 		}
 	}
 
+	if len(decisions) > 0 {
+		a.persistState()
+	}
+
 	return decisions
 }
 
@@ -353,4 +374,76 @@ func (a *ThrottleAgent) GetEffectiveRate() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return int(float64(a.originalRate) * a.currentRateAdj)
+}
+
+// SetDB attaches a database handle for state persistence.
+func (a *ThrottleAgent) SetDB(db *sql.DB) {
+	a.db = db
+}
+
+// RestoreState atomically restores all internal fields from a previously
+// persisted snapshot. Called on startup before the first Evaluate cycle.
+func (a *ThrottleAgent) RestoreState(s ThrottleState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.currentRateAdj = s.CurrentRateAdj
+	a.lastStableRate = s.LastStableRate
+	a.backoffCount = s.BackoffCount
+	a.inRecovery = s.InRecovery
+	a.recoveryStarted = s.RecoveryStarted
+	a.lastBackoffAt = s.LastBackoffAt
+	a.lastPersisted = s
+}
+
+// GetState returns a snapshot of the agent's current internal state.
+func (a *ThrottleAgent) GetState() ThrottleState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.snapshotStateLocked()
+}
+
+// snapshotStateLocked captures current state. Caller must hold mu.
+func (a *ThrottleAgent) snapshotStateLocked() ThrottleState {
+	return ThrottleState{
+		CurrentRateAdj:  a.currentRateAdj,
+		OriginalRate:    a.originalRate,
+		LastStableRate:  a.lastStableRate,
+		BackoffCount:    a.backoffCount,
+		InRecovery:      a.inRecovery,
+		RecoveryStarted: a.recoveryStarted,
+		LastBackoffAt:   a.lastBackoffAt,
+	}
+}
+
+// persistState writes the current internal state to the database if it has
+// changed since the last persist (dirty-flag check). Fire-and-forget with
+// a 3-second timeout so Evaluate is never blocked on I/O.
+func (a *ThrottleAgent) persistState() {
+	if a.db == nil {
+		return
+	}
+	snap := a.snapshotStateLocked()
+	if snap == a.lastPersisted {
+		return
+	}
+	a.lastPersisted = snap
+	isp := string(a.ID.ISP)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, err := a.db.ExecContext(ctx, `
+			INSERT INTO mailing_engine_throttle_agent_state
+				(isp, current_rate_adj, original_rate, last_stable_rate, backoff_count,
+				 in_recovery, recovery_started, last_backoff_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			ON CONFLICT (isp) DO UPDATE SET
+				current_rate_adj = $2, original_rate = $3, last_stable_rate = $4,
+				backoff_count = $5, in_recovery = $6, recovery_started = $7,
+				last_backoff_at = $8, updated_at = NOW()
+		`, isp, snap.CurrentRateAdj, snap.OriginalRate, snap.LastStableRate,
+			snap.BackoffCount, snap.InRecovery, snap.RecoveryStarted, snap.LastBackoffAt)
+		if err != nil {
+			log.Printf("[throttle-state] persist %s failed: %v", isp, err)
+		}
+	}()
 }

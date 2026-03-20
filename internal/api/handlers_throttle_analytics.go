@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 
@@ -22,11 +23,12 @@ type throttleAnalyticsHandler struct {
 }
 
 type liveRateEntry struct {
-	ISP         string  `json:"isp"`
-	DisplayName string  `json:"display_name"`
-	CurrentRate float64 `json:"current_rate"`
-	MaxRate     int     `json:"max_rate"`
-	RatePct     float64 `json:"rate_pct"`
+	ISP         string             `json:"isp"`
+	DisplayName string             `json:"display_name"`
+	CurrentRate float64            `json:"current_rate"`
+	MaxRate     int                `json:"max_rate"`
+	RatePct     float64            `json:"rate_pct"`
+	IPRates     map[string]float64 `json:"ip_rates,omitempty"`
 }
 
 type throttleDecisionEntry struct {
@@ -56,6 +58,7 @@ type throttleAnalyticsResponse struct {
 	LiveRates       []liveRateEntry           `json:"live_rates"`
 	RecentDecisions []throttleDecisionEntry   `json:"recent_decisions"`
 	Convictions     []throttleConvictionEntry `json:"convictions"`
+	PerIPEnabled    bool                      `json:"per_ip_enabled"`
 	UpdatedAt       time.Time                 `json:"updated_at"`
 }
 
@@ -90,6 +93,7 @@ func (h *throttleAnalyticsHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		LiveRates:       h.buildLiveRates(),
 		RecentDecisions: h.queryRecentDecisions(r),
 		Convictions:     h.buildConvictions(),
+		PerIPEnabled:    os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true",
 		UpdatedAt:       time.Now().UTC(),
 	}
 
@@ -122,13 +126,17 @@ func (h *throttleAnalyticsHandler) buildLiveRates() []liveRateEntry {
 			pct = math.Min((currentRate/float64(maxRate))*100, 100)
 		}
 
-		entries = append(entries, liveRateEntry{
+		entry := liveRateEntry{
 			ISP:         string(isp),
 			DisplayName: displayName,
 			CurrentRate: currentRate,
 			MaxRate:     maxRate,
 			RatePct:     pct,
-		})
+		}
+		if ipRates := h.registry.GetIPRates(isp); len(ipRates) > 0 {
+			entry.IPRates = ipRates
+		}
+		entries = append(entries, entry)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {

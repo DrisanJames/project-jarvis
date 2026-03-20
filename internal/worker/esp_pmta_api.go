@@ -108,7 +108,11 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	}
 
 	var selectedIPID string
-	if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
+	if msg.AssignedVMTA != "" {
+		payload["vmta"] = msg.AssignedVMTA
+		log.Printf("[PMTA-API] Using pre-assigned VMTA=%s for %s (ISP=%s)",
+			msg.AssignedVMTA, msg.Email, msg.RecipientISP)
+	} else if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
 		payload["vmta"] = vmta
 		log.Printf("[PMTA-API] Routing %s via explicit VMTA header: %s", msg.Email, vmta)
 	} else if s.ipPool != nil && msg.ProfileID != "" {

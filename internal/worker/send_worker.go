@@ -75,13 +75,27 @@ type SendWorkerPool struct {
 	ptdMu                      sync.RWMutex
 
 	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
-	rateRegistry interface{ AllowN(isp string, n int) int }
+	rateRegistry ISPRateLimiter
+	perIPEnabled bool
+}
+
+// ISPRateLimiter abstracts the engine.ISPRateRegistry to avoid import cycles.
+type ISPRateLimiter interface {
+	AllowN(isp string, n int) int
+	DistributeByIPStr(isp string, requested int) map[string]int
+	HasIPListStr(isp string) bool
 }
 
 // SetRateRegistry injects the ISP rate limiter. The dispatch loop
 // checks AllowN before claiming batches to enforce per-ISP rate limits.
-func (p *SendWorkerPool) SetRateRegistry(r interface{ AllowN(isp string, n int) int }) {
+func (p *SendWorkerPool) SetRateRegistry(r ISPRateLimiter) {
 	p.rateRegistry = r
+}
+
+// SetPerIPRateLimiting enables or disables per-IP rate distribution in the
+// dispatch loop. When enabled, DistributeByIP is used instead of AllowN.
+func (p *SendWorkerPool) SetPerIPRateLimiting(enabled bool) {
+	p.perIPEnabled = enabled
 }
 
 // ESPSender interface for sending via different ESPs
@@ -105,6 +119,7 @@ type EmailMessage struct {
 	ProfileID    string
 	ESPType      string
 	RecipientISP string // ISP classification for VMTA pool routing (e.g. "gmail", "yahoo")
+	AssignedVMTA string // Pre-assigned VMTA from dispatch-level IP distribution (empty = use ipPool.next)
 	Metadata     map[string]interface{}
 	Headers      map[string]string // Custom SMTP headers (List-Unsubscribe, X-Job, etc.)
 }
@@ -189,6 +204,9 @@ type QueueItem struct {
 	CreativeID    uuid.UUID
 	SubjectLineID uuid.UUID
 	FromNameID    uuid.UUID
+
+	// Pre-assigned VMTA from dispatch-level IP distribution (empty = dynamic selection)
+	AssignedVMTA string
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -751,16 +769,49 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 			continue
 		}
 
+		// Per-IP allocation map: isp -> hostname -> allowed count
+		// Populated when per-IP rate limiting is enabled; nil otherwise.
+		var ipAllocations map[string]map[string]int
+
 		if p.rateRegistry != nil {
-			for isp, count := range batchCounts {
-				if count <= 0 {
-					continue
+			if p.perIPEnabled {
+				ipAllocations = make(map[string]map[string]int)
+				for isp, count := range batchCounts {
+					if count <= 0 {
+						continue
+					}
+					if p.rateRegistry.HasIPListStr(isp) {
+						perIPAlloc := p.rateRegistry.DistributeByIPStr(isp, count)
+						totalAllowed := 0
+						for _, n := range perIPAlloc {
+							totalAllowed += n
+						}
+						if totalAllowed == 0 {
+							delete(batchCounts, isp)
+						} else {
+							batchCounts[isp] = totalAllowed
+							ipAllocations[isp] = perIPAlloc
+						}
+					} else {
+						allowed := p.rateRegistry.AllowN(isp, count)
+						if allowed == 0 {
+							delete(batchCounts, isp)
+						} else {
+							batchCounts[isp] = allowed
+						}
+					}
 				}
-				allowed := p.rateRegistry.AllowN(isp, count)
-				if allowed == 0 {
-					delete(batchCounts, isp)
-				} else {
-					batchCounts[isp] = allowed
+			} else {
+				for isp, count := range batchCounts {
+					if count <= 0 {
+						continue
+					}
+					allowed := p.rateRegistry.AllowN(isp, count)
+					if allowed == 0 {
+						delete(batchCounts, isp)
+					} else {
+						batchCounts[isp] = allowed
+					}
 				}
 			}
 			if BatchTotal(batchCounts) == 0 {
@@ -778,6 +829,11 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 			continue
 		}
 
+		// Assign pre-determined VMTAs to claimed items when per-IP is active
+		if ipAllocations != nil && len(ipAllocations) > 0 {
+			assignVMTAsToItems(items, ipAllocations)
+		}
+
 		actualCounts := make(map[string]int)
 		for _, item := range items {
 			actualCounts[ClassifySubscriberISP(item.Email)]++
@@ -786,6 +842,53 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 			campID, len(items), batchCounts, actualCounts)
 
 		p.processItemsConcurrently(items)
+	}
+}
+
+// assignVMTAsToItems distributes pre-assigned VMTA hostnames to claimed items
+// based on the per-IP allocation map from DistributeByIP. Items for each ISP
+// are round-robined across the allocated IPs proportional to their budgets.
+func assignVMTAsToItems(items []QueueItem, ipAllocations map[string]map[string]int) {
+	for i := range items {
+		isp := ClassifySubscriberISP(items[i].Email)
+		alloc, ok := ipAllocations[isp]
+		if !ok || len(alloc) == 0 {
+			continue
+		}
+
+		// Build ordered IP list from allocation for deterministic assignment
+		type ipBudget struct {
+			hostname  string
+			remaining int
+		}
+		var ips []ipBudget
+		for h, n := range alloc {
+			if n > 0 {
+				ips = append(ips, ipBudget{h, n})
+			}
+		}
+		if len(ips) == 0 {
+			continue
+		}
+
+		// Find the first IP with remaining budget
+		assigned := false
+		for j := range ips {
+			if ips[j].remaining > 0 {
+				items[i].AssignedVMTA = vmtaShortName(ips[j].hostname)
+				ips[j].remaining--
+				assigned = true
+				break
+			}
+		}
+		if !assigned {
+			continue
+		}
+
+		// Write remaining budgets back (for subsequent items in same ISP)
+		for _, ib := range ips {
+			alloc[ib.hostname] = ib.remaining
+		}
 	}
 }
 
@@ -1009,6 +1112,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		ProfileID:    item.ProfileID,
 		ESPType:      item.ESPType,
 		RecipientISP: ClassifySubscriberISP(item.Email),
+		AssignedVMTA: item.AssignedVMTA,
 		Headers:      headers,
 	}
 

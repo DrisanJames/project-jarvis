@@ -31,16 +31,21 @@ type vmtaEntry struct {
 	TodaySent        int64 // from mailing_ip_warmup_log.actual_sent
 }
 
+// OnIPsChangedFunc is called when vmtaPool.refresh() detects the IP set has changed.
+// prefix is the pool prefix (e.g. "db", "qf"), ips is the new complete IP list.
+type OnIPsChangedFunc func(prefix string, ips []vmtaEntry)
+
 type vmtaPool struct {
-	mu         sync.RWMutex
-	ips        []vmtaEntry                // all IPs (fallback for legacy profiles)
-	ispGroups  map[string][]vmtaEntry     // keyed by pool suffix: "gmail", "yahoo", etc.
-	idx        uint64
-	ispIdx     map[string]*uint64         // per-ISP round-robin counters
-	loadedAt   time.Time
-	ttl        time.Duration
-	db         *sql.DB
-	poolPrefix string                     // set at construction from profile's pool_prefix
+	mu           sync.RWMutex
+	ips          []vmtaEntry            // all IPs (fallback for legacy profiles)
+	ispGroups    map[string][]vmtaEntry // keyed by pool suffix: "gmail", "yahoo", etc.
+	idx          uint64
+	ispIdx       map[string]*uint64     // per-ISP round-robin counters
+	loadedAt     time.Time
+	ttl          time.Duration
+	db           *sql.DB
+	poolPrefix   string                 // set at construction from profile's pool_prefix
+	onIPsChanged OnIPsChangedFunc       // optional: fired when IP set composition changes
 }
 
 func newVMTAPool(db *sql.DB, poolPrefix string) *vmtaPool {
@@ -123,6 +128,7 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		}
 	}
 	if len(allIPs) > 0 {
+		changed := len(allIPs) != len(p.ips) || !sameIPSet(allIPs, p.ips)
 		p.ips = allIPs
 		p.ispGroups = groups
 		idxMap := make(map[string]*uint64, len(groups))
@@ -145,6 +151,14 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		}
 		log.Printf("[vmtaPool] Loaded %d IPs across %d ISP groups (prefix=%s, sample=%v, groups=%v)",
 			len(allIPs), len(groups), p.poolPrefix, hostSample, ispKeys)
+
+		if changed && p.onIPsChanged != nil {
+			cb := p.onIPsChanged
+			snapshot := make([]vmtaEntry, len(allIPs))
+			copy(snapshot, allIPs)
+			prefix := p.poolPrefix
+			go cb(prefix, snapshot)
+		}
 	} else {
 		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s)", profileID, p.poolPrefix)
 	}
@@ -346,17 +360,21 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		return nil, fmt.Errorf("PMTA SMTP host not configured")
 	}
 
-	// Refresh VMTA cache, then select next IP via ISP-aware round-robin
-	s.ipPool.refresh(ctx, msg.ProfileID)
 	vmtaName := ""
 	ipID := ""
-	ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
-	if vmtaErr != nil {
-		if len(s.ipPool.ips) > 0 {
-			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
-		}
-		return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
+	if msg.AssignedVMTA != "" {
+		vmtaName = msg.AssignedVMTA
+		log.Printf("[PMTA-SMTP] Using pre-assigned VMTA=%s for %s (ISP=%s)",
+			vmtaName, msg.Email, msg.RecipientISP)
 	} else {
+		s.ipPool.refresh(ctx, msg.ProfileID)
+		ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
+		if vmtaErr != nil {
+			if len(s.ipPool.ips) > 0 {
+				return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
+			}
+			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
+		}
 		vmtaName = vmtaShortName(ip.Hostname)
 		ipID = ip.ID
 		profShort := msg.ProfileID
@@ -539,6 +557,52 @@ func (a *pmtaPlainAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 
 func (a *pmtaPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	return nil, nil
+}
+
+// sameIPSet checks whether two IP slices contain the same set of hostnames
+// (order-independent). Used by refresh() to detect IP composition changes.
+func sameIPSet(a, b []vmtaEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, ip := range a {
+		set[ip.Hostname] = true
+	}
+	for _, ip := range b {
+		if !set[ip.Hostname] {
+			return false
+		}
+	}
+	return true
+}
+
+// AvailableIPsForISP returns the IPs serving a given recipient ISP that still
+// have warmup budget remaining. Used by the dispatch coordinator to pre-assign
+// IPs to queue items before claiming.
+func (p *vmtaPool) AvailableIPsForISP(recipientISP string) []vmtaEntry {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	poolSuffix := ISPPoolSuffix(recipientISP)
+	var candidates []vmtaEntry
+
+	if group, ok := p.ispGroups[poolSuffix]; ok {
+		candidates = group
+	} else if general, ok := p.ispGroups["general"]; ok {
+		candidates = general
+	} else {
+		candidates = p.ips
+	}
+
+	var available []vmtaEntry
+	for _, ip := range candidates {
+		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
+			continue
+		}
+		available = append(available, ip)
+	}
+	return available
 }
 
 // vmtaShortName extracts the short VMTA prefix from a full hostname.

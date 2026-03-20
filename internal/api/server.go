@@ -46,6 +46,7 @@ type Server struct {
 	rateRegistry    *engine.ISPRateRegistry
 	ispConfigs      map[engine.ISP]engine.ISPConfig
 	convictionStore *engine.ConvictionStore
+	agentFactory    *engine.AgentFactory
 	// S3 data normalizer for operational API
 	dataNormHandler *DataNormHandler
 	// Optizmo Delta Sync Worker — stored for graceful shutdown

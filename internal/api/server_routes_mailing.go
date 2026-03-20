@@ -612,10 +612,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			rateRegistry.SetDB(db)
 			restored := rateRegistry.RestoreFromDB(configRates)
 			agentFactory.SetRateRegistry(rateRegistry)
+			throttleRestored := agentFactory.RestoreThrottleState()
 			s.rateRegistry = rateRegistry
 			s.ispConfigs = agentFactory.GetConfigs()
 			s.convictionStore = convictionStore
-			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates (%d restored from DB)", len(agentFactory.GetConfigs()), restored)
+			s.agentFactory = agentFactory
+			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates (%d restored from DB, %d throttle states restored)",
+				len(agentFactory.GetConfigs()), restored, throttleRestored)
 
 			pmtaHost := os.Getenv("PMTA_SSH_HOST")
 			pmtaSSHPort := 22
@@ -630,6 +633,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				}
 			}
 			executor := engine.NewExecutor(pmtaHost, pmtaSSHPort, pmtaSSHUser, pmtaSSHKey)
+			executor.SetDB(db)
 
 		alertSMTPPort := 587
 		if p := os.Getenv("ALERT_SMTP_PORT"); p != "" {
@@ -698,6 +702,17 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				orgID:           engineOrgID,
 			}).handleAudienceAnalytics)
 
+			// === ENGINE-TO-UI BRIDGE (managed agent ↔ engine data) ===
+			bridge := &ISPAgentEngineBridge{
+				db:              db,
+				rateRegistry:    s.rateRegistry,
+				ispConfigs:      s.ispConfigs,
+				convictionStore: convictionStore,
+				agentFactory:    s.agentFactory,
+			}
+			r.Get("/api/mailing/isp-agents/managed/{id}/engine", bridge.HandleAgentEngine)
+			r.Get("/engine/bridge-summary", bridge.HandleEngineSummary)
+
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			pmtaCampaignAPI.RegisterRoutes(r)
@@ -729,6 +744,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				ar.Post("/calendar/recommendations/{id}/unapprove", marketingAgent.HandleUnapproveRecommendation)
 				ar.Post("/calendar/recommendations/{id}/reject", marketingAgent.HandleRejectRecommendation)
 				ar.Delete("/calendar/recommendations/{id}", marketingAgent.HandleDeleteRecommendation)
+				ar.Delete("/calendar/recommendations", marketingAgent.HandleBulkDeleteRecommendations)
 				ar.Get("/calendar/compute-quotas", marketingAgent.HandleComputeQuotas)
 				ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
 				ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ type Executor struct {
 	sshUser      string
 	sshKeyPath   string
 	sshClient    *ssh.Client
+	db           *sql.DB
 
 	mu            sync.Mutex
 	pendingReload bool
@@ -47,9 +49,13 @@ func NewExecutor(host string, port int, user, sshKeyPath string) *Executor {
 // by ISPRateRegistry.
 func (e *Executor) Execute(ctx context.Context, d Decision) error {
 	switch d.ActionTaken {
-	case "disable_source_ip", "quarantine_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
+	case "quarantine_ip":
+		return e.quarantineIP(ctx, d.TargetValue, d.ISP)
+	case "disable_source_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
 		log.Printf("[executor] SUPPRESSED action %s for ISP %s (throttle-only mode)", d.ActionTaken, d.ISP)
 		return nil
+	case "reduce_ip_volume":
+		return e.deprioritizeIP(ctx, d.TargetValue, d.ISP)
 	case "deprioritize_ip":
 		return e.deprioritizeIP(ctx, d.TargetValue, d.ISP)
 	case "reprioritize_ip":
@@ -66,6 +72,31 @@ func (e *Executor) Execute(ctx context.Context, d Decision) error {
 		log.Printf("[executor] unknown action: %s", d.ActionTaken)
 		return nil
 	}
+}
+
+// SetDB attaches a database connection so the executor can update IP status
+// directly (e.g., quarantine_ip).
+func (e *Executor) SetDB(db *sql.DB) {
+	e.db = db
+}
+
+// quarantineIP marks an IP as quarantined in the database. vmtaPool.refresh()
+// filters on status IN ('active','warmup'), so the quarantined IP is
+// automatically excluded from the sending pool within 30 seconds.
+func (e *Executor) quarantineIP(ctx context.Context, ip string, isp ISP) error {
+	if e.db != nil {
+		_, err := e.db.ExecContext(ctx,
+			`UPDATE mailing_ip_addresses SET status = 'quarantined', updated_at = NOW() WHERE ip_address = $1`,
+			ip)
+		if err != nil {
+			log.Printf("[executor] quarantine DB update for IP %s failed: %v", ip, err)
+			return err
+		}
+		log.Printf("[executor] quarantined IP %s for ISP %s (DB status updated)", ip, isp)
+	} else {
+		log.Printf("[executor] quarantine_ip for %s but no DB attached, skipping", ip)
+	}
+	return nil
 }
 
 func (e *Executor) ensureSSH() (*ssh.Client, error) {

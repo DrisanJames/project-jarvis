@@ -581,24 +581,65 @@ func (a *EmailMarketingAgent) HandleRejectRecommendation(w http.ResponseWriter, 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "rejected", "id": recID})
 }
 
-// HandleDeleteRecommendation permanently deletes a rejected recommendation.
+// HandleDeleteRecommendation permanently deletes a recommendation.
+// By default only rejected recommendations can be deleted.
+// Pass ?force=true to delete regardless of status.
 func (a *EmailMarketingAgent) HandleDeleteRecommendation(w http.ResponseWriter, r *http.Request) {
 	recID := chi.URLParam(r, "id")
 	orgID := getOrgID(r)
+	force := r.URL.Query().Get("force") == "true"
 
-	result, err := a.db.ExecContext(r.Context(),
-		`DELETE FROM agent_campaign_recommendations
-		 WHERE id = $1 AND organization_id = $2 AND status = 'rejected'`, recID, orgID)
+	q := `DELETE FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`
+	if !force {
+		q += ` AND status = 'rejected'`
+	}
+	result, err := a.db.ExecContext(r.Context(), q, recID, orgID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "recommendation not found or not in rejected status"})
+		msg := "recommendation not found or not in rejected status (use ?force=true to override)"
+		if force {
+			msg = "recommendation not found"
+		}
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": recID})
+}
+
+// HandleBulkDeleteRecommendations deletes all recommendations matching filters.
+// Query params: after_date (required, YYYY-MM-DD), exclude_campaign_ids (comma-separated UUIDs to keep).
+func (a *EmailMarketingAgent) HandleBulkDeleteRecommendations(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	afterDate := r.URL.Query().Get("after_date")
+	if afterDate == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "after_date query param is required (YYYY-MM-DD)"})
+		return
+	}
+
+	q := `DELETE FROM agent_campaign_recommendations WHERE organization_id = $1 AND scheduled_date >= $2`
+	args := []interface{}{orgID, afterDate}
+
+	if excludeRaw := r.URL.Query().Get("exclude_campaign_ids"); excludeRaw != "" {
+		ids := strings.Split(excludeRaw, ",")
+		placeholders := make([]string, len(ids))
+		for i, id := range ids {
+			args = append(args, strings.TrimSpace(id))
+			placeholders[i] = fmt.Sprintf("$%d::uuid", i+3)
+		}
+		q += ` AND (executed_campaign_id IS NULL OR executed_campaign_id NOT IN (` + strings.Join(placeholders, ",") + `))`
+	}
+
+	result, err := a.db.ExecContext(r.Context(), q, args...)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	affected, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": affected})
 }
 
 // HandleUnapproveRecommendation reverts an approved recommendation back to pending

@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"time"
 )
+
+const throttleAgentStateTTL = 4 * time.Hour
 
 // AgentFactory spawns 6 agents per ISP (48 total) and provides
 // access to agent instances by ISP and type.
@@ -86,8 +89,71 @@ func (f *AgentFactory) SetRateRegistry(registry *ISPRateRegistry) {
 	for _, agentsByType := range f.agents {
 		if ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent); ok {
 			ta.SetRateRegistry(registry)
+			ta.SetDB(f.db)
 		}
 	}
+}
+
+// RestoreThrottleState loads persisted ThrottleAgent state from the database
+// and restores it into each matching ThrottleAgent. Uses a 4-hour TTL to
+// preserve critical context (high backoffCount, active recovery) across
+// restarts while discarding truly stale state.
+func (f *AgentFactory) RestoreThrottleState() int {
+	if f.db == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := f.db.QueryContext(ctx, `
+		SELECT isp, current_rate_adj, original_rate, last_stable_rate,
+		       backoff_count, in_recovery, recovery_started, last_backoff_at, updated_at
+		FROM mailing_engine_throttle_agent_state
+		WHERE updated_at > $1
+	`, time.Now().Add(-throttleAgentStateTTL))
+	if err != nil {
+		log.Printf("[factory] restore throttle state failed: %v", err)
+		return 0
+	}
+	defer rows.Close()
+
+	restored := 0
+	for rows.Next() {
+		var ispStr string
+		var s ThrottleState
+		var recoveryStarted, lastBackoffAt sql.NullTime
+		var updatedAt time.Time
+		if err := rows.Scan(&ispStr, &s.CurrentRateAdj, &s.OriginalRate, &s.LastStableRate,
+			&s.BackoffCount, &s.InRecovery, &recoveryStarted, &lastBackoffAt, &updatedAt); err != nil {
+			log.Printf("[factory] scan throttle state row: %v", err)
+			continue
+		}
+		if recoveryStarted.Valid {
+			s.RecoveryStarted = recoveryStarted.Time
+		}
+		if lastBackoffAt.Valid {
+			s.LastBackoffAt = lastBackoffAt.Time
+		}
+
+		isp := ISP(ispStr)
+		agentsByType, ok := f.agents[isp]
+		if !ok {
+			continue
+		}
+		ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent)
+		if !ok {
+			continue
+		}
+
+		// Restore if the agent is actively throttled or has significant backoff history
+		if s.CurrentRateAdj < 1.0 || s.BackoffCount >= 3 || s.InRecovery {
+			ta.RestoreState(s)
+			restored++
+			log.Printf("[factory] restored throttle state for %s: adj=%.3f backoff=%d inRecovery=%v (saved %s ago)",
+				isp, s.CurrentRateAdj, s.BackoffCount, s.InRecovery, time.Since(updatedAt).Truncate(time.Second))
+		}
+	}
+	return restored
 }
 
 // GetConfigs returns a map of ISP -> ISPConfig for all initialized agents.
