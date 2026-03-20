@@ -1596,27 +1596,45 @@ func (a *EmailMarketingAgent) HandleCreateRecommendation(w http.ResponseWriter, 
 		`SELECT strategy FROM agent_domain_strategies WHERE organization_id = $1 AND sending_domain = $2`,
 		orgID, domain).Scan(&strategy)
 
+	initialStatus := "pending"
+	if s, ok := body["status"].(string); ok && (s == "approved" || s == "pending") {
+		initialStatus = s
+	}
+	executedCampaignID, _ := body["executed_campaign_id"].(string)
+
 	var id string
-	err := a.db.QueryRowContext(r.Context(),
-		`INSERT INTO agent_campaign_recommendations
-		 (organization_id, sending_domain, scheduled_date, scheduled_time, campaign_name,
-		  campaign_config, reasoning, strategy, projected_volume, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
-		 RETURNING id::text`,
-		orgID, domain, dateStr, timeStr, name, string(configJSON), reasoning, strategy, totalVolume,
-	).Scan(&id)
+	var err error
+	if initialStatus == "approved" && executedCampaignID != "" {
+		err = a.db.QueryRowContext(r.Context(),
+			`INSERT INTO agent_campaign_recommendations
+			 (organization_id, sending_domain, scheduled_date, scheduled_time, campaign_name,
+			  campaign_config, reasoning, strategy, projected_volume, status, approved_at, executed_campaign_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'approved', NOW(), $10::uuid)
+			 RETURNING id::text`,
+			orgID, domain, dateStr, timeStr, name, string(configJSON), reasoning, strategy, totalVolume, executedCampaignID,
+		).Scan(&id)
+	} else {
+		err = a.db.QueryRowContext(r.Context(),
+			`INSERT INTO agent_campaign_recommendations
+			 (organization_id, sending_domain, scheduled_date, scheduled_time, campaign_name,
+			  campaign_config, reasoning, strategy, projected_volume, status)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+			 RETURNING id::text`,
+			orgID, domain, dateStr, timeStr, name, string(configJSON), reasoning, strategy, totalVolume,
+		).Scan(&id)
+	}
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"status":          "created",
+		"status":          initialStatus,
 		"id":              id,
 		"campaign_name":   name,
 		"scheduled_date":  dateStr,
 		"scheduled_time":  timeStr,
 		"projected_volume": totalVolume,
-		"approval_status": "pending",
+		"approval_status": initialStatus,
 	})
 }
