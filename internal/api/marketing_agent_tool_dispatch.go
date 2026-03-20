@@ -1107,20 +1107,21 @@ func (a *EmailMarketingAgent) toolCreateRecommendation(ctx context.Context, orgI
 func (a *EmailMarketingAgent) toolCreateTemplate(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
 	name, _ := args["name"].(string)
 	subject, _ := args["subject"].(string)
-	htmlContent, _ := args["html_content"].(string)
 	fromName, _ := args["from_name"].(string)
 	previewText, _ := args["preview_text"].(string)
 	folderName, _ := args["folder_name"].(string)
 	brand, _ := args["brand"].(string)
 
-	if name == "" || subject == "" || htmlContent == "" {
-		return map[string]string{"error": "name, subject, and html_content are required"}, ""
+	if _, hasHTML := args["html_content"]; hasHTML {
+		return map[string]string{
+			"error": "html_content is not allowed. Template HTML structure is managed through approved brand templates in the Content Library. " +
+				"Use this tool only for metadata (name, subject, from_name, preview_text). " +
+				"Content variations are generated automatically by the wave content pipeline using approved template slots.",
+		}, ""
 	}
-	if len(htmlContent) < 200 {
-		return map[string]string{"error": "html_content is too short — must be a complete HTML email"}, ""
-	}
-	if !strings.Contains(htmlContent, "unsubscribe") {
-		return map[string]string{"error": "html_content must include an unsubscribe link ({{ system.unsubscribe_url }}) for CAN-SPAM compliance"}, ""
+
+	if name == "" || subject == "" {
+		return map[string]string{"error": "name and subject are required"}, ""
 	}
 
 	var folderID *string
@@ -1151,17 +1152,17 @@ func (a *EmailMarketingAgent) toolCreateTemplate(ctx context.Context, orgID stri
 	var err error
 	if folderID != nil {
 		err = a.db.QueryRowContext(ctx,
-			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, html_content, folder_id, status, created_at, updated_at)
-			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::uuid, 'active', NOW(), NOW())
+			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, folder_id, status, created_at, updated_at)
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6::uuid, 'draft', NOW(), NOW())
 			 RETURNING id::text`,
-			orgID, name, subject, fromName, previewText, htmlContent, *folderID,
+			orgID, name, subject, fromName, previewText, *folderID,
 		).Scan(&templateID)
 	} else {
 		err = a.db.QueryRowContext(ctx,
-			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, html_content, status, created_at, updated_at)
-			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'active', NOW(), NOW())
+			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, preview_text, status, created_at, updated_at)
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'draft', NOW(), NOW())
 			 RETURNING id::text`,
-			orgID, name, subject, fromName, previewText, htmlContent,
+			orgID, name, subject, fromName, previewText,
 		).Scan(&templateID)
 	}
 	if err != nil {
@@ -1176,8 +1177,8 @@ func (a *EmailMarketingAgent) toolCreateTemplate(ctx context.Context, orgID stri
 		"from_name":   fromName,
 		"brand":       brand,
 		"folder":      folderName,
-		"html_length": len(htmlContent),
-	}, fmt.Sprintf("Created template: %s (id: %s)", name, templateID)
+		"note":        "Template saved as draft (metadata only). HTML content is managed through approved brand templates.",
+	}, fmt.Sprintf("Created template metadata: %s (id: %s, draft)", name, templateID)
 }
 
 func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
@@ -1192,7 +1193,6 @@ func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID st
 		return map[string]string{"error": "AI content service not configured (missing ANTHROPIC_API_KEY or OPENAI_API_KEY)"}, ""
 	}
 
-	// If a reference template was provided, read it so the LLM can use it as inspiration
 	var referenceHTML string
 	if referenceTemplateID != "" {
 		a.db.QueryRowContext(ctx,
@@ -1208,31 +1208,33 @@ func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID st
 		return map[string]string{"error": "template generation failed: " + err.Error()}, ""
 	}
 
-	// Save each variation as a draft template in the content library
+	// Save as pending_review — EDITH cannot activate templates with custom HTML
+	// without human approval. This prevents structural template modifications
+	// while still allowing EDITH to propose new designs for review.
 	var savedTemplates []map[string]interface{}
 	for _, v := range result.Variations {
 		var templateID string
 		err := a.db.QueryRowContext(ctx,
 			`INSERT INTO mailing_templates (id, organization_id, name, subject, from_name, html_content, preview_text, status, created_at, updated_at)
-			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'draft', NOW(), NOW())
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '', 'pending_review', NOW(), NOW())
 			 RETURNING id::text`,
 			orgID,
-			fmt.Sprintf("[EDITH] %s — %s", campaignType, v.VariantName),
+			fmt.Sprintf("[EDITH-review] %s — %s", campaignType, v.VariantName),
 			v.Subject,
 			v.FromName,
 			v.HTMLContent,
 		).Scan(&templateID)
 		if err != nil {
-			log.Printf("[MarketingAgent] save draft template: %v", err)
+			log.Printf("[MarketingAgent] save pending_review template: %v", err)
 			continue
 		}
 		savedTemplates = append(savedTemplates, map[string]interface{}{
 			"template_id":  templateID,
 			"variant_name": v.VariantName,
-			"name":         fmt.Sprintf("[EDITH] %s — %s", campaignType, v.VariantName),
+			"name":         fmt.Sprintf("[EDITH-review] %s — %s", campaignType, v.VariantName),
 			"subject":      v.Subject,
 			"from_name":    v.FromName,
-			"status":       "draft",
+			"status":       "pending_review",
 		})
 	}
 
@@ -1241,13 +1243,14 @@ func (a *EmailMarketingAgent) toolGenerateTemplate(ctx context.Context, orgID st
 	}
 
 	return map[string]interface{}{
-		"status":          "generated",
+		"status":          "pending_review",
 		"templates_saved": len(savedTemplates),
 		"templates":       savedTemplates,
 		"campaign_type":   campaignType,
 		"sending_domain":  domain,
 		"brand_info":      result.BrandInfo,
-	}, fmt.Sprintf("Generated %d %s templates for %s (saved as drafts)", len(savedTemplates), campaignType, domain)
+		"note":            "Templates saved as pending_review. A human must approve them before they can be used in campaigns. Content variations for active campaigns are generated automatically by the wave content pipeline.",
+	}, fmt.Sprintf("Generated %d %s templates for %s (pending human review)", len(savedTemplates), campaignType, domain)
 }
 
 func (a *EmailMarketingAgent) toolDeployApprovedCampaign(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {

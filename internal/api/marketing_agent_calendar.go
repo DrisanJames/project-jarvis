@@ -1,16 +1,20 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 // HandleGetForecast returns calendar data for a month/domain showing recommendations grouped by date.
@@ -439,20 +443,18 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 	// Extract offer context if this recommendation is for an offer campaign
 	cfgOfferID, _ := cfg["offer_id"].(string)
 
+	// Try multi-variant generation via wave content pipeline.
+	// Match sending domain to a known brand, scrape fresh content, and generate
+	// 3 editorial variations that fill the brand's approved template slots.
+	variants := generateMultiVariantContent(ctx, a.db, sendingDomain, fromName, subject, previewText, htmlContent)
+
 	// Build the full PMTACampaignInput
 	deployInput := engine.PMTACampaignInput{
-		OfferID:       cfgOfferID,
-		Name:          campaignName,
-		TargetISPs:    targetISPs,
-		SendingDomain: sendingDomain,
-		Variants: []engine.ContentVariant{{
-			VariantName:  "A",
-			FromName:     fromName,
-			Subject:      subject,
-			PreviewText:  previewText,
-			HTMLContent:  htmlContent,
-			SplitPercent: 100,
-		}},
+		OfferID:           cfgOfferID,
+		Name:              campaignName,
+		TargetISPs:        targetISPs,
+		SendingDomain:     sendingDomain,
+		Variants:          variants,
 		ISPPlans:          ispPlans,
 		ISPQuotas:         ispQuotas,
 		InclusionLists:    inclusionListIDs,
@@ -1678,4 +1680,105 @@ func (a *EmailMarketingAgent) HandleCreateRecommendation(w http.ResponseWriter, 
 		"projected_volume": totalVolume,
 		"approval_status": initialStatus,
 	})
+}
+
+// generateMultiVariantContent attempts to produce 3 content variants for
+// round-robin rotation by scraping the brand site and running the AI wave
+// content generator. If the sending domain doesn't match a known brand, or
+// AI keys are unavailable, or generation fails, it falls back to a single
+// variant using the original content from the recommendation.
+func generateMultiVariantContent(ctx context.Context, db *sql.DB, sendingDomain, fromName, subject, previewText, htmlContent string) []engine.ContentVariant {
+	singleVariant := []engine.ContentVariant{{
+		VariantName:  "A",
+		FromName:     fromName,
+		Subject:      subject,
+		PreviewText:  previewText,
+		HTMLContent:  htmlContent,
+		SplitPercent: 100,
+	}}
+
+	brands := knownBrands()
+	var brand *brandConfig
+	for _, b := range brands {
+		if b.SendingDomain == sendingDomain && b.CampaignType != "welcome" {
+			bc := b
+			brand = &bc
+			break
+		}
+	}
+	if brand == nil {
+		return singleVariant
+	}
+
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		for _, cfgPath := range []string{"config/config.yaml", "/app/config/config.yaml"} {
+			if cfg, err := config.Load(cfgPath); err == nil && cfg.OpenAI.APIKey != "" {
+				openaiKey = cfg.OpenAI.APIKey
+				break
+			}
+		}
+	}
+	if anthropicKey == "" && openaiKey == "" {
+		log.Printf("[EDITH-deploy] no AI API key available — deploying single variant for %s", brand.BrandName)
+		return singleVariant
+	}
+
+	aiSvc := mailing.NewAIContentService(db, anthropicKey, openaiKey)
+	waveGen := mailing.NewWaveContentGenerator(aiSvc)
+
+	log.Printf("[EDITH-deploy] scraping brand intelligence from %s for multi-variant generation", brand.BlogDomain)
+	brandInfo := aiSvc.ScrapeBrandIntelligence(ctx, brand.BlogDomain)
+	contentPool := brandInfo.BlogPosts
+	if len(contentPool) < 3 && len(brand.FallbackContent) > 0 {
+		contentPool = brand.FallbackContent
+	}
+
+	numVariants := 3
+	req := mailing.WaveContentRequest{
+		SendingDomain: brand.SendingDomain,
+		BrandName:     brand.BrandName,
+		NumWaves:      numVariants,
+		CampaignType:  brand.CampaignType,
+		Voice:         brand.Voice,
+		Audience:      brand.Audience,
+		DesignSystem:  brand.DesignSystem,
+		HTMLTemplate:  brand.HTMLTemplate,
+		BrandInfo:     brandInfo,
+		ContentPool:   contentPool,
+	}
+
+	result, err := waveGen.GenerateFull(ctx, req)
+	if err != nil {
+		log.Printf("[EDITH-deploy] wave generation failed for %s: %v — falling back to single variant", brand.BrandName, err)
+		return singleVariant
+	}
+
+	if len(result.Variations) == 0 {
+		log.Printf("[EDITH-deploy] wave generation returned 0 variations for %s — falling back to single variant", brand.BrandName)
+		return singleVariant
+	}
+
+	variantNames := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+	splitPct := 100.0 / float64(len(result.Variations))
+	variants := make([]engine.ContentVariant, 0, len(result.Variations))
+	for i, v := range result.Variations {
+		name := variantNames[i%len(variantNames)]
+		pct := splitPct
+		if i == 0 {
+			pct = 100.0 - splitPct*float64(len(result.Variations)-1)
+		}
+		variants = append(variants, engine.ContentVariant{
+			VariantName:  name,
+			FromName:     fromName,
+			Subject:      v.Subject,
+			PreviewText:  v.PreviewText,
+			HTMLContent:  v.HTMLContent,
+			SplitPercent: pct,
+		})
+	}
+
+	log.Printf("[EDITH-deploy] generated %d content variants for %s (brand: %s)", len(variants), sendingDomain, brand.BrandName)
+	return variants
 }

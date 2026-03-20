@@ -256,18 +256,17 @@ func getAgentTools() []agentToolDef {
 			Type: "function",
 			Function: agentToolFuncDef{
 				Name:        "create_template",
-				Description: "Create a single email template directly in the Content Library. Use this when you have specific HTML content, subject, and brand details ready. The template is saved as a draft for user review. ALWAYS include unsubscribe links ({{ system.unsubscribe_url }}), physical address, and CAN-SPAM compliance elements.",
+				Description: "Create template metadata (name, subject, from_name, preview_text) in the Content Library as a draft. HTML content is NOT accepted — template structure is managed through approved brand templates. Content variations are generated automatically by the wave content pipeline. Do NOT pass html_content.",
 				Parameters: map[string]interface{}{
 					"type":     "object",
-					"required": []string{"name", "subject", "html_content"},
+					"required": []string{"name", "subject"},
 					"properties": map[string]interface{}{
 						"name":         prop("string", "Template name (e.g. 'DB Newsletter — Wednesday Savings')."),
 						"subject":      prop("string", "Default subject line for this template."),
 						"from_name":    prop("string", "Default from name."),
 						"preview_text": prop("string", "Default preview/pre-header text."),
-						"html_content": prop("string", "Full HTML email content. Must include {{ system.unsubscribe_url }}, physical address, and be mobile-responsive."),
 						"folder_name":  prop("string", "Folder to organize the template in (e.g. 'newsletter', 'welcome-series'). Created if it doesn't exist."),
-						"brand":        prop("string", "Brand name for organization (e.g. 'DiscountBlog', 'QuizFiesta')."),
+						"brand":        prop("string", "Brand name for organization (e.g. 'DiscountBlog', 'QuizFiesta', 'HistoryThinking', 'MyOwnHealth')."),
 					},
 				},
 			},
@@ -276,7 +275,7 @@ func getAgentTools() []agentToolDef {
 			Type: "function",
 			Function: agentToolFuncDef{
 				Name:        "generate_template",
-				Description: "Generate new AI email templates based on campaign type and sending domain brand intelligence. Scrapes the domain for colors/logos, generates 5 HTML variations, and saves each as a draft in the Content Library. Use list_templates and read_template first to review existing templates for inspiration.",
+				Description: "Generate new AI email templates for review. Templates are saved with 'pending_review' status and require human approval before use. Content variations for active campaigns are generated automatically by the wave content pipeline — use this tool only when proposing new template designs.",
 				Parameters: map[string]interface{}{
 					"type":     "object",
 					"required": []string{"campaign_type", "sending_domain"},

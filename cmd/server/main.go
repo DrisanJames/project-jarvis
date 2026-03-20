@@ -442,6 +442,38 @@ func main() {
 						{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
 					},
 				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "historythinking", BlogDomain: "historythinking.com",
+					SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
+					CampaignType: "newsletter",
+					Voice: `You are the voice of History Thinking — a scholarly yet accessible history publication. Write like a brilliant professor who tells stories at dinner parties that leave everyone speechless. Every article must surprise: reveal hidden connections, debunk myths, or reframe well-known events. Use vivid period detail and primary sources. Tone: authoritative but never dry, passionate about making history feel alive and relevant. Think: a documentary narrator who can't help but lean in when the story gets good.`,
+					Audience: `History enthusiasts who want surprising, well-researched stories that go beyond textbook summaries. They're curious, educated, and love "I didn't know that" moments.`,
+					HTMLTemplate: api.HistoryThinkingHTMLTemplate,
+				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "historythinking", BlogDomain: "historythinking.com",
+					SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
+					CampaignType: "welcome",
+					Voice: `You are the voice of History Thinking — scholarly yet accessible. Write like a brilliant professor who makes history feel alive. Surprising facts, vivid detail, authoritative but never dry.`,
+					Audience: `Brand-new subscribers who just signed up. They're curious about history and want to know what kind of content they'll receive. Hook them with the most surprising story you can find.`,
+					HTMLTemplate: api.HistoryThinkingWelcomeHTMLTemplate,
+				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "myownhealth", BlogDomain: "myownhealth.net",
+					SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
+					CampaignType: "newsletter",
+					Voice: `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. Write like a sports medicine doctor who also lifts. Direct, actionable, zero fluff. Every claim needs a mechanism: don't just say "drink water," explain what dehydration does to cortisol and recovery. Use specific numbers: grams, reps, minutes, studies. Challenge bro-science and wellness hype with actual data. Tone: confident, slightly irreverent, respects the reader's intelligence. Think: a coach who reads PubMed for fun.`,
+					Audience: `Health-conscious adults who want actionable tips without fluff. They're tired of vague "eat clean, train hard" advice and want specific protocols backed by evidence.`,
+					HTMLTemplate: api.MyOwnHealthHTMLTemplate,
+				})
+				contentRefresh.RegisterBrand(worker.ContentBrand{
+					Key: "myownhealth", BlogDomain: "myownhealth.net",
+					SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
+					CampaignType: "welcome",
+					Voice: `You are the voice of My Own Health — no-nonsense, evidence-based. Direct, actionable, zero fluff. Specific numbers and mechanisms. Confident, slightly irreverent.`,
+					Audience: `Brand-new subscribers who just signed up. They want to see immediately that this isn't another generic wellness newsletter. Hit them with something specific and useful in the first sentence.`,
+					HTMLTemplate: api.MyOwnHealthWelcomeHTMLTemplate,
+				})
 				contentRefresh.Start(ctx)
 				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 

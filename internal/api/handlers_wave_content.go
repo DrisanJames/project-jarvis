@@ -166,6 +166,58 @@ LAYOUT RULES:
 				{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
 			},
 		},
+		"historythinking": {
+			Key:           "historythinking",
+			SendingDomain: "em.historythinking.com",
+			BlogDomain:    "historythinking.com",
+			BrandName:     "History Thinking",
+			FromName:      "History Thinking",
+			CampaignType:  "newsletter",
+			HTMLTemplate:  HistoryThinkingHTMLTemplate,
+			Voice:         `You are the voice of History Thinking — a scholarly yet accessible history publication. Write like a brilliant professor who tells stories at dinner parties that leave everyone speechless. Every article must surprise: reveal hidden connections, debunk myths, or reframe well-known events. Use vivid period detail and primary sources. Tone: authoritative but never dry, passionate about making history feel alive and relevant. Think: a documentary narrator who can't help but lean in when the story gets good.`,
+			Audience:      `History enthusiasts who want surprising, well-researched stories that go beyond textbook summaries. They're curious, educated, and love "I didn't know that" moments. They share articles that make them look smart.`,
+			DesignSystem: `HISTORY THINKING EMAIL DESIGN SYSTEM:
+COLORS: Background #f5f0e8 (warm parchment), card bg #fdf6e3, borders #d4c5a0, primary accent #c4950a (gold), secondary #8b1a1a (deep red), tertiary #1b3a5c (navy), text #3d2e1f (dark brown), body #5c4a32, footer bg #3d2e1f (dark brown)
+TYPOGRAPHY: Headlines: Playfair Display, Georgia, serif. Body: Source Serif 4, Georgia, serif. Category badges: 11px uppercase on colored bg.
+LAYOUT: 600px max, editorial card style, generous line-height 1.7, parchment aesthetic`,
+		},
+		"historythinking-welcome": {
+			Key:           "historythinking",
+			SendingDomain: "em.historythinking.com",
+			BlogDomain:    "historythinking.com",
+			BrandName:     "History Thinking",
+			FromName:      "History Thinking",
+			CampaignType:  "welcome",
+			HTMLTemplate:  HistoryThinkingWelcomeHTMLTemplate,
+			Voice:         `You are the voice of History Thinking — scholarly yet accessible. Write like a brilliant professor who makes history feel alive. Surprising facts, vivid detail, authoritative but never dry.`,
+			Audience:      `Brand-new subscribers who just signed up. They're curious about history and want to know what kind of content they'll receive. Hook them with the most surprising story you can find.`,
+		},
+		"myownhealth": {
+			Key:           "myownhealth",
+			SendingDomain: "em.myownhealth.net",
+			BlogDomain:    "myownhealth.net",
+			BrandName:     "My Own Health",
+			FromName:      "My Own Health",
+			CampaignType:  "newsletter",
+			HTMLTemplate:  MyOwnHealthHTMLTemplate,
+			Voice:         `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. Write like a sports medicine doctor who also lifts. Direct, actionable, zero fluff. Every claim needs a mechanism: don't just say "drink water," explain what dehydration does to cortisol and recovery. Use specific numbers: grams, reps, minutes, studies. Challenge bro-science and wellness hype with actual data. Tone: confident, slightly irreverent, respects the reader's intelligence. Think: a coach who reads PubMed for fun.`,
+			Audience:      `Health-conscious adults who want actionable tips without fluff. They're tired of vague "eat clean, train hard" advice and want specific protocols backed by evidence. They appreciate directness and hate being talked down to.`,
+			DesignSystem: `MY OWN HEALTH EMAIL DESIGN SYSTEM:
+COLORS: Background #080e1a (deep navy-black), container #0f172a (slate-900), card bg #0a111d, borders #1e293b, primary accent #ff4500 (orange-red), secondary #0066ff (blue), tertiary #00b359 (green), text #ffffff (headlines), body #94a3b8, footer text #475569
+TYPOGRAPHY: Headlines: Oswald, Arial, sans-serif, uppercase, letter-spacing 3px. Body: system sans-serif. Category pills: 11px uppercase, rounded 50px.
+LAYOUT: 600px max, dark cards with 12px border-radius, bold contrast, fitness/performance aesthetic`,
+		},
+		"myownhealth-welcome": {
+			Key:           "myownhealth",
+			SendingDomain: "em.myownhealth.net",
+			BlogDomain:    "myownhealth.net",
+			BrandName:     "My Own Health",
+			FromName:      "My Own Health",
+			CampaignType:  "welcome",
+			HTMLTemplate:  MyOwnHealthWelcomeHTMLTemplate,
+			Voice:         `You are the voice of My Own Health — no-nonsense, evidence-based. Direct, actionable, zero fluff. Specific numbers and mechanisms. Confident, slightly irreverent.`,
+			Audience:      `Brand-new subscribers who just signed up. They want to see immediately that this isn't another generic wellness newsletter. Hit them with something specific and useful in the first sentence.`,
+		},
 	}
 }
 

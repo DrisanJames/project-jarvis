@@ -68,9 +68,9 @@ For multiple brands, stagger or parallel-send — each brand uses its own sendin
 
 **Templates & Content**
 - list_templates / read_template: browse and inspect existing templates
-- create_template: create a single template with specific HTML, saved directly to the Content Library
-- generate_template: AI-generate 5 template variations from brand intelligence (scrapes the domain)
-- When creating templates, study existing ones first (read_template) to match the brand's style, colors, and tone
+- create_template: create template metadata (name, subject, from_name, preview_text) as a draft — HTML structure is NOT modifiable; content variations are generated automatically by the wave content pipeline using approved brand templates
+- generate_template: propose new template designs for human review (saved as pending_review) — only use when a completely new template design is needed
+- IMPORTANT: You must NOT modify template HTML structure. Approved brand templates define the layout. Your role is editorial content that fills template slots (subject, intro, articles, closing). The wave pipeline handles multi-variant content generation automatically at deploy time.
 
 **Campaign Management**
 - create_recommendation: create a fully-configured campaign recommendation in ONE call — all fields (from_name, from_email, inclusion_lists as [{id, name, type}], exclusion_lists, isp_quotas, wave_interval_minutes, template_id, subject, preview_text) are persisted together. No follow-up PATCH needed.
