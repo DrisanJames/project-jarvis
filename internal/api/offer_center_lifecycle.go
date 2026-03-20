@@ -88,11 +88,14 @@ type OfferRecord struct {
 	OriginalHTMLCreative  *string    `json:"original_html_creative"`
 	Payout                *float64   `json:"payout"`
 	PayoutType            *string    `json:"payout_type"`
-	OptizmoStatus         *string    `json:"optizmo_status"`
-	OptizmoLastScrubbedAt *time.Time `json:"optizmo_last_scrubbed_at"`
-	Status                string     `json:"status"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	OptizmoStatus            *string    `json:"optizmo_status"`
+	OptizmoLastScrubbedAt    *time.Time `json:"optizmo_last_scrubbed_at"`
+	SuppressionSyncEnabled   bool       `json:"suppression_sync_enabled"`
+	LastSuppressionSyncAt    *time.Time `json:"last_suppression_sync_at"`
+	LastSuppressionSyncError *string    `json:"last_suppression_sync_error"`
+	Status                   string     `json:"status"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 type CreateOfferRequest struct {
@@ -305,7 +308,7 @@ type FromNamePerformance struct {
 // Offer scan helper
 // ---------------------------------------------------------------------------
 
-const offerSelectCols = `id, organization_id, vertical_id, brand_name, name, description, everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link, web_property, landing_page_slug, landing_page_url, landing_page_html, original_html_creative, payout, payout_type, optizmo_status, optizmo_last_scrubbed_at, status, created_at, updated_at`
+const offerSelectCols = `id, organization_id, vertical_id, brand_name, name, description, everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link, web_property, landing_page_slug, landing_page_url, landing_page_html, original_html_creative, payout, payout_type, optizmo_status, optizmo_last_scrubbed_at, COALESCE(suppression_sync_enabled, FALSE), last_suppression_sync_at, COALESCE(last_suppression_sync_error, ''), status, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...interface{}) error
@@ -318,12 +321,15 @@ func scanOfferRow(s rowScanner) (OfferRecord, error) {
 	var payoutType, optizmoStatus sql.NullString
 	var payout sql.NullFloat64
 	var optizmoScrubbedAt sql.NullTime
+	var lastSyncAt sql.NullTime
+	var lastSyncError string
 
 	err := s.Scan(
 		&o.ID, &o.OrganizationID, &verticalID, &o.BrandName, &o.Name,
 		&description, &efOfferID, &efCreativeID, &trackingLink,
 		&optizmoLink, &webProperty, &lpSlug, &lpURL, &lpHTML, &origHTML,
 		&payout, &payoutType, &optizmoStatus, &optizmoScrubbedAt,
+		&o.SuppressionSyncEnabled, &lastSyncAt, &lastSyncError,
 		&o.Status, &o.CreatedAt, &o.UpdatedAt,
 	)
 	if err != nil {
@@ -345,6 +351,10 @@ func scanOfferRow(s rowScanner) (OfferRecord, error) {
 	o.PayoutType = nullStringPtr(payoutType)
 	o.OptizmoStatus = nullStringPtr(optizmoStatus)
 	o.OptizmoLastScrubbedAt = nullTimePtr(optizmoScrubbedAt)
+	o.LastSuppressionSyncAt = nullTimePtr(lastSyncAt)
+	if lastSyncError != "" {
+		o.LastSuppressionSyncError = &lastSyncError
+	}
 
 	return o, nil
 }

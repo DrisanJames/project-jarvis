@@ -1,15 +1,19 @@
 package api
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -19,7 +23,17 @@ import (
 
 // OptizmoHandlers provides HTTP handlers for Optizmo list scrub management.
 type OptizmoHandlers struct {
-	db *sql.DB
+	db           *sql.DB
+	optizmoToken string
+}
+
+// NewOptizmoHandlers creates handlers with the Optizmo Mailer API token.
+func NewOptizmoHandlers(db *sql.DB) *OptizmoHandlers {
+	token := os.Getenv("OPTIZMO_API_TOKEN")
+	if token == "" {
+		token = "nOC0do1yMRfevcVXdikjTQOhOpyGPlx5"
+	}
+	return &OptizmoHandlers{db: db, optizmoToken: token}
 }
 
 type optizmoMatch struct {
@@ -41,6 +55,7 @@ type ScrubJobResponse struct {
 	SuppressedCount int        `json:"suppressed_count"`
 	Status          string     `json:"status"`
 	ErrorMessage    string     `json:"error_message,omitempty"`
+	ScrubType       string     `json:"scrub_type"`
 	RequestedAt     time.Time  `json:"requested_at"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
@@ -159,57 +174,12 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		log.Printf("[Optizmo] error setting job %s to processing: %v", jobID, err)
 	}
 
-	client := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := client.Get(optizmoLink)
-	if err != nil {
-		fail(fmt.Sprintf("failed to download Optizmo list: %v", err))
+	hashes, fileLineCount, validMD5Count, nonMD5Count, dlErr := h.downloadOptizmoHashes(ctx, jobID, optizmoLink)
+	if dlErr != nil {
+		fail(fmt.Sprintf("download failed: %v", dlErr))
 		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		fail(fmt.Sprintf("Optizmo returned HTTP %d: %s", resp.StatusCode, string(bodySnippet)))
-		return
-	}
-
-	suppressedHashes := make(map[string]bool)
-	plaintextEmails := make(map[string]bool)
-	var fileLineCount, validMD5Count, nonMD5Count int
-	var rawSamples []string
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		lower := strings.ToLower(line)
-		fileLineCount++
-		if isHexMD5(lower) {
-			validMD5Count++
-			suppressedHashes[lower] = true
-		} else {
-			nonMD5Count++
-			cleaned := extractEmail(lower)
-			suppressedHashes[md5Hash(cleaned)] = true
-			plaintextEmails[cleaned] = true
-		}
-		if len(rawSamples) < 3 {
-			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		fail(fmt.Sprintf("error reading Optizmo response: %v", err))
-		return
-	}
-
-	log.Printf("[Optizmo] job %s: downloaded %d entries (%d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
-		jobID, fileLineCount, validMD5Count, nonMD5Count)
-	log.Printf("[Optizmo] job %s: RAW first entries: %s", jobID, strings.Join(rawSamples, " | "))
-	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] job %s: %d plaintext entries auto-converted to MD5 for matching (also stored as plaintext for direct comparison)",
-			jobID, nonMD5Count)
-	}
+	suppressedHashes := hashes
 
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
@@ -227,55 +197,15 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		return
 	}
 
-	subRows, err := h.db.QueryContext(ctx,
-		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
-		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
-	if err != nil {
-		fail(fmt.Sprintf("failed to query subscribers: %v", err))
+	audienceCount, suppressedCount, matches, matchErr := matchAndSuppressSubscribers(ctx, h.db, offerID, suppressedHashes)
+	if matchErr != nil {
+		fail(fmt.Sprintf("subscriber matching failed: %v", matchErr))
 		return
-	}
-	defer subRows.Close()
-
-	var matches []optizmoMatch
-	var audienceCount int
-	var sampleSubHashes []string
-
-	for subRows.Next() {
-		var subID, email string
-		if err := subRows.Scan(&subID, &email); err != nil {
-			continue
-		}
-		audienceCount++
-		emailHash := md5Hash(email)
-		if len(sampleSubHashes) < 5 {
-			sampleSubHashes = append(sampleSubHashes, emailHash[:8]+"...")
-		}
-		if suppressedHashes[emailHash] || plaintextEmails[email] {
-			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: emailHash})
-		}
-	}
-	if len(sampleSubHashes) > 0 {
-		log.Printf("[Optizmo] job %s: subscriber hash samples: %s", jobID, strings.Join(sampleSubHashes, ", "))
 	}
 
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET audience_count = $1 WHERE id = $2`,
 		audienceCount, jobID)
-
-	suppressedCount := 0
-	for _, m := range matches {
-		_, err := h.db.ExecContext(ctx,
-			`INSERT INTO mailing_offer_suppressions
-				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-			 VALUES ($1, $2, $3, $4, 'optizmo', 'optizmo_scrub', NOW())
-			 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-			defaultOrgID, offerID, m.ID, m.Hash)
-		if err != nil {
-			log.Printf("[Optizmo] error inserting suppression for subscriber %s: %v", m.ID, err)
-			continue
-		}
-		suppressedCount++
-	}
 
 	now := time.Now()
 	h.db.ExecContext(ctx,
@@ -287,11 +217,10 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		 SET optizmo_status = 'scrubbed', optizmo_last_scrubbed_at = $1, updated_at = NOW()
 		 WHERE id = $2`, now, offerID)
 
-	// Create a named suppression list so it can be selected as an exclusion
 	h.createSuppressionListFromScrub(ctx, offerID, offerName, matches)
 
-	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d matched, %d suppressed",
-		jobID, audienceCount, len(matches), suppressedCount)
+	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d suppressed",
+		jobID, audienceCount, suppressedCount)
 }
 
 // createSuppressionListFromScrub creates/updates a named suppression list
@@ -443,7 +372,6 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 	defer file.Close()
 
 	suppressedHashes := make(map[string]bool)
-	plaintextEmails := make(map[string]bool)
 	var fileLineCount, validMD5Count, nonMD5Count int
 	var rawSamples []string
 	scanner := bufio.NewScanner(file)
@@ -461,7 +389,6 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 			nonMD5Count++
 			cleaned := extractEmail(lower)
 			suppressedHashes[md5Hash(cleaned)] = true
-			plaintextEmails[cleaned] = true
 		}
 		if len(rawSamples) < 3 {
 			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
@@ -481,59 +408,12 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 	log.Printf("[Optizmo] import for offer %s: %d file entries (%d unique hashes, %d valid MD5, %d non-MD5 — plaintext hashed to MD5)",
 		offerID, fileLineCount, len(suppressedHashes), validMD5Count, nonMD5Count)
 	log.Printf("[Optizmo] import RAW first entries: %s", strings.Join(rawSamples, " | "))
-	if nonMD5Count > 0 {
-		log.Printf("[Optizmo] import for offer %s: %d plaintext entries auto-converted to MD5 (also stored as plaintext for direct comparison)",
-			offerID, nonMD5Count)
-	}
 
-	subRows, err := h.db.QueryContext(ctx,
-		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
-		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
-	if err != nil {
-		log.Printf("[Optizmo] error querying subscribers for matching: %v", err)
-		respondError(w, http.StatusInternalServerError, "failed to query subscribers")
+	audienceCount, suppressedCount, _, matchErr := matchAndSuppressSubscribers(ctx, h.db, offerID, suppressedHashes)
+	if matchErr != nil {
+		log.Printf("[Optizmo] error during subscriber matching: %v", matchErr)
+		respondError(w, http.StatusInternalServerError, "failed to match subscribers")
 		return
-	}
-	defer subRows.Close()
-
-	var matches []optizmoMatch
-	var audienceCount int
-	var sampleSubHashes []string
-
-	for subRows.Next() {
-		var subID, email string
-		if err := subRows.Scan(&subID, &email); err != nil {
-			continue
-		}
-		audienceCount++
-		hash := md5Hash(email)
-		if len(sampleSubHashes) < 5 {
-			sampleSubHashes = append(sampleSubHashes, hash[:8]+"...")
-		}
-		if suppressedHashes[hash] || plaintextEmails[email] {
-			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: hash})
-		}
-	}
-	if err := subRows.Err(); err != nil {
-		log.Printf("[Optizmo] row iteration error during matching: %v", err)
-	}
-	if len(sampleSubHashes) > 0 {
-		log.Printf("[Optizmo] import subscriber hash samples: %s", strings.Join(sampleSubHashes, ", "))
-	}
-
-	suppressedCount := 0
-	for _, m := range matches {
-		_, err := h.db.ExecContext(ctx,
-			`INSERT INTO mailing_offer_suppressions
-				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-			 VALUES ($1, $2, $3, $4, 'optizmo', 'optizmo_scrub', NOW())
-			 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-			defaultOrgID, offerID, m.ID, m.Hash)
-		if err != nil {
-			log.Printf("[Optizmo] error inserting suppression for subscriber %s: %v", m.ID, err)
-			continue
-		}
-		suppressedCount++
 	}
 
 	now := time.Now()
@@ -565,8 +445,6 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		log.Printf("[Optizmo] error updating offer optizmo status: %v", err)
 	}
 
-	h.createSuppressionListFromScrub(ctx, offerID, offerName, matches)
-
 	log.Printf("[Optizmo] import complete for offer %s — %d file entries, %d audience, %d suppressed",
 		offerID, fileLineCount, audienceCount, suppressedCount)
 
@@ -574,7 +452,6 @@ func (h *OptizmoHandlers) HandleImportScrubResult(w http.ResponseWriter, r *http
 		"offer_id":         offerID,
 		"file_count":       fileLineCount,
 		"audience_scanned": audienceCount,
-		"matched":          len(matches),
 		"suppressed_count": suppressedCount,
 		"status":           "completed",
 	})
@@ -642,7 +519,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 	rows, err := h.db.QueryContext(ctx,
 		`SELECT id, COALESCE(file_count,0), COALESCE(valid_md5_count,0), COALESCE(non_md5_count,0),
 		        audience_count, suppressed_count, status,
-		        COALESCE(error_message,''), requested_at, started_at, completed_at
+		        COALESCE(error_message,''), COALESCE(scrub_type,'manual'),
+		        requested_at, started_at, completed_at
 		 FROM mailing_optizmo_scrub_jobs
 		 WHERE offer_id = $1
 		 ORDER BY requested_at DESC
@@ -660,7 +538,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 		var startedAt, completedAt sql.NullTime
 		if err := rows.Scan(&j.ID, &j.FileCount, &j.ValidMD5Count, &j.NonMD5Count,
 			&j.AudienceCount, &j.SuppressedCount, &j.Status,
-			&j.ErrorMessage, &j.RequestedAt, &startedAt, &completedAt); err != nil {
+			&j.ErrorMessage, &j.ScrubType,
+			&j.RequestedAt, &startedAt, &completedAt); err != nil {
 			log.Printf("[Optizmo] error scanning scrub job row: %v", err)
 			continue
 		}
@@ -701,6 +580,286 @@ func (h *OptizmoHandlers) CheckOfferCompliance(ctx context.Context, offerID uuid
 		return false, "Optizmo scrub failed — retry or cancel before deploying"
 	}
 	return true, ""
+}
+
+// ---------------------------------------------------------------------------
+// Optizmo Mailer API Download (package-level, shared by handlers and workers)
+// ---------------------------------------------------------------------------
+
+// downloadOptizmoHashesPkg uses the Optizmo Mailer API (2-step flow) to download
+// suppression hashes. Extracts the MAK from the offer's optizmo_link, calls
+// the prepare-download endpoint to get a ZIP download link, downloads and
+// extracts the ZIP, then returns MD5 hashes.
+// This is a package-level function shared by OptizmoHandlers and OptizmoDeltaSyncWorker.
+func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink string) (map[string]bool, int, int, int, error) {
+	mak := extractScrubMAK(optizmoLink)
+	if mak == "" {
+		return nil, 0, 0, 0, fmt.Errorf("could not extract MAK from Optizmo link: %s", optizmoLink)
+	}
+
+	if token == "" {
+		return nil, 0, 0, 0, fmt.Errorf("no Optizmo API token configured")
+	}
+
+	log.Printf("[Optizmo] %s: using Mailer API flow (mak=%s...)", logPrefix, mak[:min(12, len(mak))])
+
+	prepareURL := fmt.Sprintf("%s/accesskey/download/%s?token=%s&format=md5",
+		optizmoMailerAPIBase,
+		url.PathEscape(mak),
+		url.QueryEscape(token),
+	)
+
+	client := &http.Client{Timeout: 3 * time.Minute}
+	prepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, prepareURL, nil)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("prepare request: %w", err)
+	}
+	prepReq.Header.Set("User-Agent", "IgnitePlatform/1.0 OptizmoScrub")
+	prepReq.Header.Set("Accept", "application/json")
+
+	prepResp, err := client.Do(prepReq)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("prepare-download request: %w", err)
+	}
+	defer prepResp.Body.Close()
+
+	prepBody, err := io.ReadAll(prepResp.Body)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("read prepare response: %w", err)
+	}
+
+	if prepResp.StatusCode != http.StatusOK && prepResp.StatusCode != http.StatusAccepted {
+		return nil, 0, 0, 0, fmt.Errorf("prepare-download HTTP %d: %s", prepResp.StatusCode, string(prepBody[:min(512, len(prepBody))]))
+	}
+
+	var prepResult struct {
+		Result       string `json:"result"`
+		DownloadLink string `json:"download_link"`
+		CampaignName string `json:"campaign_name"`
+		Error        string `json:"error"`
+	}
+	if err := json.Unmarshal(prepBody, &prepResult); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("parse prepare response: %w (body: %s)", err, string(prepBody[:min(256, len(prepBody))]))
+	}
+
+	if prepResult.Result == "error" {
+		return nil, 0, 0, 0, fmt.Errorf("Optizmo API error: %s", prepResult.Error)
+	}
+	if prepResult.DownloadLink == "" {
+		return nil, 0, 0, 0, fmt.Errorf("prepare-download returned empty download_link")
+	}
+
+	log.Printf("[Optizmo] %s: prepare OK [%s], downloading ZIP...", logPrefix, prepResult.CampaignName)
+
+	tmpFile, err := os.CreateTemp("", "optizmo-scrub-*.zip")
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	var downloadSuccess bool
+	maxAttempts := 20
+	pollInterval := 5 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(pollInterval):
+			case <-ctx.Done():
+				tmpFile.Close()
+				return nil, 0, 0, 0, fmt.Errorf("context cancelled during download polling: %w", ctx.Err())
+			}
+			if pollInterval < 30*time.Second {
+				pollInterval += 5 * time.Second
+			}
+		}
+
+		dlClient := &http.Client{Timeout: 15 * time.Minute}
+		dlReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, prepResult.DownloadLink, nil)
+		dlReq.Header.Set("User-Agent", "IgnitePlatform/1.0 OptizmoScrub")
+
+		dlResp, dlErr := dlClient.Do(dlReq)
+		if dlErr != nil {
+			log.Printf("[Optizmo] %s: download attempt %d/%d failed: %v", logPrefix, attempt, maxAttempts, dlErr)
+			continue
+		}
+
+		if dlResp.StatusCode == http.StatusNotFound {
+			dlResp.Body.Close()
+			log.Printf("[Optizmo] %s: download attempt %d/%d: 404 (file not ready)", logPrefix, attempt, maxAttempts)
+			continue
+		}
+
+		if dlResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(dlResp.Body, 512))
+			dlResp.Body.Close()
+			return nil, 0, 0, 0, fmt.Errorf("download HTTP %d: %s", dlResp.StatusCode, string(body))
+		}
+
+		tmpFile.Seek(0, 0)
+		tmpFile.Truncate(0)
+		written, copyErr := io.Copy(tmpFile, dlResp.Body)
+		dlResp.Body.Close()
+		if copyErr != nil {
+			log.Printf("[Optizmo] %s: download stream error: %v (got %d bytes)", logPrefix, copyErr, written)
+			continue
+		}
+
+		log.Printf("[Optizmo] %s: downloaded %d bytes (%.1f MB)", logPrefix, written, float64(written)/1024/1024)
+		downloadSuccess = true
+		break
+	}
+
+	tmpFile.Close()
+
+	if !downloadSuccess {
+		return nil, 0, 0, 0, fmt.Errorf("download failed after %d attempts", maxAttempts)
+	}
+
+	zipReader, err := zip.OpenReader(tmpPath)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("open zip: %w", err)
+	}
+	defer zipReader.Close()
+
+	if len(zipReader.File) == 0 {
+		return nil, 0, 0, 0, fmt.Errorf("zip archive is empty")
+	}
+
+	var suppressionFile *zip.File
+	for _, f := range zipReader.File {
+		lower := strings.ToLower(f.Name)
+		if strings.Contains(lower, "suppression_list") || strings.Contains(lower, "optout") {
+			suppressionFile = f
+			break
+		}
+	}
+	if suppressionFile == nil {
+		suppressionFile = zipReader.File[0]
+		for _, f := range zipReader.File[1:] {
+			if f.UncompressedSize64 > suppressionFile.UncompressedSize64 {
+				suppressionFile = f
+			}
+		}
+	}
+
+	log.Printf("[Optizmo] %s: extracting %s (%d MB uncompressed)", logPrefix, suppressionFile.Name, suppressionFile.UncompressedSize64/1024/1024)
+
+	rc, err := suppressionFile.Open()
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("open zip entry %s: %w", suppressionFile.Name, err)
+	}
+	defer rc.Close()
+
+	hashes := make(map[string]bool)
+	var fileLineCount, validMD5Count, nonMD5Count int
+	var rawSamples []string
+
+	scanner := bufio.NewScanner(rc)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		fileLineCount++
+		if isHexMD5(lower) {
+			validMD5Count++
+			hashes[lower] = true
+		} else {
+			nonMD5Count++
+			cleaned := extractEmail(lower)
+			hashes[md5Hash(cleaned)] = true
+		}
+		if len(rawSamples) < 3 {
+			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
+		}
+	}
+
+	log.Printf("[Optizmo] %s: parsed %d entries (%d valid MD5, %d non-MD5)", logPrefix, fileLineCount, validMD5Count, nonMD5Count)
+	log.Printf("[Optizmo] %s: RAW first entries: %s", logPrefix, strings.Join(rawSamples, " | "))
+
+	return hashes, fileLineCount, validMD5Count, nonMD5Count, nil
+}
+
+// downloadOptizmoHashes delegates to the package-level function.
+func (h *OptizmoHandlers) downloadOptizmoHashes(ctx context.Context, jobID, optizmoLink string) (map[string]bool, int, int, int, error) {
+	return downloadOptizmoHashesPkg(ctx, h.optizmoToken, "job "+jobID, optizmoLink)
+}
+
+// matchAndSuppressSubscribers scans all confirmed subscribers, matches their
+// email MD5 against the provided hash set, and inserts offer-level suppressions.
+// Returns (audienceCount, suppressedCount, matches, error).
+func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string, hashes map[string]bool) (int, int, []optizmoMatch, error) {
+	subRows, err := db.QueryContext(ctx,
+		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
+		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("failed to query subscribers: %w", err)
+	}
+	defer subRows.Close()
+
+	var matches []optizmoMatch
+	var audienceCount int
+
+	for subRows.Next() {
+		var subID, email string
+		if err := subRows.Scan(&subID, &email); err != nil {
+			continue
+		}
+		audienceCount++
+		emailHash := md5Hash(email)
+		if hashes[emailHash] {
+			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: emailHash})
+		}
+	}
+
+	suppressedCount := 0
+	for _, m := range matches {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO mailing_offer_suppressions
+				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+			 VALUES ($1, $2, $3, $4, 'optizmo', 'optizmo_scrub', NOW())
+			 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
+			defaultOrgID, offerID, m.ID, m.Hash)
+		if err != nil {
+			log.Printf("[Optizmo] error inserting suppression for subscriber %s: %v", m.ID, err)
+			continue
+		}
+		suppressedCount++
+	}
+
+	return audienceCount, suppressedCount, matches, nil
+}
+
+// extractScrubMAK extracts the MAK from various Optizmo URL formats:
+//   - https://app.optizmo.com/access/campaigns?mak=m-xxx-yyy-zzz
+//   - https://www.affiliateaccesskey.com/m-xxx-yyy-zzz
+func extractScrubMAK(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if mak := parsed.Query().Get("mak"); mak != "" {
+		return mak
+	}
+	if idx := strings.Index(rawURL, "mak="); idx >= 0 {
+		rest := rawURL[idx+4:]
+		if amp := strings.IndexByte(rest, '&'); amp >= 0 {
+			return rest[:amp]
+		}
+		return rest
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		segment := path[idx+1:]
+		if strings.HasPrefix(segment, "m-") {
+			return segment
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

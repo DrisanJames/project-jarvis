@@ -48,6 +48,8 @@ type Server struct {
 	convictionStore *engine.ConvictionStore
 	// S3 data normalizer for operational API
 	dataNormHandler *DataNormHandler
+	// Optizmo Delta Sync Worker — stored for graceful shutdown
+	deltaSyncWorker *OptizmoDeltaSyncWorker
 }
 
 // NewServer creates a new API server
@@ -127,6 +129,13 @@ func (s *Server) Handler() http.Handler {
 // Returns nil if the engine has not been initialized yet.
 func (s *Server) GetRateRegistry() *engine.ISPRateRegistry {
 	return s.rateRegistry
+}
+
+// StopDeltaSyncWorker gracefully stops the Optizmo nightly delta sync worker.
+func (s *Server) StopDeltaSyncWorker() {
+	if s.deltaSyncWorker != nil {
+		s.deltaSyncWorker.Stop()
+	}
 }
 
 // HandleVersion returns build info and deployment timestamp for the UI sidebar.

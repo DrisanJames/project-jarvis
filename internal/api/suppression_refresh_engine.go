@@ -1226,7 +1226,11 @@ func (e *SuppressionRefreshEngine) downloadOptizmo(mak, sourceID string) ([]pars
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			time.Sleep(pollInterval)
+			select {
+			case <-time.After(pollInterval):
+			case <-e.stopCh:
+				return nil, 0, 0, "", fmt.Errorf("engine stopped during download polling")
+			}
 			if pollInterval < 30*time.Second {
 				pollInterval += 5 * time.Second
 			}

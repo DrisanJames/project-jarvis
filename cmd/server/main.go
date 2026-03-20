@@ -462,6 +462,7 @@ func main() {
 					campaignScheduler.Stop()
 					sendWorkerPool.Stop()
 					offerSuppWorker.Stop()
+					server.StopDeltaSyncWorker()
 					if trackingConsumer != nil {
 						trackingConsumer.Stop()
 					}
@@ -1823,6 +1824,12 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_scrub_jobs_file_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS file_count INT DEFAULT 0`},
 		{"add_scrub_jobs_valid_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS valid_md5_count INT DEFAULT 0`},
 		{"add_scrub_jobs_non_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS non_md5_count INT DEFAULT 0`},
+		{"add_scrub_jobs_scrub_type", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS scrub_type VARCHAR(20) DEFAULT 'manual'`},
+
+		{"add_offers_suppression_sync_enabled", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS suppression_sync_enabled BOOLEAN DEFAULT FALSE`},
+		{"add_offers_last_sync_at", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS last_suppression_sync_at TIMESTAMPTZ`},
+		{"add_offers_last_sync_error", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS last_suppression_sync_error TEXT DEFAULT ''`},
+		{"idx_offers_sync_enabled", `CREATE INDEX IF NOT EXISTS idx_offers_sync_enabled ON mailing_offers(suppression_sync_enabled) WHERE suppression_sync_enabled = TRUE`},
 
 		{"add_campaign_queue_offer_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS offer_id UUID`},
 		{"add_campaign_queue_creative_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS creative_id UUID`},

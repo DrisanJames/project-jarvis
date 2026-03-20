@@ -61,7 +61,8 @@ var teamAffiliateNames = map[string]string{
 
 // RegisterOfferCenterRoutes registers all Offer Center routes on the given router.
 // Intended to be called inside the /api/mailing route group in server.go.
-func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
+// Returns the delta sync worker so callers can call Stop() on shutdown.
+func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) *OptizmoDeltaSyncWorker {
 	och := &OfferCenterHandlers{
 		db:     db,
 		parent: h,
@@ -121,18 +122,27 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) {
 	r.Post("/offer-center/offers/{id}/landing-page/republish", lpHandlers.HandleRepublishLandingPage)
 
 	// --- Optizmo List Scrub Management ---
-	optizmo := &OptizmoHandlers{db: db}
+	optizmo := NewOptizmoHandlers(db)
 	r.Post("/offer-center/offers/{id}/optizmo/request-scrub", optizmo.HandleRequestScrub)
 	r.Post("/offer-center/offers/{id}/optizmo/import-result", optizmo.HandleImportScrubResult)
 	r.Post("/offer-center/offers/{id}/optizmo/cancel-scrub", optizmo.HandleCancelScrub)
 	r.Post("/offer-center/offers/{id}/optizmo/reset-scrub", optizmo.HandleResetScrub)
 	r.Get("/offer-center/offers/{id}/optizmo/status", optizmo.HandleGetScrubStatus)
 
+	// --- Optizmo Nightly Delta Sync ---
+	deltaSyncWorker := NewOptizmoDeltaSyncWorker(db)
+	r.Post("/offer-center/offers/{id}/optizmo/toggle-sync", deltaSyncWorker.HandleToggleSync)
+	r.Post("/offer-center/offers/{id}/optizmo/trigger-sync", deltaSyncWorker.HandleManualSync)
+	r.Get("/offer-center/offers/{id}/optizmo/sync-status", deltaSyncWorker.HandleSyncStatus)
+	deltaSyncWorker.Start()
+
 	// Per-offer performance
 	r.Get("/offer-center/offers/{id}/performance", och.HandleGetOfferDetailPerformance)
 	r.Get("/offer-center/offers/{id}/creatives/{cid}/performance", och.HandleGetCreativePerformance)
 	r.Get("/offer-center/offers/{id}/subjects/{sid}/performance", och.HandleGetSubjectPerformance)
 	r.Get("/offer-center/offers/{id}/from-names/{fid}/performance", och.HandleGetFromNamePerformance)
+
+	return deltaSyncWorker
 }
 
 // ---------------------------------------------------------------------------

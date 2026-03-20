@@ -48,6 +48,9 @@ interface Offer {
   payout_type: string | null;
   optizmo_status: string | null;
   optizmo_last_scrubbed_at: string | null;
+  suppression_sync_enabled: boolean;
+  last_suppression_sync_at: string | null;
+  last_suppression_sync_error: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -142,6 +145,7 @@ interface OptizmoJob {
   non_md5_count: number;
   audience_count: number;
   suppressed_count: number;
+  scrub_type?: string;
 }
 
 type DetailTab = 'overview' | 'subjects' | 'from-names' | 'creatives' | 'assets' | 'landing-page' | 'compliance' | 'performance' | 'deploy';
@@ -554,6 +558,14 @@ export const OfferManagement: React.FC = () => {
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#e0e6f0' }}>{offer.name}</h2>
             <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
               {offer.brand_name} · <span className={statusBadgeClass(offer.status)}>{offer.status}</span>
+              {offer.suppression_sync_enabled && (
+                <span
+                  style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(34,197,94,0.15)', color: '#22c55e', letterSpacing: 0.5 }}
+                  title={offer.last_suppression_sync_at ? `Last synced: ${new Date(offer.last_suppression_sync_at).toLocaleString()}` : 'Nightly sync enabled'}
+                >
+                  NIGHTLY SYNC
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -576,7 +588,7 @@ export const OfferManagement: React.FC = () => {
         {activeTab === 'creatives' && <CreativesTab offerId={offer.id} creatives={creatives} onRefresh={() => fetchCreatives(offer.id)} />}
         {activeTab === 'assets' && <AssetsTab offerId={offer.id} />}
         {activeTab === 'landing-page' && <LandingPageTab offer={offer} onRefresh={() => selectedOfferId && fetchOffer(selectedOfferId)} />}
-        {activeTab === 'compliance' && <ComplianceTab offerId={offer.id} optizmoStatus={optizmoStatus} onRefresh={() => fetchOptizmoStatus(offer.id)} />}
+        {activeTab === 'compliance' && <ComplianceTab offerId={offer.id} offer={offer} optizmoStatus={optizmoStatus} onRefresh={() => { fetchOptizmoStatus(offer.id); selectedOfferId && fetchOffer(selectedOfferId); }} />}
         {activeTab === 'performance' && <PerformanceTab performance={performance} deployments={deployments} />}
         {activeTab === 'deploy' && <DeployTab subjects={subjects} fromNames={fromNames} creatives={creatives} optizmoStatus={optizmoStatus} />}
       </div>
@@ -1727,13 +1739,15 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
 // TAB: COMPLIANCE (OPTIZMO)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | null; onRefresh: () => void }> = ({ offerId, optizmoStatus, onRefresh }) => {
+const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: OptizmoStatus | null; onRefresh: () => void }> = ({ offerId, offer, optizmoStatus, onRefresh }) => {
   const { addToast } = useToast();
   const [requesting, setRequesting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState('');
+  const [syncToggling, setSyncToggling] = useState(false);
+  const [syncTriggering, setSyncTriggering] = useState(false);
 
   useEffect(() => {
     const scrubStatus = optizmoStatus?.optizmo_status || 'not_scrubbed';
@@ -1899,12 +1913,96 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
         )}
       </div>
 
+      {/* Nightly Suppression Sync */}
+      <div style={{ marginBottom: 20, padding: 16, background: '#0d1526', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>Nightly Suppression Sync</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {offer?.suppression_sync_enabled && (
+              <button
+                style={{ ...btnPrimary, fontSize: 11, padding: '4px 10px', background: '#6366f1', opacity: syncTriggering ? 0.6 : 1 }}
+                disabled={syncTriggering}
+                onClick={async () => {
+                  setSyncTriggering(true);
+                  try {
+                    const res = await fetch(`${API}/offers/${offerId}/optizmo/trigger-sync`, { method: 'POST', credentials: 'include' });
+                    if (res.ok) {
+                      addToast({ type: 'success', title: 'Sync triggered', message: 'Check scrub history for results' });
+                      setTimeout(onRefresh, 3000);
+                    } else {
+                      const d = await res.json().catch(() => ({}));
+                      addToast({ type: 'error', title: 'Sync failed', message: (d as { error?: string }).error || res.statusText });
+                    }
+                  } catch { addToast({ type: 'error', title: 'Network error' }); }
+                  setSyncTriggering(false);
+                }}
+              >
+                {syncTriggering ? 'Triggering…' : 'Sync Now'}
+              </button>
+            )}
+            <button
+              style={{
+                position: 'relative', width: 40, height: 22, borderRadius: 11, border: 'none', cursor: (!offer?.optizmo_link) ? 'not-allowed' : 'pointer',
+                background: offer?.suppression_sync_enabled ? '#22c55e' : '#334155',
+                opacity: syncToggling || !offer?.optizmo_link ? 0.5 : 1,
+                transition: 'background 0.2s',
+              }}
+              disabled={syncToggling || !offer?.optizmo_link}
+              title={!offer?.optizmo_link ? 'Configure an Optizmo link first' : offer?.suppression_sync_enabled ? 'Disable nightly sync' : 'Enable nightly sync'}
+              onClick={async () => {
+                setSyncToggling(true);
+                try {
+                  const res = await fetch(`${API}/offers/${offerId}/optizmo/toggle-sync`, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !offer?.suppression_sync_enabled }),
+                  });
+                  if (res.ok) {
+                    addToast({ type: 'success', title: `Nightly sync ${offer?.suppression_sync_enabled ? 'disabled' : 'enabled'}` });
+                    onRefresh();
+                  } else {
+                    const d = await res.json().catch(() => ({}));
+                    addToast({ type: 'error', title: 'Toggle failed', message: (d as { error?: string }).error || res.statusText });
+                  }
+                } catch { addToast({ type: 'error', title: 'Network error' }); }
+                setSyncToggling(false);
+              }}
+            >
+              <span style={{
+                position: 'absolute', top: 2, left: offer?.suppression_sync_enabled ? 20 : 2,
+                width: 18, height: 18, borderRadius: '50%', background: '#fff',
+                transition: 'left 0.2s',
+              }} />
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>
+          {!offer?.optizmo_link
+            ? 'Configure an Optizmo link to enable nightly sync'
+            : offer?.suppression_sync_enabled
+              ? 'Suppression file will be downloaded nightly (10PM–2AM MST) and new hashes upserted'
+              : 'Enable to automatically sync Optizmo suppressions each night'
+          }
+        </div>
+        {offer?.last_suppression_sync_at && (
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', marginTop: 4 }}>
+            Last synced: {new Date(offer.last_suppression_sync_at).toLocaleString()}
+          </div>
+        )}
+        {offer?.last_suppression_sync_error && (
+          <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>
+            Last error: {offer.last_suppression_sync_error}
+          </div>
+        )}
+      </div>
+
       {optizmoStatus?.jobs && optizmoStatus.jobs.length > 0 && (
         <div>
           <h4 style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 8 }}>Scrub History</h4>
           <table className="offer-mgmt-table">
             <thead>
               <tr>
+                <th>Type</th>
                 <th>Status</th>
                 <th>Requested</th>
                 <th>Completed</th>
@@ -1922,6 +2020,15 @@ const ComplianceTab: React.FC<{ offerId: string; optizmoStatus: OptizmoStatus | 
                 const hasInvalid = nonMD5 > 0;
                 return (
                   <tr key={j.id}>
+                    <td>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                        background: j.scrub_type === 'nightly_sync' ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.06)',
+                        color: j.scrub_type === 'nightly_sync' ? '#818cf8' : 'rgba(255,255,255,0.55)',
+                      }}>
+                        {j.scrub_type === 'nightly_sync' ? 'Nightly' : 'Manual'}
+                      </span>
+                    </td>
                     <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
                     <td>{new Date(j.requested_at).toLocaleDateString()}</td>
                     <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
