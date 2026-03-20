@@ -34,6 +34,11 @@ func TestExtractScrubMAK_PathSegment(t *testing.T) {
 	assert.Equal(t, "m-abc-123-xyz", mak)
 }
 
+func TestExtractScrubMAK_SmPrefix(t *testing.T) {
+	mak := extractScrubMAK("https://www.affiliateaccesskey.com/sm-sdwr-i2")
+	assert.Equal(t, "sm-sdwr-i2", mak)
+}
+
 func TestExtractScrubMAK_Empty(t *testing.T) {
 	mak := extractScrubMAK("https://example.com/nothing")
 	assert.Empty(t, mak)

@@ -837,6 +837,7 @@ func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string
 // extractScrubMAK extracts the MAK from various Optizmo URL formats:
 //   - https://app.optizmo.com/access/campaigns?mak=m-xxx-yyy-zzz
 //   - https://www.affiliateaccesskey.com/m-xxx-yyy-zzz
+//   - https://www.affiliateaccesskey.com/sm-xxx-yyy (sm- prefix variant)
 func extractScrubMAK(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -855,7 +856,7 @@ func extractScrubMAK(rawURL string) string {
 	path := strings.TrimRight(parsed.Path, "/")
 	if idx := strings.LastIndex(path, "/"); idx >= 0 {
 		segment := path[idx+1:]
-		if strings.HasPrefix(segment, "m-") {
+		if strings.HasPrefix(segment, "m-") || strings.HasPrefix(segment, "sm-") {
 			return segment
 		}
 	}
