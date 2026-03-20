@@ -282,17 +282,18 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		return
 	}
 
-	// Look up subscriber_id and organization_id from campaign list membership
+	// Look up subscriber_id and organization_id via message_log (reliable
+	// for multi-list campaigns where mailing_campaigns.list_id is NULL).
 	var subscriberID, orgID sql.NullString
 	ing.db.QueryRowContext(ctx, `
-		SELECT s.id::text, c.organization_id::text
-		FROM mailing_subscribers s
-		JOIN mailing_campaigns c ON c.list_id = s.list_id AND c.id = $1
-		WHERE LOWER(s.email) = $2
-		LIMIT 1
+		SELECT subscriber_id::text, organization_id::text
+		FROM mailing_message_log
+		WHERE campaign_id = $1 AND LOWER(email) = $2
+		ORDER BY sent_at DESC LIMIT 1
 	`, campUUID, recipientEmail).Scan(&subscriberID, &orgID)
 
-	// If subscriber lookup didn't yield org_id, get it directly from the campaign
+	// Fallback: get org_id directly from the campaign when message_log
+	// didn't return it (e.g. older records without organization_id).
 	if !orgID.Valid {
 		ing.db.QueryRowContext(ctx, `
 			SELECT organization_id::text FROM mailing_campaigns WHERE id = $1

@@ -2773,6 +2773,125 @@ END $$`},
 		{"phase8_route_ht_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_route_mh_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_ipxo_warmup_1000", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
+
+		// =====================================================================
+		// Phase 10: Yahoo pool swap — OVH IPs become Yahoo-dedicated,
+		// IPXO Yahoo IPs redistribute to other ISP pools, shared pools retired.
+		// Rationale: OVH IPs have better Yahoo reputation (TSS04 only),
+		// while IPXO IPs hit permanent TSS09 blocks on Yahoo.
+		// =====================================================================
+
+		{"phase10_deactivate_shared_pools", `UPDATE mailing_ip_pools SET status = 'inactive', updated_at = NOW() WHERE name IN ('shared-a', 'shared-b') AND status = 'active'`},
+
+		{"phase10_ovh_to_db_yahoo", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = org_id;
+    IF pool_id_val IS NOT NULL THEN
+        UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+        WHERE ip_address IN ('15.204.22.177'::inet, '15.204.22.178'::inet, '15.204.22.179'::inet, '15.204.22.180'::inet,
+                             '15.204.22.181'::inet, '15.204.22.182'::inet, '15.204.22.183'::inet, '15.204.22.184'::inet)
+          AND pool_id != pool_id_val;
+    END IF;
+END $$`},
+
+		{"phase10_ovh_to_qf_yahoo", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = org_id;
+    IF pool_id_val IS NOT NULL THEN
+        UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+        WHERE ip_address IN ('15.204.22.185'::inet, '15.204.22.186'::inet, '15.204.22.187'::inet, '15.204.22.188'::inet,
+                             '15.204.22.189'::inet, '15.204.22.190'::inet, '15.204.22.191'::inet)
+          AND pool_id != pool_id_val;
+    END IF;
+END $$`},
+
+		{"phase10_ovh_to_ht_yahoo", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = org_id;
+    IF pool_id_val IS NOT NULL THEN
+        UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+        WHERE ip_address IN ('15.204.38.160'::inet, '15.204.38.161'::inet, '15.204.38.162'::inet, '15.204.38.163'::inet,
+                             '15.204.38.164'::inet, '15.204.38.165'::inet, '15.204.38.166'::inet, '15.204.38.167'::inet)
+          AND pool_id != pool_id_val;
+    END IF;
+END $$`},
+
+		{"phase10_ovh_to_mh_yahoo", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_id_val UUID;
+BEGIN
+    SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = org_id;
+    IF pool_id_val IS NOT NULL THEN
+        UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+        WHERE ip_address IN ('15.204.38.168'::inet, '15.204.38.169'::inet, '15.204.38.170'::inet, '15.204.38.171'::inet,
+                             '15.204.38.172'::inet, '15.204.38.173'::inet, '15.204.38.174'::inet, '15.204.38.175'::inet)
+          AND pool_id != pool_id_val;
+    END IF;
+END $$`},
+
+		{"phase10_ipxo_yh_redistribute", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            -- Server A: DB IPXO Yahoo IPs → other ISP pools
+            ('144.225.178.7',   'db-gmail-pool'),
+            ('144.225.178.8',   'db-msft-pool'),
+            ('144.225.178.9',   'db-apple-pool'),
+            ('144.225.178.10',  'db-comcast-pool'),
+            ('144.225.178.11',  'db-att-pool'),
+            ('144.225.178.12',  'db-cox-pool'),
+            ('144.225.178.13',  'db-charter-pool'),
+            -- Server A: QF IPXO Yahoo IPs → other ISP pools
+            ('144.225.178.71',  'qf-gmail-pool'),
+            ('144.225.178.72',  'qf-msft-pool'),
+            ('144.225.178.73',  'qf-apple-pool'),
+            ('144.225.178.74',  'qf-comcast-pool'),
+            ('144.225.178.75',  'qf-att-pool'),
+            ('144.225.178.76',  'qf-cox-pool'),
+            ('144.225.178.77',  'qf-charter-pool'),
+            -- Server B: HT IPXO Yahoo IPs → other ISP pools
+            ('144.225.178.136', 'ht-gmail-pool'),
+            ('144.225.178.137', 'ht-msft-pool'),
+            ('144.225.178.138', 'ht-apple-pool'),
+            ('144.225.178.139', 'ht-comcast-pool'),
+            ('144.225.178.140', 'ht-att-pool'),
+            ('144.225.178.141', 'ht-cox-pool'),
+            ('144.225.178.142', 'ht-charter-pool'),
+            ('144.225.178.143', 'ht-general-pool'),
+            -- Server B: MH IPXO Yahoo IPs → other ISP pools
+            ('144.225.178.200', 'mh-gmail-pool'),
+            ('144.225.178.201', 'mh-msft-pool'),
+            ('144.225.178.202', 'mh-apple-pool'),
+            ('144.225.178.203', 'mh-comcast-pool'),
+            ('144.225.178.204', 'mh-att-pool'),
+            ('144.225.178.205', 'mh-cox-pool'),
+            ('144.225.178.206', 'mh-charter-pool'),
+            ('144.225.178.207', 'mh-general-pool')
+        ) AS t(ip_addr, pool_name)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = pool_id_val, updated_at = NOW()
+            WHERE ip_address = rec.ip_addr::inet AND pool_id != pool_id_val;
+        END IF;
+    END LOOP;
+END $$`},
+
+		{"phase10_deactivate_test_shared_profiles", `UPDATE mailing_sending_profiles SET status = 'draft', updated_at = NOW() WHERE name IN ('Test DB Shared', 'Test QF Shared', 'Test HT Shared', 'Test MH Shared') AND status = 'active'`},
 	}
 
 	var ok, fail int

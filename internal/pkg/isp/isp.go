@@ -20,7 +20,10 @@ var domainToISP = map[string]string{
 	"googlemail.com":  Gmail,
 	"yahoo.com":       Yahoo,
 	"ymail.com":       Yahoo,
+	"rocketmail.com":  Yahoo,
+	"yahoo.ca":        Yahoo,
 	"aol.com":         Yahoo,
+	"aim.com":         Yahoo,
 	"att.net":         ATT,
 	"sbcglobal.net":   ATT,
 	"bellsouth.net":   ATT,
@@ -35,6 +38,10 @@ var domainToISP = map[string]string{
 	"xfinity.com":     Comcast,
 	"charter.net":     Charter,
 	"spectrum.net":    Charter,
+	"rr.com":          Charter,
+	"roadrunner.com":  Charter,
+	"twc.com":         Charter,
+	"brighthouse.com": Charter,
 	"cox.net":         Cox,
 }
 
@@ -50,8 +57,12 @@ func Group(email string) string {
 
 // GroupFromDomain returns the ISP group name for a bare domain.
 func GroupFromDomain(domain string) string {
-	if g, ok := domainToISP[strings.ToLower(strings.TrimSpace(domain))]; ok {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if g, ok := domainToISP[d]; ok {
 		return g
+	}
+	if strings.HasSuffix(d, ".rr.com") {
+		return Charter
 	}
 	return Other
 }

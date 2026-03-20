@@ -18,6 +18,8 @@ var ispDomainClassification = map[string]string{
 	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
 	"cox.net":     "cox",
 	"charter.net": "charter", "spectrum.net": "charter",
+	"rr.com": "charter", "roadrunner.com": "charter",
+	"twc.com": "charter", "brighthouse.com": "charter",
 	"verizon.net":    "verizon",
 	"protonmail.com": "protonmail", "proton.me": "protonmail",
 	"zoho.com": "zoho",
@@ -33,6 +35,9 @@ func ClassifySubscriberISP(email string) string {
 	domain := lower[atIdx+1:]
 	if isp, ok := ispDomainClassification[domain]; ok {
 		return isp
+	}
+	if strings.HasSuffix(domain, ".rr.com") {
+		return "charter"
 	}
 	return "other"
 }

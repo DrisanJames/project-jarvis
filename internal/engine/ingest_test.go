@@ -56,11 +56,11 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 			}
 
 			// Campaign ID is a valid UUID, so it skips the message_log lookup.
-			// Expect the subscriber + org lookup.
-			mock.ExpectQuery("SELECT s.id::text, c.organization_id::text").
+			// Expect the subscriber + org lookup via mailing_message_log.
+			mock.ExpectQuery("SELECT subscriber_id::text, organization_id::text").
 				WithArgs(sqlmock.AnyArg(), "user@comcast.net").
 				WillReturnRows(
-					sqlmock.NewRows([]string{"id", "organization_id"}).
+					sqlmock.NewRows([]string{"subscriber_id", "organization_id"}).
 						AddRow(subUUID, orgUUID),
 				)
 
@@ -192,9 +192,9 @@ func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
 		DSNStatus: "5.1.1",
 	}
 
-	mock.ExpectQuery("SELECT s.id::text, c.organization_id::text").
+	mock.ExpectQuery("SELECT subscriber_id::text, organization_id::text").
 		WithArgs(sqlmock.AnyArg(), "user@gmail.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id"}).AddRow(subUUID, orgUUID))
+		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "organization_id"}).AddRow(subUUID, orgUUID))
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"bounced", "bad-mailbox", "5.1.1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
