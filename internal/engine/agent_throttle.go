@@ -33,6 +33,18 @@ type ThrottleState struct {
 	LastBackoffAt   time.Time
 }
 
+// Equal compares two ThrottleState values using time.Equal for timestamps,
+// avoiding false positives from monotonic clock or timezone metadata.
+func (s ThrottleState) Equal(o ThrottleState) bool {
+	return s.CurrentRateAdj == o.CurrentRateAdj &&
+		s.OriginalRate == o.OriginalRate &&
+		s.LastStableRate == o.LastStableRate &&
+		s.BackoffCount == o.BackoffCount &&
+		s.InRecovery == o.InRecovery &&
+		s.RecoveryStarted.Equal(o.RecoveryStarted) &&
+		s.LastBackoffAt.Equal(o.LastBackoffAt)
+}
+
 type ThrottleAgent struct {
 	BaseAgent
 	memory       *MemoryStore
@@ -40,6 +52,7 @@ type ThrottleAgent struct {
 	alertCh      chan<- Decision
 	rateRegistry *ISPRateRegistry
 	db           *sql.DB
+	shutdownCtx  context.Context // server lifecycle context for persist goroutines
 
 	mu              sync.Mutex
 	currentRateAdj  float64
@@ -381,11 +394,21 @@ func (a *ThrottleAgent) SetDB(db *sql.DB) {
 	a.db = db
 }
 
+// SetShutdownContext provides the server lifecycle context so persist
+// goroutines are cancelled on shutdown rather than orphaned.
+func (a *ThrottleAgent) SetShutdownContext(ctx context.Context) {
+	a.shutdownCtx = ctx
+}
+
 // RestoreState atomically restores all internal fields from a previously
 // persisted snapshot. Called on startup before the first Evaluate cycle.
+// After restoring, pushes the effective rate to the registry so the limiter
+// reflects the throttled state immediately (not just after the next signal).
 func (a *ThrottleAgent) RestoreState(s ThrottleState) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	if s.OriginalRate > 0 {
+		a.originalRate = s.OriginalRate
+	}
 	a.currentRateAdj = s.CurrentRateAdj
 	a.lastStableRate = s.LastStableRate
 	a.backoffCount = s.BackoffCount
@@ -393,6 +416,14 @@ func (a *ThrottleAgent) RestoreState(s ThrottleState) {
 	a.recoveryStarted = s.RecoveryStarted
 	a.lastBackoffAt = s.LastBackoffAt
 	a.lastPersisted = s
+	effectiveRate := int(float64(a.originalRate) * a.currentRateAdj)
+	a.mu.Unlock()
+
+	if a.rateRegistry != nil && effectiveRate > 0 {
+		a.rateRegistry.SetRate(a.ID.ISP, float64(effectiveRate))
+		log.Printf("[throttle:%s] restored rate pushed to registry: %d msgs/hr (adj=%.3f)",
+			a.ID.ISP, effectiveRate, s.CurrentRateAdj)
+	}
 }
 
 // GetState returns a snapshot of the agent's current internal state.
@@ -423,13 +454,17 @@ func (a *ThrottleAgent) persistState() {
 		return
 	}
 	snap := a.snapshotStateLocked()
-	if snap == a.lastPersisted {
+	if snap.Equal(a.lastPersisted) {
 		return
 	}
 	a.lastPersisted = snap
 	isp := string(a.ID.ISP)
+	parentCtx := a.shutdownCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
 		defer cancel()
 		_, err := a.db.ExecContext(ctx, `
 			INSERT INTO mailing_engine_throttle_agent_state

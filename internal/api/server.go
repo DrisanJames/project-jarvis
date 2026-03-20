@@ -49,6 +49,8 @@ type Server struct {
 	agentFactory    *engine.AgentFactory
 	// S3 data normalizer for operational API
 	dataNormHandler *DataNormHandler
+	// Server lifecycle context — propagated to engine persist goroutines
+	shutdownCtx context.Context
 	// Optizmo Delta Sync Worker — stored for graceful shutdown
 	deltaSyncWorker *OptizmoDeltaSyncWorker
 }
@@ -130,6 +132,12 @@ func (s *Server) Handler() http.Handler {
 // Returns nil if the engine has not been initialized yet.
 func (s *Server) GetRateRegistry() *engine.ISPRateRegistry {
 	return s.rateRegistry
+}
+
+// SetShutdownContext stores the server lifecycle context. Must be called
+// before SetMailingDB so the engine can propagate it to persist goroutines.
+func (s *Server) SetShutdownContext(ctx context.Context) {
+	s.shutdownCtx = ctx
 }
 
 // StopDeltaSyncWorker gracefully stops the Optizmo nightly delta sync worker.

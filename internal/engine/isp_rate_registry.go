@@ -28,10 +28,11 @@ type IPEntry struct {
 // Per-IP rate limiting: when IP lists are set via SetIPList, per-IP limiters
 // are created that subdivide the ISP rate across IPs (warmup-aware).
 type ISPRateRegistry struct {
-	mu       sync.RWMutex
-	limiters map[ISP]*rate.Limiter
-	rates    map[ISP]float64 // current msgs/hour for logging
-	db       *sql.DB
+	mu          sync.RWMutex
+	limiters    map[ISP]*rate.Limiter
+	rates       map[ISP]float64 // current msgs/hour for logging
+	db          *sql.DB
+	shutdownCtx context.Context // server lifecycle context for persist goroutines
 
 	ipLimiters map[string]*rate.Limiter // keyed by "isp:hostname"
 	ipRates    map[string]float64       // keyed by "isp:hostname"
@@ -57,6 +58,20 @@ func NewISPRateRegistry() *ISPRateRegistry {
 // SetDB attaches a database connection for rate persistence.
 func (r *ISPRateRegistry) SetDB(db *sql.DB) {
 	r.db = db
+}
+
+// SetShutdownContext provides the server lifecycle context so persist
+// goroutines are cancelled on shutdown rather than orphaned.
+func (r *ISPRateRegistry) SetShutdownContext(ctx context.Context) {
+	r.shutdownCtx = ctx
+}
+
+func (r *ISPRateRegistry) persistCtx(timeout time.Duration) (context.Context, context.CancelFunc) {
+	parent := r.shutdownCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 // setRateInternal updates the in-memory limiter and rate map without
@@ -93,7 +108,7 @@ func (r *ISPRateRegistry) SetRate(isp ISP, msgsPerHour float64) {
 // persistRate writes one ISP's rate to the DB. Runs in a background goroutine
 // so SetRate never blocks on I/O.
 func (r *ISPRateRegistry) persistRate(isp ISP, msgsPerHour float64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := r.persistCtx(3 * time.Second)
 	defer cancel()
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO mailing_isp_throttle_state (isp, msgs_per_hour, updated_at)
@@ -426,7 +441,7 @@ func (r *ISPRateRegistry) persistIPRates(isp ISP) {
 	}
 	r.mu.RUnlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := r.persistCtx(5 * time.Second)
 	defer cancel()
 	for hostname, msgsPerHour := range snapshot {
 		_, err := r.db.ExecContext(ctx, `

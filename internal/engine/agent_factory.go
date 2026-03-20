@@ -94,6 +94,16 @@ func (f *AgentFactory) SetRateRegistry(registry *ISPRateRegistry) {
 	}
 }
 
+// SetShutdownContext propagates the server lifecycle context to all
+// ThrottleAgents so their persist goroutines respect graceful shutdown.
+func (f *AgentFactory) SetShutdownContext(ctx context.Context) {
+	for _, agentsByType := range f.agents {
+		if ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent); ok {
+			ta.SetShutdownContext(ctx)
+		}
+	}
+}
+
 // RestoreThrottleState loads persisted ThrottleAgent state from the database
 // and restores it into each matching ThrottleAgent. Uses a 4-hour TTL to
 // preserve critical context (high backoffCount, active recovery) across

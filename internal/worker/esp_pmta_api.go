@@ -41,6 +41,12 @@ func NewPMTAAPISender(apiEndpoint string, db *sql.DB, poolPrefix string) *PMTAAP
 	}
 }
 
+// SetIPChangeCallback registers a callback on the sender's VMTA pool that
+// fires when the IP set changes.
+func (s *PMTAAPISender) SetIPChangeCallback(cb OnIPsChangedFunc) {
+	s.ipPool.SetOnIPsChanged(cb)
+}
+
 // Send delivers a single email through the PMTA HTTP injection API.
 func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
 	if s.apiEndpoint == "" {
@@ -123,6 +129,9 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		}
 		if err == nil {
 			vmta := vmtaShortName(ip.Hostname)
+			if vmta == "" {
+				return nil, fmt.Errorf("selected IP %s has empty hostname — refusing to send via default-pool (server IP)", ip.ID)
+			}
 			payload["vmta"] = vmta
 			selectedIPID = ip.ID
 			profShort := msg.ProfileID
@@ -166,8 +175,9 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		go s.updateIPCounters(selectedIPID)
 	}
 
+	usedVMTA, _ := payload["vmta"].(string)
 	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", msg.Email, injectURL, messageID, resp.StatusCode)
-	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now()}, nil
+	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now(), VMTA: usedVMTA}, nil
 }
 
 func (s *PMTAAPISender) updateIPCounters(ipID string) {

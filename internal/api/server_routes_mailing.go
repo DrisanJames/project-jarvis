@@ -610,15 +610,22 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				configRates[isp] = float64(cfg.MaxMsgRate)
 			}
 			rateRegistry.SetDB(db)
+			if s.shutdownCtx != nil {
+				rateRegistry.SetShutdownContext(s.shutdownCtx)
+			}
 			restored := rateRegistry.RestoreFromDB(configRates)
+			restoredIP := rateRegistry.RestoreIPRatesFromDB()
 			agentFactory.SetRateRegistry(rateRegistry)
+			if s.shutdownCtx != nil {
+				agentFactory.SetShutdownContext(s.shutdownCtx)
+			}
 			throttleRestored := agentFactory.RestoreThrottleState()
 			s.rateRegistry = rateRegistry
 			s.ispConfigs = agentFactory.GetConfigs()
 			s.convictionStore = convictionStore
 			s.agentFactory = agentFactory
-			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates (%d restored from DB, %d throttle states restored)",
-				len(agentFactory.GetConfigs()), restored, throttleRestored)
+			log.Printf("[engine] ISPRateRegistry initialized with %d ISP rates (%d restored from DB, %d per-IP rates, %d throttle states restored)",
+				len(agentFactory.GetConfigs()), restored, restoredIP, throttleRestored)
 
 			pmtaHost := os.Getenv("PMTA_SSH_HOST")
 			pmtaSSHPort := 22
@@ -710,8 +717,8 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				convictionStore: convictionStore,
 				agentFactory:    s.agentFactory,
 			}
-			r.Get("/api/mailing/isp-agents/managed/{id}/engine", bridge.HandleAgentEngine)
-			r.Get("/engine/bridge-summary", bridge.HandleEngineSummary)
+			r.Get("/isp-agents/managed/{id}/engine", bridge.HandleAgentEngine)
+			r.Get("/isp-agents/engine/bridge-summary", bridge.HandleEngineSummary)
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)

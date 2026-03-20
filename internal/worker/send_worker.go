@@ -160,6 +160,7 @@ type SendResult struct {
 	Error     error
 	ESPType   string
 	SentAt    time.Time
+	VMTA      string // PMTA virtual MTA used (hostname or short name)
 }
 
 // QueueItem represents an item from the send queue
@@ -1042,8 +1043,12 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		}
 	}
 
+	// ── Resolve per-profile tracking domain BEFORE Liquid rendering so that
+	// {{ system.unsubscribe_url }} uses the brand domain, not projectjarvis.io ──
+	trackBase := p.resolveTrackingURL(ctx, item.ProfileID)
+
 	// ── Personalization: full Liquid template engine with all subscriber data ──
-	renderCtx := p.buildRenderContext(item)
+	renderCtx := p.buildRenderContext(item, trackBase)
 	templateSvc := mailing.NewTemplateService()
 
 	subject, _ := templateSvc.Render("s:"+item.CampaignID.String(), item.Subject, renderCtx)
@@ -1060,7 +1065,6 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
 	var unsubURL string
-	trackBase := p.resolveTrackingURL(ctx, item.ProfileID)
 	if trackBase != "" {
 		htmlContent = p.injectTrackingPixelAndLinks(
 			htmlContent,
@@ -1161,7 +1165,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 
 	// Mark as sent and update campaign stats
 	atomic.AddInt64(&p.totalSent, 1)
-	if err := p.markSent(ctx, item, result.MessageID); err != nil {
+	if err := p.markSent(ctx, item, result.MessageID, result.VMTA); err != nil {
 		log.Printf("Error marking sent: %v", err)
 	}
 
@@ -1219,8 +1223,8 @@ func (p *SendWorkerPool) getCampaignSuppressionListIDs(ctx context.Context, camp
 	return listIDs, nil
 }
 
-// markSent marks a queue item as sent
-func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID string) error {
+// markSent marks a queue item as sent and records the tracking event with VMTA metadata.
+func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID, vmta string) error {
 	_, err := p.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_queue 
 		SET status = 'sent', message_id = $2, sent_at = NOW()
@@ -1248,11 +1252,16 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		recipientDomain = strings.ToLower(item.Email[atIdx+1:])
 	}
 
+	meta := "{}"
+	if vmta != "" {
+		metaJSON, _ := json.Marshal(map[string]string{"vmta": vmta})
+		meta = string(metaJSON)
+	}
 	if _, trackErr := p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain)
-		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb
 		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain); trackErr != nil {
+	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
 	}
 
@@ -1314,12 +1323,17 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 		recipientDomain = strings.ToLower(item.Email[atIdx+1:])
 	}
 
+	bounceMeta := "{}"
+	if item.AssignedVMTA != "" {
+		metaJSON, _ := json.Marshal(map[string]string{"vmta": item.AssignedVMTA})
+		bounceMeta = string(metaJSON)
+	}
 	_, dbErr := p.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, recipient_domain)
-		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7, $8)
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, recipient_domain, metadata)
+		VALUES ($1, $2, $3, $4, 'bounced', $5, $6, NOW(), $7, $8, $9::jsonb)
 	`, uuid.New(), p.orgID, item.CampaignID, item.SubscriberID,
-		bounceType, errMsg, sendingDomain, recipientDomain)
+		bounceType, errMsg, sendingDomain, recipientDomain, bounceMeta)
 	if dbErr != nil {
 		log.Printf("[SendWorkerPool] bounce tracking insert error: %v", dbErr)
 	}
@@ -1387,6 +1401,7 @@ func isTransportError(errMsg string) bool {
 		"no sending ips configured",
 		"refusing to send via default-pool",
 		"no vmta routing available",
+		"empty hostname",
 	}
 	for _, ind := range transportIndicators {
 		if strings.Contains(lower, ind) {
@@ -1543,7 +1558,9 @@ func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseUR
 // buildRenderContext constructs a full Liquid render context from a queue item,
 // matching the schema produced by mailing.ContextBuilder.BuildContext but built
 // from data already loaded in the claim query (no extra DB round-trips).
-func (p *SendWorkerPool) buildRenderContext(item QueueItem) mailing.RenderContext {
+// trackBase is the per-profile tracking URL (e.g. https://trk.em.discountblog.com)
+// so that {{ system.unsubscribe_url }} uses the brand domain, not the platform domain.
+func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) mailing.RenderContext {
 	rc := make(mailing.RenderContext)
 
 	// Top-level profile fields
@@ -1584,8 +1601,11 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem) mailing.RenderContex
 		"current_hour":    now.Hour(),
 		"timestamp":       now.Unix(),
 	}
-	if p.trackingURL != "" {
-		tBase := p.trackingURL
+	tBase := trackBase
+	if tBase == "" {
+		tBase = p.trackingURL
+	}
+	if tBase != "" {
 		system["unsubscribe_url"] = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), tBase)
 		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", tBase, item.SubscriberID.String())
 		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", tBase, item.CampaignID.String(), item.SubscriberID.String())

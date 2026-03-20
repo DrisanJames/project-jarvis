@@ -433,6 +433,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       setEngineData(null);
       return;
     }
+    setEngineData(null);
     const agent = managedAgents.find(a => a.id === expandedAgent);
     const interval = (agent?.status === 'sending' || agent?.status === 'adapting') ? 5000 : 30000;
     fetchAgentActivity(expandedAgent);

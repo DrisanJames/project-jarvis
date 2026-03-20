@@ -37,6 +37,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -239,30 +240,33 @@ func main() {
 				log.Println("Redis not configured (REDIS_URL not set) — using PG advisory locks for distributed locking")
 			}
 
-			// Register mailing routes (reads s.redisClient for throttle routes)
-			server.SetMailingDB(mailingDB)
-			log.Println("Mailing Platform routes registered")
-
 			mailingDB.SetMaxOpenConns(25)
 			mailingDB.SetMaxIdleConns(15)
 			mailingDB.SetConnMaxLifetime(5 * time.Minute)
 			mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
-			// Test connection with timeout — only start background workers if DB is reachable
+			// Test connection and run migrations BEFORE engine initialization
+			// so that tables exist when the engine tries to restore state.
+			dbReachable := false
 			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
 			if err := mailingDB.PingContext(pingCtx); err != nil {
 				pingCancel()
 				log.Printf("Warning: Mailing database ping failed: %v — routes registered but workers skipped", err)
 			} else {
 				pingCancel()
+				dbReachable = true
 				log.Println("Mailing Platform database connected successfully")
-
-				// Run critical schema migrations at startup (DB is inside VPC,
-				// so migrations must run from the server, not the CI runner).
-				// Admin migrations run first to fix table ownership, then startup
-				// migrations can ALTER tables owned by the app user.
 				runAdminMigrations()
 				runStartupMigrations(mailingDB)
+			}
+
+			// Register mailing routes (reads s.redisClient for throttle routes).
+			// Engine restore calls will succeed now that migrations have run.
+			server.SetShutdownContext(ctx)
+			server.SetMailingDB(mailingDB)
+			log.Println("Mailing Platform routes registered")
+
+			if dbReachable {
 
 				// Start Backpressure Monitor
 				backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
@@ -350,6 +354,20 @@ func main() {
 					sendWorkerPool.SetRateRegistry(rr)
 					perIPEnabled := os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
 					sendWorkerPool.SetPerIPRateLimiting(perIPEnabled)
+					profileSender.SetIPChangeCallback(func(_ string, ispGroups map[string][]worker.VMTAInfo) {
+						for poolSuffix, entries := range ispGroups {
+							isp := engine.ISP(poolSuffix)
+							ips := make([]engine.IPEntry, len(entries))
+							for i, e := range entries {
+								ips[i] = engine.IPEntry{
+									Hostname:         e.Hostname,
+									Status:           e.Status,
+									WarmupDailyLimit: e.WarmupDailyLimit,
+								}
+							}
+							rr.SetIPList(isp, ips)
+						}
+					})
 					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v)", perIPEnabled)
 				}
 

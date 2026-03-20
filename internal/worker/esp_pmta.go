@@ -31,9 +31,18 @@ type vmtaEntry struct {
 	TodaySent        int64 // from mailing_ip_warmup_log.actual_sent
 }
 
+// VMTAInfo is the exported form of vmtaEntry, used by callbacks that cross
+// package boundaries (e.g. rate-registry wiring in main.go).
+type VMTAInfo struct {
+	Hostname         string
+	Status           string // "active" or "warmup"
+	WarmupDailyLimit int
+}
+
 // OnIPsChangedFunc is called when vmtaPool.refresh() detects the IP set has changed.
-// prefix is the pool prefix (e.g. "db", "qf"), ips is the new complete IP list.
-type OnIPsChangedFunc func(prefix string, ips []vmtaEntry)
+// prefix is the pool prefix (e.g. "db", "qf"), ispGroups is the IP set keyed by
+// ISP pool suffix (e.g. "gmail", "yahoo", "general").
+type OnIPsChangedFunc func(prefix string, ispGroups map[string][]VMTAInfo)
 
 type vmtaPool struct {
 	mu           sync.RWMutex
@@ -56,6 +65,15 @@ func newVMTAPool(db *sql.DB, poolPrefix string) *vmtaPool {
 		ispGroups:  make(map[string][]vmtaEntry),
 		ispIdx:     make(map[string]*uint64),
 	}
+}
+
+// SetOnIPsChanged registers a callback invoked (in a goroutine) whenever the
+// pool's IP set changes. Used by the rate registry wiring to keep per-IP
+// limiters in sync with the actual IP pool.
+func (p *vmtaPool) SetOnIPsChanged(cb OnIPsChangedFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onIPsChanged = cb
 }
 
 // refresh loads the IP pool from the database if stale.
@@ -154,10 +172,16 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 
 		if changed && p.onIPsChanged != nil {
 			cb := p.onIPsChanged
-			snapshot := make([]vmtaEntry, len(allIPs))
-			copy(snapshot, allIPs)
 			prefix := p.poolPrefix
-			go cb(prefix, snapshot)
+			groupSnapshot := make(map[string][]VMTAInfo, len(groups))
+			for k, v := range groups {
+				infos := make([]VMTAInfo, len(v))
+				for i, e := range v {
+					infos[i] = VMTAInfo{Hostname: e.Hostname, Status: e.Status, WarmupDailyLimit: e.WarmupDailyLimit}
+				}
+				groupSnapshot[k] = infos
+			}
+			go cb(prefix, groupSnapshot)
 		}
 	} else {
 		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s)", profileID, p.poolPrefix)
@@ -355,6 +379,13 @@ func NewPMTASender(smtpHost string, smtpPort int, username, password string, db 
 	}
 }
 
+// SetIPChangeCallback registers a callback on the sender's VMTA pool that
+// fires when the IP set changes. Used to keep the rate registry's per-IP
+// limiters synchronized with actual pool composition.
+func (s *PMTASender) SetIPChangeCallback(cb OnIPsChangedFunc) {
+	s.ipPool.SetOnIPsChanged(cb)
+}
+
 func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
 	if s.smtpHost == "" {
 		return nil, fmt.Errorf("PMTA SMTP host not configured")
@@ -376,6 +407,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}
 		vmtaName = vmtaShortName(ip.Hostname)
+		if vmtaName == "" {
+			return nil, fmt.Errorf("selected IP %s has empty hostname — refusing to send via default-pool (server IP)", ip.ID)
+		}
 		ipID = ip.ID
 		profShort := msg.ProfileID
 		if len(profShort) > 8 {
@@ -401,9 +435,7 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	if msg.ReplyTo != "" {
 		headerBuf.WriteString(fmt.Sprintf("Reply-To: %s\r\n", msg.ReplyTo))
 	}
-	if vmtaName != "" {
-		headerBuf.WriteString(fmt.Sprintf("X-Virtual-MTA: %s\r\n", vmtaName))
-	}
+	headerBuf.WriteString(fmt.Sprintf("X-Virtual-MTA: %s\r\n", vmtaName))
 
 	headerBuf.WriteString(fmt.Sprintf("X-Campaign-ID: %s\r\n", msg.CampaignID))
 	headerBuf.WriteString(fmt.Sprintf("X-Subscriber-ID: %s\r\n", msg.SubscriberID))
@@ -480,7 +512,7 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		go s.updateIPCounters(ipID)
 	}
 
-	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta", SentAt: time.Now()}, nil
+	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta", SentAt: time.Now(), VMTA: vmtaName}, nil
 }
 
 // sendOnClient performs MAIL FROM / RCPT TO / DATA on an existing connection.
@@ -575,34 +607,6 @@ func sameIPSet(a, b []vmtaEntry) bool {
 		}
 	}
 	return true
-}
-
-// AvailableIPsForISP returns the IPs serving a given recipient ISP that still
-// have warmup budget remaining. Used by the dispatch coordinator to pre-assign
-// IPs to queue items before claiming.
-func (p *vmtaPool) AvailableIPsForISP(recipientISP string) []vmtaEntry {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	poolSuffix := ISPPoolSuffix(recipientISP)
-	var candidates []vmtaEntry
-
-	if group, ok := p.ispGroups[poolSuffix]; ok {
-		candidates = group
-	} else if general, ok := p.ispGroups["general"]; ok {
-		candidates = general
-	} else {
-		candidates = p.ips
-	}
-
-	var available []vmtaEntry
-	for _, ip := range candidates {
-		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
-			continue
-		}
-		available = append(available, ip)
-	}
-	return available
 }
 
 // vmtaShortName extracts the short VMTA prefix from a full hostname.

@@ -19,9 +19,10 @@ import (
 // Sender instances are cached per profile ID so that PMTA's SMTP
 // connection pool and VMTA cache are reused across messages.
 type ProfileBasedSender struct {
-	db          *sql.DB
-	senderCache map[string]ESPSender
-	mu          sync.RWMutex
+	db              *sql.DB
+	senderCache     map[string]ESPSender
+	mu              sync.RWMutex
+	ipChangeCallback OnIPsChangedFunc
 }
 
 // NewProfileBasedSender creates a profile-based sender that reads
@@ -31,6 +32,15 @@ func NewProfileBasedSender(db *sql.DB) *ProfileBasedSender {
 		db:          db,
 		senderCache: make(map[string]ESPSender),
 	}
+}
+
+// SetIPChangeCallback registers a callback that will be wired into every
+// PMTA sender's vmtaPool as it's created. When the pool's IP set changes,
+// the callback fires so the rate registry can update per-IP limiters.
+func (s *ProfileBasedSender) SetIPChangeCallback(cb OnIPsChangedFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ipChangeCallback = cb
 }
 
 // Send looks up the sending profile for the message, creates the
@@ -165,7 +175,18 @@ func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendRes
 			atomic.StoreInt32(&c.useAPI, 1)
 			return result, nil
 		}
-		log.Printf("[PMTA-Combo] HTTP API failed (%v), falling back to SMTP", err)
+		// VMTA-related errors (exhaustion, empty hostname, no IPs) must NOT
+		// trigger SMTP fallback — the SMTP path would hit the same pool state.
+		// Only fall back to SMTP for actual API transport failures.
+		errLower := strings.ToLower(err.Error())
+		if strings.Contains(errLower, "exhausted") ||
+			strings.Contains(errLower, "refusing to send") ||
+			strings.Contains(errLower, "no sending ips") ||
+			strings.Contains(errLower, "no vmta routing") ||
+			strings.Contains(errLower, "empty hostname") {
+			return nil, err
+		}
+		log.Printf("[PMTA-Combo] HTTP API transport failed (%v), falling back to SMTP", err)
 		atomic.StoreInt32(&c.useAPI, -1)
 		atomic.StoreInt64(&c.apiFailedAt, time.Now().Unix())
 	}
@@ -173,6 +194,7 @@ func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendRes
 }
 
 // getCachedSender retrieves a cached sender or creates one via the factory.
+// When creating new PMTA senders, automatically wires the IP-change callback.
 func (s *ProfileBasedSender) getCachedSender(key string, factory func() ESPSender) ESPSender {
 	s.mu.RLock()
 	if cached, ok := s.senderCache[key]; ok {
@@ -183,11 +205,30 @@ func (s *ProfileBasedSender) getCachedSender(key string, factory func() ESPSende
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Double-check after write lock
 	if cached, ok := s.senderCache[key]; ok {
 		return cached
 	}
 	sender := factory()
+	if s.ipChangeCallback != nil {
+		s.wireIPCallback(sender)
+	}
 	s.senderCache[key] = sender
 	return sender
+}
+
+// wireIPCallback sets the IP-change callback on PMTA senders (including combo).
+func (s *ProfileBasedSender) wireIPCallback(sender ESPSender) {
+	switch st := sender.(type) {
+	case *PMTASender:
+		st.SetIPChangeCallback(s.ipChangeCallback)
+	case *PMTAAPISender:
+		st.SetIPChangeCallback(s.ipChangeCallback)
+	case *pmtaComboSender:
+		if smtp, ok := st.smtpSender.(*PMTASender); ok {
+			smtp.SetIPChangeCallback(s.ipChangeCallback)
+		}
+		if api, ok := st.apiSender.(*PMTAAPISender); ok {
+			api.SetIPChangeCallback(s.ipChangeCallback)
+		}
+	}
 }

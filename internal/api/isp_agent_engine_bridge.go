@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
@@ -49,9 +50,17 @@ func (b *ISPAgentEngineBridge) HandleAgentEngine(w http.ResponseWriter, r *http.
 
 	ctx := r.Context()
 
+	orgID, _ := GetOrgIDFromRequest(r)
+
 	var domain string
-	err := b.db.QueryRowContext(ctx,
-		`SELECT domain FROM mailing_isp_agents WHERE id = $1`, agentID).Scan(&domain)
+	query := `SELECT domain FROM mailing_isp_agents WHERE id = $1`
+	var args []interface{}
+	args = append(args, agentID)
+	if orgID != uuid.Nil {
+		query += ` AND organization_id = $2`
+		args = append(args, orgID)
+	}
+	err := b.db.QueryRowContext(ctx, query, args...).Scan(&domain)
 	if err != nil {
 		http.Error(w, "agent not found", http.StatusNotFound)
 		return
