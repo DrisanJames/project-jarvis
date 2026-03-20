@@ -162,7 +162,7 @@ func (mh *MailingHandlers) GetMailingLists(w http.ResponseWriter, r *http.Reques
 
 	// Get total count
 	var total int64
-	if err := mh.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mailing_lists`).Scan(&total); err != nil {
+	if err := mh.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mailing_lists WHERE COALESCE(is_visible, true) = true`).Scan(&total); err != nil {
 		http.Error(w, `{"error":"failed to count lists"}`, http.StatusInternalServerError)
 		return
 	}
@@ -172,6 +172,7 @@ func (mh *MailingHandlers) GetMailingLists(w http.ResponseWriter, r *http.Reques
 			   (SELECT COUNT(*) FROM mailing_subscribers s WHERE s.list_id = l.id AND s.status = 'confirmed') as active_count,
 			   status, created_at
 		FROM mailing_lists l
+		WHERE COALESCE(l.is_visible, true) = true
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
 	`, pag.Limit, pag.Offset)

@@ -1610,6 +1610,19 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_list_active_count", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`},
 		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},
 		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
+		{"add_list_is_visible", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS is_visible BOOLEAN DEFAULT true`},
+		{"hide_duplicate_lists", `
+			UPDATE mailing_lists SET is_visible = false
+			WHERE id IN (
+				'482e2ac2-06ee-4bf0-9c4c-4596c035292b',
+				'7863cda8-a5c8-4bf3-9277-39f154e472d7',
+				'a0379e54-11ba-4b57-9787-4da4c2eb223b',
+				'580cea39-9560-4753-a078-78b0aa080fcd',
+				'ed49d5cf-50f2-4200-9821-41bde46950dd',
+				'da2970f4-b652-4251-aa19-19e7e7309ca9',
+				'45a37870-dd25-4c7c-986e-8f42425720df',
+				'2902c0f5-b9a3-4771-93a9-2387f1a5d10b'
+			)`},
 
 		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},

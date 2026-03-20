@@ -257,7 +257,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	var totalSubs, totalLists, totalCampaigns int
 	svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(active_count), 0)::int, COUNT(*)
-		FROM mailing_lists WHERE status = 'active'
+		FROM mailing_lists WHERE status = 'active' AND COALESCE(is_visible, true) = true
 	`).Scan(&totalSubs, &totalLists)
 	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
 

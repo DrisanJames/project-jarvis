@@ -227,7 +227,7 @@ func (c *CampaignCopilot) toolListLists(ctx context.Context, orgID string) inter
 		        (SELECT COUNT(DISTINCT e.subscriber_id) FROM mailing_tracking_events e
 		         JOIN mailing_subscribers s2 ON s2.id = e.subscriber_id
 		         WHERE s2.list_id = l.id AND e.event_type = 'sent') as mailed_to
-		 FROM mailing_lists l WHERE l.organization_id = $1 AND l.status = 'active'
+		 FROM mailing_lists l WHERE l.organization_id = $1 AND l.status = 'active' AND COALESCE(l.is_visible, true) = true
 		 ORDER BY l.subscriber_count DESC`, orgID)
 	if err != nil {
 		return map[string]string{"error": err.Error()}

@@ -1133,7 +1133,7 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	// Load mailing lists, filtered by domain affinity
 	var allLists []listInfo
 	listRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' ORDER BY name LIMIT 100`, orgID)
+		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' AND COALESCE(is_visible, true) = true ORDER BY name LIMIT 100`, orgID)
 	if listRows != nil {
 		defer listRows.Close()
 		for listRows.Next() {

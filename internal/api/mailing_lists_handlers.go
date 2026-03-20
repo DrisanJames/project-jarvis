@@ -47,6 +47,7 @@ func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request
 		FROM mailing_lists l
 		LEFT JOIN list_sends ls ON ls.list_id = l.id
 		LEFT JOIN list_events le ON le.list_id = l.id
+		WHERE COALESCE(l.is_visible, true) = true
 		ORDER BY l.created_at DESC
 	`)
 	if err != nil {
