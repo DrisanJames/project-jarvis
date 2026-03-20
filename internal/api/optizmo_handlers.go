@@ -789,49 +789,124 @@ func (h *OptizmoHandlers) downloadOptizmoHashes(ctx context.Context, jobID, opti
 	return downloadOptizmoHashesPkg(ctx, h.optizmoToken, "job "+jobID, optizmoLink)
 }
 
-// matchAndSuppressSubscribers scans all confirmed subscribers, matches their
-// email MD5 against the provided hash set, and inserts offer-level suppressions.
+// matchAndSuppressSubscribers loads suppression hashes into a Postgres temp
+// table, then uses a single INSERT ... SELECT ... JOIN to match subscribers
+// by MD5(email) and insert suppressions. This pushes all heavy lifting
+// (hashing 600K+ emails, set intersection, bulk insert) to the database engine
+// instead of pulling everything into Go memory.
+//
 // Returns (audienceCount, suppressedCount, matches, error).
 func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string, hashes map[string]bool) (int, int, []optizmoMatch, error) {
-	subRows, err := db.QueryContext(ctx,
-		`SELECT id, LOWER(TRIM(email)) FROM mailing_subscribers
-		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("failed to query subscribers: %w", err)
+		return 0, 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer subRows.Close()
+	defer tx.Rollback()
 
-	var matches []optizmoMatch
+	// Step 1: Create an unlogged temp table for the suppression hashes.
+	// ON COMMIT DROP ensures cleanup even if we forget.
+	_, err = tx.ExecContext(ctx,
+		`CREATE TEMP TABLE _optizmo_hashes (hash VARCHAR(32) NOT NULL) ON COMMIT DROP`)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("create temp table: %w", err)
+	}
+
+	// Step 2: Bulk-load hashes using batched INSERT VALUES.
+	// ~500K hashes at 1000 per batch = ~500 round-trips (vs 600K+ before).
+	const batchSize = 1000
+	batch := make([]string, 0, batchSize)
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		query := "INSERT INTO _optizmo_hashes (hash) VALUES "
+		args := make([]interface{}, len(batch))
+		for i, h := range batch {
+			if i > 0 {
+				query += ","
+			}
+			query += fmt.Sprintf("($%d)", i+1)
+			args[i] = h
+		}
+		_, err := tx.ExecContext(ctx, query, args...)
+		batch = batch[:0]
+		return err
+	}
+
+	for h := range hashes {
+		batch = append(batch, h)
+		if len(batch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				return 0, 0, nil, fmt.Errorf("bulk insert hashes: %w", err)
+			}
+		}
+	}
+	if err := flushBatch(); err != nil {
+		return 0, 0, nil, fmt.Errorf("bulk insert hashes (final): %w", err)
+	}
+
+	// Index the temp table for the join.
+	_, err = tx.ExecContext(ctx, `CREATE INDEX ON _optizmo_hashes (hash)`)
+	if err != nil {
+		log.Printf("[Optizmo] warning: could not index temp table: %v", err)
+	}
+
+	// Step 3: Get audience count (fast COUNT).
 	var audienceCount int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_subscribers
+		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID,
+	).Scan(&audienceCount)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("count audience: %w", err)
+	}
 
-	for subRows.Next() {
-		var subID, email string
-		if err := subRows.Scan(&subID, &email); err != nil {
-			continue
-		}
-		audienceCount++
-		emailHash := md5Hash(email)
-		if hashes[emailHash] {
-			matches = append(matches, optizmoMatch{ID: subID, Email: email, Hash: emailHash})
+	// Step 4: Single INSERT ... SELECT to match and suppress in one pass.
+	// Postgres computes MD5(LOWER(TRIM(email))) for each subscriber and JOINs
+	// against the temp table — no data leaves the database.
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO mailing_offer_suppressions
+			(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+		 SELECT $1, $2, s.id, MD5(LOWER(TRIM(s.email))), 'optizmo', 'optizmo_scrub', NOW()
+		 FROM mailing_subscribers s
+		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
+		 WHERE s.organization_id = $1 AND s.status = 'confirmed'
+		 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
+		defaultOrgID, offerID)
+	if err != nil {
+		return audienceCount, 0, nil, fmt.Errorf("bulk suppress: %w", err)
+	}
+	suppressedCount, _ := res.RowsAffected()
+
+	// Step 5: Retrieve the match list for named suppression lists.
+	var matches []optizmoMatch
+	matchRows, err := tx.QueryContext(ctx,
+		`SELECT s.id, LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email)))
+		 FROM mailing_subscribers s
+		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
+		 WHERE s.organization_id = $1 AND s.status = 'confirmed'`,
+		defaultOrgID)
+	if err != nil {
+		log.Printf("[Optizmo] warning: could not retrieve match details: %v", err)
+	} else {
+		defer matchRows.Close()
+		for matchRows.Next() {
+			var m optizmoMatch
+			if err := matchRows.Scan(&m.ID, &m.Email, &m.Hash); err != nil {
+				continue
+			}
+			matches = append(matches, m)
 		}
 	}
 
-	suppressedCount := 0
-	for _, m := range matches {
-		_, err := db.ExecContext(ctx,
-			`INSERT INTO mailing_offer_suppressions
-				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-			 VALUES ($1, $2, $3, $4, 'optizmo', 'optizmo_scrub', NOW())
-			 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-			defaultOrgID, offerID, m.ID, m.Hash)
-		if err != nil {
-			log.Printf("[Optizmo] error inserting suppression for subscriber %s: %v", m.ID, err)
-			continue
-		}
-		suppressedCount++
+	if err := tx.Commit(); err != nil {
+		return audienceCount, 0, nil, fmt.Errorf("commit tx: %w", err)
 	}
 
-	return audienceCount, suppressedCount, matches, nil
+	log.Printf("[Optizmo] DB-side matching: %d audience, %d suppressed (temp table with %d hashes)",
+		audienceCount, suppressedCount, len(hashes))
+
+	return audienceCount, int(suppressedCount), matches, nil
 }
 
 // extractScrubMAK extracts the MAK from various Optizmo URL formats:

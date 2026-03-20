@@ -82,15 +82,21 @@ func TestMatchAndSuppressSubscribers_HappyPath(t *testing.T) {
 	emailHash := md5Hash("test@example.com")
 	hashes := map[string]bool{emailHash: true}
 
-	mock.ExpectQuery(`SELECT id, LOWER`).
+	mock.ExpectBegin()
+	mock.ExpectExec(`CREATE TEMP TABLE`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO _optizmo_hashes`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`CREATE INDEX`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs(defaultOrgID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}).
-			AddRow("sub-1", "test@example.com").
-			AddRow("sub-2", "other@example.com"))
-
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 	mock.ExpectExec(`INSERT INTO mailing_offer_suppressions`).
-		WithArgs(defaultOrgID, "offer-1", "sub-1", emailHash).
+		WithArgs(defaultOrgID, "offer-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT s.id`).
+		WithArgs(defaultOrgID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "hash"}).
+			AddRow("sub-1", "test@example.com", emailHash))
+	mock.ExpectCommit()
 
 	audience, suppressed, matches, matchErr := matchAndSuppressSubscribers(context.Background(), db, "offer-1", hashes)
 	require.NoError(t, matchErr)
@@ -108,10 +114,20 @@ func TestMatchAndSuppressSubscribers_NoMatches(t *testing.T) {
 
 	hashes := map[string]bool{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1": true}
 
-	mock.ExpectQuery(`SELECT id, LOWER`).
+	mock.ExpectBegin()
+	mock.ExpectExec(`CREATE TEMP TABLE`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO _optizmo_hashes`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`CREATE INDEX`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs(defaultOrgID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}).
-			AddRow("sub-1", "test@example.com"))
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectExec(`INSERT INTO mailing_offer_suppressions`).
+		WithArgs(defaultOrgID, "offer-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT s.id`).
+		WithArgs(defaultOrgID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "hash"}))
+	mock.ExpectCommit()
 
 	audience, suppressed, matches, matchErr := matchAndSuppressSubscribers(context.Background(), db, "offer-1", hashes)
 	require.NoError(t, matchErr)
