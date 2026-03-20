@@ -48,6 +48,9 @@ const (
 	SuppChannelBuffer    = 8                 // Buffered channel depth between reader and writers
 	SuppTempDir          = "/tmp/mailing-suppression-imports"
 	SuppSessionTTL       = 24 * time.Hour
+
+	GlobalSuppressionListID = "global-suppression-list"
+	DefaultOrgID            = "00000000-0000-0000-0000-000000000001"
 )
 
 // =============================================================================
@@ -96,6 +99,12 @@ type SuppImportProgress struct {
 // SERVICE
 // =============================================================================
 
+// GlobalSuppressionReloader reloads the in-memory global suppression cache after bulk import.
+type GlobalSuppressionReloader interface {
+	LoadFromDB(ctx context.Context) error
+	Count() int
+}
+
 // SuppressionImportService handles large suppression file imports.
 // Works with or without Redis; falls back to in-memory progress tracking.
 type SuppressionImportService struct {
@@ -103,11 +112,19 @@ type SuppressionImportService struct {
 	redis *redis.Client // optional
 	dir   string
 
+	globalReloader GlobalSuppressionReloader // refreshes in-memory cache after global import
+
 	// In-memory fallback when Redis is unavailable
 	mu       sync.RWMutex
 	jobs     map[string]*SuppImportJob
 	progress map[string]*SuppImportProgress
 	chunks   map[string]map[int]bool
+}
+
+// SetGlobalSuppressionReloader wires the hub so the in-memory cache is refreshed
+// after a bulk import targeting the global suppression list.
+func (s *SuppressionImportService) SetGlobalSuppressionReloader(r GlobalSuppressionReloader) {
+	s.globalReloader = r
 }
 
 // NewSuppressionImportService creates a new suppression import service
@@ -510,13 +527,22 @@ func (s *SuppressionImportService) processFile(ctx context.Context, job *SuppImp
 	// Re-enable synchronous_commit before final updates
 	s.db.ExecContext(ctx, `SET synchronous_commit = ON`)
 
-	// Update suppression list entry count
-	s.db.ExecContext(ctx, `
-		UPDATE mailing_suppression_lists
-		SET entry_count = (SELECT COUNT(*) FROM mailing_suppression_entries WHERE list_id = $1),
-		    updated_at = NOW()
-		WHERE id = $1
-	`, job.ListID)
+	if job.ListID == GlobalSuppressionListID {
+		// Sync global suppression count to the display list
+		s.db.ExecContext(ctx, `
+			UPDATE mailing_suppression_lists
+			SET entry_count = (SELECT COUNT(*) FROM mailing_global_suppressions),
+			    updated_at = NOW()
+			WHERE id = $1
+		`, GlobalSuppressionListID)
+	} else {
+		s.db.ExecContext(ctx, `
+			UPDATE mailing_suppression_lists
+			SET entry_count = (SELECT COUNT(*) FROM mailing_suppression_entries WHERE list_id = $1),
+			    updated_at = NOW()
+			WHERE id = $1
+		`, job.ListID)
+	}
 
 	finalLines := atomic.LoadInt64(&totalLines)
 	finalImported := atomic.LoadInt64(&imported)
@@ -564,6 +590,16 @@ func (s *SuppressionImportService) processFile(ctx context.Context, job *SuppImp
 
 	log.Printf("[SuppImport] Job %s COMPLETE: %d lines, %d imported, %d dups, %d invalid in %.1fs (%.0f rows/sec)",
 		jobID, finalLines, finalImported, finalDuplicates, finalInvalid, duration.Seconds(), rowsPerSec)
+
+	// Reload the in-memory global suppression cache so new entries are immediately effective
+	if job.ListID == GlobalSuppressionListID && s.globalReloader != nil && finalImported > 0 {
+		log.Printf("[SuppImport] Reloading global suppression hub in-memory cache...")
+		if err := s.globalReloader.LoadFromDB(context.Background()); err != nil {
+			log.Printf("[SuppImport] WARNING: failed to reload global suppression cache: %v", err)
+		} else {
+			log.Printf("[SuppImport] Global suppression cache reloaded (%d entries)", s.globalReloader.Count())
+		}
+	}
 }
 
 // =============================================================================
@@ -578,10 +614,14 @@ type suppRow struct {
 // insertBatchCopy uses PostgreSQL COPY protocol for maximum throughput.
 // Uses UNLOGGED temp table and work_mem boost for faster bulk operations.
 // Falls back to multi-row INSERT if COPY fails.
+// When listID is "global-suppression-list", writes to mailing_global_suppressions
+// (the canonical global suppression table) instead of mailing_suppression_entries.
 func (s *SuppressionImportService) insertBatchCopy(ctx context.Context, listID string, batch []suppRow) (imported, duplicates int) {
 	if len(batch) == 0 {
 		return 0, 0
 	}
+
+	isGlobal := listID == GlobalSuppressionListID
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -590,10 +630,8 @@ func (s *SuppressionImportService) insertBatchCopy(ctx context.Context, listID s
 	}
 	defer tx.Rollback()
 
-	// Boost work_mem for this transaction's sort/hash operations
 	tx.ExecContext(ctx, `SET LOCAL work_mem = '256MB'`)
 
-	// Create UNLOGGED session-scoped temp table (no WAL = faster writes)
 	_, err = tx.ExecContext(ctx, `
 		CREATE TEMP TABLE _supp_import_batch (
 			email VARCHAR(255),
@@ -605,7 +643,6 @@ func (s *SuppressionImportService) insertBatchCopy(ctx context.Context, listID s
 		return s.insertBatchFallback(ctx, listID, batch)
 	}
 
-	// COPY into temp table
 	stmt, err := tx.Prepare(pq.CopyIn("_supp_import_batch", "email", "md5_hash"))
 	if err != nil {
 		log.Printf("[SuppImport] COPY prepare error: %v", err)
@@ -627,14 +664,24 @@ func (s *SuppressionImportService) insertBatchCopy(ctx context.Context, listID s
 	}
 	stmt.Close()
 
-	// Merge from temp table into real table
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source, created_at)
-		SELECT gen_random_uuid()::text, $1, b.email, b.md5_hash, 'Import', 'bulk_import', NOW()
-		FROM _supp_import_batch b
-		WHERE b.md5_hash IS NOT NULL
-		ON CONFLICT (list_id, md5_hash) DO NOTHING
-	`, listID)
+	var result sql.Result
+	if isGlobal {
+		result, err = tx.ExecContext(ctx, `
+			INSERT INTO mailing_global_suppressions (organization_id, email, md5_hash, reason, source, created_at)
+			SELECT $1, b.email, b.md5_hash, 'bulk_import', 'ui_bulk_upload', NOW()
+			FROM _supp_import_batch b
+			WHERE b.md5_hash IS NOT NULL
+			ON CONFLICT (organization_id, md5_hash) DO NOTHING
+		`, DefaultOrgID)
+	} else {
+		result, err = tx.ExecContext(ctx, `
+			INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source, created_at)
+			SELECT gen_random_uuid()::text, $1, b.email, b.md5_hash, 'Import', 'bulk_import', NOW()
+			FROM _supp_import_batch b
+			WHERE b.md5_hash IS NOT NULL
+			ON CONFLICT (list_id, md5_hash) DO NOTHING
+		`, listID)
+	}
 	if err != nil {
 		log.Printf("[SuppImport] Merge INSERT error: %v", err)
 		return s.insertBatchFallback(ctx, listID, batch)
@@ -657,6 +704,8 @@ func (s *SuppressionImportService) insertBatchFallback(ctx context.Context, list
 		return 0, 0
 	}
 
+	isGlobal := listID == GlobalSuppressionListID
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0
@@ -664,11 +713,20 @@ func (s *SuppressionImportService) insertBatchFallback(ctx context.Context, list
 	defer tx.Rollback()
 
 	for _, row := range batch {
-		result, err := tx.ExecContext(ctx, `
-			INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source, created_at)
-			VALUES (gen_random_uuid()::text, $1, $2, $3, 'Import', 'bulk_import', NOW())
-			ON CONFLICT (list_id, md5_hash) DO NOTHING
-		`, listID, nullableString(row.email), row.md5Hash)
+		var result sql.Result
+		if isGlobal {
+			result, err = tx.ExecContext(ctx, `
+				INSERT INTO mailing_global_suppressions (organization_id, email, md5_hash, reason, source, created_at)
+				VALUES ($1, $2, $3, 'bulk_import', 'ui_bulk_upload', NOW())
+				ON CONFLICT (organization_id, md5_hash) DO NOTHING
+			`, DefaultOrgID, nullableString(row.email), row.md5Hash)
+		} else {
+			result, err = tx.ExecContext(ctx, `
+				INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source, created_at)
+				VALUES (gen_random_uuid()::text, $1, $2, $3, 'Import', 'bulk_import', NOW())
+				ON CONFLICT (list_id, md5_hash) DO NOTHING
+			`, listID, nullableString(row.email), row.md5Hash)
+		}
 		if err == nil {
 			rows, _ := result.RowsAffected()
 			if rows > 0 {

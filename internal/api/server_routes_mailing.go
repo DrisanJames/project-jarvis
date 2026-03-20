@@ -791,6 +791,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			pmtaCampaignAPI.SetGlobalSuppressionHub(globalHub)
 			pmtaCampaignAPI.SetExecutor(executor)
 
+			// Wire global hub to bulk import service for in-memory cache reload after global imports
+			suppImportSvc.svc.SetGlobalSuppressionReloader(globalHub)
+
 			// Export for main.go to wire to the send worker pool
 			s.GlobalHub = globalHub
 
