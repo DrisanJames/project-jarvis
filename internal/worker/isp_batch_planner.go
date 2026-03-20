@@ -2,67 +2,20 @@ package worker
 
 import (
 	"strings"
+
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
-// ISP domain classification map — single source of truth for the entire
-// send pipeline. Used by both the enqueue path (to tag queue items) and
-// the batch planner (to compute per-ISP rates).
-var ispDomainClassification = map[string]string{
-	"gmail.com": "gmail", "googlemail.com": "gmail",
-	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
-	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo",
-	"yahoo.ca": "yahoo",
-	"aol.com": "yahoo", "aim.com": "yahoo",
-	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
-	"comcast.net": "comcast", "xfinity.com": "comcast",
-	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
-	"cox.net":     "cox",
-	"charter.net": "charter", "spectrum.net": "charter",
-	"rr.com": "charter", "roadrunner.com": "charter",
-	"twc.com": "charter", "brighthouse.com": "charter",
-	"verizon.net":    "verizon",
-	"protonmail.com": "protonmail", "proton.me": "protonmail",
-	"zoho.com": "zoho",
-}
-
 // ClassifySubscriberISP returns the ISP identifier for an email address.
+// Delegates to the canonical isp.Group classifier.
 func ClassifySubscriberISP(email string) string {
-	lower := strings.ToLower(strings.TrimSpace(email))
-	atIdx := strings.LastIndex(lower, "@")
-	if atIdx < 0 || atIdx == len(lower)-1 {
-		return "other"
-	}
-	domain := lower[atIdx+1:]
-	if isp, ok := ispDomainClassification[domain]; ok {
-		return isp
-	}
-	if strings.HasSuffix(domain, ".rr.com") {
-		return "charter"
-	}
-	return "other"
-}
-
-// ispToPoolSuffix maps Go ISP classification names to PMTA pool name suffixes.
-// ISPs with dedicated classification but no per-ISP pool route to "general".
-var ispToPoolSuffix = map[string]string{
-	"gmail":     "gmail",
-	"yahoo":     "yahoo",
-	"microsoft": "msft",
-	"apple":     "apple",
-	"comcast":   "comcast",
-	"att":       "att",
-	"cox":       "cox",
-	"charter":   "charter",
+	return isp.Group(email)
 }
 
 // ISPPoolSuffix returns the PMTA pool name suffix for a given ISP classification.
-// For example, ISPPoolSuffix("microsoft") returns "msft".
-// Unmapped ISPs (verizon, protonmail, zoho, other, etc.) return "general".
-func ISPPoolSuffix(isp string) string {
-	if suffix, ok := ispToPoolSuffix[isp]; ok {
-		return suffix
-	}
-	return "general"
+// Delegates to the canonical isp.PoolSuffix.
+func ISPPoolSuffix(ispName string) string {
+	return isp.PoolSuffix(ispName)
 }
 
 // extractPoolSuffix parses the ISP suffix from a pool name.

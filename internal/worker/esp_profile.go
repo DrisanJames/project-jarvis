@@ -7,8 +7,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // ProfileBasedSender resolves a sending profile from the database and
@@ -106,91 +104,37 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		return NewSendGridSender(apiKey, s.db).Send(ctx, msg)
 	case "pmta":
 		host := smtpHost.String
-		port := 587 // safe default; overridden by profile value
+		port := 587
 		if smtpPort.Valid && smtpPort.Int64 > 0 {
 			port = int(smtpPort.Int64)
 		}
 		user := smtpUsername.String
 		pass := smtpPassword.String
 
-		// api_endpoint from the sending profile (stored in `region`)
 		apiURL := ""
 		if region != "" && region != "us-east-1" && strings.HasPrefix(region, "http") {
 			apiURL = region
 		}
 
-		// Combo sender: try HTTP injection API first (if configured), SMTP fallback
-		if host != "" && apiURL != "" {
-			return s.getCachedSender(msg.ProfileID+":pmta-combo", func() ESPSender {
-				return &pmtaComboSender{
-					apiSender:  NewPMTAAPISender(apiURL, s.db, poolPrefix),
-					smtpSender: NewPMTASender(host, port, user, pass, s.db, poolPrefix),
-				}
-			}).Send(ctx, msg)
-		}
-		// SMTP only (no HTTP API endpoint configured)
-		if host != "" {
-			return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
-				return NewPMTASender(host, port, user, pass, s.db, poolPrefix)
-			}).Send(ctx, msg)
-		}
-		// HTTP API only (no SMTP host)
+		// API-only injection: when an API endpoint is configured, always
+		// use it. SMTP fallback is intentionally removed — a delayed send
+		// (requeue) is safer than an SMTP injection that risks DMARC failure.
 		if apiURL != "" {
 			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
 				return NewPMTAAPISender(apiURL, s.db, poolPrefix)
+			}).Send(ctx, msg)
+		}
+		// SMTP-only: legacy path for profiles without an API endpoint.
+		if host != "" {
+			log.Printf("[ProfileBasedSender] WARN: profile %s has no api_endpoint, using SMTP-only (DMARC risk)", msg.ProfileID)
+			return s.getCachedSender(msg.ProfileID+":pmta-smtp", func() ESPSender {
+				return NewPMTASender(host, port, user, pass, s.db, poolPrefix)
 			}).Send(ctx, msg)
 		}
 		return nil, fmt.Errorf("profile %s: no SMTP host or API endpoint for PMTA", msg.ProfileID)
 	default:
 		return nil, fmt.Errorf("unsupported vendor type: %s", vendorType)
 	}
-}
-
-// pmtaComboSender tries the PMTA HTTP injection API first, then falls back
-// to SMTP. After a transient API failure, it retries the API after a cooldown
-// period rather than permanently switching to SMTP.
-type pmtaComboSender struct {
-	apiSender    ESPSender
-	smtpSender   ESPSender
-	useAPI       int32 // 1 = API works, -1 = API failed/cooldown, 0 = unknown
-	apiFailedAt  int64 // unix timestamp of last API failure
-}
-
-const apiRetryCooldown = 60 // seconds before retrying API after failure
-
-func (c *pmtaComboSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	state := atomic.LoadInt32(&c.useAPI)
-
-	if state == -1 {
-		failedAt := atomic.LoadInt64(&c.apiFailedAt)
-		if time.Now().Unix()-failedAt > apiRetryCooldown {
-			atomic.StoreInt32(&c.useAPI, 0)
-			state = 0
-		}
-	}
-
-	if state >= 0 {
-		result, err := c.apiSender.Send(ctx, msg)
-		if err == nil {
-			atomic.StoreInt32(&c.useAPI, 1)
-			return result, nil
-		}
-		// VMTA-related errors (exhaustion, empty hostname, no IPs) must NOT
-		// trigger SMTP fallback — the SMTP path would hit the same pool state.
-		// Only fall back to SMTP for actual API transport failures.
-		errLower := strings.ToLower(err.Error())
-		if strings.Contains(errLower, "exhausted") ||
-			strings.Contains(errLower, "refusing to send") ||
-			strings.Contains(errLower, "no sending ips") ||
-			strings.Contains(errLower, "no vmta routing") ||
-			strings.Contains(errLower, "empty hostname") {
-			return nil, err
-		}
-		log.Printf("[PMTA-Combo] HTTP API transport failed (%v), falling back to SMTP", err)
-		atomic.StoreInt32(&c.useAPI, -1)
-		atomic.StoreInt64(&c.apiFailedAt, time.Now().Unix())
-	}
-	return c.smtpSender.Send(ctx, msg)
 }
 
 // getCachedSender retrieves a cached sender or creates one via the factory.
@@ -216,19 +160,12 @@ func (s *ProfileBasedSender) getCachedSender(key string, factory func() ESPSende
 	return sender
 }
 
-// wireIPCallback sets the IP-change callback on PMTA senders (including combo).
+// wireIPCallback sets the IP-change callback on PMTA senders.
 func (s *ProfileBasedSender) wireIPCallback(sender ESPSender) {
 	switch st := sender.(type) {
 	case *PMTASender:
 		st.SetIPChangeCallback(s.ipChangeCallback)
 	case *PMTAAPISender:
 		st.SetIPChangeCallback(s.ipChangeCallback)
-	case *pmtaComboSender:
-		if smtp, ok := st.smtpSender.(*PMTASender); ok {
-			smtp.SetIPChangeCallback(s.ipChangeCallback)
-		}
-		if api, ok := st.apiSender.(*PMTAAPISender); ok {
-			api.SetIPChangeCallback(s.ipChangeCallback)
-		}
 	}
 }

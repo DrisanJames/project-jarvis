@@ -2441,6 +2441,25 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 	} else {
 		log.Println("[StartupMigration] idx_campaign_queue_recipient_isp: OK")
 	}
+
+	// Warn about active PMTA profiles missing an api_endpoint — these
+	// will fall through to SMTP-only mode, which risks DMARC rejection.
+	rows, err := db.Query(`
+		SELECT name, smtp_host, api_endpoint FROM mailing_sending_profiles
+		WHERE vendor_type = 'pmta' AND status = 'active'
+		  AND (api_endpoint IS NULL OR api_endpoint = '')
+	`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pName string
+			var pHost, pAPI sql.NullString
+			if err := rows.Scan(&pName, &pHost, &pAPI); err == nil {
+				log.Printf("[StartupMigration] WARNING: active PMTA profile '%s' (smtp_host=%s) has no api_endpoint — SMTP-only mode is a DMARC risk",
+					pName, pHost.String)
+			}
+		}
+	}
 }
 
 // runAdminMigrations connects with the RDS master user to run DDL that the

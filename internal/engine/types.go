@@ -402,6 +402,13 @@ type MicroContext struct {
 	AcceptanceRate float64 `json:"acceptance_rate,omitempty"`
 	TrueOpenRate   float64 `json:"true_open_rate,omitempty"`
 
+	// Engagement telemetry (populated by the Redis bridge, read-only for now)
+	OpenRate1h              float64 `json:"open_rate_1h,omitempty"`
+	ClickRate1h             float64 `json:"click_rate_1h,omitempty"`
+	UniqueClicks            int     `json:"unique_clicks,omitempty"`
+	ClickToComplaintRatio   float64 `json:"click_to_complaint_ratio,omitempty"`
+	EngagementScore         float64 `json:"engagement_score,omitempty"`
+
 	// Granular counts within the observation window
 	DeferralCount  int `json:"deferral_count,omitempty"`
 	AcceptedCount  int `json:"accepted_count,omitempty"`

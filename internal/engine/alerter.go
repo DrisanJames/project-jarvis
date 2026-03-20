@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/smtp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,7 +15,13 @@ type Alerter struct {
 	smtpPort int
 	from     string
 	to       []string
+
+	// Deduplication: suppress repeated alerts for the same key within a window
+	mu       sync.Mutex
+	cooldown map[string]time.Time
 }
+
+const alertCooldownWindow = 5 * time.Minute
 
 // AlerterConfig holds alerter configuration.
 type AlerterConfig struct {
@@ -31,7 +38,20 @@ func NewAlerter(cfg AlerterConfig) *Alerter {
 		smtpPort: cfg.SMTPPort,
 		from:     cfg.From,
 		to:       cfg.To,
+		cooldown: make(map[string]time.Time),
 	}
+}
+
+// shouldAlert returns true if we haven't sent an alert for this key
+// within the cooldown window. Thread-safe.
+func (a *Alerter) shouldAlert(key string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if last, ok := a.cooldown[key]; ok && time.Since(last) < alertCooldownWindow {
+		return false
+	}
+	a.cooldown[key] = time.Now()
+	return true
 }
 
 // SendDecisionAlert sends an alert for a governance decision.
@@ -121,6 +141,95 @@ Check the suppression dashboard for affected campaigns.
 ---
 Automated alert from PMTA Governance Engine.
 `, isp, count5m, threshold)
+
+	a.sendEmail(subject, body)
+}
+
+// SendBounceRateAlert fires when a campaign's hard bounce rate exceeds the
+// threshold during a monitoring window. Deduplicated per campaign.
+func (a *Alerter) SendBounceRateAlert(campaignID, campaignName string, bounceRate, threshold float64) {
+	key := fmt.Sprintf("bounce-rate:%s", campaignID)
+	if !a.shouldAlert(key) {
+		return
+	}
+	subject := fmt.Sprintf("[BOUNCE RATE] Campaign %s — %.1f%% (threshold %.1f%%)", campaignName, bounceRate*100, threshold*100)
+	body := fmt.Sprintf(`Bounce Rate Alert
+===================
+
+Campaign:   %s (%s)
+Bounce Rate: %.2f%%
+Threshold:   %.2f%%
+
+A campaign has exceeded the hard bounce rate threshold. This may indicate
+a list quality issue or authentication failure. Check campaign delivery
+logs and consider pausing the campaign.
+
+---
+Automated alert from PMTA Infrastructure Monitor.
+`, campaignName, campaignID, bounceRate*100, threshold*100)
+
+	a.sendEmail(subject, body)
+}
+
+// SendDefaultPoolAlert fires when messages are detected in PMTA's {default}
+// pool, which means they were injected without a valid VMTA assignment.
+// Deduplicated per 5-minute window.
+func (a *Alerter) SendDefaultPoolAlert(count int, vmtaName string) {
+	key := "default-pool-leak"
+	if !a.shouldAlert(key) {
+		return
+	}
+	subject := fmt.Sprintf("[DEFAULT POOL] %d message(s) routed to {default} — DMARC rejection risk", count)
+	body := fmt.Sprintf(`Default Pool Alert
+=====================
+
+Messages:   %d
+VMTA:       %s
+
+Messages were injected into PMTA without a valid Virtual MTA assignment
+and routed through the {default} pool. This causes DMARC failures because
+the server's main IP does not have DKIM/SPF configured for the sending domain.
+
+Likely causes:
+  - IP pool exhaustion (all IPs hit warmup daily limit)
+  - Empty hostname on a selected IP
+  - Missing X-Virtual-MTA header in injection payload
+
+Immediate action: check vmtaPool state, IP warmup limits, and recent
+bridge error logs.
+
+---
+Automated alert from PMTA Infrastructure Monitor.
+`, count, vmtaName)
+
+	a.sendEmail(subject, body)
+}
+
+// SendBridgeErrorAlert fires when the HTTP injection bridge returns
+// consecutive errors, indicating a systemic failure. Deduplicated per server.
+func (a *Alerter) SendBridgeErrorAlert(serverHost string, errorCount int, sampleError string) {
+	key := fmt.Sprintf("bridge-error:%s", serverHost)
+	if !a.shouldAlert(key) {
+		return
+	}
+	subject := fmt.Sprintf("[BRIDGE ERROR] %s — %d consecutive failures", serverHost, errorCount)
+	body := fmt.Sprintf(`Bridge Health Alert
+======================
+
+Server:     %s
+Consecutive Failures: %d
+Sample Error: %s
+
+The PMTA HTTP injection bridge is returning repeated errors. Messages
+will be requeued but delivery is stalled on this server.
+
+Check bridge service status:
+  ssh rocky@%s 'sudo systemctl status pmta-http-bridge'
+  ssh rocky@%s 'sudo journalctl -u pmta-http-bridge -n 50'
+
+---
+Automated alert from PMTA Infrastructure Monitor.
+`, serverHost, errorCount, sampleError, serverHost, serverHost)
 
 	a.sendEmail(subject, body)
 }

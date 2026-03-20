@@ -50,3 +50,4 @@ data/
 .jarvis/
 .cursor/
 fix_exclusion_segments
+/pmta-gateway

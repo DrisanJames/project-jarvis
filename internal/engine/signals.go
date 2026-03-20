@@ -2,9 +2,14 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // SignalProcessor computes per-ISP rolling-window metrics from ingested records.
@@ -14,9 +19,10 @@ type SignalProcessor struct {
 	orgID    string
 	registry *ISPRegistry
 
-	mu       sync.RWMutex
-	windows  map[ISP]*ISPSignalWindow
-	listeners []chan<- SignalSnapshot
+	mu          sync.RWMutex
+	windows     map[ISP]*ISPSignalWindow
+	listeners   []chan<- SignalSnapshot
+	redisClient *redis.Client
 }
 
 // ISPSignalWindow holds the rolling-window metrics for one ISP.
@@ -110,6 +116,16 @@ type SignalSnapshot struct {
 	// DSN code samples observed in the current window (up to 10)
 	RecentDSNCodes      []string `json:"recent_dsn_codes,omitempty"`
 	RecentDSNDiagnostics []string `json:"recent_dsn_diagnostics,omitempty"`
+
+	// Engagement metrics (populated from Redis telemetry bridge).
+	// These are read-only observation fields — no decision logic uses them yet.
+	OpenRate1h              float64 `json:"open_rate_1h,omitempty"`
+	TrueOpenRate1h          float64 `json:"true_open_rate_1h,omitempty"`
+	ClickRate1h             float64 `json:"click_rate_1h,omitempty"`
+	UniqueClicks1h          int     `json:"unique_clicks_1h,omitempty"`
+	ClickToComplaintRatio1h float64 `json:"click_to_complaint_ratio_1h,omitempty"`
+	Complaints5m            int     `json:"complaints_5m,omitempty"`
+	EngagementScore1h       float64 `json:"engagement_score_1h,omitempty"`
 }
 
 // IPMetric holds per-IP metrics within a snapshot.
@@ -397,6 +413,9 @@ func (sp *SignalProcessor) computeSnapshots() {
 
 		w.mu.Unlock()
 
+		// Enrich with engagement data from Redis (O(1) reads)
+		sp.enrichWithEngagement(&snap)
+
 		// Persist snapshot to DB
 		sp.persistSnapshot(snap)
 
@@ -490,4 +509,126 @@ func (sp *SignalProcessor) GetSnapshot(isp ISP) SignalSnapshot {
 		DeferralRate5m:  safeRate(w.totalDeferred.countSince(now.Add(-5*time.Minute)), sent5m),
 		DeferralRate1h:  safeRate(w.totalDeferred.countSince(now.Add(-1*time.Hour)), sent1h),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Engagement Telemetry Bridge — Redis-backed O(1) counters
+// ---------------------------------------------------------------------------
+
+// SetRedisClient attaches a Redis client for engagement metric reads.
+func (sp *SignalProcessor) SetRedisClient(c *redis.Client) {
+	sp.redisClient = c
+}
+
+// EngagementRedisKey1h returns the hash key for 1-hour engagement counters.
+func EngagementRedisKey1h(isp ISP, t time.Time) string {
+	hour := t.Truncate(time.Hour).Unix()
+	return fmt.Sprintf("isp:eng:1h:%s:%d", isp, hour)
+}
+
+// EngagementRedisKey5m returns the hash key for 5-minute engagement counters.
+func EngagementRedisKey5m(isp ISP, t time.Time) string {
+	fiveMin := t.Truncate(5 * time.Minute).Unix()
+	return fmt.Sprintf("isp:eng:5m:%s:%d", isp, fiveMin)
+}
+
+// EngagementUniqueKey returns the HyperLogLog key for unique clicks.
+func EngagementUniqueKey(isp ISP, t time.Time) string {
+	hour := t.Truncate(time.Hour).Unix()
+	return fmt.Sprintf("isp:eng:uniq:%s:%d", isp, hour)
+}
+
+const (
+	EngFieldOpens      = "opens"
+	EngFieldTrueOpens  = "true_opens"
+	EngFieldClicks     = "clicks"
+	EngFieldDelivered  = "delivered"
+	EngFieldComplaints = "complaints"
+	EngagementTTL1h    = 2 * time.Hour
+	EngagementTTL5m    = 10 * time.Minute
+)
+
+// NormalizeISPName maps display-style ISP names (e.g. "Gmail", "AT&T") to
+// engine ISP constants. Returns empty string for unrecognized names.
+func NormalizeISPName(name string) ISP {
+	switch strings.ToLower(name) {
+	case "gmail":
+		return ISPGmail
+	case "yahoo":
+		return ISPYahoo
+	case "microsoft":
+		return ISPMicrosoft
+	case "apple":
+		return ISPApple
+	case "comcast":
+		return ISPComcast
+	case "at&t", "att":
+		return ISPAtt
+	case "cox":
+		return ISPCox
+	case "charter", "charter/spectrum":
+		return ISPCharter
+	default:
+		return ""
+	}
+}
+
+// enrichWithEngagement reads Redis engagement counters and populates the
+// snapshot's engagement fields. Called from computeSnapshots on every tick.
+// If Redis is nil or returns an error, the fields remain zero — no impact.
+func (sp *SignalProcessor) enrichWithEngagement(snap *SignalSnapshot) {
+	if sp.redisClient == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	now := snap.Timestamp
+	isp := snap.ISP
+
+	// 1h engagement counters
+	key1h := EngagementRedisKey1h(isp, now)
+	vals, err := sp.redisClient.HGetAll(ctx, key1h).Result()
+	if err != nil || len(vals) == 0 {
+		return
+	}
+
+	opens := redisInt(vals[EngFieldOpens])
+	trueOpens := redisInt(vals[EngFieldTrueOpens])
+	clicks := redisInt(vals[EngFieldClicks])
+	delivered := redisInt(vals[EngFieldDelivered])
+	complaints := redisInt(vals[EngFieldComplaints])
+
+	if delivered > 0 {
+		snap.OpenRate1h = float64(opens) / float64(delivered) * 100
+		snap.TrueOpenRate1h = float64(trueOpens) / float64(delivered) * 100
+		snap.ClickRate1h = float64(clicks) / float64(delivered) * 100
+	}
+
+	if complaints > 0 {
+		snap.ClickToComplaintRatio1h = float64(clicks) / float64(complaints)
+	} else if clicks > 0 {
+		snap.ClickToComplaintRatio1h = float64(clicks) // infinity capped at click count
+	}
+
+	// Unique clicks via HyperLogLog
+	uniqKey := EngagementUniqueKey(isp, now)
+	if uniq, err := sp.redisClient.PFCount(ctx, uniqKey).Result(); err == nil {
+		snap.UniqueClicks1h = int(uniq)
+	}
+
+	// 5m complaint count (fast-twitch safety signal)
+	key5m := EngagementRedisKey5m(isp, now)
+	if c5m, err := sp.redisClient.HGet(ctx, key5m, EngFieldComplaints).Result(); err == nil {
+		snap.Complaints5m, _ = strconv.Atoi(c5m)
+	}
+
+	// Composite engagement score: TrueOpenRate * 0.4 + ClickRate * 0.6
+	snap.EngagementScore1h = (snap.TrueOpenRate1h * 0.4) + (snap.ClickRate1h * 0.6)
+}
+
+func redisInt(s string) int {
+	v, _ := strconv.Atoi(s)
+	return v
 }

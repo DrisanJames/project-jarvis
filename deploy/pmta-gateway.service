@@ -1,0 +1,19 @@
+[Unit]
+Description=PMTA Injection Gateway
+After=network.target pmta.service
+Wants=pmta.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/pmta-gateway
+Environment=LISTEN_ADDR=:19099
+Environment=SMTP_ADDR=127.0.0.1:25
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pmta-gateway
+
+[Install]
+WantedBy=multi-user.target

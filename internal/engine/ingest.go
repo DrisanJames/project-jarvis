@@ -11,9 +11,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 func ingestEmailHash(email string) string {
@@ -26,6 +28,59 @@ type campaignRecorder interface {
 	RecordEvent(e CampaignEvent)
 }
 
+// bounceWindow tracks sent and hard-bounced counts per campaign in a
+// tumbling 5-minute window for real-time bounce rate alerting.
+type bounceWindow struct {
+	mu       sync.Mutex
+	sent     map[string]int // campaignID → count
+	bounced  map[string]int // campaignID → hard bounce count
+	names    map[string]string // campaignID → campaign name
+	windowStart time.Time
+}
+
+func newBounceWindow() *bounceWindow {
+	return &bounceWindow{
+		sent:        make(map[string]int),
+		bounced:     make(map[string]int),
+		names:       make(map[string]string),
+		windowStart: time.Now(),
+	}
+}
+
+const bounceWindowDuration = 5 * time.Minute
+const hardBounceRateThreshold = 0.02   // 2%
+const softBounceRateThreshold = 0.10   // 10%
+
+func (bw *bounceWindow) record(campaignID, campaignName, eventType string, isHardBounce bool) (rate float64, exceeded bool) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
+	if time.Since(bw.windowStart) > bounceWindowDuration {
+		bw.sent = make(map[string]int)
+		bw.bounced = make(map[string]int)
+		bw.names = make(map[string]string)
+		bw.windowStart = time.Now()
+	}
+
+	bw.names[campaignID] = campaignName
+
+	switch eventType {
+	case "delivered", "bounced":
+		bw.sent[campaignID]++
+	}
+
+	if eventType == "bounced" && isHardBounce {
+		bw.bounced[campaignID]++
+	}
+
+	sent := bw.sent[campaignID]
+	if sent < 50 {
+		return 0, false
+	}
+	rate = float64(bw.bounced[campaignID]) / float64(sent)
+	return rate, rate > hardBounceRateThreshold
+}
+
 // Ingestor receives PMTA accounting records via webhook and polls PMTA
 // status APIs. It classifies each record by ISP and fans out to the
 // SignalProcessor, agent clusters, CampaignEventTracker, and
@@ -35,10 +90,14 @@ type Ingestor struct {
 	processor *SignalProcessor
 	tracker   campaignRecorder
 	globalHub *GlobalSuppressionHub
+	alerter   *Alerter
 	db        *sql.DB
 
 	// Record listeners (agents subscribe to their ISP's records)
 	listeners map[ISP][]chan<- AccountingRecord
+
+	// Real-time bounce rate monitoring
+	bounceWin *bounceWindow
 
 	// PMTA management API polling
 	pmtaHost     string
@@ -56,6 +115,11 @@ type IngestorConfig struct {
 	PMTAUser     string
 	PMTAPassword string
 	PollInterval time.Duration
+}
+
+// SetAlerter attaches the alerter for infrastructure health notifications.
+func (ing *Ingestor) SetAlerter(a *Alerter) {
+	ing.alerter = a
 }
 
 // SetCampaignTracker attaches the campaign event tracker to the ingestor.
@@ -85,6 +149,7 @@ func NewIngestor(registry *ISPRegistry, processor *SignalProcessor, cfg Ingestor
 		registry:     registry,
 		processor:    processor,
 		listeners:    make(map[ISP][]chan<- AccountingRecord),
+		bounceWin:    newBounceWindow(),
 		pmtaHost:     cfg.PMTAHost,
 		pmtaPort:     cfg.PMTAPort,
 		pmtaUser:     cfg.PMTAUser,
@@ -132,8 +197,17 @@ func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	processed := 0
+	defaultPoolCount := 0
 	for _, rec := range records {
 		isp := ing.classifyRecord(rec)
+
+		// Detect {default} pool leaks — any message routed here
+		// will fail DMARC because the server IP has no domain-specific DKIM.
+		if rec.VMTA == "{default}" || rec.Pool == "{default}" {
+			defaultPoolCount++
+			log.Printf("[ingest-ALERT] default-pool leak: recipient=%s vmta=%s pool=%s type=%s",
+				rec.Recipient, rec.VMTA, rec.Pool, rec.Type)
+		}
 
 		// Global suppression and DB persistence fire for ALL records,
 		// even if the domain doesn't map to a known ISP.
@@ -164,6 +238,10 @@ func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		processed++
+	}
+
+	if defaultPoolCount > 0 && ing.alerter != nil {
+		ing.alerter.SendDefaultPoolAlert(defaultPoolCount, "{default}")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -342,12 +420,14 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	}
 
 	// Update campaign aggregate counters.
+	hardBounce := false
 	switch eventType {
 	case "delivered":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "bounced":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
-		if isHardBounceCategory(rec.BounceCat) {
+		hardBounce = isHardBounceCategory(rec.BounceCat)
+		if hardBounce {
 			ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1 WHERE id = $1`, campUUID)
 		} else {
 			ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1 WHERE id = $1`, campUUID)
@@ -356,6 +436,16 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "deferred":
 		// Deferrals live in mailing_tracking_events only; no campaign counter.
+	}
+
+	// Bounce rate monitoring: track hard bounces in a sliding window
+	// and alert when threshold is exceeded.
+	if ing.alerter != nil && ing.bounceWin != nil && (eventType == "delivered" || eventType == "bounced") {
+		campName := campaignID[:min(8, len(campaignID))]
+		rate, exceeded := ing.bounceWin.record(campaignID, campName, eventType, hardBounce)
+		if exceeded {
+			ing.alerter.SendBounceRateAlert(campaignID, campName, rate, hardBounceRateThreshold)
+		}
 	}
 
 	// Update IP address counters when we can resolve the source IP.

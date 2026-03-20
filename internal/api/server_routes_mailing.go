@@ -681,6 +681,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			ingestor := engine.NewIngestor(ispClassifier, signalProcessor, ingestorCfg)
 			ingestor.SetDB(db)
+			ingestor.SetAlerter(alerter)
 
 			decisionStore := &engine.DBDecisionStore{DB: db}
 			orchestrator := engine.NewOrchestrator(

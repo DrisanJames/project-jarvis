@@ -12,10 +12,16 @@ import (
 	"mime/quotedprintable"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+const bridgeFailureAlertThreshold = 5
+
+// BridgeAlertFunc is called when the bridge exceeds consecutive failure threshold.
+type BridgeAlertFunc func(serverHost string, errorCount int, sampleError string)
 
 // PMTAAPISender sends emails via PMTA's HTTP injection API (port 19000).
 // Bypasses SMTP port blocking between AWS ECS and OVH.
@@ -24,6 +30,10 @@ type PMTAAPISender struct {
 	db          *sql.DB
 	client      *http.Client
 	ipPool      *vmtaPool
+
+	consecutiveFailures int64
+	lastError           string
+	bridgeAlertFn       BridgeAlertFunc
 }
 
 // NewPMTAAPISender creates a PMTA API sender.
@@ -45,6 +55,12 @@ func NewPMTAAPISender(apiEndpoint string, db *sql.DB, poolPrefix string) *PMTAAP
 // fires when the IP set changes.
 func (s *PMTAAPISender) SetIPChangeCallback(cb OnIPsChangedFunc) {
 	s.ipPool.SetOnIPsChanged(cb)
+}
+
+// SetBridgeAlertFunc registers a callback that fires when the bridge
+// exceeds bridgeFailureAlertThreshold consecutive failures.
+func (s *PMTAAPISender) SetBridgeAlertFunc(fn BridgeAlertFunc) {
+	s.bridgeAlertFn = fn
 }
 
 // Send delivers a single email through the PMTA HTTP injection API.
@@ -162,14 +178,20 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		s.recordBridgeFailure(err.Error())
 		return nil, fmt.Errorf("PMTA API request to %s: %w", injectURL, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		s.recordBridgeFailure(errMsg)
 		return nil, fmt.Errorf("PMTA API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
+
+	// Reset consecutive failure counter on success
+	atomic.StoreInt64(&s.consecutiveFailures, 0)
 
 	if selectedIPID != "" {
 		go s.updateIPCounters(selectedIPID)
@@ -178,6 +200,14 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	usedVMTA, _ := payload["vmta"].(string)
 	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", msg.Email, injectURL, messageID, resp.StatusCode)
 	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now(), VMTA: usedVMTA}, nil
+}
+
+func (s *PMTAAPISender) recordBridgeFailure(errMsg string) {
+	count := atomic.AddInt64(&s.consecutiveFailures, 1)
+	s.lastError = errMsg
+	if count == int64(bridgeFailureAlertThreshold) && s.bridgeAlertFn != nil {
+		s.bridgeAlertFn(s.apiEndpoint, int(count), errMsg)
+	}
 }
 
 func (s *PMTAAPISender) updateIPCounters(ipID string) {

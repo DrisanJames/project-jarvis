@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pmta"
 )
 
@@ -1030,58 +1031,195 @@ func (s *PMTAService) HandleWarmupStatus(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *PMTAService) HandleWarmupDashboard(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("organization_id")
-	if orgID == "" {
-		orgID = getOrgID(r)
-	}
+	ctx := r.Context()
 
-	rows, err := s.db.QueryContext(r.Context(), `
+	// Fetch all IPs with their pool association
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT ip.id, ip.ip_address::text, ip.hostname, ip.warmup_day, ip.warmup_daily_limit,
-		       ip.warmup_started_at, ip.total_sent, ip.reputation_score, ip.status,
+		       ip.warmup_started_at, ip.total_sent, ip.total_delivered, ip.total_bounced,
+		       ip.reputation_score, ip.status,
 		       COALESCE(wl.actual_sent, 0) as today_sent,
 		       COALESCE(wl.bounce_rate, 0) as today_bounce_rate,
-		       COALESCE(wl.complaint_rate, 0) as today_complaint_rate
+		       COALESCE(wl.complaint_rate, 0) as today_complaint_rate,
+		       COALESCE(p.name, '') as pool_name
 		FROM mailing_ip_addresses ip
 		LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
-		WHERE ip.organization_id = $1 AND ip.status = 'warmup'
-		ORDER BY ip.warmup_started_at ASC
-	`, orgID)
+		LEFT JOIN mailing_ip_pools p ON ip.pool_id = p.id
+		WHERE ip.status IN ('warmup', 'active')
+		ORDER BY p.name, ip.ip_address
+	`)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
 
-	var ips []map[string]interface{}
+	type ipEntry struct {
+		ID              string                            `json:"id"`
+		IP              string                            `json:"ip"`
+		Hostname        string                            `json:"hostname"`
+		Pool            string                            `json:"pool"`
+		Status          string                            `json:"status"`
+		WarmupDay       int                               `json:"warmup_day"`
+		WarmupLimit     int                               `json:"warmup_daily_limit"`
+		TodaySent       int                               `json:"today_sent"`
+		TotalSent       int64                             `json:"total_sent"`
+		TotalDelivered  int64                             `json:"total_delivered"`
+		TotalBounced    int64                             `json:"total_bounced"`
+		RepScore        float64                           `json:"reputation_score"`
+		BounceRate      float64                           `json:"today_bounce_rate"`
+		ComplaintRate   float64                           `json:"today_complaint_rate"`
+		ProgressPct     float64                           `json:"progress_pct"`
+		WarmupStarted   *time.Time                        `json:"warmup_started_at,omitempty"`
+		ISPBreakdown    map[string]map[string]int64       `json:"isp_breakdown"`
+		SevenDayTrend   []map[string]interface{}           `json:"7d_trend"`
+	}
+
+	var ipList []ipEntry
+	ipIDs := make([]string, 0)
+
 	for rows.Next() {
-		var id, ipAddr, hostname, status string
-		var warmupDay, warmupLimit int
+		var e ipEntry
 		var warmupStarted sql.NullTime
-		var totalSent int64
-		var repScore, todayBounce, todayComplaint float64
-		var todaySent int
-
-		rows.Scan(&id, &ipAddr, &hostname, &warmupDay, &warmupLimit,
-			&warmupStarted, &totalSent, &repScore, &status,
-			&todaySent, &todayBounce, &todayComplaint)
-
-		ip := map[string]interface{}{
-			"id": id, "ip_address": ipAddr, "hostname": hostname,
-			"warmup_day": warmupDay, "warmup_daily_limit": warmupLimit,
-			"total_sent": totalSent, "reputation_score": repScore, "status": status,
-			"today_sent": todaySent, "today_bounce_rate": todayBounce,
-			"today_complaint_rate": todayComplaint,
-			"progress_pct": float64(warmupDay) / 30.0 * 100,
+		var totalDelivered, totalBounced sql.NullInt64
+		rows.Scan(&e.ID, &e.IP, &e.Hostname, &e.WarmupDay, &e.WarmupLimit,
+			&warmupStarted, &e.TotalSent, &totalDelivered, &totalBounced,
+			&e.RepScore, &e.Status,
+			&e.TodaySent, &e.BounceRate, &e.ComplaintRate, &e.Pool)
+		if totalDelivered.Valid {
+			e.TotalDelivered = totalDelivered.Int64
+		}
+		if totalBounced.Valid {
+			e.TotalBounced = totalBounced.Int64
 		}
 		if warmupStarted.Valid {
-			ip["warmup_started_at"] = warmupStarted.Time
+			e.WarmupStarted = &warmupStarted.Time
 		}
-		ips = append(ips, ip)
+		e.ProgressPct = float64(e.WarmupDay) / 30.0 * 100
+		e.ISPBreakdown = make(map[string]map[string]int64)
+		ipList = append(ipList, e)
+		ipIDs = append(ipIDs, e.ID)
 	}
-	if ips == nil {
-		ips = []map[string]interface{}{}
+
+	// Per-IP per-ISP breakdown from tracking events (today)
+	if len(ipIDs) > 0 {
+		ispRows, err := s.db.QueryContext(ctx, `
+			SELECT sending_ip, recipient_domain, event_type, COUNT(*)
+			FROM mailing_tracking_events
+			WHERE event_at >= CURRENT_DATE
+			  AND sending_ip IS NOT NULL AND sending_ip != ''
+			GROUP BY sending_ip, recipient_domain, event_type
+		`)
+		if err == nil {
+			defer ispRows.Close()
+			ipIndex := make(map[string]int)
+			for i, e := range ipList {
+				ipIndex[e.IP] = i
+			}
+			for ispRows.Next() {
+				var sIP, domain, evType string
+				var cnt int64
+				ispRows.Scan(&sIP, &domain, &evType, &cnt)
+				idx, ok := ipIndex[sIP]
+				if !ok {
+					continue
+				}
+				ispGroup := ispGroupFromDomain(domain)
+				if _, exists := ipList[idx].ISPBreakdown[ispGroup]; !exists {
+					ipList[idx].ISPBreakdown[ispGroup] = map[string]int64{
+						"sent": 0, "delivered": 0, "bounced": 0, "deferred": 0,
+					}
+				}
+				ipList[idx].ISPBreakdown[ispGroup][evType] += cnt
+			}
+		}
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"warming_ips": ips, "total": len(ips)})
+
+	// 7-day warmup trend per IP
+	if len(ipIDs) > 0 {
+		trendRows, err := s.db.QueryContext(ctx, `
+			SELECT ip_id, date, actual_sent,
+			       COALESCE(actual_delivered, 0), COALESCE(actual_bounced, 0),
+			       COALESCE(bounce_rate, 0)
+			FROM mailing_ip_warmup_log
+			WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+			ORDER BY ip_id, date
+		`)
+		if err == nil {
+			defer trendRows.Close()
+			ipIndex := make(map[string]int)
+			for i, e := range ipList {
+				ipIndex[e.ID] = i
+			}
+			for trendRows.Next() {
+				var ipID, date string
+				var sent, delivered, bounced int64
+				var bounceRate float64
+				trendRows.Scan(&ipID, &date, &sent, &delivered, &bounced, &bounceRate)
+				if idx, ok := ipIndex[ipID]; ok {
+					ipList[idx].SevenDayTrend = append(ipList[idx].SevenDayTrend, map[string]interface{}{
+						"date": date, "sent": sent, "delivered": delivered,
+						"bounced": bounced, "bounce_rate": bounceRate,
+					})
+				}
+			}
+		}
+	}
+
+	// Pool-level summary
+	poolMap := make(map[string]*struct {
+		ActiveIPs    int     `json:"active_ips"`
+		TotalSent    int64   `json:"total_sent_today"`
+		AvgBounce    float64 `json:"avg_bounce_rate"`
+		bounceSum    float64
+	})
+	for _, e := range ipList {
+		pool := e.Pool
+		if pool == "" {
+			pool = "(unassigned)"
+		}
+		if _, ok := poolMap[pool]; !ok {
+			poolMap[pool] = &struct {
+				ActiveIPs    int     `json:"active_ips"`
+				TotalSent    int64   `json:"total_sent_today"`
+				AvgBounce    float64 `json:"avg_bounce_rate"`
+				bounceSum    float64
+			}{}
+		}
+		p := poolMap[pool]
+		p.ActiveIPs++
+		p.TotalSent += int64(e.TodaySent)
+		p.bounceSum += e.BounceRate
+	}
+
+	poolSummary := make([]map[string]interface{}, 0, len(poolMap))
+	for name, p := range poolMap {
+		avg := 0.0
+		if p.ActiveIPs > 0 {
+			avg = p.bounceSum / float64(p.ActiveIPs)
+		}
+		poolSummary = append(poolSummary, map[string]interface{}{
+			"pool":             name,
+			"active_ips":       p.ActiveIPs,
+			"total_sent_today": p.TotalSent,
+			"avg_bounce_rate":  avg,
+		})
+	}
+
+	if ipList == nil {
+		ipList = []ipEntry{}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"ips":           ipList,
+		"pool_summary":  poolSummary,
+		"total":         len(ipList),
+		"api_version":   "2.0",
+	})
+}
+
+func ispGroupFromDomain(domain string) string {
+	return isp.GroupFromDomain(domain)
 }
 
 // =============================================================================

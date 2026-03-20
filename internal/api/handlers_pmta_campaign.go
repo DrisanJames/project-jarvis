@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/lib/pq"
 )
@@ -1144,30 +1145,9 @@ func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, name
 	return ids
 }
 
-// domainToISPLookup maps an email domain to its ISP identifier.
-// Mirrors the canonical DomainToISP map in worker/advanced_throttle.go
-// to avoid a cross-package import.
-var ispDomainMap = map[string]string{
-	"gmail.com": "gmail", "googlemail.com": "gmail",
-	"outlook.com": "microsoft", "hotmail.com": "microsoft", "live.com": "microsoft", "msn.com": "microsoft",
-	"yahoo.com": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo", "yahoo.co.uk": "yahoo", "yahoo.co.jp": "yahoo", "yahoo.ca": "yahoo",
-	"aol.com":    "yahoo",
-	"icloud.com": "apple", "me.com": "apple", "mac.com": "apple",
-	"comcast.net": "comcast", "xfinity.com": "comcast",
-	"att.net": "att", "sbcglobal.net": "att", "bellsouth.net": "att",
-	"cox.net":     "cox",
-	"charter.net": "charter", "spectrum.net": "charter",
-	"verizon.net":    "verizon",
-	"protonmail.com": "protonmail", "proton.me": "protonmail",
-	"zoho.com": "zoho",
-}
-
+// domainToISPLookup delegates to the canonical isp.GroupFromDomain classifier.
 func domainToISPLookup(domain string) string {
-	d := strings.ToLower(domain)
-	if isp, ok := ispDomainMap[d]; ok {
-		return isp
-	}
-	return "other"
+	return isp.GroupFromDomain(domain)
 }
 
 // HandleTriggerSend manually enqueues and processes a scheduled campaign,

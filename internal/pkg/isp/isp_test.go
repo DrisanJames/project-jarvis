@@ -2,57 +2,150 @@ package isp
 
 import "testing"
 
+func TestGroupFromDomain(t *testing.T) {
+	tests := []struct {
+		domain string
+		want   string
+	}{
+		// Gmail
+		{"gmail.com", Gmail},
+		{"googlemail.com", Gmail},
+		{"GMAIL.COM", Gmail},
+
+		// Yahoo / Oath
+		{"yahoo.com", Yahoo},
+		{"ymail.com", Yahoo},
+		{"rocketmail.com", Yahoo},
+		{"yahoo.ca", Yahoo},
+		{"yahoo.co.uk", Yahoo},
+		{"yahoo.co.jp", Yahoo},
+		{"aol.com", Yahoo},
+		{"aim.com", Yahoo},
+
+		// Microsoft
+		{"outlook.com", Microsoft},
+		{"hotmail.com", Microsoft},
+		{"live.com", Microsoft},
+		{"msn.com", Microsoft},
+
+		// Apple
+		{"icloud.com", Apple},
+		{"me.com", Apple},
+		{"mac.com", Apple},
+
+		// AT&T
+		{"att.net", ATT},
+		{"sbcglobal.net", ATT},
+		{"bellsouth.net", ATT},
+
+		// Comcast
+		{"comcast.net", Comcast},
+		{"xfinity.com", Comcast},
+
+		// Charter / Spectrum / rr.com variants
+		{"charter.net", Charter},
+		{"spectrum.net", Charter},
+		{"rr.com", Charter},
+		{"roadrunner.com", Charter},
+		{"twc.com", Charter},
+		{"brighthouse.com", Charter},
+		{"nyc.rr.com", Charter},
+		{"austin.rr.com", Charter},
+		{"socal.rr.com", Charter},
+
+		// Cox
+		{"cox.net", Cox},
+
+		// Verizon
+		{"verizon.net", Verizon},
+
+		// Protonmail
+		{"protonmail.com", Protonmail},
+		{"proton.me", Protonmail},
+
+		// Zoho
+		{"zoho.com", Zoho},
+
+		// Other / unknown
+		{"example.com", Other},
+		{"company.org", Other},
+		{"", Other},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			got := GroupFromDomain(tt.domain)
+			if got != tt.want {
+				t.Errorf("GroupFromDomain(%q) = %q, want %q", tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGroup(t *testing.T) {
 	tests := []struct {
 		email string
 		want  string
 	}{
 		{"user@gmail.com", Gmail},
-		{"USER@GMAIL.COM", Gmail},
-		{"user@googlemail.com", Gmail},
-		{"user@yahoo.com", Yahoo},
-		{"user@ymail.com", Yahoo},
-		{"user@aol.com", Yahoo},
-		{"user@att.net", ATT},
+		{"user@Yahoo.Com", Yahoo},
+		{"user@nyc.rr.com", Charter},
 		{"user@outlook.com", Microsoft},
-		{"user@hotmail.com", Microsoft},
-		{"user@live.com", Microsoft},
-		{"user@msn.com", Microsoft},
-		{"user@icloud.com", Apple},
-		{"user@me.com", Apple},
-		{"user@mac.com", Apple},
-		{"user@comcast.net", Comcast},
-		{"user@xfinity.com", Comcast},
-		{"user@charter.net", Charter},
-		{"user@spectrum.net", Charter},
-		{"user@cox.net", Cox},
-		{"user@protonmail.com", Other},
-		{"user@example.com", Other},
-		{"invalid-no-at", Other},
+		{"noatsign", Other},
 		{"trailing@", Other},
 		{"", Other},
 	}
 
 	for _, tt := range tests {
-		got := Group(tt.email)
-		if got != tt.want {
-			t.Errorf("Group(%q) = %q, want %q", tt.email, got, tt.want)
-		}
+		t.Run(tt.email, func(t *testing.T) {
+			got := Group(tt.email)
+			if got != tt.want {
+				t.Errorf("Group(%q) = %q, want %q", tt.email, got, tt.want)
+			}
+		})
 	}
 }
 
-func TestGroupFromDomain(t *testing.T) {
-	if GroupFromDomain("Gmail.com") != Gmail {
-		t.Error("expected case-insensitive match")
+func TestPoolSuffix(t *testing.T) {
+	tests := []struct {
+		isp  string
+		want string
+	}{
+		{Gmail, "gmail"},
+		{Yahoo, "yahoo"},
+		{Microsoft, "msft"},
+		{Apple, "apple"},
+		{Comcast, "comcast"},
+		{ATT, "att"},
+		{Cox, "cox"},
+		{Charter, "charter"},
+		{Verizon, "general"},
+		{Protonmail, "general"},
+		{Zoho, "general"},
+		{Other, "general"},
+		{"unknown", "general"},
 	}
-	if GroupFromDomain(" gmail.com ") != Gmail {
-		t.Error("expected trimmed match")
+
+	for _, tt := range tests {
+		t.Run(tt.isp, func(t *testing.T) {
+			got := PoolSuffix(tt.isp)
+			if got != tt.want {
+				t.Errorf("PoolSuffix(%q) = %q, want %q", tt.isp, got, tt.want)
+			}
+		})
 	}
 }
 
 func TestKnownGroups(t *testing.T) {
 	groups := KnownGroups()
-	if len(groups) < 6 {
-		t.Errorf("expected at least 6 known groups, got %d", len(groups))
+	if len(groups) != 8 {
+		t.Errorf("KnownGroups() returned %d groups, want 8", len(groups))
+	}
+}
+
+func TestAllGroups(t *testing.T) {
+	groups := AllGroups()
+	if len(groups) != 11 {
+		t.Errorf("AllGroups() returned %d groups, want 11", len(groups))
 	}
 }
