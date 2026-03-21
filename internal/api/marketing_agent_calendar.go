@@ -1961,7 +1961,7 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 		SELECT id, wave_index, subject, preview_text, from_name, html_content
 		FROM mailing_wave_content_cache
 		WHERE brand_key = $1 AND used_at IS NULL AND version = $2
-		  AND ($3 = '' OR campaign_type = $3)
+		  AND ($3 = '' OR campaign_type = $3 OR campaign_type IS NULL)
 		ORDER BY generated_at DESC
 		LIMIT $4
 	`, brand.Key, mailing.GeneratorVersion, brand.CampaignType, numVariants)
