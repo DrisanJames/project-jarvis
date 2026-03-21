@@ -1953,6 +1953,56 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 
 	log.Printf("[EDITH-deploy] matched brand %q (type=%s) for campaign %q", brand.BrandName, brand.CampaignType, campaignName)
 
+	// --- Try pre-populated wave content cache first (fast path) ---
+	// This avoids expensive live AI generation + web scraping on every approval.
+	// Cache entries were generated from the brand's approved HTML template, preserving styling.
+	numVariants := 3
+	cacheRows, cacheErr := db.QueryContext(ctx, `
+		SELECT id, wave_index, subject, preview_text, from_name, html_content
+		FROM mailing_wave_content_cache
+		WHERE brand_key = $1 AND used_at IS NULL AND version = $2
+		  AND ($3 = '' OR campaign_type = $3)
+		ORDER BY generated_at DESC
+		LIMIT $4
+	`, brand.Key, mailing.GeneratorVersion, brand.CampaignType, numVariants)
+	if cacheErr == nil {
+		defer cacheRows.Close()
+		variantNames := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+		var cached []engine.ContentVariant
+		var cacheIDs []int
+		for cacheRows.Next() {
+			var cacheID, waveIdx int
+			var cSubj, cPreview, cFrom, cHTML string
+			if cacheRows.Scan(&cacheID, &waveIdx, &cSubj, &cPreview, &cFrom, &cHTML) == nil && strings.TrimSpace(cHTML) != "" {
+				cached = append(cached, engine.ContentVariant{
+					VariantName:  variantNames[len(cached)%len(variantNames)],
+					FromName:     fromName,
+					Subject:      cSubj,
+					PreviewText:  cPreview,
+					HTMLContent:  cHTML,
+					SplitPercent: 0,
+				})
+				cacheIDs = append(cacheIDs, cacheID)
+			}
+		}
+		if len(cached) >= 2 {
+			splitPct := 100.0 / float64(len(cached))
+			for i := range cached {
+				cached[i].SplitPercent = splitPct
+				if i == 0 {
+					cached[i].SplitPercent = 100.0 - splitPct*float64(len(cached)-1)
+				}
+			}
+			for _, cid := range cacheIDs {
+				db.ExecContext(ctx, `UPDATE mailing_wave_content_cache SET used_at = NOW() WHERE id = $1`, cid)
+			}
+			log.Printf("[EDITH-deploy] used %d cached variants for %s (brand: %s, type: %s)", len(cached), sendingDomain, brand.BrandName, brand.CampaignType)
+			return cached
+		}
+		log.Printf("[EDITH-deploy] cache miss for %s/%s (found %d, need ≥2) — falling back to live AI generation", brand.Key, brand.CampaignType, len(cached))
+	}
+
+	// --- Live AI generation (slow path) ---
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	if openaiKey == "" {
@@ -1978,7 +2028,6 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 		contentPool = brand.FallbackContent
 	}
 
-	numVariants := 3
 	req := mailing.WaveContentRequest{
 		SendingDomain: brand.SendingDomain,
 		BrandName:     brand.BrandName,
@@ -2003,11 +2052,11 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 		return singleVariant
 	}
 
-	variantNames := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+	variantNames2 := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
 	splitPct := 100.0 / float64(len(result.Variations))
 	variants := make([]engine.ContentVariant, 0, len(result.Variations))
 	for i, v := range result.Variations {
-		name := variantNames[i%len(variantNames)]
+		name := variantNames2[i%len(variantNames2)]
 		pct := splitPct
 		if i == 0 {
 			pct = 100.0 - splitPct*float64(len(result.Variations)-1)
@@ -2022,6 +2071,6 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 		})
 	}
 
-	log.Printf("[EDITH-deploy] generated %d content variants for %s (brand: %s)", len(variants), sendingDomain, brand.BrandName)
+	log.Printf("[EDITH-deploy] generated %d live AI variants for %s (brand: %s)", len(variants), sendingDomain, brand.BrandName)
 	return variants
 }
