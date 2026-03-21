@@ -172,18 +172,18 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		log.Printf("[Optizmo] error setting job %s to processing: %v", jobID, err)
 	}
 
-	hashes, fileLineCount, validMD5Count, nonMD5Count, dlErr := h.downloadOptizmoHashes(ctx, jobID, optizmoLink)
+	dlResult, dlErr := h.downloadOptizmoHashes(ctx, jobID, optizmoLink)
 	if dlErr != nil {
 		fail(fmt.Sprintf("download failed: %v", dlErr))
 		return
 	}
-	suppressedHashes := hashes
+	defer os.Remove(dlResult.HashFilePath)
 
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
-		fileLineCount, validMD5Count, nonMD5Count, jobID)
+		dlResult.FileLineCount, dlResult.ValidMD5Count, dlResult.NonMD5Count, jobID)
 
-	if len(suppressedHashes) == 0 {
+	if dlResult.FileLineCount == 0 {
 		h.db.ExecContext(ctx,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW()
@@ -195,7 +195,7 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		return
 	}
 
-	audienceCount, suppressedCount, matches, matchErr := matchAndSuppressSubscribers(ctx, h.db, offerID, suppressedHashes)
+	audienceCount, suppressedCount, matches, matchErr := matchAndSuppressFromHashFile(ctx, h.db, offerID, dlResult.HashFilePath)
 	if matchErr != nil {
 		fail(fmt.Sprintf("subscriber matching failed: %v", matchErr))
 		return
@@ -584,19 +584,29 @@ func (h *OptizmoHandlers) CheckOfferCompliance(ctx context.Context, offerID uuid
 // Optizmo Mailer API Download (package-level, shared by handlers and workers)
 // ---------------------------------------------------------------------------
 
+// optizmoDownloadResult holds the results of downloading and parsing an
+// Optizmo suppression file. Hashes are written to a temp file on disk
+// (one MD5 per line) to avoid loading 10M+ entries into Go memory.
+type optizmoDownloadResult struct {
+	HashFilePath string // temp file with one MD5 hash per line
+	FileLineCount int
+	ValidMD5Count int
+	NonMD5Count   int
+}
+
 // downloadOptizmoHashesPkg uses the Optizmo Mailer API (2-step flow) to download
-// suppression hashes. Extracts the MAK from the offer's optizmo_link, calls
-// the prepare-download endpoint to get a ZIP download link, downloads and
-// extracts the ZIP, then returns MD5 hashes.
-// This is a package-level function shared by OptizmoHandlers and OptizmoDeltaSyncWorker.
-func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink string) (map[string]bool, int, int, int, error) {
+// suppression hashes. Extracts the MAK, calls prepare-download, downloads the
+// ZIP, extracts, and writes MD5 hashes to a temp file on disk. The caller is
+// responsible for removing the temp file via os.Remove(result.HashFilePath).
+// Peak Go memory: ~32 KB (scanner buffer + batch buffer) regardless of file size.
+func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink string) (*optizmoDownloadResult, error) {
 	mak := extractScrubMAK(optizmoLink)
 	if mak == "" {
-		return nil, 0, 0, 0, fmt.Errorf("could not extract MAK from Optizmo link: %s", optizmoLink)
+		return nil, fmt.Errorf("could not extract MAK from Optizmo link: %s", optizmoLink)
 	}
 
 	if token == "" {
-		return nil, 0, 0, 0, fmt.Errorf("no Optizmo API token configured")
+		return nil, fmt.Errorf("no Optizmo API token configured")
 	}
 
 	log.Printf("[Optizmo] %s: using Mailer API flow (mak=%s...)", logPrefix, mak[:min(12, len(mak))])
@@ -610,24 +620,24 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 	client := &http.Client{Timeout: 3 * time.Minute}
 	prepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, prepareURL, nil)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("prepare request: %w", err)
+		return nil, fmt.Errorf("prepare request: %w", err)
 	}
 	prepReq.Header.Set("User-Agent", "IgnitePlatform/1.0 OptizmoScrub")
 	prepReq.Header.Set("Accept", "application/json")
 
 	prepResp, err := client.Do(prepReq)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("prepare-download request: %w", err)
+		return nil, fmt.Errorf("prepare-download request: %w", err)
 	}
 	defer prepResp.Body.Close()
 
 	prepBody, err := io.ReadAll(prepResp.Body)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("read prepare response: %w", err)
+		return nil, fmt.Errorf("read prepare response: %w", err)
 	}
 
 	if prepResp.StatusCode != http.StatusOK && prepResp.StatusCode != http.StatusAccepted {
-		return nil, 0, 0, 0, fmt.Errorf("prepare-download HTTP %d: %s", prepResp.StatusCode, string(prepBody[:min(512, len(prepBody))]))
+		return nil, fmt.Errorf("prepare-download HTTP %d: %s", prepResp.StatusCode, string(prepBody[:min(512, len(prepBody))]))
 	}
 
 	var prepResult struct {
@@ -637,21 +647,21 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 		Error        string `json:"error"`
 	}
 	if err := json.Unmarshal(prepBody, &prepResult); err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("parse prepare response: %w (body: %s)", err, string(prepBody[:min(256, len(prepBody))]))
+		return nil, fmt.Errorf("parse prepare response: %w (body: %s)", err, string(prepBody[:min(256, len(prepBody))]))
 	}
 
 	if prepResult.Result == "error" {
-		return nil, 0, 0, 0, fmt.Errorf("Optizmo API error: %s", prepResult.Error)
+		return nil, fmt.Errorf("Optizmo API error: %s", prepResult.Error)
 	}
 	if prepResult.DownloadLink == "" {
-		return nil, 0, 0, 0, fmt.Errorf("prepare-download returned empty download_link")
+		return nil, fmt.Errorf("prepare-download returned empty download_link")
 	}
 
 	log.Printf("[Optizmo] %s: prepare OK [%s], downloading ZIP...", logPrefix, prepResult.CampaignName)
 
 	tmpFile, err := os.CreateTemp("", "optizmo-scrub-*.zip")
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("create temp file: %w", err)
+		return nil, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
@@ -666,7 +676,7 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 			case <-time.After(pollInterval):
 			case <-ctx.Done():
 				tmpFile.Close()
-				return nil, 0, 0, 0, fmt.Errorf("context cancelled during download polling: %w", ctx.Err())
+				return nil, fmt.Errorf("context cancelled during download polling: %w", ctx.Err())
 			}
 			if pollInterval < 30*time.Second {
 				pollInterval += 5 * time.Second
@@ -692,7 +702,7 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 		if dlResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(dlResp.Body, 512))
 			dlResp.Body.Close()
-			return nil, 0, 0, 0, fmt.Errorf("download HTTP %d: %s", dlResp.StatusCode, string(body))
+			return nil, fmt.Errorf("download HTTP %d: %s", dlResp.StatusCode, string(body))
 		}
 
 		tmpFile.Seek(0, 0)
@@ -712,17 +722,17 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 	tmpFile.Close()
 
 	if !downloadSuccess {
-		return nil, 0, 0, 0, fmt.Errorf("download failed after %d attempts", maxAttempts)
+		return nil, fmt.Errorf("download failed after %d attempts", maxAttempts)
 	}
 
 	zipReader, err := zip.OpenReader(tmpPath)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("open zip: %w", err)
+		return nil, fmt.Errorf("open zip: %w", err)
 	}
 	defer zipReader.Close()
 
 	if len(zipReader.File) == 0 {
-		return nil, 0, 0, 0, fmt.Errorf("zip archive is empty")
+		return nil, fmt.Errorf("zip archive is empty")
 	}
 
 	var suppressionFile *zip.File
@@ -746,12 +756,19 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 
 	rc, err := suppressionFile.Open()
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("open zip entry %s: %w", suppressionFile.Name, err)
+		return nil, fmt.Errorf("open zip entry %s: %w", suppressionFile.Name, err)
 	}
 	defer rc.Close()
 
-	hashes := make(map[string]bool)
-	var fileLineCount, validMD5Count, nonMD5Count int
+	// Write hashes to a temp file on disk instead of a Go map.
+	// For a 10M-entry file this uses ~330 MB on disk but only ~32 KB in RAM.
+	hashFile, err := os.CreateTemp("", "optizmo-hashes-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create hash temp file: %w", err)
+	}
+	hashWriter := bufio.NewWriterSize(hashFile, 256*1024)
+
+	result := &optizmoDownloadResult{HashFilePath: hashFile.Name()}
 	var rawSamples []string
 
 	scanner := bufio.NewScanner(rc)
@@ -762,28 +779,40 @@ func downloadOptizmoHashesPkg(ctx context.Context, token, logPrefix, optizmoLink
 			continue
 		}
 		lower := strings.ToLower(line)
-		fileLineCount++
+		result.FileLineCount++
+
+		var hash string
 		if isHexMD5(lower) {
-			validMD5Count++
-			hashes[lower] = true
+			result.ValidMD5Count++
+			hash = lower
 		} else {
-			nonMD5Count++
-			cleaned := extractEmail(lower)
-			hashes[md5Hash(cleaned)] = true
+			result.NonMD5Count++
+			hash = md5Hash(extractEmail(lower))
 		}
+		hashWriter.WriteString(hash)
+		hashWriter.WriteByte('\n')
+
 		if len(rawSamples) < 3 {
 			rawSamples = append(rawSamples, fmt.Sprintf("%q", line))
 		}
 	}
 
-	log.Printf("[Optizmo] %s: parsed %d entries (%d valid MD5, %d non-MD5)", logPrefix, fileLineCount, validMD5Count, nonMD5Count)
+	if err := hashWriter.Flush(); err != nil {
+		hashFile.Close()
+		os.Remove(hashFile.Name())
+		return nil, fmt.Errorf("flush hash file: %w", err)
+	}
+	hashFile.Close()
+
+	log.Printf("[Optizmo] %s: parsed %d entries (%d valid MD5, %d non-MD5) → %s",
+		logPrefix, result.FileLineCount, result.ValidMD5Count, result.NonMD5Count, result.HashFilePath)
 	log.Printf("[Optizmo] %s: RAW first entries: %s", logPrefix, strings.Join(rawSamples, " | "))
 
-	return hashes, fileLineCount, validMD5Count, nonMD5Count, nil
+	return result, nil
 }
 
 // downloadOptizmoHashes delegates to the package-level function.
-func (h *OptizmoHandlers) downloadOptizmoHashes(ctx context.Context, jobID, optizmoLink string) (map[string]bool, int, int, int, error) {
+func (h *OptizmoHandlers) downloadOptizmoHashes(ctx context.Context, jobID, optizmoLink string) (*optizmoDownloadResult, error) {
 	return downloadOptizmoHashesPkg(ctx, h.optizmoToken, "job "+jobID, optizmoLink)
 }
 
@@ -903,6 +932,132 @@ func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string
 
 	log.Printf("[Optizmo] DB-side matching: %d audience, %d suppressed (temp table with %d hashes)",
 		audienceCount, suppressedCount, len(hashes))
+
+	return audienceCount, int(suppressedCount), matches, nil
+}
+
+// matchAndSuppressFromHashFile is the streaming variant of matchAndSuppressSubscribers.
+// Instead of accepting a Go map, it reads hashes from a file on disk (one MD5
+// per line) and streams them into a Postgres temp table in batches. Peak Go
+// memory: ~32 KB regardless of file size. This is critical for large Optizmo
+// files (10M+ entries, 327 MB) that would OOM a 1 GB container if loaded into
+// a Go map.
+func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hashFilePath string) (int, int, []optizmoMatch, error) {
+	f, err := os.Open(hashFilePath)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("open hash file: %w", err)
+	}
+	defer f.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx,
+		`CREATE TEMP TABLE _optizmo_hashes (hash VARCHAR(32) NOT NULL) ON COMMIT DROP`)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("create temp table: %w", err)
+	}
+
+	// Stream from file into temp table, 1000 hashes per batch INSERT.
+	const batchSize = 1000
+	batch := make([]string, 0, batchSize)
+	var hashCount int
+
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		query := "INSERT INTO _optizmo_hashes (hash) VALUES "
+		args := make([]interface{}, len(batch))
+		for i, h := range batch {
+			if i > 0 {
+				query += ","
+			}
+			query += fmt.Sprintf("($%d)", i+1)
+			args[i] = h
+		}
+		_, err := tx.ExecContext(ctx, query, args...)
+		batch = batch[:0]
+		return err
+	}
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		h := strings.TrimSpace(scanner.Text())
+		if h == "" {
+			continue
+		}
+		batch = append(batch, h)
+		hashCount++
+		if len(batch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				return 0, 0, nil, fmt.Errorf("bulk insert hashes: %w", err)
+			}
+		}
+	}
+	if err := flushBatch(); err != nil {
+		return 0, 0, nil, fmt.Errorf("bulk insert hashes (final): %w", err)
+	}
+
+	log.Printf("[Optizmo] streamed %d hashes into temp table from %s", hashCount, hashFilePath)
+
+	_, err = tx.ExecContext(ctx, `CREATE INDEX ON _optizmo_hashes (hash)`)
+	if err != nil {
+		log.Printf("[Optizmo] warning: could not index temp table: %v", err)
+	}
+
+	var audienceCount int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_subscribers
+		 WHERE organization_id = $1 AND status = 'confirmed'`, defaultOrgID,
+	).Scan(&audienceCount)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("count audience: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO mailing_offer_suppressions
+			(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+		 SELECT $1, $2, s.id, MD5(LOWER(TRIM(s.email))), 'optizmo', 'optizmo_scrub', NOW()
+		 FROM mailing_subscribers s
+		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
+		 WHERE s.organization_id = $1 AND s.status = 'confirmed'
+		 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
+		defaultOrgID, offerID)
+	if err != nil {
+		return audienceCount, 0, nil, fmt.Errorf("bulk suppress: %w", err)
+	}
+	suppressedCount, _ := res.RowsAffected()
+
+	var matches []optizmoMatch
+	matchRows, err := tx.QueryContext(ctx,
+		`SELECT s.id, LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email)))
+		 FROM mailing_subscribers s
+		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
+		 WHERE s.organization_id = $1 AND s.status = 'confirmed'`,
+		defaultOrgID)
+	if err != nil {
+		log.Printf("[Optizmo] warning: could not retrieve match details: %v", err)
+	} else {
+		defer matchRows.Close()
+		for matchRows.Next() {
+			var m optizmoMatch
+			if err := matchRows.Scan(&m.ID, &m.Email, &m.Hash); err != nil {
+				continue
+			}
+			matches = append(matches, m)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return audienceCount, 0, nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	log.Printf("[Optizmo] DB-side matching (streamed): %d audience, %d suppressed (%d hashes from file)",
+		audienceCount, suppressedCount, hashCount)
 
 	return audienceCount, int(suppressedCount), matches, nil
 }

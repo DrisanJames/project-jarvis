@@ -217,27 +217,33 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	logPrefix := fmt.Sprintf("sync %s [%s]", offer.Name, jobID[:8])
 	log.Printf("[DeltaSync] %s: starting download from %s", logPrefix, offer.OptizmoLink)
 
-	hashes, fileLineCount, validMD5Count, nonMD5Count, dlErr := downloadOptizmoHashesPkg(ctx, w.optizmoToken, logPrefix, offer.OptizmoLink)
+	dlResult, dlErr := downloadOptizmoHashesPkg(ctx, w.optizmoToken, logPrefix, offer.OptizmoLink)
 	if dlErr != nil {
 		errMsg := fmt.Sprintf("download failed: %v", dlErr)
 		log.Printf("[DeltaSync] %s: %s", logPrefix, errMsg)
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer dbCancel()
+		var flc, vmd5, nmd5 int
+		if dlResult != nil {
+			flc, vmd5, nmd5 = dlResult.FileLineCount, dlResult.ValidMD5Count, dlResult.NonMD5Count
+			os.Remove(dlResult.HashFilePath)
+		}
 		w.db.ExecContext(dbCtx,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'failed', error_message = $1, completed_at = NOW(),
 			     file_count = $2, valid_md5_count = $3, non_md5_count = $4
 			 WHERE id = $5`,
-			errMsg, fileLineCount, validMD5Count, nonMD5Count, jobID)
+			errMsg, flc, vmd5, nmd5, jobID)
 		w.setOfferSyncError(dbCtx, offer.ID, errMsg)
 		return
 	}
+	defer os.Remove(dlResult.HashFilePath)
 
 	w.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
-		fileLineCount, validMD5Count, nonMD5Count, jobID)
+		dlResult.FileLineCount, dlResult.ValidMD5Count, dlResult.NonMD5Count, jobID)
 
-	if len(hashes) == 0 {
+	if dlResult.FileLineCount == 0 {
 		w.db.ExecContext(ctx,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW()
@@ -247,7 +253,7 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 		return
 	}
 
-	audienceCount, suppressedCount, _, matchErr := matchAndSuppressSubscribers(ctx, w.db, offer.ID, hashes)
+	audienceCount, suppressedCount, _, matchErr := matchAndSuppressFromHashFile(ctx, w.db, offer.ID, dlResult.HashFilePath)
 	if matchErr != nil {
 		errMsg := fmt.Sprintf("subscriber matching failed: %v", matchErr)
 		log.Printf("[DeltaSync] %s: %s", logPrefix, errMsg)
@@ -270,7 +276,7 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	w.updateOfferSyncSuccess(ctx, offer.ID)
 
 	log.Printf("[DeltaSync] %s: COMPLETED — %d file entries, %d audience, %d suppressed",
-		logPrefix, fileLineCount, audienceCount, suppressedCount)
+		logPrefix, dlResult.FileLineCount, audienceCount, suppressedCount)
 }
 
 func (w *OptizmoDeltaSyncWorker) setOfferSyncError(ctx context.Context, offerID, errMsg string) {
