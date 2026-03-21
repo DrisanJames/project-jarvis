@@ -495,7 +495,7 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		return
 	}
 
-	audience, audErr := planPMTAAudience(ctx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher)
+	audience, audErr := planPMTAAudience(ctx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher, a.pmtaSvc.offerSuppMgr)
 	if audErr != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "audience planning failed: " + audErr.Error()})
 		return

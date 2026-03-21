@@ -25,6 +25,8 @@ import (
 type OptizmoHandlers struct {
 	db           *sql.DB
 	optizmoToken string
+	s3Client     *SuppressionS3Client
+	suppMgr      *OfferSuppressionManager
 }
 
 // NewOptizmoHandlers creates handlers with the Optizmo Mailer API token.
@@ -34,6 +36,25 @@ func NewOptizmoHandlers(db *sql.DB) *OptizmoHandlers {
 		token = "nOC0do1yMRfevcVXdikjTQOhOpyGPlx5"
 	}
 	return &OptizmoHandlers{db: db, optizmoToken: token}
+}
+
+// SetS3Client sets the S3 client for suppression file storage.
+func (h *OptizmoHandlers) SetS3Client(s3Client *SuppressionS3Client) {
+	h.s3Client = s3Client
+}
+
+// SetSuppressionManager sets the offer suppression manager for Bloom updates.
+func (h *OptizmoHandlers) SetSuppressionManager(mgr *OfferSuppressionManager) {
+	h.suppMgr = mgr
+}
+
+// updateProgress writes a progress percentage and message to the scrub job.
+func (h *OptizmoHandlers) updateProgress(jobID string, pct int, msg string) {
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dbCancel()
+	h.db.ExecContext(dbCtx,
+		`UPDATE mailing_optizmo_scrub_jobs SET progress_pct = $1, progress_message = $2 WHERE id = $3`,
+		pct, msg, jobID)
 }
 
 type optizmoMatch struct {
@@ -56,6 +77,10 @@ type ScrubJobResponse struct {
 	Status          string     `json:"status"`
 	ErrorMessage    string     `json:"error_message,omitempty"`
 	ScrubType       string     `json:"scrub_type"`
+	ProgressPct     int        `json:"progress_pct"`
+	ProgressMessage string     `json:"progress_message,omitempty"`
+	S3HashKey       string     `json:"s3_hash_key,omitempty"`
+	S3BloomKey      string     `json:"s3_bloom_key,omitempty"`
 	RequestedAt     time.Time  `json:"requested_at"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
@@ -172,6 +197,8 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		log.Printf("[Optizmo] error setting job %s to processing: %v", jobID, err)
 	}
 
+	h.updateProgress(jobID, 5, "Downloading suppression file from Optizmo…")
+
 	dlResult, dlErr := h.downloadOptizmoHashes(ctx, jobID, optizmoLink)
 	if dlErr != nil {
 		fail(fmt.Sprintf("download failed: %v", dlErr))
@@ -179,14 +206,33 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 	}
 	defer os.Remove(dlResult.HashFilePath)
 
+	h.updateProgress(jobID, 30, fmt.Sprintf("Downloaded %d entries, uploading to S3…", dlResult.FileLineCount))
+
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
 		dlResult.FileLineCount, dlResult.ValidMD5Count, dlResult.NonMD5Count, jobID)
 
+	// Upload hashes to S3 for persistent storage + Bloom rebuild
+	var s3HashKey string
+	if h.s3Client != nil {
+		hashFile, openErr := os.Open(dlResult.HashFilePath)
+		if openErr == nil {
+			key, _, uploadErr := h.s3Client.UploadHashFile(ctx, offerID, hashFile)
+			hashFile.Close()
+			if uploadErr != nil {
+				log.Printf("[Optizmo] job %s: S3 hash upload failed (non-fatal): %v", jobID, uploadErr)
+			} else {
+				s3HashKey = key
+				h.db.ExecContext(ctx,
+					`UPDATE mailing_optizmo_scrub_jobs SET s3_hash_key = $1 WHERE id = $2`, s3HashKey, jobID)
+			}
+		}
+	}
+
 	if dlResult.FileLineCount == 0 {
 		h.db.ExecContext(ctx,
 			`UPDATE mailing_optizmo_scrub_jobs
-			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW()
+			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW(), progress_pct = 100, progress_message = 'Complete — empty list'
 			 WHERE id = $1`, jobID)
 		h.db.ExecContext(ctx,
 			`UPDATE mailing_offers SET optizmo_status = 'scrubbed', optizmo_last_scrubbed_at = NOW(), updated_at = NOW()
@@ -195,20 +241,37 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		return
 	}
 
+	h.updateProgress(jobID, 50, "Matching subscribers against suppression hashes…")
+
 	audienceCount, suppressedCount, matches, matchErr := matchAndSuppressFromHashFile(ctx, h.db, offerID, dlResult.HashFilePath)
 	if matchErr != nil {
 		fail(fmt.Sprintf("subscriber matching failed: %v", matchErr))
 		return
 	}
 
+	h.updateProgress(jobID, 80, fmt.Sprintf("Matched %d suppressions, building Bloom filter…", suppressedCount))
+
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET audience_count = $1 WHERE id = $2`,
 		audienceCount, jobID)
 
+	// Rebuild Bloom filter from the S3 hash file
+	var s3BloomKey string
+	if h.suppMgr != nil && s3HashKey != "" {
+		if err := h.suppMgr.RebuildBloomFromS3Hashes(ctx, offerID); err != nil {
+			log.Printf("[Optizmo] job %s: Bloom rebuild failed (non-fatal): %v", jobID, err)
+		} else {
+			s3BloomKey = h.s3Client.bloomKey(offerID)
+			h.db.ExecContext(ctx,
+				`UPDATE mailing_optizmo_scrub_jobs SET s3_bloom_key = $1 WHERE id = $2`, s3BloomKey, jobID)
+		}
+	}
+
 	now := time.Now()
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs
-		 SET status = 'completed', suppressed_count = $1, completed_at = $2
+		 SET status = 'completed', suppressed_count = $1, completed_at = $2,
+		     progress_pct = 100, progress_message = 'Complete'
 		 WHERE id = $3`, suppressedCount, now, jobID)
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_offers
@@ -217,8 +280,8 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 
 	h.createSuppressionListFromScrub(ctx, offerID, offerName, matches)
 
-	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d suppressed",
-		jobID, audienceCount, suppressedCount)
+	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d suppressed, s3_hash=%s, s3_bloom=%s",
+		jobID, audienceCount, suppressedCount, s3HashKey, s3BloomKey)
 }
 
 // createSuppressionListFromScrub creates/updates a named suppression list
@@ -518,6 +581,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 		`SELECT id, COALESCE(file_count,0), COALESCE(valid_md5_count,0), COALESCE(non_md5_count,0),
 		        audience_count, suppressed_count, status,
 		        COALESCE(error_message,''), COALESCE(scrub_type,'manual'),
+		        COALESCE(progress_pct,0), COALESCE(progress_message,''),
+		        COALESCE(s3_hash_key,''), COALESCE(s3_bloom_key,''),
 		        requested_at, started_at, completed_at
 		 FROM mailing_optizmo_scrub_jobs
 		 WHERE offer_id = $1
@@ -537,6 +602,8 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 		if err := rows.Scan(&j.ID, &j.FileCount, &j.ValidMD5Count, &j.NonMD5Count,
 			&j.AudienceCount, &j.SuppressedCount, &j.Status,
 			&j.ErrorMessage, &j.ScrubType,
+			&j.ProgressPct, &j.ProgressMessage,
+			&j.S3HashKey, &j.S3BloomKey,
 			&j.RequestedAt, &startedAt, &completedAt); err != nil {
 			log.Printf("[Optizmo] error scanning scrub job row: %v", err)
 			continue

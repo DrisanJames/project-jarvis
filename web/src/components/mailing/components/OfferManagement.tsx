@@ -39,6 +39,7 @@ interface Offer {
   everflow_creative_id: string | null;
   tracking_link_template: string | null;
   optizmo_link: string | null;
+  offer_optout_link: string | null;
   web_property: string | null;
   landing_page_slug: string | null;
   landing_page_url: string | null;
@@ -146,6 +147,10 @@ interface OptizmoJob {
   audience_count: number;
   suppressed_count: number;
   scrub_type?: string;
+  progress_pct?: number;
+  progress_message?: string;
+  s3_hash_key?: string;
+  s3_bloom_key?: string;
 }
 
 type DetailTab = 'overview' | 'subjects' | 'from-names' | 'creatives' | 'assets' | 'landing-page' | 'compliance' | 'performance' | 'deploy';
@@ -641,6 +646,7 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
           everflow_creative_id: form.everflow_creative_id,
           tracking_link_template: form.tracking_link_template,
           optizmo_link: form.optizmo_link,
+          offer_optout_link: form.offer_optout_link,
           web_property: form.web_property,
           landing_page_slug: form.landing_page_slug,
           payout: form.payout,
@@ -694,6 +700,7 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
         {field('Everflow Creative ID', 'everflow_creative_id')}
         {field('Tracking Link Template', 'tracking_link_template')}
         {field('Optizmo Link', 'optizmo_link')}
+        {field('Offer Opt-Out Link', 'offer_optout_link')}
         {field('Landing Page Slug', 'landing_page_slug')}
         {field('Payout', 'payout', 'number')}
         <div style={{ marginBottom: 10 }}>
@@ -1739,6 +1746,23 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
 // TAB: COMPLIANCE (OPTIZMO)
 // ═══════════════════════════════════════════════════════════════════════════
 
+const ProgressBar: React.FC<{ pct: number; message: string }> = ({ pct, message }) => (
+  <div style={{ marginTop: 8 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>{message || 'Processing…'}</span>
+      <span style={{ fontSize: 11, color: '#818cf8', fontWeight: 600 }}>{pct}%</span>
+    </div>
+    <div style={{ height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+      <div style={{
+        height: '100%', borderRadius: 3,
+        background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+        width: `${Math.min(pct, 100)}%`,
+        transition: 'width 0.5s ease',
+      }} />
+    </div>
+  </div>
+);
+
 const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: OptizmoStatus | null; onRefresh: () => void }> = ({ offerId, offer, optizmoStatus, onRefresh }) => {
   const { addToast } = useToast();
   const [requesting, setRequesting] = useState(false);
@@ -1749,12 +1773,15 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
   const [syncToggling, setSyncToggling] = useState(false);
   const [syncTriggering, setSyncTriggering] = useState(false);
 
+  const activeJob = optizmoStatus?.jobs?.find(j => j.status === 'processing' || j.status === 'pending');
+
   useEffect(() => {
     const scrubStatus = optizmoStatus?.optizmo_status || 'not_scrubbed';
-    if (scrubStatus !== 'scrub_pending') return;
-    const interval = setInterval(onRefresh, 5000);
+    const hasActiveJob = !!activeJob;
+    if (scrubStatus !== 'scrub_pending' && !hasActiveJob) return;
+    const interval = setInterval(onRefresh, 3000);
     return () => clearInterval(interval);
-  }, [optizmoStatus?.optizmo_status, onRefresh]);
+  }, [optizmoStatus?.optizmo_status, activeJob, onRefresh]);
 
   const requestScrub = async () => {
     setRequesting(true);
@@ -1762,7 +1789,10 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
       const res = await fetch(`${API}/offers/${offerId}/optizmo/request-scrub`, {
         method: 'POST', credentials: 'include',
       });
-      if (res.ok) onRefresh();
+      if (res.ok) {
+        addToast({ type: 'success', title: 'Scrub initiated', message: 'This runs in the background — progress will update automatically' });
+        onRefresh();
+      }
       else { addToast({ type: 'error', title: 'Failed to request scrub' }); }
     } catch {
       addToast({ type: 'error', title: 'Failed to request scrub', message: 'Network error' });
@@ -1872,25 +1902,41 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
               {requesting ? 'Requesting…' : isFailed ? 'Retry Scrub' : 'Request Scrub'}
             </button>
           )}
-          {isPending && (
-            <span style={{ fontSize: 12, color: '#f59e0b', alignSelf: 'center' }}>Processing…</span>
-          )}
         </div>
       </div>
 
-      {scrubStatus === 'scrubbed' && (
+      {/* Live progress for active background job */}
+      {activeJob && (
+        <div style={{ padding: 16, marginBottom: 16, background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6366f1', animation: 'pulse 1.5s infinite' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#c7d2fe' }}>
+              {activeJob.scrub_type === 'nightly_sync' ? 'Nightly Sync' : 'Scrub'} in Progress
+            </span>
+          </div>
+          <ProgressBar pct={activeJob.progress_pct ?? 0} message={activeJob.progress_message || 'Initializing…'} />
+          {(activeJob.file_count ?? 0) > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>
+              {(activeJob.file_count ?? 0).toLocaleString()} entries downloaded
+              {(activeJob.audience_count ?? 0) > 0 && ` · ${(activeJob.audience_count ?? 0).toLocaleString()} audience scanned`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {scrubStatus === 'scrubbed' && !activeJob && (
         <div style={{ padding: 12, background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 8, fontSize: 13, color: '#22c55e', marginBottom: 16 }}>
           This offer has been scrubbed and is compliant for deployment
         </div>
       )}
 
-      {scrubStatus === 'not_scrubbed' && (
+      {scrubStatus === 'not_scrubbed' && !activeJob && (
         <div style={{ padding: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, fontSize: 13, color: '#f59e0b', marginBottom: 16 }}>
           This offer has not been scrubbed — request a scrub before deploying
         </div>
       )}
 
-      {isFailed && (
+      {isFailed && !activeJob && (
         <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
           Scrub failed — {optizmoStatus?.jobs?.[0]?.error_message || 'check the Optizmo link and try again'}
         </div>
@@ -1927,8 +1973,8 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                   try {
                     const res = await fetch(`${API}/offers/${offerId}/optizmo/trigger-sync`, { method: 'POST', credentials: 'include' });
                     if (res.ok) {
-                      addToast({ type: 'success', title: 'Sync triggered', message: 'Check scrub history for results' });
-                      setTimeout(onRefresh, 3000);
+                      addToast({ type: 'success', title: 'Sync triggered', message: 'Running in background — progress updates automatically' });
+                      setTimeout(onRefresh, 2000);
                     } else {
                       const d = await res.json().catch(() => ({}));
                       addToast({ type: 'error', title: 'Sync failed', message: (d as { error?: string }).error || res.statusText });
@@ -1980,7 +2026,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
           {!offer?.optizmo_link
             ? 'Configure an Optizmo link to enable nightly sync'
             : offer?.suppression_sync_enabled
-              ? 'Suppression file will be downloaded nightly (10PM–2AM MST) and new hashes upserted'
+              ? 'Suppression file will be downloaded nightly (10PM–2AM MST), uploaded to S3, and Bloom filter rebuilt'
               : 'Enable to automatically sync Optizmo suppressions each night'
           }
         </div>
@@ -2004,20 +2050,20 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
               <tr>
                 <th>Type</th>
                 <th>Status</th>
+                <th>Progress</th>
                 <th>Requested</th>
                 <th>Completed</th>
                 <th>File Entries</th>
-                <th>Valid MD5</th>
-                <th>Audience Scanned</th>
+                <th>Audience</th>
                 <th>Suppressed</th>
+                <th>S3</th>
                 <th>Error</th>
               </tr>
             </thead>
             <tbody>
               {optizmoStatus.jobs.map(j => {
-                const validMD5 = j.valid_md5_count ?? 0;
-                const nonMD5 = j.non_md5_count ?? 0;
-                const hasInvalid = nonMD5 > 0;
+                const isActive = j.status === 'processing' || j.status === 'pending';
+                const hasS3 = !!(j.s3_hash_key || j.s3_bloom_key);
                 return (
                   <tr key={j.id}>
                     <td>
@@ -2030,14 +2076,30 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                       </span>
                     </td>
                     <td><span className={statusBadgeClass(j.status)}>{j.status}</span></td>
+                    <td>
+                      {isActive ? (
+                        <div style={{ minWidth: 80 }}>
+                          <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', borderRadius: 2, background: '#6366f1', width: `${j.progress_pct ?? 0}%`, transition: 'width 0.5s' }} />
+                          </div>
+                          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)' }}>{j.progress_pct ?? 0}%</span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{j.status === 'completed' ? '100%' : '—'}</span>
+                      )}
+                    </td>
                     <td>{new Date(j.requested_at).toLocaleDateString()}</td>
                     <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
                     <td>{(j.file_count ?? 0).toLocaleString()}</td>
-                    <td style={{ color: hasInvalid ? '#ef4444' : '#22c55e', fontWeight: hasInvalid ? 600 : 400 }}>
-                      {validMD5.toLocaleString()}{hasInvalid && <span style={{ color: '#ef4444' }}> / {nonMD5.toLocaleString()} invalid</span>}
-                    </td>
                     <td>{(j.audience_count ?? 0).toLocaleString()}</td>
-                    <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                    <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : (j.status === 'completed' ? '#ef4444' : 'rgba(255,255,255,0.35)'), fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                    <td>
+                      {hasS3 ? (
+                        <span style={{ fontSize: 10, color: '#22c55e' }} title={[j.s3_hash_key, j.s3_bloom_key].filter(Boolean).join('\n')}>&#x2713; S3</span>
+                      ) : (
+                        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>—</span>
+                      )}
+                    </td>
                     <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
                   </tr>
                 );
@@ -2046,6 +2108,13 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
           </table>
         </div>
       )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 };
@@ -2200,7 +2269,7 @@ const NewOfferModal: React.FC<{
   const [form, setForm] = useState({
     name: '', vertical_id: '', brand_name: '', web_property: '',
     everflow_offer_id: '', everflow_creative_id: '', tracking_link_template: '',
-    optizmo_link: '', payout: '' as string, payout_type: 'cpa',
+    optizmo_link: '', offer_optout_link: '', payout: '' as string, payout_type: 'cpa',
     original_html_creative: '', status: 'draft',
   });
   const [submitting, setSubmitting] = useState(false);
@@ -2304,6 +2373,7 @@ const NewOfferModal: React.FC<{
           {field('Everflow Creative ID', 'everflow_creative_id')}
           {field('Tracking Link Template', 'tracking_link_template')}
           {field('Optizmo Link', 'optizmo_link')}
+          {field('Offer Opt-Out Link', 'offer_optout_link')}
           {field('Payout', 'payout', { type: 'number' })}
           <div>
             <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 3 }}>Payout Type</label>

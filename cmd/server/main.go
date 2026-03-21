@@ -210,6 +210,19 @@ func main() {
 				}
 			}
 
+			// Initialize suppression S3 client for offer-level Bloom filters
+			{
+				suppRegion := "us-west-2"
+				suppCfg, suppErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(suppRegion))
+				if suppErr != nil {
+					log.Printf("WARNING: Failed to load AWS config for suppression S3: %v", suppErr)
+				} else {
+					suppS3Client := s3.NewFromConfig(suppCfg)
+					server.SetSuppressionS3Client(api.NewSuppressionS3Client(suppS3Client))
+					log.Printf("Suppression S3 initialized: bucket=jarvis-offer-suppressions, region=%s", suppRegion)
+				}
+			}
+
 			// Initialize Redis BEFORE mailing routes so throttle routes register inside the group
 			var redisClient *redis.Client
 			redisURL := os.Getenv("REDIS_URL")
@@ -265,6 +278,17 @@ func main() {
 			server.SetShutdownContext(ctx)
 			server.SetMailingDB(mailingDB)
 			log.Println("Mailing Platform routes registered")
+
+			// Load offer suppression Bloom filters from S3 at startup.
+			if server.OfferSuppMgr != nil {
+				go func() {
+					loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer loadCancel()
+					if err := server.OfferSuppMgr.LoadActiveOffers(loadCtx); err != nil {
+						log.Printf("WARNING: Bloom filter startup load failed: %v — falling back to DB queries", err)
+					}
+				}()
+			}
 
 			if dbReachable {
 
@@ -369,6 +393,12 @@ func main() {
 						}
 					})
 					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v)", perIPEnabled)
+				}
+
+				// Wire offer suppression Bloom checker to send worker
+				if server.OfferSuppMgr != nil {
+					sendWorkerPool.SetOfferSuppressionChecker(server.OfferSuppMgr)
+					log.Println("Offer suppression Bloom filter wired to send worker pool")
 				}
 
 				sendWorkerPool.Start()
@@ -1877,6 +1907,10 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_scrub_jobs_valid_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS valid_md5_count INT DEFAULT 0`},
 		{"add_scrub_jobs_non_md5_count", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS non_md5_count INT DEFAULT 0`},
 		{"add_scrub_jobs_scrub_type", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS scrub_type VARCHAR(20) DEFAULT 'manual'`},
+		{"add_scrub_jobs_progress", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS progress_pct INT DEFAULT 0`},
+		{"add_scrub_jobs_progress_msg", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS progress_message TEXT DEFAULT ''`},
+		{"add_scrub_jobs_s3_hash_key", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS s3_hash_key TEXT DEFAULT ''`},
+		{"add_scrub_jobs_s3_bloom_key", `ALTER TABLE mailing_optizmo_scrub_jobs ADD COLUMN IF NOT EXISTS s3_bloom_key TEXT DEFAULT ''`},
 
 		{"add_offers_suppression_sync_enabled", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS suppression_sync_enabled BOOLEAN DEFAULT FALSE`},
 		{"add_offers_last_sync_at", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS last_suppression_sync_at TIMESTAMPTZ`},
@@ -2204,6 +2238,9 @@ END $$`},
 		// Approved ad copy and taglines storage for offers
 		{"add_offers_approved_ad_copy", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS approved_ad_copy TEXT DEFAULT ''`},
 		{"add_offers_approved_taglines", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS approved_taglines TEXT DEFAULT ''`},
+
+		// Offer-level opt-out link (advertiser unsub, distinct from Optizmo suppression link)
+		{"add_offers_optout_link", `ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS offer_optout_link TEXT DEFAULT ''`},
 
 		// Seed image domains for each sending domain (idempotent via ON CONFLICT)
 		{"seed_img_domain_projectjarvis", `INSERT INTO mailing_image_domains (id, org_id, domain, verified, ssl_status, s3_bucket, created_at, updated_at)

@@ -53,6 +53,10 @@ type Server struct {
 	shutdownCtx context.Context
 	// Optizmo Delta Sync Worker — stored for graceful shutdown
 	deltaSyncWorker *OptizmoDeltaSyncWorker
+	// S3 client for offer suppression files (separate from image CDN)
+	suppressionS3 *SuppressionS3Client
+	// Offer suppression Bloom filter manager — O(1) send-time checks
+	OfferSuppMgr *OfferSuppressionManager
 }
 
 // NewServer creates a new API server

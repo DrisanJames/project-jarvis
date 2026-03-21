@@ -33,6 +33,7 @@ type PMTACampaignService struct {
 	globalHub    *engine.GlobalSuppressionHub
 	executor     *engine.Executor
 	colCache     *campaignColumnCache
+	offerSuppMgr *OfferSuppressionManager
 
 	// preflightFn overrides preflightDeployCheck for testing (DNS lookups
 	// cannot be mocked via sqlmock). Nil means use the real implementation.
@@ -69,6 +70,10 @@ func NewPMTACampaignService(
 		suppMatcher:  NewSuppressionMatcher(),
 		colCache:     probeCampaignColumns(ctx, db),
 	}
+}
+
+func (s *PMTACampaignService) SetOfferSuppressionManager(mgr *OfferSuppressionManager) {
+	s.offerSuppMgr = mgr
 }
 
 func (s *PMTACampaignService) SetGlobalSuppressionHub(hub *engine.GlobalSuppressionHub) {
@@ -757,7 +762,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}()
 	}
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher)
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -835,7 +840,7 @@ func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *htt
 		}()
 	}
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher)
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

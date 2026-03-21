@@ -23,10 +23,12 @@ type OptizmoDeltaSyncWorker struct {
 	optizmoToken string
 	mstLoc       *time.Location
 	stopCh       chan struct{}
-	cancelFn     context.CancelFunc // cancels the lifecycle context used by runSyncCycle
+	cancelFn     context.CancelFunc
 	mu           sync.Mutex
 	running      bool
-	activeSyncs  sync.Map // offerID -> struct{} — guards against concurrent syncs per offer
+	activeSyncs  sync.Map
+	s3Client     *SuppressionS3Client
+	suppMgr      *OfferSuppressionManager
 }
 
 // NewOptizmoDeltaSyncWorker creates a new worker, loading the Optizmo API
@@ -49,6 +51,16 @@ func NewOptizmoDeltaSyncWorker(db *sql.DB) *OptizmoDeltaSyncWorker {
 		mstLoc:       loc,
 		stopCh:       make(chan struct{}),
 	}
+}
+
+// SetS3Client sets the S3 client for suppression file storage.
+func (w *OptizmoDeltaSyncWorker) SetS3Client(s3Client *SuppressionS3Client) {
+	w.s3Client = s3Client
+}
+
+// SetSuppressionManager sets the offer suppression manager for Bloom updates.
+func (w *OptizmoDeltaSyncWorker) SetSuppressionManager(mgr *OfferSuppressionManager) {
+	w.suppMgr = mgr
 }
 
 // Start launches the background scheduler goroutine.
@@ -240,18 +252,33 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	defer os.Remove(dlResult.HashFilePath)
 
 	w.db.ExecContext(ctx,
-		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3 WHERE id = $4`,
+		`UPDATE mailing_optizmo_scrub_jobs SET file_count = $1, valid_md5_count = $2, non_md5_count = $3, progress_pct = 30, progress_message = 'Downloaded, uploading to S3…' WHERE id = $4`,
 		dlResult.FileLineCount, dlResult.ValidMD5Count, dlResult.NonMD5Count, jobID)
+
+	// Upload hashes to S3
+	if w.s3Client != nil {
+		hashFile, openErr := os.Open(dlResult.HashFilePath)
+		if openErr == nil {
+			_, _, uploadErr := w.s3Client.UploadHashFile(ctx, offer.ID, hashFile)
+			hashFile.Close()
+			if uploadErr != nil {
+				log.Printf("[DeltaSync] %s: S3 hash upload failed (non-fatal): %v", logPrefix, uploadErr)
+			}
+		}
+	}
 
 	if dlResult.FileLineCount == 0 {
 		w.db.ExecContext(ctx,
 			`UPDATE mailing_optizmo_scrub_jobs
-			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW()
+			 SET status = 'completed', audience_count = 0, suppressed_count = 0, completed_at = NOW(), progress_pct = 100, progress_message = 'Complete — empty list'
 			 WHERE id = $1`, jobID)
 		w.updateOfferSyncSuccess(ctx, offer.ID)
 		log.Printf("[DeltaSync] %s: empty list — marked synced", logPrefix)
 		return
 	}
+
+	w.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET progress_pct = 50, progress_message = 'Matching subscribers…' WHERE id = $1`, jobID)
 
 	audienceCount, suppressedCount, _, matchErr := matchAndSuppressFromHashFile(ctx, w.db, offer.ID, dlResult.HashFilePath)
 	if matchErr != nil {
@@ -267,10 +294,21 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 		return
 	}
 
+	w.db.ExecContext(ctx,
+		`UPDATE mailing_optizmo_scrub_jobs SET progress_pct = 80, progress_message = 'Building Bloom filter…' WHERE id = $1`, jobID)
+
+	// Rebuild Bloom from S3 hashes
+	if w.suppMgr != nil {
+		if err := w.suppMgr.RebuildBloomFromS3Hashes(ctx, offer.ID); err != nil {
+			log.Printf("[DeltaSync] %s: Bloom rebuild failed (non-fatal): %v", logPrefix, err)
+		}
+	}
+
 	completedAt := time.Now()
 	w.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs
-		 SET status = 'completed', audience_count = $1, suppressed_count = $2, completed_at = $3
+		 SET status = 'completed', audience_count = $1, suppressed_count = $2, completed_at = $3,
+		     progress_pct = 100, progress_message = 'Complete'
 		 WHERE id = $4`, audienceCount, suppressedCount, completedAt, jobID)
 
 	w.updateOfferSyncSuccess(ctx, offer.ID)

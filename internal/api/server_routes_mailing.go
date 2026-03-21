@@ -388,7 +388,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			RegisterEverflowCreativeRoutes(r, db, efAPIKey)
 			
 			// === OFFER CENTER (Network Intelligence, Creative Library, AI Suggestions) ===
-			s.deltaSyncWorker = RegisterOfferCenterRoutes(r, db, s.handlers)
+			s.deltaSyncWorker = RegisterOfferCenterRoutes(r, db, s.handlers, s.suppressionS3, s.OfferSuppMgr)
 			RegisterOfferCreativeAssetRoutes(r, db, s.s3Client, s.imageBucket, s.cdnDomain, s.awsRegion)
 			
 			// === AGENT CONFIGURATION WIZARD (AI-Driven Campaign Setup) ===
@@ -746,6 +746,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
+			if s.OfferSuppMgr != nil {
+				pmtaCampaignAPI.SetOfferSuppressionManager(s.OfferSuppMgr)
+			}
 			pmtaCampaignAPI.RegisterRoutes(r)
 
 			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===

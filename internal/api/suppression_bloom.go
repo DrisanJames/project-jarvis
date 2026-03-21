@@ -3,7 +3,9 @@ package api
 
 import (
 	"crypto/md5"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -77,6 +79,60 @@ func (bf *BloomFilter) Size() uint64 {
 
 func (bf *BloomFilter) MemoryKB() uint64 {
 	return uint64(len(bf.bitArray)) * 8 / 1024
+}
+
+// MarshalBinary serializes the Bloom filter to a compact binary format.
+// Format: [size:8][hashCount:4][elementCount:8][lenBitArray:8][bitArray...]
+func (bf *BloomFilter) MarshalBinary() ([]byte, error) {
+	bf.mu.RLock()
+	defer bf.mu.RUnlock()
+
+	headerSize := 8 + 4 + 8 + 8
+	dataSize := len(bf.bitArray) * 8
+	buf := make([]byte, headerSize+dataSize)
+
+	binary.LittleEndian.PutUint64(buf[0:8], bf.size)
+	binary.LittleEndian.PutUint32(buf[8:12], uint32(bf.hashCount))
+	binary.LittleEndian.PutUint64(buf[12:20], bf.elementCount)
+	binary.LittleEndian.PutUint64(buf[20:28], uint64(len(bf.bitArray)))
+
+	offset := headerSize
+	for _, v := range bf.bitArray {
+		binary.LittleEndian.PutUint64(buf[offset:offset+8], v)
+		offset += 8
+	}
+	return buf, nil
+}
+
+// UnmarshalBloomFilter deserializes a Bloom filter from binary data.
+func UnmarshalBloomFilter(data []byte) (*BloomFilter, error) {
+	if len(data) < 28 {
+		return nil, fmt.Errorf("bloom data too short: %d bytes", len(data))
+	}
+
+	size := binary.LittleEndian.Uint64(data[0:8])
+	hashCount := binary.LittleEndian.Uint32(data[8:12])
+	elementCount := binary.LittleEndian.Uint64(data[12:20])
+	arrLen := binary.LittleEndian.Uint64(data[20:28])
+
+	expected := 28 + int(arrLen)*8
+	if len(data) < expected {
+		return nil, fmt.Errorf("bloom data truncated: have %d, need %d", len(data), expected)
+	}
+
+	bitArray := make([]uint64, arrLen)
+	offset := 28
+	for i := range bitArray {
+		bitArray[i] = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+	}
+
+	return &BloomFilter{
+		bitArray:     bitArray,
+		size:         size,
+		hashCount:    uint(hashCount),
+		elementCount: elementCount,
+	}, nil
 }
 
 // SuppressionMatcher handles efficient suppression matching

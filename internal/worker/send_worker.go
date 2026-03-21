@@ -36,6 +36,12 @@ type GlobalSuppressionSuppressor interface {
 	Suppress(ctx context.Context, email, reason, source, isp, dsnCode, dsnDiag, sourceIP, campaign string) (bool, error)
 }
 
+// OfferSuppressionChecker provides O(1) Bloom filter check for offer-level suppressions.
+// Returns (suppressed, bloomAvailable). If bloomAvailable is false, fall back to DB.
+type OfferSuppressionChecker interface {
+	IsSuppressed(offerID, email string) (bool, bool)
+}
+
 type SendWorkerPool struct {
 	db           *sql.DB
 	workerID     string
@@ -65,6 +71,9 @@ type SendWorkerPool struct {
 	// Global suppression hub (single source of truth)
 	globalHub        GlobalSuppressionChecker
 	globalSuppressor GlobalSuppressionSuppressor
+
+	// Offer-level suppression (Bloom filter O(1) with DB fallback)
+	offerSuppChecker OfferSuppressionChecker
 
 	// Tracking infrastructure
 	trackingURL    string // Base URL for open/click/unsubscribe tracking
@@ -223,6 +232,11 @@ func NewSendWorkerPool(db *sql.DB, numWorkers int) *SendWorkerPool {
 		batchSize:    100,                    // Claim 100 items per batch
 		pollInterval: 100 * time.Millisecond, // Poll frequently for low latency
 	}
+}
+
+// SetOfferSuppressionChecker connects the Bloom-based offer suppression checker.
+func (p *SendWorkerPool) SetOfferSuppressionChecker(checker OfferSuppressionChecker) {
+	p.offerSuppChecker = checker
 }
 
 // SetGlobalSuppressionHub connects the worker pool to the global
@@ -1005,13 +1019,35 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 
-	// Offer-level suppression — skip subscribers who already converted on this offer
+	// Offer-level suppression — Bloom filter first (O(1)), DB fallback for false positives
 	if item.OfferID != uuid.Nil {
-		var offerSuppressed bool
-		p.db.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
-			item.OfferID, item.SubscriberID).Scan(&offerSuppressed)
-		if offerSuppressed {
+		offerIDStr := item.OfferID.String()
+		skipOffer := false
+
+		if p.offerSuppChecker != nil {
+			if suppressed, avail := p.offerSuppChecker.IsSuppressed(offerIDStr, item.Email); avail {
+				if suppressed {
+					// Bloom says maybe-suppressed; verify with DB to avoid false positives
+					var dbConfirmed bool
+					p.db.QueryRowContext(ctx,
+						`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
+						item.OfferID, item.SubscriberID).Scan(&dbConfirmed)
+					skipOffer = dbConfirmed
+				}
+				// Bloom says definitely not suppressed: skip DB query entirely
+			} else {
+				// No Bloom available for this offer: full DB check
+				p.db.QueryRowContext(ctx,
+					`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
+					item.OfferID, item.SubscriberID).Scan(&skipOffer)
+			}
+		} else {
+			p.db.QueryRowContext(ctx,
+				`SELECT EXISTS(SELECT 1 FROM mailing_offer_suppressions WHERE offer_id=$1 AND subscriber_id=$2)`,
+				item.OfferID, item.SubscriberID).Scan(&skipOffer)
+		}
+
+		if skipOffer {
 			atomic.AddInt64(&p.totalSkipped, 1)
 			return p.markSkipped(ctx, item.ID, "offer_suppressed")
 		}

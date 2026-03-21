@@ -396,14 +396,23 @@ func planPMTAAudience(
 	input engine.PMTACampaignInput,
 	normalized pmtaNormalizedCampaign,
 	suppMatcher *SuppressionMatcher,
+	offerSuppMgr ...*OfferSuppressionManager,
 ) (pmtaAudiencePlan, error) {
 	// Resolve offer ID: explicit field takes precedence, otherwise look up from the campaign record
 	offerID := input.OfferID
 	if offerID == "" {
 		offerID = resolveOfferID(ctx, db, input.CampaignID)
 	}
+
+	// Offer suppression: prefer in-memory Bloom filter (O(1) per email),
+	// fall back to loading subscriber IDs from DB only if no Bloom available.
+	var offerSuppMgrRef *OfferSuppressionManager
+	if len(offerSuppMgr) > 0 {
+		offerSuppMgrRef = offerSuppMgr[0]
+	}
+	useBloomForOffer := offerID != "" && offerSuppMgrRef != nil
 	offerSuppSet := make(map[string]bool)
-	if offerID != "" {
+	if offerID != "" && !useBloomForOffer {
 		osRows, osErr := db.QueryContext(ctx,
 			`SELECT subscriber_id::text FROM mailing_offer_suppressions WHERE offer_id = $1`, offerID)
 		if osErr == nil {
@@ -416,8 +425,10 @@ func planPMTAAudience(
 			}
 		}
 		if len(offerSuppSet) > 0 {
-			log.Printf("[PlanAudience] loaded %d offer-level suppressions for offer %s", len(offerSuppSet), offerID)
+			log.Printf("[PlanAudience] loaded %d offer-level suppressions for offer %s (DB fallback)", len(offerSuppSet), offerID)
 		}
+	} else if useBloomForOffer {
+		log.Printf("[PlanAudience] using Bloom filter for offer %s suppression checks", offerID)
 	}
 
 	globalSuppSet := make(map[string]bool)
@@ -477,9 +488,16 @@ func planPMTAAudience(
 			return false
 		}
 		seenEmails[emailLower] = true
-		if offerSuppSet[subID] {
+
+		// Offer suppression: Bloom filter O(1) or DB set fallback
+		if useBloomForOffer {
+			if suppressed, avail := offerSuppMgrRef.IsSuppressed(offerID, emailLower); avail && suppressed {
+				return false
+			}
+		} else if offerSuppSet[subID] {
 			return false
 		}
+
 		hash := md5.Sum([]byte(emailLower))
 		md5Hex := hex.EncodeToString(hash[:])
 		if globalSuppSet[md5Hex] {

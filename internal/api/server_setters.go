@@ -182,6 +182,18 @@ func (s *Server) SetNormalizer(normalizer *datanorm.Normalizer) {
 	}
 }
 
+// SetSuppressionS3Client configures the S3 client for offer suppression files
+// and initializes the OfferSuppressionManager with it.
+func (s *Server) SetSuppressionS3Client(s3Client *SuppressionS3Client) {
+	s.suppressionS3 = s3Client
+	s.OfferSuppMgr = NewOfferSuppressionManager(s.mailingDB, s3Client)
+}
+
+// GetOfferSuppressionManager returns the offer suppression manager.
+func (s *Server) GetOfferSuppressionManager() *OfferSuppressionManager {
+	return s.OfferSuppMgr
+}
+
 // RegisterHealthRoutes creates a HealthChecker from the server's dependencies
 // and registers comprehensive health routes on the router. Call this after all
 // Set* methods (SetMailingDB, SetRedisClient, SetImageCDNConfig) have been invoked

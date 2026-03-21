@@ -62,7 +62,7 @@ var teamAffiliateNames = map[string]string{
 // RegisterOfferCenterRoutes registers all Offer Center routes on the given router.
 // Intended to be called inside the /api/mailing route group in server.go.
 // Returns the delta sync worker so callers can call Stop() on shutdown.
-func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) *OptizmoDeltaSyncWorker {
+func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *SuppressionS3Client, suppMgr *OfferSuppressionManager) *OptizmoDeltaSyncWorker {
 	och := &OfferCenterHandlers{
 		db:     db,
 		parent: h,
@@ -123,6 +123,8 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) *OptizmoDe
 
 	// --- Optizmo List Scrub Management ---
 	optizmo := NewOptizmoHandlers(db)
+	optizmo.SetS3Client(suppS3)
+	optizmo.SetSuppressionManager(suppMgr)
 	r.Post("/offer-center/offers/{id}/optizmo/request-scrub", optizmo.HandleRequestScrub)
 	r.Post("/offer-center/offers/{id}/optizmo/import-result", optizmo.HandleImportScrubResult)
 	r.Post("/offer-center/offers/{id}/optizmo/cancel-scrub", optizmo.HandleCancelScrub)
@@ -131,6 +133,8 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers) *OptizmoDe
 
 	// --- Optizmo Nightly Delta Sync ---
 	deltaSyncWorker := NewOptizmoDeltaSyncWorker(db)
+	deltaSyncWorker.SetS3Client(suppS3)
+	deltaSyncWorker.SetSuppressionManager(suppMgr)
 	r.Post("/offer-center/offers/{id}/optizmo/toggle-sync", deltaSyncWorker.HandleToggleSync)
 	r.Post("/offer-center/offers/{id}/optizmo/trigger-sync", deltaSyncWorker.HandleManualSync)
 	r.Get("/offer-center/offers/{id}/optizmo/sync-status", deltaSyncWorker.HandleSyncStatus)
