@@ -140,33 +140,31 @@ func (h *OptizmoHandlers) HandleRequestScrub(w http.ResponseWriter, r *http.Requ
 // subscribers, inserts suppressions, creates a named suppression list, and
 // finalizes the job+offer status.
 func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	defer func() {
-		if r := recover(); r != nil {
-			msg := fmt.Sprintf("goroutine panic: %v", r)
-			log.Printf("[Optizmo] scrub job %s PANICKED: %s", jobID, msg)
-			h.db.ExecContext(ctx,
-				`UPDATE mailing_optizmo_scrub_jobs
-				 SET status = 'failed', error_message = $1, completed_at = NOW()
-				 WHERE id = $2`, msg, jobID)
-			h.db.ExecContext(ctx,
-				`UPDATE mailing_offers SET optizmo_status = 'scrub_failed', updated_at = NOW()
-				 WHERE id = $1`, offerID)
-		}
-	}()
-
-	fail := func(msg string) {
+	// markFailed uses a fresh context so it succeeds even when the main ctx
+	// has expired (the exact scenario that was causing silent "Timed out" failures).
+	markFailed := func(msg string) {
 		log.Printf("[Optizmo] scrub job %s FAILED: %s", jobID, msg)
-		h.db.ExecContext(ctx,
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer dbCancel()
+		h.db.ExecContext(dbCtx,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'failed', error_message = $1, completed_at = NOW()
 			 WHERE id = $2`, msg, jobID)
-		h.db.ExecContext(ctx,
+		h.db.ExecContext(dbCtx,
 			`UPDATE mailing_offers SET optizmo_status = 'scrub_failed', updated_at = NOW()
 			 WHERE id = $1`, offerID)
 	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			markFailed(fmt.Sprintf("goroutine panic: %v", r))
+		}
+	}()
+
+	fail := markFailed
 
 	_, err := h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET status = 'processing', started_at = NOW() WHERE id = $1`, jobID)

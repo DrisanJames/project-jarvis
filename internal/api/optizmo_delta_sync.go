@@ -221,13 +221,15 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	if dlErr != nil {
 		errMsg := fmt.Sprintf("download failed: %v", dlErr)
 		log.Printf("[DeltaSync] %s: %s", logPrefix, errMsg)
-		w.db.ExecContext(ctx,
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer dbCancel()
+		w.db.ExecContext(dbCtx,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'failed', error_message = $1, completed_at = NOW(),
 			     file_count = $2, valid_md5_count = $3, non_md5_count = $4
 			 WHERE id = $5`,
 			errMsg, fileLineCount, validMD5Count, nonMD5Count, jobID)
-		w.setOfferSyncError(ctx, offer.ID, errMsg)
+		w.setOfferSyncError(dbCtx, offer.ID, errMsg)
 		return
 	}
 
@@ -249,11 +251,13 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	if matchErr != nil {
 		errMsg := fmt.Sprintf("subscriber matching failed: %v", matchErr)
 		log.Printf("[DeltaSync] %s: %s", logPrefix, errMsg)
-		w.db.ExecContext(ctx,
+		dbCtx2, dbCancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+		defer dbCancel2()
+		w.db.ExecContext(dbCtx2,
 			`UPDATE mailing_optizmo_scrub_jobs
 			 SET status = 'failed', error_message = $1, audience_count = $2, completed_at = NOW()
 			 WHERE id = $3`, errMsg, audienceCount, jobID)
-		w.setOfferSyncError(ctx, offer.ID, errMsg)
+		w.setOfferSyncError(dbCtx2, offer.ID, errMsg)
 		return
 	}
 
