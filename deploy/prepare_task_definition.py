@@ -76,6 +76,7 @@ def main() -> int:
     upsert_env(env_list, "JARVIS_S3_BUCKET", "jarvis-image-cdn")
     upsert_env(env_list, "JARVIS_S3_REGION", "us-west-2")
     upsert_env(env_list, "IMAGE_CDN_DOMAIN", "img.projectjarvis.io")
+    upsert_env(env_list, "ENABLE_ENGAGEMENT_ESCALATION", "true")
 
     for var_name in PASSTHROUGH_ENV_VARS:
         val = os.environ.get(var_name)
