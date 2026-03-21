@@ -1,10 +1,11 @@
 package api
 
 // DiscountBlogHTMLTemplate is the brand-accurate email skeleton for Discount Blog.
+// Synced with Content Library styling 2026-03-21: colors #FF6B6B/#2EC4B6, Playfair Display headings, Inter body, compliance footer.
 const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#F3F4F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+<body style="margin:0;padding:0;background-color:#F3F4F6;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <!-- preview text -->
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 
@@ -15,8 +16,15 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFFFFF;border-radius:12px;overflow:hidden;">
 
 <!-- HEADER -->
-<tr><td style="padding:28px 32px 20px 32px;border-bottom:1px solid #E5E7EB;">
-  <span style="font-family:Georgia,'Times New Roman',serif;font-size:26px;font-weight:700;"><span style="color:#FF7B7B;">discount</span><span style="color:#5FCCB8;">blog</span></span>
+<tr><td style="padding:24px 32px 20px 32px;border-bottom:1px solid #f0f0f0;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td><a href="https://discountblog.com" style="text-decoration:none;"><span style="font-family:'Playfair Display',Georgia,serif;font-size:26px;font-weight:800;letter-spacing:-0.5px;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></span></a></td>
+    <td style="text-align:right;vertical-align:middle;">
+      <a href="https://discountblog.com/deals" style="font-size:13px;font-weight:600;color:#6b7280;text-decoration:none;margin-right:14px;">Deals</a>
+      <a href="https://discountblog.com/blog" style="font-size:13px;font-weight:600;color:#6b7280;text-decoration:none;">Blog</a>
+    </td>
+  </tr></table>
+  <div style="text-align:right;margin-top:6px;"><span style="font-size:11px;color:#9ca3af;">Not for you?</span> <a href="{{ system.unsubscribe_url }}" style="font-size:11px;color:#9ca3af;text-decoration:underline;">Unsubscribe</a></div>
 </td></tr>
 
 <!-- GREETING + INTRO -->
@@ -26,12 +34,12 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 
 <!-- BLOCK:ARTICLE_1 -->
 <tr><td style="padding:12px 32px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-top:3px solid #FF7B7B;border-radius:8px;overflow:hidden;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-top:3px solid #FF6B6B;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#FEE2E2;color:#EF4444;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_1_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_1_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_1_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_1_SUMMARY}}</p>
-    <a href="{{ARTICLE_1_URL}}" style="color:#FF7B7B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_1_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_1_URL}}" style="color:#FF6B6B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_1_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -42,9 +50,9 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
   <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#DBEAFE;color:#3B82F6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_2_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_2_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_2_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_2_SUMMARY}}</p>
-    <a href="{{ARTICLE_2_URL}}" style="color:#5FCCB8;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_2_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_2_URL}}" style="color:#2EC4B6;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_2_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -55,9 +63,9 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
   <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#FEF3C7;color:#D97706;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_3_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_3_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_3_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_3_SUMMARY}}</p>
-    <a href="{{ARTICLE_3_URL}}" style="color:#FF7B7B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_3_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_3_URL}}" style="color:#FF6B6B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_3_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -70,11 +78,14 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 
 <!-- FOOTER -->
 <tr><td style="background-color:#FAFAFA;padding:24px 32px;border-top:1px solid #E5E7EB;">
-  <p style="margin:0 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:18px;font-weight:700;"><span style="color:#FF7B7B;">discount</span><span style="color:#5FCCB8;">blog</span></p>
-  <p style="margin:0 0 16px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
+  <p style="margin:0 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:800;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></p>
+  <p style="margin:0 0 12px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
+  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">Ignite Media Group &bull; Post Falls, ID 83854</p>
   <p style="margin:0;font-size:12px;color:#9CA3AF;">
     You received this at {{ email }}.<br>
     <a href="{{ system.unsubscribe_url }}" style="color:#9CA3AF;text-decoration:underline;">Unsubscribe</a> &nbsp;|&nbsp;
+    <a href="https://discountblog.com/privacy" style="color:#9CA3AF;text-decoration:underline;">Privacy</a> &nbsp;|&nbsp;
+    <a href="https://discountblog.com/terms" style="color:#9CA3AF;text-decoration:underline;">Terms</a> &nbsp;|&nbsp;
     <a href="https://discountblog.com" style="color:#9CA3AF;text-decoration:underline;">discountblog.com</a>
   </p>
 </td></tr>
@@ -88,11 +99,11 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 </html>`
 
 // DiscountBlogWelcomeHTMLTemplate is the welcome-series skeleton for Discount Blog.
-// Same brand styling as the newsletter but structured for onboarding new subscribers.
+// Synced with Content Library styling 2026-03-21.
 const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#F3F4F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+<body style="margin:0;padding:0;background-color:#F3F4F6;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <!-- preview text -->
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 
@@ -103,8 +114,11 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFFFFF;border-radius:12px;overflow:hidden;">
 
 <!-- HEADER -->
-<tr><td style="padding:28px 32px 20px 32px;border-bottom:1px solid #E5E7EB;">
-  <span style="font-family:Georgia,'Times New Roman',serif;font-size:26px;font-weight:700;"><span style="color:#FF7B7B;">discount</span><span style="color:#5FCCB8;">blog</span></span>
+<tr><td style="padding:24px 32px 20px 32px;border-bottom:1px solid #f0f0f0;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td><span style="font-family:'Playfair Display',Georgia,serif;font-size:26px;font-weight:800;letter-spacing:-0.5px;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></span></td>
+    <td style="text-align:right;vertical-align:middle;"><span style="font-size:11px;color:#9ca3af;">Didn't sign up?</span> <a href="{{ system.unsubscribe_url }}" style="font-size:11px;color:#9ca3af;text-decoration:underline;">Unsubscribe</a></td>
+  </tr></table>
 </td></tr>
 
 <!-- WELCOME INTRO -->
@@ -114,12 +128,12 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 
 <!-- BLOCK:ARTICLE_1 -->
 <tr><td style="padding:12px 32px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-top:3px solid #FF7B7B;border-radius:8px;overflow:hidden;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-top:3px solid #FF6B6B;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#FEE2E2;color:#EF4444;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_1_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_1_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_1_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_1_SUMMARY}}</p>
-    <a href="{{ARTICLE_1_URL}}" style="color:#FF7B7B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_1_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_1_URL}}" style="color:#FF6B6B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_1_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -130,9 +144,9 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
   <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#DBEAFE;color:#3B82F6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_2_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_2_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_2_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_2_SUMMARY}}</p>
-    <a href="{{ARTICLE_2_URL}}" style="color:#5FCCB8;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_2_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_2_URL}}" style="color:#2EC4B6;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_2_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -143,9 +157,9 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
   <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
   <tr><td style="padding:20px;">
     <span style="display:inline-block;background-color:#FEF3C7;color:#D97706;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;padding:3px 10px;border-radius:4px;">{{ARTICLE_3_CATEGORY}}</span>
-    <h2 style="margin:10px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_3_HEADLINE}}</h2>
+    <h2 style="margin:10px 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:20px;font-weight:700;color:#1F2937;line-height:1.3;">{{ARTICLE_3_HEADLINE}}</h2>
     <p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#6B7280;">{{ARTICLE_3_SUMMARY}}</p>
-    <a href="{{ARTICLE_3_URL}}" style="color:#FF7B7B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_3_CTA}} &rarr;</a>
+    <a href="{{ARTICLE_3_URL}}" style="color:#FF6B6B;font-size:14px;font-weight:600;text-decoration:none;">{{ARTICLE_3_CTA}} &rarr;</a>
   </td></tr>
   </table>
 </td></tr>
@@ -158,11 +172,14 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 
 <!-- FOOTER -->
 <tr><td style="background-color:#FAFAFA;padding:24px 32px;border-top:1px solid #E5E7EB;">
-  <p style="margin:0 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:18px;font-weight:700;"><span style="color:#FF7B7B;">discount</span><span style="color:#5FCCB8;">blog</span></p>
-  <p style="margin:0 0 16px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
+  <p style="margin:0 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:800;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></p>
+  <p style="margin:0 0 12px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
+  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">Ignite Media Group &bull; Post Falls, ID 83854</p>
   <p style="margin:0;font-size:12px;color:#9CA3AF;">
     You received this at {{ email }}.<br>
     <a href="{{ system.unsubscribe_url }}" style="color:#9CA3AF;text-decoration:underline;">Unsubscribe</a> &nbsp;|&nbsp;
+    <a href="https://discountblog.com/privacy" style="color:#9CA3AF;text-decoration:underline;">Privacy</a> &nbsp;|&nbsp;
+    <a href="https://discountblog.com/terms" style="color:#9CA3AF;text-decoration:underline;">Terms</a> &nbsp;|&nbsp;
     <a href="https://discountblog.com" style="color:#9CA3AF;text-decoration:underline;">discountblog.com</a>
   </p>
 </td></tr>
@@ -176,96 +193,90 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 </html>`
 
 // QuizFiestaWelcomeHTMLTemplate is the welcome-series skeleton for QuizFiesta.
+// Synced with Content Library styling 2026-03-21: #a855f7 purple, #FF69B4 pink accent, Inter font.
 const QuizFiestaWelcomeHTMLTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#000000;font-family:'Courier New',Courier,monospace;">
+<body style="margin:0;padding:0;background-color:#0a0a0f;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <!-- preview text -->
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#000000;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0a0a0f;">
 <tr><td align="center" style="padding:0;">
 
 <!-- EMAIL CONTAINER -->
-<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#0A0014;">
+<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#111118;">
 
 <!-- HEADER -->
-<tr><td style="padding:24px 28px 16px 28px;border-bottom:2px solid #8B5CF6;">
+<tr><td style="padding:20px 32px;border-bottom:3px solid #a855f7;">
   <table width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td style="font-family:'Courier New',Courier,monospace;font-size:22px;font-weight:700;color:#FFFFFF;letter-spacing:4px;">QUIZ FIESTA</td>
-    <td align="right" style="font-size:20px;">&#x1F47E; &#x1F47E; &#x1F47E;</td>
+    <td><a href="https://quizfiesta.com" style="text-decoration:none;font-size:22px;font-weight:800;letter-spacing:3px;color:#a855f7;">QUIZ FIESTA</a></td>
+    <td align="right"><span style="font-size:11px;color:#6b7280;">Not for you?</span> <a href="{{ system.unsubscribe_url }}" style="font-size:11px;color:#FF69B4;text-decoration:underline;font-weight:600;">Unsubscribe</a></td>
   </tr>
   </table>
 </td></tr>
 
 <!-- INTRO -->
-<tr><td style="padding:24px 28px 8px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;line-height:1.6;color:#A0A0B0;">{{INTRO}}</p>
+<tr><td style="padding:24px 32px 8px 32px;">
+  <p style="margin:0;font-size:15px;line-height:1.7;color:#9ca3af;">{{INTRO}}</p>
 </td></tr>
 
 <!-- DIVIDER -->
-<tr><td style="padding:8px 28px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #8B5CF6;box-shadow:0 1px 4px rgba(139,92,246,0.3);font-size:1px;height:1px;">&nbsp;</td></tr></table></td></tr>
+<tr><td style="padding:8px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #1f2937;font-size:1px;height:1px;">&nbsp;</td></tr></table></td></tr>
 
 <!-- BLOCK:ARTICLE_1 -->
-<tr><td style="padding:16px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:16px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #a855f7;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_1_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_1_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_1_SUMMARY}}</p>
-    <a href="{{ARTICLE_1_URL}}" style="display:inline-block;background-color:#8B5CF6;color:#FFFFFF;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #39FF14;">{{ARTICLE_1_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_1_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_1_SUMMARY}}</p>
+    <a href="{{ARTICLE_1_URL}}" style="display:inline-block;background-color:#a855f7;color:#FFFFFF;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border-radius:50px;">{{ARTICLE_1_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_1 -->
 
 <!-- BLOCK:ARTICLE_2 -->
-<tr><td style="padding:8px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:8px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #2a1a3a;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_2_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_2_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_2_SUMMARY}}</p>
-    <a href="{{ARTICLE_2_URL}}" style="display:inline-block;background-color:transparent;color:#39FF14;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #8B5CF6;">{{ARTICLE_2_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_2_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_2_SUMMARY}}</p>
+    <a href="{{ARTICLE_2_URL}}" style="display:inline-block;background:transparent;color:#FF69B4;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border:2px solid #FF69B4;border-radius:50px;">{{ARTICLE_2_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_2 -->
 
 <!-- BLOCK:ARTICLE_3 -->
-<tr><td style="padding:8px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:8px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #a855f7;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_3_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_3_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_3_SUMMARY}}</p>
-    <a href="{{ARTICLE_3_URL}}" style="display:inline-block;background-color:#8B5CF6;color:#FFFFFF;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #39FF14;">{{ARTICLE_3_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_3_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_3_SUMMARY}}</p>
+    <a href="{{ARTICLE_3_URL}}" style="display:inline-block;background-color:#a855f7;color:#FFFFFF;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border-radius:50px;">{{ARTICLE_3_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_3 -->
 
 <!-- CLOSING -->
-<tr><td style="padding:16px 28px 8px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;line-height:1.6;color:#A0A0B0;">{{CLOSING_LINE}}</p>
+<tr><td style="padding:16px 32px 8px 32px;">
+  <p style="margin:0;font-size:15px;line-height:1.7;color:#9ca3af;">{{CLOSING_LINE}}</p>
 </td></tr>
 
-<!-- INSERT COIN DIVIDER -->
-<tr><td align="center" style="padding:16px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;color:#FFD700;letter-spacing:3px;">&#9724; INSERT COIN TO CONTINUE &#9724;</p>
-</td></tr>
+<!-- DIVIDER -->
+<tr><td style="padding:8px 32px;"><hr style="border:none;border-top:1px solid #1f2937;margin:0;"></td></tr>
 
 <!-- FOOTER -->
-<tr><td style="padding:16px 28px 24px 28px;border-top:2px solid #8B5CF6;">
-  <p style="margin:0 0 8px 0;font-family:'Courier New',Courier,monospace;font-size:12px;color:#666666;">
-    <span style="color:#39FF14;">&gt;</span> &copy; 2026 PLAYER_ONE // ALL RIGHTS RESERVED
-  </p>
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:11px;color:#555555;">
-    Sent to {{ email }} |
-    <a href="{{ system.unsubscribe_url }}" style="color:#8B5CF6;text-decoration:none;">QUIT GAME</a> |
-    <a href="https://quizfiesta.com" style="color:#8B5CF6;text-decoration:none;">QUIZFIESTA.COM</a>
-  </p>
+<tr><td style="padding:16px 32px 24px 32px;">
+  <p style="margin:0 0 12px 0;text-align:center;"><a href="{{ system.unsubscribe_url }}" style="display:inline-block;background:#FF69B4;color:#ffffff;font-size:12px;font-weight:700;padding:10px 22px;border-radius:50px;text-decoration:none;">Unsubscribe Instantly</a></p>
+  <hr style="border:none;border-top:1px solid #1f2937;margin:0 0 16px;">
+  <p style="margin:0;font-size:11px;color:#4b5563;text-align:center;">&copy; {{ system.current_year }} Quiz Fiesta. All rights reserved.</p>
 </td></tr>
 
 </table>
@@ -277,96 +288,90 @@ const QuizFiestaWelcomeHTMLTemplate = `<!DOCTYPE html>
 </html>`
 
 // QuizFiestaHTMLTemplate is the brand-accurate email skeleton for QuizFiesta.
+// Synced with Content Library styling 2026-03-21: #a855f7 purple, #FF69B4 pink accent, Inter font, modern pill buttons.
 const QuizFiestaHTMLTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#000000;font-family:'Courier New',Courier,monospace;">
+<body style="margin:0;padding:0;background-color:#0a0a0f;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <!-- preview text -->
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#000000;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0a0a0f;">
 <tr><td align="center" style="padding:0;">
 
 <!-- EMAIL CONTAINER -->
-<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#0A0014;">
+<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#111118;">
 
 <!-- HEADER -->
-<tr><td style="padding:24px 28px 16px 28px;border-bottom:2px solid #8B5CF6;">
+<tr><td style="padding:20px 32px;border-bottom:3px solid #a855f7;">
   <table width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td style="font-family:'Courier New',Courier,monospace;font-size:22px;font-weight:700;color:#FFFFFF;letter-spacing:4px;">QUIZ FIESTA</td>
-    <td align="right" style="font-size:20px;">&#x1F47E; &#x1F47E; &#x1F47E;</td>
+    <td><a href="https://quizfiesta.com" style="text-decoration:none;font-size:22px;font-weight:800;letter-spacing:3px;color:#a855f7;">QUIZ FIESTA</a></td>
+    <td align="right"><span style="font-size:11px;color:#6b7280;">Not for you?</span> <a href="{{ system.unsubscribe_url }}" style="font-size:11px;color:#FF69B4;text-decoration:underline;font-weight:600;">Unsubscribe</a></td>
   </tr>
   </table>
 </td></tr>
 
 <!-- INTRO -->
-<tr><td style="padding:24px 28px 8px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;line-height:1.6;color:#A0A0B0;">{{INTRO}}</p>
+<tr><td style="padding:24px 32px 8px 32px;">
+  <p style="margin:0;font-size:15px;line-height:1.7;color:#9ca3af;">{{INTRO}}</p>
 </td></tr>
 
 <!-- DIVIDER -->
-<tr><td style="padding:8px 28px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #8B5CF6;box-shadow:0 1px 4px rgba(139,92,246,0.3);font-size:1px;height:1px;">&nbsp;</td></tr></table></td></tr>
+<tr><td style="padding:8px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #1f2937;font-size:1px;height:1px;">&nbsp;</td></tr></table></td></tr>
 
 <!-- BLOCK:ARTICLE_1 -->
-<tr><td style="padding:16px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:16px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #a855f7;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_1_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_1_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_1_SUMMARY}}</p>
-    <a href="{{ARTICLE_1_URL}}" style="display:inline-block;background-color:#8B5CF6;color:#FFFFFF;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #39FF14;">{{ARTICLE_1_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_1_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_1_SUMMARY}}</p>
+    <a href="{{ARTICLE_1_URL}}" style="display:inline-block;background-color:#a855f7;color:#FFFFFF;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border-radius:50px;">{{ARTICLE_1_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_1 -->
 
 <!-- BLOCK:ARTICLE_2 -->
-<tr><td style="padding:8px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:8px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #2a1a3a;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_2_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_2_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_2_SUMMARY}}</p>
-    <a href="{{ARTICLE_2_URL}}" style="display:inline-block;background-color:transparent;color:#39FF14;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #8B5CF6;">{{ARTICLE_2_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_2_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_2_SUMMARY}}</p>
+    <a href="{{ARTICLE_2_URL}}" style="display:inline-block;background:transparent;color:#FF69B4;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border:2px solid #FF69B4;border-radius:50px;">{{ARTICLE_2_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_2 -->
 
 <!-- BLOCK:ARTICLE_3 -->
-<tr><td style="padding:8px 28px;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1A0A2E;border:2px solid #8B5CF6;">
+<tr><td style="padding:8px 32px;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#1a1025;border:2px solid #a855f7;border-radius:12px;">
   <tr><td style="padding:20px;">
     <p style="margin:0 0 6px 0;font-size:28px;">{{ARTICLE_3_EMOJI}}</p>
-    <h2 style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:2px;">{{ARTICLE_3_HEADLINE}}</h2>
-    <p style="margin:0 0 16px 0;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:#A0A0B0;">{{ARTICLE_3_SUMMARY}}</p>
-    <a href="{{ARTICLE_3_URL}}" style="display:inline-block;background-color:#8B5CF6;color:#FFFFFF;font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:3px;text-decoration:none;padding:12px 24px;border:2px solid #39FF14;">{{ARTICLE_3_CTA}}</a>
+    <h2 style="margin:0 0 10px 0;font-size:18px;font-weight:700;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">{{ARTICLE_3_HEADLINE}}</h2>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#9ca3af;">{{ARTICLE_3_SUMMARY}}</p>
+    <a href="{{ARTICLE_3_URL}}" style="display:inline-block;background-color:#a855f7;color:#FFFFFF;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;text-decoration:none;padding:12px 24px;border-radius:50px;">{{ARTICLE_3_CTA}}</a>
   </td></tr>
   </table>
 </td></tr>
 <!-- /BLOCK:ARTICLE_3 -->
 
 <!-- CLOSING -->
-<tr><td style="padding:16px 28px 8px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;line-height:1.6;color:#A0A0B0;">{{CLOSING_LINE}}</p>
+<tr><td style="padding:16px 32px 8px 32px;">
+  <p style="margin:0;font-size:15px;line-height:1.7;color:#9ca3af;">{{CLOSING_LINE}}</p>
 </td></tr>
 
-<!-- INSERT COIN DIVIDER -->
-<tr><td align="center" style="padding:16px 28px;">
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;color:#FFD700;letter-spacing:3px;">&#9724; INSERT COIN TO CONTINUE &#9724;</p>
-</td></tr>
+<!-- DIVIDER -->
+<tr><td style="padding:8px 32px;"><hr style="border:none;border-top:1px solid #1f2937;margin:0;"></td></tr>
 
 <!-- FOOTER -->
-<tr><td style="padding:16px 28px 24px 28px;border-top:2px solid #8B5CF6;">
-  <p style="margin:0 0 8px 0;font-family:'Courier New',Courier,monospace;font-size:12px;color:#666666;">
-    <span style="color:#39FF14;">&gt;</span> &copy; 2026 PLAYER_ONE // ALL RIGHTS RESERVED
-  </p>
-  <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:11px;color:#555555;">
-    Sent to {{ email }} |
-    <a href="{{ system.unsubscribe_url }}" style="color:#8B5CF6;text-decoration:none;">QUIT GAME</a> |
-    <a href="https://quizfiesta.com" style="color:#8B5CF6;text-decoration:none;">QUIZFIESTA.COM</a>
-  </p>
+<tr><td style="padding:16px 32px 24px 32px;">
+  <p style="margin:0 0 12px 0;text-align:center;"><a href="{{ system.unsubscribe_url }}" style="display:inline-block;background:transparent;color:#FF69B4;font-size:12px;font-weight:700;padding:8px 20px;border-radius:50px;text-decoration:none;border:2px solid #FF69B4;">Unsubscribe</a></p>
+  <hr style="border:none;border-top:1px solid #1f2937;margin:0 0 16px;">
+  <p style="margin:0;font-size:11px;color:#4b5563;text-align:center;">&copy; {{ system.current_year }} Quiz Fiesta. All rights reserved.</p>
 </td></tr>
 
 </table>
@@ -378,9 +383,10 @@ const QuizFiestaHTMLTemplate = `<!DOCTYPE html>
 </html>`
 
 // HistoryThinkingHTMLTemplate — parchment/gold palette, Playfair Display serif, scholarly tone.
+// Synced with Content Library styling 2026-03-21: added Inter body font fallback, Inter for footer.
 const HistoryThinkingHTMLTemplate = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#ede4d3;font-family:'Source Serif 4',Georgia,serif;">
+<body style="margin:0;padding:0;background-color:#ede4d3;font-family:'Inter','Source Serif 4',Georgia,serif;">
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#ede4d3;"><tr><td align="center" style="padding:24px 16px;">
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#f5f0e8;border-radius:4px;overflow:hidden;">
@@ -434,9 +440,10 @@ const HistoryThinkingHTMLTemplate = `<!DOCTYPE html>
 </body></html>`
 
 // HistoryThinkingWelcomeHTMLTemplate — welcome-series skeleton for History Thinking.
+// Synced with Content Library styling 2026-03-21: added Inter body font fallback.
 const HistoryThinkingWelcomeHTMLTemplate = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#ede4d3;font-family:'Source Serif 4',Georgia,serif;">
+<body style="margin:0;padding:0;background-color:#ede4d3;font-family:'Inter','Source Serif 4',Georgia,serif;">
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#ede4d3;"><tr><td align="center" style="padding:24px 16px;">
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#f5f0e8;border-radius:4px;overflow:hidden;">
@@ -490,9 +497,10 @@ const HistoryThinkingWelcomeHTMLTemplate = `<!DOCTYPE html>
 </body></html>`
 
 // MyOwnHealthHTMLTemplate — dark theme, orange/blue accents, Oswald headings, no-nonsense fitness tone.
+// Synced with Content Library styling 2026-03-21: added Inter/Bebas Neue font stack.
 const MyOwnHealthHTMLTemplate = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#080e1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+<body style="margin:0;padding:0;background-color:#080e1a;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#080e1a;"><tr><td align="center" style="padding:24px 16px;">
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#0f172a;border-radius:8px;overflow:hidden;">
@@ -549,9 +557,10 @@ const MyOwnHealthHTMLTemplate = `<!DOCTYPE html>
 </body></html>`
 
 // MyOwnHealthWelcomeHTMLTemplate — welcome-series skeleton for My Own Health.
+// Synced with Content Library styling 2026-03-21: added Inter/Bebas Neue font stack.
 const MyOwnHealthWelcomeHTMLTemplate = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{{SUBJECT}}</title></head>
-<body style="margin:0;padding:0;background-color:#080e1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+<body style="margin:0;padding:0;background-color:#080e1a;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 <div style="display:none;max-height:0;overflow:hidden;">{{PREVIEW_TEXT}}</div>
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#080e1a;"><tr><td align="center" style="padding:24px 16px;">
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#0f172a;border-radius:8px;overflow:hidden;">
