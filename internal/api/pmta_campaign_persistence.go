@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -566,7 +567,7 @@ func insertABVariants(ctx context.Context, tx *sql.Tx, orgID, campaignID string,
 				id, test_id, variant_name, from_name, subject, html_content,
 				split_percent, created_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-		`, uuid.New().String(), testID, v.VariantName, v.FromName, v.Subject, v.HTMLContent, v.SplitPercent); err != nil {
+		`, uuid.New().String(), testID, v.VariantName, v.FromName, v.Subject, v.HTMLContent, int(math.Round(v.SplitPercent))); err != nil {
 			return fmt.Errorf("create ab variant %s: %w", v.VariantName, err)
 		}
 	}
