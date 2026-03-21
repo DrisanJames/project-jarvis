@@ -513,6 +513,65 @@ func (cb *CampaignBuilder) HandleUpdateCampaign(w http.ResponseWriter, r *http.R
 	})
 }
 
+// HandleGetCampaignVariants returns A/B content variants for a campaign.
+func (cb *CampaignBuilder) HandleGetCampaignVariants(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	rows, err := cb.db.QueryContext(ctx, `
+		SELECT v.id::text, v.variant_name, COALESCE(v.subject, ''),
+		       COALESCE(v.from_name, ''), COALESCE(v.html_content, ''),
+		       COALESCE(v.split_percent, 0),
+		       COALESCE(v.sent_count, 0), COALESCE(v.open_count, 0),
+		       COALESCE(v.click_count, 0), COALESCE(v.is_winner, false)
+		FROM mailing_ab_variants v
+		JOIN mailing_ab_tests t ON t.id = v.test_id
+		WHERE t.campaign_id = $1
+		ORDER BY v.variant_name
+	`, id)
+	if err != nil {
+		log.Printf("Error fetching variants for campaign %s: %v", id, err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer rows.Close()
+
+	type variantRow struct {
+		ID           string  `json:"id"`
+		VariantName  string  `json:"variant_name"`
+		Subject      string  `json:"subject"`
+		FromName     string  `json:"from_name"`
+		HTMLContent  string  `json:"html_content"`
+		SplitPercent float64 `json:"split_percent"`
+		SentCount    int     `json:"sent_count"`
+		OpenCount    int     `json:"open_count"`
+		ClickCount   int     `json:"click_count"`
+		IsWinner     bool    `json:"is_winner"`
+		OpenRate     float64 `json:"open_rate"`
+		ClickRate    float64 `json:"click_rate"`
+	}
+
+	variants := make([]variantRow, 0)
+	for rows.Next() {
+		var v variantRow
+		if err := rows.Scan(&v.ID, &v.VariantName, &v.Subject,
+			&v.FromName, &v.HTMLContent, &v.SplitPercent,
+			&v.SentCount, &v.OpenCount, &v.ClickCount, &v.IsWinner); err != nil {
+			log.Printf("Error scanning variant row: %v", err)
+			continue
+		}
+		if v.SentCount > 0 {
+			v.OpenRate = float64(v.OpenCount) / float64(v.SentCount) * 100
+			v.ClickRate = float64(v.ClickCount) / float64(v.SentCount) * 100
+		}
+		variants = append(variants, v)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(variants)
+}
+
 // HandleDeleteCampaign soft-deletes a campaign
 func (cb *CampaignBuilder) HandleDeleteCampaign(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

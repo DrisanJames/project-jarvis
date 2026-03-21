@@ -81,6 +81,21 @@ interface Campaign {
   throttle_speed?: string;
 }
 
+interface CampaignVariant {
+  id: string;
+  variant_name: string;
+  subject: string;
+  from_name: string;
+  html_content: string;
+  split_percent: number;
+  sent_count: number;
+  open_count: number;
+  click_count: number;
+  is_winner: boolean;
+  open_rate: number;
+  click_rate: number;
+}
+
 // Minimum preparation time in minutes (must match backend)
 const MIN_PREPARATION_MINUTES = 5;
 
@@ -792,10 +807,14 @@ const CampaignsList: React.FC<{
 const CampaignDetailsModal: React.FC<{
   campaign: Campaign | null;
   stats: CampaignStats | null;
+  variants: CampaignVariant[];
   loading: boolean;
   onClose: () => void;
   onAction: (id: string, action: string) => void;
-}> = ({ campaign, stats, loading, onClose, onAction }) => {
+}> = ({ campaign, stats, variants, loading, onClose, onAction }) => {
+  const [activeVariantIdx, setActiveVariantIdx] = useState(0);
+  const [variantPreviewOpen, setVariantPreviewOpen] = useState(false);
+
   if (!campaign) return null;
 
   return (
@@ -849,6 +868,113 @@ const CampaignDetailsModal: React.FC<{
                   </div>
                 </div>
               </div>
+
+              {/* Content Variants (A/B/C/D creatives from EDITH) */}
+              {variants.length >= 2 && (() => {
+                const activeVariant = variants[activeVariantIdx] || variants[0];
+                const hasSendData = variants.some(v => v.sent_count > 0);
+                return (
+                  <div className="details-section">
+                    <style>{`
+                      .cv-header { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
+                      .cv-badge { background: rgba(99,102,241,0.15); color: #818cf8; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
+                      .cv-tabs { display: flex; gap: 4px; margin: 14px 0 16px; }
+                      .cv-tab { padding: 7px 18px; border-radius: 8px; border: 1px solid rgba(99,102,241,0.15); background: rgba(99,102,241,0.04); color: rgba(180,210,240,0.6); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
+                      .cv-tab:hover { background: rgba(99,102,241,0.08); color: #c7d2fe; border-color: rgba(99,102,241,0.25); }
+                      .cv-tab.active { background: rgba(99,102,241,0.18); color: #a5b4fc; border-color: rgba(99,102,241,0.4); }
+                      .cv-tab .cv-winner-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; }
+                      .cv-card { background: rgba(15,23,42,0.6); border: 1px solid rgba(99,102,241,0.1); border-radius: 10px; padding: 16px; }
+                      .cv-field { margin-bottom: 12px; }
+                      .cv-field-label { font-size: 11px; color: rgba(180,210,240,0.4); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
+                      .cv-field-value { font-size: 14px; color: #e0e6f0; line-height: 1.4; }
+                      .cv-split-bar { height: 6px; border-radius: 3px; background: rgba(99,102,241,0.1); margin-top: 6px; overflow: hidden; }
+                      .cv-split-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #818cf8, #6366f1); transition: width 0.3s; }
+                      .cv-metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(99,102,241,0.08); }
+                      .cv-metric { text-align: center; }
+                      .cv-metric-val { font-size: 18px; font-weight: 700; color: #e0e6f0; }
+                      .cv-metric-lbl { font-size: 11px; color: rgba(180,210,240,0.45); margin-top: 2px; }
+                      .cv-preview-toggle { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(99,102,241,0.08); }
+                      .cv-preview-btn { background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.15); color: #a5b4fc; padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: all 0.15s; }
+                      .cv-preview-btn:hover { background: rgba(99,102,241,0.14); border-color: rgba(99,102,241,0.3); }
+                      .cv-preview-frame { margin-top: 12px; border-radius: 8px; overflow: hidden; border: 1px solid rgba(99,102,241,0.1); background: #fff; }
+                      .cv-preview-frame iframe { width: 100%; height: 500px; border: none; }
+                      .cv-winner-badge { display: inline-flex; align-items: center; gap: 5px; background: rgba(34,197,94,0.12); color: #22c55e; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; margin-left: 8px; }
+                    `}</style>
+                    <h3 className="cv-header">
+                      <FontAwesomeIcon icon={faCopy} /> Content Variants
+                      <span className="cv-badge">{variants.length} variants</span>
+                    </h3>
+                    <div className="cv-tabs">
+                      {variants.map((v, i) => (
+                        <button
+                          key={v.id}
+                          className={`cv-tab ${i === activeVariantIdx ? 'active' : ''}`}
+                          onClick={() => { setActiveVariantIdx(i); setVariantPreviewOpen(false); }}
+                        >
+                          {v.variant_name || `Variant ${i + 1}`}
+                          {v.is_winner && <span className="cv-winner-dot" />}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="cv-card">
+                      <div className="cv-field">
+                        <div className="cv-field-label">Subject Line</div>
+                        <div className="cv-field-value">{activeVariant.subject}</div>
+                      </div>
+                      <div className="cv-field">
+                        <div className="cv-field-label">From Name</div>
+                        <div className="cv-field-value">{activeVariant.from_name}</div>
+                      </div>
+                      <div className="cv-field">
+                        <div className="cv-field-label">Traffic Split</div>
+                        <div className="cv-field-value">{activeVariant.split_percent.toFixed(0)}%</div>
+                        <div className="cv-split-bar">
+                          <div className="cv-split-fill" style={{ width: `${activeVariant.split_percent}%` }} />
+                        </div>
+                      </div>
+                      {activeVariant.is_winner && (
+                        <span className="cv-winner-badge">
+                          <FontAwesomeIcon icon={faTrophy} /> Winner
+                        </span>
+                      )}
+                      {hasSendData && (
+                        <div className="cv-metrics-row">
+                          <div className="cv-metric">
+                            <div className="cv-metric-val">{activeVariant.sent_count.toLocaleString()}</div>
+                            <div className="cv-metric-lbl">Sent</div>
+                          </div>
+                          <div className="cv-metric">
+                            <div className="cv-metric-val">{activeVariant.open_count.toLocaleString()}</div>
+                            <div className="cv-metric-lbl">Opens ({activeVariant.open_rate.toFixed(1)}%)</div>
+                          </div>
+                          <div className="cv-metric">
+                            <div className="cv-metric-val">{activeVariant.click_count.toLocaleString()}</div>
+                            <div className="cv-metric-lbl">Clicks ({activeVariant.click_rate.toFixed(1)}%)</div>
+                          </div>
+                        </div>
+                      )}
+                      <div className="cv-preview-toggle">
+                        <button
+                          className="cv-preview-btn"
+                          onClick={() => setVariantPreviewOpen(!variantPreviewOpen)}
+                        >
+                          <FontAwesomeIcon icon={variantPreviewOpen ? faChevronUp : faChevronDown} />
+                          {variantPreviewOpen ? 'Hide Preview' : 'Preview Email'}
+                        </button>
+                        {variantPreviewOpen && activeVariant.html_content && (
+                          <div className="cv-preview-frame">
+                            <iframe
+                              srcDoc={activeVariant.html_content}
+                              title={`Preview ${activeVariant.variant_name}`}
+                              sandbox=""
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Performance Metrics */}
               {stats && (
@@ -2417,6 +2543,7 @@ export const CampaignPortal: React.FC<{
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [selectedCampaignStats, setSelectedCampaignStats] = useState<CampaignStats | null>(null);
+  const [campaignVariants, setCampaignVariants] = useState<CampaignVariant[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
@@ -2491,14 +2618,18 @@ export const CampaignPortal: React.FC<{
   const fetchCampaignDetails = useCallback(async (id: string) => {
     setDetailsLoading(true);
     try {
-      const [campaignRes, statsRes] = await Promise.all([
+      const [campaignRes, statsRes, variantsRes] = await Promise.all([
         orgFetch(`${API_BASE}/campaigns/${id}`, organization?.id),
         orgFetch(`${API_BASE}/campaigns/${id}/stats`, organization?.id),
+        orgFetch(`${API_BASE}/campaigns/${id}/variants`, organization?.id)
+          .catch(() => ({ json: async () => [] } as Response)),
       ]);
       const campaign = await campaignRes.json();
       const stats = await statsRes.json();
+      const variants = await variantsRes.json();
       setSelectedCampaign(campaign);
       setSelectedCampaignStats(stats);
+      setCampaignVariants(Array.isArray(variants) ? variants : []);
     } catch (err) {
       console.error('Failed to fetch campaign details:', err);
     } finally {
@@ -2650,6 +2781,7 @@ export const CampaignPortal: React.FC<{
         <CampaignDetailsModal
           campaign={selectedCampaign}
           stats={selectedCampaignStats}
+          variants={campaignVariants}
           loading={detailsLoading}
           onClose={() => setView('dashboard')}
           onAction={handleAction}

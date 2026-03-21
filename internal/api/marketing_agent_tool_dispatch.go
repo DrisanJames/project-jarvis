@@ -151,10 +151,21 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 		complaintRate := math.Round(float64(complaints)/float64(sent)*10000) / 100
 		openRate := math.Round(float64(opens)/float64(sent)*10000) / 100
 
-		normBounce := math.Min((hardBounceRate+softBounceRate)/5.0, 1.0)
-		normDeferral := math.Min(deferralRate/10.0, 1.0)
+		deliveryRate := 0.0
+		if delivered > 0 {
+			deliveryRate = math.Round(float64(delivered)/float64(sent)*10000) / 100
+		}
+		normHardBounce := math.Min(hardBounceRate/3.0, 1.0)
+		normSoftBounce := math.Min(softBounceRate/20.0, 1.0)
+		normDeliveryFail := 1.0 - math.Min(deliveryRate/100, 1)
+		normDeferral := math.Min(deferralRate/15.0, 1.0)
 		normComplaint := math.Min(complaintRate/0.1, 1.0)
-		riskScore := int(math.Round(math.Min(100, normBounce*35+normDeferral*35+normComplaint*30)))
+		rawRisk := normHardBounce*25 + normSoftBounce*10 + normDeliveryFail*20 + normDeferral*15 + normComplaint*30
+		if deliveryRate > 50 && openRate > 10 {
+			engagementDiscount := math.Min((openRate-10)/40.0, 0.15)
+			rawRisk = rawRisk * (1.0 - engagementDiscount)
+		}
+		riskScore := int(math.Round(math.Min(100, rawRisk)))
 
 		recommendation := "MAINTAIN"
 		currentQ := currentQuotas[isp]
@@ -181,7 +192,7 @@ func (a *EmailMarketingAgent) toolGetISPHealth(ctx context.Context, orgID string
 			"sent": sent, "delivered": delivered, "hard_bounces": hardBounces, "soft_bounces": softBounces, "deferred": deferred,
 			"complaints": complaints, "opens": opens,
 			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate, "deferral_rate": deferralRate,
-			"complaint_rate": complaintRate, "open_rate": openRate,
+			"complaint_rate": complaintRate, "open_rate": openRate, "delivery_rate": deliveryRate,
 			"risk_score": riskScore, "recommendation": recommendation,
 			"current_quota": currentQ, "suggested_quota": suggestedQ,
 		})
@@ -1327,12 +1338,15 @@ func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domai
 		Deferred     int
 		Complaints   int
 		Opens        int
-		RiskScore    int
-		Rec          string
-		BounceRate   float64
-		DeferralRate float64
-		ComplaintRate float64
-		OpenRate     float64
+		RiskScore      int
+		Rec            string
+		HardBounceRate float64
+		SoftBounceRate float64
+		BounceRate     float64
+		DeferralRate   float64
+		ComplaintRate  float64
+		OpenRate       float64
+		DeliveryRate   float64
 	}
 	var metrics []ispMetric
 	for rows.Next() {
@@ -1341,15 +1355,27 @@ func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domai
 		if m.ISP == "other" || m.Sent == 0 {
 			continue
 		}
-		m.BounceRate = math.Round(float64(m.HardBounces+m.SoftBounces)/float64(m.Sent)*10000) / 100
+		m.HardBounceRate = math.Round(float64(m.HardBounces)/float64(m.Sent)*10000) / 100
+		m.SoftBounceRate = math.Round(float64(m.SoftBounces)/float64(m.Sent)*10000) / 100
+		m.BounceRate = m.HardBounceRate + m.SoftBounceRate
 		m.DeferralRate = math.Round(float64(m.Deferred)/float64(m.Sent)*10000) / 100
 		m.ComplaintRate = math.Round(float64(m.Complaints)/float64(m.Sent)*10000) / 100
 		m.OpenRate = math.Round(float64(m.Opens)/float64(m.Sent)*10000) / 100
+		if m.Delivered > 0 {
+			m.DeliveryRate = math.Round(float64(m.Delivered)/float64(m.Sent)*10000) / 100
+		}
 
-		normBounce := math.Min(m.BounceRate/5.0, 1.0)
-		normDeferral := math.Min(m.DeferralRate/10.0, 1.0)
+		normHardBounce := math.Min(m.HardBounceRate/3.0, 1.0)
+		normSoftBounce := math.Min(m.SoftBounceRate/20.0, 1.0)
+		normDeliveryFail := 1.0 - math.Min(m.DeliveryRate/100, 1)
+		normDeferral := math.Min(m.DeferralRate/15.0, 1.0)
 		normComplaint := math.Min(m.ComplaintRate/0.1, 1.0)
-		m.RiskScore = int(math.Round(math.Min(100, normBounce*35+normDeferral*35+normComplaint*30)))
+		rawRisk := normHardBounce*25 + normSoftBounce*10 + normDeliveryFail*20 + normDeferral*15 + normComplaint*30
+		if m.DeliveryRate > 50 && m.OpenRate > 10 {
+			engagementDiscount := math.Min((m.OpenRate-10)/40.0, 0.15)
+			rawRisk = rawRisk * (1.0 - engagementDiscount)
+		}
+		m.RiskScore = int(math.Round(math.Min(100, rawRisk)))
 
 		switch {
 		case m.RiskScore > 80:
@@ -1366,7 +1392,14 @@ func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domai
 		metrics = append(metrics, m)
 	}
 
+	// Base quotas: use actual delivered volume as proven capacity signal.
 	baseQuotas := map[string]int{}
+	for i := range metrics {
+		if metrics[i].Delivered > 0 {
+			baseQuotas[metrics[i].ISP] = metrics[i].Delivered
+		}
+	}
+	// Fall back to last campaign plans only for ISPs with zero recent deliveries.
 	quotaRows, _ := a.db.QueryContext(ctx, `
 		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
 		JOIN mailing_campaigns c ON p.campaign_id = c.id
@@ -1436,13 +1469,21 @@ func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domai
 		rawWeights[isp] = weight
 		totalWeight += weight
 
-		healthDetails = append(healthDetails, map[string]interface{}{
+		hd := map[string]interface{}{
 			"isp": isp, "label": ispLabels[isp],
 			"risk_score": riskScore, "recommendation": rec,
 			"bounce_rate": bounceRate, "deferral_rate": deferralRate,
 			"complaint_rate": complaintRate, "open_rate": openRate,
 			"base_quota": int(base), "multiplier": multiplier,
-		})
+		}
+		if m, ok := metricByISP[isp]; ok {
+			hd["hard_bounce_rate"] = m.HardBounceRate
+			hd["soft_bounce_rate"] = m.SoftBounceRate
+			hd["delivery_rate"] = m.DeliveryRate
+			hd["sent"] = m.Sent
+			hd["delivered"] = m.Delivered
+		}
+		healthDetails = append(healthDetails, hd)
 
 		if rec != "MAINTAIN" {
 			adjustments = append(adjustments, fmt.Sprintf("%s: %s (multiplier %.2f)", isp, rec, multiplier))

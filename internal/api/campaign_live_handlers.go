@@ -89,16 +89,17 @@ type LiveDecision struct {
 }
 
 type LiveABStats struct {
-	VariantID   string  `json:"variant_id"`
-	Subject     string  `json:"subject"`
-	FromName    string  `json:"from_name"`
-	Sent        int     `json:"sent"`
-	Opens       int     `json:"opens"`
-	Clicks      int     `json:"clicks"`
-	OpenRate    float64 `json:"open_rate"`
-	ClickRate   float64 `json:"click_rate"`
-	IsWinner    bool    `json:"is_winner"`
-	IsEliminated bool   `json:"is_eliminated"`
+	VariantID    string  `json:"variant_id"`
+	VariantName  string  `json:"variant_name"`
+	Subject      string  `json:"subject"`
+	FromName     string  `json:"from_name"`
+	Sent         int     `json:"sent"`
+	Opens        int     `json:"opens"`
+	Clicks       int     `json:"clicks"`
+	OpenRate     float64 `json:"open_rate"`
+	ClickRate    float64 `json:"click_rate"`
+	IsWinner     bool    `json:"is_winner"`
+	IsEliminated bool    `json:"is_eliminated"`
 }
 
 type LiveAgentState struct {
@@ -242,7 +243,7 @@ func (h *LiveCampaignHandlers) GetLiveSnapshot(w http.ResponseWriter, r *http.Re
 		defer abRows.Close()
 		for abRows.Next() {
 			var s LiveABStats
-			if err := abRows.Scan(&s.VariantID, &s.Subject, &s.Subject, &s.FromName,
+			if err := abRows.Scan(&s.VariantID, &s.VariantName, &s.Subject, &s.FromName,
 				&s.Sent, &s.Opens, &s.Clicks, &s.IsWinner); err == nil {
 				if s.Sent > 0 {
 					s.OpenRate = float64(s.Opens) / float64(s.Sent) * 100
