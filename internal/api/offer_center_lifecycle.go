@@ -81,6 +81,7 @@ type OfferRecord struct {
 	EverflowCreativeID    *string    `json:"everflow_creative_id"`
 	TrackingLinkTemplate  *string    `json:"tracking_link_template"`
 	OptizmoLink           *string    `json:"optizmo_link"`
+	OfferOptoutLink       *string    `json:"offer_optout_link"`
 	WebProperty           *string    `json:"web_property"`
 	LandingPageSlug       *string    `json:"landing_page_slug"`
 	LandingPageURL        *string    `json:"landing_page_url"`
@@ -107,6 +108,7 @@ type CreateOfferRequest struct {
 	EverflowCreativeID   string   `json:"everflow_creative_id"`
 	TrackingLinkTemplate string   `json:"tracking_link_template"`
 	OptizmoLink          string   `json:"optizmo_link"`
+	OfferOptoutLink      string   `json:"offer_optout_link"`
 	WebProperty          string   `json:"web_property"`
 	LandingPageSlug      string   `json:"landing_page_slug"`
 	LandingPageURL       string   `json:"landing_page_url"`
@@ -126,6 +128,7 @@ type UpdateOfferRequest struct {
 	EverflowCreativeID   *string  `json:"everflow_creative_id,omitempty"`
 	TrackingLinkTemplate *string  `json:"tracking_link_template,omitempty"`
 	OptizmoLink          *string  `json:"optizmo_link,omitempty"`
+	OfferOptoutLink      *string  `json:"offer_optout_link,omitempty"`
 	WebProperty          *string  `json:"web_property,omitempty"`
 	LandingPageSlug      *string  `json:"landing_page_slug,omitempty"`
 	LandingPageURL       *string  `json:"landing_page_url,omitempty"`
@@ -308,7 +311,7 @@ type FromNamePerformance struct {
 // Offer scan helper
 // ---------------------------------------------------------------------------
 
-const offerSelectCols = `id, organization_id, vertical_id, brand_name, name, description, everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link, web_property, landing_page_slug, landing_page_url, landing_page_html, original_html_creative, payout, payout_type, optizmo_status, optizmo_last_scrubbed_at, COALESCE(suppression_sync_enabled, FALSE), last_suppression_sync_at, COALESCE(last_suppression_sync_error, ''), status, created_at, updated_at`
+const offerSelectCols = `id, organization_id, vertical_id, brand_name, name, description, everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link, COALESCE(offer_optout_link,''), web_property, landing_page_slug, landing_page_url, landing_page_html, original_html_creative, payout, payout_type, optizmo_status, optizmo_last_scrubbed_at, COALESCE(suppression_sync_enabled, FALSE), last_suppression_sync_at, COALESCE(last_suppression_sync_error, ''), status, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...interface{}) error
@@ -318,6 +321,7 @@ func scanOfferRow(s rowScanner) (OfferRecord, error) {
 	var o OfferRecord
 	var verticalID, description, efOfferID, efCreativeID, trackingLink sql.NullString
 	var optizmoLink, webProperty, lpSlug, lpURL, lpHTML, origHTML sql.NullString
+	var offerOptoutLink string
 	var payoutType, optizmoStatus sql.NullString
 	var payout sql.NullFloat64
 	var optizmoScrubbedAt sql.NullTime
@@ -327,7 +331,7 @@ func scanOfferRow(s rowScanner) (OfferRecord, error) {
 	err := s.Scan(
 		&o.ID, &o.OrganizationID, &verticalID, &o.BrandName, &o.Name,
 		&description, &efOfferID, &efCreativeID, &trackingLink,
-		&optizmoLink, &webProperty, &lpSlug, &lpURL, &lpHTML, &origHTML,
+		&optizmoLink, &offerOptoutLink, &webProperty, &lpSlug, &lpURL, &lpHTML, &origHTML,
 		&payout, &payoutType, &optizmoStatus, &optizmoScrubbedAt,
 		&o.SuppressionSyncEnabled, &lastSyncAt, &lastSyncError,
 		&o.Status, &o.CreatedAt, &o.UpdatedAt,
@@ -342,6 +346,9 @@ func scanOfferRow(s rowScanner) (OfferRecord, error) {
 	o.EverflowCreativeID = nullStringPtr(efCreativeID)
 	o.TrackingLinkTemplate = nullStringPtr(trackingLink)
 	o.OptizmoLink = nullStringPtr(optizmoLink)
+	if offerOptoutLink != "" {
+		o.OfferOptoutLink = &offerOptoutLink
+	}
 	o.WebProperty = nullStringPtr(webProperty)
 	o.LandingPageSlug = nullStringPtr(lpSlug)
 	o.LandingPageURL = nullStringPtr(lpURL)
@@ -715,14 +722,14 @@ func (och *OfferCenterHandlers) HandleCreateOffer(w http.ResponseWriter, r *http
 	_, err := och.db.ExecContext(r.Context(),
 		`INSERT INTO mailing_offers
 			(id, organization_id, vertical_id, brand_name, name, description,
-			 everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link,
+			 everflow_offer_id, everflow_creative_id, tracking_link_template, optizmo_link, offer_optout_link,
 			 web_property, landing_page_slug, landing_page_url, landing_page_html,
 			 original_html_creative, payout, payout_type, status, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		id, defaultOrgID,
 		ocNilIfEmpty(req.VerticalID), req.BrandName, req.Name, ocNilIfEmpty(req.Description),
 		ocNilIfEmpty(req.EverflowOfferID), ocNilIfEmpty(req.EverflowCreativeID),
-		ocNilIfEmpty(req.TrackingLinkTemplate), ocNilIfEmpty(req.OptizmoLink),
+		ocNilIfEmpty(req.TrackingLinkTemplate), ocNilIfEmpty(req.OptizmoLink), ocNilIfEmpty(req.OfferOptoutLink),
 		ocNilIfEmpty(req.WebProperty), ocNilIfEmpty(req.LandingPageSlug),
 		ocNilIfEmpty(req.LandingPageURL), ocNilIfEmpty(req.LandingPageHTML),
 		ocNilIfEmpty(req.OriginalHTMLCreative), req.Payout, ocNilIfEmpty(req.PayoutType),
@@ -808,6 +815,7 @@ func (och *OfferCenterHandlers) HandleUpdateOffer(w http.ResponseWriter, r *http
 	addStr("everflow_creative_id", req.EverflowCreativeID, true)
 	addStr("tracking_link_template", req.TrackingLinkTemplate, true)
 	addStr("optizmo_link", req.OptizmoLink, true)
+	addStr("offer_optout_link", req.OfferOptoutLink, true)
 	addStr("web_property", req.WebProperty, true)
 	addStr("landing_page_slug", req.LandingPageSlug, true)
 	addStr("landing_page_url", req.LandingPageURL, true)

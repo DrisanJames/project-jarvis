@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -200,7 +201,10 @@ var imageExtensions = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 }
 var textExtensions = map[string]bool{
-	".txt": true, ".html": true, ".htm": true,
+	".txt": true,
+}
+var htmlExtensions = map[string]bool{
+	".html": true, ".htm": true,
 }
 
 // zipPathSafe rejects entries with path traversal or absolute paths
@@ -264,6 +268,25 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadZipBundle(w http.ResponseWrite
 	opts.GenerateThumbnails = true
 	opts.OptimizeForWeb = false
 
+	// First pass: detect bundle type (template vs image) by checking for HTML files
+	hasHTMLFiles := false
+	for _, zf := range zipReader.File {
+		if zf.FileInfo().IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(zf.Name))
+		if htmlExtensions[ext] {
+			hasHTMLFiles = true
+			break
+		}
+	}
+
+	if hasHTMLFiles {
+		h.processTemplateBundleZip(ctx, w, zipReader, offerID, orgID)
+		return
+	}
+
+	// Image bundle: existing behavior
 	var uploaded []CreativeAsset
 	var uploadErrors []string
 	var adCopyParts []string
@@ -286,7 +309,7 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadZipBundle(w http.ResponseWrite
 			if err != nil {
 				continue
 			}
-			content, err := io.ReadAll(io.LimitReader(rc, 1<<20)) // 1 MB max per text file
+			content, err := io.ReadAll(io.LimitReader(rc, 1<<20))
 			rc.Close()
 			if err != nil {
 				continue
@@ -384,6 +407,194 @@ func (h *OfferCreativeAssetsHandlers) HandleUploadZipBundle(w http.ResponseWrite
 		"assets":         uploaded,
 		"error_details":  uploadErrors,
 	})
+}
+
+// processTemplateBundleZip handles zip files containing HTML email templates.
+// Groups files by subfolder, processes each HTML through classifyAndRewriteHTML
+// (image rehost, CTA link replacement, unsub replacement, pixel stripping),
+// and imports each template as a creative in mailing_offer_creatives.
+func (h *OfferCreativeAssetsHandlers) processTemplateBundleZip(
+	ctx context.Context, w http.ResponseWriter,
+	zipReader *zip.Reader, offerID, orgID string,
+) {
+	// Load offer metadata for link rewriting
+	var trackingLink, offerOptoutLink, webProperty string
+	h.db.QueryRowContext(ctx,
+		`SELECT COALESCE(tracking_link_template,''), COALESCE(offer_optout_link,''), COALESCE(web_property,'')
+		 FROM mailing_offers WHERE id=$1`, offerID,
+	).Scan(&trackingLink, &offerOptoutLink, &webProperty)
+
+	imageDomain := ""
+	if webProperty != "" {
+		if kit, ok := GetBrandKit(webProperty); ok {
+			imageDomain = ResolveImageDomainForBrand(h.db, kit.ImageDomain)
+		}
+	}
+	if imageDomain == "" {
+		imageDomain = os.Getenv("IMAGE_CDN_DOMAIN")
+	}
+
+	// Group files by subfolder
+	type subfolderFiles struct {
+		htmlFile    *zip.File
+		txtFile     *zip.File // plain text version of the creative
+		subjectFile *zip.File
+		fromFile    *zip.File
+	}
+	folders := make(map[string]*subfolderFiles)
+
+	for _, zf := range zipReader.File {
+		if zf.FileInfo().IsDir() || !zipPathSafe(zf.Name) {
+			continue
+		}
+		dir := filepath.Dir(zf.Name)
+		baseName := strings.ToLower(filepath.Base(zf.Name))
+		ext := strings.ToLower(filepath.Ext(baseName))
+
+		if folders[dir] == nil {
+			folders[dir] = &subfolderFiles{}
+		}
+		sf := folders[dir]
+
+		switch {
+		case htmlExtensions[ext]:
+			sf.htmlFile = zf
+		case strings.HasPrefix(baseName, "subject_line") || strings.HasPrefix(baseName, "subject-line"):
+			sf.subjectFile = zf
+		case strings.HasPrefix(baseName, "from_line") || strings.HasPrefix(baseName, "from-line"):
+			sf.fromFile = zf
+		case ext == ".txt":
+			sf.txtFile = zf
+		}
+	}
+
+	cache := newImageCache()
+	var (
+		importedCreatives  int
+		rehostedImages     int
+		subjectLinesCount  int
+		fromNamesCount     int
+		allSubjectLines    = make(map[string]bool) // deduplicate across subfolders
+		allFromNames       = make(map[string]bool)
+		uploadErrors       []string
+	)
+
+	for dir, sf := range folders {
+		if sf.htmlFile == nil {
+			continue
+		}
+
+		// Extract variant name from folder name (strip common prefixes like "123456_")
+		variantName := filepath.Base(dir)
+		if idx := strings.Index(variantName, "_"); idx > 0 && idx < 10 {
+			variantName = variantName[idx+1:]
+		}
+		variantName = strings.ReplaceAll(variantName, "_", " ")
+
+		// Read HTML content
+		htmlContent, err := readZipFileContent(sf.htmlFile, 2<<20)
+		if err != nil {
+			uploadErrors = append(uploadErrors, fmt.Sprintf("read %s: %v", sf.htmlFile.Name, err))
+			continue
+		}
+
+		// Process HTML through the import engine
+		result := classifyAndRewriteHTML(ctx, htmlContent, trackingLink, offerOptoutLink, imageDomain, orgID, h.imageCDN, cache)
+		uploadErrors = append(uploadErrors, result.Errors...)
+		rehostedImages += result.RehostedImages
+
+		// Insert as a creative
+		creativeID := uuid.New().String()
+		_, dbErr := h.db.ExecContext(ctx, `
+			INSERT INTO mailing_offer_creatives
+			(id, offer_id, version, html_content, status, approval_notes, created_at, updated_at)
+			VALUES ($1, $2, 1, $3, 'imported', $4, NOW(), NOW())`,
+			creativeID, offerID, result.RewrittenHTML,
+			fmt.Sprintf("Imported from bundle: %s", variantName))
+		if dbErr != nil {
+			uploadErrors = append(uploadErrors, fmt.Sprintf("db insert creative %s: %v", variantName, dbErr))
+			continue
+		}
+		importedCreatives++
+		log.Printf("[HTMLImport] imported creative %s from %s (%d images rehosted)", creativeID, variantName, result.RehostedImages)
+
+		// Process subject lines
+		if sf.subjectFile != nil {
+			lines, _ := readZipFileLines(sf.subjectFile)
+			for _, line := range lines {
+				if line != "" && !allSubjectLines[line] {
+					allSubjectLines[line] = true
+					subjectLinesCount++
+				}
+			}
+		}
+
+		// Process from names
+		if sf.fromFile != nil {
+			lines, _ := readZipFileLines(sf.fromFile)
+			for _, line := range lines {
+				if line != "" && !allFromNames[line] {
+					allFromNames[line] = true
+					fromNamesCount++
+				}
+			}
+		}
+	}
+
+	// Bulk insert deduplicated subject lines
+	for line := range allSubjectLines {
+		slID := uuid.New().String()
+		h.db.ExecContext(ctx, `
+			INSERT INTO mailing_offer_subject_lines (id, offer_id, subject_line, status, created_at, updated_at)
+			VALUES ($1, $2, $3, 'active', NOW(), NOW())
+			ON CONFLICT DO NOTHING`, slID, offerID, line)
+	}
+
+	// Bulk insert deduplicated from names
+	for name := range allFromNames {
+		fnID := uuid.New().String()
+		h.db.ExecContext(ctx, `
+			INSERT INTO mailing_offer_from_names (id, offer_id, from_name, status, created_at, updated_at)
+			VALUES ($1, $2, $3, 'active', NOW(), NOW())
+			ON CONFLICT DO NOTHING`, fnID, offerID, name)
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"imported_creatives":     importedCreatives,
+		"uploaded_images":        rehostedImages,
+		"subject_lines_imported": subjectLinesCount,
+		"from_names_imported":    fromNamesCount,
+		"errors":                 len(uploadErrors),
+		"error_details":          uploadErrors,
+	})
+}
+
+func readZipFileContent(zf *zip.File, maxBytes int64) (string, error) {
+	rc, err := zf.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(io.LimitReader(rc, maxBytes))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func readZipFileLines(zf *zip.File) ([]string, error) {
+	content, err := readZipFileContent(zf, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
 }
 
 // HandleListAssets — GET /offer-center/offers/{id}/assets
