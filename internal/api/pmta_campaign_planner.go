@@ -538,7 +538,8 @@ func planPMTAAudience(
 		if err := db.QueryRowContext(ctx,
 			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segmentID,
 		).Scan(&segListID, &conditionsRaw); err != nil {
-			return err
+			log.Printf("[PlanAudience] segment %s not found, skipping: %v", segmentID, err)
+			return nil
 		}
 		var listIDVal interface{}
 		if segListID != nil && *segListID != "" {
