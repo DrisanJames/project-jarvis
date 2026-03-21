@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -1411,7 +1412,160 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 
 	log.Printf("[MarketingAgent] domain=%s prefix=%s templates: %d, lists: %d inclusion (14d clickers + 7d openers first)", input.SendingDomain, domainPrefix, len(domainTemplates), len(inclusionLists))
 
-	// Generate daily recommendations — single campaign per day
+	// --- Strategy params for dual campaign generation ---
+	includeWeekends := false
+	if v, ok := params["include_weekends"].(bool); ok {
+		includeWeekends = v
+	}
+
+	// Engaged campaign lists (seed lists, stored in strategy as JSON array of {id,name,type})
+	var engagedLists []listInfo
+	if rawLists, ok := params["engaged_lists"].([]interface{}); ok {
+		for _, item := range rawLists {
+			if m, ok := item.(map[string]interface{}); ok {
+				li := listInfo{
+					ID:   fmt.Sprintf("%v", m["id"]),
+					Name: fmt.Sprintf("%v", m["name"]),
+					Type: "list",
+				}
+				if t, ok := m["type"].(string); ok {
+					li.Type = t
+				}
+				engagedLists = append(engagedLists, li)
+			}
+		}
+	}
+
+	// Engaged quotas (fixed per day, stored in strategy as {isp: volume})
+	engagedQuotas := map[string]int{}
+	if rawQ, ok := params["engaged_quotas"].(map[string]interface{}); ok {
+		for isp, v := range rawQ {
+			switch n := v.(type) {
+			case float64:
+				engagedQuotas[isp] = int(n)
+			case int:
+				engagedQuotas[isp] = n
+			}
+		}
+	}
+
+	// 90-day domain exclusion segment ID for Welcome campaigns
+	welcomeExclusionSegmentID := ""
+	welcomeExclusionSegmentName := ""
+	if v, ok := params["welcome_exclusion_segment_id"].(string); ok && v != "" {
+		welcomeExclusionSegmentID = v
+	}
+	if v, ok := params["welcome_exclusion_segment_name"].(string); ok && v != "" {
+		welcomeExclusionSegmentName = v
+	}
+	if welcomeExclusionSegmentID == "" {
+		// Auto-detect: find "Sent Last 90D" segment for this domain
+		var autoID, autoName string
+		a.db.QueryRowContext(r.Context(),
+			`SELECT id::text, name FROM mailing_segments
+			 WHERE organization_id = $1 AND status = 'active'
+			   AND LOWER(name) LIKE '%90d%' AND LOWER(name) LIKE '%sent%'
+			   AND (LOWER(name) LIKE '%' || $2 || '%' OR LOWER(name) LIKE '%' || $3 || '%')
+			 LIMIT 1`, orgID, strings.ToLower(domainPrefix), strings.Replace(strings.ToLower(input.SendingDomain), "em.", "", 1)).Scan(&autoID, &autoName)
+		if autoID != "" {
+			welcomeExclusionSegmentID = autoID
+			welcomeExclusionSegmentName = autoName
+			log.Printf("[MarketingAgent] auto-detected 90D exclusion segment: %s (%s)", autoName, autoID)
+		}
+	}
+
+	// Schedule time offsets for staggered sends
+	engagedTimeOffset := 0
+	if v, ok := params["engaged_schedule_offset_minutes"].(float64); ok {
+		engagedTimeOffset = int(v)
+	}
+	welcomeTimeOffset := 30
+	if v, ok := params["welcome_schedule_offset_minutes"].(float64); ok {
+		welcomeTimeOffset = int(v)
+	}
+
+	dualMode := len(engagedLists) > 0 && len(engagedQuotas) > 0
+	log.Printf("[MarketingAgent] dual_mode=%v include_weekends=%v engaged_lists=%d engaged_quotas=%d 90d_excl=%s",
+		dualMode, includeWeekends, len(engagedLists), len(engagedQuotas), welcomeExclusionSegmentID)
+
+	// Split templates into welcome and newsletter categories
+	var welcomeTemplates, newsletterTemplates []savedTemplate
+	for _, tmpl := range domainTemplates {
+		lower := strings.ToLower(tmpl.Name + " " + tmpl.Folder)
+		if strings.Contains(lower, "welcome") {
+			welcomeTemplates = append(welcomeTemplates, tmpl)
+		} else {
+			newsletterTemplates = append(newsletterTemplates, tmpl)
+		}
+	}
+	if len(welcomeTemplates) == 0 {
+		welcomeTemplates = domainTemplates
+	}
+	if len(newsletterTemplates) == 0 {
+		newsletterTemplates = domainTemplates
+	}
+
+	// Build Welcome exclusion lists (base exclusions + 90-day domain segment)
+	welcomeExclusions := make([]listInfo, len(exclusionLists))
+	copy(welcomeExclusions, exclusionLists)
+	if welcomeExclusionSegmentID != "" {
+		name := welcomeExclusionSegmentName
+		if name == "" {
+			name = domainPrefix + " - Sent Last 90D"
+		}
+		welcomeExclusions = append(welcomeExclusions, listInfo{
+			ID:   welcomeExclusionSegmentID,
+			Name: name,
+			Type: "segment",
+		})
+	}
+
+	// --- Replace stale ISP plan baseline with actual 3-day delivery data ---
+	deliveryQuotas := map[string]int{}
+	dRows, _ := a.db.QueryContext(r.Context(), `
+		SELECT
+			LOWER(COALESCE(te.isp, 'other')) as isp,
+			COUNT(*) as delivered
+		FROM mailing_tracking_events te
+		JOIN mailing_campaigns c ON te.campaign_id = c.id
+		WHERE c.organization_id::text = $1
+		  AND c.from_email LIKE '%@' || $2
+		  AND te.event_type = 'delivered'
+		  AND te.created_at > NOW() - INTERVAL '3 days'
+		GROUP BY 1`, orgID, input.SendingDomain)
+	if dRows != nil {
+		defer dRows.Close()
+		for dRows.Next() {
+			var isp string
+			var count int
+			dRows.Scan(&isp, &count)
+			dailyAvg := count / 3
+			if dailyAvg > 0 {
+				deliveryQuotas[isp] = dailyAvg
+			}
+		}
+	}
+	if len(deliveryQuotas) > 0 {
+		log.Printf("[MarketingAgent] using 3-day delivery baseline: %v", deliveryQuotas)
+		currentQuotas = deliveryQuotas
+	}
+
+	// Helper: compute time string with minute offset from base
+	computeTime := func(baseTime string, offsetMinutes int) string {
+		parts := strings.Split(baseTime, ":")
+		h, m := 13, 0
+		if len(parts) >= 2 {
+			fmt.Sscanf(parts[0], "%d", &h)
+			fmt.Sscanf(parts[1], "%d", &m)
+		}
+		total := h*60 + m + offsetMinutes
+		if total < 0 {
+			total = 0
+		}
+		return fmt.Sprintf("%02d:%02d", total/60, total%60)
+	}
+
+	// Generate daily recommendations — dual campaigns per day (Engaged + Welcome)
 	created := 0
 	endDate := t.AddDate(0, 1, -1)
 	current := t
@@ -1421,63 +1575,132 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 	dayIndex := 0
 	for !current.After(endDate) {
 		weekday := current.Weekday()
-		if weekday == time.Saturday || weekday == time.Sunday {
+		if !includeWeekends && (weekday == time.Saturday || weekday == time.Sunday) {
 			current = current.AddDate(0, 0, 1)
 			continue
 		}
 
-		multiplier := 1.0 + (increasePct/100.0)*float64(dayIndex)
+		// Compound growth: (1 + pct/100)^dayIndex
+		multiplier := math.Pow(1.0+increasePct/100.0, float64(dayIndex))
 
-		// Single campaign per day — 100% volume, 14D clickers + 7D openers first, Global Suppression always excluded
-		quotas := map[string]interface{}{}
-		volume := 0
+		dateStr := current.Format("2006-01-02")
+		dayLabel := current.Format("Monday")
+
+		// === Campaign 1: Engaged (seeds) — if dual mode ===
+		if dualMode {
+			engTime := computeTime(scheduleTime, engagedTimeOffset)
+			engVol := 0
+			engQuotaMap := map[string]interface{}{}
+			for isp, vol := range engagedQuotas {
+				engQuotaMap[isp] = vol
+				engVol += vol
+			}
+
+			engTmpl := newsletterTemplates[dayIndex%len(newsletterTemplates)]
+			engName := input.SendingDomain + " — " + dayLabel + " Engaged"
+
+			engCfg, _ := json.Marshal(map[string]interface{}{
+				"sending_domain":        input.SendingDomain,
+				"isp_quotas":            engQuotaMap,
+				"name":                  engName,
+				"scheduled_date":        dateStr,
+				"scheduled_time":        engTime,
+				"from_name":             fromName,
+				"from_email":            fromEmail,
+				"subject":               engTmpl.Subject,
+				"preview_text":          engTmpl.PreviewText,
+				"template_id":           engTmpl.ID,
+				"template_name":         engTmpl.Name,
+				"wave_interval_minutes": histWaveInterval,
+				"throttle_per_wave":     histThrottlePerWave,
+				"audience_priority":     audiencePriority,
+				"inclusion_lists":       engagedLists,
+				"exclusion_lists":       exclusionLists,
+				"campaign_type":         "engaged_send",
+			})
+			_, err := a.db.ExecContext(r.Context(),
+				`INSERT INTO agent_campaign_recommendations
+				 (organization_id, sending_domain, scheduled_date, scheduled_time,
+				  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
+				orgID, input.SendingDomain, dateStr, engTime,
+				engName, string(engCfg),
+				fmt.Sprintf("Engaged campaign — seed lists, fixed quotas. Day %d.", dayIndex+1),
+				strategy, engVol)
+			if err != nil {
+				log.Printf("[MarketingAgent] forecast insert error (engaged): %v", err)
+			} else {
+				created++
+			}
+		}
+
+		// === Campaign 2 (or only campaign): Welcome / General ===
+		welTime := scheduleTime
+		if dualMode {
+			welTime = computeTime(scheduleTime, welcomeTimeOffset)
+		}
+
+		welQuotas := map[string]interface{}{}
+		welVol := 0
 		for isp, base := range currentQuotas {
 			adjusted := int(float64(base) * multiplier)
-			quotas[isp] = adjusted
-			volume += adjusted
+			welQuotas[isp] = adjusted
+			welVol += adjusted
 		}
-		var tmplID, tmplName, subj, preview string
-		if len(domainTemplates) > 0 {
-			t := domainTemplates[dayIndex%len(domainTemplates)]
-			tmplID = t.ID
-			tmplName = t.Name
-			subj = t.Subject
-			preview = t.PreviewText
+
+		welTmpl := welcomeTemplates[dayIndex%len(welcomeTemplates)]
+		welType := "welcome_send"
+		welLabel := "Welcome"
+		welExcl := welcomeExclusions
+		welInclusion := inclusionLists
+		if !dualMode {
+			welType = "general_send"
+			welLabel = ""
+			welExcl = exclusionLists
 		}
-		if preview == "" && len(previewTextPool) > 0 {
-			preview = previewTextPool[dayIndex%len(previewTextPool)]
+
+		welName := input.SendingDomain + " — " + dayLabel
+		if welLabel != "" {
+			welName += " " + welLabel
 		}
-		campaignName := input.SendingDomain + " — " + current.Format("Jan 2")
-		cfg, _ := json.Marshal(map[string]interface{}{
+
+		welCfg, _ := json.Marshal(map[string]interface{}{
 			"sending_domain":        input.SendingDomain,
-			"isp_quotas":            quotas,
-			"name":                  campaignName,
-			"scheduled_date":        current.Format("2006-01-02"),
-			"scheduled_time":        scheduleTime,
+			"isp_quotas":            welQuotas,
+			"name":                  welName,
+			"scheduled_date":        dateStr,
+			"scheduled_time":        welTime,
 			"from_name":             fromName,
 			"from_email":            fromEmail,
-			"subject":               subj,
-			"preview_text":          preview,
-			"template_id":           tmplID,
-			"template_name":         tmplName,
+			"subject":               welTmpl.Subject,
+			"preview_text":          welTmpl.PreviewText,
+			"template_id":           welTmpl.ID,
+			"template_name":         welTmpl.Name,
 			"wave_interval_minutes": histWaveInterval,
 			"throttle_per_wave":     histThrottlePerWave,
 			"audience_priority":     audiencePriority,
-			"inclusion_lists":       inclusionLists,
-			"exclusion_lists":       exclusionLists,
-			"campaign_type":         "general_send",
+			"inclusion_lists":       welInclusion,
+			"exclusion_lists":       welExcl,
+			"campaign_type":         welType,
 		})
 		_, err := a.db.ExecContext(r.Context(),
 			`INSERT INTO agent_campaign_recommendations
 			 (organization_id, sending_domain, scheduled_date, scheduled_time,
 			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-			orgID, input.SendingDomain, current.Format("2006-01-02"), scheduleTime,
-			campaignName, string(cfg),
-			fmt.Sprintf("Single campaign — 14D clickers and 7D openers prioritized ahead of lists. Global Suppression always excluded. Day %d, %.0f%% cumulative volume increase.", dayIndex+1, increasePct*float64(dayIndex)),
-			strategy, volume)
+			orgID, input.SendingDomain, dateStr, welTime,
+			welName, string(welCfg),
+			fmt.Sprintf("%s campaign — compound growth %.0f%% per day. Day %d, multiplier %.2fx. %s",
+				welLabel, increasePct, dayIndex+1, multiplier,
+				func() string {
+					if welcomeExclusionSegmentID != "" {
+						return "90-day domain exclusion active."
+					}
+					return "Global Suppression excluded."
+				}()),
+			strategy, welVol)
 		if err != nil {
-			log.Printf("[MarketingAgent] forecast insert error: %v", err)
+			log.Printf("[MarketingAgent] forecast insert error (welcome): %v", err)
 		} else {
 			created++
 		}
@@ -1493,6 +1716,8 @@ func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *h
 		"sending_domain":          input.SendingDomain,
 		"strategy":                strategy,
 		"month":                   input.Month,
+		"dual_mode":               dualMode,
+		"include_weekends":        includeWeekends,
 	})
 }
 
