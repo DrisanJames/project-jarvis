@@ -77,6 +77,7 @@ def main() -> int:
     upsert_env(env_list, "JARVIS_S3_REGION", "us-west-2")
     upsert_env(env_list, "IMAGE_CDN_DOMAIN", "img.projectjarvis.io")
     upsert_env(env_list, "ENABLE_ENGAGEMENT_ESCALATION", "true")
+    upsert_env(env_list, "REDIS_URL", "apex-redis.x9k9ng.0001.usw2.cache.amazonaws.com:6379")
 
     for var_name in PASSTHROUGH_ENV_VARS:
         val = os.environ.get(var_name)
