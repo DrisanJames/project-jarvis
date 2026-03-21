@@ -444,9 +444,12 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 	cfgOfferID, _ := cfg["offer_id"].(string)
 
 	// Try multi-variant generation via wave content pipeline.
-	// Match sending domain to a known brand, scrape fresh content, and generate
-	// 3 editorial variations that fill the brand's approved template slots.
-	variants := generateMultiVariantContent(ctx, a.db, sendingDomain, fromName, subject, previewText, htmlContent)
+	// Match sending domain + campaign type to a known brand, scrape fresh
+	// content, and generate 3 editorial variations that fill the brand's
+	// approved template slots. Works for both engaged AND welcome campaigns —
+	// welcome campaigns get welcome-specific content while the template
+	// structure stays locked. Every text element varies for anti-fingerprinting.
+	variants := generateMultiVariantContent(ctx, a.db, campaignName, sendingDomain, fromName, subject, previewText, htmlContent)
 
 	// Build the full PMTACampaignInput
 	deployInput := engine.PMTACampaignInput{
@@ -1684,10 +1687,13 @@ func (a *EmailMarketingAgent) HandleCreateRecommendation(w http.ResponseWriter, 
 
 // generateMultiVariantContent attempts to produce 3 content variants for
 // round-robin rotation by scraping the brand site and running the AI wave
-// content generator. If the sending domain doesn't match a known brand, or
-// AI keys are unavailable, or generation fails, it falls back to a single
-// variant using the original content from the recommendation.
-func generateMultiVariantContent(ctx context.Context, db *sql.DB, sendingDomain, fromName, subject, previewText, htmlContent string) []engine.ContentVariant {
+// content generator. Both newsletter/engaged and welcome campaigns are
+// supported — the campaignName is used to select the correct brand config
+// (welcome vs newsletter) so that welcome campaigns get welcome-appropriate
+// multi-variant content while preserving the approved template structure.
+// Every text element (subject, preview, intro, articles, CTAs) varies between
+// variants for ISP anti-fingerprinting while the HTML layout stays locked.
+func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, sendingDomain, fromName, subject, previewText, htmlContent string) []engine.ContentVariant {
 	singleVariant := []engine.ContentVariant{{
 		VariantName:  "A",
 		FromName:     fromName,
@@ -1697,10 +1703,20 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, sendingDomain,
 		SplitPercent: 100,
 	}}
 
+	isWelcome := strings.Contains(strings.ToLower(campaignName), "welcome")
+
 	brands := knownBrands()
 	var brand *brandConfig
 	for _, b := range brands {
-		if b.SendingDomain == sendingDomain && b.CampaignType != "welcome" {
+		if b.SendingDomain != sendingDomain {
+			continue
+		}
+		if isWelcome && b.CampaignType == "welcome" {
+			bc := b
+			brand = &bc
+			break
+		}
+		if !isWelcome && b.CampaignType != "welcome" {
 			bc := b
 			brand = &bc
 			break
@@ -1709,6 +1725,8 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, sendingDomain,
 	if brand == nil {
 		return singleVariant
 	}
+
+	log.Printf("[EDITH-deploy] matched brand %q (type=%s) for campaign %q", brand.BrandName, brand.CampaignType, campaignName)
 
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	openaiKey := os.Getenv("OPENAI_API_KEY")

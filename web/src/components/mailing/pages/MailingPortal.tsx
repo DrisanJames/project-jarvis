@@ -33,6 +33,7 @@ const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel
 const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
 const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketingAgent').then(m => ({ default: m.EmailMarketingAgent })));
 const WarmupDashboard = lazy(() => import('../components/WarmupDashboard').then(m => ({ default: m.WarmupDashboard })));
+const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -41,7 +42,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents';
 
 interface Tab {
   id: TabId;
@@ -64,6 +65,7 @@ const tabs: Tab[] = [
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
   { id: 'warmup-dashboard', label: 'IP Warmup', icon: faFire, description: 'Per-IP warmup progress, ISP delivery heatmap & pool health' },
+  { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP rate management, throttle control & throughput visibility' },
   { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
@@ -155,6 +157,8 @@ export const MailingPortal: React.FC = () => {
         return <DeliveryServersManager />;
       case 'warmup-dashboard':
         return <Suspense fallback={<ChunkLoader />}><WarmupDashboard /></Suspense>;
+      case 'deliverability':
+        return <Suspense fallback={<ChunkLoader />}><DeliverabilityControl /></Suspense>;
       case 'offers':
         return <OfferManagement />;
       case 'automations':

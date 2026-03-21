@@ -75,10 +75,11 @@ type ISPConfig struct {
 	BounceActionPct    float64         `json:"bounce_action_pct" db:"bounce_action_pct"`
 	ComplaintWarnPct   float64         `json:"complaint_warn_pct" db:"complaint_warn_pct"`
 	ComplaintActionPct float64         `json:"complaint_action_pct" db:"complaint_action_pct"`
-	MaxConnections     int             `json:"max_connections" db:"max_connections"`
-	MaxMsgRate         int             `json:"max_msg_rate" db:"max_msg_rate"`
-	DeferralCodes      []string        `json:"deferral_codes"`
-	KnownBehaviors     json.RawMessage `json:"known_behaviors" db:"known_behaviors"`
+	MaxConnections          int             `json:"max_connections" db:"max_connections"`
+	MaxMsgRate              int             `json:"max_msg_rate" db:"max_msg_rate"`
+	MaxEscalationMultiplier float64         `json:"max_escalation_multiplier" db:"max_escalation_multiplier"`
+	DeferralCodes           []string        `json:"deferral_codes"`
+	KnownBehaviors          json.RawMessage `json:"known_behaviors" db:"known_behaviors"`
 	PoolName           string          `json:"pool_name" db:"pool_name"`
 	WarmupSchedule     json.RawMessage `json:"warmup_schedule" db:"warmup_schedule"`
 	Enabled            bool            `json:"enabled" db:"enabled"`
@@ -438,6 +439,7 @@ type MicroContext struct {
 	BackoffStep     int     `json:"backoff_step,omitempty"`
 	RecoveryTimeMin float64 `json:"recovery_time_min,omitempty"`
 	PriorRateAdj    float64 `json:"prior_rate_adj,omitempty"`
+	EscalationAdj   float64 `json:"escalation_adj,omitempty"`
 }
 
 // ConvictionOutcome records what actually happened after the verdict was applied.

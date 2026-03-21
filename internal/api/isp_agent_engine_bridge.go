@@ -22,6 +22,7 @@ type ISPAgentEngineBridge struct {
 	ispConfigs      map[engine.ISP]engine.ISPConfig
 	convictionStore *engine.ConvictionStore
 	agentFactory    *engine.AgentFactory
+	signalProcessor *engine.SignalProcessor
 }
 
 // domainToISP maps a managed agent's domain (e.g. "gmail.com") to the
@@ -208,6 +209,28 @@ func (b *ISPAgentEngineBridge) HandleAgentEngine(w http.ResponseWriter, r *http.
 	}
 	resp["ip_health"] = ipHealth
 	resp["per_ip_enabled"] = os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
+	resp["escalation_enabled"] = os.Getenv("ENABLE_ENGAGEMENT_ESCALATION") == "true"
+
+	// Escalation state from ThrottleAgent
+	if b.agentFactory != nil {
+		if ta := b.agentFactory.GetThrottleAgent(isp); ta != nil {
+			state := ta.GetState()
+			if state.EscalationAdj > 1.0 {
+				resp["escalation"] = map[string]interface{}{
+					"adj":            state.EscalationAdj,
+					"effective_rate": ta.GetEffectiveRate(),
+					"base_rate":      state.OriginalRate,
+					"cooldown_until": state.EscalationCooldownUntil,
+					"last_at":        state.LastEscalationAt,
+				}
+			}
+		}
+	}
+
+	// Engagement telemetry from Redis
+	if b.signalProcessor != nil {
+		resp["engagement"] = b.signalProcessor.GetEngagementMetrics(isp)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -221,8 +244,9 @@ func (b *ISPAgentEngineBridge) HandleEngineSummary(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 
 	resp := map[string]interface{}{
-		"per_ip_enabled": os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true",
-		"updated_at":     time.Now().UTC(),
+		"per_ip_enabled":    os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true",
+		"escalation_enabled": os.Getenv("ENABLE_ENGAGEMENT_ESCALATION") == "true",
+		"updated_at":         time.Now().UTC(),
 	}
 
 	// All ISP rates
@@ -279,6 +303,20 @@ func (b *ISPAgentEngineBridge) HandleEngineSummary(w http.ResponseWriter, r *htt
 		}
 	}
 	resp["throttle_states"] = throttleStates
+
+	// Per-ISP engagement telemetry
+	if b.signalProcessor != nil {
+		engagement := make(map[string]engine.EngagementMetrics)
+		for isp := range b.ispConfigs {
+			m := b.signalProcessor.GetEngagementMetrics(isp)
+			if m.OpenRate1h > 0 || m.ClickRate1h > 0 || m.UniqueClicks1h > 0 {
+				engagement[string(isp)] = m
+			}
+		}
+		if len(engagement) > 0 {
+			resp["engagement"] = engagement
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {

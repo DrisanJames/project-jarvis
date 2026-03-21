@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,11 @@ type ThrottleState struct {
 	InRecovery      bool
 	RecoveryStarted time.Time
 	LastBackoffAt   time.Time
+
+	// Escalation state (Layer 2: engagement-driven rate increases above MaxMsgRate)
+	EscalationAdj          float64   // 1.0 = baseline, >1.0 = escalated above MaxMsgRate
+	EscalationCooldownUntil time.Time // next escalation allowed after this time
+	LastEscalationAt       time.Time
 }
 
 // Equal compares two ThrottleState values using time.Equal for timestamps,
@@ -42,7 +48,10 @@ func (s ThrottleState) Equal(o ThrottleState) bool {
 		s.BackoffCount == o.BackoffCount &&
 		s.InRecovery == o.InRecovery &&
 		s.RecoveryStarted.Equal(o.RecoveryStarted) &&
-		s.LastBackoffAt.Equal(o.LastBackoffAt)
+		s.LastBackoffAt.Equal(o.LastBackoffAt) &&
+		s.EscalationAdj == o.EscalationAdj &&
+		s.EscalationCooldownUntil.Equal(o.EscalationCooldownUntil) &&
+		s.LastEscalationAt.Equal(o.LastEscalationAt)
 }
 
 type ThrottleAgent struct {
@@ -63,7 +72,13 @@ type ThrottleAgent struct {
 	recoveryStarted time.Time
 	lastBackoffAt   time.Time
 
-	lastPersisted ThrottleState // dirty-flag: skip persist when unchanged
+	// Escalation state
+	escalationAdj           float64
+	escalationCooldownUntil time.Time
+	lastEscalationAt        time.Time
+	escalationEnabled       bool // cached from env at construction time
+
+	lastPersisted ThrottleState
 }
 
 // NewThrottleAgent creates a new ISP-scoped throttle agent.
@@ -74,11 +89,13 @@ func NewThrottleAgent(id AgentID, config ISPConfig, memory *MemoryStore, convict
 			Config: config,
 			Status: StatusActive,
 		},
-		memory:         memory,
-		convictions:    convictions,
-		alertCh:        alertCh,
-		currentRateAdj: 1.0,
-		originalRate:   config.MaxMsgRate,
+		memory:            memory,
+		convictions:       convictions,
+		alertCh:           alertCh,
+		currentRateAdj:    1.0,
+		originalRate:      config.MaxMsgRate,
+		escalationAdj:     1.0,
+		escalationEnabled: os.Getenv("ENABLE_ENGAGEMENT_ESCALATION") == "true",
 	}
 }
 
@@ -105,7 +122,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	currentEffective := int(float64(a.originalRate) * a.currentRateAdj)
+	currentEffective := a.computeEffectiveRateLocked()
 
 	// Build the current situation context for recall and conviction recording
 	situationCtx := MicroContext{
@@ -118,6 +135,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 		DeferralRate:    deferralRate,
 		ComplaintRate:   snap.ComplaintRate1h,
 		AcceptanceRate:  acceptanceRate,
+		TrueOpenRate:    snap.TrueOpenRate1h,
 		DeferralCount:   snap.Deferred5m,
 		AcceptedCount:   snap.Sent5m - snap.Deferred5m,
 		BounceCount:     snap.Bounced1h,
@@ -126,6 +144,13 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 		EffectiveRate:   currentEffective,
 		BackoffStep:     a.backoffCount,
 		PriorRateAdj:    a.currentRateAdj,
+
+		OpenRate1h:            snap.OpenRate1h,
+		ClickRate1h:           snap.ClickRate1h,
+		UniqueClicks:          snap.UniqueClicks1h,
+		ClickToComplaintRatio: snap.ClickToComplaintRatio1h,
+		EngagementScore:       snap.EngagementScore1h,
+		EscalationAdj:         a.escalationAdj,
 	}
 
 	// Recall similar past situations to inform the decision
@@ -138,12 +163,18 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 	}
 
 	if deferralRate > 20 {
+		// Any escalation is immediately reverted on deferral spike
+		if a.escalationAdj > 1.0 {
+			a.escalationAdj = 1.0
+			log.Printf("[throttle:%s] escalation reverted due to deferral spike (%.1f%%)", a.ID.ISP, deferralRate)
+		}
+
 		if a.inRecovery {
 			a.currentRateAdj = a.lastStableRate
 			a.inRecovery = false
 			a.SetCooldown(30 * time.Minute)
 
-			newRate := int(float64(a.originalRate) * a.currentRateAdj)
+			newRate := a.computeEffectiveRateLocked()
 			if a.rateRegistry != nil {
 				a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
 			}
@@ -188,7 +219,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 			a.currentRateAdj = reduction
 			a.lastBackoffAt = now
 
-			newRate := int(float64(a.originalRate) * a.currentRateAdj)
+			newRate := a.computeEffectiveRateLocked()
 			if a.rateRegistry != nil {
 				a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
 			}
@@ -247,7 +278,7 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 
 		newAdj := math.Min(a.currentRateAdj*1.10, 1.0)
 		a.currentRateAdj = newAdj
-		newRate := int(float64(a.originalRate) * newAdj)
+		newRate := a.computeEffectiveRateLocked()
 		if a.rateRegistry != nil {
 			a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
 		}
@@ -303,23 +334,26 @@ func (a *ThrottleAgent) Evaluate(snap SignalSnapshot) []Decision {
 			})
 		}
 	} else if deferralRate <= 5 && a.currentRateAdj >= 1.0 && snap.Sent5m >= 50 {
-		// Steady state: everything is good. Record a WILL conviction to remember
-		// that this rate works under these conditions.
-		if a.convictions != nil {
-			a.convictions.Record(ctx, Conviction{
-				AgentType: AgentThrottle,
-				ISP:       a.ID.ISP,
-				Verdict:   VerdictWill,
-				Statement: fmt.Sprintf(
-					"I WILL send at %d/hr to %s. Steady state, deferral rate %.1f%%. "+
-					"%d sent in 5min, %d deferred, %d accepted (%.1f%%). No action needed. %s",
-					currentEffective, a.ID.ISP, deferralRate,
-					snap.Sent5m, snap.Deferred5m, snap.Sent5m-snap.Deferred5m, acceptanceRate,
-					priorWisdom,
-				),
-				Context:   situationCtx,
-				CreatedAt: now,
-			})
+		// Steady state: everything is good.
+		escalated := a.tryEngagementEscalation(ctx, snap, now, currentEffective, deferralRate, acceptanceRate, &situationCtx, priorWisdom, &decisions)
+
+		if !escalated {
+			if a.convictions != nil {
+				a.convictions.Record(ctx, Conviction{
+					AgentType: AgentThrottle,
+					ISP:       a.ID.ISP,
+					Verdict:   VerdictWill,
+					Statement: fmt.Sprintf(
+						"I WILL send at %d/hr to %s. Steady state, deferral rate %.1f%%. "+
+						"%d sent in 5min, %d deferred, %d accepted (%.1f%%). No action needed. %s",
+						currentEffective, a.ID.ISP, deferralRate,
+						snap.Sent5m, snap.Deferred5m, snap.Sent5m-snap.Deferred5m, acceptanceRate,
+						priorWisdom,
+					),
+					Context:   situationCtx,
+					CreatedAt: now,
+				})
+			}
 		}
 	}
 
@@ -386,7 +420,22 @@ func (a *ThrottleAgent) SetRateRegistry(r *ISPRateRegistry) {
 func (a *ThrottleAgent) GetEffectiveRate() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return int(float64(a.originalRate) * a.currentRateAdj)
+	return a.computeEffectiveRateLocked()
+}
+
+// computeEffectiveRateLocked returns originalRate * rateAdj * escalationAdj.
+// Caller must hold mu.
+func (a *ThrottleAgent) computeEffectiveRateLocked() int {
+	return int(float64(a.originalRate) * a.currentRateAdj * a.escalationAdj)
+}
+
+// maxEscalationMultiplier returns the configured ceiling for escalation.
+// Defaults to 1.0 (no escalation) if not configured.
+func (a *ThrottleAgent) maxEscalationMultiplier() float64 {
+	if a.Config.MaxEscalationMultiplier > 1.0 {
+		return a.Config.MaxEscalationMultiplier
+	}
+	return 1.5 // safe default when not explicitly configured
 }
 
 // SetDB attaches a database handle for state persistence.
@@ -415,8 +464,15 @@ func (a *ThrottleAgent) RestoreState(s ThrottleState) {
 	a.inRecovery = s.InRecovery
 	a.recoveryStarted = s.RecoveryStarted
 	a.lastBackoffAt = s.LastBackoffAt
+	if s.EscalationAdj > 0 {
+		a.escalationAdj = s.EscalationAdj
+	} else {
+		a.escalationAdj = 1.0
+	}
+	a.escalationCooldownUntil = s.EscalationCooldownUntil
+	a.lastEscalationAt = s.LastEscalationAt
 	a.lastPersisted = s
-	effectiveRate := int(float64(a.originalRate) * a.currentRateAdj)
+	effectiveRate := a.computeEffectiveRateLocked()
 	a.mu.Unlock()
 
 	if a.rateRegistry != nil && effectiveRate > 0 {
@@ -436,13 +492,16 @@ func (a *ThrottleAgent) GetState() ThrottleState {
 // snapshotStateLocked captures current state. Caller must hold mu.
 func (a *ThrottleAgent) snapshotStateLocked() ThrottleState {
 	return ThrottleState{
-		CurrentRateAdj:  a.currentRateAdj,
-		OriginalRate:    a.originalRate,
-		LastStableRate:  a.lastStableRate,
-		BackoffCount:    a.backoffCount,
-		InRecovery:      a.inRecovery,
-		RecoveryStarted: a.recoveryStarted,
-		LastBackoffAt:   a.lastBackoffAt,
+		CurrentRateAdj:          a.currentRateAdj,
+		OriginalRate:            a.originalRate,
+		LastStableRate:          a.lastStableRate,
+		BackoffCount:            a.backoffCount,
+		InRecovery:              a.inRecovery,
+		RecoveryStarted:         a.recoveryStarted,
+		LastBackoffAt:           a.lastBackoffAt,
+		EscalationAdj:           a.escalationAdj,
+		EscalationCooldownUntil: a.escalationCooldownUntil,
+		LastEscalationAt:        a.lastEscalationAt,
 	}
 }
 
@@ -469,16 +528,198 @@ func (a *ThrottleAgent) persistState() {
 		_, err := a.db.ExecContext(ctx, `
 			INSERT INTO mailing_engine_throttle_agent_state
 				(isp, current_rate_adj, original_rate, last_stable_rate, backoff_count,
-				 in_recovery, recovery_started, last_backoff_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+				 in_recovery, recovery_started, last_backoff_at,
+				 escalation_adj, escalation_cooldown_until, last_escalation_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 			ON CONFLICT (isp) DO UPDATE SET
 				current_rate_adj = $2, original_rate = $3, last_stable_rate = $4,
 				backoff_count = $5, in_recovery = $6, recovery_started = $7,
-				last_backoff_at = $8, updated_at = NOW()
+				last_backoff_at = $8, escalation_adj = $9, escalation_cooldown_until = $10,
+				last_escalation_at = $11, updated_at = NOW()
 		`, isp, snap.CurrentRateAdj, snap.OriginalRate, snap.LastStableRate,
-			snap.BackoffCount, snap.InRecovery, snap.RecoveryStarted, snap.LastBackoffAt)
+			snap.BackoffCount, snap.InRecovery, snap.RecoveryStarted, snap.LastBackoffAt,
+			snap.EscalationAdj, snap.EscalationCooldownUntil, snap.LastEscalationAt)
 		if err != nil {
 			log.Printf("[throttle-state] persist %s failed: %v", isp, err)
 		}
 	}()
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2: Engagement-Driven Escalation
+// ---------------------------------------------------------------------------
+
+const (
+	escalationStepPct      = 0.05          // 5% per escalation step
+	escalationCooldown     = 4 * time.Hour // minimum wait between escalation steps
+	escalationMinClicks    = 100           // require 100+ unique clicks/hr for confidence
+	escalationMinCTCRatio  = 10.0          // clicks-to-complaints ratio ≥ 10:1
+	escalationMinSent      = 200           // require meaningful sending volume
+	escalationRevertWindow = 2 * time.Hour // auto-revert if engagement drops within this window
+)
+
+// tryEngagementEscalation checks whether engagement signals justify a proactive
+// rate increase above MaxMsgRate. Returns true if an escalation decision was made.
+// Caller must hold mu. This is a no-op if the feature flag is off.
+func (a *ThrottleAgent) tryEngagementEscalation(
+	ctx context.Context,
+	snap SignalSnapshot,
+	now time.Time,
+	currentEffective int,
+	deferralRate, acceptanceRate float64,
+	situationCtx *MicroContext,
+	priorWisdom string,
+	decisions *[]Decision,
+) bool {
+	if !a.escalationEnabled {
+		return false
+	}
+
+	maxMult := a.maxEscalationMultiplier()
+	if maxMult <= 1.0 {
+		return false
+	}
+
+	// Check auto-revert: if currently escalated but engagement has degraded, revert.
+	// Guard: don't revert when Redis data is insufficient (hour-boundary key rotation
+	// or Redis outage produces zero metrics — that's not degraded engagement, it's
+	// missing data). Complaints5m > 5 is checked unconditionally since that's a
+	// direct negative signal independent of hourly counters.
+	if a.escalationAdj > 1.0 {
+		hasEngagementData := snap.Sent1h >= escalationMinSent && snap.UniqueClicks1h > 0
+		complaintsSpike := snap.Complaints5m > 5
+		engagementDegraded := hasEngagementData &&
+			(snap.ClickToComplaintRatio1h < escalationMinCTCRatio ||
+				snap.UniqueClicks1h < escalationMinClicks/2)
+
+		if complaintsSpike || engagementDegraded {
+
+			prevAdj := a.escalationAdj
+			a.escalationAdj = 1.0
+			newRate := a.computeEffectiveRateLocked()
+			if a.rateRegistry != nil {
+				a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
+			}
+
+			*decisions = append(*decisions, Decision{
+				ISP:         a.ID.ISP,
+				AgentType:   AgentThrottle,
+				ActionTaken: "revert_escalation",
+				ActionParams: mustJSON(map[string]interface{}{
+					"prev_escalation_adj":       prevAdj,
+					"effective_rate":             newRate,
+					"click_to_complaint_ratio":   snap.ClickToComplaintRatio1h,
+					"unique_clicks":              snap.UniqueClicks1h,
+					"complaints_5m":              snap.Complaints5m,
+					"engagement_score":           snap.EngagementScore1h,
+				}),
+				TargetType:  "isp",
+				TargetValue: string(a.ID.ISP),
+				Result:      "applied",
+				CreatedAt:   now,
+			})
+
+			if a.convictions != nil {
+				situationCtx.EffectiveRate = newRate
+				a.convictions.Record(ctx, Conviction{
+					AgentType: AgentThrottle,
+					ISP:       a.ID.ISP,
+					Verdict:   VerdictWont,
+					Statement: fmt.Sprintf(
+						"I WONT maintain escalated rate for %s. Engagement degraded: CTC ratio %.1f (need %.0f), "+
+						"unique clicks %d, 5m complaints %d. Reverted escalation from %.0f%% to baseline. Rate %d/hr. %s",
+						a.ID.ISP, snap.ClickToComplaintRatio1h, escalationMinCTCRatio,
+						snap.UniqueClicks1h, snap.Complaints5m, (prevAdj-1)*100, newRate, priorWisdom,
+					),
+					Context:   *situationCtx,
+					CreatedAt: now,
+				})
+			}
+
+			log.Printf("[throttle:%s] escalation reverted: CTC=%.1f clicks=%d complaints5m=%d",
+				a.ID.ISP, snap.ClickToComplaintRatio1h, snap.UniqueClicks1h, snap.Complaints5m)
+			return true
+		}
+	}
+
+	// Escalation preconditions
+	if now.Before(a.escalationCooldownUntil) {
+		return false
+	}
+	if a.escalationAdj >= maxMult {
+		return false
+	}
+	if snap.Sent1h < escalationMinSent {
+		return false
+	}
+	if snap.UniqueClicks1h < escalationMinClicks {
+		return false
+	}
+	if snap.ClickToComplaintRatio1h < escalationMinCTCRatio {
+		return false
+	}
+	if snap.BounceRate1h > 2.0 {
+		return false
+	}
+	if snap.ComplaintRate1h > 0.1 {
+		return false
+	}
+
+	// All preconditions met — escalate by one step
+	newEscAdj := math.Min(a.escalationAdj+escalationStepPct, maxMult)
+	a.escalationAdj = newEscAdj
+	a.escalationCooldownUntil = now.Add(escalationCooldown)
+	a.lastEscalationAt = now
+
+	newRate := a.computeEffectiveRateLocked()
+	if a.rateRegistry != nil {
+		a.rateRegistry.SetRate(a.ID.ISP, float64(newRate))
+	}
+
+	*decisions = append(*decisions, Decision{
+		ISP:         a.ID.ISP,
+		AgentType:   AgentThrottle,
+		ActionTaken: "escalate_rate",
+		ActionParams: mustJSON(map[string]interface{}{
+			"escalation_adj":            newEscAdj,
+			"effective_rate":             newRate,
+			"max_msg_rate":               a.originalRate,
+			"click_to_complaint_ratio":   snap.ClickToComplaintRatio1h,
+			"unique_clicks":              snap.UniqueClicks1h,
+			"engagement_score":           snap.EngagementScore1h,
+			"open_rate_1h":               snap.OpenRate1h,
+			"true_open_rate_1h":          snap.TrueOpenRate1h,
+			"click_rate_1h":              snap.ClickRate1h,
+			"max_escalation_multiplier":  maxMult,
+		}),
+		TargetType:  "isp",
+		TargetValue: string(a.ID.ISP),
+		Result:      "applied",
+		CreatedAt:   now,
+	})
+
+	if a.convictions != nil {
+		situationCtx.EffectiveRate = newRate
+		a.convictions.Record(ctx, Conviction{
+			AgentType: AgentThrottle,
+			ISP:       a.ID.ISP,
+			Verdict:   VerdictWill,
+			Statement: fmt.Sprintf(
+				"I WILL escalate rate to %d/hr for %s (%.0f%% above base %d/hr). "+
+				"Engagement signals strong: CTC ratio %.1f, %d unique clicks, open rate %.1f%%, click rate %.1f%%, "+
+				"engagement score %.1f. Deferrals %.1f%%, bounces %.1f%%, complaints %.2f%%. "+
+				"Next escalation available in %s. %s",
+				newRate, a.ID.ISP, (newEscAdj-1)*100, a.originalRate,
+				snap.ClickToComplaintRatio1h, snap.UniqueClicks1h, snap.OpenRate1h, snap.ClickRate1h,
+				snap.EngagementScore1h, deferralRate, snap.BounceRate1h, snap.ComplaintRate1h,
+				escalationCooldown, priorWisdom,
+			),
+			Context:   *situationCtx,
+			CreatedAt: now,
+		})
+	}
+
+	log.Printf("[throttle:%s] ESCALATED to %d/hr (%.0f%% above base %d/hr, CTC=%.1f, clicks=%d)",
+		a.ID.ISP, newRate, (newEscAdj-1)*100, a.originalRate, snap.ClickToComplaintRatio1h, snap.UniqueClicks1h)
+	return true
 }

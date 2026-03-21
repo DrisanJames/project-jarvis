@@ -118,7 +118,7 @@ type SignalSnapshot struct {
 	RecentDSNDiagnostics []string `json:"recent_dsn_diagnostics,omitempty"`
 
 	// Engagement metrics (populated from Redis telemetry bridge).
-	// These are read-only observation fields — no decision logic uses them yet.
+	// Used by ThrottleAgent escalation logic and recorded in conviction memory.
 	OpenRate1h              float64 `json:"open_rate_1h,omitempty"`
 	TrueOpenRate1h          float64 `json:"true_open_rate_1h,omitempty"`
 	ClickRate1h             float64 `json:"click_rate_1h,omitempty"`
@@ -631,4 +631,34 @@ func (sp *SignalProcessor) enrichWithEngagement(snap *SignalSnapshot) {
 func redisInt(s string) int {
 	v, _ := strconv.Atoi(s)
 	return v
+}
+
+// EngagementMetrics is a standalone struct for engagement telemetry data
+// that can be consumed by API handlers without coupling to SignalSnapshot.
+type EngagementMetrics struct {
+	OpenRate1h              float64 `json:"open_rate_1h"`
+	TrueOpenRate1h          float64 `json:"true_open_rate_1h"`
+	ClickRate1h             float64 `json:"click_rate_1h"`
+	UniqueClicks1h          int     `json:"unique_clicks_1h"`
+	ClickToComplaintRatio1h float64 `json:"click_to_complaint_ratio_1h"`
+	Complaints5m            int     `json:"complaints_5m"`
+	EngagementScore1h       float64 `json:"engagement_score_1h"`
+}
+
+// GetEngagementMetrics reads Redis and returns the current engagement metrics
+// for an ISP. Safe to call even if Redis is nil (returns zero struct).
+func (sp *SignalProcessor) GetEngagementMetrics(isp ISP) EngagementMetrics {
+	var snap SignalSnapshot
+	snap.ISP = isp
+	snap.Timestamp = time.Now()
+	sp.enrichWithEngagement(&snap)
+	return EngagementMetrics{
+		OpenRate1h:              snap.OpenRate1h,
+		TrueOpenRate1h:          snap.TrueOpenRate1h,
+		ClickRate1h:             snap.ClickRate1h,
+		UniqueClicks1h:          snap.UniqueClicks1h,
+		ClickToComplaintRatio1h: snap.ClickToComplaintRatio1h,
+		Complaints5m:            snap.Complaints5m,
+		EngagementScore1h:       snap.EngagementScore1h,
+	}
 }

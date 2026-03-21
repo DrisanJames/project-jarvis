@@ -683,6 +683,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			ingestor.SetDB(db)
 			ingestor.SetAlerter(alerter)
 
+			// Wire Redis engagement telemetry bridge
+			if s.redisClient != nil {
+				signalProcessor.SetRedisClient(s.redisClient)
+				ingestor.SetRedisClient(s.redisClient)
+				svc.SetRedisClient(s.redisClient)
+				log.Println("[engine] Engagement telemetry bridge enabled (Redis-backed)")
+			}
+
 			decisionStore := &engine.DBDecisionStore{DB: db}
 			orchestrator := engine.NewOrchestrator(
 				decisionStore, engineOrgID, agentFactory, signalProcessor,
@@ -699,6 +707,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				configs:         s.ispConfigs,
 				db:              db,
 				convictionStore: convictionStore,
+				factory:         s.agentFactory,
 				orgID:           engineOrgID,
 			}).ServeHTTP)
 
@@ -707,6 +716,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				configs:         s.ispConfigs,
 				db:              db,
 				convictionStore: convictionStore,
+				factory:         s.agentFactory,
 				orgID:           engineOrgID,
 			}).handleAudienceAnalytics)
 
@@ -717,9 +727,22 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				ispConfigs:      s.ispConfigs,
 				convictionStore: convictionStore,
 				agentFactory:    s.agentFactory,
+				signalProcessor: signalProcessor,
 			}
 			r.Get("/isp-agents/managed/{id}/engine", bridge.HandleAgentEngine)
 			r.Get("/isp-agents/engine/bridge-summary", bridge.HandleEngineSummary)
+
+			// === DELIVERABILITY CONTROL (ISP config CRUD + hot-reload) ===
+			delivH := &deliverabilityHandler{
+				db:           db,
+				rateRegistry: rateRegistry,
+				agentFactory: agentFactory,
+				ispConfigs:   s.ispConfigs,
+			}
+			r.Get("/deliverability/config", delivH.HandleGetConfig)
+			r.Patch("/deliverability/config/{isp}", delivH.HandlePatchConfig)
+			r.Post("/deliverability/config/{isp}/reset-throttle", delivH.HandleResetThrottle)
+			r.Get("/deliverability/throughput", delivH.HandleGetThroughput)
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)

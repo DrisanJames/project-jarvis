@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // sha256Hash generates a SHA256 hash of the input
@@ -34,6 +35,7 @@ type MailingService struct {
 	throttler       *MailingThrottler
 	onTrackingEvent TrackingEventCallback
 	globalHub       GlobalSuppressionChecker
+	redisClient     *redis.Client
 }
 
 // SetTrackingEventCallback registers a callback for open/click/unsubscribe events.
@@ -45,6 +47,11 @@ func (svc *MailingService) SetTrackingEventCallback(cb TrackingEventCallback) {
 // suppression single source of truth for pre-send checking.
 func (svc *MailingService) SetGlobalSuppressionHub(hub GlobalSuppressionChecker) {
 	svc.globalHub = hub
+}
+
+// SetRedisClient attaches a Redis client for engagement telemetry writes.
+func (svc *MailingService) SetRedisClient(c *redis.Client) {
+	svc.redisClient = c
 }
 
 func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {

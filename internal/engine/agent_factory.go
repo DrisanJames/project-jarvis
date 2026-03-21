@@ -117,7 +117,8 @@ func (f *AgentFactory) RestoreThrottleState() int {
 
 	rows, err := f.db.QueryContext(ctx, `
 		SELECT isp, current_rate_adj, original_rate, last_stable_rate,
-		       backoff_count, in_recovery, recovery_started, last_backoff_at, updated_at
+		       backoff_count, in_recovery, recovery_started, last_backoff_at, updated_at,
+		       COALESCE(escalation_adj, 1.0), escalation_cooldown_until, last_escalation_at
 		FROM mailing_engine_throttle_agent_state
 		WHERE updated_at > $1
 	`, time.Now().Add(-throttleAgentStateTTL))
@@ -131,10 +132,11 @@ func (f *AgentFactory) RestoreThrottleState() int {
 	for rows.Next() {
 		var ispStr string
 		var s ThrottleState
-		var recoveryStarted, lastBackoffAt sql.NullTime
+		var recoveryStarted, lastBackoffAt, escalationCooldown, lastEscalation sql.NullTime
 		var updatedAt time.Time
 		if err := rows.Scan(&ispStr, &s.CurrentRateAdj, &s.OriginalRate, &s.LastStableRate,
-			&s.BackoffCount, &s.InRecovery, &recoveryStarted, &lastBackoffAt, &updatedAt); err != nil {
+			&s.BackoffCount, &s.InRecovery, &recoveryStarted, &lastBackoffAt, &updatedAt,
+			&s.EscalationAdj, &escalationCooldown, &lastEscalation); err != nil {
 			log.Printf("[factory] scan throttle state row: %v", err)
 			continue
 		}
@@ -143,6 +145,12 @@ func (f *AgentFactory) RestoreThrottleState() int {
 		}
 		if lastBackoffAt.Valid {
 			s.LastBackoffAt = lastBackoffAt.Time
+		}
+		if escalationCooldown.Valid {
+			s.EscalationCooldownUntil = escalationCooldown.Time
+		}
+		if lastEscalation.Valid {
+			s.LastEscalationAt = lastEscalation.Time
 		}
 
 		isp := ISP(ispStr)
@@ -155,15 +163,76 @@ func (f *AgentFactory) RestoreThrottleState() int {
 			continue
 		}
 
-		// Restore if the agent is actively throttled or has significant backoff history
-		if s.CurrentRateAdj < 1.0 || s.BackoffCount >= 3 || s.InRecovery {
+		// Restore if the agent is actively throttled, escalated, or has significant backoff history
+		if s.CurrentRateAdj < 1.0 || s.BackoffCount >= 3 || s.InRecovery || s.EscalationAdj > 1.0 {
 			ta.RestoreState(s)
 			restored++
-			log.Printf("[factory] restored throttle state for %s: adj=%.3f backoff=%d inRecovery=%v (saved %s ago)",
-				isp, s.CurrentRateAdj, s.BackoffCount, s.InRecovery, time.Since(updatedAt).Truncate(time.Second))
+			log.Printf("[factory] restored throttle state for %s: adj=%.3f backoff=%d inRecovery=%v escalation=%.2f (saved %s ago)",
+				isp, s.CurrentRateAdj, s.BackoffCount, s.InRecovery, s.EscalationAdj, time.Since(updatedAt).Truncate(time.Second))
 		}
 	}
 	return restored
+}
+
+// UpdateConfig updates the in-memory ISPConfig for an ISP's ThrottleAgent
+// and pushes the new originalRate so future adjustments scale correctly.
+// Returns the updated config and whether the ISP was found. The caller is
+// responsible for persisting to DB and pushing the new rate to the registry.
+func (f *AgentFactory) UpdateConfig(isp ISP, apply func(*ISPConfig)) (ISPConfig, bool) {
+	agentsByType, ok := f.agents[isp]
+	if !ok {
+		return ISPConfig{}, false
+	}
+	ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent)
+	if !ok {
+		return ISPConfig{}, false
+	}
+	ta.mu.Lock()
+	apply(&ta.Config)
+	ta.originalRate = ta.Config.MaxMsgRate
+	ta.mu.Unlock()
+	return ta.Config, true
+}
+
+// ResetThrottle clears the throttle state for an ISP, restoring the rate
+// adjustment to 1.0 and clearing backoff/recovery state. Pushes the fresh
+// rate to the registry. Returns the new effective rate.
+func (f *AgentFactory) ResetThrottle(isp ISP) (int, bool) {
+	agentsByType, ok := f.agents[isp]
+	if !ok {
+		return 0, false
+	}
+	ta, ok := agentsByType[AgentThrottle].(*ThrottleAgent)
+	if !ok {
+		return 0, false
+	}
+	ta.mu.Lock()
+	ta.currentRateAdj = 1.0
+	ta.backoffCount = 0
+	ta.inRecovery = false
+	ta.lastStableRate = 1.0
+	ta.escalationAdj = 1.0
+	effectiveRate := ta.computeEffectiveRateLocked()
+	ta.mu.Unlock()
+
+	if ta.rateRegistry != nil {
+		ta.rateRegistry.SetRate(isp, float64(effectiveRate))
+		ta.rateRegistry.ClearIPState(isp)
+	}
+
+	if ta.db != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			ta.db.ExecContext(ctx, `
+				DELETE FROM mailing_engine_throttle_agent_state WHERE isp = $1
+			`, string(isp))
+			ta.db.ExecContext(ctx, `
+				DELETE FROM mailing_isp_throttle_state WHERE isp = $1
+			`, string(isp))
+		}()
+	}
+	return effectiveRate, true
 }
 
 // GetConfigs returns a map of ISP -> ISPConfig for all initialized agents.
@@ -189,6 +258,16 @@ func (f *AgentFactory) GetAgent(isp ISP, at AgentType) Agent {
 // GetSuppressionAgent returns the suppression agent for an ISP.
 func (f *AgentFactory) GetSuppressionAgent(isp ISP) *SuppressionAgent {
 	return f.suppressionAgents[isp]
+}
+
+// GetThrottleAgent returns the throttle agent for an ISP, or nil if not found.
+func (f *AgentFactory) GetThrottleAgent(isp ISP) *ThrottleAgent {
+	agentsByType, ok := f.agents[isp]
+	if !ok {
+		return nil
+	}
+	ta, _ := agentsByType[AgentThrottle].(*ThrottleAgent)
+	return ta
 }
 
 // GetAllAgents returns all agents as a flat slice.
@@ -225,7 +304,8 @@ func (f *AgentFactory) loadISPConfigs(ctx context.Context) ([]ISPConfig, error) 
 		`SELECT id, organization_id, isp, display_name, domain_patterns, mx_patterns,
 		 bounce_warn_pct, bounce_action_pct, complaint_warn_pct, complaint_action_pct,
 		 max_connections, max_msg_rate, deferral_codes, known_behaviors, pool_name,
-		 warmup_schedule, enabled, created_at, updated_at
+		 warmup_schedule, enabled, created_at, updated_at,
+		 COALESCE(max_escalation_multiplier, 1.5) AS max_escalation_multiplier
 		 FROM mailing_engine_isp_config WHERE organization_id = $1 AND enabled = TRUE`,
 		f.orgID)
 	if err != nil {
@@ -241,7 +321,8 @@ func (f *AgentFactory) loadISPConfigs(ctx context.Context) ([]ISPConfig, error) 
 			&domainPatternsJSON, &mxPatternsJSON,
 			&c.BounceWarnPct, &c.BounceActionPct, &c.ComplaintWarnPct, &c.ComplaintActionPct,
 			&c.MaxConnections, &c.MaxMsgRate, &deferralCodesJSON, &c.KnownBehaviors,
-			&c.PoolName, &c.WarmupSchedule, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+			&c.PoolName, &c.WarmupSchedule, &c.Enabled, &c.CreatedAt, &c.UpdatedAt,
+			&c.MaxEscalationMultiplier)
 		if err != nil {
 			log.Printf("[factory] scan ISP config error: %v", err)
 			continue

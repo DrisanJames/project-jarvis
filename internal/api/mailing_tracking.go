@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
@@ -147,6 +148,7 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 
 	svc.updateEngagementScore(ctx, subscriberID)
 	svc.updateISPAgent(ctx, campaignID, isp, "open")
+	svc.incrOpenEngagement(isp, isMachineOpen)
 
 	svc.serveTrackingPixel(w)
 }
@@ -235,6 +237,7 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 
 	svc.updateEngagementScore(ctx, subscriberID)
 	svc.updateISPAgent(ctx, campaignID, isp, "click")
+	svc.incrClickEngagement(isp, subscriberID.String())
 
 	redirectURL := enrichOwnedDomainURL(originalURL, subscriberID, emailID, campaignID)
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
@@ -627,6 +630,59 @@ func (svc *MailingService) HandleGetTrackingEvents(w http.ResponseWriter, r *htt
 func calculateRate(count, total int) float64 {
 	if total == 0 { return 0 }
 	return float64(count) / float64(total) * 100
+}
+
+// incrOpenEngagement pushes open counts to Redis engagement telemetry.
+func (svc *MailingService) incrOpenEngagement(ispName string, isMachineOpen bool) {
+	if svc.redisClient == nil {
+		return
+	}
+	engineISP := engine.NormalizeISPName(ispName)
+	if engineISP == "" {
+		return
+	}
+
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	key1h := engine.EngagementRedisKey1h(engineISP, now)
+	pipe := svc.redisClient.Pipeline()
+	pipe.HIncrBy(ctx, key1h, engine.EngFieldOpens, 1)
+	if !isMachineOpen {
+		pipe.HIncrBy(ctx, key1h, engine.EngFieldTrueOpens, 1)
+	}
+	pipe.Expire(ctx, key1h, engine.EngagementTTL1h)
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("[engagement-redis] open incr error: %v", err)
+	}
+}
+
+// incrClickEngagement pushes click counts to Redis engagement telemetry.
+func (svc *MailingService) incrClickEngagement(ispName string, subscriberID string) {
+	if svc.redisClient == nil {
+		return
+	}
+	engineISP := engine.NormalizeISPName(ispName)
+	if engineISP == "" {
+		return
+	}
+
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	key1h := engine.EngagementRedisKey1h(engineISP, now)
+	uniqKey := engine.EngagementUniqueKey(engineISP, now)
+
+	pipe := svc.redisClient.Pipeline()
+	pipe.HIncrBy(ctx, key1h, engine.EngFieldClicks, 1)
+	pipe.Expire(ctx, key1h, engine.EngagementTTL1h)
+	pipe.PFAdd(ctx, uniqKey, subscriberID)
+	pipe.Expire(ctx, uniqKey, engine.EngagementTTL1h)
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("[engagement-redis] click incr error: %v", err)
+	}
 }
 
 func extractIPFromRemoteAddr(addr string) *string {

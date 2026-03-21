@@ -19,16 +19,18 @@ type throttleAnalyticsHandler struct {
 	configs         map[engine.ISP]engine.ISPConfig
 	db              *sql.DB
 	convictionStore *engine.ConvictionStore
+	factory         *engine.AgentFactory
 	orgID           string
 }
 
 type liveRateEntry struct {
-	ISP         string             `json:"isp"`
-	DisplayName string             `json:"display_name"`
-	CurrentRate float64            `json:"current_rate"`
-	MaxRate     int                `json:"max_rate"`
-	RatePct     float64            `json:"rate_pct"`
-	IPRates     map[string]float64 `json:"ip_rates,omitempty"`
+	ISP           string             `json:"isp"`
+	DisplayName   string             `json:"display_name"`
+	CurrentRate   float64            `json:"current_rate"`
+	MaxRate       int                `json:"max_rate"`
+	RatePct       float64            `json:"rate_pct"`
+	EscalationAdj float64            `json:"escalation_adj,omitempty"`
+	IPRates       map[string]float64 `json:"ip_rates,omitempty"`
 }
 
 type throttleDecisionEntry struct {
@@ -52,14 +54,22 @@ type throttleConvictionEntry struct {
 	BackoffStep     int       `json:"backoff_step"`
 	RecoveryTimeMin float64   `json:"recovery_time_min"`
 	CreatedAt       time.Time `json:"created_at"`
+
+	// Engagement telemetry captured at the moment of the conviction
+	OpenRate1h            float64 `json:"open_rate_1h,omitempty"`
+	ClickRate1h           float64 `json:"click_rate_1h,omitempty"`
+	UniqueClicks          int     `json:"unique_clicks,omitempty"`
+	ClickToComplaintRatio float64 `json:"click_to_complaint_ratio,omitempty"`
+	EngagementScore       float64 `json:"engagement_score,omitempty"`
 }
 
 type throttleAnalyticsResponse struct {
-	LiveRates       []liveRateEntry           `json:"live_rates"`
-	RecentDecisions []throttleDecisionEntry   `json:"recent_decisions"`
-	Convictions     []throttleConvictionEntry `json:"convictions"`
-	PerIPEnabled    bool                      `json:"per_ip_enabled"`
-	UpdatedAt       time.Time                 `json:"updated_at"`
+	LiveRates            []liveRateEntry           `json:"live_rates"`
+	RecentDecisions      []throttleDecisionEntry   `json:"recent_decisions"`
+	Convictions          []throttleConvictionEntry `json:"convictions"`
+	PerIPEnabled         bool                      `json:"per_ip_enabled"`
+	EscalationEnabled    bool                      `json:"escalation_enabled"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
 }
 
 type audienceISPEntry struct {
@@ -90,11 +100,12 @@ type audienceAnalyticsResponse struct {
 
 func (h *throttleAnalyticsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp := throttleAnalyticsResponse{
-		LiveRates:       h.buildLiveRates(),
-		RecentDecisions: h.queryRecentDecisions(r),
-		Convictions:     h.buildConvictions(),
-		PerIPEnabled:    os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true",
-		UpdatedAt:       time.Now().UTC(),
+		LiveRates:         h.buildLiveRates(),
+		RecentDecisions:   h.queryRecentDecisions(r),
+		Convictions:       h.buildConvictions(),
+		PerIPEnabled:      os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true",
+		EscalationEnabled: os.Getenv("ENABLE_ENGAGEMENT_ESCALATION") == "true",
+		UpdatedAt:         time.Now().UTC(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -132,6 +143,14 @@ func (h *throttleAnalyticsHandler) buildLiveRates() []liveRateEntry {
 			CurrentRate: currentRate,
 			MaxRate:     maxRate,
 			RatePct:     pct,
+		}
+		if h.factory != nil {
+			if ta := h.factory.GetThrottleAgent(isp); ta != nil {
+				state := ta.GetState()
+				if state.EscalationAdj > 1.0 {
+					entry.EscalationAdj = state.EscalationAdj
+				}
+			}
 		}
 		if ipRates := h.registry.GetIPRates(isp); len(ipRates) > 0 {
 			entry.IPRates = ipRates
@@ -216,6 +235,12 @@ func (h *throttleAnalyticsHandler) buildConvictions() []throttleConvictionEntry 
 				BackoffStep:     c.Context.BackoffStep,
 				RecoveryTimeMin: c.Context.RecoveryTimeMin,
 				CreatedAt:       c.CreatedAt,
+
+				OpenRate1h:            c.Context.OpenRate1h,
+				ClickRate1h:           c.Context.ClickRate1h,
+				UniqueClicks:          c.Context.UniqueClicks,
+				ClickToComplaintRatio: c.Context.ClickToComplaintRatio,
+				EngagementScore:       c.Context.EngagementScore,
 			})
 		}
 	}

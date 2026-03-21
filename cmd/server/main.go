@@ -420,20 +420,20 @@ func main() {
 						{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 average 94% accuracy. Where do you rank?", URL: "https://quizfiesta.com/leaderboard"},
 					},
 				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "discountblog", BlogDomain: "discountblog.com",
-					SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
-					CampaignType: "welcome",
-					Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. First-person storytelling. Warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate.`,
-					Audience: `Brand-new subscribers who just signed up. They're curious but uncommitted — this is the first impression. They need to see immediate value and understand what they'll get by staying subscribed.`,
-					HTMLTemplate: api.DiscountBlogWelcomeHTMLTemplate,
-				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "quizfiesta", BlogDomain: "quizfiesta.com",
-					SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
-					CampaignType: "welcome",
-					Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. Short punchy sentences. Arcade/gaming lingo. Competitive but encouraging — you want them to play, not feel bad.`,
-					Audience: `Brand-new players who just signed up. They've never played before. Get them excited to try their first game — make them feel like they've entered an arcade.`,
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "discountblog", BlogDomain: "discountblog.com",
+				SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
+				CampaignType: "welcome",
+				Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. This is a WELCOME email for brand-new subscribers. Your job is to prove — with real numbers and real examples — that this newsletter will save them money. First-person storytelling: "My wife and I tried this..." Pull specific dollar amounts, percentages, and store names from the articles. Feature 2-3 of the best current deals as proof of value. Include a clear CTA to browse deals. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. The first impression must feel real, not manufactured.`,
+				Audience: `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression. They're skeptical of yet another email list and need immediate proof this one is different. Show them a real deal they would have missed.`,
+				HTMLTemplate: api.DiscountBlogWelcomeHTMLTemplate,
+			})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "quizfiesta", BlogDomain: "quizfiesta.com",
+				SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
+				CampaignType: "welcome",
+				Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. This is a WELCOME email for brand-new players. Your job is to get them to tap PLAY within 60 seconds of opening. Short punchy sentences. Direct challenges: "Think you know science? Prove it." Arcade/gaming lingo: "INSERT COIN", "PLAYER ONE", "high score", "streak." Highlight 2-3 game modes with specific hooks — mention the leaderboard record, mention the AI opponent, mention multiplayer. Competitive but encouraging — trash-talk with a wink. Think: the attract screen on an arcade cabinet that makes you dig for quarters.`,
+				Audience: `Brand-new players who just signed up. They haven't played yet. They're one tap away from becoming addicted or unsubscribing. This email decides which. Hit them with the most exciting game mode, a challenge they can't ignore, and a CTA that feels like pressing START.`,
 					HTMLTemplate: api.QuizFiestaWelcomeHTMLTemplate,
 					FallbackContent: []mailing.BlogExcerpt{
 						{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
@@ -450,14 +450,14 @@ func main() {
 					Audience: `History enthusiasts who want surprising, well-researched stories that go beyond textbook summaries. They're curious, educated, and love "I didn't know that" moments.`,
 					HTMLTemplate: api.HistoryThinkingHTMLTemplate,
 				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "historythinking", BlogDomain: "historythinking.com",
-					SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
-					CampaignType: "welcome",
-					Voice: `You are the voice of History Thinking — scholarly yet accessible. Write like a brilliant professor who makes history feel alive. Surprising facts, vivid detail, authoritative but never dry.`,
-					Audience: `Brand-new subscribers who just signed up. They're curious about history and want to know what kind of content they'll receive. Hook them with the most surprising story you can find.`,
-					HTMLTemplate: api.HistoryThinkingWelcomeHTMLTemplate,
-				})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "historythinking", BlogDomain: "historythinking.com",
+				SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
+				CampaignType: "welcome",
+				Voice: `You are the voice of History Thinking — a scholarly yet accessible history publication. This is a WELCOME email for brand-new subscribers. Your job is to prove that this newsletter will consistently surprise and educate them. Write like a brilliant professor telling stories at a dinner party that leave everyone speechless. Lead with the most jaw-dropping historical fact you can find from the blog. Feature 2-3 articles with vivid period detail: dates, names, consequences. Every article summary should end on a hook that makes them want to click through. Tone: authoritative but never dry, passionate about making history feel alive and relevant.`,
+				Audience: `Brand-new subscribers who just signed up. They're curious about history but haven't committed — this is the email that proves History Thinking is different from boring history textbooks. They want "I didn't know that" moments they can share with friends.`,
+				HTMLTemplate: api.HistoryThinkingWelcomeHTMLTemplate,
+			})
 				contentRefresh.RegisterBrand(worker.ContentBrand{
 					Key: "myownhealth", BlogDomain: "myownhealth.net",
 					SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
@@ -466,14 +466,14 @@ func main() {
 					Audience: `Health-conscious adults who want actionable tips without fluff. They're tired of vague "eat clean, train hard" advice and want specific protocols backed by evidence.`,
 					HTMLTemplate: api.MyOwnHealthHTMLTemplate,
 				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "myownhealth", BlogDomain: "myownhealth.net",
-					SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
-					CampaignType: "welcome",
-					Voice: `You are the voice of My Own Health — no-nonsense, evidence-based. Direct, actionable, zero fluff. Specific numbers and mechanisms. Confident, slightly irreverent.`,
-					Audience: `Brand-new subscribers who just signed up. They want to see immediately that this isn't another generic wellness newsletter. Hit them with something specific and useful in the first sentence.`,
-					HTMLTemplate: api.MyOwnHealthWelcomeHTMLTemplate,
-				})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "myownhealth", BlogDomain: "myownhealth.net",
+				SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
+				CampaignType: "welcome",
+				Voice: `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. This is a WELCOME email for brand-new subscribers. Your job is to prove in 30 seconds of reading that this newsletter is different from every other wellness spam in their inbox. Lead with a specific, surprising health fact backed by a mechanism. Feature 2-3 articles with concrete numbers — grams, percentages, study sizes, timeframes. Challenge conventional wisdom: if a popular belief is wrong, say so and explain why. Mention the free tools (BMI, macro, calorie calculators) as proof of value. Tone: confident like a sports medicine doctor who also lifts, slightly irreverent, zero fluff, respects the reader's intelligence.`,
+				Audience: `Brand-new subscribers who just signed up. They're tired of vague "eat clean, train hard" wellness newsletters and want evidence-based content with specific protocols. This email must immediately prove we're different — hit them with the most counterintuitive, well-sourced health insight from the blog.`,
+				HTMLTemplate: api.MyOwnHealthWelcomeHTMLTemplate,
+			})
 				contentRefresh.Start(ctx)
 				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 
@@ -2369,6 +2369,12 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 			last_backoff_at TIMESTAMPTZ,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+		{"add_escalation_cols_throttle_state", `DO $$ BEGIN
+			ALTER TABLE mailing_engine_throttle_agent_state ADD COLUMN IF NOT EXISTS escalation_adj DOUBLE PRECISION NOT NULL DEFAULT 1.0;
+			ALTER TABLE mailing_engine_throttle_agent_state ADD COLUMN IF NOT EXISTS escalation_cooldown_until TIMESTAMPTZ;
+			ALTER TABLE mailing_engine_throttle_agent_state ADD COLUMN IF NOT EXISTS last_escalation_at TIMESTAMPTZ;
+		END $$`},
+		{"add_max_escalation_multiplier_isp_config", `ALTER TABLE mailing_engine_isp_config ADD COLUMN IF NOT EXISTS max_escalation_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1.5`},
 		{"create_ip_throttle_state", `CREATE TABLE IF NOT EXISTS mailing_isp_ip_throttle_state (
 			isp TEXT NOT NULL,
 			ip_hostname TEXT NOT NULL,

@@ -106,6 +106,8 @@ type Ingestor struct {
 	pmtaPassword string
 	pollInterval time.Duration
 	httpClient   *http.Client
+
+	redisClient *redis.Client
 }
 
 // IngestorConfig holds configuration for the ingestor.
@@ -162,6 +164,11 @@ func NewIngestor(registry *ISPRegistry, processor *SignalProcessor, cfg Ingestor
 			},
 		},
 	}
+}
+
+// SetRedisClient sets the Redis client for engagement telemetry writes.
+func (ing *Ingestor) SetRedisClient(c *redis.Client) {
+	ing.redisClient = c
 }
 
 // SubscribeISP registers a listener for records classified to a specific ISP.
@@ -438,6 +445,9 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		// Deferrals live in mailing_tracking_events only; no campaign counter.
 	}
 
+	// Engagement telemetry bridge: increment Redis counters for delivered/complained
+	ing.incrEngagementCounters(isp, eventType)
+
 	// Bounce rate monitoring: track hard bounces in a sliding window
 	// and alert when threshold is exceeded.
 	if ing.alerter != nil && ing.bounceWin != nil && (eventType == "delivered" || eventType == "bounced") {
@@ -530,6 +540,44 @@ func (ing *Ingestor) recomputeProfileScore(ctx context.Context, eHash string) {
 		UPDATE mailing_inbox_profiles SET engagement_score = $2, updated_at = NOW()
 		WHERE email_hash = $1
 	`, eHash, score)
+}
+
+// incrEngagementCounters pushes delivered and complained counts into Redis
+// for the engagement telemetry bridge. Fire-and-forget with short timeout.
+func (ing *Ingestor) incrEngagementCounters(isp ISP, eventType string) {
+	if ing.redisClient == nil || isp == "" {
+		return
+	}
+
+	var field string
+	switch eventType {
+	case "delivered":
+		field = EngFieldDelivered
+	case "complained":
+		field = EngFieldComplaints
+	default:
+		return
+	}
+
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	pipe := ing.redisClient.Pipeline()
+
+	key1h := EngagementRedisKey1h(isp, now)
+	pipe.HIncrBy(ctx, key1h, field, 1)
+	pipe.Expire(ctx, key1h, EngagementTTL1h)
+
+	if eventType == "complained" {
+		key5m := EngagementRedisKey5m(isp, now)
+		pipe.HIncrBy(ctx, key5m, field, 1)
+		pipe.Expire(ctx, key5m, EngagementTTL5m)
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("[engagement-redis] incr %s/%s error: %v", isp, field, err)
+	}
 }
 
 // isHardBounceCategory returns true for PMTA bounce categories that indicate

@@ -417,6 +417,24 @@ func (r *ISPRateRegistry) HasIPList(isp ISP) bool {
 	return len(r.ipLists[isp]) > 0
 }
 
+// ClearIPState removes all per-IP limiters, rates, and IP lists for an ISP.
+func (r *ISPRateRegistry) ClearIPState(isp ISP) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefix := string(isp) + ":"
+	for k := range r.ipLimiters {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(r.ipLimiters, k)
+		}
+	}
+	for k := range r.ipRates {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(r.ipRates, k)
+		}
+	}
+	delete(r.ipLists, isp)
+}
+
 // DistributeByIPStr is the string-typed adapter for DistributeByIP,
 // matching the ISPRateLimiter interface used by the worker package.
 func (r *ISPRateRegistry) DistributeByIPStr(isp string, requested int) map[string]int {

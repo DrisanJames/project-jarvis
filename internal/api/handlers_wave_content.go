@@ -145,8 +145,12 @@ LAYOUT RULES:
 			FromName:      "Jamie @ Discount Blog",
 			CampaignType:  "welcome",
 			HTMLTemplate:  DiscountBlogWelcomeHTMLTemplate,
-			Voice:         `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money. Warm, honest, slightly conspiratorial. NOT salesy, NOT clickbaity, NOT corporate.`,
-			Audience:      `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression.`,
+			Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. This is a WELCOME email for brand-new subscribers. Your job is to prove — with real numbers and real examples — that this newsletter will save them money. First-person storytelling: "My wife and I tried this..." Pull specific dollar amounts, percentages, and store names from the articles. Feature 2-3 of the best current deals as proof of value. Include a clear CTA to browse deals. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. The first impression must feel real, not manufactured.`,
+			Audience: `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression. They're skeptical of yet another email list and need immediate proof this one is different. Show them a real deal they would have missed.`,
+			DesignSystem: `DISCOUNT BLOG WELCOME EMAIL DESIGN SYSTEM:
+COLORS: Background #FFFFFF, card bg #FAFAFA with 1px #E5E7EB border, primary accent #FF6B6B (coral), secondary #4ECDC4 (teal), headlines #1A1A1A, body #6B7280, prices #EF4444 red / #9CA3AF strikethrough, CTA bg #FF6B6B text #FFFFFF border-radius 6px
+TYPOGRAPHY: Headlines Georgia serif, body system sans-serif, H1=28px H2=22px body=15px line-height 1.6, badges 11px uppercase
+LAYOUT: 600px max, editorial cards with subtle borders, "discount blog" lowercase header in #FF6B6B Georgia, text-forward editorial feel, generous whitespace`,
 		},
 		"quizfiesta-welcome": {
 			Key:           "quizfiesta",
@@ -157,8 +161,12 @@ LAYOUT RULES:
 			FromName:      "QuizFiesta Team",
 			CampaignType:  "welcome",
 			HTMLTemplate:  QuizFiestaWelcomeHTMLTemplate,
-			Voice:         `You are the voice of QuizFiesta — a retro-arcade trivia platform. Short punchy sentences. Arcade/gaming lingo. Competitive but encouraging.`,
-			Audience:      `Brand-new players who just signed up. Get them excited to try their first game.`,
+			Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. This is a WELCOME email for brand-new players. Your job is to get them to tap PLAY within 60 seconds of opening. Short punchy sentences. Direct challenges: "Think you know science? Prove it." Arcade/gaming lingo: "INSERT COIN", "PLAYER ONE", "high score", "streak." Highlight 2-3 game modes with specific hooks — mention the leaderboard record, mention the AI opponent, mention multiplayer. Every sentence should make them WANT to compete. Competitive but encouraging — trash-talk with a wink. Think: the attract screen on an arcade cabinet that makes you dig for quarters.`,
+			Audience: `Brand-new players who just signed up. They haven't played yet. They're one tap away from becoming addicted or unsubscribing. This email decides which. Hit them with the most exciting game mode, a challenge they can't ignore, and a CTA that feels like pressing START.`,
+			DesignSystem: `QUIZFIESTA WELCOME EMAIL DESIGN SYSTEM:
+COLORS: Background #0A0014 (deep purple-black), cards #1A0A2E with 1px #8B5CF6 border, neon green #39FF14 for scores/CTAs, gold #FFD700 for "INSERT COIN", cyan #38BDF8 for links, hot pink #D946EF for badges, text #FFFFFF/#A0A0B0
+TYPOGRAPHY: ALL monospace "Courier New", headlines 26px uppercase letter-spacing 2px, body 14px, CTAs 14px uppercase letter-spacing 3px, score numbers 32px #39FF14
+LAYOUT: 600px max, #000000 outer, sharp edges (border-radius: 0), monospace line separators, terminal-style leaderboard sections, "INSERT COIN TO CONTINUE" CTA style`,
 			FallbackContent: []mailing.BlogExcerpt{
 				{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
 				{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last.", URL: "https://quizfiesta.com/play"},
@@ -189,8 +197,12 @@ LAYOUT: 600px max, editorial card style, generous line-height 1.7, parchment aes
 			FromName:      "History Thinking",
 			CampaignType:  "welcome",
 			HTMLTemplate:  HistoryThinkingWelcomeHTMLTemplate,
-			Voice:         `You are the voice of History Thinking — scholarly yet accessible. Write like a brilliant professor who makes history feel alive. Surprising facts, vivid detail, authoritative but never dry.`,
-			Audience:      `Brand-new subscribers who just signed up. They're curious about history and want to know what kind of content they'll receive. Hook them with the most surprising story you can find.`,
+			Voice: `You are the voice of History Thinking — a scholarly yet accessible history publication. This is a WELCOME email for brand-new subscribers. Your job is to prove that this newsletter will consistently surprise and educate them. Write like a brilliant professor telling stories at a dinner party that leave everyone speechless. Lead with the most jaw-dropping historical fact you can find from the blog — something that makes them think "I had NO idea." Feature 2-3 articles with vivid period detail: dates, names, consequences. Every article summary should end on a hook that makes them want to click through. Tone: authoritative but never dry, passionate about making history feel alive and relevant. Think: a documentary narrator who can't help but lean in when the story gets good.`,
+			Audience: `Brand-new subscribers who just signed up. They're curious about history but haven't committed — this is the email that proves History Thinking is different from boring history textbooks. They want "I didn't know that" moments they can share with friends. Give them 2-3 that are irresistible.`,
+			DesignSystem: `HISTORY THINKING WELCOME EMAIL DESIGN SYSTEM:
+COLORS: Background #f5f0e8 (warm parchment), cards #fdf6e3, borders #d4c5a0, primary #c4950a (gold), secondary #8b1a1a (deep red), tertiary #1b3a5c (navy), headlines #3d2e1f (dark brown), body #5c4a32, footer bg #3d2e1f
+TYPOGRAPHY: Headlines Playfair Display/Georgia serif, body Source Serif 4/Georgia serif, badges 11px uppercase
+LAYOUT: 600px max, editorial card style, generous line-height 1.7, parchment aesthetic, category badges on colored backgrounds`,
 		},
 		"myownhealth": {
 			Key:           "myownhealth",
@@ -215,8 +227,12 @@ LAYOUT: 600px max, dark cards with 12px border-radius, bold contrast, fitness/pe
 			FromName:      "My Own Health",
 			CampaignType:  "welcome",
 			HTMLTemplate:  MyOwnHealthWelcomeHTMLTemplate,
-			Voice:         `You are the voice of My Own Health — no-nonsense, evidence-based. Direct, actionable, zero fluff. Specific numbers and mechanisms. Confident, slightly irreverent.`,
-			Audience:      `Brand-new subscribers who just signed up. They want to see immediately that this isn't another generic wellness newsletter. Hit them with something specific and useful in the first sentence.`,
+			Voice: `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. This is a WELCOME email for brand-new subscribers. Your job is to prove in 30 seconds of reading that this newsletter is different from every other wellness spam in their inbox. Lead with a specific, surprising health fact backed by a mechanism: "Your gut produces 95% of your serotonin — that's why what you eat affects your mood before your waistline." Feature 2-3 articles with concrete numbers — grams, percentages, study sizes, timeframes. Challenge conventional wisdom: if a popular belief is wrong, say so and explain why. Mention the free tools (BMI, macro, calorie calculators) as proof of value. Tone: confident like a sports medicine doctor who also lifts, slightly irreverent, zero fluff, respects the reader's intelligence. Think: a coach who reads PubMed for fun and can explain it in one sentence.`,
+			Audience: `Brand-new subscribers who just signed up. They're tired of vague "eat clean, train hard" wellness newsletters and want evidence-based content with specific protocols. This email must immediately prove we're different — hit them with the most counterintuitive, well-sourced health insight from the blog. They appreciate directness and hate being talked down to.`,
+			DesignSystem: `MY OWN HEALTH WELCOME EMAIL DESIGN SYSTEM:
+COLORS: Background #080e1a (deep navy-black), container #0f172a (slate-900), cards #0a111d, borders #1e293b, primary #ff4500 (orange-red), secondary #0066ff (blue), tertiary #00b359 (green), headlines #ffffff, body #94a3b8, footer #475569
+TYPOGRAPHY: Headlines Oswald/Arial sans-serif uppercase letter-spacing 3px, body system sans-serif, category pills 11px uppercase rounded 50px
+LAYOUT: 600px max, dark cards with 12px border-radius, bold contrast, fitness/performance aesthetic`,
 		},
 	}
 }
