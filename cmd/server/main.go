@@ -162,20 +162,17 @@ func main() {
 	// Set the full config on server for handlers that need it (e.g., IP pool types)
 	server.SetConfig(cfg)
 
-	// Start HTTP server IMMEDIATELY so ALB health checks pass while the
-	// heavy mailing platform init (migrations, conviction restore, etc.) runs.
+	// ── Phase 1: Register ALL routes BEFORE starting the HTTP server ──
+	// Chi v5 compiles the route tree on the first ServeHTTP call. Routes
+	// added after that may not be visible. We must register mailing routes
+	// (via SetMailingDB) before any request is served.
 	server.RegisterHealthRoutes()
 	log.Println("Health check routes registered: /health, /health/live, /health/ready")
-	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
-		log.Printf("Starting server on %s (early — platform init continues in background)", addr)
-		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
-	}()
-	time.Sleep(100 * time.Millisecond) // let listener bind before ALB's next check
 
-	// Initialize Mailing Platform with PostgreSQL
+	var mailingDB *sql.DB
+	var redisClient *redis.Client
+	dbReachable := false
+
 	if cfg.Mailing.Enabled && cfg.Mailing.DatabaseURL != "" {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
 
@@ -190,120 +187,134 @@ func main() {
 		}
 		dbURL += sep + "options=-c%20statement_timeout%3D30000%20-c%20idle_in_transaction_session_timeout%3D30000"
 		log.Printf("DB URL host portion: ...@%s/...", extractHost(dbURL))
-		mailingDB, err := sql.Open("postgres", dbURL)
+		var err error
+		mailingDB, err = sql.Open("postgres", dbURL)
 		if err != nil {
 			log.Printf("Warning: Failed to connect to mailing database: %v", err)
-		} else {
-			// Set OpenAI config for AI-powered features (subject suggestions, etc.)
-			server.SetOpenAIConfig(cfg.OpenAI)
+			mailingDB = nil
+		}
+	}
 
-			// Initialize Image CDN S3 client before registering routes
-			{
-				imgBucket := os.Getenv("JARVIS_S3_BUCKET")
-				if imgBucket == "" && cfg.Storage.S3Bucket != "" {
-					imgBucket = cfg.Storage.S3Bucket
-				}
-				if imgBucket != "" {
-					imgRegion := os.Getenv("JARVIS_S3_REGION")
-					if imgRegion == "" {
-						imgRegion = cfg.Storage.AWSRegion
-					}
-					if imgRegion == "" {
-						imgRegion = "us-west-2"
-					}
-					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(imgRegion))
-					if err != nil {
-						log.Printf("WARNING: Failed to load AWS config for Image CDN: %v", err)
-					} else {
-						imgS3Client := s3.NewFromConfig(awsCfg)
-						imgCDNDomain := os.Getenv("IMAGE_CDN_DOMAIN")
-						server.SetImageCDNConfig(imgS3Client, imgBucket, imgCDNDomain, imgRegion)
-						log.Printf("Image CDN initialized: bucket=%s, region=%s, cdn=%s", imgBucket, imgRegion, imgCDNDomain)
-					}
-				}
-			}
+	if mailingDB != nil {
+		server.SetOpenAIConfig(cfg.OpenAI)
 
-			// Initialize suppression S3 client for offer-level Bloom filters
-			{
-				suppRegion := "us-west-2"
-				suppCfg, suppErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(suppRegion))
-				if suppErr != nil {
-					log.Printf("WARNING: Failed to load AWS config for suppression S3: %v", suppErr)
-				} else {
-					suppS3Client := s3.NewFromConfig(suppCfg)
-					server.SetSuppressionS3Client(api.NewSuppressionS3Client(suppS3Client))
-					log.Printf("Suppression S3 initialized: bucket=jarvis-offer-suppressions, region=%s", suppRegion)
+		// Initialize Image CDN S3 client before registering routes
+		{
+			imgBucket := os.Getenv("JARVIS_S3_BUCKET")
+			if imgBucket == "" && cfg.Storage.S3Bucket != "" {
+				imgBucket = cfg.Storage.S3Bucket
+			}
+			if imgBucket != "" {
+				imgRegion := os.Getenv("JARVIS_S3_REGION")
+				if imgRegion == "" {
+					imgRegion = cfg.Storage.AWSRegion
 				}
-			}
-
-			// Initialize Redis BEFORE mailing routes so throttle routes register inside the group
-			var redisClient *redis.Client
-			redisURL := os.Getenv("REDIS_URL")
-			if redisURL == "" {
-				redisURL = os.Getenv("REDIS_ADDR")
-			}
-			if redisURL != "" {
-				opts, err := redis.ParseURL(redisURL)
+				if imgRegion == "" {
+					imgRegion = "us-west-2"
+				}
+				awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(imgRegion))
 				if err != nil {
-					redisClient = redis.NewClient(&redis.Options{Addr: redisURL})
+					log.Printf("WARNING: Failed to load AWS config for Image CDN: %v", err)
 				} else {
-					redisClient = redis.NewClient(opts)
+					imgS3Client := s3.NewFromConfig(awsCfg)
+					imgCDNDomain := os.Getenv("IMAGE_CDN_DOMAIN")
+					server.SetImageCDNConfig(imgS3Client, imgBucket, imgCDNDomain, imgRegion)
+					log.Printf("Image CDN initialized: bucket=%s, region=%s, cdn=%s", imgBucket, imgRegion, imgCDNDomain)
 				}
-				pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
-				if err := redisClient.Ping(pingCtx).Err(); err != nil {
-					log.Printf("Warning: Redis connection failed (%s): %v — falling back to PG advisory locks", redisURL, err)
-					redisClient.Close()
-					redisClient = nil
-				} else {
-					server.SetRedisClient(redisClient)
-					if authManager != nil {
-						authManager.SetRedisClient(redisClient)
-					}
-					log.Printf("Redis connected: %s (distributed locking + persistent sessions enabled)", redisURL)
-				}
-				pingCancel()
-			} else {
-				log.Println("Redis not configured (REDIS_URL not set) — using PG advisory locks for distributed locking")
 			}
+		}
 
-			mailingDB.SetMaxOpenConns(25)
-			mailingDB.SetMaxIdleConns(15)
-			mailingDB.SetConnMaxLifetime(5 * time.Minute)
-			mailingDB.SetConnMaxIdleTime(2 * time.Minute)
+		// Initialize suppression S3 client for offer-level Bloom filters
+		{
+			suppRegion := "us-west-2"
+			suppCfg, suppErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(suppRegion))
+			if suppErr != nil {
+				log.Printf("WARNING: Failed to load AWS config for suppression S3: %v", suppErr)
+			} else {
+				suppS3Client := s3.NewFromConfig(suppCfg)
+				server.SetSuppressionS3Client(api.NewSuppressionS3Client(suppS3Client))
+				log.Printf("Suppression S3 initialized: bucket=jarvis-offer-suppressions, region=%s", suppRegion)
+			}
+		}
 
-			// Test DB connectivity and run migrations. The HTTP server is already
-			// listening so ALB health checks pass during the migration window.
-			dbReachable := false
+		// Initialize Redis BEFORE mailing routes so throttle routes register inside the group
+		redisURL := os.Getenv("REDIS_URL")
+		if redisURL == "" {
+			redisURL = os.Getenv("REDIS_ADDR")
+		}
+		if redisURL != "" {
+			opts, err := redis.ParseURL(redisURL)
+			if err != nil {
+				redisClient = redis.NewClient(&redis.Options{Addr: redisURL})
+			} else {
+				redisClient = redis.NewClient(opts)
+			}
 			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
-			if err := mailingDB.PingContext(pingCtx); err != nil {
-				pingCancel()
-				log.Printf("Warning: Mailing database ping failed: %v — routes registered but workers skipped", err)
+			if err := redisClient.Ping(pingCtx).Err(); err != nil {
+				log.Printf("Warning: Redis connection failed (%s): %v — falling back to PG advisory locks", redisURL, err)
+				redisClient.Close()
+				redisClient = nil
 			} else {
-				pingCancel()
-				dbReachable = true
-				log.Println("Mailing Platform database connected successfully")
-				runAdminMigrations()
-				runStartupMigrations(mailingDB)
+				server.SetRedisClient(redisClient)
+				if authManager != nil {
+					authManager.SetRedisClient(redisClient)
+				}
+				log.Printf("Redis connected: %s (distributed locking + persistent sessions enabled)", redisURL)
 			}
+			pingCancel()
+		} else {
+			log.Println("Redis not configured (REDIS_URL not set) — using PG advisory locks for distributed locking")
+		}
 
-			// Register mailing routes (reads s.redisClient for throttle routes).
-			// Engine restore calls will succeed now that migrations have run.
-			server.SetShutdownContext(ctx)
-			server.SetMailingDB(mailingDB)
-			log.Println("Mailing Platform routes registered")
+		mailingDB.SetMaxOpenConns(25)
+		mailingDB.SetMaxIdleConns(15)
+		mailingDB.SetConnMaxLifetime(5 * time.Minute)
+		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
-			// Load offer suppression Bloom filters from S3 at startup.
-			if server.OfferSuppMgr != nil {
-				go func() {
-					loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-					defer loadCancel()
-					if err := server.OfferSuppMgr.LoadActiveOffers(loadCtx); err != nil {
-						log.Printf("WARNING: Bloom filter startup load failed: %v — falling back to DB queries", err)
-					}
-				}()
-			}
+		// Register mailing routes BEFORE server starts.
+		// sql.Open doesn't actually connect — handlers will get real DB errors
+		// on first query if the DB is unreachable, but routes will be registered.
+		server.SetShutdownContext(ctx)
+		server.SetMailingDB(mailingDB)
+		log.Println("Mailing Platform routes registered")
+	}
 
-			if dbReachable {
+	// ── Phase 2: Start HTTP server — ALL routes are now registered ──
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
+		log.Printf("Starting server on %s (all routes registered)", addr)
+		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// ── Phase 3: Run migrations and start workers (server is already serving) ──
+	if mailingDB != nil {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := mailingDB.PingContext(pingCtx); err != nil {
+			pingCancel()
+			log.Printf("Warning: Mailing database ping failed: %v — workers skipped", err)
+		} else {
+			pingCancel()
+			dbReachable = true
+			log.Println("Mailing Platform database connected successfully")
+			runAdminMigrations()
+			runStartupMigrations(mailingDB)
+		}
+
+		// Load offer suppression Bloom filters from S3 at startup.
+		if server.OfferSuppMgr != nil {
+			go func() {
+				loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer loadCancel()
+				if err := server.OfferSuppMgr.LoadActiveOffers(loadCtx); err != nil {
+					log.Printf("WARNING: Bloom filter startup load failed: %v — falling back to DB queries", err)
+				}
+			}()
+		}
+
+		if dbReachable {
 
 				// Start Backpressure Monitor
 				backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
@@ -570,11 +581,9 @@ func main() {
 				}()
 			}
 		}
-	} else {
+	if mailingDB == nil {
 		log.Println("Mailing Platform not configured (disabled or missing database_url)")
 	}
-
-	// (HTTP server + health routes already started above, before mailing init)
 
 	// Initialize Mailgun - always run if API key is configured
 	if cfg.Mailgun.APIKey != "" && len(cfg.Mailgun.Domains) > 0 {
