@@ -162,12 +162,22 @@ func main() {
 	// Set the full config on server for handlers that need it (e.g., IP pool types)
 	server.SetConfig(cfg)
 
-	// ── Phase 1: Register ALL routes BEFORE starting the HTTP server ──
-	// Chi v5 compiles the route tree on the first ServeHTTP call. Routes
-	// added after that may not be visible. We must register mailing routes
-	// (via SetMailingDB) before any request is served.
+	// Start HTTP server IMMEDIATELY so ALB health checks pass while the
+	// heavy platform init (AWS credential fetch via IMDS, Redis, S3) runs.
+	// Chi v5 does NOT compile/lock the route tree — routes added later are
+	// visible to subsequent requests, so mailing routes can be registered
+	// after the listener is already accepting connections.
 	server.RegisterHealthRoutes()
 	log.Println("Health check routes registered: /health, /health/live, /health/ready")
+
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
+		log.Printf("Starting server on %s (health routes ready, platform init continues)", addr)
+		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
 
 	var mailingDB *sql.DB
 	var redisClient *redis.Client
@@ -198,7 +208,6 @@ func main() {
 	if mailingDB != nil {
 		server.SetOpenAIConfig(cfg.OpenAI)
 
-		// Initialize Image CDN S3 client before registering routes
 		{
 			imgBucket := os.Getenv("JARVIS_S3_BUCKET")
 			if imgBucket == "" && cfg.Storage.S3Bucket != "" {
@@ -224,7 +233,6 @@ func main() {
 			}
 		}
 
-		// Initialize suppression S3 client for offer-level Bloom filters
 		{
 			suppRegion := "us-west-2"
 			suppCfg, suppErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(suppRegion))
@@ -237,7 +245,6 @@ func main() {
 			}
 		}
 
-		// Initialize Redis BEFORE mailing routes so throttle routes register inside the group
 		redisURL := os.Getenv("REDIS_URL")
 		if redisURL == "" {
 			redisURL = os.Getenv("REDIS_ADDR")
@@ -271,25 +278,12 @@ func main() {
 		mailingDB.SetConnMaxLifetime(5 * time.Minute)
 		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
-		// Register mailing routes BEFORE server starts.
-		// sql.Open doesn't actually connect — handlers will get real DB errors
-		// on first query if the DB is unreachable, but routes will be registered.
 		server.SetShutdownContext(ctx)
 		server.SetMailingDB(mailingDB)
 		log.Println("Mailing Platform routes registered")
 	}
 
-	// ── Phase 2: Start HTTP server — ALL routes are now registered ──
-	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
-		log.Printf("Starting server on %s (all routes registered)", addr)
-		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
-	}()
-	time.Sleep(100 * time.Millisecond)
-
-	// ── Phase 3: Run migrations and start workers (server is already serving) ──
+	// ── Run migrations and start workers (server is already serving) ──
 	if mailingDB != nil {
 		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
 		if err := mailingDB.PingContext(pingCtx); err != nil {
@@ -562,6 +556,40 @@ func main() {
 				eventWriter := datanorm.NewEventWriter(mailingDB)
 				_ = eventWriter // will be wired to handlers in subsequent phases
 
+				// Start Data Pipeline (nightly S3 ingestion, EO validation, list replenishment)
+				var dataPipeline *worker.DataPipeline
+				if cfg.DataPipeline.Enabled {
+					var err error
+					dataPipeline, err = worker.NewDataPipeline(mailingDB, cfg.DataPipeline, "00000000-0000-0000-0000-000000000001")
+					if err != nil {
+						log.Printf("Warning: Data Pipeline init failed: %v", err)
+					} else {
+						// Wire notifications via alerter with SES auth
+						sesUser := os.Getenv("SES_SMTP_USER")
+						sesSecret := os.Getenv("SES_SMTP_SECRET")
+						sesRegion := os.Getenv("SES_REGION")
+						if sesRegion == "" {
+							sesRegion = "us-east-1"
+						}
+						if sesUser != "" && sesSecret != "" {
+							pipelineAlerter := engine.NewAlerter(engine.AlerterConfig{
+								SMTPHost: fmt.Sprintf("email-smtp.%s.amazonaws.com", sesRegion),
+								SMTPPort: 587,
+								SMTPUser: sesUser,
+								SMTPPass: sesSecret,
+								From:     "noreply@projectjarvis.io",
+								To:       []string{cfg.DataPipeline.AdminEmail},
+							})
+							dataPipeline.Notifier = &pipelineAlerterAdapter{alerter: pipelineAlerter}
+						}
+
+						dataPipeline.Start()
+						server.DataPipeline = dataPipeline
+						log.Printf("Data Pipeline started (bucket: %s, prefix: %s, run_hour_utc: %d)",
+							cfg.DataPipeline.S3Bucket, cfg.DataPipeline.S3Prefix, cfg.DataPipeline.RunHourUTC)
+					}
+				}
+
 				// Ensure workers stop on shutdown (H12)
 				go func() {
 					<-ctx.Done()
@@ -574,6 +602,9 @@ func main() {
 					}
 					if normalizer != nil {
 						normalizer.Stop()
+					}
+					if dataPipeline != nil {
+						dataPipeline.Stop()
 					}
 					if redisClient != nil {
 						redisClient.Close()
@@ -2448,6 +2479,64 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (isp, ip_hostname)
 		)`},
+		{"create_data_pipeline_runs", `CREATE TABLE IF NOT EXISTS data_pipeline_runs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			completed_at TIMESTAMPTZ,
+			status TEXT NOT NULL DEFAULT 'running',
+			files_processed INT DEFAULT 0,
+			emails_total INT DEFAULT 0,
+			emails_verified INT DEFAULT 0,
+			emails_suppressed INT DEFAULT 0,
+			emails_deduped INT DEFAULT 0,
+			details JSONB DEFAULT '{}',
+			error_message TEXT,
+			notification_sent BOOLEAN DEFAULT false
+		)`},
+		{"create_data_pipeline_files", `CREATE TABLE IF NOT EXISTS data_pipeline_files (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			s3_key TEXT NOT NULL UNIQUE,
+			isp_folder TEXT NOT NULL,
+			isp_normalized TEXT NOT NULL,
+			row_count INT,
+			status TEXT NOT NULL DEFAULT 'available',
+			run_id UUID,
+			sending_domain TEXT,
+			target_list_id UUID,
+			verified_count INT DEFAULT 0,
+			suppressed_count INT DEFAULT 0,
+			deduped_count INT DEFAULT 0,
+			processed_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"create_data_pipeline_domain_lists", `CREATE TABLE IF NOT EXISTS data_pipeline_domain_lists (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			sending_domain TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			list_id UUID NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(sending_domain, isp)
+		)`},
+		{"seed_pipeline_domain_lists", `
+			INSERT INTO data_pipeline_domain_lists (sending_domain, isp, list_id)
+			SELECT v.sending_domain, v.isp, l.id
+			FROM (VALUES
+				('em.discountblog.com', 'gmail', 'Google - Active - 1 03052026'),
+				('em.discountblog.com', 'yahoo', 'Yahoo - Clickers - 0 03052026'),
+				('em.discountblog.com', 'microsoft', 'Microsoft - Active - 1 03052026'),
+				('em.discountblog.com', 'apple', 'Apple - Active - 1 03052026'),
+				('em.discountblog.com', 'comcast', 'Comcast - Active - 1 03052026'),
+				('em.discountblog.com', 'charter', 'Charter - Active - 2 03092026'),
+				('em.discountblog.com', 'att', 'ATT - Active -1 03052026'),
+				('em.discountblog.com', 'cox', 'Cox - Active - 1 03052026')
+			) AS v(sending_domain, isp, list_name)
+			JOIN mailing_lists l ON l.name = v.list_name
+			WHERE NOT EXISTS (
+				SELECT 1 FROM data_pipeline_domain_lists dl
+				WHERE dl.sending_domain = v.sending_domain AND dl.isp = v.isp
+			)
+		`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -3059,4 +3148,34 @@ func vmtaShort(hostname string) string {
 		return hostname[:idx]
 	}
 	return hostname
+}
+
+// pipelineAlerterAdapter bridges worker.PipelineNotifier to engine.Alerter.
+type pipelineAlerterAdapter struct {
+	alerter *engine.Alerter
+}
+
+func (a *pipelineAlerterAdapter) SendPipelineReport(report worker.PipelineReport) error {
+	ar := engine.PipelineRunReport{
+		RunID:            report.RunID,
+		StartedAt:        report.StartedAt,
+		CompletedAt:      report.CompletedAt,
+		FilesProcessed:   report.FilesProcessed,
+		EmailsTotal:      report.EmailsTotal,
+		EmailsVerified:   report.EmailsVerified,
+		EmailsSuppressed: report.EmailsSuppressed,
+		EmailsDeduped:    report.EmailsDeduped,
+		Errors:           report.Errors,
+	}
+	for _, d := range report.DomainBreakdown {
+		ar.DomainBreakdown = append(ar.DomainBreakdown, engine.PipelineDomainStat{
+			SendingDomain: d.SendingDomain,
+			ISP:           d.ISP,
+			ListName:      d.ListName,
+			Added:         d.Added,
+			Suppressed:    d.Suppressed,
+			Deduped:       d.Deduped,
+		})
+	}
+	return a.alerter.SendPipelineReport(ar)
 }
