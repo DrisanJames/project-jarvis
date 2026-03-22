@@ -162,6 +162,19 @@ func main() {
 	// Set the full config on server for handlers that need it (e.g., IP pool types)
 	server.SetConfig(cfg)
 
+	// Start HTTP server IMMEDIATELY so ALB health checks pass while the
+	// heavy mailing platform init (migrations, conviction restore, etc.) runs.
+	server.RegisterHealthRoutes()
+	log.Println("Health check routes registered: /health, /health/live, /health/ready")
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
+		log.Printf("Starting server on %s (early — platform init continues in background)", addr)
+		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond) // let listener bind before ALB's next check
+
 	// Initialize Mailing Platform with PostgreSQL
 	if cfg.Mailing.Enabled && cfg.Mailing.DatabaseURL != "" {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
@@ -258,8 +271,8 @@ func main() {
 			mailingDB.SetConnMaxLifetime(5 * time.Minute)
 			mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
-			// Test connection and run migrations BEFORE engine initialization
-			// so that tables exist when the engine tries to restore state.
+			// Test DB connectivity and run migrations. The HTTP server is already
+			// listening so ALB health checks pass during the migration window.
 			dbReachable := false
 			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
 			if err := mailingDB.PingContext(pingCtx); err != nil {
@@ -561,18 +574,7 @@ func main() {
 		log.Println("Mailing Platform not configured (disabled or missing database_url)")
 	}
 
-	// Register early health endpoint so ALB health checks pass while slow
-	// integrations (Mailgun, SES, Ongage, Everflow, Snowflake, etc.) initialize.
-	server.RegisterHealthRoutes()
-	log.Println("Health check routes registered: /health, /health/live, /health/ready")
-
-	go func() {
-		addr := fmt.Sprintf("%s:%d", cfg.Server.GetHost(), cfg.Server.Port)
-		log.Printf("Starting server on %s (early — integration init continues in background)", addr)
-		if err := server.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
-	}()
+	// (HTTP server + health routes already started above, before mailing init)
 
 	// Initialize Mailgun - always run if API key is configured
 	if cfg.Mailgun.APIKey != "" && len(cfg.Mailgun.Domains) > 0 {
