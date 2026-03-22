@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"strings"
 	"time"
 
@@ -73,6 +74,32 @@ func (a *EmailMarketingAgent) executeAgentTool(ctx context.Context, orgID, name,
 		result, action = a.toolClearForecasts(ctx, orgID, args)
 	case "compute_isp_quotas":
 		result = a.toolComputeISPQuotas(ctx, orgID, args)
+	case "get_ip_pool_health":
+		result = a.toolGetIPPoolHealth(ctx, orgID)
+	case "get_preflight_status":
+		result = a.toolGetPreflightStatus(ctx, orgID, args)
+	case "get_pipeline_health":
+		result = a.toolGetPipelineHealth(ctx, orgID)
+	case "manage_ip_status":
+		result, action = a.toolManageIPStatus(ctx, orgID, args)
+	case "get_isp_sending_insights":
+		result = a.toolGetISPSendingInsights(ctx, orgID, args)
+	case "get_deliverability_report":
+		result = a.toolGetDeliverabilityReport(ctx, orgID, args)
+	case "get_injection_analytics":
+		result = a.toolGetInjectionAnalytics(ctx, orgID, args)
+	case "get_content_learnings":
+		result = a.toolGetContentLearnings(ctx, orgID, args)
+	case "get_wave_cache_status":
+		result = a.toolGetWaveCacheStatus(ctx, orgID)
+	case "refresh_wave_cache":
+		result, action = a.toolRefreshWaveCache(ctx, orgID, args)
+	case "get_subscriber_360":
+		result = a.toolGetSubscriber360(ctx, orgID, args)
+	case "get_segment_preview":
+		result = a.toolGetSegmentPreview(ctx, orgID, args)
+	case "approve_recommendation":
+		result, action = a.toolApproveRecommendation(ctx, orgID, args)
 	default:
 		result = map[string]string{"error": "unknown tool: " + name}
 	}
@@ -1535,4 +1562,613 @@ func (a *EmailMarketingAgent) toolComputeISPQuotas(ctx context.Context, orgID st
 		return map[string]string{"error": "sending_domain and target_volume (>0) are required"}
 	}
 	return a.ComputeISPQuotas(ctx, orgID, domain, targetVolume)
+}
+
+// ── Infrastructure Tools ────────────────────────────────────────────────────
+
+func (a *EmailMarketingAgent) toolGetIPPoolHealth(ctx context.Context, orgID string) interface{} {
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT p.id::text, p.name, COALESCE(p.pool_type,''), COALESCE(p.status,''),
+		       COUNT(i.id) AS total_ips,
+		       COUNT(CASE WHEN i.status IN ('active','warmup') THEN 1 END) AS active_ips,
+		       COUNT(CASE WHEN i.status = 'paused' THEN 1 END) AS paused_ips,
+		       COUNT(CASE WHEN i.status = 'quarantined' THEN 1 END) AS quarantined_ips
+		FROM mailing_ip_pools p
+		LEFT JOIN mailing_ip_addresses i ON i.pool_id = p.id
+		WHERE p.organization_id = $1
+		GROUP BY p.id, p.name, p.pool_type, p.status
+		ORDER BY p.name`, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var pools []map[string]interface{}
+	for rows.Next() {
+		var id, name, poolType, status string
+		var total, active, paused, quarantined int
+		rows.Scan(&id, &name, &poolType, &status, &total, &active, &paused, &quarantined)
+		pools = append(pools, map[string]interface{}{
+			"id": id, "name": name, "pool_type": poolType, "status": status,
+			"total_ips": total, "active_ips": active, "paused_ips": paused, "quarantined_ips": quarantined,
+		})
+	}
+
+	ipRows, err := a.db.QueryContext(ctx, `
+		SELECT i.id::text, i.ip_address::text, COALESCE(i.hostname,''), i.status,
+		       p.name AS pool_name, COALESCE(i.warmup_stage,''), COALESCE(i.warmup_day,0),
+		       COALESCE(i.reputation_score,0), i.total_sent, i.total_delivered, i.total_bounced
+		FROM mailing_ip_addresses i
+		LEFT JOIN mailing_ip_pools p ON i.pool_id = p.id
+		WHERE i.organization_id = $1
+		ORDER BY p.name, i.ip_address`, orgID)
+	if err == nil {
+		defer ipRows.Close()
+		var ips []map[string]interface{}
+		for ipRows.Next() {
+			var id, addr, hostname, status, poolName, warmupStage string
+			var warmupDay int
+			var repScore float64
+			var sent, delivered, bounced int64
+			ipRows.Scan(&id, &addr, &hostname, &status, &poolName, &warmupStage, &warmupDay, &repScore, &sent, &delivered, &bounced)
+			ips = append(ips, map[string]interface{}{
+				"id": id, "ip_address": addr, "hostname": hostname, "status": status,
+				"pool_name": poolName, "warmup_stage": warmupStage, "warmup_day": warmupDay,
+				"reputation_score": repScore, "total_sent": sent, "total_delivered": delivered, "total_bounced": bounced,
+			})
+		}
+		return map[string]interface{}{"pools": pools, "ips": ips}
+	}
+	return map[string]interface{}{"pools": pools}
+}
+
+func (a *EmailMarketingAgent) toolGetPreflightStatus(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	domain, _ := args["sending_domain"].(string)
+	if domain == "" {
+		return map[string]string{"error": "sending_domain required"}
+	}
+	pf := preflightDeployCheck(ctx, a.db, orgID, domain)
+	var errors []map[string]interface{}
+	for _, e := range pf.Errors {
+		errors = append(errors, map[string]interface{}{
+			"check": e.Check, "message": e.Message,
+		})
+	}
+	var warnings []map[string]interface{}
+	for _, w := range pf.Warnings {
+		warnings = append(warnings, map[string]interface{}{
+			"check": w.Check, "message": w.Message,
+		})
+	}
+	return map[string]interface{}{
+		"ok": pf.OK, "sending_domain": domain,
+		"errors": errors, "warnings": warnings,
+	}
+}
+
+func (a *EmailMarketingAgent) toolGetPipelineHealth(ctx context.Context, orgID string) interface{} {
+	health := map[string]interface{}{}
+
+	// Wave content cache inventory
+	var cacheTotal, cacheAvailable int
+	a.db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(CASE WHEN used_at IS NULL THEN 1 END) FROM mailing_wave_content_cache WHERE version = $1`, mailing.GeneratorVersion).Scan(&cacheTotal, &cacheAvailable)
+	health["wave_cache"] = map[string]interface{}{"total": cacheTotal, "available": cacheAvailable}
+
+	// PMTA reachability
+	conn, err := net.DialTimeout("tcp", "15.204.101.125:587", 5*time.Second)
+	pmtaUp := err == nil
+	if conn != nil {
+		conn.Close()
+	}
+	health["pmta_reachable"] = pmtaUp
+
+	// Active campaigns
+	var scheduled, sending int
+	a.db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN status='scheduled' THEN 1 END), COUNT(CASE WHEN status='sending' THEN 1 END) FROM mailing_campaigns WHERE organization_id = $1`, orgID).Scan(&scheduled, &sending)
+	health["campaigns"] = map[string]interface{}{"scheduled": scheduled, "sending": sending}
+
+	// IP health summary
+	var totalIPs, activeIPs int
+	a.db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(CASE WHEN status IN ('active','warmup') THEN 1 END) FROM mailing_ip_addresses WHERE organization_id = $1`, orgID).Scan(&totalIPs, &activeIPs)
+	health["ips"] = map[string]interface{}{"total": totalIPs, "active": activeIPs}
+
+	// Pending recommendations
+	var pendingRecs int
+	a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_campaign_recommendations WHERE organization_id = $1 AND status = 'pending'`, orgID).Scan(&pendingRecs)
+	health["pending_recommendations"] = pendingRecs
+
+	return health
+}
+
+func (a *EmailMarketingAgent) toolManageIPStatus(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	ipID, _ := args["ip_id"].(string)
+	newStatus, _ := args["status"].(string)
+	if ipID == "" || newStatus == "" {
+		return map[string]string{"error": "ip_id and status required"}, ""
+	}
+	allowed := map[string]bool{"active": true, "warmup": true, "paused": true}
+	if !allowed[newStatus] {
+		return map[string]string{"error": "status must be active, warmup, or paused"}, ""
+	}
+	res, err := a.db.ExecContext(ctx,
+		`UPDATE mailing_ip_addresses SET status = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3`,
+		newStatus, ipID, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}, ""
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return map[string]string{"error": "IP not found"}, ""
+	}
+	return map[string]interface{}{"status": "updated", "ip_id": ipID, "new_status": newStatus}, fmt.Sprintf("Updated IP %s to %s", ipID, newStatus)
+}
+
+// ── Analytics Tools ─────────────────────────────────────────────────────────
+
+func (a *EmailMarketingAgent) toolGetISPSendingInsights(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	domain, _ := args["sending_domain"].(string)
+	days := 7
+	if d, ok := args["days"].(float64); ok && int(d) > 0 {
+		days = min(int(d), 30)
+	}
+
+	end := time.Now()
+	start := end.Add(-time.Duration(days) * 24 * time.Hour)
+
+	q := fmt.Sprintf(`SELECT DATE(t.event_at) AS day,
+		%s AS isp,
+		SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) AS sent,
+		SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+		SUM(CASE WHEN t.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) AS hard_bounces,
+		SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) AS soft_bounces,
+		SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) AS opens,
+		SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) AS clicks,
+		SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) AS complaints
+	FROM mailing_tracking_events t
+	LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
+	WHERE t.event_at >= $1 AND t.event_at <= $2 AND t.organization_id = $3`,
+		ispDomainCaseSQL)
+
+	qArgs := []interface{}{start, end, orgID}
+	if domain != "" {
+		q += fmt.Sprintf(` AND LOWER(COALESCE(NULLIF(t.sending_domain,''),'unknown')) = LOWER($%d)`, len(qArgs)+1)
+		qArgs = append(qArgs, domain)
+	}
+	q += ` GROUP BY day, isp ORDER BY day, isp`
+
+	rows, err := a.db.QueryContext(ctx, q, qArgs...)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var insights []map[string]interface{}
+	for rows.Next() {
+		var day time.Time
+		var isp string
+		var sent, delivered, hardBounces, softBounces, opens, clicks, complaints int
+		rows.Scan(&day, &isp, &sent, &delivered, &hardBounces, &softBounces, &opens, &clicks, &complaints)
+		if isp == "other" || sent == 0 {
+			continue
+		}
+		insights = append(insights, map[string]interface{}{
+			"date": day.Format("2006-01-02"), "isp": isp,
+			"sent": sent, "delivered": delivered,
+			"hard_bounces": hardBounces, "soft_bounces": softBounces,
+			"opens": opens, "clicks": clicks, "complaints": complaints,
+			"delivery_rate": math.Round(float64(delivered)/float64(sent)*10000) / 100,
+			"open_rate":     math.Round(float64(opens)/float64(sent)*10000) / 100,
+		})
+	}
+	if insights == nil {
+		insights = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"insights": insights, "days": days, "domain_filter": domain}
+}
+
+func (a *EmailMarketingAgent) toolGetDeliverabilityReport(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	days := 7
+	if d, ok := args["days"].(float64); ok && int(d) > 0 {
+		days = min(int(d), 30)
+	}
+
+	end := time.Now()
+	start := end.Add(-time.Duration(days) * 24 * time.Hour)
+
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(t.sending_domain,''),'unknown') AS domain,
+		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) AS sent,
+		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+		       SUM(CASE WHEN t.event_type IN ('hard_bounce','bounced') THEN 1 ELSE 0 END) AS hard_bounces,
+		       SUM(CASE WHEN t.event_type = 'soft_bounce' THEN 1 ELSE 0 END) AS soft_bounces,
+		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) AS opens,
+		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) AS clicks,
+		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) AS complaints
+		FROM mailing_tracking_events t
+		WHERE t.event_at >= $1 AND t.event_at <= $2 AND t.organization_id = $3
+		GROUP BY domain ORDER BY sent DESC`, start, end, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var domains []map[string]interface{}
+	for rows.Next() {
+		var domain string
+		var sent, delivered, hardBounces, softBounces, opens, clicks, complaints int
+		rows.Scan(&domain, &sent, &delivered, &hardBounces, &softBounces, &opens, &clicks, &complaints)
+		if sent == 0 {
+			continue
+		}
+		domains = append(domains, map[string]interface{}{
+			"sending_domain": domain, "sent": sent, "delivered": delivered,
+			"hard_bounces": hardBounces, "soft_bounces": softBounces,
+			"opens": opens, "clicks": clicks, "complaints": complaints,
+			"delivery_rate":    math.Round(float64(delivered)/float64(sent)*10000) / 100,
+			"hard_bounce_rate": math.Round(float64(hardBounces)/float64(sent)*10000) / 100,
+			"complaint_rate":   math.Round(float64(complaints)/float64(sent)*10000) / 100,
+			"open_rate":        math.Round(float64(opens)/float64(sent)*10000) / 100,
+		})
+	}
+	if domains == nil {
+		domains = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"domains": domains, "window_days": days}
+}
+
+func (a *EmailMarketingAgent) toolGetInjectionAnalytics(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	campaignID, _ := args["campaign_id"].(string)
+	limit := 10
+	if l, ok := args["limit"].(float64); ok && int(l) > 0 {
+		limit = min(int(l), 50)
+	}
+
+	q := `SELECT w.id::text, w.wave_number, w.isp_plan_id::text, w.status,
+	             w.planned_recipients, COALESCE(w.enqueued_recipients,0),
+	             w.batch_size, w.scheduled_at, w.started_at, w.completed_at,
+	             COALESCE(p.isp,'')
+	      FROM mailing_campaign_waves w
+	      LEFT JOIN mailing_campaign_isp_plans p ON w.isp_plan_id = p.id`
+	qArgs := []interface{}{}
+	if campaignID != "" {
+		q += ` WHERE w.campaign_id = $1::uuid`
+		qArgs = append(qArgs, campaignID)
+	} else {
+		q += ` JOIN mailing_campaigns c ON w.campaign_id = c.id WHERE c.organization_id = $1`
+		qArgs = append(qArgs, orgID)
+	}
+	q += fmt.Sprintf(` ORDER BY w.scheduled_at DESC LIMIT %d`, limit)
+
+	rows, err := a.db.QueryContext(ctx, q, qArgs...)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var waves []map[string]interface{}
+	for rows.Next() {
+		var id, planID, status, isp string
+		var waveNum, planned, enqueued, batchSize int
+		var scheduledAt time.Time
+		var startedAt, completedAt sql.NullTime
+		rows.Scan(&id, &waveNum, &planID, &status, &planned, &enqueued, &batchSize, &scheduledAt, &startedAt, &completedAt, &isp)
+		w := map[string]interface{}{
+			"id": id, "wave_number": waveNum, "isp": isp, "status": status,
+			"planned_recipients": planned, "enqueued_recipients": enqueued,
+			"batch_size": batchSize, "scheduled_at": scheduledAt.Format(time.RFC3339),
+		}
+		if startedAt.Valid {
+			w["started_at"] = startedAt.Time.Format(time.RFC3339)
+		}
+		if completedAt.Valid {
+			w["completed_at"] = completedAt.Time.Format(time.RFC3339)
+		}
+		waves = append(waves, w)
+	}
+	if waves == nil {
+		waves = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"waves": waves, "count": len(waves)}
+}
+
+func (a *EmailMarketingAgent) toolGetContentLearnings(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	domain, _ := args["sending_domain"].(string)
+	limit := 20
+	if l, ok := args["limit"].(float64); ok && int(l) > 0 {
+		limit = min(int(l), 50)
+	}
+
+	q := `SELECT c.id::text, c.name, c.subject, COALESCE(c.from_name,''),
+	             c.sent_count, COALESCE(c.open_count,0), COALESCE(c.click_count,0),
+	             COALESCE(c.hard_bounce_count,0), COALESCE(c.soft_bounce_count,0),
+	             COALESCE(c.complaint_count,0), c.created_at
+	      FROM mailing_campaigns c
+	      WHERE c.organization_id = $1 AND c.status IN ('completed','sent','completed_with_errors')
+	        AND c.sent_count > 0`
+	qArgs := []interface{}{orgID}
+	if domain != "" {
+		q += fmt.Sprintf(` AND LOWER(COALESCE(c.from_email,'')) LIKE '%%@' || LOWER($%d)`, len(qArgs)+1)
+		qArgs = append(qArgs, domain)
+	}
+	q += fmt.Sprintf(` ORDER BY c.created_at DESC LIMIT %d`, limit)
+
+	rows, err := a.db.QueryContext(ctx, q, qArgs...)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var learnings []map[string]interface{}
+	for rows.Next() {
+		var id, name, subject, fromName string
+		var sent, opens, clicks, hardBounces, softBounces, complaints int
+		var createdAt time.Time
+		rows.Scan(&id, &name, &subject, &fromName, &sent, &opens, &clicks, &hardBounces, &softBounces, &complaints, &createdAt)
+		l := map[string]interface{}{
+			"campaign_id": id, "name": name, "subject": subject, "from_name": fromName,
+			"sent": sent, "opens": opens, "clicks": clicks,
+			"hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
+			"date": createdAt.Format("2006-01-02"),
+		}
+		if sent > 0 {
+			l["open_rate"] = math.Round(float64(opens)/float64(sent)*10000) / 100
+			l["click_rate"] = math.Round(float64(clicks)/float64(sent)*10000) / 100
+			l["hard_bounce_rate"] = math.Round(float64(hardBounces)/float64(sent)*10000) / 100
+		}
+		learnings = append(learnings, l)
+	}
+	if learnings == nil {
+		learnings = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"learnings": learnings, "count": len(learnings)}
+}
+
+// ── Content & Audience Tools ────────────────────────────────────────────────
+
+func (a *EmailMarketingAgent) toolGetWaveCacheStatus(ctx context.Context, orgID string) interface{} {
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT brand_key, COALESCE(campaign_type,'newsletter'),
+		       COUNT(*) AS total,
+		       COUNT(CASE WHEN used_at IS NULL THEN 1 END) AS available,
+		       COUNT(CASE WHEN used_at IS NOT NULL THEN 1 END) AS used
+		FROM mailing_wave_content_cache
+		WHERE version = $1
+		GROUP BY brand_key, campaign_type
+		ORDER BY brand_key, campaign_type`, mailing.GeneratorVersion)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var brands []map[string]interface{}
+	for rows.Next() {
+		var brand, campType string
+		var total, available, used int
+		rows.Scan(&brand, &campType, &total, &available, &used)
+		brands = append(brands, map[string]interface{}{
+			"brand_key": brand, "campaign_type": campType,
+			"total": total, "available": available, "used": used,
+		})
+	}
+	if brands == nil {
+		brands = []map[string]interface{}{}
+	}
+	return map[string]interface{}{"cache_entries": brands, "version": mailing.GeneratorVersion}
+}
+
+func (a *EmailMarketingAgent) toolRefreshWaveCache(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	brand, _ := args["brand"].(string)
+	if brand == "" {
+		brand = "all"
+	}
+	waves := 5
+	if w, ok := args["waves"].(float64); ok && int(w) > 0 {
+		waves = min(int(w), 10)
+	}
+
+	brands := knownBrands()
+	var refreshed []string
+
+	for key, bc := range brands {
+		if brand != "all" && key != brand && bc.BrandName != brand {
+			continue
+		}
+		if a.aiContent == nil {
+			continue
+		}
+		scraped := a.aiContent.ScrapeBrandIntelligence(ctx, bc.BlogDomain)
+		if scraped == nil {
+			continue
+		}
+		contentPool := scraped.BlogPosts
+		if len(contentPool) < 3 && len(bc.FallbackContent) > 0 {
+			contentPool = bc.FallbackContent
+		}
+		waveGen := mailing.NewWaveContentGenerator(a.aiContent)
+		result, genErr := waveGen.GenerateFull(ctx, mailing.WaveContentRequest{
+			SendingDomain: bc.SendingDomain,
+			BrandName:     bc.BrandName,
+			NumWaves:      waves,
+			CampaignType:  bc.CampaignType,
+			Voice:         bc.Voice,
+			Audience:      bc.Audience,
+			DesignSystem:  bc.DesignSystem,
+			HTMLTemplate:  bc.HTMLTemplate,
+			BrandInfo:     scraped,
+			ContentPool:   contentPool,
+		})
+		if genErr != nil || result == nil {
+			continue
+		}
+		for i, v := range result.Variations {
+			var editJSON []byte
+			if i < len(result.Editorial) {
+				editJSON, _ = json.Marshal(result.Editorial[i])
+			}
+			a.db.ExecContext(ctx, `
+				INSERT INTO mailing_wave_content_cache
+				(brand_key, wave_index, subject, preview_text, from_name, html_content, diagnostics, generated_at, version, campaign_type, editorial_json)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)`,
+				bc.Key, i, v.Subject, v.PreviewText, v.FromName, v.HTMLContent,
+				"{}", mailing.GeneratorVersion, bc.CampaignType, string(editJSON))
+		}
+		refreshed = append(refreshed, key)
+	}
+
+	return map[string]interface{}{
+		"status":   "refreshed",
+		"brands":   refreshed,
+		"waves":    waves,
+	}, fmt.Sprintf("Refreshed wave cache for %d brands", len(refreshed))
+}
+
+func (a *EmailMarketingAgent) toolGetSubscriber360(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	email, _ := args["email"].(string)
+	if email == "" {
+		return map[string]string{"error": "email required"}
+	}
+
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT s.id::text, s.email, COALESCE(s.first_name,''), COALESCE(s.last_name,''),
+		       s.status, l.name AS list_name,
+		       COALESCE(s.total_opens,0), COALESCE(s.total_clicks,0),
+		       s.last_open_at, s.last_click_at, s.last_email_at,
+		       COALESCE(s.engagement_score,0), COALESCE(s.isp,''),
+		       s.subscribed_at
+		FROM mailing_subscribers s
+		LEFT JOIN mailing_lists l ON s.list_id = l.id
+		WHERE s.organization_id = $1 AND LOWER(s.email) = LOWER($2)
+		ORDER BY s.subscribed_at DESC`, orgID, email)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+
+	var subs []map[string]interface{}
+	for rows.Next() {
+		var id, em, first, last, status, listName, isp string
+		var totalOpens, totalClicks int
+		var lastOpen, lastClick, lastEmail sql.NullTime
+		var score float64
+		var subscribedAt time.Time
+		rows.Scan(&id, &em, &first, &last, &status, &listName, &totalOpens, &totalClicks,
+			&lastOpen, &lastClick, &lastEmail, &score, &isp, &subscribedAt)
+		sub := map[string]interface{}{
+			"id": id, "email": em, "first_name": first, "last_name": last,
+			"status": status, "list": listName, "isp": isp,
+			"total_opens": totalOpens, "total_clicks": totalClicks,
+			"engagement_score": score, "subscribed_at": subscribedAt.Format(time.RFC3339),
+		}
+		if lastOpen.Valid {
+			sub["last_open_at"] = lastOpen.Time.Format(time.RFC3339)
+		}
+		if lastClick.Valid {
+			sub["last_click_at"] = lastClick.Time.Format(time.RFC3339)
+		}
+		if lastEmail.Valid {
+			sub["last_email_at"] = lastEmail.Time.Format(time.RFC3339)
+		}
+		subs = append(subs, sub)
+	}
+
+	// Recent events
+	var events []map[string]interface{}
+	evRows, evErr := a.db.QueryContext(ctx, `
+		SELECT t.event_type, t.event_at, COALESCE(c.name,'')
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_campaigns c ON t.campaign_id = c.id
+		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
+		WHERE t.organization_id = $1 AND LOWER(s.email) = LOWER($2)
+		ORDER BY t.event_at DESC LIMIT 20`, orgID, email)
+	if evErr == nil {
+		defer evRows.Close()
+		for evRows.Next() {
+			var evType, campName string
+			var evAt time.Time
+			evRows.Scan(&evType, &evAt, &campName)
+			events = append(events, map[string]interface{}{
+				"event": evType, "at": evAt.Format(time.RFC3339), "campaign": campName,
+			})
+		}
+	}
+
+	return map[string]interface{}{
+		"email":         email,
+		"subscriptions": subs,
+		"recent_events": events,
+	}
+}
+
+func (a *EmailMarketingAgent) toolGetSegmentPreview(ctx context.Context, orgID string, args map[string]interface{}) interface{} {
+	segmentID, _ := args["segment_id"].(string)
+	if segmentID == "" {
+		return map[string]string{"error": "segment_id required"}
+	}
+
+	var name, segType, conditions string
+	var subCount int
+	err := a.db.QueryRowContext(ctx,
+		`SELECT name, COALESCE(segment_type,'dynamic'), subscriber_count, COALESCE(conditions::text,'{}')
+		 FROM mailing_segments WHERE id = $1 AND organization_id = $2`,
+		segmentID, orgID).Scan(&name, &segType, &subCount, &conditions)
+	if err != nil {
+		return map[string]string{"error": "segment not found"}
+	}
+
+	var conds interface{}
+	json.Unmarshal([]byte(conditions), &conds)
+
+	// Sample subscribers
+	sampleRows, sErr := a.db.QueryContext(ctx, `
+		SELECT s.email, COALESCE(s.isp,''), COALESCE(s.total_opens,0), s.last_open_at
+		FROM mailing_segment_subscribers ss
+		JOIN mailing_subscribers s ON ss.subscriber_id = s.id
+		WHERE ss.segment_id = $1
+		ORDER BY RANDOM() LIMIT 10`, segmentID)
+	var samples []map[string]interface{}
+	if sErr == nil {
+		defer sampleRows.Close()
+		for sampleRows.Next() {
+			var em, isp string
+			var opens int
+			var lastOpen sql.NullTime
+			sampleRows.Scan(&em, &isp, &opens, &lastOpen)
+			s := map[string]interface{}{"email": em, "isp": isp, "total_opens": opens}
+			if lastOpen.Valid {
+				s["last_open_at"] = lastOpen.Time.Format(time.RFC3339)
+			}
+			samples = append(samples, s)
+		}
+	}
+
+	return map[string]interface{}{
+		"id": segmentID, "name": name, "type": segType,
+		"subscriber_count": subCount, "conditions": conds,
+		"sample_subscribers": samples,
+	}
+}
+
+// ── Approve Recommendation (delegates to shared doApproveRecommendation) ────
+
+func (a *EmailMarketingAgent) toolApproveRecommendation(ctx context.Context, orgID string, args map[string]interface{}) (interface{}, string) {
+	recID, _ := args["recommendation_id"].(string)
+	if recID == "" {
+		return map[string]string{"error": "recommendation_id required"}, ""
+	}
+
+	res, err := a.doApproveRecommendation(ctx, orgID, recID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}, ""
+	}
+
+	return map[string]interface{}{
+		"status":         "approved",
+		"recommendation": recID,
+		"campaign_id":    res.CampaignID,
+		"campaign_name":  res.CampaignName,
+		"scheduled_at":   res.ScheduledAt.Format(time.RFC3339),
+		"total_audience": res.TotalAudience,
+		"target_isps":    res.TargetISPs,
+		"isp_plans":      res.ISPPlanCount,
+	}, fmt.Sprintf("Approved recommendation %s → campaign %s", recID, res.CampaignID)
 }

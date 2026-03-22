@@ -112,8 +112,8 @@ func NewEmailMarketingAgent(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACa
 
 	model := cfg.Model
 	if useAnthropic {
-		model = "claude-sonnet-4-20250514"
-		log.Printf("[MarketingAgent] Using Anthropic Claude (%s)", model)
+		model = "claude-opus-4-20250514"
+		log.Printf("[MarketingAgent] Using Anthropic Claude Opus 4 (%s)", model)
 	} else if model == "" {
 		model = "gpt-4.1"
 	}
@@ -125,7 +125,7 @@ func NewEmailMarketingAgent(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACa
 		model:        model,
 		useAnthropic: useAnthropic,
 		httpClient: &http.Client{
-			Timeout: 180 * time.Second,
+			Timeout: 300 * time.Second,
 		},
 		pmtaSvc:   pmtaSvc,
 		segAPI:    segAPI,
@@ -218,7 +218,7 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 	}
 
 	orgID := getOrgID(r)
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 	defer cancel()
 
 	// ── Load or create conversation ──────────────────────────────────────
@@ -312,7 +312,7 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 	var recommendationsCreated []string
 	var assistantContent string
 
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 25; i++ {
 		var resp *agentOpenAIResp
 		var err error
 		if a.useAnthropic {
@@ -323,7 +323,7 @@ func (a *EmailMarketingAgent) HandleChat(w http.ResponseWriter, r *http.Request)
 				Messages:            messages,
 				Tools:               tools,
 				Temperature:         0.3,
-				MaxCompletionTokens: 8000,
+				MaxCompletionTokens: 16000,
 			}
 			resp, err = a.callAgentOpenAI(ctx, openaiReq)
 		}
@@ -673,10 +673,15 @@ func (a *EmailMarketingAgent) callClaude(ctx context.Context, systemPrompt strin
 
 	reqBody := map[string]interface{}{
 		"model":      a.model,
-		"max_tokens": 8000,
+		"max_tokens": 16000,
 		"system":     systemPrompt,
 		"messages":   cMsgs,
 		"tools":      cTools,
+		"thinking": map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": 10000,
+		},
+		"temperature": 1,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -691,6 +696,7 @@ func (a *EmailMarketingAgent) callClaude(ctx context.Context, systemPrompt strin
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", a.anthropicKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
@@ -732,6 +738,9 @@ func (a *EmailMarketingAgent) callClaude(ctx context.Context, systemPrompt strin
 
 	for _, block := range claudeResp.Content {
 		switch block.Type {
+		case "thinking":
+			// Extended thinking blocks are internal reasoning — skip them
+			continue
 		case "text":
 			textContent += block.Text
 		case "tool_use":

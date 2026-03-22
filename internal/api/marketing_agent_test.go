@@ -28,7 +28,7 @@ func TestBuildAgentSystemPrompt_Empty(t *testing.T) {
 	assert.Contains(t, prompt, "EDITH")
 	assert.Contains(t, prompt, "email marketing strategist")
 	assert.Contains(t, prompt, "Affiliate Email Marketing")
-	assert.Contains(t, prompt, "Campaign Framework Pattern")
+	assert.Contains(t, prompt, "Decision Framework")
 	assert.Contains(t, prompt, "create_template")
 	assert.NotContains(t, prompt, "What I Remember")
 	assert.NotContains(t, prompt, "Active Domain Strategies")
@@ -157,9 +157,9 @@ func TestHandleApproveRecommendation_NotPending(t *testing.T) {
 	mock.ExpectQuery(`SELECT status, campaign_config`).
 		WithArgs("rec-id", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"status", "campaign_config", "campaign_name", "strategy",
+			"status", "campaign_config", "campaign_name",
 			"sending_domain", "scheduled_date", "scheduled_time",
-		}).AddRow("approved", "{}", "Test Campaign", "newsletter", "em.test.com", time.Now(), "13:00"))
+		}).AddRow("approved", "{}", "Test Campaign", "em.test.com", time.Now(), "13:00"))
 
 	r := chi.NewRouter()
 	r.Post("/recommendations/{id}/approve", agent.HandleApproveRecommendation)

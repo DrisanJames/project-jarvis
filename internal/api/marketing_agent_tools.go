@@ -387,5 +387,190 @@ func getAgentTools() []agentToolDef {
 				},
 			},
 		},
+
+		// ── Campaign Approval ───────────────────────────────────────────
+
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "approve_recommendation",
+				Description: "Approve a pending campaign recommendation and deploy it through the full PMTA wave pipeline. This is the final step — it runs preflight checks, generates multi-variant content, plans the audience, creates the campaign with ISP wave scheduling, and marks the recommendation as approved. The campaign will be scheduled for sending at the configured time. ONLY call this after the user has explicitly confirmed they want to approve.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"recommendation_id"},
+					"properties": map[string]interface{}{
+						"recommendation_id": prop("string", "The recommendation UUID to approve and deploy."),
+					},
+				},
+			},
+		},
+
+		// ── Infrastructure Tools ────────────────────────────────────────
+
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_ip_pool_health",
+				Description: "List all IP pools and their IPs with statuses (active, warmup, paused, quarantined). Shows pool-level aggregates and per-IP details including reputation scores, warmup stage, and lifetime send/deliver/bounce counts.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_preflight_status",
+				Description: "Run infrastructure preflight checks for a sending domain BEFORE approving campaigns. Validates: sending profile exists, IP pool has active IPs, DKIM/SPF DNS records resolve, PMTA is reachable. Returns pass/fail per check with error details.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"sending_domain"},
+					"properties": map[string]interface{}{
+						"sending_domain": prop("string", "The sending domain to validate (e.g. em.discountblog.com)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_pipeline_health",
+				Description: "Get a holistic health check of the entire sending pipeline: wave content cache inventory, PMTA reachability (port 587), active/scheduled campaign counts, IP availability, and pending recommendation count.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "manage_ip_status",
+				Description: "Update the status of a sending IP address. Use to recover quarantined IPs (set to 'warmup'), pause problematic IPs, or activate IPs. Only affects IPs owned by the organization.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"ip_id", "status"},
+					"properties": map[string]interface{}{
+						"ip_id":  prop("string", "UUID of the IP address to update."),
+						"status": prop("string", "New status: 'active', 'warmup', or 'paused'."),
+					},
+				},
+			},
+		},
+
+		// ── Analytics Tools ─────────────────────────────────────────────
+
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_isp_sending_insights",
+				Description: "Get day-by-day per-ISP sending metrics: sent, delivered, hard/soft bounces, opens, clicks, complaints with delivery and open rates. Useful for trend analysis and identifying ISP-specific issues over time.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"sending_domain": prop("string", "Filter by sending domain (optional)."),
+						"days":           prop("integer", "Number of days to look back (default 7, max 30)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_deliverability_report",
+				Description: "Get aggregate deliverability metrics grouped by sending domain: total sent, delivered, hard/soft bounces, opens, clicks, complaints with calculated rates. Covers the last N days.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"days": prop("integer", "Number of days to look back (default 7, max 30)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_injection_analytics",
+				Description: "Get wave-level injection details for campaigns: wave number, ISP, status, planned vs enqueued recipients, batch size, scheduling timestamps. Use to monitor active sends or audit completed campaigns.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"campaign_id": prop("string", "Campaign UUID to inspect waves for. If omitted, shows recent waves across all campaigns."),
+						"limit":       prop("integer", "Max waves to return (default 10, max 50)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_content_learnings",
+				Description: "Get historical campaign performance data for learning: subject lines, from names, open/click/bounce rates from completed campaigns. Use to inform future subject line and content decisions.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"sending_domain": prop("string", "Filter by sending domain (optional)."),
+						"limit":          prop("integer", "Max campaigns to return (default 20, max 50)."),
+					},
+				},
+			},
+		},
+
+		// ── Content & Audience Tools ────────────────────────────────────
+
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_wave_cache_status",
+				Description: "Check the wave content cache inventory grouped by brand and campaign type. Shows total, available (unused), and used entries per brand. Use to verify content is ready before approving campaigns.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "refresh_wave_cache",
+				Description: "Trigger AI content generation to replenish the wave content cache for a brand. Scrapes the brand's blog, generates multi-variant editorial content, and stores it for future campaign approvals. Use when get_wave_cache_status shows low available entries.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"brand": prop("string", "Brand key to refresh (e.g. 'discountblog', 'quizfiesta', 'historythinking', 'myownhealth'). Use '-welcome' suffix for welcome variants. Use 'all' for all brands."),
+						"waves": prop("integer", "Number of content variations to generate (default 5, max 10)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_subscriber_360",
+				Description: "Look up a specific subscriber by email address. Returns all list memberships, engagement history (opens, clicks, scores), ISP, and recent tracking events. Use for debugging delivery issues or understanding subscriber behavior.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"email"},
+					"properties": map[string]interface{}{
+						"email": prop("string", "Subscriber email address to look up."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: agentToolFuncDef{
+				Name:        "get_segment_preview",
+				Description: "Preview a segment: see its conditions, subscriber count, and a random sample of 10 matching subscribers with their ISP, open counts, and last activity. Use to verify a segment targets the right audience before including it in a campaign.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"segment_id"},
+					"properties": map[string]interface{}{
+						"segment_id": prop("string", "UUID of the segment to preview."),
+					},
+				},
+			},
+		},
 	}
 }

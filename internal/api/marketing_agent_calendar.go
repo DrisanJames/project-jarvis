@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -260,29 +259,37 @@ func (a *EmailMarketingAgent) HandleGetRecommendation(w http.ResponseWriter, r *
 	respondJSON(w, http.StatusOK, result)
 }
 
-// HandleApproveRecommendation deploys the recommendation as a real scheduled campaign
-// through the existing PMTA campaign pipeline — identical to deploying from Campaign Manager.
-func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter, r *http.Request) {
-	recID := chi.URLParam(r, "id")
-	orgID := getOrgID(r)
-	ctx := r.Context()
+// approveResult holds the outcome of a recommendation approval.
+type approveResult struct {
+	CampaignID    string
+	CampaignName  string
+	CampaignStatus string
+	ScheduledAt   time.Time
+	TotalAudience int
+	TargetISPs    []string
+	ISPPlanCount  int
+	WavePreview   []map[string]interface{}
+}
 
-	var status, configJSON, campaignName, recStrategy, sendingDomain string
+// doApproveRecommendation is the shared pipeline that both the HTTP handler and the
+// LLM tool dispatch call. It reads the recommendation, validates config, generates
+// content, runs preflight, plans audience, creates the campaign, and marks the
+// recommendation approved. Uses a detached context so ALB timeouts can't kill it.
+func (a *EmailMarketingAgent) doApproveRecommendation(readCtx context.Context, orgID, recID string) (*approveResult, error) {
+	var status, configJSON, campaignName, sendingDomain string
 	var scheduledDate time.Time
 	var scheduledTime sql.NullString
-	err := a.db.QueryRowContext(ctx,
-		`SELECT status, campaign_config::text, COALESCE(campaign_name,''), COALESCE(strategy,''),
+	err := a.db.QueryRowContext(readCtx,
+		`SELECT status, campaign_config::text, COALESCE(campaign_name,''),
 		        sending_domain, scheduled_date, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), '')
 		 FROM agent_campaign_recommendations WHERE id = $1 AND organization_id = $2`,
-		recID, orgID).Scan(&status, &configJSON, &campaignName, &recStrategy,
+		recID, orgID).Scan(&status, &configJSON, &campaignName,
 		&sendingDomain, &scheduledDate, &scheduledTime)
 	if err != nil {
-		respondJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found"})
-		return
+		return nil, fmt.Errorf("recommendation not found: %s", recID)
 	}
 	if status != "pending" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "can only approve pending recommendations, current status: " + status})
-		return
+		return nil, fmt.Errorf("can only approve pending recommendations, current status: %s", status)
 	}
 
 	var cfg map[string]interface{}
@@ -293,32 +300,27 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		cfg = map[string]interface{}{}
 	}
 
-	// Load template HTML (required — campaign needs content)
 	templateID, _ := cfg["template_id"].(string)
 	var htmlContent string
 	if templateID != "" {
-		a.db.QueryRowContext(ctx,
+		a.db.QueryRowContext(readCtx,
 			`SELECT COALESCE(html_content,'') FROM mailing_templates WHERE id = $1 AND organization_id = $2`,
 			templateID, orgID).Scan(&htmlContent)
 	}
 	if strings.TrimSpace(htmlContent) == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no email template assigned or template has no HTML content. Assign a template first."})
-		return
+		return nil, fmt.Errorf("no email template assigned or template has no HTML content")
 	}
 
 	subject, _ := cfg["subject"].(string)
 	fromName, _ := cfg["from_name"].(string)
 	previewText, _ := cfg["preview_text"].(string)
 	if subject == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: subject line is required"})
-		return
+		return nil, fmt.Errorf("subject line is required")
 	}
 	if fromName == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: from name is required"})
-		return
+		return nil, fmt.Errorf("from name is required")
 	}
 
-	// Build scheduled time
 	timeStr := "13:00"
 	if scheduledTime.Valid && scheduledTime.String != "" {
 		timeStr = scheduledTime.String
@@ -340,7 +342,6 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		schedAt = time.Now().Add(5 * time.Minute)
 	}
 
-	// Build ISP quotas and target ISPs from config
 	var targetISPs []engine.ISP
 	var ispQuotas []engine.ISPQuota
 	var ispPlans []engine.PMTAISPScheduleInput
@@ -363,30 +364,22 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 			targetISPs = append(targetISPs, engine.ISP(isp))
 			ispQuotas = append(ispQuotas, engine.ISPQuota{ISP: isp, Volume: vol})
 			ispPlans = append(ispPlans, engine.PMTAISPScheduleInput{
-				ISP:               isp,
-				Quota:             vol,
-				RandomizeAudience: false,
-				ThrottleStrategy:  "auto",
-				Timezone:          "UTC",
+				ISP: isp, Quota: vol, RandomizeAudience: false,
+				ThrottleStrategy: "auto", Timezone: "UTC",
 				Cadence: engine.PMTACadenceInput{
-					Mode:         "interval",
-					EveryMinutes: waveInterval,
-					BatchSize:    0,
+					Mode: "interval", EveryMinutes: waveInterval, BatchSize: 0,
 				},
 				TimeSpans: []engine.PMTATimeSpanInput{{
-					Type:    "absolute",
-					StartAt: &schedAt,
-					EndAt:   func() *time.Time { t := schedAt.Add(8 * time.Hour); return &t }(),
+					Type: "absolute", StartAt: &schedAt,
+					EndAt: func() *time.Time { t := schedAt.Add(8 * time.Hour); return &t }(),
 				}},
 			})
 		}
 	}
 	if len(targetISPs) == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no ISP quotas configured"})
-		return
+		return nil, fmt.Errorf("no ISP quotas configured")
 	}
 
-	// Build inclusion lists and segments (extract IDs from the config objects, split by type)
 	var inclusionListIDs, inclusionSegmentIDs []string
 	var sendPriority []engine.PriorityItem
 	if lists, ok := cfg["inclusion_lists"].([]interface{}); ok {
@@ -414,8 +407,7 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		}
 	}
 	if len(inclusionListIDs) == 0 && len(inclusionSegmentIDs) == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot approve: no inclusion lists or segments configured"})
-		return
+		return nil, fmt.Errorf("no inclusion lists or segments configured")
 	}
 
 	var exclusionListIDs, exclusionSegmentIDs []string
@@ -441,93 +433,66 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		}
 	}
 
-	// Extract offer context if this recommendation is for an offer campaign
 	cfgOfferID, _ := cfg["offer_id"].(string)
 
-	// Try multi-variant generation via wave content pipeline.
-	// Match sending domain + campaign type to a known brand, scrape fresh
-	// content, and generate 3 editorial variations that fill the brand's
-	// approved template slots. Works for both engaged AND welcome campaigns —
-	// welcome campaigns get welcome-specific content while the template
-	// structure stays locked. Every text element varies for anti-fingerprinting.
-	variants := generateMultiVariantContent(ctx, a.db, campaignName, sendingDomain, fromName, subject, previewText, htmlContent)
+	// Detached context for heavy operations (content gen, audience, campaign creation).
+	deployCtx, deployCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer deployCancel()
 
-	// Build the full PMTACampaignInput
+	variants := generateMultiVariantContent(deployCtx, a.db, campaignName, sendingDomain, fromName, subject, previewText, htmlContent)
+
 	deployInput := engine.PMTACampaignInput{
-		OfferID:           cfgOfferID,
-		Name:              campaignName,
-		TargetISPs:        targetISPs,
-		SendingDomain:     sendingDomain,
-		Variants:          variants,
-		ISPPlans:          ispPlans,
-		ISPQuotas:         ispQuotas,
-		InclusionLists:    inclusionListIDs,
-		InclusionSegments: inclusionSegmentIDs,
-		SendPriority:      sendPriority,
-		ExclusionLists:    exclusionListIDs,
-		ExclusionSegments: exclusionSegmentIDs,
-		SendDays:          []string{},
-		SendHour:          hour,
-		Timezone:          "UTC",
-		ThrottleStrategy:  "auto",
-		RandomizeAudience: false,
-		SendMode:          "scheduled",
-		ScheduledAt:       &schedAt,
+		OfferID: cfgOfferID, Name: campaignName, TargetISPs: targetISPs,
+		SendingDomain: sendingDomain, Variants: variants, ISPPlans: ispPlans,
+		ISPQuotas: ispQuotas, InclusionLists: inclusionListIDs,
+		InclusionSegments: inclusionSegmentIDs, SendPriority: sendPriority,
+		ExclusionLists: exclusionListIDs, ExclusionSegments: exclusionSegmentIDs,
+		SendDays: []string{}, SendHour: hour, Timezone: "UTC",
+		ThrottleStrategy: "auto", RandomizeAudience: false,
+		SendMode: "scheduled", ScheduledAt: &schedAt,
 	}
 
-	// Pre-deploy infrastructure validation
-	preflight := preflightDeployCheck(ctx, a.db, orgID, sendingDomain)
+	preflight := preflightDeployCheck(deployCtx, a.db, orgID, sendingDomain)
 	if !preflight.OK {
 		msgs := make([]string, len(preflight.Errors))
 		for i, e := range preflight.Errors {
 			msgs[i] = e.Check + ": " + e.Message
 		}
-		respondJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "preflight failed: " + strings.Join(msgs, "; "),
-		})
-		return
+		return nil, fmt.Errorf("preflight failed: %s", strings.Join(msgs, "; "))
 	}
 
-	// Normalize, plan audience, and create the real campaign
 	normalized, normErr := normalizePMTACampaignInput(deployInput)
 	if normErr != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign normalization failed: " + normErr.Error()})
-		return
+		return nil, fmt.Errorf("campaign normalization failed: %w", normErr)
 	}
 
-	audience, audErr := planPMTAAudience(ctx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher, a.pmtaSvc.offerSuppMgr)
+	audience, audErr := planPMTAAudience(deployCtx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher, a.pmtaSvc.offerSuppMgr)
 	if audErr != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "audience planning failed: " + audErr.Error()})
-		return
+		return nil, fmt.Errorf("audience planning failed: %w", audErr)
 	}
 
-	tx, txErr := a.db.BeginTx(ctx, nil)
+	tx, txErr := a.db.BeginTx(deployCtx, nil)
 	if txErr != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": txErr.Error()})
-		return
+		return nil, fmt.Errorf("begin tx: %w", txErr)
 	}
 	defer tx.Rollback()
 
-	result, createErr := createPMTAWaveCampaign(ctx, tx, a.db, orgID, deployInput, normalized, audience, a.pmtaSvc.colCache)
+	result, createErr := createPMTAWaveCampaign(deployCtx, tx, a.db, orgID, deployInput, normalized, audience, a.pmtaSvc.colCache)
 	if createErr != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "campaign creation failed: " + createErr.Error()})
-		return
+		return nil, fmt.Errorf("campaign creation failed: %w", createErr)
 	}
 
 	if err := tx.Commit(); err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "commit failed: " + err.Error()})
-		return
+		return nil, fmt.Errorf("commit failed: %w", err)
 	}
 
-	// Link the offer to the created campaign so future audience plans check offer suppressions
 	if cfgOfferID != "" {
-		a.db.ExecContext(ctx,
+		a.db.ExecContext(deployCtx,
 			`UPDATE mailing_campaigns SET offer_id = $1::uuid WHERE id = $2::uuid AND (offer_id IS NULL OR offer_id = '00000000-0000-0000-0000-000000000000')`,
 			cfgOfferID, result.CampaignID)
 	}
 
-	// Mark recommendation as approved and link to the deployed campaign
-	a.db.ExecContext(ctx,
+	a.db.ExecContext(deployCtx,
 		`UPDATE agent_campaign_recommendations
 		 SET status = 'approved', approved_at = NOW(), executed_campaign_id = $1::uuid, updated_at = NOW()
 		 WHERE id = $2`,
@@ -535,15 +500,12 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 
 	log.Printf("[MarketingAgent] recommendation %s approved → campaign %s scheduled for %s", recID, result.CampaignID, schedAt.Format(time.RFC3339))
 
-	// Build wave plan preview for the response
 	wavePreview := make([]map[string]interface{}, 0, len(normalized.Plans))
 	for _, plan := range normalized.Plans {
 		count := audience.CountsByISP[plan.ISP]
 		waves := buildPMTAWaveSpecs(result.CampaignID, plan, count)
 		entry := map[string]interface{}{
-			"isp":            plan.ISP,
-			"audience_count": count,
-			"wave_count":     len(waves),
+			"isp": plan.ISP, "audience_count": count, "wave_count": len(waves),
 		}
 		if len(waves) > 0 {
 			entry["first_wave_at"] = waves[0].ScheduledAt.Format(time.RFC3339)
@@ -553,17 +515,46 @@ func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter,
 		wavePreview = append(wavePreview, entry)
 	}
 
+	ispStrs := make([]string, len(result.TargetISPs))
+	for i, isp := range result.TargetISPs {
+		ispStrs[i] = string(isp)
+	}
+
+	return &approveResult{
+		CampaignID:     result.CampaignID,
+		CampaignName:   result.Name,
+		CampaignStatus: result.Status,
+		ScheduledAt:    schedAt,
+		TotalAudience:  result.TotalAudience,
+		TargetISPs:     ispStrs,
+		ISPPlanCount:   len(result.ISPPlans),
+		WavePreview:    wavePreview,
+	}, nil
+}
+
+// HandleApproveRecommendation deploys the recommendation as a real scheduled campaign
+// through the existing PMTA campaign pipeline — identical to deploying from Campaign Manager.
+func (a *EmailMarketingAgent) HandleApproveRecommendation(w http.ResponseWriter, r *http.Request) {
+	recID := chi.URLParam(r, "id")
+	orgID := getOrgID(r)
+
+	res, err := a.doApproveRecommendation(r.Context(), orgID, recID)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "approved",
 		"id":              recID,
-		"campaign_id":     result.CampaignID,
-		"campaign_name":   result.Name,
-		"campaign_status": result.Status,
-		"scheduled_at":    schedAt.Format(time.RFC3339),
-		"total_audience":  result.TotalAudience,
-		"target_isps":     result.TargetISPs,
-		"isp_plans":       len(result.ISPPlans),
-		"wave_preview":    wavePreview,
+		"campaign_id":     res.CampaignID,
+		"campaign_name":   res.CampaignName,
+		"campaign_status": res.CampaignStatus,
+		"scheduled_at":    res.ScheduledAt.Format(time.RFC3339),
+		"total_audience":  res.TotalAudience,
+		"target_isps":     res.TargetISPs,
+		"isp_plans":       res.ISPPlanCount,
+		"wave_preview":    res.WavePreview,
 	})
 }
 
@@ -948,776 +939,134 @@ func (a *EmailMarketingAgent) HandleUpdateRecommendation(w http.ResponseWriter, 
 	respondJSON(w, http.StatusOK, result)
 }
 
-// HandleGenerateForecast generates campaign recommendations for a month based on the domain strategy.
+// HandleGenerateForecast routes forecast generation through the EDITH LLM agent.
+// Instead of hardcoded scheduling logic, EDITH uses its tools (compute_isp_quotas,
+// list_lists, list_segments, etc.) to reason about volume, audience, and timing,
+// then calls create_recommendation for each campaign.
 func (a *EmailMarketingAgent) HandleGenerateForecast(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
 	var input struct {
 		SendingDomain   string `json:"sending_domain"`
 		Month           string `json:"month"`
 		ForceRegenerate bool   `json:"force_regenerate"`
+		StartDate       string `json:"start_date"`
+		EndDate         string `json:"end_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	if input.SendingDomain == "" || input.Month == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending_domain and month are required"})
+	if input.SendingDomain == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending_domain is required"})
 		return
 	}
 
-	startDate := input.Month + "-01"
-	t, err := time.Parse("2006-01-02", startDate)
-	if err != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid month format"})
-		return
-	}
-
-	// Load strategy
-	var strategy string
-	var paramsJSON sql.NullString
-	err = a.db.QueryRowContext(r.Context(),
-		`SELECT strategy, params::text FROM agent_domain_strategies WHERE organization_id = $1 AND sending_domain = $2`,
-		orgID, input.SendingDomain).Scan(&strategy, &paramsJSON)
-	if err != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "no strategy configured for " + input.SendingDomain + ". Set one up first."})
-		return
-	}
-
-	var params map[string]interface{}
-	if paramsJSON.Valid {
-		json.Unmarshal([]byte(paramsJSON.String), &params)
-	}
-
-	// Get current quotas as baseline
-	currentQuotas := map[string]int{}
-	quotaRows, _ := a.db.QueryContext(r.Context(), `
-		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
-		JOIN mailing_campaigns c ON p.campaign_id = c.id
-		WHERE c.organization_id::text = $1
-		  AND c.status IN ('completed','sent','cancelled','completed_with_errors','sending')
-		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
-		LIMIT 100`, orgID)
-	if quotaRows != nil {
-		defer quotaRows.Close()
-		for quotaRows.Next() {
-			var isp string
-			var quota int
-			quotaRows.Scan(&isp, &quota)
-			if _, seen := currentQuotas[isp]; !seen {
-				currentQuotas[isp] = quota
-			}
+	startDate := input.StartDate
+	endDate := input.EndDate
+	if startDate == "" && input.Month != "" {
+		startDate = input.Month + "-01"
+		if t, err := time.Parse("2006-01-02", startDate); err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid month format"})
+			return
+		} else {
+			endDate = t.AddDate(0, 1, -1).Format("2006-01-02")
 		}
 	}
-
-	// Default warmup starting quotas when no campaign history exists
-	if len(currentQuotas) == 0 {
-		log.Printf("[MarketingAgent] no historical quotas found for org %s, using warmup defaults", orgID)
-		maxDaily := 50000
-		if mv, ok := params["max_daily_volume"].(float64); ok && int(mv) > 0 {
-			maxDaily = int(mv)
-		}
-		// Distribution based on typical US mailbox market share
-		currentQuotas = map[string]int{
-			"gmail":     int(float64(maxDaily) * 0.30),
-			"yahoo":     int(float64(maxDaily) * 0.18),
-			"microsoft": int(float64(maxDaily) * 0.20),
-			"apple":     int(float64(maxDaily) * 0.12),
-			"comcast":   int(float64(maxDaily) * 0.08),
-			"att":       int(float64(maxDaily) * 0.06),
-			"cox":       int(float64(maxDaily) * 0.03),
-			"charter":   int(float64(maxDaily) * 0.03),
-		}
+	if startDate == "" {
+		startDate = time.Now().Format("2006-01-02")
+	}
+	if endDate == "" {
+		endDate = time.Now().AddDate(0, 0, 14).Format("2006-01-02")
 	}
 
-	increasePct := 10.0
-	if v, ok := params["daily_volume_increase_pct"].(float64); ok && v > 0 {
-		increasePct = v
-	}
-
-	// Clear existing pending recommendations for this month if regenerating
+	// Route through EDITH LLM: construct a structured prompt and let the agent
+	// use its tools (compute_isp_quotas, list_lists, create_recommendation, etc.)
+	// to generate the forecast with full reasoning.
+	prompt := fmt.Sprintf(
+		`Generate a campaign schedule for sending domain %s from %s to %s. `+
+			`Follow the Decision Framework in your system prompt exactly. `+
+			`For each day in the range, create the standard 2-campaign pattern: `+
+			`1) Newsletter/Engaged campaign (engaged segments only, scheduled first), `+
+			`2) Welcome/Main campaign (ISP lists only, scheduled 30 min after). `+
+			`Use compute_isp_quotas for each day's target volume. `+
+			`Apply 20%% compound daily growth from the most recent actual send volume. `+
+			`Verify everything with get_recommendations after creating. `+
+			`Present a consolidated schedule table when done.`,
+		input.SendingDomain, startDate, endDate,
+	)
 	if input.ForceRegenerate {
-		a.db.ExecContext(r.Context(),
-			`DELETE FROM agent_campaign_recommendations
-			 WHERE organization_id = $1 AND sending_domain = $2
-			   AND scheduled_date >= $3 AND scheduled_date <= $4 AND status = 'pending'`,
-			orgID, input.SendingDomain, startDate, t.AddDate(0, 1, -1).Format("2006-01-02"))
+		prompt += " Clear existing pending recommendations for this domain first using clear_forecasts."
 	}
 
-	// Determine domain affinity for template matching
-	domainLower := strings.ToLower(input.SendingDomain)
-	isQFDomain := strings.Contains(domainLower, "quizfiesta")
-	isHTDomain := strings.Contains(domainLower, "historythinking")
-	isMHDomain := strings.Contains(domainLower, "myownhealth")
-	domainPrefix := ""
-	switch {
-	case isQFDomain:
-		domainPrefix = "qf"
-	case isHTDomain:
-		domainPrefix = "ht"
-	case isMHDomain:
-		domainPrefix = "mh"
-	default:
-		domainPrefix = "db"
-	}
+	// Load context for the LLM
+	memories := a.loadMemories(r.Context(), orgID)
+	strategies := a.loadDomainStrategies(r.Context(), orgID)
+	systemPrompt := buildAgentSystemPrompt(memories, strategies)
 
-	// Pull from_name, preview_text, schedule time from the most recent sent campaign for this domain
-	var fromName, fromEmail, histScheduleTime, histPreviewText string
-	var histCampaignID string
-	a.db.QueryRowContext(r.Context(),
-		`SELECT c.id::text, COALESCE(c.from_name,''), COALESCE(c.from_email,''),
-		        TO_CHAR(c.scheduled_at AT TIME ZONE 'UTC', 'HH24:MI'),
-		        COALESCE(c.preview_text,'')
-		 FROM mailing_campaigns c
-		 WHERE c.organization_id::text = $1
-		   AND c.from_email LIKE '%@' || $2
-		   AND c.status IN ('sent','completed','sending')
-		 ORDER BY COALESCE(c.scheduled_at, c.created_at) DESC LIMIT 1`,
-		orgID, input.SendingDomain).Scan(&histCampaignID, &fromName, &fromEmail, &histScheduleTime, &histPreviewText)
-	if fromName == "" {
-		a.db.QueryRowContext(r.Context(),
-			`SELECT COALESCE(from_name,''), COALESCE(from_email,'') FROM mailing_sending_profiles
-			 WHERE organization_id = $1 AND sending_domain = $2 AND status = 'active' LIMIT 1`,
-			orgID, input.SendingDomain).Scan(&fromName, &fromEmail)
+	messages := []agentOpenAIMsg{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: prompt},
 	}
-	if fromName == "" {
-		switch {
-		case isQFDomain:
-			fromName = "Quiz Fiesta"
-		case isHTDomain:
-			fromName = "History Thinking"
-		case isMHDomain:
-			fromName = "My Own Health"
-		default:
-			fromName = "Jamie @ Discount Blog"
-		}
-	}
-	if fromEmail == "" {
-		fromEmail = "hello@" + input.SendingDomain
-	}
+	tools := getAgentTools()
 
-	// Pull wave interval from the most recent ISP plan for this domain's campaign
-	histWaveInterval := 15
-	histThrottlePerWave := 0
-	if histCampaignID != "" {
-		var cadenceJSON string
-		err := a.db.QueryRowContext(r.Context(),
-			`SELECT COALESCE(config_snapshot::text, '{}')
-			 FROM mailing_campaign_isp_plans WHERE campaign_id = $1 LIMIT 1`,
-			histCampaignID).Scan(&cadenceJSON)
-		if err == nil && cadenceJSON != "" {
-			var snapshot map[string]interface{}
-			if json.Unmarshal([]byte(cadenceJSON), &snapshot) == nil {
-				if cadence, ok := snapshot["cadence"].(map[string]interface{}); ok {
-					if em, ok := cadence["every_minutes"].(float64); ok && int(em) > 0 {
-						histWaveInterval = int(em)
-					}
-					if bs, ok := cadence["batch_size"].(float64); ok && int(bs) > 0 {
-						histThrottlePerWave = int(bs)
-					}
-				}
-			}
-		}
-	}
-	log.Printf("[MarketingAgent] historical data: from=%q preview=%q wave=%d throttle=%d",
-		fromName, histPreviewText, histWaveInterval, histThrottlePerWave)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
 
-	// If no historical preview_text, pull a pool of recent preview texts from this domain's campaigns
-	var previewTextPool []string
-	if histPreviewText != "" {
-		previewTextPool = append(previewTextPool, histPreviewText)
-	}
-	ptRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT DISTINCT COALESCE(preview_text,'')
-		 FROM mailing_campaigns
-		 WHERE organization_id::text = $1 AND from_email LIKE '%@' || $2
-		   AND status IN ('sent','completed','sending') AND preview_text IS NOT NULL AND preview_text != ''
-		 ORDER BY 1 LIMIT 10`,
-		orgID, input.SendingDomain)
-	if ptRows != nil {
-		defer ptRows.Close()
-		for ptRows.Next() {
-			var pt string
-			ptRows.Scan(&pt)
-			if pt != "" {
-				found := false
-				for _, existing := range previewTextPool {
-					if existing == pt {
-						found = true
-						break
-					}
-				}
-				if !found {
-					previewTextPool = append(previewTextPool, pt)
-				}
-			}
-		}
-	}
-	log.Printf("[MarketingAgent] preview_text pool: %d entries", len(previewTextPool))
+	var actionsTaken []string
+	var assistantContent string
 
-	// Use historical schedule time or sensible default
-	scheduleTime := "11:00"
-	if histScheduleTime != "" {
-		scheduleTime = histScheduleTime
-	}
-
-	// 14D clickers and 7D openers are prioritized via ordered inclusion_lists; this is the semantic tier order
-	audiencePriority := []string{"clickers_14d", "openers_7d", "engagers_30d", "recent_subscribers", "cold"}
-	if ap, ok := params["audience_priority"].([]interface{}); ok {
-		audiencePriority = []string{}
-		for _, v := range ap {
-			if s, ok := v.(string); ok {
-				audiencePriority = append(audiencePriority, s)
-			}
-		}
-	}
-
-	type listInfo struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Type string `json:"type"`
-	}
-
-	// Load mailing lists, filtered by domain affinity
-	var allLists []listInfo
-	listRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_lists WHERE organization_id = $1 AND status = 'active' AND COALESCE(is_visible, true) = true ORDER BY name LIMIT 100`, orgID)
-	if listRows != nil {
-		defer listRows.Close()
-		for listRows.Next() {
-			var li listInfo
-			listRows.Scan(&li.ID, &li.Name)
-			li.Type = "list"
-			allLists = append(allLists, li)
-		}
-	}
-
-	// Load active segments as inclusion candidates
-	var allSegments []listInfo
-	segIncRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_segments
-		 WHERE organization_id = $1 AND status = 'active'
-		 ORDER BY name LIMIT 50`, orgID)
-	if segIncRows != nil {
-		defer segIncRows.Close()
-		for segIncRows.Next() {
-			var si listInfo
-			segIncRows.Scan(&si.ID, &si.Name)
-			si.Type = "segment"
-			allSegments = append(allSegments, si)
-		}
-	}
-
-	// Filter lists & segments: domain affinity, exclude test/seed, deduplicate by name
-	isTestOrSeed := func(name string) bool {
-		lower := strings.ToLower(name)
-		return strings.Contains(lower, "test") || strings.Contains(lower, "seed") ||
-			strings.Contains(lower, "s3 import") || strings.Contains(lower, "template test")
-	}
-	listMatchesDomain := func(name string) bool {
-		lower := strings.ToLower(name)
-		switch {
-		case isQFDomain:
-			return strings.HasPrefix(lower, "qf ") || strings.Contains(lower, "quizfiesta")
-		case isHTDomain:
-			return strings.HasPrefix(lower, "ht ") || strings.Contains(lower, "historythinking") || strings.Contains(lower, "history thinking")
-		case isMHDomain:
-			return strings.HasPrefix(lower, "mh ") || strings.Contains(lower, "myownhealth") || strings.Contains(lower, "my own health")
-		default:
-			return strings.HasPrefix(lower, "db ") || strings.Contains(lower, "discountblog") || strings.Contains(lower, "discount blog") ||
-				(!strings.HasPrefix(lower, "qf ") && !strings.HasPrefix(lower, "ht ") && !strings.HasPrefix(lower, "mh "))
-		}
-	}
-	var inclusionLists []listInfo
-	seenNames := map[string]bool{}
-	for _, li := range allLists {
-		if !listMatchesDomain(li.Name) {
-			continue
-		}
-		if isTestOrSeed(li.Name) {
-			continue
-		}
-		nameLower := strings.ToLower(strings.TrimSpace(li.Name))
-		if seenNames[nameLower] {
-			continue
-		}
-		seenNames[nameLower] = true
-		inclusionLists = append(inclusionLists, li)
-	}
-	// Also add filtered segments to the inclusion pool (skip exclusion-type segments)
-	isExclusionSegment := func(name string) bool {
-		lower := strings.ToLower(name)
-		return strings.Contains(lower, "inactive") || strings.Contains(lower, "no engagement") ||
-			strings.Contains(lower, "no open") || strings.Contains(lower, "bot ") ||
-			strings.Contains(lower, "system") || strings.Contains(lower, "suppression")
-	}
-	for _, si := range allSegments {
-		if isTestOrSeed(si.Name) || isExclusionSegment(si.Name) {
-			continue
-		}
-		lower := strings.ToLower(si.Name)
-		isShared := strings.Contains(lower, "mailed") || strings.Contains(lower, "global") || strings.Contains(lower, "all ")
-		if !isShared && !listMatchesDomain(si.Name) {
-			continue
-		}
-		nameLower := strings.ToLower(strings.TrimSpace(si.Name))
-		if seenNames[nameLower] {
-			continue
-		}
-		seenNames[nameLower] = true
-		inclusionLists = append(inclusionLists, si)
-	}
-	if len(inclusionLists) == 0 {
-		inclusionLists = allLists
-	}
-
-	// Prioritize 14D clickers and 7D openers segments ahead of all lists
-	// Order: clickers_14d → openers_7d → rest
-	is14dClickers := func(name string) bool {
-		lower := strings.ToLower(name)
-		return strings.Contains(lower, "14d") && strings.Contains(lower, "clicker")
-	}
-	is7dOpeners := func(name string) bool {
-		lower := strings.ToLower(name)
-		return strings.Contains(lower, "7d") && strings.Contains(lower, "opener")
-	}
-	var orderedInclusion []listInfo
-	for _, li := range inclusionLists {
-		if li.Type == "segment" && is14dClickers(li.Name) {
-			orderedInclusion = append(orderedInclusion, li)
-		}
-	}
-	for _, li := range inclusionLists {
-		if li.Type == "segment" && is7dOpeners(li.Name) {
-			orderedInclusion = append(orderedInclusion, li)
-		}
-	}
-	seenPriority := map[string]bool{}
-	for _, li := range orderedInclusion {
-		seenPriority[li.ID] = true
-	}
-	for _, li := range inclusionLists {
-		if !seenPriority[li.ID] {
-			orderedInclusion = append(orderedInclusion, li)
-		}
-	}
-	inclusionLists = orderedInclusion
-
-	// Load suppression lists (always include ALL suppression lists)
-	var rawSuppressionLists []listInfo
-	suppRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_suppression_lists ORDER BY name LIMIT 50`)
-	if suppRows != nil {
-		defer suppRows.Close()
-		for suppRows.Next() {
-			var li listInfo
-			suppRows.Scan(&li.ID, &li.Name)
-			li.Type = "suppression_list"
-			rawSuppressionLists = append(rawSuppressionLists, li)
-		}
-	}
-	// Global Suppression MUST be first in exclusions; then rest
-	var exclusionLists []listInfo
-	for _, li := range rawSuppressionLists {
-		if strings.Contains(strings.ToLower(li.Name), "global") {
-			exclusionLists = append(exclusionLists, li)
-		}
-	}
-	for _, li := range rawSuppressionLists {
-		if !strings.Contains(strings.ToLower(li.Name), "global") {
-			exclusionLists = append(exclusionLists, li)
-		}
-	}
-
-	// Always add inactives segment as exclusion
-	segRows, _ := a.db.QueryContext(r.Context(),
-		`SELECT id::text, name FROM mailing_segments
-		 WHERE organization_id = $1 AND status = 'active'
-		   AND (LOWER(name) LIKE '%inactive%' OR LOWER(name) LIKE '%no engagement%' OR LOWER(name) LIKE '%no open%')
-		 ORDER BY name LIMIT 10`, orgID)
-	if segRows != nil {
-		defer segRows.Close()
-		for segRows.Next() {
-			var seg listInfo
-			segRows.Scan(&seg.ID, &seg.Name)
-			seg.Type = "segment"
-			exclusionLists = append(exclusionLists, seg)
-		}
-	}
-
-	if len(exclusionLists) == 0 {
-		exclusionLists = []listInfo{}
-	}
-	log.Printf("[MarketingAgent] lists: %d raw → %d inclusion (filtered, deduped, no test/seed), %d exclusion (suppression+segments)", len(allLists), len(inclusionLists), len(exclusionLists))
-
-	// Load templates, filtered by domain affinity
-	type savedTemplate struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Subject     string `json:"subject"`
-		Folder      string `json:"folder"`
-		PreviewText string `json:"preview_text"`
-	}
-
-	var allTemplates []savedTemplate
-	tRows, tErr := a.db.QueryContext(r.Context(),
-		`SELECT t.id::text, t.name, COALESCE(t.subject,''), COALESCE(f.name,''), COALESCE(t.preview_text,'')
-		 FROM mailing_templates t
-		 LEFT JOIN mailing_template_folders f ON t.folder_id = f.id
-		 WHERE t.organization_id = $1 AND t.status = 'active'
-		   AND t.html_content IS NOT NULL AND LENGTH(t.html_content) > 10
-		 ORDER BY t.updated_at DESC LIMIT 30`, orgID)
-	if tErr != nil {
-		log.Printf("[MarketingAgent] template query error: %v (orgID=%s)", tErr, orgID)
-	} else {
-		defer tRows.Close()
-		for tRows.Next() {
-			var t savedTemplate
-			if scanErr := tRows.Scan(&t.ID, &t.Name, &t.Subject, &t.Folder, &t.PreviewText); scanErr != nil {
-				log.Printf("[MarketingAgent] template scan error: %v", scanErr)
-				continue
-			}
-			allTemplates = append(allTemplates, t)
-		}
-	}
-
-	// Filter templates by domain affinity: match by brand prefix in name or folder
-	var domainTemplates []savedTemplate
-	for _, t := range allTemplates {
-		lower := strings.ToLower(t.Name + " " + t.Folder)
-		switch {
-		case isQFDomain:
-			if strings.Contains(lower, "qf") || strings.Contains(lower, "quiz fiesta") || strings.Contains(lower, "quizfiesta") {
-				domainTemplates = append(domainTemplates, t)
-			}
-		case isHTDomain:
-			if strings.Contains(lower, "ht ") || strings.Contains(lower, "history thinking") || strings.Contains(lower, "historythinking") {
-				domainTemplates = append(domainTemplates, t)
-			}
-		case isMHDomain:
-			if strings.Contains(lower, "mh ") || strings.Contains(lower, "my own health") || strings.Contains(lower, "myownhealth") {
-				domainTemplates = append(domainTemplates, t)
-			}
-		default:
-			isOtherBrand := strings.Contains(lower, "qf") || strings.Contains(lower, "quizfiesta") ||
-				strings.Contains(lower, "ht ") || strings.Contains(lower, "historythinking") ||
-				strings.Contains(lower, "mh ") || strings.Contains(lower, "myownhealth")
-			if !isOtherBrand {
-				domainTemplates = append(domainTemplates, t)
-			}
-		}
-	}
-	if len(domainTemplates) == 0 {
-		domainTemplates = allTemplates
-	}
-
-	log.Printf("[MarketingAgent] domain=%s prefix=%s templates: %d, lists: %d inclusion (14d clickers + 7d openers first)", input.SendingDomain, domainPrefix, len(domainTemplates), len(inclusionLists))
-
-	// --- Strategy params for dual campaign generation ---
-	includeWeekends := false
-	if v, ok := params["include_weekends"].(bool); ok {
-		includeWeekends = v
-	}
-
-	// Engaged campaign lists (seed lists, stored in strategy as JSON array of {id,name,type})
-	var engagedLists []listInfo
-	if rawLists, ok := params["engaged_lists"].([]interface{}); ok {
-		for _, item := range rawLists {
-			if m, ok := item.(map[string]interface{}); ok {
-				li := listInfo{
-					ID:   fmt.Sprintf("%v", m["id"]),
-					Name: fmt.Sprintf("%v", m["name"]),
-					Type: "list",
-				}
-				if t, ok := m["type"].(string); ok {
-					li.Type = t
-				}
-				engagedLists = append(engagedLists, li)
-			}
-		}
-	}
-
-	// Engaged quotas (fixed per day, stored in strategy as {isp: volume})
-	engagedQuotas := map[string]int{}
-	if rawQ, ok := params["engaged_quotas"].(map[string]interface{}); ok {
-		for isp, v := range rawQ {
-			switch n := v.(type) {
-			case float64:
-				engagedQuotas[isp] = int(n)
-			case int:
-				engagedQuotas[isp] = n
-			}
-		}
-	}
-
-	// 90-day domain exclusion segment ID for Welcome campaigns
-	welcomeExclusionSegmentID := ""
-	welcomeExclusionSegmentName := ""
-	if v, ok := params["welcome_exclusion_segment_id"].(string); ok && v != "" {
-		welcomeExclusionSegmentID = v
-	}
-	if v, ok := params["welcome_exclusion_segment_name"].(string); ok && v != "" {
-		welcomeExclusionSegmentName = v
-	}
-	if welcomeExclusionSegmentID == "" {
-		// Auto-detect: find "Sent Last 90D" segment for this domain
-		var autoID, autoName string
-		a.db.QueryRowContext(r.Context(),
-			`SELECT id::text, name FROM mailing_segments
-			 WHERE organization_id = $1 AND status = 'active'
-			   AND LOWER(name) LIKE '%90d%' AND LOWER(name) LIKE '%sent%'
-			   AND (LOWER(name) LIKE '%' || $2 || '%' OR LOWER(name) LIKE '%' || $3 || '%')
-			 LIMIT 1`, orgID, strings.ToLower(domainPrefix), strings.Replace(strings.ToLower(input.SendingDomain), "em.", "", 1)).Scan(&autoID, &autoName)
-		if autoID != "" {
-			welcomeExclusionSegmentID = autoID
-			welcomeExclusionSegmentName = autoName
-			log.Printf("[MarketingAgent] auto-detected 90D exclusion segment: %s (%s)", autoName, autoID)
-		}
-	}
-
-	// Schedule time offsets for staggered sends
-	engagedTimeOffset := 0
-	if v, ok := params["engaged_schedule_offset_minutes"].(float64); ok {
-		engagedTimeOffset = int(v)
-	}
-	welcomeTimeOffset := 30
-	if v, ok := params["welcome_schedule_offset_minutes"].(float64); ok {
-		welcomeTimeOffset = int(v)
-	}
-
-	dualMode := len(engagedLists) > 0 && len(engagedQuotas) > 0
-	log.Printf("[MarketingAgent] dual_mode=%v include_weekends=%v engaged_lists=%d engaged_quotas=%d 90d_excl=%s",
-		dualMode, includeWeekends, len(engagedLists), len(engagedQuotas), welcomeExclusionSegmentID)
-
-	// Split templates into welcome and newsletter categories
-	var welcomeTemplates, newsletterTemplates []savedTemplate
-	for _, tmpl := range domainTemplates {
-		lower := strings.ToLower(tmpl.Name + " " + tmpl.Folder)
-		if strings.Contains(lower, "welcome") {
-			welcomeTemplates = append(welcomeTemplates, tmpl)
+	for i := 0; i < 25; i++ {
+		var resp *agentOpenAIResp
+		var llmErr error
+		if a.useAnthropic {
+			resp, llmErr = a.callClaude(ctx, systemPrompt, messages, tools)
 		} else {
-			newsletterTemplates = append(newsletterTemplates, tmpl)
-		}
-	}
-	if len(welcomeTemplates) == 0 {
-		welcomeTemplates = domainTemplates
-	}
-	if len(newsletterTemplates) == 0 {
-		newsletterTemplates = domainTemplates
-	}
-
-	// Build Welcome exclusion lists (base exclusions + 90-day domain segment)
-	welcomeExclusions := make([]listInfo, len(exclusionLists))
-	copy(welcomeExclusions, exclusionLists)
-	if welcomeExclusionSegmentID != "" {
-		name := welcomeExclusionSegmentName
-		if name == "" {
-			name = domainPrefix + " - Sent Last 90D"
-		}
-		welcomeExclusions = append(welcomeExclusions, listInfo{
-			ID:   welcomeExclusionSegmentID,
-			Name: name,
-			Type: "segment",
-		})
-	}
-
-	// --- Replace stale ISP plan baseline with actual 3-day delivery data ---
-	deliveryQuotas := map[string]int{}
-	dRows, _ := a.db.QueryContext(r.Context(), `
-		SELECT
-			LOWER(COALESCE(te.isp, 'other')) as isp,
-			COUNT(*) as delivered
-		FROM mailing_tracking_events te
-		JOIN mailing_campaigns c ON te.campaign_id = c.id
-		WHERE c.organization_id::text = $1
-		  AND c.from_email LIKE '%@' || $2
-		  AND te.event_type = 'delivered'
-		  AND te.created_at > NOW() - INTERVAL '3 days'
-		GROUP BY 1`, orgID, input.SendingDomain)
-	if dRows != nil {
-		defer dRows.Close()
-		for dRows.Next() {
-			var isp string
-			var count int
-			dRows.Scan(&isp, &count)
-			dailyAvg := count / 3
-			if dailyAvg > 0 {
-				deliveryQuotas[isp] = dailyAvg
+			openaiReq := agentOpenAIReq{
+				Model: a.model, Messages: messages, Tools: tools,
+				Temperature: 0.3, MaxCompletionTokens: 16000,
 			}
+			resp, llmErr = a.callAgentOpenAI(ctx, openaiReq)
 		}
-	}
-	if len(deliveryQuotas) > 0 {
-		log.Printf("[MarketingAgent] using 3-day delivery baseline: %v", deliveryQuotas)
-		currentQuotas = deliveryQuotas
-	}
+		if llmErr != nil {
+			log.Printf("[MarketingAgent] forecast LLM error: %v", llmErr)
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "AI service error: " + llmErr.Error()})
+			return
+		}
+		if len(resp.Choices) == 0 {
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "empty AI response"})
+			return
+		}
 
-	// Helper: compute time string with minute offset from base
-	computeTime := func(baseTime string, offsetMinutes int) string {
-		parts := strings.Split(baseTime, ":")
-		h, m := 13, 0
-		if len(parts) >= 2 {
-			fmt.Sscanf(parts[0], "%d", &h)
-			fmt.Sscanf(parts[1], "%d", &m)
-		}
-		total := h*60 + m + offsetMinutes
-		if total < 0 {
-			total = 0
-		}
-		return fmt.Sprintf("%02d:%02d", total/60, total%60)
-	}
-
-	// Generate daily recommendations — dual campaigns per day (Engaged + Welcome)
-	created := 0
-	endDate := t.AddDate(0, 1, -1)
-	current := t
-	if current.Before(time.Now()) {
-		current = time.Now().Truncate(24 * time.Hour).AddDate(0, 0, 1)
-	}
-	dayIndex := 0
-	for !current.After(endDate) {
-		weekday := current.Weekday()
-		if !includeWeekends && (weekday == time.Saturday || weekday == time.Sunday) {
-			current = current.AddDate(0, 0, 1)
+		choice := resp.Choices[0]
+		if choice.FinishReason == "tool_calls" && len(choice.Message.ToolCalls) > 0 {
+			messages = append(messages, choice.Message)
+			for _, tc := range choice.Message.ToolCalls {
+				result, action := a.executeAgentTool(ctx, orgID, tc.Function.Name, tc.Function.Arguments)
+				if action != "" {
+					actionsTaken = append(actionsTaken, action)
+				}
+				messages = append(messages, agentOpenAIMsg{Role: "tool", Content: result, ToolCallID: tc.ID})
+			}
 			continue
 		}
-
-		// Compound growth: (1 + pct/100)^dayIndex
-		multiplier := math.Pow(1.0+increasePct/100.0, float64(dayIndex))
-
-		dateStr := current.Format("2006-01-02")
-		dayLabel := current.Format("Monday")
-
-		// === Campaign 1: Engaged (seeds) — if dual mode ===
-		if dualMode {
-			engTime := computeTime(scheduleTime, engagedTimeOffset)
-			engVol := 0
-			engQuotaMap := map[string]interface{}{}
-			for isp, vol := range engagedQuotas {
-				engQuotaMap[isp] = vol
-				engVol += vol
-			}
-
-			engTmpl := newsletterTemplates[dayIndex%len(newsletterTemplates)]
-			engName := input.SendingDomain + " — " + dayLabel + " Engaged"
-
-			engCfg, _ := json.Marshal(map[string]interface{}{
-				"sending_domain":        input.SendingDomain,
-				"isp_quotas":            engQuotaMap,
-				"name":                  engName,
-				"scheduled_date":        dateStr,
-				"scheduled_time":        engTime,
-				"from_name":             fromName,
-				"from_email":            fromEmail,
-				"subject":               engTmpl.Subject,
-				"preview_text":          engTmpl.PreviewText,
-				"template_id":           engTmpl.ID,
-				"template_name":         engTmpl.Name,
-				"wave_interval_minutes": histWaveInterval,
-				"throttle_per_wave":     histThrottlePerWave,
-				"audience_priority":     audiencePriority,
-				"inclusion_lists":       engagedLists,
-				"exclusion_lists":       exclusionLists,
-				"campaign_type":         "engaged_send",
-			})
-			_, err := a.db.ExecContext(r.Context(),
-				`INSERT INTO agent_campaign_recommendations
-				 (organization_id, sending_domain, scheduled_date, scheduled_time,
-				  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-				orgID, input.SendingDomain, dateStr, engTime,
-				engName, string(engCfg),
-				fmt.Sprintf("Engaged campaign — seed lists, fixed quotas. Day %d.", dayIndex+1),
-				strategy, engVol)
-			if err != nil {
-				log.Printf("[MarketingAgent] forecast insert error (engaged): %v", err)
-			} else {
-				created++
-			}
-		}
-
-		// === Campaign 2 (or only campaign): Welcome / General ===
-		welTime := scheduleTime
-		if dualMode {
-			welTime = computeTime(scheduleTime, welcomeTimeOffset)
-		}
-
-		welQuotas := map[string]interface{}{}
-		welVol := 0
-		for isp, base := range currentQuotas {
-			adjusted := int(float64(base) * multiplier)
-			welQuotas[isp] = adjusted
-			welVol += adjusted
-		}
-
-		welTmpl := welcomeTemplates[dayIndex%len(welcomeTemplates)]
-		welType := "welcome_send"
-		welLabel := "Welcome"
-		welExcl := welcomeExclusions
-		welInclusion := inclusionLists
-		if !dualMode {
-			welType = "general_send"
-			welLabel = ""
-			welExcl = exclusionLists
-		}
-
-		welName := input.SendingDomain + " — " + dayLabel
-		if welLabel != "" {
-			welName += " " + welLabel
-		}
-
-		welCfg, _ := json.Marshal(map[string]interface{}{
-			"sending_domain":        input.SendingDomain,
-			"isp_quotas":            welQuotas,
-			"name":                  welName,
-			"scheduled_date":        dateStr,
-			"scheduled_time":        welTime,
-			"from_name":             fromName,
-			"from_email":            fromEmail,
-			"subject":               welTmpl.Subject,
-			"preview_text":          welTmpl.PreviewText,
-			"template_id":           welTmpl.ID,
-			"template_name":         welTmpl.Name,
-			"wave_interval_minutes": histWaveInterval,
-			"throttle_per_wave":     histThrottlePerWave,
-			"audience_priority":     audiencePriority,
-			"inclusion_lists":       welInclusion,
-			"exclusion_lists":       welExcl,
-			"campaign_type":         welType,
-		})
-		_, err := a.db.ExecContext(r.Context(),
-			`INSERT INTO agent_campaign_recommendations
-			 (organization_id, sending_domain, scheduled_date, scheduled_time,
-			  campaign_name, campaign_config, reasoning, strategy, projected_volume, status)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-			orgID, input.SendingDomain, dateStr, welTime,
-			welName, string(welCfg),
-			fmt.Sprintf("%s campaign — compound growth %.0f%% per day. Day %d, multiplier %.2fx. %s",
-				welLabel, increasePct, dayIndex+1, multiplier,
-				func() string {
-					if welcomeExclusionSegmentID != "" {
-						return "90-day domain exclusion active."
-					}
-					return "Global Suppression excluded."
-				}()),
-			strategy, welVol)
-		if err != nil {
-			log.Printf("[MarketingAgent] forecast insert error (welcome): %v", err)
-		} else {
-			created++
-		}
-
-		dayIndex++
-		current = current.AddDate(0, 0, 1)
+		assistantContent = choice.Message.Content
+		break
 	}
+
+	// Count recommendations created
+	var created int
+	a.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM agent_campaign_recommendations WHERE organization_id = $1 AND sending_domain = $2 AND status = 'pending' AND scheduled_date >= $3`,
+		orgID, input.SendingDomain, startDate).Scan(&created)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":                  "generated",
 		"recommendations_created": created,
-		"templates_assigned":      len(domainTemplates),
 		"sending_domain":          input.SendingDomain,
-		"strategy":                strategy,
-		"month":                   input.Month,
-		"dual_mode":               dualMode,
-		"include_weekends":        includeWeekends,
+		"start_date":              startDate,
+		"end_date":                endDate,
+		"actions_taken":           actionsTaken,
+		"edith_summary":           assistantContent,
 	})
 }
 
