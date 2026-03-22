@@ -1144,8 +1144,20 @@ func main() {
 
 // runStartupMigrations applies critical schema fixes that must run before
 // the scheduler and send workers start. These are idempotent and safe to
-// re-run on every boot.
+// re-run on every boot. Uses a PostgreSQL advisory lock so only one ECS
+// task runs migrations at a time during rolling deployments.
 func runStartupMigrations(db *sql.DB) {
+	const migrationLockID = 8675309 // arbitrary but stable
+	var acquired bool
+	if err := db.QueryRow("SELECT pg_try_advisory_lock($1)", migrationLockID).Scan(&acquired); err != nil {
+		log.Printf("[StartupMigration] advisory lock query failed: %v — running migrations anyway", err)
+		acquired = true
+	}
+	if !acquired {
+		log.Println("[StartupMigration] Another instance holds the migration lock — skipping")
+		return
+	}
+	defer db.Exec("SELECT pg_advisory_unlock($1)", migrationLockID)
 	migrations := []struct {
 		name string
 		sql  string
@@ -1157,7 +1169,11 @@ func runStartupMigrations(db *sql.DB) {
 		DECLARE
 			part regclass;
 		BEGIN
-			ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT;
+			BEGIN
+				ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT;
+			EXCEPTION WHEN OTHERS THEN
+				NULL; -- partitioned table: column must be added per-partition
+			END;
 			FOR part IN
 				SELECT inhrelid::regclass
 				FROM pg_inherits
@@ -1166,9 +1182,9 @@ func runStartupMigrations(db *sql.DB) {
 				EXECUTE format('ALTER TABLE %s ADD COLUMN IF NOT EXISTS email TEXT', part);
 			END LOOP;
 		END $$`},
-		{"add_tracking_event_time_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW()`},
-		{"add_tracking_metadata_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`},
-		{"add_tracking_is_unique_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false`},
+		{"add_tracking_event_time_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW(); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
+		{"add_tracking_metadata_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
+		{"add_tracking_is_unique_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		// Drop restrictive event_type constraint so hard_bounce, soft_bounce, delivered etc. can be stored
 		{"drop_tracking_evt_chk", `ALTER TABLE mailing_tracking_events DROP CONSTRAINT IF EXISTS mailing_tracking_events_event_type_check`},
 		// Ensure inbox profiles has email and last_bounce_at columns
@@ -1177,7 +1193,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"drop_status_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},
-		{"widen_status_col", `ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT`},
+		{"widen_status_col", `DO $$ BEGIN ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		{"readd_status_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
 		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
 		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
@@ -1505,8 +1521,8 @@ func runStartupMigrations(db *sql.DB) {
 			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
 		`},
 		{"reset_emergency_agents", `UPDATE mailing_engine_agent_state SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
-		{"add_tracking_sending_domain", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255)`},
-		{"add_tracking_sending_ip", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45)`},
+		{"add_tracking_sending_domain", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
+		{"add_tracking_sending_ip", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		{"idx_tracking_sending_domain", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_domain ON mailing_tracking_events(sending_domain)`},
 		{"idx_tracking_sending_ip", `CREATE INDEX IF NOT EXISTS idx_tracking_sending_ip ON mailing_tracking_events(sending_ip)`},
 		{"backfill_sending_domain_startup", `
@@ -1518,9 +1534,9 @@ func runStartupMigrations(db *sql.DB) {
 			  AND c.from_email IS NOT NULL
 			  AND c.from_email LIKE '%@%'
 		`},
-		{"create_auto_fill_sending_domain_fn_startup", `
+		{"create_auto_fill_sending_domain_fn_startup", `DO $$ BEGIN
 			CREATE OR REPLACE FUNCTION auto_fill_sending_domain()
-			RETURNS TRIGGER AS $$
+			RETURNS TRIGGER AS $fn$
 			BEGIN
 			  IF NEW.sending_domain IS NULL OR NEW.sending_domain = '' THEN
 			    SELECT LOWER(SPLIT_PART(c.from_email, '@', 2)) INTO NEW.sending_domain
@@ -1530,7 +1546,8 @@ func runStartupMigrations(db *sql.DB) {
 			  END IF;
 			  RETURN NEW;
 			END;
-			$$ LANGUAGE plpgsql
+			$fn$ LANGUAGE plpgsql;
+		EXCEPTION WHEN OTHERS THEN NULL; END $$
 		`},
 		{"create_auto_fill_trigger_startup", `
 			DO $$ BEGIN
@@ -1541,7 +1558,7 @@ func runStartupMigrations(db *sql.DB) {
 			  END IF;
 			END $$
 		`},
-		{"consolidate_suppression_entries", `
+		{"consolidate_suppression_entries", `DO $$ BEGIN
 			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
 			SELECT gen_random_uuid(),
 				COALESCE(
@@ -1555,7 +1572,8 @@ func runStartupMigrations(db *sql.DB) {
 			FROM mailing_suppression_entries e
 			WHERE e.is_global = TRUE AND e.md5_hash IS NOT NULL AND e.md5_hash != ''
 			AND NOT EXISTS (SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = e.md5_hash)
-			ON CONFLICT DO NOTHING
+			ON CONFLICT DO NOTHING;
+		EXCEPTION WHEN OTHERS THEN NULL; END $$
 		`},
 		{"consolidate_suppression_legacy", `
 			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
