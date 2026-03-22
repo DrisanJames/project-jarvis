@@ -134,16 +134,31 @@ echo "Waiting for ECS service stability (tailing $LOG_GROUP)..."
 aws logs tail "$LOG_GROUP" --follow --since 1m "${AWS_ARGS[@]}" &
 LOG_TAIL_PID=$!
 
-set +e
-aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" "${AWS_ARGS[@]}"
-WAIT_EXIT=$?
-set -e
+MAX_WAIT=900  # 15 minutes
+POLL=15
+ELAPSED=0
+STABLE=false
+while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+  DEPLOYMENTS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" "${AWS_ARGS[@]}" \
+    --query 'services[0].deployments' --output json 2>/dev/null || echo "[]")
+  COUNT=$(echo "$DEPLOYMENTS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+  if [ "$COUNT" = "1" ]; then
+    STATUS=$(echo "$DEPLOYMENTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0].get('rolloutState',''))" 2>/dev/null || echo "")
+    if [ "$STATUS" = "COMPLETED" ]; then
+      STABLE=true
+      break
+    fi
+  fi
+  echo "  [$((ELAPSED))s] $COUNT deployment(s) active — waiting..."
+  sleep "$POLL"
+  ELAPSED=$((ELAPSED + POLL))
+done
 
 kill "$LOG_TAIL_PID" 2>/dev/null || true
 wait "$LOG_TAIL_PID" 2>/dev/null || true
 
-if [ "$WAIT_EXIT" -ne 0 ]; then
-  echo "ECS service failed to stabilize." >&2
+if [ "$STABLE" != "true" ]; then
+  echo "ECS service failed to stabilize after ${MAX_WAIT}s." >&2
   exit 1
 fi
 
