@@ -255,13 +255,21 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 		`UPDATE mailing_optizmo_scrub_jobs SET audience_count = $1 WHERE id = $2`,
 		audienceCount, jobID)
 
-	// Rebuild Bloom filter from the S3 hash file
+	// Rebuild Bloom filter — prefer local file (avoids S3 round-trip), fall back to S3 hashes
 	var s3BloomKey string
-	if h.suppMgr != nil && s3HashKey != "" {
-		if err := h.suppMgr.RebuildBloomFromS3Hashes(ctx, offerID); err != nil {
-			log.Printf("[Optizmo] job %s: Bloom rebuild failed (non-fatal): %v", jobID, err)
+	if h.suppMgr != nil {
+		var bloomErr error
+		bloomErr = h.suppMgr.RebuildBloomFromLocalFile(ctx, offerID, dlResult.HashFilePath)
+		if bloomErr != nil && s3HashKey != "" {
+			log.Printf("[Optizmo] job %s: local Bloom build failed, trying S3: %v", jobID, bloomErr)
+			bloomErr = h.suppMgr.RebuildBloomFromS3Hashes(ctx, offerID)
+		}
+		if bloomErr != nil {
+			log.Printf("[Optizmo] job %s: Bloom rebuild failed (non-fatal): %v", jobID, bloomErr)
 		} else {
-			s3BloomKey = h.s3Client.bloomKey(offerID)
+			if h.s3Client != nil {
+				s3BloomKey = h.s3Client.bloomKey(offerID)
+			}
 			h.db.ExecContext(ctx,
 				`UPDATE mailing_optizmo_scrub_jobs SET s3_bloom_key = $1 WHERE id = $2`, s3BloomKey, jobID)
 		}

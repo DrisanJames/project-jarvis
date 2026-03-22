@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -83,22 +84,35 @@ func (sc *SuppressionS3Client) UploadRawZIP(ctx context.Context, offerID string,
 }
 
 // UploadHashFile uploads a gzipped hash file to S3.
-// The caller passes the uncompressed hash data; this function gzips it.
+// Gzip compression is done to a temp file on disk (not in memory) to avoid
+// OOM on large lists (10M+ hashes = 330MB+).
 func (sc *SuppressionS3Client) UploadHashFile(ctx context.Context, offerID string, hashData io.Reader) (string, int, error) {
 	key := sc.hashKey(offerID)
 
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
+	tmpGz, err := os.CreateTemp("", "supp-gzip-*.gz")
+	if err != nil {
+		return "", 0, fmt.Errorf("create temp gzip file: %w", err)
+	}
+	defer os.Remove(tmpGz.Name())
+	defer tmpGz.Close()
+
+	gw := gzip.NewWriter(tmpGz)
 	n, err := io.Copy(gw, hashData)
 	if err != nil {
-		return "", 0, fmt.Errorf("gzip hashes: %w", err)
+		return "", 0, fmt.Errorf("gzip hashes to temp file: %w", err)
 	}
 	gw.Close()
+
+	if _, err := tmpGz.Seek(0, io.SeekStart); err != nil {
+		return "", 0, fmt.Errorf("seek temp gzip file: %w", err)
+	}
+	stat, _ := tmpGz.Stat()
 
 	_, err = sc.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:          aws.String(sc.bucket),
 		Key:             aws.String(key),
-		Body:            bytes.NewReader(buf.Bytes()),
+		Body:            tmpGz,
+		ContentLength:   aws.Int64(stat.Size()),
 		ContentType:     aws.String("application/gzip"),
 		ContentEncoding: aws.String("gzip"),
 	})
@@ -106,7 +120,7 @@ func (sc *SuppressionS3Client) UploadHashFile(ctx context.Context, offerID strin
 		return "", 0, fmt.Errorf("upload hashes to s3://%s/%s: %w", sc.bucket, key, err)
 	}
 	log.Printf("[SuppressionS3] uploaded %d bytes of hashes (gzipped: %d bytes) → s3://%s/%s",
-		n, buf.Len(), sc.bucket, key)
+		n, stat.Size(), sc.bucket, key)
 	return key, int(n), nil
 }
 

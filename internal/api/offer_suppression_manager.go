@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +172,74 @@ func (m *OfferSuppressionManager) RebuildBloomFromS3Hashes(ctx context.Context, 
 	})
 
 	log.Printf("[OfferSuppMgr] rebuilt Bloom for offer %s: %d elements, %d KB", offerID, bf.Size(), bf.MemoryKB())
+	return nil
+}
+
+// RebuildBloomFromLocalFile builds a Bloom filter from a local hash file (one
+// MD5 per line) without requiring S3. Used when we already have the hashes on
+// disk and want to avoid an S3 round-trip. Optionally uploads the Bloom to S3.
+func (m *OfferSuppressionManager) RebuildBloomFromLocalFile(ctx context.Context, offerID, hashFilePath string) error {
+	f, err := os.Open(hashFilePath)
+	if err != nil {
+		return fmt.Errorf("open hash file: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	count := uint64(0)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
+		}
+	}
+	f.Close()
+
+	if count == 0 {
+		log.Printf("[OfferSuppMgr] empty local hash file for offer %s", offerID)
+		return nil
+	}
+
+	f2, err := os.Open(hashFilePath)
+	if err != nil {
+		return fmt.Errorf("re-open hash file: %w", err)
+	}
+	defer f2.Close()
+
+	bf := NewBloomFilter(count, 0.001)
+	scanner2 := bufio.NewScanner(f2)
+	scanner2.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner2.Scan() {
+		h := strings.TrimSpace(scanner2.Text())
+		if h != "" {
+			bf.AddMD5(h)
+		}
+	}
+
+	m.mu.Lock()
+	m.filters[offerID] = bf
+	m.mu.Unlock()
+
+	bloomBytes, err := bf.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("marshal bloom: %w", err)
+	}
+	if m.s3 != nil {
+		if _, err := m.s3.UploadBloom(ctx, offerID, bloomBytes); err != nil {
+			log.Printf("[OfferSuppMgr] warning: could not persist Bloom to S3 for offer %s: %v", offerID, err)
+		}
+		m.s3.SaveMeta(ctx, SuppressionMeta{
+			OfferID:     offerID,
+			HashCount:   int(count),
+			BloomSizeKB: int(bf.MemoryKB()),
+			BloomFPRate: 0.001,
+			LastSyncAt:  time.Now(),
+			S3HashKey:   m.s3.hashKey(offerID),
+			S3BloomKey:  m.s3.bloomKey(offerID),
+		})
+	}
+
+	log.Printf("[OfferSuppMgr] rebuilt Bloom from local file for offer %s: %d elements, %d KB", offerID, bf.Size(), bf.MemoryKB())
 	return nil
 }
 

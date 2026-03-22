@@ -297,10 +297,15 @@ func (w *OptizmoDeltaSyncWorker) syncOffer(ctx context.Context, offer syncOfferR
 	w.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs SET progress_pct = 80, progress_message = 'Building Bloom filter…' WHERE id = $1`, jobID)
 
-	// Rebuild Bloom from S3 hashes
+	// Rebuild Bloom — prefer local file, fall back to S3
 	if w.suppMgr != nil {
-		if err := w.suppMgr.RebuildBloomFromS3Hashes(ctx, offer.ID); err != nil {
-			log.Printf("[DeltaSync] %s: Bloom rebuild failed (non-fatal): %v", logPrefix, err)
+		bloomErr := w.suppMgr.RebuildBloomFromLocalFile(ctx, offer.ID, dlResult.HashFilePath)
+		if bloomErr != nil {
+			log.Printf("[DeltaSync] %s: local Bloom build failed, trying S3: %v", logPrefix, bloomErr)
+			bloomErr = w.suppMgr.RebuildBloomFromS3Hashes(ctx, offer.ID)
+		}
+		if bloomErr != nil {
+			log.Printf("[DeltaSync] %s: Bloom rebuild failed (non-fatal): %v", logPrefix, bloomErr)
 		}
 	}
 
