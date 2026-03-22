@@ -2439,16 +2439,41 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		)`},
 	}
 
-	var ok, fail int
+	// Use a dedicated connection with a short statement timeout so heavy
+	// backfills fail fast (~5s) instead of holding up startup for 30s each.
+	conn, connErr := db.Conn(context.Background())
+	if connErr != nil {
+		log.Printf("[StartupMigration] failed to get dedicated connection: %v — using pool", connErr)
+	}
+	execSQL := func(sql string) error {
+		if conn != nil {
+			_, err := conn.ExecContext(context.Background(), sql)
+			return err
+		}
+		_, err := db.Exec(sql)
+		return err
+	}
+	if conn != nil {
+		defer conn.Close()
+		execSQL("SET statement_timeout = '5s'")
+	}
+
+	var ok, fail, skip int
 	for _, m := range migrations {
-		if _, err := db.Exec(m.sql); err != nil {
-			log.Printf("[StartupMigration] %s: ERROR %v", m.name, err)
-			fail++
+		if err := execSQL(m.sql); err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "statement timeout") {
+				log.Printf("[StartupMigration] %s: TIMEOUT (skipped — will retry next boot)", m.name)
+				skip++
+			} else {
+				log.Printf("[StartupMigration] %s: ERROR %v", m.name, err)
+				fail++
+			}
 		} else {
 			ok++
 		}
 	}
-	log.Printf("[StartupMigration] Complete: %d OK, %d errors", ok, fail)
+	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts", ok, fail, skip)
 
 	// Diagnostic: log pool assignments for OVH IPs to verify routing
 	poolRows, poolErr := db.Query(`
