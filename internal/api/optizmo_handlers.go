@@ -1030,6 +1030,10 @@ func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hash
 	}
 	defer tx.Rollback()
 
+	// Raise statement timeout for the entire transaction — 10M-row temp table
+	// operations (inserts, index, JOIN) can exceed the default timeout.
+	tx.ExecContext(ctx, `SET LOCAL statement_timeout = '600s'`)
+
 	_, err = tx.ExecContext(ctx,
 		`CREATE TEMP TABLE _optizmo_hashes (hash VARCHAR(32) NOT NULL) ON COMMIT DROP`)
 	if err != nil {
@@ -1079,10 +1083,20 @@ func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hash
 
 	log.Printf("[Optizmo] streamed %d hashes into temp table from %s", hashCount, hashFilePath)
 
+	// Index the temp table for faster JOIN. Use a savepoint so that if the
+	// CREATE INDEX hits the statement timeout, we rollback only the index
+	// attempt rather than aborting the entire transaction.
+	tx.ExecContext(ctx, "SAVEPOINT before_idx")
+	_, err = tx.ExecContext(ctx, `SET LOCAL statement_timeout = '600s'`)
+	if err != nil {
+		log.Printf("[Optizmo] warning: could not raise statement_timeout: %v", err)
+	}
 	_, err = tx.ExecContext(ctx, `CREATE INDEX ON _optizmo_hashes (hash)`)
 	if err != nil {
-		log.Printf("[Optizmo] warning: could not index temp table: %v", err)
+		log.Printf("[Optizmo] warning: could not index temp table: %v — rolling back savepoint", err)
+		tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT before_idx")
 	}
+	tx.ExecContext(ctx, "RELEASE SAVEPOINT before_idx")
 
 	var audienceCount int
 	err = tx.QueryRowContext(ctx,
