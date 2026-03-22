@@ -609,7 +609,7 @@ type ispCampaignState struct {
 // campaigns, computes proportional batch plans, claims items concurrently
 // across ISPs, and fans claimed items out to a bounded worker pool.
 func (p *SendWorkerPool) ispDispatchLoop() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	states := make(map[string]*ispCampaignState)

@@ -355,7 +355,7 @@ func main() {
 				}
 
 				// Start Send Worker Pool (processes the queue and sends emails)
-				sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 10)
+				sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 25)
 				profileSender := worker.NewProfileBasedSender(mailingDB)
 				sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
 				sendWorkerPool.SetPMTASender(profileSender)
@@ -2536,6 +2536,55 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 				SELECT 1 FROM data_pipeline_domain_lists dl
 				WHERE dl.sending_domain = v.sending_domain AND dl.isp = v.isp
 			)
+		`},
+		{"seed_pipeline_domain_lists_mh_ht", `
+			INSERT INTO data_pipeline_domain_lists (sending_domain, isp, list_id)
+			SELECT v.sending_domain, v.isp, l.id
+			FROM (VALUES
+				('em.ownmyhealth.net', 'yahoo', 'MH Yahoo'),
+				('em.ownmyhealth.net', 'gmail', 'MH Gmail'),
+				('em.ownmyhealth.net', 'microsoft', 'MH Msft'),
+				('em.ownmyhealth.net', 'apple', 'MH Apple'),
+				('em.ownmyhealth.net', 'comcast', 'MH Comcast'),
+				('em.ownmyhealth.net', 'charter', 'MH Charter'),
+				('em.ownmyhealth.net', 'att', 'MH Att'),
+				('em.ownmyhealth.net', 'cox', 'MH Cox'),
+				('em.ownmyhealth.net', 'other', 'MH Other'),
+				('em.historythinking.com', 'yahoo', 'HT Yahoo'),
+				('em.historythinking.com', 'gmail', 'HT Gmail'),
+				('em.historythinking.com', 'microsoft', 'HT Msft'),
+				('em.historythinking.com', 'apple', 'HT Apple'),
+				('em.historythinking.com', 'comcast', 'HT Comcast'),
+				('em.historythinking.com', 'charter', 'HT Charter'),
+				('em.historythinking.com', 'att', 'HT Att'),
+				('em.historythinking.com', 'cox', 'HT Cox'),
+				('em.historythinking.com', 'other', 'HT Other'),
+				('em.quizfiesta.com', 'yahoo', 'QF Yahoo - Active - 2 03092026'),
+				('em.quizfiesta.com', 'gmail', 'QF Google - Active - 2 03092026'),
+				('em.quizfiesta.com', 'microsoft', 'QF Microsoft - Active - 2 03092026'),
+				('em.quizfiesta.com', 'apple', 'QF Apple - Active - 2 03092026'),
+				('em.quizfiesta.com', 'comcast', 'QF Comcast - Active - 2 03092026'),
+				('em.quizfiesta.com', 'charter', 'QF Charter - Active - 2 03092026'),
+				('em.quizfiesta.com', 'cox', 'QF Cox - Active - 2 03092026')
+			) AS v(sending_domain, isp, list_name)
+			JOIN mailing_lists l ON l.name = v.list_name
+			WHERE NOT EXISTS (
+				SELECT 1 FROM data_pipeline_domain_lists dl
+				WHERE dl.sending_domain = v.sending_domain AND dl.isp = v.isp
+			)
+		`},
+		{"mark_used_charter_s3_files", `
+			INSERT INTO data_pipeline_files (id, s3_key, isp_folder, isp_normalized, status, row_count, processed_at, created_at)
+			VALUES
+				(gen_random_uuid(), 'warmup-data/2026/Charter/Charter_001.csv', 'Charter', 'charter', 'processed', 10000, NOW(), NOW()),
+				(gen_random_uuid(), 'warmup-data/2026/Charter/Charter_002.csv', 'Charter', 'charter', 'processed', 10000, NOW(), NOW())
+			ON CONFLICT (s3_key) DO UPDATE SET status = 'processed', processed_at = NOW()
+		`},
+		{"update_isp_rates_8h_window", `
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 2200 WHERE isp = 'microsoft' AND max_msg_rate < 2200;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 1650 WHERE isp = 'yahoo'     AND max_msg_rate < 1650;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 1350 WHERE isp = 'gmail'     AND max_msg_rate < 1350;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 900  WHERE isp = 'apple'     AND max_msg_rate < 900;
 		`},
 	}
 

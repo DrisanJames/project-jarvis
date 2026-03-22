@@ -184,7 +184,7 @@ func (h *deliverabilityHandler) HandlePatchConfig(w http.ResponseWriter, r *http
 		    bounce_warn_pct = $3, bounce_action_pct = $4,
 		    complaint_warn_pct = $5, complaint_action_pct = $6,
 		    enabled = $7, updated_at = NOW()
-		WHERE isp = $8 AND ($9 = '' OR organization_id = $9)
+		WHERE isp = $8 AND ($9 = '' OR organization_id = $9::uuid)
 	`, updatedCfg.MaxMsgRate, updatedCfg.MaxConnections,
 		updatedCfg.BounceWarnPct, updatedCfg.BounceActionPct,
 		updatedCfg.ComplaintWarnPct, updatedCfg.ComplaintActionPct,
