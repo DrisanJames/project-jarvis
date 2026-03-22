@@ -1305,7 +1305,7 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 	// --- Try pre-populated wave content cache first (fast path) ---
 	// This avoids expensive live AI generation + web scraping on every approval.
 	// Cache entries were generated from the brand's approved HTML template, preserving styling.
-	numVariants := 3
+	numVariants := 4
 	cacheRows, cacheErr := db.QueryContext(ctx, `
 		SELECT id, wave_index, subject, preview_text, from_name, html_content
 		FROM mailing_wave_content_cache
@@ -1422,4 +1422,172 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 
 	log.Printf("[EDITH-deploy] generated %d live AI variants for %s (brand: %s)", len(variants), sendingDomain, brand.BrandName)
 	return variants
+}
+
+// HandleGenerateVariants creates 4 A/B content variants for an existing campaign
+// and inserts them into mailing_ab_tests + mailing_ab_variants for round-robin rotation.
+// POST /api/mailing/agent/calendar/campaigns/{campaignId}/generate-variants
+func (a *EmailMarketingAgent) HandleGenerateVariants(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	campaignID := chi.URLParam(r, "campaignId")
+	if campaignID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaignId is required"})
+		return
+	}
+
+	var name, sendingDomain, fromName, fromEmail, subject, previewText, htmlContent, sendingProfileID string
+	err := a.db.QueryRowContext(r.Context(), `
+		SELECT c.name, COALESCE(sp.sending_domain, ''), COALESCE(c.from_name, ''),
+		       COALESCE(c.from_email, ''), COALESCE(c.subject, ''),
+		       COALESCE(c.preview_text, ''), COALESCE(c.html_content, ''),
+		       COALESCE(c.sending_profile_id::text, '')
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+		WHERE c.id = $1 AND c.organization_id = $2
+	`, campaignID, orgID).Scan(&name, &sendingDomain, &fromName, &fromEmail, &subject, &previewText, &htmlContent, &sendingProfileID)
+	if err == sql.ErrNoRows {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "campaign not found"})
+		return
+	}
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if sendingDomain == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign has no sending profile/domain"})
+		return
+	}
+
+	variants := generateMultiVariantContent(r.Context(), a.db, name, sendingDomain, fromName, subject, previewText, htmlContent)
+	if len(variants) < 2 {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"status":   "fallback",
+			"message":  "AI generation returned only 1 variant; using campaign content as-is",
+			"variants": variants,
+		})
+		return
+	}
+
+	// Remove any existing AB test for this campaign before inserting fresh variants
+	a.db.ExecContext(r.Context(), `
+		DELETE FROM mailing_ab_variants WHERE test_id IN (
+			SELECT id FROM mailing_ab_tests WHERE campaign_id = $1 AND organization_id = $2
+		)`, campaignID, orgID)
+	a.db.ExecContext(r.Context(), `
+		DELETE FROM mailing_ab_tests WHERE campaign_id = $1 AND organization_id = $2`, campaignID, orgID)
+
+	var testID string
+	err = a.db.QueryRowContext(r.Context(), `
+		INSERT INTO mailing_ab_tests (organization_id, campaign_id, name, test_type,
+			test_sample_percent, winner_metric, status, created_at, updated_at)
+		VALUES ($1, $2::uuid, $3, 'content', 100, 'open_rate', 'testing', NOW(), NOW())
+		RETURNING id::text
+	`, orgID, campaignID, name+" Content Rotation").Scan(&testID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "create ab test: " + err.Error()})
+		return
+	}
+
+	for _, v := range variants {
+		_, err = a.db.ExecContext(r.Context(), `
+			INSERT INTO mailing_ab_variants (test_id, variant_name, from_name, subject, html_content, split_percent, created_at)
+			VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())
+		`, testID, v.VariantName, v.FromName, v.Subject, v.HTMLContent, int(v.SplitPercent))
+		if err != nil {
+			log.Printf("[EDITH-variants] failed to insert variant %s for campaign %s: %v", v.VariantName, campaignID, err)
+		}
+	}
+
+	variantSummary := make([]map[string]interface{}, len(variants))
+	for i, v := range variants {
+		variantSummary[i] = map[string]interface{}{
+			"variant_name": v.VariantName,
+			"subject":      v.Subject,
+			"preview_text": v.PreviewText,
+			"from_name":    v.FromName,
+			"split_pct":    int(v.SplitPercent),
+		}
+	}
+
+	log.Printf("[EDITH-variants] created %d variants for campaign %s (%s)", len(variants), campaignID, name)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "ok",
+		"campaign_id": campaignID,
+		"test_id":     testID,
+		"count":       len(variants),
+		"variants":    variantSummary,
+	})
+}
+
+// HandleGetDayVariants returns all A/B variants for campaigns linked to recommendations on a given date.
+// GET /api/mailing/agent/calendar/day/{date}/variants
+func (a *EmailMarketingAgent) HandleGetDayVariants(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dateStr := chi.URLParam(r, "date")
+	if dateStr == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required"})
+		return
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT rec.campaign_name, rec.sending_domain, rec.executed_campaign_id::text,
+		       v.variant_name, v.subject, COALESCE(v.from_name, ''), v.html_content, v.split_percent
+		FROM agent_campaign_recommendations rec
+		JOIN mailing_ab_tests t ON t.campaign_id = rec.executed_campaign_id
+		JOIN mailing_ab_variants v ON v.test_id = t.id
+		WHERE rec.organization_id = $1 AND rec.scheduled_date = $2
+		  AND rec.executed_campaign_id IS NOT NULL
+		ORDER BY rec.campaign_name, v.variant_name
+	`, orgID, dateStr)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type variantRow struct {
+		VariantName  string `json:"variant_name"`
+		Subject      string `json:"subject"`
+		FromName     string `json:"from_name"`
+		HTMLContent  string `json:"html_content"`
+		SplitPercent int    `json:"split_percent"`
+	}
+	type campaignVariants struct {
+		CampaignName string       `json:"campaign_name"`
+		SendingDomain string      `json:"sending_domain"`
+		CampaignID   string       `json:"campaign_id"`
+		Variants     []variantRow `json:"variants"`
+	}
+
+	byKey := map[string]*campaignVariants{}
+	var order []string
+	for rows.Next() {
+		var cName, domain, cID, vName, vSubj, vFrom, vHTML string
+		var splitPct int
+		if err := rows.Scan(&cName, &domain, &cID, &vName, &vSubj, &vFrom, &vHTML, &splitPct); err != nil {
+			continue
+		}
+		key := cID
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = &campaignVariants{
+				CampaignName: cName, SendingDomain: domain, CampaignID: cID,
+			}
+			order = append(order, key)
+		}
+		byKey[key].Variants = append(byKey[key].Variants, variantRow{
+			VariantName: vName, Subject: vSubj, FromName: vFrom,
+			HTMLContent: vHTML, SplitPercent: splitPct,
+		})
+	}
+
+	result := make([]campaignVariants, 0, len(order))
+	for _, k := range order {
+		result = append(result, *byKey[k])
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"date":      dateStr,
+		"campaigns": result,
+	})
 }

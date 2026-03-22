@@ -5,9 +5,10 @@ import {
   faSpinner, faPlus, faTrash, faCheck, faTimes,
   faChartLine, faArrowUp, faSyncAlt, faHistory,
   faEdit, faSave, faArrowLeft, faBolt, faClock,
+  faChevronDown, faChevronRight, faEye, faLayerGroup,
 } from '@fortawesome/free-solid-svg-icons';
 
-const PAGE_VERSION = '1.6';
+const PAGE_VERSION = '1.7';
 
 // ── Markdown renderer (same pattern as CampaignCopilot) ─────────────────────
 function simpleMarkdown(text: string): string {
@@ -399,9 +400,13 @@ const AgentCalendar: React.FC = () => {
   const [testSending, setTestSending] = useState(false);
   const [testSendResult, setTestSendResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [dayVariants, setDayVariants] = useState<Record<string, { campaign_name: string; sending_domain: string; campaign_id: string; variants: { variant_name: string; subject: string; from_name: string; html_content: string; split_percent: number }[] }[]>>({});
+  const [variantsLoading, setVariantsLoading] = useState(false);
+  const [expandedVariant, setExpandedVariant] = useState<string | null>(null);
 
   useEffect(() => { loadDomains(); }, []);
   useEffect(() => { if (selectedDomain) loadForecast(); }, [selectedDomain, month]);
+  useEffect(() => { if (selectedDay) loadDayVariants(selectedDay.date); }, [selectedDay]);
 
   useEffect(() => {
     if (selectedRec) {
@@ -465,6 +470,18 @@ const AgentCalendar: React.FC = () => {
       const resp = await fetch(`/api/mailing/agent/calendar/forecast?month=${month}&sending_domain=${encodeURIComponent(selectedDomain)}`);
       if (resp.ok) setForecast(await resp.json());
     } catch {} finally { setLoading(false); }
+  };
+
+  const loadDayVariants = async (date: string) => {
+    if (dayVariants[date]) return;
+    setVariantsLoading(true);
+    try {
+      const resp = await fetch(`/api/mailing/agent/calendar/day/${date}/variants`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setDayVariants(prev => ({ ...prev, [date]: data.campaigns || [] }));
+      }
+    } catch {} finally { setVariantsLoading(false); }
   };
 
   const generateForecast = async () => {
@@ -804,6 +821,56 @@ const AgentCalendar: React.FC = () => {
                 </div>
               </div>
             ))}
+
+            {/* Variant Library */}
+            {selectedDay && (() => {
+              const campaigns = dayVariants[selectedDay.date];
+              if (!campaigns && variantsLoading) return <div style={{ textAlign: 'center', padding: 16, color: '#64748b', fontSize: 12 }}><FontAwesomeIcon icon={faSpinner} spin /> Loading variants...</div>;
+              if (!campaigns || campaigns.length === 0) return null;
+              return (
+                <div style={{ marginTop: 16, borderTop: '1px solid rgba(99,102,241,0.1)', paddingTop: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                    <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#a78bfa', fontSize: 13 }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Content Variant Library</span>
+                    <span style={{ fontSize: 10, color: '#64748b', marginLeft: 'auto' }}>{campaigns.length} campaign{campaigns.length !== 1 ? 's' : ''}</span>
+                  </div>
+                  {campaigns.map((c) => (
+                    <div key={c.campaign_id} style={{ marginBottom: 8 }}>
+                      <div
+                        onClick={() => setExpandedVariant(expandedVariant === c.campaign_id ? null : c.campaign_id)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#111827', borderRadius: 8, cursor: 'pointer', border: '1px solid rgba(99,102,241,0.08)' }}
+                      >
+                        <FontAwesomeIcon icon={expandedVariant === c.campaign_id ? faChevronDown : faChevronRight} style={{ color: '#818cf8', fontSize: 10 }} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', flex: 1 }}>{c.campaign_name}</span>
+                        <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(167,139,250,0.1)', color: '#a78bfa' }}>{c.variants.length} variants</span>
+                      </div>
+                      {expandedVariant === c.campaign_id && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, padding: '8px 0 0' }}>
+                          {c.variants.map((v) => (
+                            <div key={v.variant_name} style={{ background: '#0d1117', borderRadius: 8, padding: 10, border: '1px solid rgba(99,102,241,0.06)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: '#818cf8', background: 'rgba(99,102,241,0.1)', padding: '1px 6px', borderRadius: 4 }}>{v.variant_name}</span>
+                                <span style={{ fontSize: 10, color: '#475569' }}>{v.split_percent}%</span>
+                              </div>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 4, lineHeight: 1.3, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any }}>{v.subject}</div>
+                              {v.from_name && <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>From: {v.from_name}</div>}
+                              {v.html_content && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setTemplateHtml(v.html_content); setShowTemplatePreview(true); }}
+                                  style={{ fontSize: 10, padding: '3px 8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 4, color: '#818cf8', cursor: 'pointer' }}
+                                >
+                                  <FontAwesomeIcon icon={faEye} style={{ marginRight: 3 }} /> Preview
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

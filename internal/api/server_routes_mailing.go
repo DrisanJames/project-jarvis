@@ -782,10 +782,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				ar.Post("/calendar/recommendations/{id}/reject", marketingAgent.HandleRejectRecommendation)
 				ar.Delete("/calendar/recommendations/{id}", marketingAgent.HandleDeleteRecommendation)
 				ar.Delete("/calendar/recommendations", marketingAgent.HandleBulkDeleteRecommendations)
-				ar.Get("/calendar/compute-quotas", marketingAgent.HandleComputeQuotas)
-				ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
-				ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)
-				ar.Post("/calendar/cancel-tomorrow", marketingAgent.HandleCancelTomorrowCampaigns)
+			ar.Get("/calendar/compute-quotas", marketingAgent.HandleComputeQuotas)
+			ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
+			ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)
+			ar.Post("/calendar/cancel-tomorrow", marketingAgent.HandleCancelTomorrowCampaigns)
+			ar.Post("/calendar/campaigns/{campaignId}/generate-variants", marketingAgent.HandleGenerateVariants)
+			ar.Get("/calendar/day/{date}/variants", marketingAgent.HandleGetDayVariants)
 			})
 
 			// === PMTA SEND-TIME RECOMMENDATIONS ===
@@ -897,6 +899,16 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			consciousness.Start(context.Background())
 
 			// Injection Analytics registered above (public, no auth)
+
+			// Data Pipeline dashboard endpoints
+			if s.DataPipeline != nil {
+				pipelineH := NewDataPipelineHandlers(db, s.DataPipeline)
+				r.Get("/pipeline/stats", pipelineH.HandleGetPipelineStats)
+				r.Get("/pipeline/runs", pipelineH.HandleGetPipelineRuns)
+				r.Get("/pipeline/health", pipelineH.HandleGetDomainHealth)
+				r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
+				r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
+			}
 		})
 	}
 }
