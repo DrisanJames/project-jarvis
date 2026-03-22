@@ -24,6 +24,9 @@ import (
 // SetMailingDB sets the PostgreSQL database for mailing platform and registers routes
 func (s *Server) SetMailingDB(db *sql.DB) {
 	s.mailingDB = db
+	if s.OfferSuppMgr != nil && db != nil {
+		s.OfferSuppMgr.db = db
+	}
 	if s.apiRouter != nil && db != nil {
 		// Register mailing routes INSIDE the /api sub-router so they
 		// automatically inherit the auth middleware from SetupRoutes.
