@@ -127,6 +127,7 @@ aws ecs update-service \
   --service "$ECS_SERVICE" \
   --task-definition "$NEW_TASK_DEF_ARN" \
   --force-new-deployment \
+  --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200,deploymentCircuitBreaker={enable=true,rollback=false}" \
   "${AWS_ARGS[@]}" >/dev/null
 
 LOG_GROUP="/ecs/ignite-upside-down"
