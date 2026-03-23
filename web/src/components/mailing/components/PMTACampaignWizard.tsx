@@ -579,9 +579,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     if (aiSelectedIdxs.length === 0) return;
     const picked = aiSelectedIdxs.map(i => aiVariations[i]).filter(Boolean);
     const names = ['A', 'B', 'C', 'D'];
+    const domainFromName = sendingDomains.find(d => d.domain === selectedDomain)?.from_name || '';
     const newVariants: ContentVariant[] = picked.map((v, i) => ({
       variant_name: names[i] || String.fromCharCode(65 + i),
-      from_name: v.from_name || '',
+      from_name: domainFromName,
       subject: v.subject || '',
       preview_text: v.preview_text || '',
       html_content: v.html_content || '',
@@ -1256,9 +1257,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     if (!match?.from_name) return;
     setVariants(prev => {
       if (prev.length === 0) return prev;
-      if (prev[0].from_name && prev[0].from_name.trim() !== '') return prev;
-      const updated = [...prev];
-      updated[0] = { ...updated[0], from_name: match.from_name! };
+      const updated = prev.map(v => ({ ...v, from_name: match.from_name! }));
       return updated;
     });
   }, [selectedDomain, sendingDomains]);
@@ -1272,7 +1271,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     const updated = variants.map(v => ({ ...v, split_percent: newPercent }));
     updated.push({
       variant_name: names[variants.length],
-      from_name: '', subject: '', preview_text: '', html_content: '',
+      from_name: sendingDomains.find(d => d.domain === selectedDomain)?.from_name || variants[0]?.from_name || '',
+      subject: '', preview_text: '', html_content: '',
       split_percent: 100 - (newPercent * variants.length),
     });
     setVariants(updated);
@@ -1886,7 +1886,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const loadTemplate = (tpl: any, variantIdx: number) => {
     updateVariant(variantIdx, 'subject', tpl.subject || '');
     updateVariant(variantIdx, 'html_content', tpl.html_content || '');
-    if (tpl.from_name) updateVariant(variantIdx, 'from_name', tpl.from_name);
     if (tpl.preview_text) updateVariant(variantIdx, 'preview_text', tpl.preview_text);
     setShowTemplatePicker(false);
   };
