@@ -1076,12 +1076,27 @@ func (s *Server) HandlePreflightCheck(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// isUserExplicitSpan returns true when the time-span source indicates the user
+// explicitly chose the delivery window duration in the PMTA wizard. When true,
+// the minimum-span safety check is skipped — the user accepts the volume spike.
+func isUserExplicitSpan(source string) bool {
+	switch source {
+	case "duration-calc", "manual":
+		return true
+	}
+	return false
+}
+
 // waveSanityCheck validates the normalized wave plan meets minimum throttling
 // requirements. Called after normalizePMTACampaignInput + buildPMTAWaveSpecs.
 //
 // The minimum span is proportional to the actual recipient count (sum of
 // PlannedRecipients across waves), not the quota. The quota is the warmup
 // ceiling and can be much larger than the actual list size for a given ISP.
+//
+// When the user explicitly set the delivery window (Source = "duration-calc"
+// or "manual"), the minimum-span enforcement is skipped for that ISP — the
+// user is deliberately choosing a shorter window.
 func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
 	const smallISPThreshold = 500
 	var issues []string
@@ -1102,12 +1117,21 @@ func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWav
 			issues = append(issues, fmt.Sprintf("ISP %s has only %d waves (min %d)", isp, len(waves), minWavesPerISP))
 		}
 		if len(waves) >= 2 {
-			first := waves[0].ScheduledAt
-			last := waves[len(waves)-1].ScheduledAt
-			span := last.Sub(first)
-			minSpan := minSpanForVolume(actualRecipients)
-			if span < minSpan-15*time.Minute {
-				issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v, %d recipients)", isp, span.Round(time.Minute), minSpan.Round(time.Minute), actualRecipients))
+			userExplicit := false
+			for _, ts := range plan.TimeSpans {
+				if isUserExplicitSpan(ts.Source) {
+					userExplicit = true
+					break
+				}
+			}
+			if !userExplicit {
+				first := waves[0].ScheduledAt
+				last := waves[len(waves)-1].ScheduledAt
+				span := last.Sub(first)
+				minSpan := minSpanForVolume(actualRecipients)
+				if span < minSpan-15*time.Minute {
+					issues = append(issues, fmt.Sprintf("ISP %s wave span is %v (min %v, %d recipients)", isp, span.Round(time.Minute), minSpan.Round(time.Minute), actualRecipients))
+				}
 			}
 		}
 	}

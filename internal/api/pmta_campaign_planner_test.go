@@ -131,3 +131,122 @@ func TestWaveSanityCheck_QuotaVsActualCount(t *testing.T) {
 		}
 	})
 }
+
+func TestWaveSanityCheck_UserExplicitDurationBypass(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("user-explicit duration-calc bypasses min-span", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "microsoft",
+			Quota: 1500,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now.Add(4 * time.Hour),
+				Source:  "duration-calc",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"microsoft": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 213},
+				{WaveNumber: 2, ScheduledAt: now.Add(90 * time.Minute), PlannedRecipients: 213},
+				{WaveNumber: 3, ScheduledAt: now.Add(3 * time.Hour), PlannedRecipients: 214},
+				{WaveNumber: 4, ScheduledAt: now.Add(4*time.Hour + 30*time.Minute), PlannedRecipients: 213},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err != nil {
+			t.Errorf("user-explicit duration should bypass min-span check, got: %v", err)
+		}
+	})
+
+	t.Run("user-explicit manual source bypasses min-span", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "gmail",
+			Quota: 5000,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now.Add(3 * time.Hour),
+				Source:  "manual",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"gmail": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 500},
+				{WaveNumber: 2, ScheduledAt: now.Add(1 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 3, ScheduledAt: now.Add(2 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 4, ScheduledAt: now.Add(3 * time.Hour), PlannedRecipients: 500},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err != nil {
+			t.Errorf("manual source should bypass min-span check, got: %v", err)
+		}
+	})
+
+	t.Run("auto-generated span still enforces min-span", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "gmail",
+			Quota: 5000,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now.Add(3 * time.Hour),
+				Source:  "default_throttle_window",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"gmail": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 500},
+				{WaveNumber: 2, ScheduledAt: now.Add(1 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 3, ScheduledAt: now.Add(2 * time.Hour), PlannedRecipients: 500},
+				{WaveNumber: 4, ScheduledAt: now.Add(3 * time.Hour), PlannedRecipients: 500},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err == nil {
+			t.Error("auto-generated span should still enforce min-span, but passed")
+		}
+	})
+
+	t.Run("user-explicit still enforces min-wave-count", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "microsoft",
+			Quota: 1500,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now.Add(4 * time.Hour),
+				Source:  "duration-calc",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"microsoft": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 400},
+				{WaveNumber: 2, ScheduledAt: now.Add(2 * time.Hour), PlannedRecipients: 400},
+				{WaveNumber: 3, ScheduledAt: now.Add(4 * time.Hour), PlannedRecipients: 400},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err == nil {
+			t.Error("user-explicit should still enforce min-wave-count, but passed")
+		}
+	})
+}
+
+func TestIsUserExplicitSpan(t *testing.T) {
+	tests := []struct {
+		source string
+		want   bool
+	}{
+		{"duration-calc", true},
+		{"manual", true},
+		{"default_throttle_window", false},
+		{"legacy_throttle_window", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			if got := isUserExplicitSpan(tt.source); got != tt.want {
+				t.Errorf("isUserExplicitSpan(%q) = %v, want %v", tt.source, got, tt.want)
+			}
+		})
+	}
+}
