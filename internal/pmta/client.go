@@ -1,6 +1,7 @@
 package pmta
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/xml"
 	"fmt"
@@ -59,6 +60,21 @@ func (c *Client) get(path string) ([]byte, error) {
 		return nil, fmt.Errorf("PMTA API returned %d: %s", resp.StatusCode, string(body))
 	}
 	return body, nil
+}
+
+// unwrapRsp handles PMTA v5's <rsp><data>...</data></rsp> wrapper.
+// If the response is wrapped, it extracts the inner <data> content.
+// If not wrapped, returns the original body unchanged.
+func unwrapRsp(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if bytes.HasPrefix(trimmed, []byte("<rsp")) {
+		start := bytes.Index(trimmed, []byte("<data>"))
+		end := bytes.LastIndex(trimmed, []byte("</data>"))
+		if start >= 0 && end > start {
+			return trimmed[start+len("<data>") : end]
+		}
+	}
+	return body
 }
 
 // XML response structures matching PMTA's management API output format.
@@ -126,7 +142,7 @@ func (c *Client) GetStatus() (*ServerStatus, error) {
 	}
 
 	var xs xmlStatus
-	if err := xml.Unmarshal(body, &xs); err != nil {
+	if err := xml.Unmarshal(unwrapRsp(body), &xs); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA status XML: %w", err)
 	}
 
@@ -148,7 +164,7 @@ func (c *Client) GetQueues() ([]QueueEntry, error) {
 	}
 
 	var xq xmlQueues
-	if err := xml.Unmarshal(body, &xq); err != nil {
+	if err := xml.Unmarshal(unwrapRsp(body), &xq); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA queues XML: %w", err)
 	}
 
@@ -174,7 +190,7 @@ func (c *Client) GetVMTAs() ([]VMTAStatus, error) {
 	}
 
 	var xv xmlVMTAs
-	if err := xml.Unmarshal(body, &xv); err != nil {
+	if err := xml.Unmarshal(unwrapRsp(body), &xv); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA vmtas XML: %w", err)
 	}
 
@@ -207,7 +223,7 @@ func (c *Client) GetDomains() ([]DomainStatus, error) {
 	}
 
 	var xd xmlDomains
-	if err := xml.Unmarshal(body, &xd); err != nil {
+	if err := xml.Unmarshal(unwrapRsp(body), &xd); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA domains XML: %w", err)
 	}
 
