@@ -595,7 +595,7 @@ export const OfferManagement: React.FC = () => {
         {activeTab === 'landing-page' && <LandingPageTab offer={offer} onRefresh={() => selectedOfferId && fetchOffer(selectedOfferId)} />}
         {activeTab === 'compliance' && <ComplianceTab offerId={offer.id} offer={offer} optizmoStatus={optizmoStatus} onRefresh={() => { fetchOptizmoStatus(offer.id); selectedOfferId && fetchOffer(selectedOfferId); }} />}
         {activeTab === 'performance' && <PerformanceTab performance={performance} deployments={deployments} />}
-        {activeTab === 'deploy' && <DeployTab subjects={subjects} fromNames={fromNames} creatives={creatives} optizmoStatus={optizmoStatus} />}
+        {activeTab === 'deploy' && <DeployTab offerId={offer.id} subjects={subjects} fromNames={fromNames} creatives={creatives} optizmoStatus={optizmoStatus} />}
       </div>
     );
   };
@@ -2189,78 +2189,291 @@ const PerformanceTab: React.FC<{ performance: OfferPerformance | null; deploymen
 // TAB: DEPLOY
 // ═══════════════════════════════════════════════════════════════════════════
 
+interface ProofCard {
+  id: string;
+  creative_id: string;
+  subject_line_id: string;
+  from_name_id: string;
+  creative_html: string;
+  subject_text: string;
+  from_name_text: string;
+  version: number;
+  status: 'idle' | 'sending' | 'sent' | 'error';
+  error?: string;
+  message_id?: string;
+}
+
 const DeployTab: React.FC<{
+  offerId: string;
   subjects: SubjectLine[];
   fromNames: FromName[];
   creatives: OfferCreative[];
   optizmoStatus: OptizmoStatus | null;
-}> = ({ subjects, fromNames, creatives, optizmoStatus }) => {
+}> = ({ offerId, subjects, fromNames, creatives, optizmoStatus }) => {
+  const { addToast } = useToast();
   const [selectedCreative, setSelectedCreative] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('');
   const [selectedFromName, setSelectedFromName] = useState('');
+  const [proofQueue, setProofQueue] = useState<ProofCard[]>([]);
+  const [proofEmail, setProofEmail] = useState(() => localStorage.getItem('proof_email') || '');
+  const [sendingProofs, setSendingProofs] = useState(false);
 
   const approvedSubjects = subjects.filter(s => s.status === 'approved');
   const approvedFromNames = fromNames.filter(f => f.status === 'approved');
   const approvedCreatives = creatives.filter(c => c.status === 'approved');
   const isCompliant = optizmoStatus?.optizmo_status === 'scrubbed';
 
-  const canDeploy = selectedCreative && selectedSubject && selectedFromName && isCompliant;
+  const canAddToQueue = selectedCreative && selectedSubject && selectedFromName;
+
+  const addToProofQueue = () => {
+    if (!canAddToQueue) return;
+    const creative = approvedCreatives.find(c => c.id === selectedCreative);
+    const subject = approvedSubjects.find(s => s.id === selectedSubject);
+    const fromName = approvedFromNames.find(f => f.id === selectedFromName);
+    if (!creative || !subject || !fromName) return;
+
+    const card: ProofCard = {
+      id: `${creative.id}-${subject.id}-${fromName.id}-${Date.now()}`,
+      creative_id: creative.id,
+      subject_line_id: subject.id,
+      from_name_id: fromName.id,
+      creative_html: creative.html_content || '',
+      subject_text: subject.subject_line,
+      from_name_text: fromName.from_name,
+      version: creative.version,
+      status: 'idle',
+    };
+    setProofQueue(prev => [...prev, card]);
+    setSelectedCreative('');
+    setSelectedSubject('');
+    setSelectedFromName('');
+  };
+
+  const removeFromQueue = (id: string) => {
+    setProofQueue(prev => prev.filter(c => c.id !== id));
+  };
+
+  const sendProofs = async () => {
+    if (proofQueue.length === 0 || !proofEmail) return;
+    localStorage.setItem('proof_email', proofEmail);
+    setSendingProofs(true);
+
+    setProofQueue(prev => prev.map(c => ({ ...c, status: 'sending' as const })));
+
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/proof-send`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          proofs: proofQueue.map(c => ({
+            creative_id: c.creative_id,
+            subject_line_id: c.subject_line_id,
+            from_name_id: c.from_name_id,
+          })),
+          recipient_email: proofEmail,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        setProofQueue(prev => prev.map(c => ({ ...c, status: 'error' as const, error: errText })));
+        addToast({ type: 'error', title: 'Proof send failed', message: errText });
+        setSendingProofs(false);
+        return;
+      }
+
+      const data = await res.json();
+      const resultMap = new Map<string, { status: string; message_id?: string; error?: string }>();
+      if (data.results) {
+        for (const r of data.results) {
+          resultMap.set(r.creative_id, r);
+        }
+      }
+
+      setProofQueue(prev => prev.map(c => {
+        const r = resultMap.get(c.creative_id);
+        if (r && r.status === 'sent') {
+          return { ...c, status: 'sent' as const, message_id: r.message_id };
+        } else if (r && r.status === 'error') {
+          return { ...c, status: 'error' as const, error: r.error };
+        }
+        return { ...c, status: 'sent' as const };
+      }));
+
+      const sentCount = data.results?.filter((r: { status: string }) => r.status === 'sent').length || 0;
+      addToast({ type: 'success', title: `${sentCount} proof(s) sent`, message: `Delivered to ${proofEmail}` });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Network error';
+      setProofQueue(prev => prev.map(c => ({ ...c, status: 'error' as const, error: errMsg })));
+      addToast({ type: 'error', title: 'Proof send failed', message: errMsg });
+    } finally {
+      setSendingProofs(false);
+    }
+  };
+
+  const canDeploy = proofQueue.some(c => c.status === 'sent') && isCompliant;
 
   return (
     <div>
-      <h3 style={sectionTitle}>Deploy Campaign</h3>
+      <h3 style={sectionTitle}>Proof Send &amp; Deploy</h3>
 
-      <div style={{ display: 'grid', gap: 14, maxWidth: 500 }}>
-        <div>
-          <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Creative</label>
-          <select value={selectedCreative} onChange={e => setSelectedCreative(e.target.value)} style={inputStyle}>
-            <option value="">Select approved creative…</option>
-            {approvedCreatives.map(c => (
-              <option key={c.id} value={c.id}>v{c.version} — {c.total_sends} sends, {(c.open_rate * 100).toFixed(1)}% open rate</option>
-            ))}
-          </select>
-          {approvedCreatives.length === 0 && <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>No approved creatives — approve one in the Creatives tab</div>}
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Subject Line</label>
-          <select value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)} style={inputStyle}>
-            <option value="">Select approved subject…</option>
-            {approvedSubjects.map(s => (
-              <option key={s.id} value={s.id}>{s.subject_line} — {(s.open_rate * 100).toFixed(1)}% open rate</option>
-            ))}
-          </select>
-          {approvedSubjects.length === 0 && <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>No approved subjects — approve one in the Subjects tab</div>}
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>From Name</label>
-          <select value={selectedFromName} onChange={e => setSelectedFromName(e.target.value)} style={inputStyle}>
-            <option value="">Select approved from name…</option>
-            {approvedFromNames.map(f => (
-              <option key={f.id} value={f.id}>{f.from_name} — {(f.complaint_rate * 100).toFixed(3)}% complaint rate</option>
-            ))}
-          </select>
-          {approvedFromNames.length === 0 && <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>No approved from names — approve one in the From Names tab</div>}
-        </div>
-
-        <div style={{ padding: 12, background: isCompliant ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${isCompliant ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`, borderRadius: 8 }}>
-          <div style={{ fontSize: 13, color: isCompliant ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
-            {isCompliant ? '✓ Compliance gate passed' : '✗ Compliance gate failed — scrub required'}
+      {/* Selection Panel */}
+      <div style={{ display: 'grid', gap: 10, maxWidth: 560, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Creative</label>
+            <select value={selectedCreative} onChange={e => setSelectedCreative(e.target.value)} style={inputStyle}>
+              <option value="">Select…</option>
+              {approvedCreatives.map(c => (
+                <option key={c.id} value={c.id}>v{c.version} — {(c.open_rate * 100).toFixed(1)}% OR</option>
+              ))}
+            </select>
+            {approvedCreatives.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved creatives</div>}
           </div>
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
-            Optizmo status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Subject Line</label>
+            <select value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)} style={inputStyle}>
+              <option value="">Select…</option>
+              {approvedSubjects.map(s => (
+                <option key={s.id} value={s.id}>{s.subject_line.length > 40 ? s.subject_line.slice(0, 40) + '…' : s.subject_line}</option>
+              ))}
+            </select>
+            {approvedSubjects.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved subjects</div>}
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>From Name</label>
+            <select value={selectedFromName} onChange={e => setSelectedFromName(e.target.value)} style={inputStyle}>
+              <option value="">Select…</option>
+              {approvedFromNames.map(f => (
+                <option key={f.id} value={f.id}>{f.from_name}</option>
+              ))}
+            </select>
+            {approvedFromNames.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved from names</div>}
           </div>
         </div>
-
         <button
-          style={{ ...btnPrimary, padding: '12px 24px', fontSize: 14, opacity: canDeploy ? 1 : 0.4 }}
-          disabled={!canDeploy}
-          onClick={() => alert('Deployment wiring coming in a future phase. Selected creative, subject, and from name are ready.')}
+          style={{ ...btnPrimary, opacity: canAddToQueue ? 1 : 0.35, width: 'fit-content' }}
+          disabled={!canAddToQueue}
+          onClick={addToProofQueue}
         >
-          Deploy Campaign
+          + Add to Proof Queue
         </button>
       </div>
+
+      {/* Proof Queue */}
+      {proofQueue.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Proof Queue ({proofQueue.length})
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            {proofQueue.map(card => (
+              <div key={card.id} style={{
+                background: '#0d1220', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
+                overflow: 'hidden', position: 'relative',
+              }}>
+                {/* Status badge */}
+                <div style={{
+                  position: 'absolute', top: 6, left: 6, zIndex: 2,
+                  padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                  background: card.status === 'sent' ? 'rgba(34,197,94,0.9)'
+                    : card.status === 'error' ? 'rgba(239,68,68,0.9)'
+                    : card.status === 'sending' ? 'rgba(129,140,248,0.9)'
+                    : 'rgba(255,255,255,0.15)',
+                  color: '#fff',
+                }}>
+                  {card.status === 'idle' ? 'PROOF' : card.status === 'sending' ? 'SENDING…' : card.status === 'sent' ? 'SENT' : 'ERROR'}
+                </div>
+
+                {/* Remove button */}
+                {card.status === 'idle' && (
+                  <button
+                    onClick={() => removeFromQueue(card.id)}
+                    style={{
+                      position: 'absolute', top: 4, right: 4, zIndex: 2,
+                      background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: 4,
+                      color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 14, padding: '0 5px', lineHeight: '20px',
+                    }}
+                    title="Remove"
+                  >×</button>
+                )}
+
+                {/* Creative preview */}
+                <div style={{ height: 180, overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.06)', position: 'relative' }}>
+                  <iframe
+                    srcDoc={card.creative_html}
+                    style={{ width: '200%', height: '360px', transform: 'scale(0.5)', transformOrigin: 'top left', border: 'none', pointerEvents: 'none' }}
+                    sandbox=""
+                    title={`Preview v${card.version}`}
+                  />
+                </div>
+
+                {/* Card info */}
+                <div style={{ padding: '8px 10px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    title={card.subject_text}
+                  >
+                    [PROOF] {card.subject_text}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>From: {card.from_name_text}</span>
+                    <span style={{ fontSize: 10, color: 'rgba(129,140,248,0.7)', fontWeight: 600 }}>v{card.version}</span>
+                  </div>
+                  {card.status === 'error' && card.error && (
+                    <div style={{ fontSize: 10, color: '#ef4444', marginTop: 4 }}>{card.error}</div>
+                  )}
+                  {card.status === 'sent' && card.message_id && (
+                    <div style={{ fontSize: 10, color: '#22c55e', marginTop: 4 }}>ID: {card.message_id.slice(0, 20)}…</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Send Proof Section */}
+      {proofQueue.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 20, maxWidth: 560 }}>
+          <input
+            type="email"
+            placeholder="Proof email address…"
+            value={proofEmail}
+            onChange={e => setProofEmail(e.target.value)}
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button
+            style={{ ...btnPrimary, padding: '8px 20px', whiteSpace: 'nowrap', opacity: (proofEmail && !sendingProofs) ? 1 : 0.4 }}
+            disabled={!proofEmail || sendingProofs}
+            onClick={sendProofs}
+          >
+            {sendingProofs ? 'Sending…' : `Send Proof${proofQueue.length > 1 ? 's' : ''} (${proofQueue.length})`}
+          </button>
+        </div>
+      )}
+
+      {/* Compliance Gate */}
+      <div style={{
+        padding: 12, maxWidth: 560, marginBottom: 14,
+        background: isCompliant ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+        border: `1px solid ${isCompliant ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`, borderRadius: 8,
+      }}>
+        <div style={{ fontSize: 13, color: isCompliant ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+          {isCompliant ? 'Compliance gate passed' : 'Compliance gate failed — scrub required'}
+        </div>
+        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
+          Optizmo status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
+        </div>
+      </div>
+
+      {/* Deploy */}
+      <button
+        style={{ ...btnPrimary, padding: '12px 24px', fontSize: 14, opacity: canDeploy ? 1 : 0.4 }}
+        disabled={!canDeploy}
+        onClick={() => alert('Deployment wiring coming in a future phase. Selected creative, subject, and from name are ready.')}
+      >
+        Deploy Campaign
+      </button>
     </div>
   );
 };

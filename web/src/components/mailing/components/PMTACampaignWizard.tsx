@@ -6,7 +6,7 @@ import {
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faMagic, faSave, faEye, faUpload, faCode, faGripVertical,
-  faCopy, faTrophy, faChevronDown, faChevronUp,
+  faCopy, faTrophy, faChevronDown, faChevronUp, faSearch,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -354,6 +354,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [sendPriority, setSendPriority] = useState<{ id: string; type: 'list' | 'segment' }[]>([]);
   const [selectedSuppLists, setSelectedSuppLists] = useState<string[]>([]);
   const [selectedExclusionSegments, setSelectedExclusionSegments] = useState<string[]>([]);
+  const [inclusionSearch, setInclusionSearch] = useState('');
+  const [suppressionSearch, setSuppressionSearch] = useState('');
+  const [exclusionSearch, setExclusionSearch] = useState('');
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
   const [audienceError, setAudienceError] = useState('');
 
@@ -2459,12 +2462,37 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   </div>
                 )}
 
+                {(lists.length > 0 || segments.length > 0) && (
+                  <div style={{ position: 'relative', marginBottom: 8 }}>
+                    <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'rgba(180,210,240,0.3)', pointerEvents: 'none' }} />
+                    <input
+                      type="text" value={inclusionSearch} onChange={e => setInclusionSearch(e.target.value)}
+                      placeholder="Search lists & segments..."
+                      style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', fontSize: 12, background: '#0a0f1e', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 6, color: '#e0e8f0', outline: 'none' }}
+                    />
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
-                  {lists.map(l => (
+                  {lists
+                    .filter(l => !inclusionSearch || l.name.toLowerCase().includes(inclusionSearch.toLowerCase()))
+                    .sort((a, b) => {
+                      const asel = selectedLists.includes(a.id) ? 0 : 1;
+                      const bsel = selectedLists.includes(b.id) ? 0 : 1;
+                      return asel !== bsel ? asel - bsel : a.name.localeCompare(b.name);
+                    })
+                    .map(l => (
                     <AudienceCard key={`list-${l.id}`} name={l.name} count={l.subscriber_count || 0}
                       selected={selectedLists.includes(l.id)} type="list" onToggle={() => toggleList(l.id)} />
                   ))}
-                  {segments.map(s => (
+                  {segments
+                    .filter(s => !inclusionSearch || s.name.toLowerCase().includes(inclusionSearch.toLowerCase()))
+                    .sort((a, b) => {
+                      const asel = selectedSegments.includes(a.id) ? 0 : 1;
+                      const bsel = selectedSegments.includes(b.id) ? 0 : 1;
+                      return asel !== bsel ? asel - bsel : a.name.localeCompare(b.name);
+                    })
+                    .map(s => (
                     <AudienceCard key={`seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
                       selected={selectedSegments.includes(s.id)} type="segment" onToggle={() => toggleSegment(s.id)} />
                   ))}
@@ -2486,8 +2514,26 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                   </div>
                 )}
 
+                {suppressionLists.length > 0 && (
+                  <div style={{ position: 'relative', marginBottom: 8 }}>
+                    <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'rgba(180,210,240,0.3)', pointerEvents: 'none' }} />
+                    <input
+                      type="text" value={suppressionSearch} onChange={e => setSuppressionSearch(e.target.value)}
+                      placeholder="Search suppression..."
+                      style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', fontSize: 12, background: '#0a0f1e', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 6, color: '#e0e8f0', outline: 'none' }}
+                    />
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', paddingRight: 4 }}>
-                  {suppressionLists.map(sl => (
+                  {suppressionLists
+                    .filter(sl => !suppressionSearch || sl.name.toLowerCase().includes(suppressionSearch.toLowerCase()))
+                    .sort((a, b) => {
+                      const asel = selectedSuppLists.includes(a.id) ? 0 : 1;
+                      const bsel = selectedSuppLists.includes(b.id) ? 0 : 1;
+                      return asel !== bsel ? asel - bsel : a.name.localeCompare(b.name);
+                    })
+                    .map(sl => (
                     <AudienceCard key={`supp-${sl.id}`} name={sl.name} count={sl.entry_count || 0}
                       selected={selectedSuppLists.includes(sl.id)} type="suppression" onToggle={() => toggleSuppList(sl.id)} />
                   ))}
@@ -2500,8 +2546,23 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                       <h4 style={{ margin: 0, fontSize: 13, color: '#f59e0b', fontWeight: 600 }}>Exclusion Segments</h4>
                       <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>{selectedExclusionSegments.length} active</span>
                     </div>
+                    <div style={{ position: 'relative', marginBottom: 8 }}>
+                      <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'rgba(180,210,240,0.3)', pointerEvents: 'none' }} />
+                      <input
+                        type="text" value={exclusionSearch} onChange={e => setExclusionSearch(e.target.value)}
+                        placeholder="Search exclusion segments..."
+                        style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', fontSize: 12, background: '#0a0f1e', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 6, color: '#e0e8f0', outline: 'none' }}
+                      />
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', paddingRight: 4 }}>
-                      {segments.map(s => (
+                      {segments
+                        .filter(s => !exclusionSearch || s.name.toLowerCase().includes(exclusionSearch.toLowerCase()))
+                        .sort((a, b) => {
+                          const asel = selectedExclusionSegments.includes(a.id) ? 0 : 1;
+                          const bsel = selectedExclusionSegments.includes(b.id) ? 0 : 1;
+                          return asel !== bsel ? asel - bsel : a.name.localeCompare(b.name);
+                        })
+                        .map(s => (
                         <AudienceCard key={`excl-seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
                           selected={selectedExclusionSegments.includes(s.id)} type="exclusion-segment"
                           onToggle={() => toggleExclusionSegment(s.id)} />

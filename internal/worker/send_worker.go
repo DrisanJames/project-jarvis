@@ -133,11 +133,11 @@ type EmailMessage struct {
 	Headers      map[string]string // Custom SMTP headers (List-Unsubscribe, X-Job, etc.)
 }
 
-// injectPreviewText prepends a hidden preheader span into the HTML body.
+// InjectPreviewText prepends a hidden preheader span into the HTML body.
 // This is the industry-standard technique for email preview text:
 // a visually hidden span at the top of <body>, followed by whitespace padding
 // to push any other preview content out of the preview pane.
-func injectPreviewText(html, previewText string) string {
+func InjectPreviewText(html, previewText string) string {
 	if previewText == "" || html == "" {
 		return html
 	}
@@ -1093,10 +1093,10 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	textContent, _ := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
 
 	if previewText != "" {
-		htmlContent = injectPreviewText(htmlContent, previewText)
+		htmlContent = InjectPreviewText(htmlContent, previewText)
 	}
 
-	htmlContent = replaceTrackingMergeTags(htmlContent, item.CampaignID.String(), item.SubscriberID.String(), item.CreativeID.String())
+	htmlContent = ReplaceTrackingMergeTags(htmlContent, item.CampaignID.String(), item.SubscriberID.String(), item.CreativeID.String())
 
 	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
@@ -1521,10 +1521,10 @@ func getHostname() string {
 	return "ignite-worker"
 }
 
-// replaceTrackingMergeTags replaces Everflow tracking link merge tags at send time.
+// ReplaceTrackingMergeTags replaces Everflow tracking link merge tags at send time.
 // {{DATE_MMDDYYYY}} -> current date in mmddYYYY format
 // {{MAILING_ID}} -> the campaign/mailing ID (subscriber-specific for tracking)
-func replaceTrackingMergeTags(html string, campaignID string, subscriberID string, creativeID ...string) string {
+func ReplaceTrackingMergeTags(html string, campaignID string, subscriberID string, creativeID ...string) string {
 	now := time.Now()
 	dateStr := fmt.Sprintf("%02d%02d%d", now.Month(), now.Day(), now.Year())
 
@@ -1545,18 +1545,24 @@ func replaceTrackingMergeTags(html string, campaignID string, subscriberID strin
 
 var linkRe = regexp.MustCompile(`href=["'](https?://[^"']+)["']`)
 
-func (p *SendWorkerPool) trackSign(data string) string {
-	h := hmac.New(sha256.New, []byte(p.trackingSecret))
+// TrackSign computes a truncated HMAC-SHA256 signature for tracking URLs.
+func TrackSign(data, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
-	orgID := p.orgID
+func (p *SendWorkerPool) trackSign(data string) string {
+	return TrackSign(data, p.trackingSecret)
+}
+
+// InjectTrackingPixelAndLinks adds an open-tracking pixel and rewrites href
+// links to click-tracking URLs. orgID and secret are passed explicitly so this
+// function can be called outside of a SendWorkerPool context (e.g. proof sends).
+func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
-	// Sign the encoded payload to match API verifySig (which signs the URL param as received)
-	sig := p.trackSign(encoded)
+	sig := TrackSign(encoded, secret)
 
 	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`, baseURL, encoded, sig)
 	if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx >= 0 {
@@ -1576,19 +1582,27 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
-		// Sign the encoded payload to match API verifySig (which signs the URL param as received)
-		linkSig := p.trackSign(linkEncoded)
+		linkSig := TrackSign(linkEncoded, secret)
 		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, baseURL, linkEncoded, linkSig)
 	})
 
 	return html
 }
 
-func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseURL string) string {
-	data := fmt.Sprintf("%s|%s|%s", p.orgID, campaignID, subscriberID)
+func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
+	return InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, p.orgID, p.trackingSecret)
+}
+
+// GenerateUnsubscribeURL builds a signed one-click unsubscribe URL.
+func GenerateUnsubscribeURL(orgID, campaignID, subscriberID, baseURL, secret string) string {
+	data := fmt.Sprintf("%s|%s|%s", orgID, campaignID, subscriberID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
-	sig := p.trackSign(encoded)
+	sig := TrackSign(encoded, secret)
 	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", baseURL, encoded, sig)
+}
+
+func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseURL string) string {
+	return GenerateUnsubscribeURL(p.orgID, campaignID, subscriberID, baseURL, p.trackingSecret)
 }
 
 // buildRenderContext constructs a full Liquid render context from a queue item,

@@ -141,6 +141,10 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *Su
 	r.Get("/offer-center/offers/{id}/optizmo/sync-status", deltaSyncWorker.HandleSyncStatus)
 	deltaSyncWorker.Start()
 
+	// --- Proof Send ---
+	proofHandler := NewProofSendHandler(db)
+	r.Post("/offer-center/offers/{id}/proof-send", proofHandler.HandleProofSend)
+
 	// Per-offer performance
 	r.Get("/offer-center/offers/{id}/performance", och.HandleGetOfferDetailPerformance)
 	r.Get("/offer-center/offers/{id}/creatives/{cid}/performance", och.HandleGetCreativePerformance)
