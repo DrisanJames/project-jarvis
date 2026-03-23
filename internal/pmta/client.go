@@ -1,6 +1,7 @@
 package pmta
 
 import (
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -18,11 +19,18 @@ type Client struct {
 }
 
 // NewClient creates a PMTA management API client.
+// PMTA may redirect HTTP→HTTPS with a self-signed cert on the management port,
+// so we skip TLS verification for these internal infrastructure connections.
 func NewClient(host string, port int, apiKey string) *Client {
 	return &Client{
-		baseURL:    fmt.Sprintf("http://%s:%d", host, port),
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		baseURL: fmt.Sprintf("http://%s:%d", host, port),
+		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
 	}
 }
 
