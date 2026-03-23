@@ -1282,6 +1282,11 @@ func (och *OfferCenterHandlers) HandleCreateOfferCreative(w http.ResponseWriter,
 	id := uuid.New().String()
 	now := time.Now()
 
+	htmlToStore := req.HTMLContent
+	if htmlToStore != "" {
+		htmlToStore = injectUnsubDisclaimer(htmlToStore)
+	}
+
 	var version int
 	err := och.db.QueryRowContext(r.Context(),
 		`INSERT INTO mailing_offer_creatives
@@ -1290,7 +1295,7 @@ func (och *OfferCenterHandlers) HandleCreateOfferCreative(w http.ResponseWriter,
 		         $3, $4, $5, $6, $7, $8)
 		 RETURNING version`,
 		id, offerID,
-		ocNilIfEmpty(req.HTMLContent), ocNilIfEmpty(req.SubjectLineID), ocNilIfEmpty(req.FromNameID),
+		ocNilIfEmpty(htmlToStore), ocNilIfEmpty(req.SubjectLineID), ocNilIfEmpty(req.FromNameID),
 		req.Status, now, now).Scan(&version)
 	if err != nil {
 		log.Printf("ERROR: create offer creative: %v", err)

@@ -260,12 +260,13 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 		id := uuid.New().String()
 		now := time.Now()
 
+		htmlWithUnsub := injectUnsubDisclaimer(c.HTML)
 		_, err := och.db.ExecContext(ctx,
 			`INSERT INTO mailing_offer_creatives
 			 (id, offer_id, version, html_content, status, approval_notes, created_at, updated_at)
 			 VALUES ($1, $2, COALESCE((SELECT MAX(version) FROM mailing_offer_creatives WHERE offer_id = $2), 0) + 1,
 			         $3, 'generated', $4, $5, $6)`,
-			id, offerID, c.HTML, fmt.Sprintf("[%s] %s", c.VariantName, c.Angle), now, now)
+			id, offerID, htmlWithUnsub, fmt.Sprintf("[%s] %s", c.VariantName, c.Angle), now, now)
 		if err != nil {
 			log.Printf("[CreativeGen] error inserting creative %d: %v", i+1, err)
 			continue

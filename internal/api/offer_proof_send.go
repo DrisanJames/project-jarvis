@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -76,17 +77,21 @@ func (h *ProofSendHandler) HandleProofSend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	profileID, fromEmail, trackBase := h.resolveSendingProfile(ctx, webProperty)
+	profileID, fromEmail, trackBase, sendingDomain := h.resolveSendingProfile(ctx, webProperty)
 	if profileID == "" {
-		http.Error(w, `{"error":"no active sending profile for this brand"}`, http.StatusUnprocessableEntity)
+		http.Error(w, `{"error":"no active PMTA sending profile for this brand"}`, http.StatusUnprocessableEntity)
 		return
 	}
+
+	recipientISP := worker.ClassifySubscriberISP(req.RecipientEmail)
+	log.Printf("[proof-send] offer=%s domain=%s profile=%s recipientISP=%s recipient=%s",
+		offerID, sendingDomain, profileID, recipientISP, req.RecipientEmail)
 
 	ts := mailing.NewTemplateService()
 
 	results := make([]proofResult, 0, len(req.Proofs))
 	for i, p := range req.Proofs {
-		res := h.sendOneProof(ctx, ts, offerID, profileID, fromEmail, trackBase, req.RecipientEmail, p, i)
+		res := h.sendOneProof(ctx, ts, offerID, profileID, fromEmail, trackBase, sendingDomain, req.RecipientEmail, recipientISP, p, i)
 		results = append(results, res)
 	}
 
@@ -99,7 +104,7 @@ func (h *ProofSendHandler) HandleProofSend(w http.ResponseWriter, r *http.Reques
 func (h *ProofSendHandler) sendOneProof(
 	ctx context.Context,
 	ts *mailing.TemplateService,
-	offerID, profileID, fromEmail, trackBase, recipientEmail string,
+	offerID, profileID, fromEmail, trackBase, sendingDomain, recipientEmail, recipientISP string,
 	p proofItem,
 	index int,
 ) proofResult {
@@ -131,7 +136,6 @@ func (h *ProofSendHandler) sendOneProof(
 	}
 
 	subject := "[PROOF] " + subjectLine
-
 	emailID := uuid.New().String()
 
 	rc := buildProofRenderContext(recipientEmail, trackBase, emailID)
@@ -150,76 +154,70 @@ func (h *ProofSendHandler) sendOneProof(
 
 	renderedHTML = worker.ReplaceTrackingMergeTags(renderedHTML, proofCampaignID, proofSubscriberID, p.CreativeID)
 
+	var unsubURL string
 	if trackBase != "" && h.trackingSecret != "" {
 		renderedHTML = worker.InjectTrackingPixelAndLinks(
 			renderedHTML, proofCampaignID, proofSubscriberID, emailID, trackBase, h.orgID, h.trackingSecret,
 		)
 
-		unsubURL := worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
+		unsubURL = worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{system.unsubscribe_url}}", unsubURL)
+	}
+
+	if !strings.Contains(renderedHTML, "<html") {
+		renderedHTML = "<html><body>" + renderedHTML + "</body></html>"
 	}
 
 	headers := map[string]string{
 		"X-Proof-Send": "true",
 		"X-Offer-ID":   offerID,
 	}
-	if trackBase != "" && h.trackingSecret != "" {
-		unsubURL := worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
+	if unsubURL != "" {
 		headers["List-Unsubscribe"] = "<" + unsubURL + ">"
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 	}
 
 	msg := &worker.EmailMessage{
-		ID:           emailID,
-		CampaignID:   proofCampaignID,
-		SubscriberID: proofSubscriberID,
 		Email:        recipientEmail,
 		FromName:     fromName,
 		FromEmail:    fromEmail,
 		Subject:      renderedSubject,
 		HTMLContent:  renderedHTML,
 		ProfileID:    profileID,
-		RecipientISP: "proof",
+		RecipientISP: recipientISP,
 		Headers:      headers,
 	}
 
 	result, sendErr := h.sender.Send(ctx, msg)
 	if sendErr != nil {
-		log.Printf("[proof-send] send error for creative %s: %v", p.CreativeID, sendErr)
+		log.Printf("[proof-send] PMTA error for creative %s: %v", p.CreativeID, sendErr)
 		return proofResult{CreativeID: p.CreativeID, Status: "error", Error: sendErr.Error()}
-	}
-	if result != nil && !result.Success {
-		errMsg := "send failed"
-		if result.Error != nil {
-			errMsg = result.Error.Error()
-		}
-		return proofResult{CreativeID: p.CreativeID, Status: "error", Error: errMsg}
 	}
 
 	messageID := ""
 	if result != nil {
 		messageID = result.MessageID
 	}
-	log.Printf("[proof-send] sent proof #%d creative=%s to=%s messageID=%s", index+1, p.CreativeID, recipientEmail, messageID)
+	log.Printf("[proof-send] sent proof #%d creative=%s to=%s via PMTA messageID=%s domain=%s profile=%s isp=%s",
+		index+1, p.CreativeID, recipientEmail, messageID, sendingDomain, profileID, recipientISP)
 	return proofResult{CreativeID: p.CreativeID, Status: "sent", MessageID: messageID}
 }
 
-func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webProperty string) (profileID, fromEmail, trackBase string) {
-	var sendingDomain string
+func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webProperty string) (profileID, fromEmail, trackBase, sendingDomain string) {
 	if webProperty != "" {
 		if kit, ok := GetBrandKit(webProperty); ok {
 			sendingDomain = kit.SendingDomain
 		}
 	}
 	if sendingDomain == "" {
-		return "", "", ""
+		return "", "", "", ""
 	}
 
 	var pID, fEmail string
 	var trackingDomain, sDomain sql.NullString
 	err := h.db.QueryRowContext(ctx,
-		`SELECT id::text, COALESCE(from_email,''), COALESCE(tracking_domain,''), COALESCE(sending_domain,'')
+		`SELECT id::text, COALESCE(from_email,''), tracking_domain, sending_domain
 		 FROM mailing_sending_profiles
 		 WHERE sending_domain = $1 AND vendor_type = 'pmta' AND status = 'active'
 		 ORDER BY created_at DESC LIMIT 1`,
@@ -227,7 +225,7 @@ func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webPropert
 	).Scan(&pID, &fEmail, &trackingDomain, &sDomain)
 	if err != nil {
 		log.Printf("[proof-send] no sending profile for domain %s: %v", sendingDomain, err)
-		return "", "", ""
+		return "", "", "", ""
 	}
 
 	tb := h.trackingURL
@@ -237,7 +235,7 @@ func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webPropert
 		tb = ensureHTTPS("trk." + sDomain.String)
 	}
 
-	return pID, fEmail, tb
+	return pID, fEmail, tb, sendingDomain
 }
 
 func buildProofRenderContext(email, trackBase, emailID string) map[string]interface{} {
@@ -253,10 +251,11 @@ func buildProofRenderContext(email, trackBase, emailID string) map[string]interf
 		rc["email_domain"] = parts[1]
 	}
 
+	now := time.Now()
 	system := map[string]interface{}{
-		"date":       "2026-03-18",
-		"year":       "2026",
-		"month_name": "March",
+		"date":       now.Format("2006-01-02"),
+		"year":       fmt.Sprintf("%d", now.Year()),
+		"month_name": now.Format("January"),
 	}
 	if trackBase != "" {
 		unsubURL := fmt.Sprintf("%s/track/unsubscribe/proof/%s", trackBase, emailID)
@@ -281,15 +280,12 @@ func buildProofRenderContext(email, trackBase, emailID string) map[string]interf
 	}
 	rc["subscriber"] = subscriber
 
-	custom := make(map[string]interface{})
-	rc["custom"] = custom
-
-	engagement := map[string]interface{}{
+	rc["custom"] = make(map[string]interface{})
+	rc["engagement"] = map[string]interface{}{
 		"score":  float64(100),
 		"opens":  0,
 		"clicks": 0,
 	}
-	rc["engagement"] = engagement
 
 	return rc
 }
