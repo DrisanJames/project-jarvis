@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -105,6 +106,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/clone-candidates", s.HandleCloneCandidates)
 		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
 		cr.Get("/last-quotas", s.HandleLastQuotas)
+		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 	})
 }
 
@@ -1954,5 +1956,258 @@ func (s *PMTACampaignService) HandleLastQuotas(w http.ResponseWriter, r *http.Re
 		"quotas":          quotas,
 		"source_campaign": name,
 		"source_date":     sourceDate,
+	})
+}
+
+// HandleDeliverabilityRecommendations uses Claude to analyze 3-day ISP sending
+// history for a given sending domain and return per-ISP quota recommendations.
+func (s *PMTACampaignService) HandleDeliverabilityRecommendations(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	ctx := r.Context()
+
+	var req struct {
+		SendingDomain string `json:"sending_domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.SendingDomain == "" {
+		respondError(w, http.StatusBadRequest, "sending_domain is required")
+		return
+	}
+
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		respondError(w, http.StatusInternalServerError, "ANTHROPIC_API_KEY not configured")
+		return
+	}
+
+	// Query 1: Per-ISP daily volumes from mailing_campaign_isp_plans (3 days)
+	type ispDayVolume struct {
+		ISP      string `json:"isp"`
+		SendDate string `json:"send_date"`
+		Quota    int    `json:"quota"`
+		Sent     int    `json:"sent"`
+		Failed   int    `json:"failed"`
+		Campaigns int   `json:"campaigns"`
+	}
+	var volumes []ispDayVolume
+
+	volRows, err := s.db.QueryContext(ctx, `
+		SELECT p.isp, DATE(c.created_at)::text AS send_date,
+		       COALESCE(SUM(p.quota), 0), COALESCE(SUM(p.sent_count), 0),
+		       COALESCE(SUM(p.failed_count), 0), COUNT(DISTINCT c.id)
+		FROM mailing_campaign_isp_plans p
+		JOIN mailing_campaigns c ON c.id = p.campaign_id
+		WHERE c.organization_id = $1
+		  AND p.sending_domain = $2
+		  AND c.created_at >= NOW() - INTERVAL '3 days'
+		  AND c.status IN ('completed', 'sent', 'sending', 'completed_with_errors')
+		GROUP BY p.isp, DATE(c.created_at)
+		ORDER BY DATE(c.created_at) DESC, p.isp
+	`, orgID, req.SendingDomain)
+	if err != nil {
+		log.Printf("[deliverability-recs] volume query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "failed to query ISP volumes")
+		return
+	}
+	defer volRows.Close()
+	for volRows.Next() {
+		var v ispDayVolume
+		if err := volRows.Scan(&v.ISP, &v.SendDate, &v.Quota, &v.Sent, &v.Failed, &v.Campaigns); err != nil {
+			log.Printf("[deliverability-recs] volume scan error: %v", err)
+			continue
+		}
+		volumes = append(volumes, v)
+	}
+
+	// Query 2: Campaign-level engagement metrics (3 days, same domain)
+	type campaignMetric struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		SendDate     string `json:"send_date"`
+		Sent         int    `json:"sent"`
+		Opens        int    `json:"opens"`
+		Clicks       int    `json:"clicks"`
+		HardBounces  int    `json:"hard_bounces"`
+		SoftBounces  int    `json:"soft_bounces"`
+		Complaints   int    `json:"complaints"`
+	}
+	var campaigns []campaignMetric
+
+	campRows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT ON (c.id)
+		       c.id::text, c.name, DATE(c.created_at)::text AS send_date,
+		       COALESCE(c.sent_count, 0), COALESCE(c.open_count, 0),
+		       COALESCE(c.click_count, 0), COALESCE(c.hard_bounce_count, 0),
+		       COALESCE(c.soft_bounce_count, 0), COALESCE(c.complaint_count, 0)
+		FROM mailing_campaigns c
+		JOIN mailing_campaign_isp_plans p ON p.campaign_id = c.id
+		WHERE c.organization_id = $1
+		  AND p.sending_domain = $2
+		  AND c.created_at >= NOW() - INTERVAL '3 days'
+		  AND c.status IN ('completed', 'sent', 'sending', 'completed_with_errors')
+		ORDER BY c.id, c.created_at DESC
+	`, orgID, req.SendingDomain)
+	if err != nil {
+		log.Printf("[deliverability-recs] campaign query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "failed to query campaign metrics")
+		return
+	}
+	defer campRows.Close()
+	for campRows.Next() {
+		var cm campaignMetric
+		if err := campRows.Scan(&cm.ID, &cm.Name, &cm.SendDate, &cm.Sent, &cm.Opens, &cm.Clicks, &cm.HardBounces, &cm.SoftBounces, &cm.Complaints); err != nil {
+			log.Printf("[deliverability-recs] campaign scan error: %v", err)
+			continue
+		}
+		campaigns = append(campaigns, cm)
+	}
+
+	if len(volumes) == 0 && len(campaigns) == 0 {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"recommendations":  []interface{}{},
+			"overall_summary":  "No sending data found for " + req.SendingDomain + " in the last 3 days. Set quotas manually based on your warmup plan.",
+			"cautions":         []string{"No historical data available for AI analysis"},
+			"data_context":     map[string]interface{}{"isp_volumes": []interface{}{}, "campaigns": []interface{}{}},
+		})
+		return
+	}
+
+	// Build the data summary for Claude
+	volJSON, _ := json.MarshalIndent(volumes, "", "  ")
+	campJSON, _ := json.MarshalIndent(campaigns, "", "  ")
+
+	systemPrompt := `You are a senior email deliverability analyst. You analyze ISP sending data and recommend optimal sending quotas.
+
+RULES:
+- Analyze the 3-day sending history provided below.
+- For each ISP that has data, recommend a quota for the next campaign.
+- Base recommendations on: volume trends, failure rates, and engagement rates.
+- If an ISP shows increasing failures or complaints, recommend reducing volume.
+- If an ISP is performing well (low bounces, decent opens), recommend maintaining or slightly increasing.
+- Be conservative with recommendations — reputation damage is hard to reverse.
+- If an ISP had zero sends in the window, recommend starting small (100-500).
+- Factor in warmup constraints: IPs in warmup should not exceed ~500/day per ISP initially.
+
+RESPONSE FORMAT — return ONLY valid JSON, no markdown fences:
+{
+  "recommendations": [
+    {
+      "isp": "<isp name>",
+      "suggested_quota": <integer>,
+      "trend": "<increasing|stable|decreasing|new>",
+      "risk_level": "<low|medium|high>",
+      "rationale": "<1-2 sentence explanation>"
+    }
+  ],
+  "overall_summary": "<2-3 sentence overall assessment>",
+  "cautions": ["<any warnings or things to monitor>"]
+}`
+
+	userPrompt := fmt.Sprintf(`Analyze the following 3-day sending data for domain "%s" and provide ISP quota recommendations.
+
+ISP DAILY VOLUMES (quota set vs actually sent vs failed, per day):
+%s
+
+CAMPAIGN-LEVEL ENGAGEMENT (opens, clicks, bounces, complaints per campaign):
+%s
+
+Provide your recommendations as JSON.`, req.SendingDomain, string(volJSON), string(campJSON))
+
+	// Call Claude
+	claudeReqBody := map[string]interface{}{
+		"model":      "claude-sonnet-4-6",
+		"max_tokens": 4000,
+		"system":     systemPrompt,
+		"messages": []map[string]string{
+			{"role": "user", "content": userPrompt},
+		},
+	}
+
+	jsonBody, err := json.Marshal(claudeReqBody)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to build AI request")
+		return
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to create AI request")
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	aiResp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("[deliverability-recs] Claude request error: %v", err)
+		respondError(w, http.StatusInternalServerError, "AI analysis request failed")
+		return
+	}
+	defer aiResp.Body.Close()
+
+	if aiResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(aiResp.Body)
+		truncated := string(body)
+		if len(truncated) > 500 {
+			truncated = truncated[:500]
+		}
+		log.Printf("[deliverability-recs] Claude returned %d: %s", aiResp.StatusCode, truncated)
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("AI service returned %d", aiResp.StatusCode))
+		return
+	}
+
+	var claudeResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(aiResp.Body).Decode(&claudeResp); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to decode AI response")
+		return
+	}
+	if len(claudeResp.Content) == 0 {
+		respondError(w, http.StatusInternalServerError, "empty AI response")
+		return
+	}
+
+	raw := strings.TrimSpace(claudeResp.Content[0].Text)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var parsed struct {
+		Recommendations []struct {
+			ISP            string `json:"isp"`
+			SuggestedQuota int    `json:"suggested_quota"`
+			Trend          string `json:"trend"`
+			RiskLevel      string `json:"risk_level"`
+			Rationale      string `json:"rationale"`
+		} `json:"recommendations"`
+		OverallSummary string   `json:"overall_summary"`
+		Cautions       []string `json:"cautions"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		log.Printf("[deliverability-recs] failed to parse AI JSON: %v (raw: %.500s)", err, raw)
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"recommendations":  []interface{}{},
+			"overall_summary":  "AI analysis returned an unparseable response. Raw output: " + raw[:min(len(raw), 300)],
+			"cautions":         []string{"AI response could not be parsed"},
+			"data_context":     map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"recommendations":  parsed.Recommendations,
+		"overall_summary":  parsed.OverallSummary,
+		"cautions":         parsed.Cautions,
+		"data_context":     map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
 	})
 }

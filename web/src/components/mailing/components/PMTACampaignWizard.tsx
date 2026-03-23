@@ -319,6 +319,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [insightDomainFilter, setInsightDomainFilter] = useState('');
   const [insightAvailableDomains, setInsightAvailableDomains] = useState<string[]>([]);
 
+  // Deliverability Recommendations modal
+  const [delivRecsOpen, setDelivRecsOpen] = useState(false);
+  const [delivRecsLoading, setDelivRecsLoading] = useState(false);
+  const [delivRecsDomain, setDelivRecsDomain] = useState('');
+  const [delivRecsResult, setDelivRecsResult] = useState<any>(null);
+  const [delivRecsError, setDelivRecsError] = useState('');
+  const [delivRecsDomains, setDelivRecsDomains] = useState<{ domain: string }[]>([]);
+
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
   const [selectedDomain, setSelectedDomain] = useState('');
@@ -452,6 +460,57 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     }
     setInsightsLoading(false);
   }, [orgId]);
+
+  const openDelivRecsModal = useCallback(async () => {
+    setDelivRecsOpen(true);
+    setDelivRecsResult(null);
+    setDelivRecsError('');
+    if (delivRecsDomains.length === 0) {
+      try {
+        const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/sending-domains`);
+        if (res.ok) {
+          const data = await res.json();
+          setDelivRecsDomains((data.domains || []).map((d: any) => ({ domain: d.domain || d })));
+        }
+      } catch { /* ignore */ }
+    }
+  }, [fetchWithRetry, delivRecsDomains.length]);
+
+  const fetchDeliverabilityRecs = useCallback(async () => {
+    if (!delivRecsDomain) return;
+    setDelivRecsLoading(true);
+    setDelivRecsError('');
+    setDelivRecsResult(null);
+    try {
+      const res = await orgFetch(`${API_BASE}/pmta-campaign/deliverability-recs`, orgId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sending_domain: delivRecsDomain }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDelivRecsError(data?.error || 'Failed to get recommendations');
+      } else {
+        setDelivRecsResult(data);
+      }
+    } catch (err: any) {
+      setDelivRecsError(err?.message || 'Network error');
+    }
+    setDelivRecsLoading(false);
+  }, [delivRecsDomain, orgId]);
+
+  const applyAllDelivRecs = useCallback(() => {
+    if (!delivRecsResult?.recommendations) return;
+    const updated: Record<string, number> = { ...ispQuotas };
+    for (const rec of delivRecsResult.recommendations) {
+      const key = rec.isp?.toLowerCase();
+      if (key && rec.suggested_quota > 0) {
+        updated[key] = rec.suggested_quota;
+      }
+    }
+    setISPQuotas(updated);
+    setDelivRecsOpen(false);
+  }, [delivRecsResult, ispQuotas]);
 
   const fetchDomains = useCallback(async () => {
     setDomainError('');
@@ -1806,9 +1865,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         marginTop: selectedISPs.length > 0 ? 16 : 0,
       }}>
         <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
-          <h4 style={{ margin: '0 0 8px', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
-            <FontAwesomeIcon icon={faShieldAlt} /> Volume Quotas <span style={{ fontWeight: 400 }}>(optional)</span>
-          </h4>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <h4 style={{ margin: 0, fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+              <FontAwesomeIcon icon={faShieldAlt} /> Volume Quotas <span style={{ fontWeight: 400 }}>(optional)</span>
+            </h4>
+            <button
+              onClick={openDelivRecsModal}
+              style={{
+                background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+                border: 'none', borderRadius: 6, padding: '5px 12px',
+                color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                transition: 'opacity 0.2s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
+              onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+            >
+              <FontAwesomeIcon icon={faBrain} /> Deliverability Recommendations
+            </button>
+          </div>
           <p style={{ margin: '0 0 12px', fontSize: 11, color: '#64748b' }}>
             Set maximum sends per ISP. Leave at 0 for unlimited.
           </p>
@@ -1855,6 +1930,177 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
           </div>
         </div>
       </div>
+
+      {/* Deliverability Recommendations Modal */}
+      {delivRecsOpen && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} onClick={() => setDelivRecsOpen(false)}>
+          <div style={{
+            background: '#0d1526', border: '1px solid rgba(100,130,255,0.18)',
+            borderRadius: 14, padding: 24, width: '100%', maxWidth: 600,
+            maxHeight: '80vh', overflowY: 'auto',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16, color: '#e0e6f0' }}>
+                <FontAwesomeIcon icon={faBrain} style={{ color: '#8b5cf6', marginRight: 8 }} />
+                Deliverability Recommendations
+              </h3>
+              <button onClick={() => setDelivRecsOpen(false)} style={{
+                background: 'none', border: 'none', color: '#64748b', fontSize: 18, cursor: 'pointer',
+              }}>&times;</button>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 6 }}>
+                Sending Domain
+              </label>
+              <select
+                value={delivRecsDomain}
+                onChange={e => { setDelivRecsDomain(e.target.value); setDelivRecsResult(null); setDelivRecsError(''); }}
+                style={{
+                  width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.12)',
+                  borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 13,
+                }}
+              >
+                <option value="">-- Select a domain --</option>
+                {delivRecsDomains.map(d => (
+                  <option key={d.domain} value={d.domain}>{d.domain}</option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={fetchDeliverabilityRecs}
+              disabled={!delivRecsDomain || delivRecsLoading}
+              style={{
+                width: '100%', padding: '10px 0', borderRadius: 8, border: 'none',
+                background: delivRecsDomain ? 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)' : '#1e293b',
+                color: delivRecsDomain ? '#fff' : '#475569',
+                fontSize: 13, fontWeight: 600, cursor: delivRecsDomain ? 'pointer' : 'not-allowed',
+                marginBottom: 16, transition: 'all 0.2s',
+              }}
+            >
+              {delivRecsLoading ? 'Analyzing 3-day data...' : 'Provide Recommendations'}
+            </button>
+
+            {delivRecsLoading && (
+              <div style={{ textAlign: 'center', padding: 20 }}>
+                <div style={{
+                  width: 32, height: 32, border: '3px solid #1e293b', borderTopColor: '#8b5cf6',
+                  borderRadius: '50%', margin: '0 auto 12px',
+                  animation: 'spin 0.8s linear infinite',
+                }} />
+                <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>
+                  AI is reviewing your ISP sending history...
+                </p>
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+              </div>
+            )}
+
+            {delivRecsError && (
+              <div style={{ padding: 12, background: '#ef444420', borderRadius: 8, color: '#ef4444', fontSize: 12, marginBottom: 12 }}>
+                {delivRecsError}
+              </div>
+            )}
+
+            {delivRecsResult && !delivRecsLoading && (
+              <div>
+                {delivRecsResult.overall_summary && (
+                  <div style={{
+                    padding: 12, background: '#1e293b', borderRadius: 8, marginBottom: 14,
+                    fontSize: 12, color: '#cbd5e1', lineHeight: 1.6,
+                    borderLeft: '3px solid #8b5cf6',
+                  }}>
+                    {delivRecsResult.overall_summary}
+                  </div>
+                )}
+
+                {delivRecsResult.cautions?.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    {delivRecsResult.cautions.map((c: string, i: number) => (
+                      <div key={i} style={{
+                        padding: '6px 10px', background: '#f59e0b15', borderRadius: 6,
+                        fontSize: 11, color: '#f59e0b', marginBottom: 4,
+                      }}>
+                        ⚠ {c}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {delivRecsResult.recommendations?.length > 0 && (
+                  <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+                    {delivRecsResult.recommendations.map((rec: any) => {
+                      const meta = ISP_META[rec.isp] || { label: rec.isp, color: '#64748b', emoji: '🌐' };
+                      const riskColor = rec.risk_level === 'high' ? '#ef4444' : rec.risk_level === 'medium' ? '#f59e0b' : '#22c55e';
+                      return (
+                        <div key={rec.isp} style={{
+                          padding: 12, background: '#0a0f1a', borderRadius: 8,
+                          border: `1px solid ${meta.color}30`,
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: meta.color }}>
+                              {meta.emoji} {meta.label}
+                            </span>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <span style={{
+                                fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                                background: riskColor + '20', color: riskColor, fontWeight: 600,
+                              }}>
+                                {rec.risk_level?.toUpperCase()}
+                              </span>
+                              <span style={{
+                                fontSize: 14, fontWeight: 700, color: '#e0e6f0',
+                                fontFamily: 'monospace',
+                              }}>
+                                {rec.suggested_quota?.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
+                            {rec.rationale}
+                          </div>
+                          {rec.trend && (
+                            <span style={{
+                              display: 'inline-block', marginTop: 4, fontSize: 10, padding: '1px 6px',
+                              borderRadius: 4, background: '#1e293b', color: '#64748b',
+                            }}>
+                              Trend: {rec.trend}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {delivRecsResult.recommendations?.length > 0 && (
+                  <button
+                    onClick={applyAllDelivRecs}
+                    style={{
+                      width: '100%', padding: '10px 0', borderRadius: 8, border: 'none',
+                      background: 'linear-gradient(135deg, #22c55e 0%, #10b981 100%)',
+                      color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    Apply All Quotas
+                  </button>
+                )}
+
+                {delivRecsResult.recommendations?.length === 0 && !delivRecsResult.overall_summary && (
+                  <div style={{ textAlign: 'center', padding: 16, color: '#64748b', fontSize: 12 }}>
+                    No recommendations available for this domain.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 
