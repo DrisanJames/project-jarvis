@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { 
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
   faListUl, faCrosshairs, faBolt, faFileImport,
-  faBan, faBrain, faRobot, faChartPie, faServer,
+  faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faEye, faFire,
 } from '@fortawesome/free-solid-svg-icons';
@@ -34,6 +34,7 @@ const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').
 const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketingAgent').then(m => ({ default: m.EmailMarketingAgent })));
 const WarmupDashboard = lazy(() => import('../components/WarmupDashboard').then(m => ({ default: m.WarmupDashboard })));
 const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
+const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -42,7 +43,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline';
 
 interface Tab {
   id: TabId;
@@ -68,6 +69,7 @@ const tabs: Tab[] = [
   { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP rate management, throttle control & throughput visibility' },
   { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
+  { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
 
@@ -171,6 +173,8 @@ export const MailingPortal: React.FC = () => {
         return <ConsciousnessDashboard />;
       case 'data-import':
         return <DataNormalizerPanel />;
+      case 'data-pipeline':
+        return <Suspense fallback={<ChunkLoader />}><DataPipelineDashboard /></Suspense>;
       case 'site-traffic':
         return <SiteTrafficDashboard />;
       default:

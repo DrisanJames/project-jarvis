@@ -31,6 +31,7 @@ type Config struct {
 	Mailing            MailingConfig           `yaml:"mailing"`
 	OVHCloud           OVHCloudConfig          `yaml:"ovhcloud"`
 	DataNorm           DataNormConfig          `yaml:"datanorm"`
+	DataPipeline       DataPipelineConfig      `yaml:"data_pipeline"`
 	Verification       VerificationConfig      `yaml:"verification"`
 	Automation         AutomationConfig        `yaml:"automation"`
 	Warmup             WarmupConfig            `yaml:"warmup"`
@@ -44,6 +45,21 @@ type DataNormConfig struct {
 	AWSProfile      string `yaml:"aws_profile"`
 	IntervalMinutes int    `yaml:"interval_minutes"`
 	DefaultListID   string `yaml:"default_list_id"`
+}
+
+// DataPipelineConfig holds settings for the automated data ingestion & hygiene pipeline.
+type DataPipelineConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	S3Bucket            string `yaml:"s3_bucket"`
+	S3Prefix            string `yaml:"s3_prefix"`
+	S3Region            string `yaml:"s3_region"`
+	AWSProfile          string `yaml:"aws_profile"`
+	RunHourUTC          int    `yaml:"run_hour_utc"`
+	EOAPIToken          string `yaml:"eo_api_token"`
+	EOListID            int    `yaml:"eo_list_id"`
+	EOConcurrency       int    `yaml:"eo_concurrency"`
+	AdminEmail          string `yaml:"admin_email"`
+	MinDeficitThreshold int    `yaml:"min_deficit_threshold"`
 }
 
 // VerificationConfig holds email verification provider settings.
@@ -534,6 +550,19 @@ func LoadFromEnv(path string) (*Config, error) {
 	}
 	if v := os.Getenv("DATANORM_S3_REGION"); v != "" {
 		cfg.DataNorm.S3Region = v
+	}
+	// DataPipeline overrides
+	if v := os.Getenv("DATA_PIPELINE_S3_BUCKET"); v != "" {
+		cfg.DataPipeline.S3Bucket = v
+	}
+	if v := os.Getenv("DATA_PIPELINE_S3_REGION"); v != "" {
+		cfg.DataPipeline.S3Region = v
+	}
+	if v := os.Getenv("DATA_PIPELINE_EO_API_TOKEN"); v != "" {
+		cfg.DataPipeline.EOAPIToken = v
+	}
+	if v := os.Getenv("DATA_PIPELINE_ADMIN_EMAIL"); v != "" {
+		cfg.DataPipeline.AdminEmail = v
 	}
 
 	return cfg, nil

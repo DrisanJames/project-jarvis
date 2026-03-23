@@ -70,6 +70,14 @@ func (och *OfferCenterHandlers) HandleGenerateCreatives(w http.ResponseWriter, r
 		return
 	}
 
+	// If offer has no original_html_creative, fall back to the first imported creative
+	if htmlCreative == "" {
+		och.db.QueryRowContext(ctx,
+			`SELECT html_content FROM mailing_offer_creatives
+			 WHERE offer_id=$1 AND html_content != '' ORDER BY created_at ASC LIMIT 1`,
+			offerID).Scan(&htmlCreative)
+	}
+
 	assets, _ := LoadOfferAssets(och.db, offerID)
 	imageDomain := ResolveImageDomainForBrand(och.db, kit.ImageDomain)
 	assetPrompt := BuildAssetPromptSection(assets, imageDomain)

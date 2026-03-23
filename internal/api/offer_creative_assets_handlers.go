@@ -477,6 +477,7 @@ func (h *OfferCreativeAssetsHandlers) processTemplateBundleZip(
 		allSubjectLines    = make(map[string]bool) // deduplicate across subfolders
 		allFromNames       = make(map[string]bool)
 		uploadErrors       []string
+		firstImportedHTML  string // for populating original_html_creative if empty
 	)
 
 	for dir, sf := range folders {
@@ -503,6 +504,23 @@ func (h *OfferCreativeAssetsHandlers) processTemplateBundleZip(
 		uploadErrors = append(uploadErrors, result.Errors...)
 		rehostedImages += result.RehostedImages
 
+		// Register rehosted images as creative assets (visible in Assets tab, usable by AI generation)
+		for _, rec := range result.ImageRecords {
+			role := classifyAssetRole(rec.Width, rec.Height)
+			label := fmt.Sprintf("%s (%dx%d)", assetRoleLabel(role), rec.Width, rec.Height)
+			assetID := uuid.New().String()
+			h.db.ExecContext(ctx, `
+				INSERT INTO mailing_offer_creative_assets
+				(id, offer_id, hosted_image_id, asset_role, label, width, height,
+				 cdn_url, cdn_url_medium, cdn_url_thumbnail, original_filename,
+				 file_size, mime_type, sort_order, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '', '', $9, $10, $11, 0, NOW())
+				ON CONFLICT (offer_id, hosted_image_id) DO NOTHING
+			`, assetID, offerID, rec.HostedImageID, role, label,
+				rec.Width, rec.Height, rec.CDNURL,
+				rec.OriginalFilename, rec.FileSize, rec.ContentType)
+		}
+
 		// Insert as a creative
 		creativeID := uuid.New().String()
 		_, dbErr := h.db.ExecContext(ctx, `
@@ -516,6 +534,9 @@ func (h *OfferCreativeAssetsHandlers) processTemplateBundleZip(
 			continue
 		}
 		importedCreatives++
+		if firstImportedHTML == "" {
+			firstImportedHTML = result.RewrittenHTML
+		}
 		log.Printf("[HTMLImport] imported creative %s from %s (%d images rehosted)", creativeID, variantName, result.RehostedImages)
 
 		// Process subject lines
@@ -557,6 +578,15 @@ func (h *OfferCreativeAssetsHandlers) processTemplateBundleZip(
 			INSERT INTO mailing_offer_from_names (id, offer_id, from_name, status, created_at, updated_at)
 			VALUES ($1, $2, $3, 'active', NOW(), NOW())
 			ON CONFLICT DO NOTHING`, fnID, offerID, name)
+	}
+
+	// Populate original_html_creative on the offer if it's empty — used by landing page
+	// generation and creative generation as source content for AI context.
+	if firstImportedHTML != "" {
+		h.db.ExecContext(ctx, `
+			UPDATE mailing_offers SET original_html_creative=$1, updated_at=NOW()
+			WHERE id=$2 AND (original_html_creative IS NULL OR original_html_creative='')`,
+			firstImportedHTML, offerID)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{

@@ -109,6 +109,7 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *Su
 	r.Get("/offer-center/offers/{id}/creatives", och.HandleListOfferCreatives)
 	r.Post("/offer-center/offers/{id}/creatives", och.HandleCreateOfferCreative)
 	r.Post("/offer-center/offers/{id}/creatives/generate", och.HandleGenerateCreatives)
+	r.Get("/offer-center/offers/{id}/creatives/download-zip", och.HandleDownloadCreativesZip)
 	r.Delete("/offer-center/offers/{id}/creatives/all", och.HandleDeleteAllOfferCreatives)
 	r.Put("/offer-center/offers/{id}/creatives/{cid}", och.HandleUpdateOfferCreative)
 	r.Delete("/offer-center/offers/{id}/creatives/{cid}", och.HandleDeleteOfferCreative)

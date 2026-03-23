@@ -13,6 +13,8 @@ import (
 type Alerter struct {
 	smtpHost string
 	smtpPort int
+	smtpUser string
+	smtpPass string
 	from     string
 	to       []string
 
@@ -27,6 +29,8 @@ const alertCooldownWindow = 5 * time.Minute
 type AlerterConfig struct {
 	SMTPHost string
 	SMTPPort int
+	SMTPUser string
+	SMTPPass string
 	From     string
 	To       []string
 }
@@ -36,6 +40,8 @@ func NewAlerter(cfg AlerterConfig) *Alerter {
 	return &Alerter{
 		smtpHost: cfg.SMTPHost,
 		smtpPort: cfg.SMTPPort,
+		smtpUser: cfg.SMTPUser,
+		smtpPass: cfg.SMTPPass,
 		from:     cfg.From,
 		to:       cfg.To,
 		cooldown: make(map[string]time.Time),
@@ -234,6 +240,73 @@ Automated alert from PMTA Infrastructure Monitor.
 	a.sendEmail(subject, body)
 }
 
+// SendPipelineReport sends a formatted email summarizing a data pipeline run.
+func (a *Alerter) SendPipelineReport(report PipelineRunReport) error {
+	subject := fmt.Sprintf("[IGNITE] Data Pipeline Complete — %d verified, %d suppressed", report.EmailsVerified, report.EmailsSuppressed)
+
+	var sb strings.Builder
+	sb.WriteString("Data Pipeline Run Report\n")
+	sb.WriteString("========================\n\n")
+	sb.WriteString(fmt.Sprintf("Run ID:       %s\n", report.RunID))
+	sb.WriteString(fmt.Sprintf("Started:      %s\n", report.StartedAt.Format(time.RFC3339)))
+	sb.WriteString(fmt.Sprintf("Completed:    %s\n", report.CompletedAt.Format(time.RFC3339)))
+	sb.WriteString(fmt.Sprintf("Duration:     %s\n\n", report.CompletedAt.Sub(report.StartedAt).Round(time.Second)))
+
+	sb.WriteString("Summary\n")
+	sb.WriteString("-------\n")
+	sb.WriteString(fmt.Sprintf("Files Processed:   %d\n", report.FilesProcessed))
+	sb.WriteString(fmt.Sprintf("Emails Total:      %d\n", report.EmailsTotal))
+	sb.WriteString(fmt.Sprintf("Emails Verified:   %d  (added to lists)\n", report.EmailsVerified))
+	sb.WriteString(fmt.Sprintf("Emails Suppressed: %d  (sent to global suppression)\n", report.EmailsSuppressed))
+	sb.WriteString(fmt.Sprintf("Emails Deduped:    %d  (already existed)\n\n", report.EmailsDeduped))
+
+	if len(report.DomainBreakdown) > 0 {
+		sb.WriteString("Domain Breakdown\n")
+		sb.WriteString("----------------\n")
+		for _, d := range report.DomainBreakdown {
+			sb.WriteString(fmt.Sprintf("  %s / %s (%s): +%d added, %d suppressed, %d deduped\n",
+				d.SendingDomain, d.ISP, d.ListName, d.Added, d.Suppressed, d.Deduped))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(report.Errors) > 0 {
+		sb.WriteString("Errors\n")
+		sb.WriteString("------\n")
+		for _, e := range report.Errors {
+			sb.WriteString(fmt.Sprintf("  - %s\n", e))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("---\nAutomated report from IGNITE Data Pipeline.\n")
+
+	return a.sendEmailAuth(subject, sb.String())
+}
+
+// PipelineRunReport is the alerter-facing struct for pipeline notifications.
+type PipelineRunReport struct {
+	RunID            string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	FilesProcessed   int
+	EmailsTotal      int
+	EmailsVerified   int
+	EmailsSuppressed int
+	EmailsDeduped    int
+	DomainBreakdown  []PipelineDomainStat
+	Errors           []string
+}
+
+type PipelineDomainStat struct {
+	SendingDomain string
+	ISP           string
+	ListName      string
+	Added         int
+	Suppressed    int
+	Deduped       int
+}
+
 func (a *Alerter) sendEmail(subject, body string) {
 	if a.smtpHost == "" || len(a.to) == 0 {
 		log.Printf("[alerter] would send: %s", subject)
@@ -248,4 +321,30 @@ func (a *Alerter) sendEmail(subject, body string) {
 	if err != nil {
 		log.Printf("[alerter] send error: %v (subject: %s)", err, subject)
 	}
+}
+
+// sendEmailAuth sends an email via SES SMTP with authentication.
+// Falls back to unauthenticated relay if SES credentials are not set.
+func (a *Alerter) sendEmailAuth(subject, body string) error {
+	if a.smtpHost == "" || len(a.to) == 0 {
+		log.Printf("[alerter] would send (auth): %s", subject)
+		return nil
+	}
+
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
+		a.from, strings.Join(a.to, ","), subject, body)
+
+	addr := fmt.Sprintf("%s:%d", a.smtpHost, a.smtpPort)
+
+	var auth smtp.Auth
+	if a.smtpUser != "" && a.smtpPass != "" {
+		auth = smtp.PlainAuth("", a.smtpUser, a.smtpPass, a.smtpHost)
+	}
+
+	err := smtp.SendMail(addr, auth, a.from, a.to, []byte(msg))
+	if err != nil {
+		log.Printf("[alerter] send (auth) error: %v (subject: %s)", err, subject)
+		return err
+	}
+	return nil
 }

@@ -572,6 +572,75 @@ func (cb *CampaignBuilder) HandleGetCampaignVariants(w http.ResponseWriter, r *h
 	json.NewEncoder(w).Encode(variants)
 }
 
+// HandleUpdateVariant patches a single A/B variant's content.
+// PATCH /campaigns/{id}/variants/{variantId}
+func (cb *CampaignBuilder) HandleUpdateVariant(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	variantID := chi.URLParam(r, "variantId")
+
+	var input struct {
+		Subject     *string  `json:"subject"`
+		FromName    *string  `json:"from_name"`
+		HTMLContent *string  `json:"html_content"`
+		SplitPercent *float64 `json:"split_percent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	var sets []string
+	var args []interface{}
+	idx := 1
+	if input.Subject != nil {
+		sets = append(sets, fmt.Sprintf("subject = $%d", idx))
+		args = append(args, *input.Subject)
+		idx++
+	}
+	if input.FromName != nil {
+		sets = append(sets, fmt.Sprintf("from_name = $%d", idx))
+		args = append(args, *input.FromName)
+		idx++
+	}
+	if input.HTMLContent != nil {
+		sets = append(sets, fmt.Sprintf("html_content = $%d", idx))
+		args = append(args, *input.HTMLContent)
+		idx++
+	}
+	if input.SplitPercent != nil {
+		sets = append(sets, fmt.Sprintf("split_percent = $%d", idx))
+		args = append(args, *input.SplitPercent)
+		idx++
+	}
+	if len(sets) == 0 {
+		http.Error(w, `{"error":"no fields to update"}`, http.StatusBadRequest)
+		return
+	}
+
+	query := fmt.Sprintf("UPDATE mailing_ab_variants SET %s WHERE id = $%d::uuid",
+		strings.Join(sets, ", "), idx)
+	args = append(args, variantID)
+
+	result, err := cb.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		log.Printf("Error updating variant %s: %v", variantID, err)
+		http.Error(w, `{"error":"failed to update variant"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		http.Error(w, `{"error":"variant not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":      variantID,
+		"updated": len(sets),
+		"message": "Variant updated",
+	})
+}
+
 // HandleDeleteCampaign soft-deletes a campaign
 func (cb *CampaignBuilder) HandleDeleteCampaign(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

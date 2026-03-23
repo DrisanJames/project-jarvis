@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -134,6 +135,8 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 			return 0, loadErr
 		}
 	}
+
+	variants = sanitizeVariantURLsAtDispatch(variants, brandKey)
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, subscriber_id, email, recipient_isp, selection_rank,
@@ -348,4 +351,67 @@ func buildVariantFromEditorial(cached *CachedWaveContent, fallbackFromName, fall
 
 func hasPlaceholders(html string) bool {
 	return strings.Contains(html, "{{INTRO}}") || strings.Contains(html, "{{ARTICLE_1_HEADLINE}}")
+}
+
+// brandURLFallbacks maps brand keys to their fallback redirect target.
+// AI-generated article slugs that don't match any known path are rewritten
+// to the fallback URL (typically the blog root) so users land on real content.
+var brandURLFallbacks = map[string]struct {
+	Domain     string
+	Fallback   string
+	KnownPaths []string
+}{
+	"historythinking": {
+		Domain:   "historythinking.com",
+		Fallback: "/blog",
+		KnownPaths: []string{
+			"/blog", "/privacy", "/terms", "/about", "/auth",
+			"/blog/category/ancient-civilizations",
+			"/blog/category/american-history",
+			"/blog/category/cultural-history",
+			"/blog/category/historical-figures",
+			"/blog/category/medieval-world",
+			"/blog/category/revolutionary-movements",
+			"/blog/category/science-and-discovery",
+			"/blog/category/world-wars",
+		},
+	},
+}
+
+// sanitizeVariantURLsAtDispatch rewrites hallucinated article URLs to the
+// brand's blog root. AI sometimes fabricates article slugs that 404; this
+// catches them at dispatch time and redirects to real content.
+func sanitizeVariantURLsAtDispatch(variants []campaignVariant, brandKey string) []campaignVariant {
+	rule, ok := brandURLFallbacks[brandKey]
+	if !ok {
+		return variants
+	}
+
+	baseURL := "https://" + rule.Domain
+	re := regexp.MustCompile(`href="` + regexp.QuoteMeta(baseURL) + `/([^"]+)"`)
+
+	for i := range variants {
+		html := variants[i].HTMLContent
+		replaced := false
+		html = re.ReplaceAllStringFunc(html, func(match string) string {
+			slug := re.FindStringSubmatch(match)
+			if len(slug) < 2 {
+				return match
+			}
+			path := "/" + slug[1]
+			for _, kp := range rule.KnownPaths {
+				if path == kp || strings.HasPrefix(path, kp+"/") {
+					return match
+				}
+			}
+			replaced = true
+			return `href="` + baseURL + rule.Fallback + `"`
+		})
+		if replaced {
+			variants[i].HTMLContent = html
+			log.Printf("[wave-dispatch-urlfix] rewrote hallucinated URLs to %s%s for variant %s (brand: %s)",
+				baseURL, rule.Fallback, variants[i].VariantName, brandKey)
+		}
+	}
+	return variants
 }

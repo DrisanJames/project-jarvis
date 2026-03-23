@@ -141,5 +141,6 @@ func (cb *CampaignBuilder) RegisterRoutes(r chi.Router) {
 		r.Get("/{id}/stats", cb.HandleCampaignStats)
 		r.Get("/{id}/timeline", cb.HandleCampaignTimeline)
 		r.Get("/{id}/variants", cb.HandleGetCampaignVariants)
+		r.Patch("/{id}/variants/{variantId}", cb.HandleUpdateVariant)
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1127,6 +1128,196 @@ func (a *EmailMarketingAgent) HandleCancelTomorrowCampaigns(w http.ResponseWrite
 	})
 }
 
+// HandleCloneDay clones all approved recommendations from a source date to a target date,
+// applying a growth multiplier to ISP quotas. Each cloned recommendation is automatically
+// approved, triggering full campaign creation (audience planning, content generation, etc.).
+// POST /api/mailing/agent/calendar/clone-day
+// Body: {"source_date":"2026-03-23","target_date":"2026-03-24","growth_percent":20,"isp_growth":{"gmail":25,"yahoo":15}}
+func (a *EmailMarketingAgent) HandleCloneDay(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+
+	var body struct {
+		SourceDate    string             `json:"source_date"`
+		TargetDate    string             `json:"target_date"`
+		GrowthPercent float64            `json:"growth_percent"`
+		ISPGrowth     map[string]float64 `json:"isp_growth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if body.SourceDate == "" || body.TargetDate == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "source_date and target_date are required"})
+		return
+	}
+	if _, err := time.Parse("2006-01-02", body.SourceDate); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "source_date must be YYYY-MM-DD"})
+		return
+	}
+	if _, err := time.Parse("2006-01-02", body.TargetDate); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "target_date must be YYYY-MM-DD"})
+		return
+	}
+	if body.SourceDate == body.TargetDate {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "source_date and target_date must differ"})
+		return
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT id::text, sending_domain, COALESCE(TO_CHAR(scheduled_time, 'HH24:MI'), '10:00'),
+		       COALESCE(campaign_name,''), COALESCE(reasoning,''), COALESCE(strategy,''),
+		       campaign_config::text
+		FROM agent_campaign_recommendations
+		WHERE organization_id = $1 AND scheduled_date = $2::date AND status = 'approved'
+		ORDER BY sending_domain, campaign_name
+	`, orgID, body.SourceDate)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query source recs: " + err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type sourceRec struct {
+		ID, Domain, Time, Name, Reasoning, Strategy, ConfigJSON string
+	}
+	var sources []sourceRec
+	for rows.Next() {
+		var s sourceRec
+		if err := rows.Scan(&s.ID, &s.Domain, &s.Time, &s.Name, &s.Reasoning, &s.Strategy, &s.ConfigJSON); err != nil {
+			continue
+		}
+		sources = append(sources, s)
+	}
+	if len(sources) == 0 {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("no approved recommendations found for %s", body.SourceDate)})
+		return
+	}
+
+	// Check for existing approved recs on target date to avoid duplicates
+	var existingCount int
+	a.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM agent_campaign_recommendations WHERE organization_id = $1 AND scheduled_date = $2::date AND status = 'approved'`,
+		orgID, body.TargetDate).Scan(&existingCount)
+	if existingCount > 0 {
+		respondJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%d approved recommendations already exist for %s — unapprove/delete them first or pick a different target_date", existingCount, body.TargetDate),
+		})
+		return
+	}
+
+	// Use a detached context so ALB timeout doesn't kill mid-flight
+	cloneCtx, cloneCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cloneCancel()
+
+	type cloneResult struct {
+		Name       string `json:"name"`
+		Domain     string `json:"domain"`
+		RecID      string `json:"rec_id"`
+		CampaignID string `json:"campaign_id,omitempty"`
+		Audience   int    `json:"audience"`
+		Status     string `json:"status"`
+		Error      string `json:"error,omitempty"`
+	}
+	var results []cloneResult
+
+	for _, src := range sources {
+		var cfg map[string]interface{}
+		if src.ConfigJSON != "" {
+			json.Unmarshal([]byte(src.ConfigJSON), &cfg)
+		}
+		if cfg == nil {
+			cfg = map[string]interface{}{}
+		}
+
+		if quotas, ok := cfg["isp_quotas"].(map[string]interface{}); ok {
+			for isp, v := range quotas {
+				vol := 0.0
+				switch n := v.(type) {
+				case float64:
+					vol = n
+				case int:
+					vol = float64(n)
+				}
+				growthPct := body.GrowthPercent
+				if ispPct, found := body.ISPGrowth[isp]; found {
+					growthPct = ispPct
+				}
+				quotas[isp] = int(vol * (1.0 + growthPct/100.0))
+			}
+			cfg["isp_quotas"] = quotas
+		}
+
+		configJSON, _ := json.Marshal(cfg)
+		totalVolume := 0
+		if quotas, ok := cfg["isp_quotas"].(map[string]interface{}); ok {
+			for _, v := range quotas {
+				switch n := v.(type) {
+				case float64:
+					totalVolume += int(n)
+				case int:
+					totalVolume += n
+				}
+			}
+		}
+
+		var strategy string
+		a.db.QueryRowContext(cloneCtx,
+			`SELECT strategy FROM agent_domain_strategies WHERE organization_id = $1 AND sending_domain = $2`,
+			orgID, src.Domain).Scan(&strategy)
+		if strategy == "" {
+			strategy = src.Strategy
+		}
+
+		var newRecID string
+		err := a.db.QueryRowContext(cloneCtx,
+			`INSERT INTO agent_campaign_recommendations
+			 (organization_id, sending_domain, scheduled_date, scheduled_time, campaign_name,
+			  campaign_config, reasoning, strategy, projected_volume, status)
+			 VALUES ($1, $2, $3::date, $4::time, $5, $6, $7, $8, $9, 'pending')
+			 RETURNING id::text`,
+			orgID, src.Domain, body.TargetDate, src.Time, src.Name,
+			string(configJSON), fmt.Sprintf("Cloned from %s with %.0f%% growth", body.SourceDate, body.GrowthPercent),
+			strategy, totalVolume,
+		).Scan(&newRecID)
+		if err != nil {
+			results = append(results, cloneResult{Name: src.Name, Domain: src.Domain, Status: "failed", Error: "insert: " + err.Error()})
+			continue
+		}
+
+		result, approveErr := a.doApproveRecommendation(cloneCtx, orgID, newRecID)
+		if approveErr != nil {
+			results = append(results, cloneResult{Name: src.Name, Domain: src.Domain, RecID: newRecID, Status: "failed", Error: approveErr.Error()})
+			continue
+		}
+		results = append(results, cloneResult{
+			Name: src.Name, Domain: src.Domain, RecID: newRecID,
+			CampaignID: result.CampaignID, Audience: result.TotalAudience, Status: "approved",
+		})
+		log.Printf("[CloneDay] %s → %s: %s audience=%d campaign=%s", body.SourceDate, body.TargetDate, src.Name, result.TotalAudience, result.CampaignID)
+	}
+
+	ok := 0
+	failed := 0
+	for _, r := range results {
+		if r.Status == "approved" {
+			ok++
+		} else {
+			failed++
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":       "completed",
+		"source_date":  body.SourceDate,
+		"target_date":  body.TargetDate,
+		"growth":       body.GrowthPercent,
+		"isp_growth":   body.ISPGrowth,
+		"total_cloned": ok,
+		"total_failed": failed,
+		"results":      results,
+	})
+}
+
 // HandleComputeQuotas exposes ComputeISPQuotas as a REST endpoint.
 // GET /api/mailing/agent/calendar/compute-quotas?domain=...&volume=...
 func (a *EmailMarketingAgent) HandleComputeQuotas(w http.ResponseWriter, r *http.Request) {
@@ -1346,7 +1537,7 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 				db.ExecContext(ctx, `UPDATE mailing_wave_content_cache SET used_at = NOW() WHERE id = $1`, cid)
 			}
 			log.Printf("[EDITH-deploy] used %d cached variants for %s (brand: %s, type: %s)", len(cached), sendingDomain, brand.BrandName, brand.CampaignType)
-			return cached
+			return sanitizeVariantURLs(cached, brand.BlogDomain)
 		}
 		log.Printf("[EDITH-deploy] cache miss for %s/%s (found %d, need ≥2) — falling back to live AI generation", brand.Key, brand.CampaignType, len(cached))
 	}
@@ -1421,6 +1612,67 @@ func generateMultiVariantContent(ctx context.Context, db *sql.DB, campaignName, 
 	}
 
 	log.Printf("[EDITH-deploy] generated %d live AI variants for %s (brand: %s)", len(variants), sendingDomain, brand.BrandName)
+	return sanitizeVariantURLs(variants, brand.BlogDomain)
+}
+
+// brandURLFallbackRules maps blog domains to their fallback target for
+// hallucinated article URLs. AI-generated slugs that don't match any known
+// path are rewritten to the fallback (typically /blog).
+var brandURLFallbackRules = map[string]struct {
+	Fallback   string
+	KnownPaths []string
+}{
+	"historythinking.com": {
+		Fallback: "/blog",
+		KnownPaths: []string{
+			"/blog", "/privacy", "/terms", "/about", "/auth",
+			"/blog/category/ancient-civilizations",
+			"/blog/category/american-history",
+			"/blog/category/cultural-history",
+			"/blog/category/historical-figures",
+			"/blog/category/medieval-world",
+			"/blog/category/revolutionary-movements",
+			"/blog/category/science-and-discovery",
+			"/blog/category/world-wars",
+		},
+	},
+}
+
+// sanitizeVariantURLs rewrites hallucinated article URLs in variant HTML to
+// the brand's blog root. AI fabricates article slugs that 404; this redirects
+// them to the nearest real content page.
+func sanitizeVariantURLs(variants []engine.ContentVariant, blogDomain string) []engine.ContentVariant {
+	rule, ok := brandURLFallbackRules[blogDomain]
+	if !ok {
+		return variants
+	}
+
+	baseURL := "https://" + blogDomain
+	re := regexp.MustCompile(`href="` + regexp.QuoteMeta(baseURL) + `/([^"]+)"`)
+
+	for i := range variants {
+		html := variants[i].HTMLContent
+		replaced := false
+		html = re.ReplaceAllStringFunc(html, func(match string) string {
+			slug := re.FindStringSubmatch(match)
+			if len(slug) < 2 {
+				return match
+			}
+			path := "/" + slug[1]
+			for _, kp := range rule.KnownPaths {
+				if path == kp || strings.HasPrefix(path, kp+"/") {
+					return match
+				}
+			}
+			replaced = true
+			return `href="` + baseURL + rule.Fallback + `"`
+		})
+		if replaced {
+			variants[i].HTMLContent = html
+			log.Printf("[EDITH-urlfix] rewrote hallucinated URLs to %s%s for variant %s (domain: %s)",
+				baseURL, rule.Fallback, variants[i].VariantName, blogDomain)
+		}
+	}
 	return variants
 }
 

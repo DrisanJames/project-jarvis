@@ -786,6 +786,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
 			ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)
 			ar.Post("/calendar/cancel-tomorrow", marketingAgent.HandleCancelTomorrowCampaigns)
+			ar.Post("/calendar/clone-day", marketingAgent.HandleCloneDay)
 			ar.Post("/calendar/campaigns/{campaignId}/generate-variants", marketingAgent.HandleGenerateVariants)
 			ar.Get("/calendar/day/{date}/variants", marketingAgent.HandleGetDayVariants)
 			})

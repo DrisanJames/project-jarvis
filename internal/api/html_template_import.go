@@ -16,10 +16,22 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
+// rehostedImageRecord holds info about an image rehosted to S3 during HTML import.
+type rehostedImageRecord struct {
+	HostedImageID    string
+	CDNURL           string
+	OriginalFilename string
+	Width            int
+	Height           int
+	FileSize         int64
+	ContentType      string
+}
+
 // htmlImportResult holds the result of processing a single HTML template.
 type htmlImportResult struct {
 	RewrittenHTML  string
 	RehostedImages int
+	ImageRecords   []rehostedImageRecord
 	Errors         []string
 }
 
@@ -112,13 +124,16 @@ func classifyAndRewriteHTML(
 		}
 
 		// Rehost external image to S3
-		cdnURL, err := rehostImage(ctx, url, orgID, imageDomain, imageCDN, cache)
+		rec, err := rehostImage(ctx, url, orgID, imageDomain, imageCDN, cache)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("rehost %s: %v", truncateURL(url), err))
 			return match
 		}
 		result.RehostedImages++
-		return prefix + cdnURL + suffix
+		if rec.record != nil {
+			result.ImageRecords = append(result.ImageRecords, *rec.record)
+		}
+		return prefix + rec.cdnURL + suffix
 	})
 
 	// Step 3: Process all href="..." attributes (links)
@@ -152,6 +167,11 @@ func classifyAndRewriteHTML(
 	return result
 }
 
+type rehostResult struct {
+	cdnURL string
+	record *rehostedImageRecord // nil if served from cache
+}
+
 // rehostImage downloads an image from an external URL and uploads it to S3.
 // Uses the cache to avoid re-downloading the same URL across templates.
 func rehostImage(
@@ -161,9 +181,9 @@ func rehostImage(
 	imageDomain string,
 	imageCDN *mailing.ImageCDNService,
 	cache *imageCache,
-) (string, error) {
+) (rehostResult, error) {
 	if cdnURL, ok := cache.get(originalURL); ok {
-		return cdnURL, nil
+		return rehostResult{cdnURL: cdnURL}, nil
 	}
 
 	client := &http.Client{
@@ -174,17 +194,17 @@ func rehostImage(
 	}
 	resp, err := client.Get(originalURL)
 	if err != nil {
-		return "", fmt.Errorf("download failed: %w", err)
+		return rehostResult{}, fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return rehostResult{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	if err != nil {
-		return "", fmt.Errorf("reading response: %w", err)
+		return rehostResult{}, fmt.Errorf("reading response: %w", err)
 	}
 
 	// Extract filename from URL path
@@ -200,11 +220,11 @@ func rehostImage(
 		ctx, orgID, filename, bytes.NewReader(data),
 		mailing.ImageUploadOptions{
 			Quality:            85,
-			GenerateThumbnails: false,
+			GenerateThumbnails: true,
 		},
 	)
 	if err != nil {
-		return "", fmt.Errorf("S3 upload: %w", err)
+		return rehostResult{}, fmt.Errorf("S3 upload: %w", err)
 	}
 
 	cdnURL := hostedImage.CDNURL
@@ -214,7 +234,18 @@ func rehostImage(
 
 	cache.set(originalURL, cdnURL)
 	log.Printf("[HTMLImport] rehosted %s -> %s", truncateURL(originalURL), truncateURL(cdnURL))
-	return cdnURL, nil
+	return rehostResult{
+		cdnURL: cdnURL,
+		record: &rehostedImageRecord{
+			HostedImageID:    hostedImage.ID,
+			CDNURL:           cdnURL,
+			OriginalFilename: hostedImage.OriginalFilename,
+			Width:            hostedImage.Width,
+			Height:           hostedImage.Height,
+			FileSize:         hostedImage.Size,
+			ContentType:      hostedImage.ContentType,
+		},
+	}, nil
 }
 
 func truncateURL(u string) string {

@@ -1,11 +1,14 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1425,6 +1428,76 @@ func (och *OfferCenterHandlers) HandleDeleteAllOfferCreatives(w http.ResponseWri
 	}
 	n, _ := result.RowsAffected()
 	respondJSON(w, http.StatusOK, map[string]interface{}{"deleted": n})
+}
+
+// HandleDownloadCreativesZip — GET /offer-center/offers/{id}/creatives/download-zip
+// Serves a zip file containing each creative as a separate .html file with a human-readable name.
+func (och *OfferCenterHandlers) HandleDownloadCreativesZip(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+
+	var offerName string
+	och.db.QueryRowContext(r.Context(), `SELECT name FROM mailing_offers WHERE id=$1`, offerID).Scan(&offerName)
+
+	rows, err := och.db.QueryContext(r.Context(),
+		`SELECT id, version, html_content, COALESCE(status,''), COALESCE(approval_notes,'')
+		 FROM mailing_offer_creatives
+		 WHERE offer_id = $1 AND html_content != ''
+		 ORDER BY version ASC, created_at ASC`, offerID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to query creatives")
+		return
+	}
+	defer rows.Close()
+
+	slugRe := regexp.MustCompile(`[^a-zA-Z0-9]+`)
+	safeName := slugRe.ReplaceAllString(offerName, "_")
+	if safeName == "" || safeName == "_" {
+		safeName = "creatives"
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	count := 0
+
+	for rows.Next() {
+		var id, html, status, notes string
+		var version int
+		if err := rows.Scan(&id, &version, &html, &status, &notes); err != nil {
+			continue
+		}
+		count++
+
+		label := slugRe.ReplaceAllString(notes, "_")
+		if len(label) > 60 {
+			label = label[:60]
+		}
+		if label == "" || label == "_" {
+			label = fmt.Sprintf("creative_%d", count)
+		}
+
+		filename := fmt.Sprintf("%s_v%d_%s_%s.html", safeName, version, status, label)
+		fw, err := zw.Create(filename)
+		if err != nil {
+			continue
+		}
+		fw.Write([]byte(html))
+	}
+
+	zw.Close()
+
+	if count == 0 {
+		respondError(w, http.StatusNotFound, "No creatives to download")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s_creatives.zip"`, safeName))
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 // ---------------------------------------------------------------------------

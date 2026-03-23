@@ -1097,9 +1097,18 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
           {showUpload ? 'Cancel' : 'Upload Manual'}
         </button>
         {creatives.length > 0 && (
-          <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={deleteAllCreatives}>
-            Delete All ({creatives.length})
-          </button>
+          <>
+            <a
+              href={`${API}/offers/${offerId}/creatives/download-zip`}
+              download
+              style={{ ...btnGhost, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              Download ZIP
+            </a>
+            <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={deleteAllCreatives}>
+              Delete All ({creatives.length})
+            </button>
+          </>
         )}
         {isGenerating && (
           <span style={{ fontSize: 11, color: '#f59e0b' }}>AI is crafting your emails — this takes 1-2 minutes</span>

@@ -15,6 +15,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/redis/go-redis/v9"
 )
@@ -57,6 +58,8 @@ type Server struct {
 	suppressionS3 *SuppressionS3Client
 	// Offer suppression Bloom filter manager — O(1) send-time checks
 	OfferSuppMgr *OfferSuppressionManager
+	// Data pipeline reference — exported so main.go can wire it
+	DataPipeline *worker.DataPipeline
 }
 
 // NewServer creates a new API server
