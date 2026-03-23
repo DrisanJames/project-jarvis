@@ -2586,6 +2586,12 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 			UPDATE mailing_engine_isp_config SET max_msg_rate = 1610 WHERE isp = 'gmail'     AND max_msg_rate < 1610;
 			UPDATE mailing_engine_isp_config SET max_msg_rate = 1040 WHERE isp = 'apple'     AND max_msg_rate < 1040;
 		`},
+		{"set_isp_rates_6h_spread_v1", `
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 870  WHERE isp = 'microsoft';
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 650  WHERE isp = 'yahoo';
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 525  WHERE isp = 'gmail';
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 340  WHERE isp = 'apple';
+		`},
 		{"fix_all_isp_pool_ips_warmup_v2", `
 			UPDATE mailing_ip_addresses
 			SET status = 'warmup',
