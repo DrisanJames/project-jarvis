@@ -2580,11 +2580,11 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 				(gen_random_uuid(), 'warmup-data/2026/Charter/Charter_002.csv', 'Charter', 'charter', 'processed', 10000, NOW(), NOW())
 			ON CONFLICT (s3_key) DO UPDATE SET status = 'processed', processed_at = NOW()
 		`},
-		{"update_isp_rates_8h_window", `
-			UPDATE mailing_engine_isp_config SET max_msg_rate = 2200 WHERE isp = 'microsoft' AND max_msg_rate < 2200;
-			UPDATE mailing_engine_isp_config SET max_msg_rate = 1650 WHERE isp = 'yahoo'     AND max_msg_rate < 1650;
-			UPDATE mailing_engine_isp_config SET max_msg_rate = 1350 WHERE isp = 'gmail'     AND max_msg_rate < 1350;
-			UPDATE mailing_engine_isp_config SET max_msg_rate = 900  WHERE isp = 'apple'     AND max_msg_rate < 900;
+		{"update_isp_rates_8h_window_v2", `
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 2659 WHERE isp = 'microsoft' AND max_msg_rate < 2659;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 1980 WHERE isp = 'yahoo'     AND max_msg_rate < 1980;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 1610 WHERE isp = 'gmail'     AND max_msg_rate < 1610;
+			UPDATE mailing_engine_isp_config SET max_msg_rate = 1040 WHERE isp = 'apple'     AND max_msg_rate < 1040;
 		`},
 		{"fix_all_isp_pool_ips_warmup_v2", `
 			UPDATE mailing_ip_addresses
