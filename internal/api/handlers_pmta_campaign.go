@@ -2118,9 +2118,12 @@ Provide your recommendations as JSON.`, req.SendingDomain, string(volJSON), stri
 
 	// Call Claude
 	claudeReqBody := map[string]interface{}{
-		"model":      "claude-sonnet-4-6",
-		"max_tokens": 4000,
+		"model":      "claude-opus-4-6",
+		"max_tokens": 16000,
 		"system":     systemPrompt,
+		"thinking": map[string]interface{}{
+			"type": "adaptive",
+		},
 		"messages": []map[string]string{
 			{"role": "user", "content": userPrompt},
 		},
@@ -2157,7 +2160,16 @@ Provide your recommendations as JSON.`, req.SendingDomain, string(volJSON), stri
 			truncated = truncated[:500]
 		}
 		log.Printf("[deliverability-recs] Claude returned %d: %s", aiResp.StatusCode, truncated)
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("AI service returned %d", aiResp.StatusCode))
+		var errDetail struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &errDetail) == nil && errDetail.Error.Message != "" {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("AI service error: %s", errDetail.Error.Message))
+		} else {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("AI service returned %d", aiResp.StatusCode))
+		}
 		return
 	}
 
@@ -2171,12 +2183,18 @@ Provide your recommendations as JSON.`, req.SendingDomain, string(volJSON), stri
 		respondError(w, http.StatusInternalServerError, "failed to decode AI response")
 		return
 	}
-	if len(claudeResp.Content) == 0 {
-		respondError(w, http.StatusInternalServerError, "empty AI response")
+
+	var raw string
+	for _, block := range claudeResp.Content {
+		if block.Type == "text" {
+			raw = strings.TrimSpace(block.Text)
+			break
+		}
+	}
+	if raw == "" {
+		respondError(w, http.StatusInternalServerError, "empty AI response — no text block")
 		return
 	}
-
-	raw := strings.TrimSpace(claudeResp.Content[0].Text)
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
