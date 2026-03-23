@@ -170,23 +170,47 @@ func classifyAndRewriteHTML(
 	return result
 }
 
-const unsubDisclaimer = `<p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">` +
-	`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please ` +
-	`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.` +
-	`</p>`
+const unsubDisclaimerMarker = `<!-- unsub-disclaimer -->`
+
+func buildUnsubDisclaimerHTML(brandName, physicalAddress string) string {
+	addrLine := "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801"
+	if physicalAddress != "" {
+		addrLine = physicalAddress
+	}
+	senderLine := ""
+	if brandName != "" {
+		senderLine = brandName + " · "
+	}
+	return unsubDisclaimerMarker +
+		`<p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">` +
+		`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please ` +
+		`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.` +
+		`</p>` +
+		`<p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">` +
+		senderLine + addrLine +
+		`</p>`
+}
 
 func injectUnsubDisclaimer(html string) string {
+	return injectUnsubDisclaimerBrand(html, "", "")
+}
+
+func injectUnsubDisclaimerBrand(html, brandName, physicalAddress string) string {
+	if strings.Contains(html, unsubDisclaimerMarker) {
+		return html
+	}
+	disclaimer := buildUnsubDisclaimerHTML(brandName, physicalAddress)
 	lower := strings.ToLower(html)
 	bodyIdx := strings.Index(lower, "<body")
 	if bodyIdx < 0 {
-		return unsubDisclaimer + html
+		return disclaimer + html
 	}
 	closeIdx := strings.Index(html[bodyIdx:], ">")
 	if closeIdx < 0 {
-		return unsubDisclaimer + html
+		return disclaimer + html
 	}
 	insertAt := bodyIdx + closeIdx + 1
-	return html[:insertAt] + unsubDisclaimer + html[insertAt:]
+	return html[:insertAt] + disclaimer + html[insertAt:]
 }
 
 type rehostResult struct {

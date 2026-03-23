@@ -138,7 +138,12 @@ func (h *ProofSendHandler) sendOneProof(
 	subject := "[PROOF] " + subjectLine
 	emailID := uuid.New().String()
 
-	rc := buildProofRenderContext(recipientEmail, trackBase, emailID)
+	var unsubURL string
+	if trackBase != "" && h.trackingSecret != "" {
+		unsubURL = worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
+	}
+
+	rc := buildProofRenderContext(recipientEmail, trackBase, emailID, unsubURL)
 
 	renderedSubject, err := ts.Render("", subject, rc)
 	if err != nil {
@@ -154,13 +159,10 @@ func (h *ProofSendHandler) sendOneProof(
 
 	renderedHTML = worker.ReplaceTrackingMergeTags(renderedHTML, proofCampaignID, proofSubscriberID, p.CreativeID)
 
-	var unsubURL string
 	if trackBase != "" && h.trackingSecret != "" {
 		renderedHTML = worker.InjectTrackingPixelAndLinks(
 			renderedHTML, proofCampaignID, proofSubscriberID, emailID, trackBase, h.orgID, h.trackingSecret,
 		)
-
-		unsubURL = worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{system.unsubscribe_url}}", unsubURL)
 	}
@@ -238,7 +240,7 @@ func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webPropert
 	return pID, fEmail, tb, sendingDomain
 }
 
-func buildProofRenderContext(email, trackBase, emailID string) map[string]interface{} {
+func buildProofRenderContext(email, trackBase, emailID, unsubURL string) map[string]interface{} {
 	rc := make(mailing.RenderContext)
 
 	rc["first_name"] = "Proof"
@@ -257,12 +259,13 @@ func buildProofRenderContext(email, trackBase, emailID string) map[string]interf
 		"year":       fmt.Sprintf("%d", now.Year()),
 		"month_name": now.Format("January"),
 	}
-	if trackBase != "" {
-		unsubURL := fmt.Sprintf("%s/track/unsubscribe/proof/%s", trackBase, emailID)
+	if unsubURL != "" {
 		system["unsubscribe_url"] = unsubURL
-		system["preferences_url"] = "#preferences"
-		system["view_in_browser_url"] = "#view-in-browser"
+	} else if trackBase != "" {
+		system["unsubscribe_url"] = trackBase + "/track/unsubscribe"
 	}
+	system["preferences_url"] = "#preferences"
+	system["view_in_browser_url"] = "#view-in-browser"
 	rc["system"] = system
 
 	rc["campaign"] = map[string]interface{}{

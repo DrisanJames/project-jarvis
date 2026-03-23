@@ -1334,7 +1334,11 @@ func (och *OfferCenterHandlers) HandleUpdateOfferCreative(w http.ResponseWriter,
 	var args []interface{}
 
 	if req.HTMLContent != nil {
-		args = append(args, *req.HTMLContent)
+		html := *req.HTMLContent
+		if html != "" {
+			html = injectUnsubDisclaimer(html)
+		}
+		args = append(args, html)
 		sets = append(sets, fmt.Sprintf("html_content = $%d", len(args)))
 	}
 	if req.SubjectLineID != nil {
