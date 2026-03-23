@@ -101,6 +101,16 @@ func GetBrandKit(webProperty string) (BrandKit, bool) {
 	return kit, ok
 }
 
+// GetBrandKitBySendingDomain returns the BrandKit whose SendingDomain matches.
+func GetBrandKitBySendingDomain(domain string) (BrandKit, bool) {
+	for _, kit := range brandKits {
+		if kit.SendingDomain == domain {
+			return kit, true
+		}
+	}
+	return BrandKit{}, false
+}
+
 func init() {
 	for key, kit := range brandKits {
 		envKey := strings.ToUpper(strings.ReplaceAll(key, "-", "_")) + "_API_KEY"

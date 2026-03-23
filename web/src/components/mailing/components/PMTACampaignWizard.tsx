@@ -340,6 +340,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
   const [aiError, setAIError] = useState('');
   const [aiSaving, setAISaving] = useState(false);
 
+  // AI Subject + Preheader suggestion state
+  const [aiSuggestingIdx, setAISuggestingIdx] = useState<number | null>(null);
+  const [aiSuggestions, setAISuggestions] = useState<Array<{ subject: string; preview_text: string; reasoning: string; category: string }>>([]);
+  const [aiSuggestError, setAISuggestError] = useState('');
+
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
   const [segments, setSegments] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
@@ -626,6 +631,38 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       fetchTemplates();
     } catch { /* noop */ }
     setAISaving(false);
+  };
+
+  const handleAISuggestSubjectPreheader = useCallback(async (variantIdx: number) => {
+    setAISuggestingIdx(variantIdx);
+    setAISuggestions([]);
+    setAISuggestError('');
+    try {
+      const res = await orgFetch(`${API_BASE}/ai/suggest-subject-preheader`, orgId, {
+        method: 'POST',
+        body: JSON.stringify({
+          sending_domain: selectedDomain,
+          html_content: variants[variantIdx]?.html_content || '',
+          campaign_type: aiCampaignType || '',
+          count: 3,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAISuggestError(data.error || `Generation failed (HTTP ${res.status})`);
+      } else {
+        setAISuggestions(data.suggestions || []);
+      }
+    } catch (err: any) {
+      setAISuggestError(err?.message || 'Generation failed — network error');
+    }
+  }, [selectedDomain, variants, aiCampaignType, orgId]);
+
+  const handleApplySuggestion = (variantIdx: number, suggestion: { subject: string; preview_text: string }) => {
+    updateVariant(variantIdx, 'subject', suggestion.subject);
+    updateVariant(variantIdx, 'preview_text', suggestion.preview_text);
+    setAISuggestingIdx(null);
+    setAISuggestions([]);
   };
 
   // Load data on step entry
@@ -2127,6 +2164,71 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
               style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
             />
             <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid tags. Shown as email preview text in inbox.</div>
+          </div>
+
+          {/* AI Subject + Preheader Suggest */}
+          <div style={{ marginBottom: 10 }}>
+            <button
+              onClick={() => {
+                if (aiSuggestingIdx === idx) { setAISuggestingIdx(null); setAISuggestions([]); setAISuggestError(''); }
+                else handleAISuggestSubjectPreheader(idx);
+              }}
+              disabled={!selectedDomain || (aiSuggestingIdx === idx && aiSuggestions.length === 0 && !aiSuggestError)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: aiSuggestingIdx === idx && aiSuggestions.length > 0 ? 'rgba(0,200,255,0.08)' : 'linear-gradient(135deg, rgba(0,229,255,0.10), rgba(0,176,255,0.10))',
+                color: !selectedDomain ? '#4b5563' : '#00e5ff',
+                border: `1px solid ${aiSuggestingIdx === idx && aiSuggestions.length > 0 ? '#00e5ff' : 'rgba(0,200,255,0.15)'}`,
+                borderRadius: 8, padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                cursor: !selectedDomain ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
+              }}
+            >
+              {aiSuggestingIdx === idx && aiSuggestions.length === 0 && !aiSuggestError
+                ? <><FontAwesomeIcon icon={faSpinner} spin /> Generating with Claude...</>
+                : aiSuggestingIdx === idx
+                  ? <><FontAwesomeIcon icon={faTimes} /> Dismiss Suggestions</>
+                  : <><FontAwesomeIcon icon={faMagic} /> AI Suggest Subject + Preheader</>
+              }
+            </button>
+
+            {aiSuggestError && aiSuggestingIdx === idx && (
+              <div style={{ marginTop: 8, background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '8px 12px', color: '#ff8a80', fontSize: 12 }}>
+                <FontAwesomeIcon icon={faExclamationTriangle} /> {aiSuggestError}
+              </div>
+            )}
+
+            {aiSuggestions.length > 0 && aiSuggestingIdx === idx && (
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 11, color: 'rgba(0,200,255,0.6)', fontWeight: 600, marginBottom: 2 }}>Click a suggestion to apply:</div>
+                {aiSuggestions.map((s, si) => (
+                  <div
+                    key={si}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleApplySuggestion(idx, s)}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleApplySuggestion(idx, s); } }}
+                    style={{
+                      background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 8,
+                      padding: '10px 12px', cursor: 'pointer', transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = '#00e5ff'; (e.currentTarget as HTMLDivElement).style.background = 'rgba(0,200,255,0.04)'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(0,200,255,0.12)'; (e.currentTarget as HTMLDivElement).style.background = '#0a0f1a'; }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.5px',
+                        color: s.category === 'urgency' ? '#f59e0b' : s.category === 'curiosity' ? '#a78bfa' : s.category === 'benefit' ? '#10b981' : s.category === 'question' ? '#38bdf8' : '#00e5ff',
+                        background: s.category === 'urgency' ? 'rgba(245,158,11,0.1)' : s.category === 'curiosity' ? 'rgba(167,139,250,0.1)' : s.category === 'benefit' ? 'rgba(16,185,129,0.1)' : s.category === 'question' ? 'rgba(56,189,248,0.1)' : 'rgba(0,229,255,0.1)',
+                        padding: '2px 6px', borderRadius: 4,
+                      }}>{s.category}</span>
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 3 }}>{s.subject}</div>
+                    <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>{s.preview_text}</div>
+                    {s.reasoning && <div style={{ fontSize: 10, color: '#64748b', marginTop: 4, fontStyle: 'italic' }}>{s.reasoning}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* HTML Content with merge tag toolbar, upload, and preview */}

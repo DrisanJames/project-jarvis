@@ -434,6 +434,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Route("/ai", func(aiRouter chi.Router) {
 				aiSuggestionSvc.RegisterRoutes(aiRouter)
 				aiContentHandlers.RegisterRoutes(aiRouter)
+				aiRouter.Post("/suggest-subject-preheader", HandleSuggestSubjectPreheader(db))
 			})
 			
 			// === A/B SPLIT TESTING (Integrated with Campaigns) ===
