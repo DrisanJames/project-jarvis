@@ -1423,7 +1423,16 @@ func runStartupMigrations(db *sql.DB) {
 			CONSTRAINT mailing_suppressions_email_key UNIQUE (email)
 		)`},
 		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
-		{"reset_orphaned_sending_v2", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE status = 'sending' AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))`},
+		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+			WHERE status = 'sending'
+			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
+			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = mailing_campaigns.id AND w.status IN ('planned','enqueuing','dispatched'))
+			AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = mailing_campaigns.id AND w2.status = 'completed')`},
+		{"reset_orphaned_sending_v3", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
+			WHERE status = 'sending'
+			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
+			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = mailing_campaigns.id AND w.status IN ('planned','enqueuing','dispatched'))
+			AND started_at < NOW() - INTERVAL '24 hours'`},
 		{"unstick_locked_queue_items", `UPDATE mailing_campaign_queue SET status = 'queued', worker_id = NULL, locked_at = NULL WHERE status = 'sending' AND locked_at < NOW() - INTERVAL '10 minutes'`},
 		// Seed IP pools and warmup IPs (originally in migration 030, may not exist in production RDS)
 		{"seed_warmup_pool", `INSERT INTO mailing_ip_pools (organization_id, name, description, pool_type, status)
