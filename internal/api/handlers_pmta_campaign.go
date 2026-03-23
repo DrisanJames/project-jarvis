@@ -129,18 +129,31 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 		ON CONFLICT (organization_id, domain) DO NOTHING
 	`, orgID)
 
-	profileFromNames := make(map[string]string)
+	// Build domain → (from_name, ip_pool, pool_prefix) from active PMTA profiles.
+	// ORDER BY created_at DESC so the most recent profile wins per domain.
+	type profileInfo struct {
+		fromName   string
+		ipPool     string
+		poolPrefix string
+	}
+	profileMap := make(map[string]profileInfo)
 	pfRows, pfErr := s.db.QueryContext(ctx, `
-		SELECT sending_domain, from_name FROM mailing_sending_profiles
+		SELECT sending_domain,
+		       COALESCE(from_name, ''),
+		       COALESCE(ip_pool, ''),
+		       COALESCE(pool_prefix, '')
+		FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active'
 		  AND sending_domain IS NOT NULL AND sending_domain != ''
-		  AND from_name IS NOT NULL AND from_name != ''
+		ORDER BY created_at DESC
 	`, orgID)
 	if pfErr == nil {
 		for pfRows.Next() {
-			var dom, fn string
-			if pfRows.Scan(&dom, &fn) == nil {
-				profileFromNames[dom] = fn
+			var dom, fn, pool, pfx string
+			if pfRows.Scan(&dom, &fn, &pool, &pfx) == nil {
+				if _, exists := profileMap[dom]; !exists {
+					profileMap[dom] = profileInfo{fromName: fn, ipPool: pool, poolPrefix: pfx}
+				}
 			}
 		}
 		pfRows.Close()
@@ -171,29 +184,66 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 		var ipCount, activeCount, warmupCount int
 		var ips []string
 
-		ipRows, err := s.db.QueryContext(ctx, `
-			SELECT ip.ip_address::text, ip.status
-			FROM mailing_ip_addresses ip
-			WHERE ip.organization_id = $1 AND ip.status IN ('active', 'warmup')
-			ORDER BY ip.hostname
-		`, orgID)
-		if err == nil {
-			for ipRows.Next() {
-				var ipAddr, ipStatus string
-				ipRows.Scan(&ipAddr, &ipStatus)
-				ips = append(ips, ipAddr)
-				ipCount++
-				switch ipStatus {
-				case "active":
-					activeCount++
-				case "warmup":
-					warmupCount++
-				}
-			}
-			ipRows.Close()
-		}
+		prof := profileMap[domain]
+		pfx := strings.TrimSpace(prof.poolPrefix)
 
-		poolName = "default-pool"
+		if pfx != "" {
+			// ISP-dedicated pools: pool_prefix "db" → pools db-gmail-pool, db-yahoo-pool, etc.
+			ipRows, qErr := s.db.QueryContext(ctx, `
+				SELECT ip.ip_address::text, ip.status
+				FROM mailing_ip_addresses ip
+				JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+				WHERE pool.name LIKE $1 || '-%'
+				  AND ip.status IN ('active', 'warmup')
+				  AND pool.status = 'active'
+				ORDER BY ip.hostname
+			`, pfx)
+			if qErr == nil {
+				for ipRows.Next() {
+					var ipAddr, ipStatus string
+					ipRows.Scan(&ipAddr, &ipStatus)
+					ips = append(ips, ipAddr)
+					ipCount++
+					switch ipStatus {
+					case "active":
+						activeCount++
+					case "warmup":
+						warmupCount++
+					}
+				}
+				ipRows.Close()
+			}
+			poolName = prof.ipPool + " (" + pfx + "-*)"
+		} else if strings.TrimSpace(prof.ipPool) != "" {
+			// Single named pool (e.g. warmup-pool)
+			ipRows, qErr := s.db.QueryContext(ctx, `
+				SELECT ip.ip_address::text, ip.status
+				FROM mailing_ip_addresses ip
+				JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+				WHERE pool.name = $1
+				  AND ip.status IN ('active', 'warmup')
+				  AND pool.status = 'active'
+				ORDER BY ip.hostname
+			`, strings.TrimSpace(prof.ipPool))
+			if qErr == nil {
+				for ipRows.Next() {
+					var ipAddr, ipStatus string
+					ipRows.Scan(&ipAddr, &ipStatus)
+					ips = append(ips, ipAddr)
+					ipCount++
+					switch ipStatus {
+					case "active":
+						activeCount++
+					case "warmup":
+						warmupCount++
+					}
+				}
+				ipRows.Close()
+			}
+			poolName = prof.ipPool
+		} else {
+			poolName = "(none)"
+		}
 
 		repScore := 100.0
 		if activeCount == 0 && warmupCount > 0 {
@@ -206,7 +256,7 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 
 		domains = append(domains, engine.SendingDomainInfo{
 			Domain:          domain,
-			FromName:        profileFromNames[domain],
+			FromName:        prof.fromName,
 			DKIMConfigured:  dkim,
 			SPFConfigured:   spf,
 			DMARCConfigured: dmarc,
