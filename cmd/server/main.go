@@ -2586,6 +2586,19 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 			UPDATE mailing_engine_isp_config SET max_msg_rate = 1350 WHERE isp = 'gmail'     AND max_msg_rate < 1350;
 			UPDATE mailing_engine_isp_config SET max_msg_rate = 900  WHERE isp = 'apple'     AND max_msg_rate < 900;
 		`},
+		{"fix_all_isp_pool_ips_warmup_v2", `
+			UPDATE mailing_ip_addresses
+			SET status = 'warmup',
+			    warmup_daily_limit = GREATEST(COALESCE(warmup_daily_limit, 0), 10000),
+			    warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'warming'),
+			    updated_at = NOW()
+			WHERE pool_id IN (
+				SELECT id FROM mailing_ip_pools
+				WHERE (name LIKE 'ht-%' OR name LIKE 'mh-%' OR name LIKE 'db-%' OR name LIKE 'qf-%')
+				AND status = 'active'
+			)
+			AND status NOT IN ('active', 'warmup')
+		`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -2629,7 +2642,7 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		SELECT ip.ip_address::text, ip.hostname, pool.name as pool_name, ip.status, COALESCE(ip.warmup_daily_limit, 0)
 		FROM mailing_ip_addresses ip
 		JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-		WHERE ip.ip_address::text LIKE '15.204.22.%' OR ip.ip_address::text LIKE '15.204.38.%'
+		WHERE ip.ip_address::text LIKE '15.204.22.%' OR ip.ip_address::text LIKE '15.204.38.%' OR ip.ip_address::text LIKE '144.225.178.%'
 		ORDER BY ip.ip_address`)
 	if poolErr == nil {
 		defer poolRows.Close()
