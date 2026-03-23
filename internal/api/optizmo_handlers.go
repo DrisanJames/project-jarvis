@@ -276,17 +276,26 @@ func (h *OptizmoHandlers) runInlineScrub(jobID, offerID, offerName, optizmoLink 
 	}
 
 	now := time.Now()
-	h.db.ExecContext(ctx,
+	// Use a fresh context for the final status updates so they succeed even
+	// if the main goroutine context is near its deadline.
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer finalCancel()
+
+	if _, err := h.db.ExecContext(finalCtx,
 		`UPDATE mailing_optizmo_scrub_jobs
 		 SET status = 'completed', suppressed_count = $1, completed_at = $2,
 		     progress_pct = 100, progress_message = 'Complete'
-		 WHERE id = $3`, suppressedCount, now, jobID)
-	h.db.ExecContext(ctx,
+		 WHERE id = $3`, suppressedCount, now, jobID); err != nil {
+		log.Printf("[Optizmo] job %s: CRITICAL — failed to mark job completed: %v", jobID, err)
+	}
+	if _, err := h.db.ExecContext(finalCtx,
 		`UPDATE mailing_offers
 		 SET optizmo_status = 'scrubbed', optizmo_last_scrubbed_at = $1, updated_at = NOW()
-		 WHERE id = $2`, now, offerID)
+		 WHERE id = $2`, now, offerID); err != nil {
+		log.Printf("[Optizmo] job %s: CRITICAL — failed to mark offer scrubbed: %v", jobID, err)
+	}
 
-	h.createSuppressionListFromScrub(ctx, offerID, offerName, matches)
+	h.createSuppressionListFromScrub(finalCtx, offerID, offerName, matches)
 
 	log.Printf("[Optizmo] job %s COMPLETED: %d audience, %d suppressed, s3_hash=%s, s3_bloom=%s",
 		jobID, audienceCount, suppressedCount, s3HashKey, s3BloomKey)
@@ -539,12 +548,14 @@ func (h *OptizmoHandlers) HandleGetScrubStatus(w http.ResponseWriter, r *http.Re
 
 	ctx := r.Context()
 
-	// Auto-recover stuck jobs: any job pending/processing for >10min is dead
+	// Auto-recover stuck jobs: any job pending/processing for >30min is dead.
+	// The scrub goroutine has a 20-minute context timeout, so 30 min is a safe
+	// upper bound that avoids prematurely marking active jobs as failed.
 	h.db.ExecContext(ctx,
 		`UPDATE mailing_optizmo_scrub_jobs
 		 SET status = 'failed', error_message = 'Timed out — goroutine likely crashed or server restarted', completed_at = NOW()
 		 WHERE offer_id = $1 AND status IN ('pending','processing')
-		   AND requested_at < NOW() - INTERVAL '10 minutes'`, offerID)
+		   AND requested_at < NOW() - INTERVAL '30 minutes'`, offerID)
 	// If all jobs for this offer are failed/cancelled and status is still scrub_pending, reset
 	var stuckPending bool
 	h.db.QueryRowContext(ctx,
