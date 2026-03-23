@@ -2605,6 +2605,10 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 			)
 			AND status NOT IN ('active', 'warmup')
 		`},
+
+		// List dashboard performance indexes
+		{"idx_subscribers_list_status", `CREATE INDEX IF NOT EXISTS idx_subscribers_list_status ON mailing_subscribers (list_id, status)`},
+		{"idx_lists_visible_created", `CREATE INDEX IF NOT EXISTS idx_lists_visible_created ON mailing_lists (created_at DESC) WHERE COALESCE(is_visible, true) = true`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
