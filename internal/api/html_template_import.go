@@ -163,8 +163,30 @@ func classifyAndRewriteHTML(
 		return match
 	})
 
+	// Step 4: Inject "do not reply / unsubscribe" disclaimer at the top of the email body
+	html = injectUnsubDisclaimer(html)
+
 	result.RewrittenHTML = html
 	return result
+}
+
+const unsubDisclaimer = `<p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">` +
+	`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please ` +
+	`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.` +
+	`</p>`
+
+func injectUnsubDisclaimer(html string) string {
+	lower := strings.ToLower(html)
+	bodyIdx := strings.Index(lower, "<body")
+	if bodyIdx < 0 {
+		return unsubDisclaimer + html
+	}
+	closeIdx := strings.Index(html[bodyIdx:], ">")
+	if closeIdx < 0 {
+		return unsubDisclaimer + html
+	}
+	insertAt := bodyIdx + closeIdx + 1
+	return html[:insertAt] + unsubDisclaimer + html[insertAt:]
 }
 
 type rehostResult struct {
