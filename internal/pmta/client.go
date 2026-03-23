@@ -62,17 +62,15 @@ func (c *Client) get(path string) ([]byte, error) {
 	return body, nil
 }
 
-// unwrapRsp handles PMTA v5's <rsp><data>...</data></rsp> wrapper.
-// If the response is wrapped, it extracts the inner <data> content.
-// If not wrapped, returns the original body unchanged.
-func unwrapRsp(body []byte) []byte {
-	trimmed := bytes.TrimSpace(body)
-	if bytes.HasPrefix(trimmed, []byte("<rsp")) {
-		start := bytes.Index(trimmed, []byte("<data>"))
-		end := bytes.LastIndex(trimmed, []byte("</data>"))
-		if start >= 0 && end > start {
-			return trimmed[start+len("<data>") : end]
-		}
+// extractElement finds a specific XML element within a larger document.
+// Handles PMTA v5's <rsp><data>...<element>...</element>...</data></rsp> wrapper.
+func extractElement(body []byte, elementName string) []byte {
+	openTag := "<" + elementName
+	closeTag := "</" + elementName + ">"
+	start := bytes.Index(body, []byte(openTag))
+	end := bytes.LastIndex(body, []byte(closeTag))
+	if start >= 0 && end > start {
+		return body[start : end+len(closeTag)]
 	}
 	return body
 }
@@ -142,7 +140,7 @@ func (c *Client) GetStatus() (*ServerStatus, error) {
 	}
 
 	var xs xmlStatus
-	if err := xml.Unmarshal(unwrapRsp(body), &xs); err != nil {
+	if err := xml.Unmarshal(extractElement(body, "status"), &xs); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA status XML: %w", err)
 	}
 
@@ -164,7 +162,7 @@ func (c *Client) GetQueues() ([]QueueEntry, error) {
 	}
 
 	var xq xmlQueues
-	if err := xml.Unmarshal(unwrapRsp(body), &xq); err != nil {
+	if err := xml.Unmarshal(extractElement(body, "queues"), &xq); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA queues XML: %w", err)
 	}
 
@@ -190,7 +188,7 @@ func (c *Client) GetVMTAs() ([]VMTAStatus, error) {
 	}
 
 	var xv xmlVMTAs
-	if err := xml.Unmarshal(unwrapRsp(body), &xv); err != nil {
+	if err := xml.Unmarshal(extractElement(body, "vmtas"), &xv); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA vmtas XML: %w", err)
 	}
 
@@ -223,7 +221,7 @@ func (c *Client) GetDomains() ([]DomainStatus, error) {
 	}
 
 	var xd xmlDomains
-	if err := xml.Unmarshal(unwrapRsp(body), &xd); err != nil {
+	if err := xml.Unmarshal(extractElement(body, "domains"), &xd); err != nil {
 		return nil, fmt.Errorf("failed to parse PMTA domains XML: %w", err)
 	}
 
