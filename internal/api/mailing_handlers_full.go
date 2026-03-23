@@ -425,6 +425,20 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	dashboard["pmta_connected"] = totalPMTA > 0
 	dashboard["pmta_server_count"] = totalPMTA
 
+	// Sidebar audience metrics (pre-computed by Lambda every 15 min)
+	var activeAudience int
+	var churnPct, introPct float64
+	var metricsComputedAt time.Time
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT active_audience_60d, global_churn_pct, global_intro_pct, computed_at
+		FROM mailing_audience_metrics WHERE id = 1
+	`).Scan(&activeAudience, &churnPct, &introPct, &metricsComputedAt); err == nil {
+		dashboard["active_audience_60d"] = activeAudience
+		dashboard["global_churn_pct"] = churnPct
+		dashboard["global_intro_pct"] = introPct
+		dashboard["metrics_computed_at"] = metricsComputedAt
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dashboard)
 }

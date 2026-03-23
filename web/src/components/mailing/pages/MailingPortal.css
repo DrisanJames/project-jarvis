@@ -208,15 +208,15 @@
 
 .quick-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
   margin-bottom: 16px;
 }
 
 .quick-stat {
   background: rgba(0, 200, 255, 0.04);
   border: 1px solid rgba(0, 200, 255, 0.08);
-  padding: 12px;
+  padding: 10px 6px;
   border-radius: 8px;
   text-align: center;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -230,7 +230,7 @@
 
 .quick-stat-value {
   display: block;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 700;
   color: #00e5ff;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;

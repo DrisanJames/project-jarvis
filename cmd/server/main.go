@@ -2618,6 +2618,18 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		// List dashboard performance indexes
 		{"idx_subscribers_list_status", `CREATE INDEX IF NOT EXISTS idx_subscribers_list_status ON mailing_subscribers (list_id, status)`},
 		{"idx_lists_visible_created", `CREATE INDEX IF NOT EXISTS idx_lists_visible_created ON mailing_lists (created_at DESC) WHERE COALESCE(is_visible, true) = true`},
+
+		{"create_audience_metrics_table", `
+			CREATE TABLE IF NOT EXISTS mailing_audience_metrics (
+				id                   INTEGER PRIMARY KEY DEFAULT 1,
+				active_audience_60d  INTEGER NOT NULL DEFAULT 0,
+				global_churn_pct     NUMERIC(6,3) NOT NULL DEFAULT 0,
+				global_intro_pct     NUMERIC(6,3) NOT NULL DEFAULT 0,
+				computed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (id = 1)
+			)`},
+		{"seed_audience_metrics_row", `
+			INSERT INTO mailing_audience_metrics (id) VALUES (1) ON CONFLICT DO NOTHING`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

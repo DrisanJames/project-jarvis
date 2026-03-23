@@ -225,12 +225,16 @@ export const MailingPortal: React.FC = () => {
         <div className="sidebar-footer">
           <div className="quick-stats">
             <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.total_subscribers?.toLocaleString() || '—'}</span>
-              <span className="quick-stat-label">Subscribers</span>
+              <span className="quick-stat-value">{realTimeStats?.active_audience_60d?.toLocaleString() || '—'}</span>
+              <span className="quick-stat-label">Active Audience</span>
             </div>
             <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.performance?.open_rate ? `${(realTimeStats.performance.open_rate * 100).toFixed(1)}%` : '—'}</span>
-              <span className="quick-stat-label">Open Rate</span>
+              <span className="quick-stat-value">{realTimeStats?.global_churn_pct != null ? `${realTimeStats.global_churn_pct.toFixed(2)}%` : '—'}</span>
+              <span className="quick-stat-label">Global Churn</span>
+            </div>
+            <div className="quick-stat">
+              <span className="quick-stat-value">{realTimeStats?.global_intro_pct != null ? `${realTimeStats.global_intro_pct.toFixed(1)}%` : '—'}</span>
+              <span className="quick-stat-label">Global Intro</span>
             </div>
           </div>
           <div className="connection-status">
