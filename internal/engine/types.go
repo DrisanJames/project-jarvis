@@ -551,10 +551,22 @@ type ConvictionIntel struct {
 	RiskFactors     []string `json:"risk_factors"`
 }
 
+// TurbulenceAlert represents an advisory-only alert from the conviction system
+// when it detects conditions that would have triggered a destructive action.
+type TurbulenceAlert struct {
+	ISP        string    `json:"isp"`
+	IP         string    `json:"ip,omitempty"`
+	Action     string    `json:"action"`
+	AgentType  string    `json:"agent_type"`
+	Reasoning  string    `json:"reasoning"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
 // CampaignIntelResponse is returned by the campaign-intel endpoint.
 type CampaignIntelResponse struct {
-	ISPs            []ISPIntel `json:"isps"`
-	OverallStrategy string     `json:"overall_strategy"`
+	ISPs             []ISPIntel        `json:"isps"`
+	OverallStrategy  string            `json:"overall_strategy"`
+	TurbulenceAlerts []TurbulenceAlert `json:"turbulence_alerts"`
 }
 
 // SendingDomainInfo describes a PMTA sending domain with its infrastructure.

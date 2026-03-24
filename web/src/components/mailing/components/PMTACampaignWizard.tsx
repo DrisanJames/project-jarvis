@@ -132,6 +132,15 @@ interface ISPIntel {
   strategy: string;
 }
 
+interface TurbulenceAlert {
+  isp: string;
+  ip?: string;
+  action: string;
+  agent_type: string;
+  reasoning: string;
+  occurred_at: string;
+}
+
 interface AudienceEstimate {
   total_recipients: number;
   after_suppressions: number;
@@ -370,6 +379,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // Step 5 state
   const [ispIntel, setISPIntel] = useState<ISPIntel[]>([]);
+  const [turbulenceAlerts, setTurbulenceAlerts] = useState<TurbulenceAlert[]>([]);
+  const [turbulenceDismissed, setTurbulenceDismissed] = useState(false);
 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
@@ -602,6 +613,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       });
       const data = await res.json();
       setISPIntel(data.isps || []);
+      setTurbulenceAlerts(data.turbulence_alerts || []);
+      setTurbulenceDismissed(false);
     } catch (err) {
       console.warn('[Wizard] intel fetch failed:', err);
     }
@@ -982,6 +995,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setAudienceEstimate(null);
       setAudienceError('');
       setISPIntel([]);
+      setTurbulenceAlerts([]);
+      setTurbulenceDismissed(false);
       setRecommendations([]);
       setRecsLoaded(false);
       setDeployResult(null);
@@ -3078,6 +3093,66 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
         <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
           Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
         </p>
+
+        {turbulenceAlerts.length > 0 && !turbulenceDismissed && (
+          <div style={{
+            background: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.3)',
+            borderRadius: 10,
+            padding: '14px 16px',
+            marginBottom: 16,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 18 }}>&#9888;</span>
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#f59e0b' }}>
+                  Turbulence Detected
+                </span>
+                <span style={{ fontSize: 11, color: 'rgba(245,158,11,0.6)', fontWeight: 500, marginLeft: 4 }}>
+                  Advisory only — does not block deployment
+                </span>
+              </div>
+              <button
+                onClick={() => setTurbulenceDismissed(true)}
+                style={{
+                  background: 'transparent', border: 'none', color: 'rgba(245,158,11,0.5)',
+                  cursor: 'pointer', fontSize: 18, padding: '0 4px', lineHeight: 1,
+                }}
+                title="Dismiss"
+              >&times;</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {turbulenceAlerts.slice(0, 10).map((alert, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'baseline', gap: 8,
+                  fontSize: 12, color: 'rgba(245,158,11,0.85)',
+                }}>
+                  <span style={{
+                    background: 'rgba(245,158,11,0.15)', borderRadius: 4,
+                    padding: '1px 6px', fontSize: 10, fontWeight: 600,
+                    textTransform: 'uppercase', whiteSpace: 'nowrap',
+                  }}>
+                    {alert.isp}
+                  </span>
+                  <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11 }}>
+                    {alert.action.replace(/_/g, ' ')}{alert.ip ? ` on ${alert.ip}` : ''}
+                  </span>
+                  <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 11, flex: 1 }}>
+                    {alert.reasoning}
+                  </span>
+                  <span style={{ color: 'rgba(180,210,240,0.25)', fontSize: 10, whiteSpace: 'nowrap' }}>
+                    {new Date(alert.occurred_at).toLocaleTimeString()}
+                  </span>
+                </div>
+              ))}
+              {turbulenceAlerts.length > 10 && (
+                <div style={{ fontSize: 11, color: 'rgba(245,158,11,0.5)', paddingTop: 4 }}>
+                  +{turbulenceAlerts.length - 10} more alerts in the last 24h
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Skeleton loading */}
         {intelLoading && ispIntel.length === 0 && (

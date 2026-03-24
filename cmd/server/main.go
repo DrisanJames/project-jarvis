@@ -3262,6 +3262,14 @@ END $$`},
 			WHERE ip_address IN ('15.204.38.168'::inet, '15.204.38.169'::inet, '15.204.38.170'::inet, '15.204.38.171'::inet,
 			                     '15.204.38.172'::inet, '15.204.38.173'::inet, '15.204.38.174'::inet, '15.204.38.175'::inet)
 			  AND status != 'active'`},
+
+		{"phase11_reset_all_quarantined_ips", `UPDATE mailing_ip_addresses ip
+			SET status = 'active', updated_at = NOW()
+			FROM mailing_ip_pools pool
+			WHERE ip.pool_id = pool.id
+			  AND pool.status = 'active'
+			  AND ip.status NOT IN ('active', 'paused', 'cold')
+			  AND ip.ip_address != '15.204.22.176'::inet`},
 	}
 
 	var ok, fail int

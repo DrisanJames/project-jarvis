@@ -466,10 +466,40 @@ func (s *PMTACampaignService) HandleCampaignIntel(w http.ResponseWriter, r *http
 		overallStrategy = strings.Join(strategies, " | ")
 	}
 
+	turbulenceAlerts := queryTurbulenceAlerts(ctx, s.db, s.orgID)
+
 	respondJSON(w, http.StatusOK, engine.CampaignIntelResponse{
-		ISPs:            ispIntels,
-		OverallStrategy: overallStrategy,
+		ISPs:             ispIntels,
+		OverallStrategy:  overallStrategy,
+		TurbulenceAlerts: turbulenceAlerts,
 	})
+}
+
+func queryTurbulenceAlerts(ctx context.Context, db *sql.DB, orgID string) []engine.TurbulenceAlert {
+	rows, err := db.QueryContext(ctx,
+		`SELECT isp, agent_type, action_taken,
+		        COALESCE(target_value, ''), result, created_at
+		 FROM mailing_engine_decisions
+		 WHERE organization_id = $1
+		   AND action_taken IN ('quarantine_ip', 'emergency_halt', 'pause_warmup', 'disable_source_ip')
+		   AND created_at > NOW() - INTERVAL '24 hours'
+		 ORDER BY created_at DESC
+		 LIMIT 50`, orgID)
+	if err != nil {
+		log.Printf("[campaign-intel] turbulence query error: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var alerts []engine.TurbulenceAlert
+	for rows.Next() {
+		var a engine.TurbulenceAlert
+		if err := rows.Scan(&a.ISP, &a.AgentType, &a.Action, &a.IP, &a.Reasoning, &a.OccurredAt); err != nil {
+			continue
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts
 }
 
 func buildISPStrategy(isp engine.ISP, tp engine.ThroughputInfo, ws engine.WarmupSummary, ci engine.ConvictionIntel, warnings []string) string {

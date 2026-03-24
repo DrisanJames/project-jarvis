@@ -49,10 +49,8 @@ func NewExecutor(host string, port int, user, sshKeyPath string) *Executor {
 // by ISPRateRegistry.
 func (e *Executor) Execute(ctx context.Context, d Decision) error {
 	switch d.ActionTaken {
-	case "quarantine_ip":
-		return e.quarantineIP(ctx, d.TargetValue, d.ISP)
-	case "disable_source_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
-		log.Printf("[executor] SUPPRESSED action %s for ISP %s (throttle-only mode)", d.ActionTaken, d.ISP)
+	case "quarantine_ip", "disable_source_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
+		log.Printf("[executor] ADVISORY-ONLY: %s for ISP %s target=%s (decision persisted, IP status unchanged)", d.ActionTaken, d.ISP, d.TargetValue)
 		return nil
 	case "reduce_ip_volume":
 		return e.deprioritizeIP(ctx, d.TargetValue, d.ISP)
