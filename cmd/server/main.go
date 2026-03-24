@@ -3222,6 +3222,30 @@ BEGIN
 END $$`},
 
 		{"phase10_deactivate_test_shared_profiles", `UPDATE mailing_sending_profiles SET status = 'draft', updated_at = NOW() WHERE name IN ('Test DB Shared', 'Test QF Shared', 'Test HT Shared', 'Test MH Shared') AND status = 'active'`},
+
+		// Phase 11: Promote all OVH Yahoo IPs to active (both servers).
+		// These IPs are announced to Yahoo and have good reputation.
+		// Active status bypasses warmup daily limits in vmtaPool.next(),
+		// ensuring Yahoo mail always routes through OVH IPs. PMTA's own
+		// per-domain rate limits (50/h for yahoo.com) handle queuing.
+		// Server A: db-yahoo-pool (15.204.22.177-184), qf-yahoo-pool (15.204.22.185-191)
+		// Server B: ht-yahoo-pool (15.204.38.160-167), mh-yahoo-pool (15.204.38.168-175)
+		{"phase11_promote_db_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.22.177'::inet, '15.204.22.178'::inet, '15.204.22.179'::inet, '15.204.22.180'::inet,
+			                     '15.204.22.181'::inet, '15.204.22.182'::inet, '15.204.22.183'::inet, '15.204.22.184'::inet)
+			  AND status = 'warmup'`},
+		{"phase11_promote_qf_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.22.185'::inet, '15.204.22.186'::inet, '15.204.22.187'::inet, '15.204.22.188'::inet,
+			                     '15.204.22.189'::inet, '15.204.22.190'::inet, '15.204.22.191'::inet)
+			  AND status = 'warmup'`},
+		{"phase11_promote_ht_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.38.160'::inet, '15.204.38.161'::inet, '15.204.38.162'::inet, '15.204.38.163'::inet,
+			                     '15.204.38.164'::inet, '15.204.38.165'::inet, '15.204.38.166'::inet, '15.204.38.167'::inet)
+			  AND status = 'warmup'`},
+		{"phase11_promote_mh_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.38.168'::inet, '15.204.38.169'::inet, '15.204.38.170'::inet, '15.204.38.171'::inet,
+			                     '15.204.38.172'::inet, '15.204.38.173'::inet, '15.204.38.174'::inet, '15.204.38.175'::inet)
+			  AND status = 'warmup'`},
 	}
 
 	var ok, fail int

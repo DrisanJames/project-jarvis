@@ -43,6 +43,17 @@ type proofResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+type deployOfferRequest struct {
+	Creatives []proofItem `json:"creatives"`
+}
+
+type deployResult struct {
+	CreativeID string `json:"creative_id"`
+	TemplateID string `json:"template_id"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+}
+
 const proofCampaignID = "00000000-0000-0000-0000-00000000ff01"
 const proofSubscriberID = "00000000-0000-0000-0000-00000000ff02"
 
@@ -204,6 +215,148 @@ func (h *ProofSendHandler) sendOneProof(
 	log.Printf("[proof-send] sent proof #%d creative=%s to=%s via PMTA messageID=%s domain=%s profile=%s isp=%s",
 		index+1, p.CreativeID, recipientEmail, messageID, sendingDomain, profileID, recipientISP)
 	return proofResult{CreativeID: p.CreativeID, Status: "sent", MessageID: messageID}
+}
+
+// HandleDeployOffer promotes proofed offer creatives into the mailing_templates
+// table so they become selectable in the PMTACampaignWizard's Content Library.
+func (h *ProofSendHandler) HandleDeployOffer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		http.Error(w, `{"error":"missing offer id"}`, http.StatusBadRequest)
+		return
+	}
+
+	var req deployOfferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.Creatives) == 0 {
+		http.Error(w, `{"error":"creatives array is empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	var offerName, webProperty string
+	err := h.db.QueryRowContext(ctx,
+		`SELECT COALESCE(name,''), COALESCE(web_property,'') FROM mailing_offers WHERE id = $1`, offerID,
+	).Scan(&offerName, &webProperty)
+	if err != nil {
+		http.Error(w, `{"error":"offer not found"}`, http.StatusNotFound)
+		return
+	}
+
+	_, fromEmail, _, _ := h.resolveSendingProfile(ctx, webProperty)
+
+	orgID, _ := uuid.Parse(h.orgID)
+	templateStore := mailing.NewEmailTemplateStore(h.db)
+	folderSvc := mailing.NewTemplateFolderService(h.db)
+
+	folderPath := "Offer Deployments/" + offerName
+	folder, folderErr := folderSvc.GetOrCreateFolderPath(ctx, orgID, folderPath)
+	var folderID *uuid.UUID
+	if folderErr == nil && folder != nil {
+		folderID = &folder.ID
+	} else if folderErr != nil {
+		log.Printf("[deploy-offer] folder creation warning: %v", folderErr)
+	}
+
+	results := make([]deployResult, 0, len(req.Creatives))
+	deployed := 0
+
+	for _, item := range req.Creatives {
+		res := h.deployOneCreative(ctx, templateStore, offerID, offerName, fromEmail, orgID, folderID, item)
+		if res.Status == "deployed" {
+			deployed++
+		}
+		results = append(results, res)
+	}
+
+	log.Printf("[deploy-offer] offer=%s deployed=%d/%d folder=%s", offerID, deployed, len(req.Creatives), folderPath)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deployed":    deployed,
+		"results":     results,
+		"folder_path": folderPath,
+	})
+}
+
+func (h *ProofSendHandler) deployOneCreative(
+	ctx context.Context,
+	templateStore *mailing.EmailTemplateStore,
+	offerID, offerName, fromEmail string,
+	orgID uuid.UUID,
+	folderID *uuid.UUID,
+	item proofItem,
+) deployResult {
+	var htmlContent string
+	var version int
+	err := h.db.QueryRowContext(ctx,
+		`SELECT COALESCE(html_content,''), COALESCE(version,1) FROM mailing_offer_creatives WHERE id = $1 AND offer_id = $2`,
+		item.CreativeID, offerID,
+	).Scan(&htmlContent, &version)
+	if err != nil || htmlContent == "" {
+		return deployResult{CreativeID: item.CreativeID, Status: "error", Error: "creative not found or empty"}
+	}
+
+	var subjectLine string
+	err = h.db.QueryRowContext(ctx,
+		`SELECT subject_line FROM mailing_offer_subject_lines WHERE id = $1 AND offer_id = $2`,
+		item.SubjectLineID, offerID,
+	).Scan(&subjectLine)
+	if err != nil {
+		return deployResult{CreativeID: item.CreativeID, Status: "error", Error: "subject line not found"}
+	}
+
+	var fromName string
+	err = h.db.QueryRowContext(ctx,
+		`SELECT from_name FROM mailing_offer_from_names WHERE id = $1 AND offer_id = $2`,
+		item.FromNameID, offerID,
+	).Scan(&fromName)
+	if err != nil {
+		return deployResult{CreativeID: item.CreativeID, Status: "error", Error: "from name not found"}
+	}
+
+	var existingID string
+	dupErr := h.db.QueryRowContext(ctx,
+		`SELECT id::text FROM mailing_templates
+		 WHERE folder_id = $1 AND subject = $2 AND html_content = $3
+		 LIMIT 1`,
+		folderID, subjectLine, htmlContent,
+	).Scan(&existingID)
+	if dupErr == nil && existingID != "" {
+		return deployResult{CreativeID: item.CreativeID, TemplateID: existingID, Status: "deployed", Error: ""}
+	}
+
+	tplName := fmt.Sprintf("%s — %s (v%d)", offerName, subjectLine, version)
+	if len(tplName) > 200 {
+		tplName = tplName[:200]
+	}
+
+	createReq := &mailing.CreateTemplateRequest{
+		FolderID:    folderID,
+		Name:        tplName,
+		Description: fmt.Sprintf("Deployed from offer: %s", offerName),
+		Subject:     subjectLine,
+		FromName:    fromName,
+		FromEmail:   fromEmail,
+		HTMLContent: htmlContent,
+	}
+
+	tpl, createErr := templateStore.CreateTemplate(ctx, orgID, createReq)
+	if createErr != nil {
+		log.Printf("[deploy-offer] template insert error for creative %s: %v", item.CreativeID, createErr)
+		return deployResult{CreativeID: item.CreativeID, Status: "error", Error: createErr.Error()}
+	}
+
+	_, _ = h.db.ExecContext(ctx,
+		`INSERT INTO mailing_offer_deployments (offer_id, campaign_id, creative_id, subject_line_id, from_name_id)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		offerID, tpl.ID, item.CreativeID, item.SubjectLineID, item.FromNameID,
+	)
+
+	return deployResult{CreativeID: item.CreativeID, TemplateID: tpl.ID.String(), Status: "deployed"}
 }
 
 func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webProperty string) (profileID, fromEmail, trackBase, sendingDomain string) {

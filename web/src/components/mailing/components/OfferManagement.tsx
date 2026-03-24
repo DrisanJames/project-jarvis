@@ -2311,7 +2311,48 @@ const DeployTab: React.FC<{
     }
   };
 
-  const canDeploy = proofQueue.some(c => c.status === 'sent') && isCompliant;
+  const [deploying, setDeploying] = useState(false);
+  const [deployed, setDeployed] = useState(false);
+
+  const canDeploy = proofQueue.some(c => c.status === 'sent') && isCompliant && !deployed;
+
+  const handleDeploy = async () => {
+    const sentCards = proofQueue.filter(c => c.status === 'sent');
+    if (sentCards.length === 0) return;
+    setDeploying(true);
+    try {
+      const res = await fetch(`${API}/offers/${offerId}/deploy`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          creatives: sentCards.map(c => ({
+            creative_id: c.creative_id,
+            subject_line_id: c.subject_line_id,
+            from_name_id: c.from_name_id,
+          })),
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        addToast({ type: 'error', title: 'Deploy failed', message: errText });
+        return;
+      }
+
+      const data = await res.json();
+      setDeployed(true);
+      addToast({
+        type: 'success',
+        title: `${data.deployed} creative(s) deployed`,
+        message: `Available in Content Library → ${data.folder_path}`,
+      });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Network error';
+      addToast({ type: 'error', title: 'Deploy failed', message: errMsg });
+    } finally {
+      setDeploying(false);
+    }
+  };
 
   return (
     <div>
@@ -2468,12 +2509,17 @@ const DeployTab: React.FC<{
 
       {/* Deploy */}
       <button
-        style={{ ...btnPrimary, padding: '12px 24px', fontSize: 14, opacity: canDeploy ? 1 : 0.4 }}
-        disabled={!canDeploy}
-        onClick={() => alert('Deployment wiring coming in a future phase. Selected creative, subject, and from name are ready.')}
+        style={{ ...btnPrimary, padding: '12px 24px', fontSize: 14, opacity: (canDeploy && !deploying) ? 1 : 0.4 }}
+        disabled={!canDeploy || deploying}
+        onClick={handleDeploy}
       >
-        Deploy Campaign
+        {deploying ? 'Deploying…' : deployed ? 'Deployed to Content Library' : 'Deploy Campaign'}
       </button>
+      {deployed && (
+        <div style={{ fontSize: 12, color: '#22c55e', marginTop: 8 }}>
+          Creatives are now available for selection in the Campaign Wizard Content Library.
+        </div>
+      )}
     </div>
   );
 };
