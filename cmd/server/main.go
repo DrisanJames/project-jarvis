@@ -3246,6 +3246,22 @@ END $$`},
 			WHERE ip_address IN ('15.204.38.168'::inet, '15.204.38.169'::inet, '15.204.38.170'::inet, '15.204.38.171'::inet,
 			                     '15.204.38.172'::inet, '15.204.38.173'::inet, '15.204.38.174'::inet, '15.204.38.175'::inet)
 			  AND status = 'warmup'`},
+		{"phase11_force_promote_db_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.22.177'::inet, '15.204.22.178'::inet, '15.204.22.179'::inet, '15.204.22.180'::inet,
+			                     '15.204.22.181'::inet, '15.204.22.182'::inet, '15.204.22.183'::inet, '15.204.22.184'::inet)
+			  AND status != 'active'`},
+		{"phase11_force_promote_qf_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.22.185'::inet, '15.204.22.186'::inet, '15.204.22.187'::inet, '15.204.22.188'::inet,
+			                     '15.204.22.189'::inet, '15.204.22.190'::inet, '15.204.22.191'::inet)
+			  AND status != 'active'`},
+		{"phase11_force_promote_ht_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.38.160'::inet, '15.204.38.161'::inet, '15.204.38.162'::inet, '15.204.38.163'::inet,
+			                     '15.204.38.164'::inet, '15.204.38.165'::inet, '15.204.38.166'::inet, '15.204.38.167'::inet)
+			  AND status != 'active'`},
+		{"phase11_force_promote_mh_yahoo_ips", `UPDATE mailing_ip_addresses SET status = 'active', updated_at = NOW()
+			WHERE ip_address IN ('15.204.38.168'::inet, '15.204.38.169'::inet, '15.204.38.170'::inet, '15.204.38.171'::inet,
+			                     '15.204.38.172'::inet, '15.204.38.173'::inet, '15.204.38.174'::inet, '15.204.38.175'::inet)
+			  AND status != 'active'`},
 	}
 
 	var ok, fail int
