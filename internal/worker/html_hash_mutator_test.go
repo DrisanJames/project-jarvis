@@ -127,11 +127,17 @@ func TestInjectHoneypotLink(t *testing.T) {
 	assert.Contains(t, result, `aria-hidden="true"`)
 	assert.Contains(t, result, `opacity:0`)
 
+	// Must have two-segment format: /track/verify/{token}/{nonce}
+	verifyIdx := strings.Index(result, "track/verify/")
+	require.Greater(t, verifyIdx, 0)
+	afterVerify := result[verifyIdx+len("track/verify/"):]
+	quoteIdx := strings.Index(afterVerify, `"`)
+	require.Greater(t, quoteIdx, 0)
+	pathPart := afterVerify[:quoteIdx]
+	assert.Contains(t, pathPart, "/", "honeypot URL must have two segments (token/nonce)")
+
 	bodyCloseIdx := strings.LastIndex(result, "</body>")
-	honeypotIdx := strings.Index(result, "track/verify/")
-	require.Greater(t, bodyCloseIdx, 0)
-	require.Greater(t, honeypotIdx, 0)
-	assert.Less(t, honeypotIdx, bodyCloseIdx, "honeypot link should be before </body>")
+	assert.Less(t, verifyIdx, bodyCloseIdx, "honeypot link should be before </body>")
 }
 
 func TestInjectHoneypotLink_NoBody(t *testing.T) {

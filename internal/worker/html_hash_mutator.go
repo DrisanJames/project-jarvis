@@ -270,13 +270,17 @@ const botTrapBaseURL = "https://projectjarvis.io/track/verify/"
 // injectHoneypotLink embeds a hidden link that only automated scanners will
 // follow. If clicked, the backend flags the subscriber as a bot. The link is
 // invisible to humans: off-screen, zero-opacity, zero font size, aria-hidden.
+// Uses two path segments (/track/verify/{token}/{nonce}) to match production
+// ALB routing requirements.
 func injectHoneypotLink(html, subscriberID string) string {
 	token := base64.URLEncoding.EncodeToString([]byte(subscriberID))
+	h := sha256.Sum256([]byte(subscriberID))
+	nonce := fmt.Sprintf("%x", h[:4])
 	honeypot := fmt.Sprintf(
 		`<div style="position:absolute;left:-9999px;top:-9999px;opacity:0;font-size:0;line-height:0;max-height:0;overflow:hidden;mso-hide:all;" aria-hidden="true">`+
-			`<a href="%s%s" style="color:transparent;text-decoration:none;font-size:0;line-height:0;" tabindex="-1">.</a>`+
+			`<a href="%s%s/%s" style="color:transparent;text-decoration:none;font-size:0;line-height:0;" tabindex="-1">.</a>`+
 			`</div>`,
-		botTrapBaseURL, token,
+		botTrapBaseURL, token, nonce,
 	)
 
 	bodyClose := strings.LastIndex(strings.ToLower(html), "</body>")
