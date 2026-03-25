@@ -1778,6 +1778,8 @@ func runStartupMigrations(db *sql.DB) {
 
 		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
+		{"add_subscriber_bot_cols", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS is_bot BOOLEAN NOT NULL DEFAULT false; ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS bot_detected_at TIMESTAMPTZ`},
+		{"idx_subscriber_is_bot", `CREATE INDEX IF NOT EXISTS idx_subscribers_is_bot ON mailing_subscribers(is_bot) WHERE is_bot = true`},
 
 		{"sync_bounced_to_global_supp", `
 			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)

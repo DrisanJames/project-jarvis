@@ -110,33 +110,19 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		return 0, err
 	}
 
-	// Campaign's own html_content is ALWAYS the authoritative template.
-	// We fetch editorial copy from the cache and re-render it into the campaign's template.
+	// Hash Fingerprint Diversification: use the campaign's own content directly.
+	// Per-recipient HTML/subject mutations are applied in the queue insertion loop
+	// to produce unique fingerprints without changing visible content.
 	brandKey := deriveBrandKey(campaignFromEmail.String)
-	campType := detectCampaignType(campaignName.String)
+	_ = campaignFromName // from_name lives on the campaign; not needed per-recipient
+	_ = campaignName     // campaign type detection reserved for future editorial path
 
-	var variants []campaignVariant
-	if brandKey != "" {
-		cached, cacheErr := GetUnusedWaveByType(ctx, db, brandKey, campType)
-		if cacheErr == nil && cached != nil {
-			variant := buildVariantFromEditorial(cached, campaignFromName.String, campaignSubject.String, campaignHTML.String, brandKey)
-			log.Printf("[wave-dispatch] editorial merged into campaign template brand=%s type=%s wave=%d subject=%q",
-				brandKey, campType, cached.Variation.WaveIndex, variant.Subject)
-			variants = []campaignVariant{variant}
-		} else {
-			log.Printf("[wave-dispatch] no cached editorial for brand=%s type=%s: %v — using campaign content as-is", brandKey, campType, cacheErr)
-		}
-	}
+	baseHTML := campaignHTML.String
+	baseSubject := campaignSubject.String
 
-	if len(variants) == 0 {
-		var loadErr error
-		variants, loadErr = loadCampaignVariantsForWave(ctx, tx, campaignID.String(), campaignFromName.String, campaignSubject.String, campaignHTML.String)
-		if loadErr != nil {
-			return 0, loadErr
-		}
-	}
-
-	variants = sanitizeVariantURLsAtDispatch(variants, brandKey)
+	// URL sanitization still runs on the base content before per-recipient mutation
+	sanitized := sanitizeVariantURLsAtDispatch([]campaignVariant{{HTMLContent: baseHTML}}, brandKey)
+	baseHTML = sanitized[0].HTMLContent
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, subscriber_id, email, recipient_isp, selection_rank,
@@ -173,8 +159,12 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 	}
 
 	queuedCount := 0
-	for idx, rec := range candidates {
-		v := variants[idx%len(variants)]
+	for _, rec := range candidates {
+		seed := computeMutationSeed(rec.subscriberID, waveID)
+		recipientHTML := mutateHTMLHash(baseHTML, seed)
+		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
+		recipientSubject := mutateSubjectLine(baseSubject, seed, brandKey)
+
 		var sourceID interface{}
 		if rec.audienceSourceID.Valid {
 			parsed, err := uuid.Parse(rec.audienceSourceID.String)
@@ -192,7 +182,7 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 				'queued', 5, $6, NOW(), $7, $8,
 				$9, $10, $11, $12
 			)
-		`, uuid.New(), campaignID, rec.subscriberID, coalesceWaveValue(v.Subject, campaignSubject.String), coalesceWaveValue(v.HTMLContent, campaignHTML.String),
+		`, uuid.New(), campaignID, rec.subscriberID, recipientSubject, recipientHTML,
 			scheduledAt, ispPlanID, waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
 		); err != nil {
 			return 0, err
