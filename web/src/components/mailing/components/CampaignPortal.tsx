@@ -635,6 +635,152 @@ const CampaignDashboard: React.FC<{
 };
 
 // ============================================================================
+// CAMPAIGN CARD (with inline creative preview toggle)
+// ============================================================================
+
+const CampaignCard: React.FC<{
+  campaign: Campaign;
+  onViewCampaign: (id: string) => void;
+  onAction: (id: string, action: string) => void;
+}> = ({ campaign, onViewCampaign, onAction }) => {
+  const [showCreative, setShowCreative] = useState(false);
+  const hasCreative = !!(campaign.html_preview && campaign.html_preview.trim());
+
+  return (
+    <div className={`campaign-card ig-card-hover${campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
+      <div className="card-header">
+        <StatusBadge status={campaign.status} />
+        <div className="card-actions">
+          {hasCreative && (
+            <button
+              onClick={() => setShowCreative(!showCreative)}
+              title={showCreative ? 'Hide Creative' : 'Preview Creative'}
+              className={showCreative ? 'active' : ''}
+            >
+              <FontAwesomeIcon icon={faCode} />
+            </button>
+          )}
+          <button onClick={() => onViewCampaign(campaign.id)} title="View Details">
+            <FontAwesomeIcon icon={faEye} />
+          </button>
+          {canEditCampaign(campaign) && (
+            <button onClick={() => onAction(campaign.id, 'edit')} title="Edit Campaign">
+              <FontAwesomeIcon icon={faEdit} />
+            </button>
+          )}
+          <button onClick={() => onAction(campaign.id, 'duplicate')} title="Duplicate">
+            <FontAwesomeIcon icon={faCopy} />
+          </button>
+          {['scheduled', 'preparing', 'sending'].includes(campaign.status) && (
+            <button onClick={() => onAction(campaign.id, 'pause')} title="Pause">
+              <FontAwesomeIcon icon={faPause} />
+            </button>
+          )}
+          {campaign.status === 'paused' && (
+            <button onClick={() => onAction(campaign.id, 'resume')} title="Resume">
+              <FontAwesomeIcon icon={faPlay} />
+            </button>
+          )}
+          {['scheduled', 'preparing', 'sending', 'paused'].includes(campaign.status) && (
+            <button onClick={() => onAction(campaign.id, 'cancel')} title="Cancel" className="danger">
+              <FontAwesomeIcon icon={faStop} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="card-body" onClick={() => onViewCampaign(campaign.id)}>
+        <h4 className="campaign-name">{campaign.name}</h4>
+        <p className="campaign-subject">{campaign.subject}</p>
+        {campaign.preview_text && (
+          <p className="campaign-preheader">{campaign.preview_text}</p>
+        )}
+
+        {((campaign.list_names && campaign.list_names.length > 0) || (campaign.segment_names && campaign.segment_names.length > 0)) && (
+          <div className="campaign-audience-badges">
+            {campaign.list_names?.map((ln, i) => (
+              <span key={`list-${i}`} className="audience-badge list-badge">
+                <FontAwesomeIcon icon={faUsers} /> {ln}
+              </span>
+            ))}
+            {campaign.segment_names?.map((sn, i) => (
+              <span key={`seg-${i}`} className="audience-badge segment-badge">
+                <FontAwesomeIcon icon={faBullseye} /> {sn}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="campaign-meta">
+          {campaign.profile_name && (
+            <span className="meta-item">
+              <FontAwesomeIcon icon={faPaperPlane} /> {campaign.profile_name}
+            </span>
+          )}
+          {campaign.scheduled_at && (
+            <span className="meta-item">
+              <FontAwesomeIcon icon={faCalendarAlt} /> {new Date(campaign.scheduled_at).toLocaleString()}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Inline Creative Preview (toggled by code icon) */}
+      {showCreative && hasCreative && (
+        <div className="creative-preview-section" onClick={e => e.stopPropagation()}>
+          <div className="creative-preview-header">
+            <span>Creative Preview</span>
+            <button onClick={() => setShowCreative(false)}>
+              <FontAwesomeIcon icon={faChevronUp} /> Hide
+            </button>
+          </div>
+          <div className="creative-preview-frame">
+            <iframe
+              srcDoc={campaign.html_preview}
+              sandbox=""
+              title="Email creative preview"
+            />
+          </div>
+          {campaign.html_preview && campaign.html_preview.length >= 490 && (
+            <p className="creative-preview-note">Showing first 500 characters. Click View Details for full content.</p>
+          )}
+        </div>
+      )}
+
+      <div className="card-stats ig-stagger">
+        <div className="stat">
+          <span className="stat-value"><AnimatedCounter value={campaign.sent_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Sent</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value"><AnimatedCounter value={campaign.open_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Opens</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value"><AnimatedCounter value={campaign.click_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Clicks</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">
+            {campaign.sent_count > 0 ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1) : 0}%
+          </span>
+          <span className="stat-label">Open Rate</span>
+        </div>
+      </div>
+
+      {campaign.status === 'sending' && campaign.total_recipients > 0 && (
+        <div className="sending-progress">
+          <ProgressBar value={campaign.sent_count} max={campaign.total_recipients} color="primary" />
+          <span className="progress-text">
+            {campaign.sent_count?.toLocaleString()} / {campaign.total_recipients?.toLocaleString()}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================================
 // CAMPAIGNS LIST VIEW
 // ============================================================================
 
@@ -716,106 +862,12 @@ const CampaignsList: React.FC<{
       ) : (
         <div className="campaigns-grid">
           {filteredCampaigns.map(campaign => (
-            <div key={campaign.id} className={`campaign-card ig-card-hover${campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
-                <div className="card-header">
-                <StatusBadge status={campaign.status} />
-                <div className="card-actions">
-                  <button onClick={() => onViewCampaign(campaign.id)} title="View Details">
-                    <FontAwesomeIcon icon={faEye} />
-                  </button>
-                  {canEditCampaign(campaign) && (
-                    <button onClick={() => onAction(campaign.id, 'edit')} title="Edit Campaign">
-                      <FontAwesomeIcon icon={faEdit} />
-                    </button>
-                  )}
-                  <button onClick={() => onAction(campaign.id, 'duplicate')} title="Duplicate">
-                    <FontAwesomeIcon icon={faCopy} />
-                  </button>
-                  {['scheduled', 'preparing', 'sending'].includes(campaign.status) && (
-                    <button onClick={() => onAction(campaign.id, 'pause')} title="Pause">
-                      <FontAwesomeIcon icon={faPause} />
-                    </button>
-                  )}
-                  {campaign.status === 'paused' && (
-                    <button onClick={() => onAction(campaign.id, 'resume')} title="Resume">
-                      <FontAwesomeIcon icon={faPlay} />
-                    </button>
-                  )}
-                  {['scheduled', 'preparing', 'sending', 'paused'].includes(campaign.status) && (
-                    <button onClick={() => onAction(campaign.id, 'cancel')} title="Cancel" className="danger">
-                      <FontAwesomeIcon icon={faStop} />
-                    </button>
-                  )}
-                </div>
-              </div>
-              
-              <div className="card-body" onClick={() => onViewCampaign(campaign.id)}>
-                <h4 className="campaign-name">{campaign.name}</h4>
-                <p className="campaign-subject">{campaign.subject}</p>
-                {campaign.preview_text && (
-                  <p className="campaign-preheader">{campaign.preview_text}</p>
-                )}
-                
-                {/* Audience Badges: Lists + Segments */}
-                {((campaign.list_names && campaign.list_names.length > 0) || (campaign.segment_names && campaign.segment_names.length > 0)) && (
-                  <div className="campaign-audience-badges">
-                    {campaign.list_names?.map((ln, i) => (
-                      <span key={`list-${i}`} className="audience-badge list-badge">
-                        <FontAwesomeIcon icon={faUsers} /> {ln}
-                      </span>
-                    ))}
-                    {campaign.segment_names?.map((sn, i) => (
-                      <span key={`seg-${i}`} className="audience-badge segment-badge">
-                        <FontAwesomeIcon icon={faBullseye} /> {sn}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                <div className="campaign-meta">
-                  {campaign.profile_name && (
-                    <span className="meta-item">
-                      <FontAwesomeIcon icon={faPaperPlane} /> {campaign.profile_name}
-                    </span>
-                  )}
-                  {campaign.scheduled_at && (
-                    <span className="meta-item">
-                      <FontAwesomeIcon icon={faCalendarAlt} /> {new Date(campaign.scheduled_at).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="card-stats ig-stagger">
-                <div className="stat">
-                  <span className="stat-value"><AnimatedCounter value={campaign.sent_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-                  <span className="stat-label">Sent</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-value"><AnimatedCounter value={campaign.open_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-                  <span className="stat-label">Opens</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-value"><AnimatedCounter value={campaign.click_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-                  <span className="stat-label">Clicks</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-value">
-                    {campaign.sent_count > 0 ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1) : 0}%
-                  </span>
-                  <span className="stat-label">Open Rate</span>
-                </div>
-              </div>
-
-              {campaign.status === 'sending' && campaign.total_recipients > 0 && (
-                <div className="sending-progress">
-                  <ProgressBar value={campaign.sent_count} max={campaign.total_recipients} color="primary" />
-                  <span className="progress-text">
-                    {campaign.sent_count?.toLocaleString()} / {campaign.total_recipients?.toLocaleString()}
-                  </span>
-                </div>
-              )}
-            </div>
+            <CampaignCard
+              key={campaign.id}
+              campaign={campaign}
+              onViewCampaign={onViewCampaign}
+              onAction={onAction}
+            />
           ))}
         </div>
       )}
