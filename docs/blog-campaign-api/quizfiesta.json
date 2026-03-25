@@ -1,0 +1,6 @@
+{
+  "sending_domain": "em.quizfiesta.com",
+  "subject": "{{ first_name | default: \"Quiz Fan\" }}, YOUR SUBJECT LINE HERE",
+  "preview_text": "YOUR PREHEADER TEXT HERE",
+  "html_content": "YOUR FULL HTML EMAIL CONTENT HERE"
+}

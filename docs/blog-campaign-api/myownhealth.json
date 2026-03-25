@@ -1,0 +1,6 @@
+{
+  "sending_domain": "em.myownhealth.net",
+  "subject": "{{ first_name | default: \"Health Seeker\" }}, YOUR SUBJECT LINE HERE",
+  "preview_text": "YOUR PREHEADER TEXT HERE",
+  "html_content": "YOUR FULL HTML EMAIL CONTENT HERE"
+}

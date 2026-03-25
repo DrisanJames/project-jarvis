@@ -757,6 +757,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
 
+			// === BLOG CAMPAIGN INGEST (minimal JSON → full engaged campaign) ===
+			r.Post("/blog-campaign", pmtaCampaignAPI.HandleBlogCampaign)
+
 			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)

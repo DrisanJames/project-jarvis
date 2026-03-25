@@ -1,0 +1,6 @@
+{
+  "sending_domain": "em.historythinking.com",
+  "subject": "{{ first_name | default: \"History Enthusiast\" }}, YOUR SUBJECT LINE HERE",
+  "preview_text": "YOUR PREHEADER TEXT HERE",
+  "html_content": "YOUR FULL HTML EMAIL CONTENT HERE"
+}
