@@ -84,7 +84,8 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Get("/track/click/{data}/{sig}", svc.HandleTrackClick)
 		s.router.Get("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
 		s.router.Get("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)
-		s.router.Get("/track/verify/{token}/{nonce}", HandleBotTrap(db))
+		// Bot trap honeypot — public (hidden link in emails, clicked by bots)
+		s.router.Get("/api/mailing/bt/{token}/{nonce}", HandleBotTrap(db))
 		// RFC 8058: mail clients POST to the List-Unsubscribe URL with List-Unsubscribe=One-Click
 		s.router.Post("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
 		s.router.Post("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)

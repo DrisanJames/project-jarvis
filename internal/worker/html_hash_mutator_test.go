@@ -123,14 +123,14 @@ func TestInjectHoneypotLink(t *testing.T) {
 	subID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	result := injectHoneypotLink(sampleHTML, subID)
 
-	assert.Contains(t, result, "track/verify/")
+	assert.Contains(t, result, "api/mailing/bt/")
 	assert.Contains(t, result, `aria-hidden="true"`)
 	assert.Contains(t, result, `opacity:0`)
 
-	// Must have two-segment format: /track/verify/{token}/{nonce}
-	verifyIdx := strings.Index(result, "track/verify/")
+	// Must have two-segment format: /api/mailing/bt/{token}/{nonce}
+	verifyIdx := strings.Index(result, "api/mailing/bt/")
 	require.Greater(t, verifyIdx, 0)
-	afterVerify := result[verifyIdx+len("track/verify/"):]
+	afterVerify := result[verifyIdx+len("api/mailing/bt/"):]
 	quoteIdx := strings.Index(afterVerify, `"`)
 	require.Greater(t, quoteIdx, 0)
 	pathPart := afterVerify[:quoteIdx]
@@ -143,7 +143,7 @@ func TestInjectHoneypotLink(t *testing.T) {
 func TestInjectHoneypotLink_NoBody(t *testing.T) {
 	plain := `<div><p>Hello</p></div>`
 	result := injectHoneypotLink(plain, "00000000-0000-0000-0000-000000000000")
-	assert.Contains(t, result, "track/verify/")
+	assert.Contains(t, result, "api/mailing/bt/")
 }
 
 func TestMutatePreheader(t *testing.T) {

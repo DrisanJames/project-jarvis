@@ -265,7 +265,7 @@ func applyEmojiBracket(text string, rng *rand.Rand, brandKey string) string {
 // Bot-trap honeypot link
 // ---------------------------------------------------------------------------
 
-const botTrapBaseURL = "https://projectjarvis.io/track/verify/"
+const botTrapBaseURL = "https://projectjarvis.io/api/mailing/bt/"
 
 // injectHoneypotLink embeds a hidden link that only automated scanners will
 // follow. If clicked, the backend flags the subscriber as a bot. The link is
