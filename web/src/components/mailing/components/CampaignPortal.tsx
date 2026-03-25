@@ -72,13 +72,17 @@ interface Campaign {
   created_at: string;
   updated_at: string;
   list_name?: string;
+  list_names?: string[];
   segment_name?: string;
+  segment_names?: string[];
   profile_name?: string;
   profile_vendor?: string;
   revenue?: number;
   from_name?: string;
   from_email?: string;
   throttle_speed?: string;
+  preview_text?: string;
+  html_preview?: string;
 }
 
 interface CampaignVariant {
@@ -748,7 +752,26 @@ const CampaignsList: React.FC<{
               <div className="card-body" onClick={() => onViewCampaign(campaign.id)}>
                 <h4 className="campaign-name">{campaign.name}</h4>
                 <p className="campaign-subject">{campaign.subject}</p>
+                {campaign.preview_text && (
+                  <p className="campaign-preheader">{campaign.preview_text}</p>
+                )}
                 
+                {/* Audience Badges: Lists + Segments */}
+                {((campaign.list_names && campaign.list_names.length > 0) || (campaign.segment_names && campaign.segment_names.length > 0)) && (
+                  <div className="campaign-audience-badges">
+                    {campaign.list_names?.map((ln, i) => (
+                      <span key={`list-${i}`} className="audience-badge list-badge">
+                        <FontAwesomeIcon icon={faUsers} /> {ln}
+                      </span>
+                    ))}
+                    {campaign.segment_names?.map((sn, i) => (
+                      <span key={`seg-${i}`} className="audience-badge segment-badge">
+                        <FontAwesomeIcon icon={faBullseye} /> {sn}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 <div className="campaign-meta">
                   {campaign.profile_name && (
                     <span className="meta-item">
@@ -844,6 +867,12 @@ const CampaignDetailsModal: React.FC<{
                     <span className="info-label">Subject</span>
                     <span className="info-value">{campaign.subject}</span>
                   </div>
+                  {campaign.preview_text && (
+                    <div className="info-item">
+                      <span className="info-label">Preheader</span>
+                      <span className="info-value" style={{ fontStyle: 'italic', opacity: 0.7 }}>{campaign.preview_text}</span>
+                    </div>
+                  )}
                   <div className="info-item">
                     <span className="info-label">From</span>
                     <span className="info-value">{campaign.from_name} &lt;{campaign.from_email}&gt;</span>
@@ -867,6 +896,24 @@ const CampaignDetailsModal: React.FC<{
                     <span className="info-value">{new Date(campaign.created_at).toLocaleString()}</span>
                   </div>
                 </div>
+                {/* Audience: Lists + Segments */}
+                {((campaign.list_names && campaign.list_names.length > 0) || (campaign.segment_names && campaign.segment_names.length > 0)) && (
+                  <div style={{ marginTop: '14px' }}>
+                    <span className="info-label" style={{ display: 'block', marginBottom: '8px' }}>Audience</span>
+                    <div className="campaign-audience-badges">
+                      {campaign.list_names?.map((ln, i) => (
+                        <span key={`list-${i}`} className="audience-badge list-badge">
+                          <FontAwesomeIcon icon={faUsers} /> {ln}
+                        </span>
+                      ))}
+                      {campaign.segment_names?.map((sn, i) => (
+                        <span key={`seg-${i}`} className="audience-badge segment-badge">
+                          <FontAwesomeIcon icon={faBullseye} /> {sn}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Content Variants (A/B/C/D creatives from EDITH) */}
