@@ -795,7 +795,7 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 					if count <= 0 {
 						continue
 					}
-					if p.rateRegistry.HasIPListStr(isp) {
+					if p.rateRegistry.HasIPListStr(isp) && !ovhRequiredSuffixes[ISPPoolSuffix(isp)] {
 						perIPAlloc := p.rateRegistry.DistributeByIPStr(isp, count)
 						totalAllowed := 0
 						for _, n := range perIPAlloc {
