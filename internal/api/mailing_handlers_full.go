@@ -425,15 +425,26 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	dashboard["pmta_connected"] = totalPMTA > 0
 	dashboard["pmta_server_count"] = totalPMTA
 
-	// Sidebar audience metrics (pre-computed by Lambda every 15 min)
+	// Sidebar audience metrics — compute active audience directly from subscriber engagement data.
+	// This counts unique non-seed subscribers who opened or clicked within the last 60 days.
 	var activeAudience int
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM mailing_subscribers s
+		WHERE s.status = 'confirmed'
+		  AND (s.last_open_at >= NOW() - INTERVAL '60 days' OR s.last_click_at >= NOW() - INTERVAL '60 days')
+		  AND s.list_id NOT IN (SELECT id FROM mailing_lists WHERE name ILIKE '%seed%')
+	`).Scan(&activeAudience); err == nil {
+		dashboard["active_audience_60d"] = activeAudience
+	}
+
+	// Churn & intro from pre-computed Lambda table (fallback 0 if not populated)
 	var churnPct, introPct float64
 	var metricsComputedAt time.Time
 	if err := svc.db.QueryRowContext(ctx, `
-		SELECT active_audience_60d, global_churn_pct, global_intro_pct, computed_at
+		SELECT global_churn_pct, global_intro_pct, computed_at
 		FROM mailing_audience_metrics WHERE id = 1
-	`).Scan(&activeAudience, &churnPct, &introPct, &metricsComputedAt); err == nil {
-		dashboard["active_audience_60d"] = activeAudience
+	`).Scan(&churnPct, &introPct, &metricsComputedAt); err == nil {
 		dashboard["global_churn_pct"] = churnPct
 		dashboard["global_intro_pct"] = introPct
 		dashboard["metrics_computed_at"] = metricsComputedAt

@@ -44,13 +44,17 @@ def _connect():
 
 
 def _active_audience(conn):
-    """Unique subscribers who opened or clicked in the last 60 days, excluding seeds."""
+    """Unique subscribers who opened or clicked in the last 60 days, excluding seeds.
+
+    Uses mailing_subscribers.last_open_at / last_click_at which are maintained
+    by the tracking handlers on every open/click webhook.
+    """
     rows = conn.run(f"""
-        SELECT COUNT(DISTINCT e.subscriber_id)
-        FROM mailing_tracking_events e
-        JOIN mailing_subscribers s ON s.id = e.subscriber_id
-        WHERE e.event_type IN ('opened', 'clicked')
-          AND e.event_at >= NOW() - INTERVAL '60 days'
+        SELECT COUNT(*)
+        FROM mailing_subscribers s
+        WHERE s.status = 'confirmed'
+          AND (s.last_open_at >= NOW() - INTERVAL '60 days'
+               OR s.last_click_at >= NOW() - INTERVAL '60 days')
           AND s.list_id NOT IN ({SEED_EXCLUSION})
     """)
     return rows[0][0]
