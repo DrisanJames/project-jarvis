@@ -106,6 +106,53 @@ func TestMutateSubjectLine_PreservesMeaning(t *testing.T) {
 	assert.True(t, hasSavings || hasTips, "mutated subject %q should retain core meaning tokens", mutated)
 }
 
+func TestMutateSubjectLine_PreservesLiquidTags(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string
+		tag     string
+	}{
+		{
+			name:    "first_name with default",
+			subject: "{{ first_name | Default: 'Hey' }}, spring offers land this weekend!",
+			tag:     "{{ first_name | Default: 'Hey' }}",
+		},
+		{
+			name:    "email tag",
+			subject: "New deals for {{ email }}",
+			tag:     "{{ email }}",
+		},
+		{
+			name:    "multiple tags",
+			subject: "{{ first_name }}, check out {{ offer_name }} today",
+			tag:     "{{ first_name }}",
+		},
+		{
+			name:    "system unsubscribe",
+			subject: "Great tips inside {{ system.unsubscribe_url }}",
+			tag:     "{{ system.unsubscribe_url }}",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for seed := int64(0); seed < 50; seed++ {
+				result := mutateSubjectLine(tc.subject, seed, "discountblog")
+				assert.Contains(t, result, tc.tag,
+					"seed %d: Liquid tag %q must survive mutation intact, got: %q", seed, tc.tag, result)
+			}
+		})
+	}
+}
+
+func TestMutatePreheader_PreservesLiquidTags(t *testing.T) {
+	preheader := "{{ first_name | Default: 'Friend' }}, find the best new deals"
+	for seed := int64(0); seed < 50; seed++ {
+		result := mutatePreheader(preheader, seed)
+		assert.Contains(t, result, "{{ first_name | Default: 'Friend' }}",
+			"seed %d: Liquid tag must survive, got: %q", seed, result)
+	}
+}
+
 func TestComputeMutationSeed(t *testing.T) {
 	id1 := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	id2 := uuid.MustParse("22222222-2222-2222-2222-222222222222")

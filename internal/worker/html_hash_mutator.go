@@ -149,22 +149,41 @@ var brandEmojiPools = map[string][]string{
 	"projectjarvis":  {"🚀", "⚡", "🔧", "💻", "🤖", "✨", "🎯", "📊"},
 }
 
+var reLiquidTag = regexp.MustCompile(`\{\{[^}]*\}\}`)
+
+func protectLiquidTags(text string) (string, []string) {
+	var tags []string
+	protected := reLiquidTag.ReplaceAllStringFunc(text, func(match string) string {
+		idx := len(tags)
+		tags = append(tags, match)
+		return fmt.Sprintf("__LQ%d__", idx)
+	})
+	return protected, tags
+}
+
+func restoreLiquidTags(text string, tags []string) string {
+	for i, tag := range tags {
+		text = strings.Replace(text, fmt.Sprintf("__LQ%d__", i), tag, 1)
+	}
+	return text
+}
+
 func mutateSubjectLine(subject string, seed int64, brandKey string) string {
 	rng := rand.New(rand.NewSource(seed))
-	result := subject
+	result, tags := protectLiquidTags(subject)
 	result = applySynonymSwap(result, rng)
 	result = rotatePunctuation(result, rng)
 	result = microShiftCaps(result, rng)
 	result = applyEmojiBracket(result, rng, brandKey)
-	return result
+	return restoreLiquidTags(result, tags)
 }
 
 func mutatePreheader(preheader string, seed int64) string {
 	rng := rand.New(rand.NewSource(seed))
-	result := preheader
+	result, tags := protectLiquidTags(preheader)
 	result = applySynonymSwap(result, rng)
 	result = rotatePunctuation(result, rng)
-	return result
+	return restoreLiquidTags(result, tags)
 }
 
 func applySynonymSwap(text string, rng *rand.Rand) string {
