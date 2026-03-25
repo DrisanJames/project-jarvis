@@ -56,10 +56,14 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			   COALESCE(p.vendor_type, '') as vendor_type,
 			   COALESCE(l.name, '') as list_name,
 			   COALESCE(c.list_ids::text, '[]'),
-			   LEFT(COALESCE(c.html_content,''), 500)
+			   LEFT(COALESCE(c.html_content,''), 500),
+			   COALESCE(c.preview_text, ''),
+			   COALESCE(seg.name, '') as segment_name,
+			   COALESCE(c.pmta_config->'campaign_input'->>'inclusion_segments', '[]')
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles p ON c.sending_profile_id = p.id
 		LEFT JOIN mailing_lists l ON c.list_id = l.id
+		LEFT JOIN mailing_segments seg ON c.segment_id = seg.id
 	` + whereClause
 
 	query += " ORDER BY c.created_at DESC"
@@ -83,6 +87,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		var fromName, fromEmail, throttleSpeed string
 		var profileName, vendorType, listName string
 		var listIDsJSON, htmlPreview string
+		var previewText, segmentName, inclusionSegmentsJSON string
 		var createdAt time.Time
 		var scheduledAt, startedAt, completedAt sql.NullTime
 
@@ -95,7 +100,8 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			&throttleSpeed,
 			&createdAt, &scheduledAt, &startedAt, &completedAt,
 			&profileName, &vendorType, &listName,
-			&listIDsJSON, &htmlPreview)
+			&listIDsJSON, &htmlPreview,
+			&previewText, &segmentName, &inclusionSegmentsJSON)
 
 		// Resolve list names from list_ids JSONB for multi-list campaigns
 		var listNames []string
@@ -109,6 +115,23 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 					var ln string
 					if err := cb.db.QueryRowContext(ctx, `SELECT name FROM mailing_lists WHERE id = $1`, lid).Scan(&ln); err == nil && ln != "" {
 						listNames = append(listNames, ln)
+					}
+				}
+			}
+		}
+
+		// Resolve segment names: legacy segment_id + PMTA inclusion_segments
+		var segmentNames []string
+		if segmentName != "" {
+			segmentNames = append(segmentNames, segmentName)
+		}
+		if inclusionSegmentsJSON != "" && inclusionSegmentsJSON != "[]" && inclusionSegmentsJSON != "null" {
+			var segIDs []string
+			if err := json.Unmarshal([]byte(inclusionSegmentsJSON), &segIDs); err == nil && len(segIDs) > 0 {
+				for _, sid := range segIDs {
+					var sn string
+					if err := cb.db.QueryRowContext(ctx, `SELECT name FROM mailing_segments WHERE id = $1`, sid).Scan(&sn); err == nil && sn != "" {
+						segmentNames = append(segmentNames, sn)
 					}
 				}
 			}
@@ -141,6 +164,8 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			"list_name":         listName,
 			"list_names":        listNames,
 			"html_preview":      htmlPreview,
+			"preview_text":      previewText,
+			"segment_names":     segmentNames,
 		}
 
 		if scheduledAt.Valid {
