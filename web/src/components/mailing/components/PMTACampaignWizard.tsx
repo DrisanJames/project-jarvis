@@ -359,7 +359,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
 
   // AI Subject + Preheader suggestion state
   const [aiSuggestingIdx, setAISuggestingIdx] = useState<number | null>(null);
-  const [aiSuggestions, setAISuggestions] = useState<Array<{ subject: string; preview_text: string; reasoning: string; category: string }>>([]);
+  const [aiSuggestions, setAISuggestions] = useState<Array<{ subject: string; plain_subject?: string; preview_text: string; reasoning: string; category: string; subject_length?: number }>>([]);
   const [aiSuggestError, setAISuggestError] = useState('');
 
   // Step 4 state
@@ -2481,12 +2481,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <span style={{
                         fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.5px',
-                        color: s.category === 'urgency' ? '#f59e0b' : s.category === 'curiosity' ? '#a78bfa' : s.category === 'benefit' ? '#10b981' : s.category === 'question' ? '#38bdf8' : '#00e5ff',
-                        background: s.category === 'urgency' ? 'rgba(245,158,11,0.1)' : s.category === 'curiosity' ? 'rgba(167,139,250,0.1)' : s.category === 'benefit' ? 'rgba(16,185,129,0.1)' : s.category === 'question' ? 'rgba(56,189,248,0.1)' : 'rgba(0,229,255,0.1)',
+                        color: s.category === 'urgency' ? '#f59e0b' : s.category === 'curiosity' ? '#a78bfa' : s.category === 'benefit' ? '#10b981' : s.category === 'question' ? '#38bdf8' : s.category === 'social_proof' ? '#ec4899' : '#00e5ff',
+                        background: s.category === 'urgency' ? 'rgba(245,158,11,0.1)' : s.category === 'curiosity' ? 'rgba(167,139,250,0.1)' : s.category === 'benefit' ? 'rgba(16,185,129,0.1)' : s.category === 'question' ? 'rgba(56,189,248,0.1)' : s.category === 'social_proof' ? 'rgba(236,72,153,0.1)' : 'rgba(0,229,255,0.1)',
                         padding: '2px 6px', borderRadius: 4,
                       }}>{s.category}</span>
+                      {s.subject_length != null && (
+                        <span style={{ fontSize: 10, color: (s.subject_length || 0) > 50 ? '#f59e0b' : '#64748b', fontWeight: 600 }}>
+                          {s.subject_length} chars
+                        </span>
+                      )}
                     </div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 3 }}>{s.subject}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 2 }}>{s.subject}</div>
+                    {s.plain_subject && s.plain_subject !== s.subject && (
+                      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.35)', marginBottom: 3, fontStyle: 'italic' }}>Inbox preview: {s.plain_subject}</div>
+                    )}
                     <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>{s.preview_text}</div>
                     {s.reasoning && <div style={{ fontSize: 10, color: '#64748b', marginTop: 4, fontStyle: 'italic' }}>{s.reasoning}</div>}
                   </div>

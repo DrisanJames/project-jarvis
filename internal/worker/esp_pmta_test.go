@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -207,4 +208,105 @@ func TestVMTAPoolNext_EmptyPool(t *testing.T) {
 	_, err := pool.next("gmail")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no IPs in pool")
+}
+
+// ---------------------------------------------------------------------------
+// OVH-only routing — Yahoo, AT&T, Cox must use the "yahoo" ISP group
+// ---------------------------------------------------------------------------
+
+func TestVMTAPoolNext_OVH_ATTRoutesToYahooGroup(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	attIPs := []vmtaEntry{
+		{ID: "ipxo1", Hostname: "ipxo-att.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	allIPs := append(append(yahooIPs, attIPs...), generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo":   yahooIPs,
+		"att":     attIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("att")
+	require.NoError(t, err)
+	assert.Equal(t, "ovh1", ip.ID, "ATT must route to yahoo group (OVH IPs), not att group (IPXO)")
+}
+
+func TestVMTAPoolNext_OVH_CoxRoutesToYahooGroup(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	coxIPs := []vmtaEntry{
+		{ID: "ipxo1", Hostname: "ipxo-cox.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	allIPs := append(yahooIPs, coxIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo": yahooIPs,
+		"cox":   coxIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("cox")
+	require.NoError(t, err)
+	assert.Equal(t, "ovh1", ip.ID, "Cox must route to yahoo group (OVH IPs), not cox group (IPXO)")
+}
+
+func TestVMTAPoolNext_OVH_YahooStaysInYahooGroup(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	allIPs := append(yahooIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo":   yahooIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("yahoo")
+	require.NoError(t, err)
+	assert.Equal(t, "ovh1", ip.ID, "Yahoo must use yahoo group")
+}
+
+func TestVMTAPoolNext_OVH_BlocksFallbackToGeneral(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	allIPs := append(yahooIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo":   yahooIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	for _, isp := range []string{"yahoo", "att", "cox"} {
+		_, err := pool.next(isp)
+		require.Error(t, err, "OVH ISP %q must NOT fall back to general when yahoo exhausted", isp)
+		var ovhErr ovhExhaustedError
+		assert.True(t, errors.As(err, &ovhErr), "error for %q should be ovhExhaustedError", isp)
+	}
+}
+
+func TestVMTAPoolNext_OVH_NonOVH_StillFallsBack(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+	}
+	generalIPs := []vmtaEntry{
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+	}
+	allIPs := append(yahooIPs, generalIPs...)
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo":   yahooIPs,
+		"general": generalIPs,
+	}, allIPs, "db")
+
+	ip, err := pool.next("verizon")
+	require.NoError(t, err)
+	assert.Equal(t, "gen1", ip.ID, "non-OVH ISPs must still fall back to general")
 }
