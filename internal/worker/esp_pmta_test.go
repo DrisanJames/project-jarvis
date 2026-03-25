@@ -2,6 +2,7 @@ package worker
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -70,14 +71,14 @@ func buildTestPool(groups map[string][]vmtaEntry, flatIPs []vmtaEntry, prefix st
 
 func TestVMTAPoolNext_ISPSpecificSelection(t *testing.T) {
 	gmailIPs := []vmtaEntry{
-		{ID: "gm1", Hostname: "mta-db-gm1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
-		{ID: "gm2", Hostname: "mta-db-gm2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+		{ID: "gm1", Hostname: "mta-db-gm1.mail.em.discountblog.com", IP: "144.225.178.7", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+		{ID: "gm2", Hostname: "mta-db-gm2.mail.em.discountblog.com", IP: "144.225.178.8", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
 	}
 	yahooIPs := []vmtaEntry{
-		{ID: "yh1", Hostname: "mta-db-yh1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+		{ID: "yh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
 	}
 	generalIPs := []vmtaEntry{
-		{ID: "gn1", Hostname: "mta-db-gn1.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
+		{ID: "gn1", Hostname: "mta-db-gn1.mail.em.discountblog.com", IP: "144.225.178.10", Status: "warmup", WarmupDailyLimit: 100, TodaySent: 0},
 	}
 
 	allIPs := append(append(gmailIPs, yahooIPs...), generalIPs...)
@@ -216,13 +217,13 @@ func TestVMTAPoolNext_EmptyPool(t *testing.T) {
 
 func TestVMTAPoolNext_OVH_ATTRoutesToYahooGroup(t *testing.T) {
 	yahooIPs := []vmtaEntry{
-		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ovh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "active", WarmupDailyLimit: 10000},
 	}
 	attIPs := []vmtaEntry{
-		{ID: "ipxo1", Hostname: "ipxo-att.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ipxo1", Hostname: "ipxo-att.mail.em.discountblog.com", IP: "144.225.178.11", Status: "active", WarmupDailyLimit: 10000},
 	}
 	generalIPs := []vmtaEntry{
-		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", IP: "144.225.178.10", Status: "active", WarmupDailyLimit: 10000},
 	}
 	allIPs := append(append(yahooIPs, attIPs...), generalIPs...)
 	pool := buildTestPool(map[string][]vmtaEntry{
@@ -238,10 +239,10 @@ func TestVMTAPoolNext_OVH_ATTRoutesToYahooGroup(t *testing.T) {
 
 func TestVMTAPoolNext_OVH_CoxRoutesToYahooGroup(t *testing.T) {
 	yahooIPs := []vmtaEntry{
-		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ovh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "active", WarmupDailyLimit: 10000},
 	}
 	coxIPs := []vmtaEntry{
-		{ID: "ipxo1", Hostname: "ipxo-cox.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ipxo1", Hostname: "ipxo-cox.mail.em.discountblog.com", IP: "144.225.178.12", Status: "active", WarmupDailyLimit: 10000},
 	}
 	allIPs := append(yahooIPs, coxIPs...)
 	pool := buildTestPool(map[string][]vmtaEntry{
@@ -256,10 +257,10 @@ func TestVMTAPoolNext_OVH_CoxRoutesToYahooGroup(t *testing.T) {
 
 func TestVMTAPoolNext_OVH_YahooStaysInYahooGroup(t *testing.T) {
 	yahooIPs := []vmtaEntry{
-		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ovh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "active", WarmupDailyLimit: 10000},
 	}
 	generalIPs := []vmtaEntry{
-		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", IP: "144.225.178.10", Status: "active", WarmupDailyLimit: 10000},
 	}
 	allIPs := append(yahooIPs, generalIPs...)
 	pool := buildTestPool(map[string][]vmtaEntry{
@@ -274,10 +275,10 @@ func TestVMTAPoolNext_OVH_YahooStaysInYahooGroup(t *testing.T) {
 
 func TestVMTAPoolNext_OVH_BlocksFallbackToGeneral(t *testing.T) {
 	yahooIPs := []vmtaEntry{
-		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+		{ID: "ovh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
 	}
 	generalIPs := []vmtaEntry{
-		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", IP: "144.225.178.10", Status: "active", WarmupDailyLimit: 10000},
 	}
 	allIPs := append(yahooIPs, generalIPs...)
 	pool := buildTestPool(map[string][]vmtaEntry{
@@ -295,10 +296,10 @@ func TestVMTAPoolNext_OVH_BlocksFallbackToGeneral(t *testing.T) {
 
 func TestVMTAPoolNext_OVH_NonOVH_StillFallsBack(t *testing.T) {
 	yahooIPs := []vmtaEntry{
-		{ID: "ovh1", Hostname: "mta2.mail.em.discountblog.com", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
+		{ID: "ovh1", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "warmup", WarmupDailyLimit: 50, TodaySent: 50},
 	}
 	generalIPs := []vmtaEntry{
-		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "gen1", Hostname: "ipxo-gen.mail.em.discountblog.com", IP: "144.225.178.10", Status: "active", WarmupDailyLimit: 10000},
 	}
 	allIPs := append(yahooIPs, generalIPs...)
 	pool := buildTestPool(map[string][]vmtaEntry{
@@ -309,4 +310,36 @@ func TestVMTAPoolNext_OVH_NonOVH_StillFallsBack(t *testing.T) {
 	ip, err := pool.next("verizon")
 	require.NoError(t, err)
 	assert.Equal(t, "gen1", ip.ID, "non-OVH ISPs must still fall back to general")
+}
+
+func TestVMTAPoolNext_OVH_IPPrefixFiltersIPXOFromYahooGroup(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ipxo_in_yahoo", Hostname: "mta-db-yh2.mail.em.discountblog.com", IP: "144.225.178.7", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ovh_in_yahoo", Hostname: "mta-a-shrd1.mail.em.discountblog.com", IP: "15.204.22.177", Status: "active", WarmupDailyLimit: 10000},
+	}
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo": yahooIPs,
+	}, yahooIPs, "db")
+
+	for i := 0; i < 10; i++ {
+		ip, err := pool.next("yahoo")
+		require.NoError(t, err)
+		assert.Equal(t, "ovh_in_yahoo", ip.ID, "IPXO IP in yahoo group must be filtered out by IP prefix check")
+		assert.True(t, strings.HasPrefix(ip.IP, "15.204."), "selected IP must be OVH")
+	}
+}
+
+func TestVMTAPoolNext_OVH_AllIPXOInYahooGroup_ReturnsError(t *testing.T) {
+	yahooIPs := []vmtaEntry{
+		{ID: "ipxo1", Hostname: "mta-db-yh2.mail.em.discountblog.com", IP: "144.225.178.7", Status: "active", WarmupDailyLimit: 10000},
+		{ID: "ipxo2", Hostname: "mta-db-yh3.mail.em.discountblog.com", IP: "144.225.178.8", Status: "active", WarmupDailyLimit: 10000},
+	}
+	pool := buildTestPool(map[string][]vmtaEntry{
+		"yahoo": yahooIPs,
+	}, yahooIPs, "db")
+
+	_, err := pool.next("yahoo")
+	require.Error(t, err)
+	var ovhErr ovhExhaustedError
+	assert.True(t, errors.As(err, &ovhErr), "when only IPXO IPs exist in yahoo group, must return ovhExhaustedError")
 }

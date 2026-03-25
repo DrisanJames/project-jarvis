@@ -27,6 +27,7 @@ import (
 type vmtaEntry struct {
 	ID               string
 	Hostname         string
+	IP               string // e.g. "15.204.22.177" or "144.225.178.7"
 	Status           string // "active" or "warmup"
 	WarmupDailyLimit int
 	TodaySent        int64 // from mailing_ip_warmup_log.actual_sent
@@ -53,6 +54,11 @@ var ovhRequiredSuffixes = map[string]bool{
 	"att":   true,
 	"cox":   true,
 }
+
+// ovhIPPrefix is the network prefix for all OVH Cloud IPs in our fleet.
+// Used as defense-in-depth to ensure OVH-required ISPs never route through
+// IPXO IPs, regardless of database pool assignments.
+const ovhIPPrefix = "15.204."
 
 // ovhExhaustedError is returned when an OVH-required ISP cannot find an
 // available IP in the yahoo group. The Send() caller uses this to trigger
@@ -121,7 +127,8 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 			SELECT ip.id, ip.hostname, ip.status,
 			       COALESCE(ip.warmup_daily_limit, 50),
 			       COALESCE(wl.actual_sent, 0),
-			       pool.name AS pool_name
+			       pool.name AS pool_name,
+			       COALESCE(host(ip.ip_address), '')
 			FROM mailing_ip_addresses ip
 			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
 			LEFT JOIN mailing_ip_warmup_log wl ON wl.ip_id = ip.id AND wl.date = CURRENT_DATE
@@ -136,7 +143,8 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 			SELECT ip.id, ip.hostname, ip.status,
 			       COALESCE(ip.warmup_daily_limit, 50),
 			       COALESCE(wl.actual_sent, 0),
-			       pool.name AS pool_name
+			       pool.name AS pool_name,
+			       COALESCE(host(ip.ip_address), '')
 			FROM mailing_ip_addresses ip
 			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
 			JOIN mailing_sending_profiles sp ON sp.ip_pool = pool.name
@@ -158,7 +166,7 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	for rows.Next() {
 		var e vmtaEntry
 		var poolName string
-		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent, &poolName); err != nil {
+		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent, &poolName, &e.IP); err != nil {
 			continue
 		}
 		allIPs = append(allIPs, e)
@@ -245,8 +253,8 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 		if len(idShort) > 8 {
 			idShort = idShort[:8]
 		}
-		log.Printf("[vmtaPool] Selected VMTA=%s IP=%s ISP=%s poolPrefix=%s source=%s sent=%d/%d",
-			vmtaShortName(ip.Hostname), idShort, recipientISP, p.poolPrefix, source, ip.TodaySent, ip.WarmupDailyLimit)
+		log.Printf("[vmtaPool] Selected VMTA=%s addr=%s ISP=%s poolPrefix=%s source=%s sent=%d/%d",
+			vmtaShortName(ip.Hostname), ip.IP, recipientISP, p.poolPrefix, source, ip.TodaySent, ip.WarmupDailyLimit)
 		return ip, nil
 	}
 
@@ -256,6 +264,10 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 		for attempts := 0; attempts < len(group); attempts++ {
 			idx := atomic.AddUint64(counter, 1) % uint64(len(group))
 			ip := group[idx]
+			if ovhRequired && !strings.HasPrefix(ip.IP, ovhIPPrefix) {
+				log.Printf("[vmtaPool] OVH-only: SKIPPING non-OVH IP=%s host=%s for ISP=%s", ip.IP, ip.Hostname, recipientISP)
+				continue
+			}
 			if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 				continue
 			}
