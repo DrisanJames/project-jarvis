@@ -264,20 +264,8 @@ func createPMTAWaveCampaign(
 		}
 
 		recipients := audience.RecipientsByISP[plan.ISP]
-		for _, rec := range recipients {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO mailing_campaign_plan_recipients (
-					id, campaign_id, isp_plan_id, subscriber_id, email, recipient_isp,
-					selection_rank, audience_source_type, audience_source_id, status, created_at
-				) VALUES (
-					$1, $2, $3, $4, $5, $6,
-					$7, $8, $9, 'selected', NOW()
-				)
-			`, uuid.New(), campaignID, planID, mustUUID(rec.SubscriberID), rec.Email, rec.ISP,
-				rec.SelectionRank, rec.SourceType, parseNullableUUID(rec.SourceID),
-			); err != nil {
-				return engine.PMTAWavePlanResult{}, fmt.Errorf("insert plan recipient for %s: %w", plan.ISP, err)
-			}
+		if err := batchInsertPlanRecipients(ctx, tx, campaignID, planID, plan.ISP, recipients); err != nil {
+			return engine.PMTAWavePlanResult{}, err
 		}
 
 		waves := buildPMTAWaveSpecs(campaignID.String(), plan, selectedCount)
@@ -582,6 +570,57 @@ func firstPlanTimezone(normalized pmtaNormalizedCampaign) string {
 		return "UTC"
 	}
 	return normalized.Plans[0].Timezone
+}
+
+// batchInsertPlanRecipients inserts plan recipients in multi-row batches
+// instead of one-at-a-time, reducing DB round trips from N to ceil(N/200).
+func batchInsertPlanRecipients(
+	ctx context.Context,
+	tx *sql.Tx,
+	campaignID uuid.UUID,
+	planID uuid.UUID,
+	ispName string,
+	recipients []pmtaSelectedRecipient,
+) error {
+	if len(recipients) == 0 {
+		return nil
+	}
+	const batchSize = 200
+	const paramsPerRow = 9
+
+	for i := 0; i < len(recipients); i += batchSize {
+		end := i + batchSize
+		if end > len(recipients) {
+			end = len(recipients)
+		}
+		batch := recipients[i:end]
+
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO mailing_campaign_plan_recipients (
+			id, campaign_id, isp_plan_id, subscriber_id, email, recipient_isp,
+			selection_rank, audience_source_type, audience_source_id, status, created_at
+		) VALUES `)
+
+		args := make([]any, 0, len(batch)*paramsPerRow)
+		for j, rec := range batch {
+			if j > 0 {
+				sb.WriteString(", ")
+			}
+			base := j * paramsPerRow
+			fmt.Fprintf(&sb, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, 'selected', NOW())",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+			args = append(args,
+				uuid.New(), campaignID, planID,
+				mustUUID(rec.SubscriberID), rec.Email, rec.ISP,
+				rec.SelectionRank, rec.SourceType, parseNullableUUID(rec.SourceID),
+			)
+		}
+
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("insert plan recipients batch for %s: %w", ispName, err)
+		}
+	}
+	return nil
 }
 
 func parseNullableUUID(raw string) interface{} {

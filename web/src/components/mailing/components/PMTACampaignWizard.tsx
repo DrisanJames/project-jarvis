@@ -1281,7 +1281,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/deploy`, {
         method: 'POST',
         body: JSON.stringify(buildCampaignPayload()),
-      }, 3);
+      }, 0);
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setDeployResult({ error: `Deploy timed out (HTTP ${res.status}). The campaign may still be processing — check the campaign list before retrying.` });
+        setDeploying(false);
+        return;
+      }
       const data = await res.json();
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
