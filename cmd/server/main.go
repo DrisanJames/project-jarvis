@@ -2704,6 +2704,16 @@ BEGIN
         END IF;
     END LOOP;
 END $$`},
+
+		// Phase 13: Pause all OVH IPs — all production sending now uses IPXO only.
+		{"phase13_pause_all_ovh_ips", `UPDATE mailing_ip_addresses
+			SET status = 'paused', updated_at = NOW()
+			WHERE ip_address <<= '15.204.22.176/28'::inet
+			  AND status NOT IN ('paused', 'cold')`},
+		{"phase13_pause_all_ovh_ips_block2", `UPDATE mailing_ip_addresses
+			SET status = 'paused', updated_at = NOW()
+			WHERE ip_address <<= '15.204.38.160/28'::inet
+			  AND status NOT IN ('paused', 'cold')`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

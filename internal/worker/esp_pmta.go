@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"mime/quotedprintable"
@@ -46,31 +45,6 @@ type VMTAInfo struct {
 // ISP pool suffix (e.g. "gmail", "yahoo", "general").
 type OnIPsChangedFunc func(prefix string, ispGroups map[string][]VMTAInfo)
 
-// ovhRequiredSuffixes lists ISP pool suffixes that MUST route exclusively
-// through OVH IPs (housed in the "yahoo" ISP group). These ISPs must never
-// fall back to general or flat-list pools which may contain IPXO IPs.
-var ovhRequiredSuffixes = map[string]bool{
-	"yahoo": true,
-	"att":   true,
-	"cox":   true,
-}
-
-// ovhIPPrefix is the network prefix for all OVH Cloud IPs in our fleet.
-// Used as defense-in-depth to ensure OVH-required ISPs never route through
-// IPXO IPs, regardless of database pool assignments.
-const ovhIPPrefix = "15.204."
-
-// ovhExhaustedError is returned when an OVH-required ISP cannot find an
-// available IP in the yahoo group. The Send() caller uses this to trigger
-// a forced refresh and one retry before giving up.
-type ovhExhaustedError struct {
-	isp        string
-	poolPrefix string
-}
-
-func (e ovhExhaustedError) Error() string {
-	return fmt.Sprintf("ovh-required pool exhausted (ISP=%s, poolPrefix=%s)", e.isp, e.poolPrefix)
-}
 
 type vmtaPool struct {
 	mu           sync.RWMutex
@@ -228,10 +202,8 @@ func (p *vmtaPool) forceRefresh(ctx context.Context, profileID string) {
 }
 
 // next returns the next available IP for the given recipient ISP,
-// enforcing warmup daily limits. For OVH-required ISPs (yahoo, att, cox),
-// all traffic is forced through the "yahoo" ISP group and fallback to
-// general or flat-list pools is blocked. Other ISPs retain the original
-// general → flat-list fallback chain.
+// enforcing warmup daily limits. Fallback chain: ISP-specific group →
+// general pool → flat list.
 func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -241,12 +213,6 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 	}
 
 	poolSuffix := ISPPoolSuffix(recipientISP)
-
-	ovhRequired := ovhRequiredSuffixes[poolSuffix]
-	if ovhRequired && poolSuffix != "yahoo" {
-		log.Printf("[vmtaPool] OVH-only: remapping ISP=%s (suffix=%s) → yahoo group", recipientISP, poolSuffix)
-		poolSuffix = "yahoo"
-	}
 
 	selectIP := func(source string, ip vmtaEntry) (vmtaEntry, error) {
 		idShort := ip.ID
@@ -264,10 +230,6 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 		for attempts := 0; attempts < len(group); attempts++ {
 			idx := atomic.AddUint64(counter, 1) % uint64(len(group))
 			ip := group[idx]
-			if ovhRequired && !strings.HasPrefix(ip.IP, ovhIPPrefix) {
-				log.Printf("[vmtaPool] OVH-only: SKIPPING non-OVH IP=%s host=%s for ISP=%s", ip.IP, ip.Hostname, recipientISP)
-				continue
-			}
 			if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
 				continue
 			}
@@ -275,14 +237,7 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 		}
 	}
 
-	// OVH-required ISPs: never fall back to general or flat-list (IPXO IPs).
-	if ovhRequired {
-		log.Printf("[vmtaPool] OVH-only EXHAUSTED: yahoo group empty/exhausted for ISP=%s, poolPrefix=%s — blocking fallback to IPXO",
-			recipientISP, p.poolPrefix)
-		return vmtaEntry{}, ovhExhaustedError{isp: recipientISP, poolPrefix: p.poolPrefix}
-	}
-
-	// Tier 2: general pool fallback (non-OVH ISPs only)
+	// Tier 2: general pool fallback
 	if poolSuffix != "general" {
 		if general, ok := p.ispGroups["general"]; ok && len(general) > 0 {
 			counter := p.ispIdx["general"]
@@ -297,7 +252,7 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 		}
 	}
 
-	// Tier 3: flat list fallback (non-OVH ISPs only)
+	// Tier 3: flat list fallback
 	for attempts := 0; attempts < len(p.ips); attempts++ {
 		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
 		ip := p.ips[idx]
@@ -462,15 +417,6 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	} else {
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
-		if vmtaErr != nil {
-			var ovhErr ovhExhaustedError
-			if errors.As(vmtaErr, &ovhErr) {
-				log.Printf("[PMTA-SMTP] OVH self-heal: forcing refresh for ISP=%s, profile=%s",
-					msg.RecipientISP, msg.ProfileID)
-				s.ipPool.forceRefresh(ctx, msg.ProfileID)
-				ip, vmtaErr = s.ipPool.next(msg.RecipientISP)
-			}
-		}
 		if vmtaErr != nil {
 			if len(s.ipPool.ips) > 0 {
 				return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)

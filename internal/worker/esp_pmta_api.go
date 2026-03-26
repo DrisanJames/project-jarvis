@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -141,15 +140,6 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	} else if s.ipPool != nil && msg.ProfileID != "" {
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		ip, err := s.ipPool.next(msg.RecipientISP)
-		if err != nil {
-			var ovhErr ovhExhaustedError
-			if errors.As(err, &ovhErr) {
-				log.Printf("[PMTA-API] OVH self-heal: forcing refresh for ISP=%s, profile=%s",
-					msg.RecipientISP, msg.ProfileID)
-				s.ipPool.forceRefresh(ctx, msg.ProfileID)
-				ip, err = s.ipPool.next(msg.RecipientISP)
-			}
-		}
 		if err != nil && len(s.ipPool.ips) > 0 {
 			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", err)
 		}
