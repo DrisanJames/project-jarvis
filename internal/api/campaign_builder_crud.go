@@ -56,7 +56,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			   COALESCE(p.vendor_type, '') as vendor_type,
 			   COALESCE(l.name, '') as list_name,
 			   COALESCE(c.list_ids::text, '[]'),
-			   LEFT(COALESCE(c.html_content,''), 500),
+			   COALESCE(c.html_content,''),
 			   COALESCE(c.preview_text, ''),
 			   COALESCE(seg.name, '') as segment_name,
 			   COALESCE(c.pmta_config->'campaign_input'->>'inclusion_segments', '[]')
