@@ -1108,7 +1108,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 			trackBase,
 		)
 		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), trackBase)
-		headers["List-Unsubscribe"] = fmt.Sprintf("<%s>", unsubURL)
+
+		// RFC 8058: both mailto: and https: for maximum ISP compatibility.
+		// mailto: must be domain-aligned with the From address for ISP trust.
+		fromDomain := item.FromEmail
+		if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
+			fromDomain = item.FromEmail[atIdx+1:]
+		}
+		unsubData := fmt.Sprintf("%s|%s|%s", p.orgID, item.CampaignID.String(), item.SubscriberID.String())
+		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+		mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
+		headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, unsubURL)
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
 		// Replace {{ system.unsubscribe_url }} in body if present

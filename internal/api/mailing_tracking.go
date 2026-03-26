@@ -239,6 +239,13 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	svc.updateISPAgent(ctx, campaignID, isp, "click")
 	svc.incrClickEngagement(isp, subscriberID.String())
 
+	// PHASE 2 (not yet implemented): When CNAME records exist (e.g. trk.discountblog.com
+	// pointing to projectjarvis.io), we can set a true first-party cookie here because the
+	// cookie domain matches the landing page's registrable domain. Until then, identity is
+	// carried via URL params (sid/eid/cid) and the JS-set first-party cookie on the landing
+	// page. Cross-origin Set-Cookie from projectjarvis.io is blocked by Safari ITP, Firefox
+	// ETP, and Chrome Privacy Sandbox in 2026.
+
 	redirectURL := enrichOwnedDomainURL(originalURL, subscriberID, emailID, campaignID)
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 }
@@ -337,6 +344,12 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	}
 
 	log.Printf("TRACK UNSUBSCRIBE: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
+
+	// RFC 8058: ISP one-click POST expects a minimal 200 response, not HTML.
+	if r.Method == http.MethodPost {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(`<!DOCTYPE html>
@@ -693,4 +706,106 @@ func extractIPFromRemoteAddr(addr string) *string {
 		return &addr
 	}
 	return nil
+}
+
+// HandleInboundMailtoUnsubscribe processes forwarded inbound emails sent to
+// unsub+{encoded}@{domain} addresses. The encoded local-part contains the
+// base64-encoded orgID|campaignID|subscriberID token. This endpoint is called
+// by SES inbound rules, Mailgun routes, or any MTA that can POST received
+// mail to a webhook.
+//
+// Expected POST body (JSON):
+//
+//	{ "recipient": "unsub+TOKEN@em.quizfiesta.com" }
+//
+// or SES SNS notification with the recipient in the envelope.
+func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	type inboundPayload struct {
+		Recipient string `json:"recipient"`
+	}
+
+	var payload inboundPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	recipient := strings.ToLower(strings.TrimSpace(payload.Recipient))
+	if recipient == "" {
+		http.Error(w, "missing recipient", http.StatusBadRequest)
+		return
+	}
+
+	// Extract the +encoded portion: unsub+TOKEN@domain
+	localPart := recipient
+	if atIdx := strings.Index(recipient, "@"); atIdx >= 0 {
+		localPart = recipient[:atIdx]
+	}
+	plusIdx := strings.Index(localPart, "+")
+	if plusIdx < 0 || !strings.HasPrefix(localPart, "unsub+") {
+		http.Error(w, "invalid unsub address format", http.StatusBadRequest)
+		return
+	}
+	encoded := localPart[plusIdx+1:]
+
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		log.Printf("INBOUND UNSUB: base64 decode error for recipient=%s: %v", logger.RedactEmail(recipient), err)
+		http.Error(w, "invalid token", http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) < 3 {
+		http.Error(w, "invalid token data", http.StatusBadRequest)
+		return
+	}
+
+	orgID, _ := uuid.Parse(parts[0])
+	campaignID, _ := uuid.Parse(parts[1])
+	subscriberID, _ := uuid.Parse(parts[2])
+
+	var email string
+	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
+
+	if email == "" {
+		log.Printf("INBOUND UNSUB: subscriber %s not found", subscriberID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	isp := extractISP(email)
+
+	if svc.onTrackingEvent != nil {
+		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, isp)
+	}
+
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at)
+		VALUES ($1, $2, $3, $4, 'unsubscribed', NOW())
+	`, uuid.New(), orgID, campaignID, subscriberID)
+
+	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1`, subscriberID)
+	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET unsubscribe_count = COALESCE(unsubscribe_count, 0) + 1 WHERE id = $1`, campaignID)
+
+	svc.db.ExecContext(ctx, `
+		INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
+		VALUES ($1, $2, 'User unsubscribed (mailto)', 'mailto_unsubscribe', true, NOW(), NOW())
+		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'User unsubscribed (mailto)', updated_at = NOW()
+	`, uuid.New(), email)
+
+	if email != "" {
+		emailLower := strings.ToLower(strings.TrimSpace(email))
+		md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
+		svc.db.ExecContext(ctx, `
+			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, isp, created_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, 'unsubscribe', 'mailto_unsubscribe', $4, NOW())
+			ON CONFLICT (organization_id, md5_hash) DO UPDATE SET reason = 'unsubscribe', updated_at = NOW()
+		`, orgID, emailLower, md5Hash, isp)
+	}
+
+	log.Printf("INBOUND MAILTO UNSUB: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
+	w.WriteHeader(http.StatusOK)
 }

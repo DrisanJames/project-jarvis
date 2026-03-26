@@ -144,6 +144,8 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/site-pixel/traffic/stream", siteEventsHandler.HandleSiteTrafficStream)
 			r.Get("/site-pixel/domains", siteEventsHandler.HandleGetTrackedDomains)
 			r.Get("/site-pixel/visitors", siteEventsHandler.HandleGetIdentifiedVisitors)
+			r.Get("/site-pixel/isp-reconciliation", siteEventsHandler.HandleISPReconciliation)
+			r.Get("/site-pixel/ghost-visitors", siteEventsHandler.HandleGhostVisitors)
 
 			// Platform info
 			r.Get("/version", s.HandleVersion)
@@ -489,6 +491,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// One-click unsubscribe (RFC 8058)
 			r.Post("/unsubscribe/one-click", suppSvc.HandleOneClickUnsubscribe)
 			r.Get("/unsubscribe/list-header", suppSvc.HandleListUnsubscribeHeader)
+
+			// Inbound mailto: unsubscribe webhook (receives forwarded unsub emails from SES/Mailgun)
+			r.Post("/webhooks/unsub-inbound", svc.HandleInboundMailtoUnsubscribe)
 			
 			// === AI SEND TIME OPTIMIZATION ===
 			aiSendTimeHandlers := NewAISendTimeHandlers(db)
