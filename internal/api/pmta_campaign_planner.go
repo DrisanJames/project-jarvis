@@ -469,18 +469,33 @@ func planPMTAAudience(
 
 	allowedISPs := make(map[string]bool, len(normalized.Plans))
 	planMap := make(map[string]pmtaNormalizedPlan, len(normalized.Plans))
+	ispQuota := make(map[string]int, len(normalized.Plans))
 	for _, plan := range normalized.Plans {
 		allowedISPs[plan.ISP] = true
 		planMap[plan.ISP] = plan
+		ispQuota[plan.ISP] = plan.Quota // 0 = unlimited
 	}
 
 	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
 	var qualified []pmtaSelectedRecipient
 	seenEmails := make(map[string]bool)
 	selectionRank := 0
+	qualifiedPerISP := make(map[string]int, len(normalized.Plans))
 
 	// Async ISP backfill: collect subscriber IDs that need ISP set, flush in background.
 	var ispBackfill []struct{ ID, ISP string }
+
+	allQuotasMet := func() bool {
+		for isp, q := range ispQuota {
+			if q <= 0 {
+				return false // unlimited ISP = never "met"
+			}
+			if qualifiedPerISP[isp] < q {
+				return false
+			}
+		}
+		return true
+	}
 
 	qualifyEmail := func(subID, email, sourceType, sourceID string) bool {
 		emailLower := strings.ToLower(strings.TrimSpace(email))
@@ -517,6 +532,11 @@ func planPMTAAudience(
 		if len(allowedISPs) > 0 && !allowedISPs[isp] {
 			return false
 		}
+
+		if q := ispQuota[isp]; q > 0 && qualifiedPerISP[isp] >= q {
+			return false
+		}
+
 		selectionRank++
 		qualified = append(qualified, pmtaSelectedRecipient{
 			SubscriberID:  subID,
@@ -526,11 +546,15 @@ func planPMTAAudience(
 			SourceID:      sourceID,
 			SelectionRank: selectionRank,
 		})
+		qualifiedPerISP[isp]++
 		ispBackfill = append(ispBackfill, struct{ ID, ISP string }{subID, isp})
 		return true
 	}
 
 	streamList := func(listID string) error {
+		if allQuotasMet() {
+			return nil
+		}
 		rows, err := db.QueryContext(ctx, `
 			SELECT s.id::text, s.email
 			FROM mailing_subscribers s
@@ -546,11 +570,17 @@ func planPMTAAudience(
 			if rows.Scan(&subID, &email) == nil {
 				qualifyEmail(subID, email, "list", listID)
 			}
+			if allQuotasMet() {
+				break
+			}
 		}
 		return nil
 	}
 
 	streamSegment := func(segmentID string) error {
+		if allQuotasMet() {
+			return nil
+		}
 		var segListID *string
 		var conditionsRaw sql.NullString
 		if err := db.QueryRowContext(ctx,
@@ -574,12 +604,18 @@ func planPMTAAudience(
 			if rows.Scan(&subID, &email) == nil {
 				qualifyEmail(subID, email, "segment", segmentID)
 			}
+			if allQuotasMet() {
+				break
+			}
 		}
 		return nil
 	}
 
 	if len(input.SendPriority) > 0 {
 		for _, item := range input.SendPriority {
+			if allQuotasMet() {
+				break
+			}
 			switch item.Type {
 			case "list":
 				resolved := resolveListNamesToIDs(ctx, db, orgID, []string{item.ID})
@@ -596,15 +632,26 @@ func planPMTAAudience(
 		}
 	} else {
 		for _, listID := range inclusionIDs {
+			if allQuotasMet() {
+				break
+			}
 			if err := streamList(listID); err != nil {
 				return pmtaAudiencePlan{}, err
 			}
 		}
 		for _, segmentID := range input.InclusionSegments {
+			if allQuotasMet() {
+				break
+			}
 			if err := streamSegment(segmentID); err != nil {
 				return pmtaAudiencePlan{}, err
 			}
 		}
+	}
+
+	if len(ispQuota) > 0 {
+		log.Printf("[PlanAudience] early-cutoff: scanned %d unique emails, qualified %d (quotas: %v, filled: %v)",
+			len(seenEmails), len(qualified), ispQuota, qualifiedPerISP)
 	}
 
 	recipientsByISP := make(map[string][]pmtaSelectedRecipient, len(normalized.Plans))

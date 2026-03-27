@@ -1,8 +1,13 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
 func TestMinSpanForVolume(t *testing.T) {
@@ -248,5 +253,205 @@ func TestIsUserExplicitSpan(t *testing.T) {
 				t.Errorf("isUserExplicitSpan(%q) = %v, want %v", tt.source, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPlanPMTAAudience_EarlyQuotaCutoff(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	listID := "aaaaaaaa-0000-0000-0000-000000000001"
+
+	gmailQuota := 5
+	yahooQuota := 3
+	totalQuota := gmailQuota + yahooQuota
+
+	// Seed 100 Gmail + 100 Yahoo subscribers — far exceeding the quotas.
+	subscriberRows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 100; i++ {
+		subscriberRows.AddRow(
+			fmt.Sprintf("11111111-0000-0000-0000-%012d", i),
+			fmt.Sprintf("user%d@gmail.com", i),
+		)
+	}
+	for i := 0; i < 100; i++ {
+		subscriberRows.AddRow(
+			fmt.Sprintf("22222222-0000-0000-0000-%012d", i),
+			fmt.Sprintf("user%d@yahoo.com", i),
+		)
+	}
+
+	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
+		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
+	mock.ExpectQuery("SELECT s.id::text, s.email").
+		WithArgs(listID).
+		WillReturnRows(subscriberRows)
+
+	input := engine.PMTACampaignInput{
+		InclusionLists: []string{listID},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: gmailQuota},
+			{ISP: "yahoo", Quota: yahooQuota},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{
+			{ISP: "gmail", Quota: gmailQuota},
+			{ISP: "yahoo", Quota: yahooQuota},
+		},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if result.CountsByISP["gmail"] != gmailQuota {
+		t.Errorf("gmail count = %d, want %d", result.CountsByISP["gmail"], gmailQuota)
+	}
+	if result.CountsByISP["yahoo"] != yahooQuota {
+		t.Errorf("yahoo count = %d, want %d", result.CountsByISP["yahoo"], yahooQuota)
+	}
+	if result.SelectedTotal != totalQuota {
+		t.Errorf("SelectedTotal = %d, want %d", result.SelectedTotal, totalQuota)
+	}
+
+	// The early cutoff should have stopped scanning well before 200 rows.
+	// TotalSeen is the count of unique emails processed (deduped). With
+	// the cutoff active, it must be much less than the full 200.
+	if result.TotalSeen >= 200 {
+		t.Errorf("TotalSeen = %d — expected early cutoff to stop before scanning all 200 rows", result.TotalSeen)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+func TestPlanPMTAAudience_UnlimitedQuotaStreamsAll(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	listID := "aaaaaaaa-0000-0000-0000-000000000002"
+
+	subscriberRows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 50; i++ {
+		subscriberRows.AddRow(
+			fmt.Sprintf("33333333-0000-0000-0000-%012d", i),
+			fmt.Sprintf("user%d@gmail.com", i),
+		)
+	}
+
+	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
+		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
+	mock.ExpectQuery("SELECT s.id::text, s.email").
+		WithArgs(listID).
+		WillReturnRows(subscriberRows)
+
+	input := engine.PMTACampaignInput{
+		InclusionLists: []string{listID},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 0}, // 0 = unlimited
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{
+			{ISP: "gmail", Quota: 0},
+		},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if result.CountsByISP["gmail"] != 50 {
+		t.Errorf("gmail count = %d, want 50 (unlimited quota should select all)", result.CountsByISP["gmail"])
+	}
+	if result.TotalSeen != 50 {
+		t.Errorf("TotalSeen = %d, want 50", result.TotalSeen)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+func TestPlanPMTAAudience_RespectsSendPriority(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	list1 := "aaaaaaaa-0000-0000-0000-000000000003"
+	list2 := "aaaaaaaa-0000-0000-0000-000000000004"
+
+	list1Rows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 10; i++ {
+		list1Rows.AddRow(
+			fmt.Sprintf("44444444-0000-0000-0000-%012d", i),
+			fmt.Sprintf("priority%d@gmail.com", i),
+		)
+	}
+	list2Rows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 10; i++ {
+		list2Rows.AddRow(
+			fmt.Sprintf("55555555-0000-0000-0000-%012d", i),
+			fmt.Sprintf("secondary%d@gmail.com", i),
+		)
+	}
+
+	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
+		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
+	// First list streamed (high priority)
+	mock.ExpectQuery("SELECT s.id::text, s.email").
+		WithArgs(list1).
+		WillReturnRows(list1Rows)
+	// Second list should NOT be queried because quota (3) is met by list1
+
+	input := engine.PMTACampaignInput{
+		InclusionLists: []string{list1, list2},
+		SendPriority: []engine.PriorityItem{
+			{ID: list1, Type: "list"},
+			{ID: list2, Type: "list"},
+		},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 3},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{
+			{ISP: "gmail", Quota: 3},
+		},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if result.CountsByISP["gmail"] != 3 {
+		t.Errorf("gmail count = %d, want 3", result.CountsByISP["gmail"])
+	}
+
+	// All selected should be from the priority list
+	for _, rec := range result.RecipientsByISP["gmail"] {
+		if rec.SourceID != list1 {
+			t.Errorf("expected all recipients from priority list %s, got source %s", list1, rec.SourceID)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
 	}
 }
