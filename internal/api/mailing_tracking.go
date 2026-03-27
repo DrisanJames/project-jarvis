@@ -777,19 +777,20 @@ func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter,
 		recipient = payload.Recipient
 	}
 
-	recipient = strings.ToLower(strings.TrimSpace(recipient))
+	recipient = strings.TrimSpace(recipient)
 	if recipient == "" {
 		http.Error(w, "missing recipient", http.StatusBadRequest)
 		return
 	}
 
 	// Extract the +encoded portion: unsub+TOKEN@domain
+	// Only lowercase for the prefix check — the base64 token is case-sensitive.
 	localPart := recipient
 	if atIdx := strings.Index(recipient, "@"); atIdx >= 0 {
 		localPart = recipient[:atIdx]
 	}
 	plusIdx := strings.Index(localPart, "+")
-	if plusIdx < 0 || !strings.HasPrefix(localPart, "unsub+") {
+	if plusIdx < 0 || !strings.HasPrefix(strings.ToLower(localPart), "unsub+") {
 		log.Printf("INBOUND UNSUB: not an unsub address: %s", logger.RedactEmail(recipient))
 		w.WriteHeader(http.StatusOK)
 		return
