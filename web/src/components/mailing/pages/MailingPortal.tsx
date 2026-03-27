@@ -1279,7 +1279,7 @@ const AIAgentsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId
 };
 
 // ─── Site Traffic Dashboard ────────────────────────────────────────────────
-const PAGE_VERSION_SITE_TRAFFIC = '2.0';
+const PAGE_VERSION_SITE_TRAFFIC = '3.0';
 const SiteTrafficDashboard: React.FC = () => {
   const { organization } = useAuth();
   const orgId = organization?.id || '';
@@ -1293,7 +1293,9 @@ const SiteTrafficDashboard: React.FC = () => {
   const [showSnippet, setShowSnippet] = useState(false);
   const [liveEvents, setLiveEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview'|'visitors'>('visitors');
+  const [activeTab, setActiveTab] = useState<'overview'|'visitors'|'reconciliation'>('visitors');
+  const [reconData, setReconData] = useState<any>(null);
+  const [reconLoading, setReconLoading] = useState(false);
 
   const fetchTraffic = React.useCallback(async () => {
     try {
@@ -1367,6 +1369,19 @@ const SiteTrafficDashboard: React.FC = () => {
       }
     } catch {}
   };
+
+  const fetchRecon = React.useCallback(async () => {
+    setReconLoading(true);
+    try {
+      const reconRange = timeRange === '1h' ? '1d' : timeRange;
+      const res = await fetch(`/api/mailing/site-pixel/isp-reconciliation?range=${reconRange}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
+      });
+      if (res.ok) setReconData(await res.json());
+    } catch {}
+    setReconLoading(false);
+  }, [orgId, timeRange]);
 
   const cardStyle: React.CSSProperties = { background: '#0d1526', borderRadius: 10, padding: '16px 20px', border: '1px solid rgba(0,200,255,0.08)' };
   const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e0e6f0', lineHeight: 1 };
@@ -1478,6 +1493,7 @@ const SiteTrafficDashboard: React.FC = () => {
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <button style={tabBtnStyle(activeTab === 'visitors')} onClick={() => setActiveTab('visitors')}>Identified Visitors</button>
             <button style={tabBtnStyle(activeTab === 'overview')} onClick={() => setActiveTab('overview')}>Overview</button>
+            <button style={tabBtnStyle(activeTab === 'reconciliation')} onClick={() => { setActiveTab('reconciliation'); if (!reconData) fetchRecon(); }}>ISP Reconciliation</button>
           </div>
 
           {activeTab === 'visitors' && (
@@ -1598,6 +1614,69 @@ const SiteTrafficDashboard: React.FC = () => {
                 </table>
               </div>
             </>
+          )}
+
+          {activeTab === 'reconciliation' && (
+            <div style={cardStyle}>
+              <h4 style={{ margin: '0 0 14px', fontSize: 14, color: '#e0e6f0' }}>ISP Engagement Reconciliation</h4>
+              <p style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '0 0 16px' }}>
+                Compares email-reported clicks with confirmed site visits by ISP. A <span style={{ color: '#ef4444' }}>low validation %</span> or <span style={{ color: '#f59e0b' }}>high ghost count</span> indicates ISP metric suppression.
+              </p>
+              {reconLoading ? (
+                <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>Loading reconciliation data...</div>
+              ) : reconData ? (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+                    <div style={{ ...cardStyle, borderLeft: '3px solid #00e5ff' }}>
+                      <div style={{ ...statStyle, fontSize: 22 }}>{reconData.total_email_clicked?.toLocaleString() ?? 0}</div>
+                      <div style={labelStyle}>Email Clicks (Reported)</div>
+                    </div>
+                    <div style={{ ...cardStyle, borderLeft: '3px solid #00b894' }}>
+                      <div style={{ ...statStyle, fontSize: 22, color: '#00b894' }}>{reconData.total_site_visitors?.toLocaleString() ?? 0}</div>
+                      <div style={labelStyle}>Site Visitors (Confirmed)</div>
+                    </div>
+                    <div style={{ ...cardStyle, borderLeft: '3px solid #f59e0b' }}>
+                      <div style={{ ...statStyle, fontSize: 22, color: '#f59e0b' }}>{reconData.total_ghost_visitors?.toLocaleString() ?? 0}</div>
+                      <div style={labelStyle}>Ghost Visitors</div>
+                    </div>
+                  </div>
+                  <div style={{ overflow: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '2px solid rgba(0,200,255,0.12)' }}>
+                          {['ISP','Subscribers','Sent','Opened','Clicked','Site Visitors','Pageviews','Validation %','Ghost Visitors'].map(h => (
+                            <th key={h} style={{ textAlign: h === 'ISP' ? 'left' : 'right', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(reconData.isps || []).map((row: any, i: number) => {
+                          const suppressed = row.click_validation_pct > 120 || (row.ghost_visitors > 0 && row.email_clicked === 0);
+                          return (
+                            <tr key={i} style={{ borderBottom: '1px solid rgba(0,200,255,0.06)', background: suppressed ? 'rgba(239,68,68,0.06)' : 'transparent' }}>
+                              <td style={{ padding: '10px 8px', color: '#00e5ff', fontWeight: 600 }}>{row.isp}{suppressed && <span style={{ marginLeft: 6, color: '#ef4444', fontSize: 10, fontWeight: 700 }}>SUPPRESSED</span>}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.total_subscribers?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_sent?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_opened?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_clicked?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#00b894', fontWeight: 600 }}>{row.site_unique_visitors?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: 'rgba(180,210,240,0.65)' }}>{row.site_total_pageviews?.toLocaleString()}</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: row.click_validation_pct > 120 ? '#ef4444' : row.click_validation_pct > 80 ? '#00b894' : '#f59e0b', fontWeight: 700 }}>{row.click_validation_pct}%</td>
+                              <td style={{ padding: '10px 8px', textAlign: 'right', color: row.ghost_visitors > 0 ? '#f59e0b' : '#475569', fontWeight: row.ghost_visitors > 0 ? 700 : 400 }}>{row.ghost_visitors?.toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ marginTop: 12, padding: 12, background: 'rgba(0,200,255,0.04)', borderRadius: 8, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
+                    <strong style={{ color: '#e0e6f0' }}>Reading this report:</strong> Validation % above 100% means more people visited the site than the ISP reported as clicks — direct evidence of metric suppression. Ghost visitors are subscribers who visited the site but had zero recorded email clicks. A high ghost count for a specific ISP (e.g., Yahoo) is the "smoking gun."
+                  </div>
+                </>
+              ) : (
+                <div style={{ textAlign: 'center', padding: 40, color: '#64748b' }}>Click "ISP Reconciliation" to load the report.</div>
+              )}
+            </div>
           )}
 
           <div style={{ textAlign: 'right', fontSize: 10, color: '#374151', marginTop: 8 }}>v{PAGE_VERSION_SITE_TRAFFIC}</div>

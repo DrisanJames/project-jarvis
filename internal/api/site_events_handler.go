@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -698,7 +699,11 @@ func siteEventHash(s string) string {
 	return fmt.Sprintf("%x", h)
 }
 
-var allowedRefererDomains = []string{"getmecoupons.net", "discountblog.com", "quizfiesta.com", "localhost", "projectjarvis.io"}
+var allowedRefererDomains = []string{
+	"getmecoupons.net", "discountblog.com", "quizfiesta.com",
+	"historythinking.com", "myownhealth.net",
+	"localhost", "projectjarvis.io",
+}
 
 func isAllowedReferer(referer string) bool {
 	lower := strings.ToLower(referer)
@@ -735,4 +740,204 @@ func safeDeref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// HandleISPReconciliation compares email engagement metrics with first-party
+// site visit data by ISP to identify metric suppression.
+// GET /api/mailing/site-pixel/isp-reconciliation?range=7d
+func (h *SiteEventsHandler) HandleISPReconciliation(w http.ResponseWriter, r *http.Request) {
+	timeRange := r.URL.Query().Get("range")
+	if timeRange == "" {
+		timeRange = "7d"
+	}
+	var interval string
+	switch timeRange {
+	case "1d":
+		interval = "1 day"
+	case "7d":
+		interval = "7 days"
+	case "30d":
+		interval = "30 days"
+	default:
+		interval = "7 days"
+	}
+
+	query := `
+	WITH email_engagement AS (
+		SELECT
+			CASE
+				WHEN s.email ILIKE '%gmail%'     THEN 'Gmail'
+				WHEN s.email ILIKE '%yahoo%' OR s.email ILIKE '%ymail%' THEN 'Yahoo'
+				WHEN s.email ILIKE '%outlook%' OR s.email ILIKE '%hotmail%' OR s.email ILIKE '%live.com%' THEN 'Microsoft'
+				WHEN s.email ILIKE '%aol%'       THEN 'AOL'
+				WHEN s.email ILIKE '%icloud%' OR s.email ILIKE '%me.com%' OR s.email ILIKE '%mac.com%' THEN 'Apple'
+				WHEN s.email ILIKE '%comcast%'   THEN 'Comcast'
+				ELSE 'Other'
+			END AS isp,
+			COUNT(DISTINCT s.id)                                              AS total_subscribers,
+			COUNT(DISTINCT CASE WHEN te.event_type = 'sent'      THEN s.id END) AS email_sent,
+			COUNT(DISTINCT CASE WHEN te.event_type = 'opened'    THEN s.id END) AS email_opened,
+			COUNT(DISTINCT CASE WHEN te.event_type = 'clicked'   THEN s.id END) AS email_clicked
+		FROM mailing_subscribers s
+		LEFT JOIN mailing_tracking_events te ON te.subscriber_id = s.id
+			AND te.event_at > NOW() - $1::interval
+		WHERE s.status = 'active'
+		GROUP BY 1
+	),
+	site_visits AS (
+		SELECT
+			CASE
+				WHEN se.subscriber_email ILIKE '%gmail%'     THEN 'Gmail'
+				WHEN se.subscriber_email ILIKE '%yahoo%' OR se.subscriber_email ILIKE '%ymail%' THEN 'Yahoo'
+				WHEN se.subscriber_email ILIKE '%outlook%' OR se.subscriber_email ILIKE '%hotmail%' OR se.subscriber_email ILIKE '%live.com%' THEN 'Microsoft'
+				WHEN se.subscriber_email ILIKE '%aol%'       THEN 'AOL'
+				WHEN se.subscriber_email ILIKE '%icloud%' OR se.subscriber_email ILIKE '%me.com%' OR se.subscriber_email ILIKE '%mac.com%' THEN 'Apple'
+				WHEN se.subscriber_email ILIKE '%comcast%'   THEN 'Comcast'
+				ELSE 'Other'
+			END AS isp,
+			COUNT(DISTINCT se.subscriber_id) AS site_unique_visitors,
+			COUNT(*) AS site_total_pageviews
+		FROM subscriber_events se
+		WHERE se.source IN ('site','site_beacon')
+			AND se.event_type = 'page_view'
+			AND se.subscriber_email IS NOT NULL AND se.subscriber_email != ''
+			AND se.event_at > NOW() - $1::interval
+		GROUP BY 1
+	)
+	SELECT
+		COALESCE(e.isp, v.isp)                          AS isp,
+		COALESCE(e.total_subscribers, 0)                 AS total_subscribers,
+		COALESCE(e.email_sent, 0)                        AS email_sent,
+		COALESCE(e.email_opened, 0)                      AS email_opened,
+		COALESCE(e.email_clicked, 0)                     AS email_clicked,
+		COALESCE(v.site_unique_visitors, 0)              AS site_unique_visitors,
+		COALESCE(v.site_total_pageviews, 0)              AS site_total_pageviews,
+		CASE WHEN COALESCE(e.email_clicked, 0) > 0
+			THEN ROUND(COALESCE(v.site_unique_visitors,0)::numeric / e.email_clicked * 100, 1)
+			ELSE 0
+		END                                              AS click_validation_pct,
+		GREATEST(COALESCE(v.site_unique_visitors,0) - COALESCE(e.email_clicked,0), 0) AS ghost_visitors
+	FROM email_engagement e
+	FULL OUTER JOIN site_visits v ON e.isp = v.isp
+	ORDER BY COALESCE(e.total_subscribers, 0) DESC
+	`
+
+	rows, err := h.db.QueryContext(r.Context(), query, interval)
+	if err != nil {
+		log.Printf("[ISPRecon] query error: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	type ispRow struct {
+		ISP                string  `json:"isp"`
+		TotalSubscribers   int     `json:"total_subscribers"`
+		EmailSent          int     `json:"email_sent"`
+		EmailOpened        int     `json:"email_opened"`
+		EmailClicked       int     `json:"email_clicked"`
+		SiteUniqueVisitors int     `json:"site_unique_visitors"`
+		SiteTotalPageviews int     `json:"site_total_pageviews"`
+		ClickValidationPct float64 `json:"click_validation_pct"`
+		GhostVisitors      int     `json:"ghost_visitors"`
+	}
+
+	var results []ispRow
+	for rows.Next() {
+		var r ispRow
+		rows.Scan(
+			&r.ISP, &r.TotalSubscribers, &r.EmailSent, &r.EmailOpened,
+			&r.EmailClicked, &r.SiteUniqueVisitors, &r.SiteTotalPageviews,
+			&r.ClickValidationPct, &r.GhostVisitors,
+		)
+		results = append(results, r)
+	}
+	if results == nil {
+		results = []ispRow{}
+	}
+
+	var totalGhost, totalSiteVisitors, totalEmailClicked int
+	for _, r := range results {
+		totalGhost += r.GhostVisitors
+		totalSiteVisitors += r.SiteUniqueVisitors
+		totalEmailClicked += r.EmailClicked
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"isps":                results,
+		"time_range":          timeRange,
+		"total_ghost_visitors": totalGhost,
+		"total_site_visitors":  totalSiteVisitors,
+		"total_email_clicked":  totalEmailClicked,
+	})
+}
+
+// HandleGhostVisitors returns subscriber-level detail for ghost visitors:
+// subscribers with site activity but no email clicks recorded by the ISP.
+// Uses 45-day click window vs 30-day site visit window to prevent boundary false positives.
+// GET /api/mailing/site-pixel/ghost-visitors?limit=100
+func (h *SiteEventsHandler) HandleGhostVisitors(w http.ResponseWriter, r *http.Request) {
+	limitInt := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limitInt = v
+	}
+
+	query := `
+	SELECT
+		se.subscriber_email,
+		se.subscriber_id::text,
+		COUNT(*)                                 AS site_pageviews,
+		MAX(se.event_at)                         AS last_visit_at,
+		COALESCE(MAX(se.metadata->>'domain'),'') AS last_domain,
+		COALESCE(MAX(se.metadata->>'page_url'),'') AS last_page
+	FROM subscriber_events se
+	WHERE se.source IN ('site','site_beacon')
+		AND se.event_type = 'page_view'
+		AND se.subscriber_email IS NOT NULL AND se.subscriber_email != ''
+		AND se.subscriber_id IS NOT NULL
+		AND se.event_at > NOW() - INTERVAL '30 days'
+		AND NOT EXISTS (
+			SELECT 1 FROM mailing_tracking_events te
+			WHERE te.subscriber_id = se.subscriber_id
+				AND te.event_type = 'clicked'
+				AND te.event_at > NOW() - INTERVAL '45 days'
+		)
+	GROUP BY se.subscriber_email, se.subscriber_id
+	ORDER BY site_pageviews DESC
+	LIMIT $1
+	`
+
+	rows, err := h.db.QueryContext(r.Context(), query, limitInt)
+	if err != nil {
+		log.Printf("[GhostVisitors] query error: %v", err)
+		respondJSON(w, http.StatusOK, map[string]interface{}{"ghost_visitors": []interface{}{}, "total": 0})
+		return
+	}
+	defer rows.Close()
+
+	type ghostRow struct {
+		Email        string `json:"email"`
+		SubscriberID string `json:"subscriber_id"`
+		SiteViews    int    `json:"site_pageviews"`
+		LastVisitAt  string `json:"last_visit_at"`
+		LastDomain   string `json:"last_domain"`
+		LastPage     string `json:"last_page"`
+	}
+
+	var results []ghostRow
+	for rows.Next() {
+		var g ghostRow
+		var visitAt time.Time
+		rows.Scan(&g.Email, &g.SubscriberID, &g.SiteViews, &visitAt, &g.LastDomain, &g.LastPage)
+		g.LastVisitAt = visitAt.Format(time.RFC3339)
+		results = append(results, g)
+	}
+	if results == nil {
+		results = []ghostRow{}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"ghost_visitors": results,
+		"total":          len(results),
+	})
 }

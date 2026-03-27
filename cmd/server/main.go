@@ -436,6 +436,10 @@ func main() {
 				segRefresh.Start(ctx)
 				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m)")
 
+				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
+				ghostVisitorWorker.Start(ctx)
+				log.Println("Ghost Visitor Worker started (tags ghost visitors every 4h)")
+
 				// Start List Refresh Worker (updates subscriber_count and mailed_to on lists)
 				listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
 				listRefresh.Start(ctx)
@@ -2172,7 +2176,19 @@ END $$`},
 		{"phase6_ip_pool_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 
-		{"create_subscriber_events", `CREATE TABLE IF NOT EXISTS subscriber_events (
+		{"drop_subscriber_events_if_stale", `DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'subscriber_events' AND column_name = 'subscriber_id'
+			) AND EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_name = 'subscriber_events'
+			) THEN
+				DROP TABLE subscriber_events CASCADE;
+			END IF;
+		END $$`},
+		{"create_subscriber_events_v2", `CREATE TABLE IF NOT EXISTS subscriber_events (
 			id BIGSERIAL PRIMARY KEY,
 			email_hash VARCHAR(64) NOT NULL,
 			event_type VARCHAR(50) NOT NULL DEFAULT 'page_view',
@@ -2186,21 +2202,18 @@ END $$`},
 			ip_address VARCHAR(45),
 			user_agent TEXT
 		)`},
-		{"idx_sub_events_hash", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_hash ON subscriber_events(email_hash)`},
-		{"idx_sub_events_type", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_type ON subscriber_events(event_type)`},
-		{"idx_sub_events_at", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_at ON subscriber_events(event_at)`},
-		{"idx_sub_events_source", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_source ON subscriber_events(source)`},
-		{"idx_sub_events_domain", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_domain ON subscriber_events((metadata->>'domain'))`},
-		{"idx_sub_events_subscriber", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_subscriber ON subscriber_events(subscriber_id)`},
-		{"add_sub_events_identity_cols", `DO $$
+		{"idx_sub_events_hash_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_hash ON subscriber_events(email_hash)`},
+		{"idx_sub_events_type_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_type ON subscriber_events(event_type)`},
+		{"idx_sub_events_at_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_at ON subscriber_events(event_at)`},
+		{"idx_sub_events_source_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_source ON subscriber_events(source)`},
+		{"idx_sub_events_domain_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_domain ON subscriber_events((metadata->>'domain'))`},
+		{"idx_sub_events_subscriber_v2", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_subscriber ON subscriber_events(subscriber_id)`},
+		{"grant_subscriber_events_v2", `DO $$
 		BEGIN
-			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS subscriber_id UUID;
-			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS subscriber_email VARCHAR(255);
-			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45);
-			ALTER TABLE subscriber_events ADD COLUMN IF NOT EXISTS user_agent TEXT;
+			GRANT ALL ON TABLE subscriber_events TO ignite;
+			GRANT ALL ON SEQUENCE subscriber_events_id_seq TO ignite;
 		EXCEPTION WHEN OTHERS THEN NULL;
 		END $$`},
-		{"grant_subscriber_events", `GRANT ALL ON TABLE subscriber_events TO ignite; GRANT ALL ON SEQUENCE subscriber_events_id_seq TO ignite`},
 
 		{"purge_besmed_tracking_events", `DELETE FROM mailing_tracking_events WHERE LOWER(sending_domain) LIKE '%besmed%'`},
 		{"purge_besmed_queue", `DELETE FROM mailing_campaign_queue WHERE campaign_id IN (SELECT id FROM mailing_campaigns WHERE LOWER(from_email) LIKE '%besmed%')`},
@@ -2714,6 +2727,45 @@ END $$`},
 			SET status = 'paused', updated_at = NOW()
 			WHERE ip_address <<= '15.204.38.160/28'::inet
 			  AND status NOT IN ('paused', 'cold')`},
+
+		// === GHOST VISITOR TRACKING INFRASTRUCTURE ===
+		{"create_mailing_subscriber_tags", `CREATE TABLE IF NOT EXISTS mailing_subscriber_tags (
+			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
+			tag TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (subscriber_id, tag)
+		)`},
+		{"idx_subscriber_tags_tag", `CREATE INDEX IF NOT EXISTS idx_subscriber_tags_tag ON mailing_subscriber_tags (tag)`},
+
+		{"idx_subscriber_events_recon", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_recon ON subscriber_events (subscriber_id, source, event_at) WHERE source IN ('site','site_beacon')`},
+		{"idx_tracking_events_recon", `CREATE INDEX IF NOT EXISTS idx_tracking_events_recon ON mailing_tracking_events (subscriber_id, event_type, event_at)`},
+
+		{"seed_ghost_visitor_segment_row", `
+			INSERT INTO mailing_segments (
+				id, organization_id, name, description, segment_type, conditions,
+				status, subscriber_count, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), id, 'Ghost Visitors (System)',
+				'Subscribers with confirmed site visits but zero ISP-reported email clicks in the last 30 days. Strong signal of ISP metric suppression — prime re-engagement candidates.',
+				'system', '[]'::jsonb, 'active', 0, NOW(), NOW()
+			FROM organizations
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segments WHERE name = 'Ghost Visitors (System)' AND organization_id = organizations.id
+			)
+		`},
+		{"seed_ghost_visitor_segment_query", `
+			INSERT INTO mailing_system_segments (segment_id, system_query)
+			SELECT ms.id,
+				'SELECT COUNT(DISTINCT s.id) FROM mailing_subscribers s WHERE s.organization_id = $1 AND s.status = ''confirmed'' AND EXISTS (SELECT 1 FROM subscriber_events se WHERE se.subscriber_id = s.id AND se.source IN (''site'',''site_beacon'') AND se.event_type = ''page_view'' AND se.event_at > NOW() - INTERVAL ''30 days'') AND NOT EXISTS (SELECT 1 FROM mailing_tracking_events te WHERE te.subscriber_id = s.id AND te.event_type = ''clicked'' AND te.event_at > NOW() - INTERVAL ''45 days'')'
+			FROM mailing_segments ms
+			WHERE ms.name = 'Ghost Visitors (System)'
+				AND NOT EXISTS (SELECT 1 FROM mailing_system_segments WHERE segment_id = ms.id)
+		`},
+
+		// Deliverability remediation: add revision numbering and compliance metadata to mailing_templates
+		{"add_template_version_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1`},
+		{"add_template_compliance_status_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS compliance_status TEXT DEFAULT 'unchecked'`},
+		{"add_template_compliance_warnings_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS compliance_warnings JSONB DEFAULT '[]'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -2751,6 +2803,13 @@ END $$`},
 		}
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts", ok, fail, skip)
+
+	// Diagnostic: check for invalid indexes (can happen if CREATE INDEX CONCURRENTLY fails mid-way)
+	var invalidCount int
+	db.QueryRow(`SELECT COUNT(*) FROM pg_class c JOIN pg_index i ON c.oid = i.indexrelid WHERE NOT i.indisvalid`).Scan(&invalidCount)
+	if invalidCount > 0 {
+		log.Printf("[StartupMigration] WARNING: %d invalid indexes detected — run REINDEX on affected tables", invalidCount)
+	}
 
 	// Diagnostic: log pool assignments for OVH IPs to verify routing
 	poolRows, poolErr := db.Query(`

@@ -71,6 +71,13 @@ These are ABSOLUTE — never violate them:
 - Exclusion: ALWAYS include the 90-day domain exclusion segment for that brand
 - Purpose: introduce new subscribers who haven't been mailed in 90+ days
 
+**Ghost Visitor campaigns (high-priority engagement):**
+- The "Ghost Visitors (System)" segment contains subscribers with confirmed site visits but zero ISP-reported email clicks. These are people ISPs are hiding from our metrics — they ARE engaged, the ISP just won't tell us.
+- Treat Ghost Visitors as a PRIME re-engagement audience, second only to 14D clickers and 7D openers.
+- Include Ghost Visitors in Engaged/Newsletter campaigns alongside traditional engagement segments.
+- Send Ghost Visitors BEFORE cold ISP lists, AFTER confirmed engagers.
+- When get_engagement_breakdown returns a "ghost_visitors" count > 0, mention it in your reasoning — it validates the ISP suppression theory.
+
 **Both campaign types:**
 - Exclusion: ALWAYS include Global Suppression (global-suppression-list) as FIRST exclusion
 - Exclusion: Include inactivity segments (Sent 7D No Engagement, Sent Last 7D No Opens)

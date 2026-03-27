@@ -1087,10 +1087,32 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	renderCtx := p.buildRenderContext(item, trackBase)
 	templateSvc := mailing.NewTemplateService()
 
-	subject, _ := templateSvc.Render("s:"+item.CampaignID.String(), item.Subject, renderCtx)
-	previewText, _ := templateSvc.Render("pv:"+item.CampaignID.String(), item.PreviewText, renderCtx)
-	htmlContent, _ := templateSvc.Render("h:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.HTMLContent, renderCtx)
-	textContent, _ := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
+	subject, subjErr := templateSvc.Render("s:"+item.CampaignID.String(), item.Subject, renderCtx)
+	if subjErr != nil {
+		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=subject err=%v", item.CampaignID, subjErr)
+	}
+	previewText, pvErr := templateSvc.Render("pv:"+item.CampaignID.String(), item.PreviewText, renderCtx)
+	if pvErr != nil {
+		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=preview_text err=%v", item.CampaignID, pvErr)
+	}
+	htmlContent, htmlErr := templateSvc.Render("h:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.HTMLContent, renderCtx)
+	if htmlErr != nil {
+		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=html_content err=%v", item.CampaignID, htmlErr)
+	}
+	textContent, textErr := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
+	if textErr != nil {
+		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=text_content err=%v", item.CampaignID, textErr)
+	}
+
+	// Detect unresolved template syntax in rendered subject (high signal)
+	if strings.Contains(subject, "{{") || strings.Contains(subject, "{%") {
+		log.Printf("[SendWorkerPool] UNRESOLVED_TOKEN campaign=%s field=subject rendered=%q", item.CampaignID, subject)
+	}
+
+	// Text/plain fallback: auto-generate from final HTML if text is empty
+	if strings.TrimSpace(textContent) == "" && strings.TrimSpace(htmlContent) != "" {
+		textContent = GenerateTextFromHTML(htmlContent)
+	}
 
 	if previewText != "" {
 		htmlContent = InjectPreviewText(htmlContent, previewText)
@@ -1164,6 +1186,15 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		RecipientISP: ClassifySubscriberISP(item.Email),
 		AssignedVMTA: item.AssignedVMTA,
 		Headers:      headers,
+	}
+
+	// Post-render validation: audit or enforce based on VALIDATOR_MODE env var
+	validatorMode := GetValidatorMode()
+	messageClass := "promotional"
+	validationIssues := ValidateRenderedMessage(msg, validatorMode, messageClass)
+	if validatorMode == ValidatorEnforce && HasBlockingIssues(validationIssues) {
+		atomic.AddInt64(&p.totalFailed, 1)
+		return p.markFailed(ctx, item.ID, "message validation failed: blocking issues detected")
 	}
 
 	// Select sender based on ESP type

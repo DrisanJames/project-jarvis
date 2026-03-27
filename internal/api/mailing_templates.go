@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 func (s *AdvancedMailingService) HandleGetTemplates(w http.ResponseWriter, r *http.Request) {
@@ -63,20 +64,41 @@ func (s *AdvancedMailingService) HandleCreateTemplate(w http.ResponseWriter, r *
 		categoryID = &cid
 	}
 	
+	// Intake validation: check content before persisting
+	complianceIssues := worker.ValidateTemplateContent(input.HTMLContent, input.PlainContent, input.Subject)
+	complianceStatus := "pass"
+	if len(complianceIssues) > 0 {
+		complianceStatus = "warnings"
+		for _, issue := range complianceIssues {
+			if issue.Severity == worker.SeverityError {
+				complianceStatus = "fail"
+				break
+			}
+		}
+	}
+	warningsJSON, _ := json.Marshal(complianceIssues)
+
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO mailing_templates (id, organization_id, category_id, name, description, subject, from_name, from_email, html_content, plain_content, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', NOW(), NOW())
-	`, templateID, orgID, categoryID, input.Name, input.Description, input.Subject, input.FromName, input.FromEmail, input.HTMLContent, input.PlainContent)
+		INSERT INTO mailing_templates (id, organization_id, category_id, name, description, subject, from_name, from_email, html_content, plain_content, status, version, compliance_status, compliance_warnings, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', 1, $11, $12, NOW(), NOW())
+	`, templateID, orgID, categoryID, input.Name, input.Description, input.Subject, input.FromName, input.FromEmail, input.HTMLContent, input.PlainContent, complianceStatus, string(warningsJSON))
 	
 	if err != nil {
 		log.Printf("Error creating template: %v", err)
 		http.Error(w, `{"error":"failed to create template"}`, http.StatusInternalServerError)
 		return
 	}
+
+	if len(complianceIssues) > 0 {
+		log.Printf("[TemplateIntake] template=%s compliance=%s issues=%d", templateID, complianceStatus, len(complianceIssues))
+	}
 	
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{"id": templateID.String(), "name": input.Name})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": templateID.String(), "name": input.Name,
+		"compliance_status": complianceStatus, "compliance_warnings": complianceIssues,
+	})
 }
 
 func (s *AdvancedMailingService) HandleGetTemplate(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +140,20 @@ func (s *AdvancedMailingService) HandleUpdateTemplate(w http.ResponseWriter, r *
 	}
 	json.NewDecoder(r.Body).Decode(&input)
 	
+	// Intake validation on update (runs against incoming content)
+	complianceIssues := worker.ValidateTemplateContent(input.HTMLContent, input.PlainContent, input.Subject)
+	complianceStatus := "pass"
+	if len(complianceIssues) > 0 {
+		complianceStatus = "warnings"
+		for _, issue := range complianceIssues {
+			if issue.Severity == worker.SeverityError {
+				complianceStatus = "fail"
+				break
+			}
+		}
+	}
+	warningsJSON, _ := json.Marshal(complianceIssues)
+
 	s.db.ExecContext(ctx, `
 		UPDATE mailing_templates SET 
 			name = COALESCE(NULLIF($2, ''), name),
@@ -125,12 +161,22 @@ func (s *AdvancedMailingService) HandleUpdateTemplate(w http.ResponseWriter, r *
 			subject = COALESCE(NULLIF($4, ''), subject),
 			html_content = COALESCE(NULLIF($5, ''), html_content),
 			plain_content = COALESCE(NULLIF($6, ''), plain_content),
+			version = COALESCE(version, 0) + 1,
+			compliance_status = $7,
+			compliance_warnings = $8,
 			updated_at = NOW()
 		WHERE id = $1
-	`, templateID, input.Name, input.Description, input.Subject, input.HTMLContent, input.PlainContent)
+	`, templateID, input.Name, input.Description, input.Subject, input.HTMLContent, input.PlainContent, complianceStatus, string(warningsJSON))
+
+	if len(complianceIssues) > 0 {
+		log.Printf("[TemplateIntake] template=%s compliance=%s issues=%d", templateID, complianceStatus, len(complianceIssues))
+	}
 	
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"id": templateID, "updated": true})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": templateID, "updated": true,
+		"compliance_status": complianceStatus, "compliance_warnings": complianceIssues,
+	})
 }
 
 func (s *AdvancedMailingService) HandleCloneTemplate(w http.ResponseWriter, r *http.Request) {

@@ -443,9 +443,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	messageID := fmt.Sprintf("%s@%s", uuid.New().String(), msgDomain)
 
 	var headerBuf bytes.Buffer
-	headerBuf.WriteString(fmt.Sprintf("From: %s <%s>\r\n", msg.FromName, msg.FromEmail))
+	headerBuf.WriteString(BuildFromHeader(msg.FromName, msg.FromEmail))
 	headerBuf.WriteString(fmt.Sprintf("To: %s\r\n", msg.Email))
-	headerBuf.WriteString(fmt.Sprintf("Subject: %s\r\n", msg.Subject))
+	headerBuf.WriteString(BuildSubjectHeader(msg.Subject))
 	headerBuf.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
 	headerBuf.WriteString("MIME-Version: 1.0\r\n")
 

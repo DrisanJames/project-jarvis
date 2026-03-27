@@ -661,6 +661,10 @@ func (a *EmailMarketingAgent) toolGetEngagementBreakdown(ctx context.Context, or
 		{"openers_7d", baseWhere + ` AND last_open_at >= NOW() - INTERVAL '7 days'`},
 		{"clickers_14d", baseWhere + ` AND last_click_at >= NOW() - INTERVAL '14 days'`},
 		{"engagers_30d", baseWhere + ` AND (last_open_at >= NOW() - INTERVAL '30 days' OR last_click_at >= NOW() - INTERVAL '30 days')`},
+		{"ghost_visitors", baseWhere + ` AND EXISTS (
+			SELECT 1 FROM mailing_subscriber_tags t
+			WHERE t.subscriber_id = mailing_subscribers.id AND t.tag = 'ghost_visitor'
+		)`},
 		{"recent_subscribers", baseWhere + ` AND subscribed_at >= NOW() - INTERVAL '30 days' AND COALESCE(total_opens,0) = 0`},
 		{"total_confirmed", baseWhere},
 	}

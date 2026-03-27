@@ -80,9 +80,9 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
 	var rfc822 bytes.Buffer
 
-	rfc822.WriteString(fmt.Sprintf("From: %s <%s>\r\n", msg.FromName, msg.FromEmail))
+	rfc822.WriteString(BuildFromHeader(msg.FromName, msg.FromEmail))
 	rfc822.WriteString(fmt.Sprintf("To: %s\r\n", msg.Email))
-	rfc822.WriteString(fmt.Sprintf("Subject: %s\r\n", msg.Subject))
+	rfc822.WriteString(BuildSubjectHeader(msg.Subject))
 	rfc822.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
 	rfc822.WriteString("MIME-Version: 1.0\r\n")
 

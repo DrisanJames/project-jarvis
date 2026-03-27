@@ -754,9 +754,9 @@ func (svc *MailingService) sendViaSMTP(ctx context.Context, host string, port in
 	// Build MIME message
 	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
 	var msg bytes.Buffer
-	msg.WriteString(fmt.Sprintf("From: %s <%s>\r\n", fromName, fromEmail))
+	msg.WriteString(worker.BuildFromHeader(fromName, fromEmail))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	msg.WriteString(worker.BuildSubjectHeader(subject))
 	msg.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	if replyEmail != "" {
@@ -890,9 +890,9 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
 
 	var rfc822 bytes.Buffer
-	rfc822.WriteString(fmt.Sprintf("From: %s <%s>\r\n", fromName, fromEmail))
+	rfc822.WriteString(worker.BuildFromHeader(fromName, fromEmail))
 	rfc822.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	rfc822.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	rfc822.WriteString(worker.BuildSubjectHeader(subject))
 	rfc822.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
 	rfc822.WriteString("MIME-Version: 1.0\r\n")
 	if replyEmail != "" {

@@ -38,7 +38,15 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 
 	// CORS - allow credentials for auth cookies (H8: explicit origins)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://projectjarvis.io", "http://localhost:5173", "http://localhost:8080"},
+		AllowedOrigins: []string{
+			"https://projectjarvis.io",
+			"http://localhost:5173", "http://localhost:8080",
+			"https://discountblog.com", "https://www.discountblog.com",
+			"https://quizfiesta.com", "https://www.quizfiesta.com",
+			"https://historythinking.com", "https://www.historythinking.com",
+			"https://myownhealth.net", "https://www.myownhealth.net",
+			"https://myownhealth.com", "https://www.myownhealth.com",
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Admin-Key", "X-Organization-ID"},
 		ExposedHeaders:   []string{"Link"},
