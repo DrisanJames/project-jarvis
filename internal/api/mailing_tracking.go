@@ -893,14 +893,13 @@ func (svc *MailingService) extractRecipientFromSESNotification(messageJSON strin
 		candidates = sesNotification.Mail.Destination
 	}
 	for _, addr := range candidates {
-		lower := strings.ToLower(addr)
-		if strings.Contains(lower, "unsub+") {
-			return lower
+		if strings.Contains(strings.ToLower(addr), "unsub+") {
+			return addr
 		}
 	}
 
 	if len(candidates) > 0 {
-		return strings.ToLower(candidates[0])
+		return candidates[0]
 	}
 	return ""
 }
