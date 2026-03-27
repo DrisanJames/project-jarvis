@@ -110,13 +110,14 @@ func createPMTAWaveCampaign(
 
 		setClauses := "name = $2, status = 'scheduled', scheduled_at = $3, " +
 			"from_name = $4, from_email = $5, reply_to = $6, " +
-			"subject = $7, preview_text = $8, html_content = $9"
+			"subject = $7, preview_text = $8, html_content = $9, plain_content = $10"
 		args := []any{
 			campaignID, input.Name, scheduledAt,
 			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
 			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+			input.Variants[0].PlainContent,
 		}
-		nextP := 10
+		nextP := 11
 
 		type optCol struct {
 			col string
@@ -156,16 +157,17 @@ func createPMTAWaveCampaign(
 	} else {
 		colList := []string{"id", "organization_id", "name", "status", "scheduled_at",
 			"from_name", "from_email", "reply_to", "subject", "preview_text", "html_content",
-			"created_at", "updated_at"}
+			"plain_content", "created_at", "updated_at"}
 		valList := []string{"$1", "$2", "$3", "'scheduled'", "$4",
 			"$5", "$6", "$7", "$8", "$9", "$10",
-			"NOW()", "NOW()"}
+			"$11", "NOW()", "NOW()"}
 		args := []any{
 			campaignID, orgID, input.Name, scheduledAt,
 			resolvedFromName, resolvedFromEmail, profile.ReplyTo,
 			input.Variants[0].Subject, input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+			input.Variants[0].PlainContent,
 		}
-		nextP := 11
+		nextP := 12
 
 		type optCol struct {
 			col string
@@ -375,19 +377,19 @@ func loadLatestPMTADraft(ctx context.Context, db *sql.DB, orgID string, cc *camp
 	}
 
 	if cfg.CampaignInput.Name == "" && !hasPMTAConfig {
-		var subj, fromN, prevT, htmlC, sendDom sql.NullString
+		var subj, fromN, prevT, htmlC, plainC, sendDom sql.NullString
 		_ = db.QueryRowContext(ctx, `
 			SELECT COALESCE(subject,''), COALESCE(from_name,''), COALESCE(preview_text,''),
-			       COALESCE(html_content,''), COALESCE(SPLIT_PART(from_email,'@',2),'')
+			       COALESCE(html_content,''), COALESCE(plain_content,''), COALESCE(SPLIT_PART(from_email,'@',2),'')
 			FROM mailing_campaigns WHERE id = $1
-		`, campaignID).Scan(&subj, &fromN, &prevT, &htmlC, &sendDom)
+		`, campaignID).Scan(&subj, &fromN, &prevT, &htmlC, &plainC, &sendDom)
 
 		cfg.CampaignInput = engine.PMTACampaignInput{
 			Name:          name,
 			SendingDomain: sendDom.String,
 			Variants: []engine.ContentVariant{{
 				VariantName: "A", FromName: fromN.String, Subject: subj.String,
-				PreviewText: prevT.String, HTMLContent: htmlC.String, SplitPercent: 100,
+				PreviewText: prevT.String, HTMLContent: htmlC.String, PlainContent: plainC.String, SplitPercent: 100,
 			}},
 		}
 	}
@@ -456,10 +458,12 @@ func savePMTADraftCampaign(
 	subject := ""
 	previewText := ""
 	htmlContent := ""
+	plainContent := ""
 	if len(input.Variants) > 0 {
 		subject = input.Variants[0].Subject
 		previewText = input.Variants[0].PreviewText
 		htmlContent = input.Variants[0].HTMLContent
+		plainContent = input.Variants[0].PlainContent
 	}
 
 	scheduledAt := derivePMTADraftScheduledAt(input)
@@ -470,21 +474,23 @@ func savePMTADraftCampaign(
 
 	colList := []string{"id", "organization_id", "name", "status", "scheduled_at",
 		"from_name", "from_email", "reply_to", "subject", "preview_text", "html_content",
-		"created_at", "updated_at"}
+		"plain_content", "created_at", "updated_at"}
 	valList := []string{"$1", "$2", "$3", "'draft'", "$4",
 		"$5", "$6", "$7", "$8", "$9", "$10",
-		"NOW()", "NOW()"}
+		"$11", "NOW()", "NOW()"}
 	updateParts := []string{
 		"name = EXCLUDED.name", "status = 'draft'", "scheduled_at = EXCLUDED.scheduled_at",
 		"from_name = EXCLUDED.from_name", "from_email = EXCLUDED.from_email", "reply_to = EXCLUDED.reply_to",
 		"subject = EXCLUDED.subject", "preview_text = EXCLUDED.preview_text", "html_content = EXCLUDED.html_content",
+		"plain_content = EXCLUDED.plain_content",
 		"total_recipients = 0", "started_at = NULL", "completed_at = NULL", "updated_at = NOW()",
 	}
 	args := []any{
 		campaignID, orgID, input.Name, scheduledAt,
 		resolvedFromName, resolvedFromEmail, profile.ReplyTo, subject, previewText, htmlContent,
+		plainContent,
 	}
-	nextP := 11
+	nextP := 12
 
 	type optCol struct {
 		col string

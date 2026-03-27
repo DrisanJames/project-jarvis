@@ -1273,14 +1273,14 @@ func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.R
 	}
 
 	// Load campaign metadata
-	var fromName, fromEmail, replyTo, subject, htmlContent, profileID string
+	var fromName, fromEmail, replyTo, subject, htmlContent, plainContent, profileID string
 	var listIDsJSON string
 	s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(from_name,''), COALESCE(from_email,''), COALESCE(reply_to,''),
-		       subject, COALESCE(html_content,''), COALESCE(sending_profile_id::text,''),
-		       COALESCE(list_ids::text,'[]')
+		       subject, COALESCE(html_content,''), COALESCE(plain_content,''),
+		       COALESCE(sending_profile_id::text,''), COALESCE(list_ids::text,'[]')
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&fromName, &fromEmail, &replyTo, &subject, &htmlContent, &profileID, &listIDsJSON)
+	`, campaignID).Scan(&fromName, &fromEmail, &replyTo, &subject, &htmlContent, &plainContent, &profileID, &listIDsJSON)
 
 	var listIDs []string
 	json.Unmarshal([]byte(listIDsJSON), &listIDs)
@@ -1307,9 +1307,9 @@ func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.R
 		rows.Scan(&subID, &email)
 		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO mailing_campaign_queue
-				(id, campaign_id, subscriber_id, email, subject, html_content, from_name, from_email, reply_to, sending_profile_id, esp_type, status, priority, created_at)
-			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'pmta', 'pending', 0, NOW())
-		`, campaignID, subID, email, subject, htmlContent, fromName, fromEmail, replyTo, profileID)
+				(id, campaign_id, subscriber_id, email, subject, html_content, plain_content, from_name, from_email, reply_to, sending_profile_id, esp_type, status, priority, created_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pmta', 'pending', 0, NOW())
+		`, campaignID, subID, email, subject, htmlContent, plainContent, fromName, fromEmail, replyTo, profileID)
 		if err != nil {
 			log.Printf("[TriggerSend] enqueue error for %s: %v", email, err)
 		} else {

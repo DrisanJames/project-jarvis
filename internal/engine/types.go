@@ -677,6 +677,7 @@ type ContentVariant struct {
 	Subject      string  `json:"subject"`
 	PreviewText  string  `json:"preview_text"`
 	HTMLContent  string  `json:"html_content"`
+	PlainContent string  `json:"plain_content"`
 	SplitPercent float64 `json:"split_percent"`
 }
 

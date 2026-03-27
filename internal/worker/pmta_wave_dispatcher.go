@@ -101,12 +101,12 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		return 0, tx.Commit()
 	}
 
-	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML, campaignName sql.NullString
+	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML, campaignName, campaignPlain sql.NullString
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(subject, ''),
-		       COALESCE(html_content, ''), COALESCE(name, '')
+		       COALESCE(html_content, ''), COALESCE(name, ''), COALESCE(plain_content, '')
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML, &campaignName); err != nil {
+	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML, &campaignName, &campaignPlain); err != nil {
 		return 0, err
 	}
 
@@ -178,12 +178,13 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 				recipient_isp, selection_rank, audience_source_type, audience_source_id
 			) VALUES (
-				$1, $2, $3, $4, $5, '',
+				$1, $2, $3, $4, $5, $13,
 				'queued', 5, $6, NOW(), $7, $8,
 				$9, $10, $11, $12
 			)
 		`, uuid.New(), campaignID, rec.subscriberID, recipientSubject, recipientHTML,
 			scheduledAt, ispPlanID, waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
+			campaignPlain.String,
 		); err != nil {
 			return 0, err
 		}
