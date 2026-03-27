@@ -861,26 +861,39 @@ func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter,
 // looks like an unsub+ address.
 func (svc *MailingService) extractRecipientFromSESNotification(messageJSON string) string {
 	var sesNotification struct {
-		Receipt struct {
+		NotificationType string `json:"notificationType"`
+		Receipt          struct {
 			Recipients []string `json:"recipients"`
 		} `json:"receipt"`
 		Mail struct {
+			Source      string   `json:"source"`
 			Destination []string `json:"destination"`
 		} `json:"mail"`
 	}
 	if err := json.Unmarshal([]byte(messageJSON), &sesNotification); err != nil {
 		log.Printf("INBOUND UNSUB: failed to parse SES notification JSON: %v", err)
+		// Log first 500 chars for debugging
+		snippet := messageJSON
+		if len(snippet) > 500 {
+			snippet = snippet[:500]
+		}
+		log.Printf("INBOUND UNSUB: raw message snippet: %s", snippet)
 		return ""
 	}
 
-	// Check receipt.recipients first (SES inbound), then mail.destination
+	log.Printf("INBOUND UNSUB: SES notification type=%s receipt.recipients=%v mail.destination=%v mail.source=%s",
+		sesNotification.NotificationType,
+		sesNotification.Receipt.Recipients,
+		sesNotification.Mail.Destination,
+		sesNotification.Mail.Source)
+
 	candidates := sesNotification.Receipt.Recipients
 	if len(candidates) == 0 {
 		candidates = sesNotification.Mail.Destination
 	}
 	for _, addr := range candidates {
 		lower := strings.ToLower(addr)
-		if strings.HasPrefix(lower, "unsub+") || strings.Contains(lower, "unsub+") {
+		if strings.Contains(lower, "unsub+") {
 			return lower
 		}
 	}
