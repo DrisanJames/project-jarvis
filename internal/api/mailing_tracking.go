@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -239,13 +240,6 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	svc.updateISPAgent(ctx, campaignID, isp, "click")
 	svc.incrClickEngagement(isp, subscriberID.String())
 
-	// PHASE 2 (not yet implemented): When CNAME records exist (e.g. trk.discountblog.com
-	// pointing to projectjarvis.io), we can set a true first-party cookie here because the
-	// cookie domain matches the landing page's registrable domain. Until then, identity is
-	// carried via URL params (sid/eid/cid) and the JS-set first-party cookie on the landing
-	// page. Cross-origin Set-Cookie from projectjarvis.io is blocked by Safari ITP, Firefox
-	// ETP, and Chrome Privacy Sandbox in 2026.
-
 	redirectURL := enrichOwnedDomainURL(originalURL, subscriberID, emailID, campaignID)
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 }
@@ -255,6 +249,15 @@ var ownedDomains = []string{
 	"myownhealth.net", "getmecoupons.net",
 }
 
+// enrichOwnedDomainURL encodes subscriber identity into the URL **path** rather
+// than query parameters. ISPs (Apple LTP, Yahoo, Firefox ETP) strip tracking
+// query params but cannot strip path segments without breaking the link.
+//
+// Input:  https://discountblog.com/blog/best-deals
+// Output: https://discountblog.com/e/<base64url(sid|eid|cid)>/blog/best-deals
+//
+// The brand site's Next.js middleware intercepts /e/<token>/, decodes the
+// identity, sets a first-party HttpOnly cookie, and rewrites to the clean path.
 func enrichOwnedDomainURL(rawURL string, subscriberID, emailID, campaignID uuid.UUID) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -271,11 +274,11 @@ func enrichOwnedDomainURL(rawURL string, subscriberID, emailID, campaignID uuid.
 	if !owned {
 		return rawURL
 	}
-	q := u.Query()
-	q.Set("sid", subscriberID.String())
-	q.Set("eid", emailID.String())
-	q.Set("cid", campaignID.String())
-	u.RawQuery = q.Encode()
+	token := base64.RawURLEncoding.EncodeToString(
+		[]byte(subscriberID.String() + "|" + emailID.String() + "|" + campaignID.String()),
+	)
+	cleanPath := strings.TrimPrefix(u.Path, "/")
+	u.Path = "/e/" + token + "/" + cleanPath
 	return u.String()
 }
 
@@ -709,30 +712,72 @@ func extractIPFromRemoteAddr(addr string) *string {
 }
 
 // HandleInboundMailtoUnsubscribe processes forwarded inbound emails sent to
-// unsub+{encoded}@{domain} addresses. The encoded local-part contains the
-// base64-encoded orgID|campaignID|subscriberID token. This endpoint is called
-// by SES inbound rules, Mailgun routes, or any MTA that can POST received
-// mail to a webhook.
+// unsub+{encoded}@{domain} addresses. It supports two input formats:
 //
-// Expected POST body (JSON):
+//  1. Direct JSON: { "recipient": "unsub+TOKEN@em.quizfiesta.com" }
+//  2. AWS SNS envelope: SubscriptionConfirmation (auto-confirmed) and
+//     Notification messages wrapping an SES inbound email notification.
 //
-//	{ "recipient": "unsub+TOKEN@em.quizfiesta.com" }
-//
-// or SES SNS notification with the recipient in the envelope.
+// The encoded local-part contains the base64-encoded orgID|campaignID|subscriberID token.
 func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	type inboundPayload struct {
-		Recipient string `json:"recipient"`
-	}
-
-	var payload inboundPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
 
-	recipient := strings.ToLower(strings.TrimSpace(payload.Recipient))
+	var recipient string
+
+	// Detect SNS envelope vs direct JSON by checking for "Type" field.
+	var envelope struct {
+		Type         string `json:"Type"`
+		SubscribeURL string `json:"SubscribeURL"`
+		Message      string `json:"Message"`
+	}
+	if err := json.Unmarshal(bodyBytes, &envelope); err == nil && envelope.Type != "" {
+		switch envelope.Type {
+		case "SubscriptionConfirmation":
+			log.Printf("INBOUND UNSUB: SNS SubscriptionConfirmation — confirming via %s", envelope.SubscribeURL)
+			if envelope.SubscribeURL != "" {
+				resp, err := http.Get(envelope.SubscribeURL)
+				if err != nil {
+					log.Printf("INBOUND UNSUB: failed to confirm SNS subscription: %v", err)
+				} else {
+					resp.Body.Close()
+					log.Printf("INBOUND UNSUB: SNS subscription confirmed (status %d)", resp.StatusCode)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+
+		case "Notification":
+			recipient = svc.extractRecipientFromSESNotification(envelope.Message)
+			if recipient == "" {
+				log.Printf("INBOUND UNSUB: could not extract recipient from SNS notification")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+		default:
+			log.Printf("INBOUND UNSUB: unknown SNS Type=%s", envelope.Type)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	} else {
+		// Direct JSON payload: { "recipient": "unsub+TOKEN@domain" }
+		var payload struct {
+			Recipient string `json:"recipient"`
+		}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		recipient = payload.Recipient
+	}
+
+	recipient = strings.ToLower(strings.TrimSpace(recipient))
 	if recipient == "" {
 		http.Error(w, "missing recipient", http.StatusBadRequest)
 		return
@@ -745,7 +790,8 @@ func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter,
 	}
 	plusIdx := strings.Index(localPart, "+")
 	if plusIdx < 0 || !strings.HasPrefix(localPart, "unsub+") {
-		http.Error(w, "invalid unsub address format", http.StatusBadRequest)
+		log.Printf("INBOUND UNSUB: not an unsub address: %s", logger.RedactEmail(recipient))
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	encoded := localPart[plusIdx+1:]
@@ -808,4 +854,39 @@ func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter,
 
 	log.Printf("INBOUND MAILTO UNSUB: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
 	w.WriteHeader(http.StatusOK)
+}
+
+// extractRecipientFromSESNotification parses an SES inbound email notification
+// (JSON string from the SNS Message field) and returns the first recipient that
+// looks like an unsub+ address.
+func (svc *MailingService) extractRecipientFromSESNotification(messageJSON string) string {
+	var sesNotification struct {
+		Receipt struct {
+			Recipients []string `json:"recipients"`
+		} `json:"receipt"`
+		Mail struct {
+			Destination []string `json:"destination"`
+		} `json:"mail"`
+	}
+	if err := json.Unmarshal([]byte(messageJSON), &sesNotification); err != nil {
+		log.Printf("INBOUND UNSUB: failed to parse SES notification JSON: %v", err)
+		return ""
+	}
+
+	// Check receipt.recipients first (SES inbound), then mail.destination
+	candidates := sesNotification.Receipt.Recipients
+	if len(candidates) == 0 {
+		candidates = sesNotification.Mail.Destination
+	}
+	for _, addr := range candidates {
+		lower := strings.ToLower(addr)
+		if strings.HasPrefix(lower, "unsub+") || strings.Contains(lower, "unsub+") {
+			return lower
+		}
+	}
+
+	if len(candidates) > 0 {
+		return strings.ToLower(candidates[0])
+	}
+	return ""
 }
