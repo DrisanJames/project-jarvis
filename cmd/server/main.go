@@ -2990,6 +2990,25 @@ END $$`},
 		{"tracking_domain_enforce_ht", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.historythinking.com', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.historythinking.com')`},
 		{"tracking_domain_enforce_mh", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.myownhealth.net', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.myownhealth.net')`},
 		{"tracking_domain_enforce_m_db", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.m.discountblog.com', updated_at = NOW() WHERE sending_domain = 'm.discountblog.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.m.discountblog.com')`},
+
+		// m.* SES relay profiles route through the same PMTA server and
+		// ISP pool infrastructure as their em.* counterparts. These must
+		// be in runStartupMigrations (not runAdminMigrations) because
+		// DB_ADMIN_URL is not set in production ECS.
+		{"startup_m_pool_prefix", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'db');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'qf');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'ht');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'mh');
+END $$`},
+		{"startup_m_ip_pool", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool != 'qf-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND ip_pool != 'ht-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool != 'mh-gmail-pool';
+END $$`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
