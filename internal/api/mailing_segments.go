@@ -518,7 +518,7 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 		converted[i] = SegmentConditionInput{Group: c.Group, Field: c.Field, Operator: c.Operator, Value: c.Value}
 	}
 	where, args := BuildSegmentWhereClause(listID, converted)
-	query := fmt.Sprintf("SELECT COUNT(*) FROM mailing_subscribers WHERE %s", where)
+	query := fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
 
 	var count int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
@@ -537,6 +537,7 @@ func mapFieldToColumn(field string) string {
 		"first_name":             "first_name",
 		"last_name":              "last_name",
 		"status":                 "status",
+		"isp":                    "isp",
 		"engagement_score":       "engagement_score",
 		"total_emails_received":  "total_emails_received",
 		"total_opens":            "total_opens",

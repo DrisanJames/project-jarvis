@@ -179,7 +179,7 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 	}
 
 	where, args := buildRefreshWhereClause(seg.ListID, conditions)
-	query := fmt.Sprintf("SELECT COUNT(*) FROM mailing_subscribers WHERE %s", where)
+	query := fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
 
 	var count int
 	if err := w.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
@@ -263,6 +263,18 @@ func buildRefreshWhereClause(listID *uuid.UUID, conditions []segCondition) (stri
 		case "contains":
 			clause = fmt.Sprintf("%s ILIKE $%d", col, argNum)
 			args = append(args, "%"+c.Value+"%")
+			argNum++
+		case "not_contains":
+			clause = fmt.Sprintf("%s NOT ILIKE $%d", col, argNum)
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+		case "starts_with":
+			clause = fmt.Sprintf("%s ILIKE $%d", col, argNum)
+			args = append(args, c.Value+"%")
+			argNum++
+		case "ends_with":
+			clause = fmt.Sprintf("%s ILIKE $%d", col, argNum)
+			args = append(args, "%"+c.Value)
 			argNum++
 		case "in_last_days", "within_last":
 			clause = fmt.Sprintf("%s >= NOW() - INTERVAL '%s days'", col, c.Value)
@@ -376,7 +388,7 @@ func buildEventClause(evType, operator, value string, argNum int, domainFilter s
 func mapCol(field string) string {
 	m := map[string]string{
 		"email": "email", "first_name": "first_name", "last_name": "last_name",
-		"status": "status", "engagement_score": "engagement_score",
+		"status": "status", "isp": "isp", "engagement_score": "engagement_score",
 		"total_emails_received": "total_emails_received", "total_opens": "total_opens",
 		"total_clicks": "total_clicks", "last_email_at": "last_email_at",
 		"last_open_at": "last_open_at", "last_click_at": "last_click_at",

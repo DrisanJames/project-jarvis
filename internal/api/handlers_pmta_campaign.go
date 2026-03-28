@@ -1686,10 +1686,7 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 		FROM mailing_campaigns
 		WHERE organization_id = $1
 		  AND status IN ('completed', 'sent', 'cancelled', 'completed_with_errors', 'sending', 'draft')
-		ORDER BY
-		  CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END DESC,
-		  COALESCE(sent_count, 0) DESC,
-		  created_at DESC
+		ORDER BY COALESCE(completed_at, started_at, created_at) DESC
 		LIMIT 20
 	`, configSelect)
 
@@ -1806,94 +1803,339 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Try to use the stored pmta_config first
+	scheduleMode := "quick"
+	var inputMap map[string]interface{}
+
+	// Primary path: use stored pmta_config blob
 	if configJSON.Valid && configJSON.String != "" && configJSON.String != "{}" {
 		var cfg struct {
 			CampaignInput json.RawMessage `json:"campaign_input"`
 			ScheduleMode  string          `json:"schedule_mode,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(configJSON.String), &cfg); err == nil && len(cfg.CampaignInput) > 2 {
-			var inputMap map[string]interface{}
-			if err := json.Unmarshal(cfg.CampaignInput, &inputMap); err == nil {
+			if err := json.Unmarshal(cfg.CampaignInput, &inputMap); err != nil {
+				inputMap = nil
+			} else {
 				delete(inputMap, "campaign_id")
 				inputMap["name"] = name + " (Clone)"
-				cfg.CampaignInput, _ = json.Marshal(inputMap)
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"campaign_id":    "",
-				"name":           name + " (Clone)",
-				"status":         "draft",
-				"schedule_mode":  cfg.ScheduleMode,
-				"source_id":      campaignID,
-				"source_status":  status,
-				"campaign_input": json.RawMessage(cfg.CampaignInput),
-			})
-			return
-		}
-	}
-
-	// Fallback: reconstruct config from ISP plans and base campaign data
-	var subject, fromName, fromEmail, htmlContent, previewText, sendingDomain sql.NullString
-	s.db.QueryRowContext(ctx, `
-		SELECT subject, from_name, from_email, html_content, preview_text,
-		       COALESCE(SPLIT_PART(from_email, '@', 2), '')
-		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&subject, &fromName, &fromEmail, &htmlContent, &previewText, &sendingDomain)
-
-	// Get ISP plans
-	planRows, _ := s.db.QueryContext(ctx, `
-		SELECT isp, quota, COALESCE(throttle_strategy, 'auto'), COALESCE(timezone, 'UTC')
-		FROM mailing_campaign_isp_plans
-		WHERE campaign_id = $1 ORDER BY isp
-	`, campaignID)
-	var ispPlans []map[string]interface{}
-	var targetISPs []string
-	var ispQuotas []map[string]interface{}
-	if planRows != nil {
-		defer planRows.Close()
-		for planRows.Next() {
-			var isp string
-			var quota int
-			var throttle, tz string
-			if err := planRows.Scan(&isp, &quota, &throttle, &tz); err == nil {
-				targetISPs = append(targetISPs, isp)
-				ispQuotas = append(ispQuotas, map[string]interface{}{"isp": isp, "volume": quota})
-				ispPlans = append(ispPlans, map[string]interface{}{
-					"isp": isp, "quota": quota, "throttle_strategy": throttle, "timezone": tz,
-				})
+				if cfg.ScheduleMode != "" {
+					scheduleMode = cfg.ScheduleMode
+				}
 			}
 		}
 	}
 
-	clonedInput := map[string]interface{}{
-		"name":          name + " (Clone)",
-		"target_isps":   targetISPs,
-		"sending_domain": sendingDomain.String,
-		"isp_plans":     ispPlans,
-		"isp_quotas":    ispQuotas,
-		"variants": []map[string]interface{}{{
-			"variant_name":  "A",
-			"from_name":     fromName.String,
-			"subject":       subject.String,
-			"preview_text":  previewText.String,
-			"html_content":  htmlContent.String,
-			"split_percent": 100,
-		}},
+	// Fallback: reconstruct campaign_input from DB columns when pmta_config
+	// is absent, empty, or failed to parse.
+	if inputMap == nil {
+		inputMap = buildCloneInputFromDB(ctx, s.db, campaignID, name)
 	}
 
-	clonedJSON, _ := json.Marshal(clonedInput)
+	// Enrich: fill any empty/nil fields from authoritative DB sources.
+	// Handles both stale-but-valid pmta_config blobs and fallback gaps.
+	enrichCloneInput(ctx, s.db, campaignID, inputMap)
+
+	clonedJSON, _ := json.Marshal(inputMap)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"campaign_id":    "",
 		"name":           name + " (Clone)",
 		"status":         "draft",
+		"schedule_mode":  scheduleMode,
 		"source_id":      campaignID,
 		"source_status":  status,
 		"campaign_input": json.RawMessage(clonedJSON),
 	})
+}
+
+// buildCloneInputFromDB reconstructs a full campaign_input map from relational
+// DB columns when pmta_config is absent or unusable. This is the fallback path.
+func buildCloneInputFromDB(ctx context.Context, db *sql.DB, campaignID, name string) map[string]interface{} {
+	var subject, fromName, fromEmail, htmlContent, previewText sql.NullString
+	var listIDsJSON, suppListIDsJSON, suppSegIDsJSON sql.NullString
+	var scheduledAt sql.NullTime
+
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(subject, ''), COALESCE(from_name, ''), COALESCE(from_email, ''),
+		       COALESCE(html_content, ''), COALESCE(preview_text, ''),
+		       COALESCE(list_ids::text, '[]'), COALESCE(suppression_list_ids::text, '[]'),
+		       COALESCE(suppression_segment_ids::text, '[]'), scheduled_at
+		FROM mailing_campaigns WHERE id = $1
+	`, campaignID).Scan(&subject, &fromName, &fromEmail, &htmlContent, &previewText,
+		&listIDsJSON, &suppListIDsJSON, &suppSegIDsJSON, &scheduledAt)
+	if err != nil {
+		log.Printf("[CloneData] fallback base query error for %s: %v", campaignID, err)
+	}
+
+	var inclusionLists, exclusionLists, exclusionSegments []string
+	json.Unmarshal([]byte(listIDsJSON.String), &inclusionLists)
+	json.Unmarshal([]byte(suppListIDsJSON.String), &exclusionLists)
+	json.Unmarshal([]byte(suppSegIDsJSON.String), &exclusionSegments)
+	if inclusionLists == nil {
+		inclusionLists = []string{}
+	}
+	if exclusionLists == nil {
+		exclusionLists = []string{}
+	}
+	if exclusionSegments == nil {
+		exclusionSegments = []string{}
+	}
+
+	sendMode := "immediate"
+	if scheduledAt.Valid {
+		sendMode = "scheduled"
+	}
+
+	// Read ISP plans including sending_domain and randomize_audience
+	planRows, planErr := db.QueryContext(ctx, `
+		SELECT isp, quota, COALESCE(throttle_strategy, 'auto'), COALESCE(timezone, 'UTC'),
+		       sending_domain, randomize_audience
+		FROM mailing_campaign_isp_plans
+		WHERE campaign_id = $1 ORDER BY isp
+	`, campaignID)
+
+	var ispPlans []map[string]interface{}
+	var targetISPs []string
+	var ispQuotas []map[string]interface{}
+	sendingDomain := ""
+	randomizeAudience := false
+
+	if planErr != nil {
+		log.Printf("[CloneData] ISP plans query error for %s: %v", campaignID, planErr)
+	} else {
+		defer planRows.Close()
+		allRandomize := true
+		anyRow := false
+		for planRows.Next() {
+			var ispName string
+			var quota int
+			var throttle, tz, planDomain string
+			var planRandomize bool
+			if err := planRows.Scan(&ispName, &quota, &throttle, &tz, &planDomain, &planRandomize); err != nil {
+				log.Printf("[CloneData] ISP plan scan error: %v", err)
+				continue
+			}
+			anyRow = true
+			targetISPs = append(targetISPs, ispName)
+			ispQuotas = append(ispQuotas, map[string]interface{}{"isp": ispName, "volume": quota})
+			ispPlans = append(ispPlans, map[string]interface{}{
+				"isp": ispName, "quota": quota, "throttle_strategy": throttle, "timezone": tz,
+			})
+			if sendingDomain == "" {
+				sendingDomain = planDomain
+			}
+			if !planRandomize {
+				allRandomize = false
+			}
+		}
+		if anyRow {
+			randomizeAudience = allRandomize
+		}
+	}
+
+	// Ultimate fallback for sending_domain: split from from_email
+	if sendingDomain == "" && fromEmail.Valid && strings.Contains(fromEmail.String, "@") {
+		parts := strings.SplitN(fromEmail.String, "@", 2)
+		if len(parts) == 2 {
+			sendingDomain = parts[1]
+		}
+	}
+
+	// Read A/B variants
+	variants := loadCloneVariants(ctx, db, campaignID)
+	if len(variants) == 0 {
+		variants = []map[string]interface{}{{
+			"variant_name":  "A",
+			"from_name":     fromName.String,
+			"subject":       subject.String,
+			"preview_text":  previewText.String,
+			"html_content":  htmlContent.String,
+			"split_percent": float64(100),
+		}}
+	}
+
+	return map[string]interface{}{
+		"name":               name + " (Clone)",
+		"target_isps":        targetISPs,
+		"sending_domain":     sendingDomain,
+		"isp_plans":          ispPlans,
+		"isp_quotas":         ispQuotas,
+		"variants":           variants,
+		"inclusion_lists":    inclusionLists,
+		"inclusion_segments": []string{},
+		"exclusion_lists":    exclusionLists,
+		"exclusion_segments": exclusionSegments,
+		"send_priority":      []interface{}{},
+		"randomize_audience": randomizeAudience,
+		"send_mode":          sendMode,
+	}
+}
+
+// enrichCloneInput fills empty/nil fields in an existing campaign_input map
+// from authoritative DB sources. Used for both the primary pmta_config path
+// (handles stale blobs missing newer fields) and the fallback reconstruction.
+func enrichCloneInput(ctx context.Context, db *sql.DB, campaignID string, m map[string]interface{}) {
+	// 1. Sending domain: prefer ISP plan table over from_email splitting
+	if strVal, _ := m["sending_domain"].(string); strVal == "" {
+		var domain sql.NullString
+		err := db.QueryRowContext(ctx, `
+			SELECT DISTINCT sending_domain
+			FROM mailing_campaign_isp_plans
+			WHERE campaign_id = $1
+			LIMIT 1
+		`, campaignID).Scan(&domain)
+		if err == nil && domain.Valid && domain.String != "" {
+			m["sending_domain"] = domain.String
+		}
+	}
+
+	// 2. Lists and segments + scheduled_at for send_mode inference
+	needLists := isEmptySlice(m["inclusion_lists"])
+	needExclLists := isEmptySlice(m["exclusion_lists"])
+	needExclSegs := isEmptySlice(m["exclusion_segments"])
+	needSendMode := false
+	if sm, _ := m["send_mode"].(string); sm == "" {
+		needSendMode = true
+	}
+
+	if needLists || needExclLists || needExclSegs || needSendMode {
+		var listIDsJSON, suppListIDsJSON, suppSegIDsJSON sql.NullString
+		var scheduledAt sql.NullTime
+		err := db.QueryRowContext(ctx, `
+			SELECT COALESCE(list_ids::text, '[]'), COALESCE(suppression_list_ids::text, '[]'),
+			       COALESCE(suppression_segment_ids::text, '[]'), scheduled_at
+			FROM mailing_campaigns WHERE id = $1
+		`, campaignID).Scan(&listIDsJSON, &suppListIDsJSON, &suppSegIDsJSON, &scheduledAt)
+		if err != nil {
+			log.Printf("[CloneData] enrich lists query error for %s: %v", campaignID, err)
+		} else {
+			if needLists {
+				var ids []string
+				if json.Unmarshal([]byte(listIDsJSON.String), &ids) == nil && len(ids) > 0 {
+					m["inclusion_lists"] = ids
+				}
+			}
+			if needExclLists {
+				var ids []string
+				if json.Unmarshal([]byte(suppListIDsJSON.String), &ids) == nil && len(ids) > 0 {
+					m["exclusion_lists"] = ids
+				}
+			}
+			if needExclSegs {
+				var ids []string
+				if json.Unmarshal([]byte(suppSegIDsJSON.String), &ids) == nil && len(ids) > 0 {
+					m["exclusion_segments"] = ids
+				}
+			}
+			if needSendMode {
+				if scheduledAt.Valid {
+					m["send_mode"] = "scheduled"
+				} else {
+					m["send_mode"] = "immediate"
+				}
+			}
+		}
+	}
+
+	// 3. Randomize audience: only enrich when key is absent (not when false)
+	if _, exists := m["randomize_audience"]; !exists {
+		var ra sql.NullBool
+		err := db.QueryRowContext(ctx, `
+			SELECT bool_and(randomize_audience)
+			FROM mailing_campaign_isp_plans
+			WHERE campaign_id = $1
+			HAVING count(*) > 0
+		`, campaignID).Scan(&ra)
+		if err == nil && ra.Valid {
+			m["randomize_audience"] = ra.Bool
+		}
+	}
+
+	// 4. A/B variants: enrich when missing, empty, or single variant with blank content
+	needVariants := false
+	switch v := m["variants"].(type) {
+	case nil:
+		needVariants = true
+	case []interface{}:
+		if len(v) == 0 {
+			needVariants = true
+		} else if len(v) == 1 {
+			if vm, ok := v[0].(map[string]interface{}); ok {
+				if html, _ := vm["html_content"].(string); html == "" {
+					needVariants = true
+				}
+			}
+		}
+	case []map[string]interface{}:
+		if len(v) == 0 {
+			needVariants = true
+		} else if len(v) == 1 {
+			if html, _ := v[0]["html_content"].(string); html == "" {
+				needVariants = true
+			}
+		}
+	}
+	if needVariants {
+		variants := loadCloneVariants(ctx, db, campaignID)
+		if len(variants) > 0 {
+			m["variants"] = variants
+		}
+	}
+}
+
+// loadCloneVariants reads A/B variants from the DB for a given campaign.
+// Returns nil if no variants are found.
+func loadCloneVariants(ctx context.Context, db *sql.DB, campaignID string) []map[string]interface{} {
+	rows, err := db.QueryContext(ctx, `
+		SELECT v.variant_name, COALESCE(v.from_name, ''), COALESCE(v.subject, ''),
+		       COALESCE(v.preheader, ''), COALESCE(v.html_content, ''),
+		       COALESCE(v.split_percent, 50)
+		FROM mailing_ab_variants v
+		JOIN mailing_ab_tests t ON t.id = v.test_id
+		WHERE t.campaign_id = $1
+		ORDER BY v.variant_name ASC
+	`, campaignID)
+	if err != nil {
+		log.Printf("[CloneData] AB variants query error for %s: %v", campaignID, err)
+		return nil
+	}
+	defer rows.Close()
+
+	var variants []map[string]interface{}
+	for rows.Next() {
+		var vName, vFromName, vSubject, vPreheader, vHTML string
+		var vSplit int
+		if err := rows.Scan(&vName, &vFromName, &vSubject, &vPreheader, &vHTML, &vSplit); err != nil {
+			log.Printf("[CloneData] AB variant scan error: %v", err)
+			continue
+		}
+		variants = append(variants, map[string]interface{}{
+			"variant_name":  vName,
+			"from_name":     vFromName,
+			"subject":       vSubject,
+			"preview_text":  vPreheader,
+			"html_content":  vHTML,
+			"split_percent": float64(vSplit),
+		})
+	}
+	return variants
+}
+
+// isEmptySlice returns true if v is nil or an empty slice-like value.
+func isEmptySlice(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	switch s := v.(type) {
+	case []interface{}:
+		return len(s) == 0
+	case []string:
+		return len(s) == 0
+	case []map[string]interface{}:
+		return len(s) == 0
+	}
+	return false
 }
 
 // HandleLastQuotas returns ISP quotas from the most recently completed/sent
