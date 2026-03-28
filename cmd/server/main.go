@@ -2766,6 +2766,12 @@ END $$`},
 		{"add_template_version_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1`},
 		{"add_template_compliance_status_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS compliance_status TEXT DEFAULT 'unchecked'`},
 		{"add_template_compliance_warnings_col", `ALTER TABLE mailing_templates ADD COLUMN IF NOT EXISTS compliance_warnings JSONB DEFAULT '[]'`},
+
+		// Brand-aligned tracking domains: replace projectjarvis.io with per-brand subdomains
+		{"tracking_domain_discountblog", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.discountblog.com', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND tracking_domain = 'projectjarvis.io'`},
+		{"tracking_domain_historythinking", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.historythinking.com', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND tracking_domain = 'projectjarvis.io'`},
+		{"tracking_domain_myownhealth", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.myownhealth.net', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND tracking_domain = 'projectjarvis.io'`},
+		{"tracking_domain_quizfiesta", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.quizfiesta.com', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND tracking_domain = 'projectjarvis.io'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
