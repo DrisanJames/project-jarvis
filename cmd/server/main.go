@@ -2995,19 +2995,56 @@ END $$`},
 		// ISP pool infrastructure as their em.* counterparts. These must
 		// be in runStartupMigrations (not runAdminMigrations) because
 		// DB_ADMIN_URL is not set in production ECS.
-		{"startup_m_pool_prefix", `DO $$
+		// SES relay: Create the ses-relay-pool and virtual IP entries so the
+		// send worker can resolve VMTA "ses-relay" for m.* profiles.
+		// The actual relay routing happens in PMTA config (smtp-hosts → SES).
+		{"ses_relay_pool_create", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    pool_a_id UUID;
+    pool_b_id UUID;
 BEGIN
-    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'db');
-    UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'qf');
-    UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'ht');
-    UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '' OR pool_prefix != 'mh');
+    -- Create ses-relay-pool for Server A (DB/QF brands)
+    INSERT INTO mailing_ip_pools (id, organization_id, name, status, created_at, updated_at)
+    VALUES (gen_random_uuid(), org_id, 'ses-relay-a', 'active', NOW(), NOW())
+    ON CONFLICT DO NOTHING;
+    SELECT id INTO pool_a_id FROM mailing_ip_pools WHERE name = 'ses-relay-a' AND organization_id = org_id;
+
+    -- Create ses-relay-pool for Server B (HT/MH brands)
+    INSERT INTO mailing_ip_pools (id, organization_id, name, status, created_at, updated_at)
+    VALUES (gen_random_uuid(), org_id, 'ses-relay-b', 'active', NOW(), NOW())
+    ON CONFLICT DO NOTHING;
+    SELECT id INTO pool_b_id FROM mailing_ip_pools WHERE name = 'ses-relay-b' AND organization_id = org_id;
+
+    -- Virtual IP for Server A relay VMTA (hostname drives VMTA selection)
+    INSERT INTO mailing_ip_addresses (id, pool_id, ip_address, hostname, status, warmup_daily_limit, created_at, updated_at)
+    SELECT gen_random_uuid(), pool_a_id, '15.204.101.125'::inet,
+           'ses-relay.mail.projectjarvis.io', 'active', 50000, NOW(), NOW()
+    WHERE pool_a_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM mailing_ip_addresses WHERE hostname = 'ses-relay.mail.projectjarvis.io' AND pool_id = pool_a_id);
+
+    -- Virtual IP for Server B relay VMTA
+    INSERT INTO mailing_ip_addresses (id, pool_id, ip_address, hostname, status, warmup_daily_limit, created_at, updated_at)
+    SELECT gen_random_uuid(), pool_b_id, '15.204.107.107'::inet,
+           'ses-relay.mail.projectjarvis.io', 'active', 50000, NOW(), NOW()
+    WHERE pool_b_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM mailing_ip_addresses WHERE hostname = 'ses-relay.mail.projectjarvis.io' AND pool_id = pool_b_id);
 END $$`},
-		{"startup_m_ip_pool", `DO $$
+		// Route m.* profiles through SES relay pools (empty pool_prefix = direct pool join)
+		{"ses_relay_m_profiles", `DO $$
 BEGIN
-    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool';
-    UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool != 'qf-gmail-pool';
-    UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND ip_pool != 'ht-gmail-pool';
-    UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool != 'mh-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-a', pool_prefix = ''
+    WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta'
+      AND (ip_pool != 'ses-relay-a' OR pool_prefix != '' OR pool_prefix IS NULL);
+    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-a', pool_prefix = ''
+    WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta'
+      AND (ip_pool != 'ses-relay-a' OR pool_prefix != '' OR pool_prefix IS NULL);
+    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-b', pool_prefix = ''
+    WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta'
+      AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
+    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-b', pool_prefix = ''
+    WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta'
+      AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
 END $$`},
 	}
 
