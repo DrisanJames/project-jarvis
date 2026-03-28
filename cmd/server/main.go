@@ -2998,35 +2998,41 @@ END $$`},
 		// SES relay: Create the ses-relay-pool and virtual IP entries so the
 		// send worker can resolve VMTA "ses-relay" for m.* profiles.
 		// The actual relay routing happens in PMTA config (smtp-hosts → SES).
-		{"ses_relay_pool_create", `DO $$
+		{"ses_relay_pool_create_v2", `DO $$
 DECLARE
     org_id UUID := '00000000-0000-0000-0000-000000000001';
     pool_a_id UUID;
     pool_b_id UUID;
 BEGIN
-    -- Create ses-relay-pool for Server A (DB/QF brands)
+    -- Create ses-relay pool for Server A (DB/QF brands)
     INSERT INTO mailing_ip_pools (id, organization_id, name, status, created_at, updated_at)
-    VALUES (gen_random_uuid(), org_id, 'ses-relay-a', 'active', NOW(), NOW())
-    ON CONFLICT DO NOTHING;
+    SELECT gen_random_uuid(), org_id, 'ses-relay-a', 'active', NOW(), NOW()
+    WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ses-relay-a' AND organization_id = org_id);
     SELECT id INTO pool_a_id FROM mailing_ip_pools WHERE name = 'ses-relay-a' AND organization_id = org_id;
 
-    -- Create ses-relay-pool for Server B (HT/MH brands)
+    -- Create ses-relay pool for Server B (HT/MH brands)
     INSERT INTO mailing_ip_pools (id, organization_id, name, status, created_at, updated_at)
-    VALUES (gen_random_uuid(), org_id, 'ses-relay-b', 'active', NOW(), NOW())
-    ON CONFLICT DO NOTHING;
+    SELECT gen_random_uuid(), org_id, 'ses-relay-b', 'active', NOW(), NOW()
+    WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ses-relay-b' AND organization_id = org_id);
     SELECT id INTO pool_b_id FROM mailing_ip_pools WHERE name = 'ses-relay-b' AND organization_id = org_id;
 
     -- Virtual IP for Server A relay VMTA (hostname drives VMTA selection)
-    INSERT INTO mailing_ip_addresses (id, pool_id, ip_address, hostname, status, warmup_daily_limit, created_at, updated_at)
-    SELECT gen_random_uuid(), pool_a_id, '15.204.101.125'::inet,
-           'ses-relay.mail.projectjarvis.io', 'active', 50000, NOW(), NOW()
+    INSERT INTO mailing_ip_addresses (id, organization_id, pool_id, ip_address, hostname, status,
+        warmup_daily_limit, warmup_stage, warmup_day, hosting_provider, acquisition_type,
+        rdns_verified, reputation_score, created_at, updated_at)
+    SELECT gen_random_uuid(), org_id, pool_a_id, '15.204.101.125'::inet,
+           'ses-relay.mail.projectjarvis.io', 'active',
+           50000, 'mature', 999, 'OVH', 'purchased', true, 100.0, NOW(), NOW()
     WHERE pool_a_id IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM mailing_ip_addresses WHERE hostname = 'ses-relay.mail.projectjarvis.io' AND pool_id = pool_a_id);
 
     -- Virtual IP for Server B relay VMTA
-    INSERT INTO mailing_ip_addresses (id, pool_id, ip_address, hostname, status, warmup_daily_limit, created_at, updated_at)
-    SELECT gen_random_uuid(), pool_b_id, '15.204.107.107'::inet,
-           'ses-relay.mail.projectjarvis.io', 'active', 50000, NOW(), NOW()
+    INSERT INTO mailing_ip_addresses (id, organization_id, pool_id, ip_address, hostname, status,
+        warmup_daily_limit, warmup_stage, warmup_day, hosting_provider, acquisition_type,
+        rdns_verified, reputation_score, created_at, updated_at)
+    SELECT gen_random_uuid(), org_id, pool_b_id, '15.204.107.107'::inet,
+           'ses-relay.mail.projectjarvis.io', 'active',
+           50000, 'mature', 999, 'OVH', 'purchased', true, 100.0, NOW(), NOW()
     WHERE pool_b_id IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM mailing_ip_addresses WHERE hostname = 'ses-relay.mail.projectjarvis.io' AND pool_id = pool_b_id);
 END $$`},
