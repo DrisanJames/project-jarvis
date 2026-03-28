@@ -1143,9 +1143,16 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, unsubURL)
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
-		// Replace {{ system.unsubscribe_url }} in body if present
+		// Safety net: replace any unresolved system tokens in both HTML and text
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.unsubscribe_url }}", unsubURL)
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.unsubscribe_url}}", unsubURL)
+		textContent = strings.ReplaceAll(textContent, "{{ system.unsubscribe_url }}", unsubURL)
+		textContent = strings.ReplaceAll(textContent, "{{system.unsubscribe_url}}", unsubURL)
+		prefsURL := fmt.Sprintf("%s/preferences?sid=%s", trackBase, item.SubscriberID.String())
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.preferences_url }}", prefsURL)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.preferences_url}}", prefsURL)
+		textContent = strings.ReplaceAll(textContent, "{{ system.preferences_url }}", prefsURL)
+		textContent = strings.ReplaceAll(textContent, "{{system.preferences_url}}", prefsURL)
 
 		// CAN-SPAM: if no unsub link exists in the body, inject one before </body>
 		if !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {

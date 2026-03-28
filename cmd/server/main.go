@@ -2772,6 +2772,13 @@ END $$`},
 		{"tracking_domain_historythinking", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.historythinking.com', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND tracking_domain = 'projectjarvis.io'`},
 		{"tracking_domain_myownhealth", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.myownhealth.net', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND tracking_domain = 'projectjarvis.io'`},
 		{"tracking_domain_quizfiesta", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.quizfiesta.com', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND tracking_domain = 'projectjarvis.io'`},
+
+		// Hardened: enforce correct tracking_domain for ALL profiles regardless of current value
+		{"tracking_domain_enforce_db", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.discountblog.com', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.discountblog.com')`},
+		{"tracking_domain_enforce_qf", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.quizfiesta.com', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.quizfiesta.com')`},
+		{"tracking_domain_enforce_ht", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.historythinking.com', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.historythinking.com')`},
+		{"tracking_domain_enforce_mh", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.myownhealth.net', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.myownhealth.net')`},
+		{"tracking_domain_enforce_m_db", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.m.discountblog.com', updated_at = NOW() WHERE sending_domain = 'm.discountblog.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.m.discountblog.com')`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

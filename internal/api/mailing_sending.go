@@ -155,6 +155,24 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		input.TextContent = fmt.Sprintf("%s\n\nThis is a test email from IGNITE Mailing Platform.", input.Subject)
 	}
 
+	// ── Resolve per-profile tracking domain (matches production send worker) ──
+	trackBase := svc.trackingURL
+	{
+		var td, sd sql.NullString
+		svc.db.QueryRowContext(ctx,
+			`SELECT COALESCE(tracking_domain,''), COALESCE(sending_domain,'') FROM mailing_sending_profiles WHERE id = $1`,
+			profile.ID).Scan(&td, &sd)
+		if td.Valid && td.String != "" {
+			if !strings.HasPrefix(td.String, "http") {
+				trackBase = "https://" + td.String
+			} else {
+				trackBase = td.String
+			}
+		} else if sd.Valid && sd.String != "" {
+			trackBase = "https://trk." + sd.String
+		}
+	}
+
 	// ── Liquid template rendering (so test sends match live pipeline) ──
 	now := time.Now()
 	emailLocal := input.To
@@ -163,6 +181,29 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		emailLocal = input.To[:at]
 		emailDomain = input.To[at+1:]
 	}
+
+	system := map[string]interface{}{
+		"current_date":    now.Format("January 2, 2006"),
+		"current_year":    now.Year(),
+		"current_month":   now.Month().String(),
+		"current_day":     now.Day(),
+		"current_weekday": now.Weekday().String(),
+	}
+
+	testCampaignID := uuid.New().String()
+	testSubID := uuid.New().String()
+	var unsubURL string
+	if trackBase != "" && svc.signingKey != "" {
+		unsubData := fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", testCampaignID, testSubID)
+		h := hmac.New(sha256.New, []byte(svc.signingKey))
+		h.Write([]byte(unsubData))
+		sig := hex.EncodeToString(h.Sum(nil))[:16]
+		encoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+		unsubURL = fmt.Sprintf("%s/track/unsubscribe/%s/%s", trackBase, encoded, sig)
+		system["unsubscribe_url"] = unsubURL
+		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, testSubID)
+	}
+
 	rc := mailing.RenderContext{
 		"first_name":   "",
 		"last_name":    "",
@@ -170,16 +211,10 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		"full_name":    "",
 		"email_local":  emailLocal,
 		"email_domain": emailDomain,
-		"system": map[string]interface{}{
-			"current_date":    now.Format("January 2, 2006"),
-			"current_year":    now.Year(),
-			"current_month":   now.Month().String(),
-			"current_day":     now.Day(),
-			"current_weekday": now.Weekday().String(),
-		},
-		"now":   now,
-		"today": now.Format("January 2, 2006"),
-		"year":  now.Year(),
+		"system":       system,
+		"now":          now,
+		"today":        now.Format("January 2, 2006"),
+		"year":         now.Year(),
 		"campaign": map[string]interface{}{
 			"name":      input.Subject,
 			"subject":   input.Subject,
@@ -195,6 +230,20 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 	}
 	if rendered, err := templateSvc.Render("test-text:"+input.To, input.TextContent, rc); err == nil {
 		input.TextContent = rendered
+	}
+
+	// Safety net: replace any unresolved system tokens in both HTML and text
+	if unsubURL != "" {
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{ system.unsubscribe_url }}", unsubURL)
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{system.unsubscribe_url}}", unsubURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{ system.unsubscribe_url }}", unsubURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{system.unsubscribe_url}}", unsubURL)
+	}
+	if prefsURL, ok := system["preferences_url"].(string); ok && prefsURL != "" {
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{ system.preferences_url }}", prefsURL)
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{system.preferences_url}}", prefsURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{ system.preferences_url }}", prefsURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{system.preferences_url}}", prefsURL)
 	}
 
 	// Route to appropriate ESP based on vendor type
@@ -239,6 +288,20 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			vmtaPool := fmt.Sprintf("%s-%s-pool", *profile.PoolPrefix, ispSuffix)
 			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": vmtaPool}
 			log.Printf("[SendTest] Routing via VMTA pool %s (recipient ISP: %s)", vmtaPool, recipientISP)
+		}
+		if unsubURL != "" {
+			if pmtaExtraHeaders == nil {
+				pmtaExtraHeaders = make(map[string]string)
+			}
+			fromDomain := fromEmail
+			if atIdx := strings.LastIndex(fromEmail, "@"); atIdx >= 0 {
+				fromDomain = fromEmail[atIdx+1:]
+			}
+			unsubData := fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", testCampaignID, testSubID)
+			unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+			mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
+			pmtaExtraHeaders["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, unsubURL)
+			pmtaExtraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 		}
 
 		if profile.APIEndpoint != nil && *profile.APIEndpoint != "" {
