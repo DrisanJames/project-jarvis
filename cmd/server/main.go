@@ -1502,6 +1502,90 @@ func runStartupMigrations(db *sql.DB) {
 				WHERE domain = 'm.discountblog.com'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
+		// --- AWS SES via PMTA relay: m.quizfiesta.com ---
+		// DKIM: 3 CNAMEs configured in SES (already verified)
+		// SPF:  m.quizfiesta.com TXT "v=spf1 include:amazonses.com ~all"
+		// DMARC: _dmarc.m.quizfiesta.com TXT "v=DMARC1; p=reject; rua=mailto:dmarc@quizfiesta.com"
+		// BIMI: default._bimi.m.quizfiesta.com TXT "v=BIMI1; l=https://d3j30mnhwt8cov.cloudfront.net/bimi/quizfiesta.svg; a=;"
+		// Relay block on Server A (15.204.101.125) → email-smtp.us-west-1.amazonaws.com:587
+		{"seed_ses_quizfiesta_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'QuizFiesta SES', 'pmta', 'Quiz Fiesta', 'hello@m.quizfiesta.com', 'reply@m.quizfiesta.com',
+				'm.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099',
+				1000, 10000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'm.quizfiesta.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_quizfiesta_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.quizfiesta.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.quizfiesta.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		// --- AWS SES via PMTA relay: m.historythinking.com ---
+		// DKIM: 3 CNAMEs configured via GoDaddy API (54pbgywbl5..., trprauojv7..., heyfh5ayh...)
+		// SPF:  m.historythinking.com TXT "v=spf1 include:amazonses.com ~all"
+		// DMARC: _dmarc.m.historythinking.com TXT "v=DMARC1; p=reject; rua=mailto:dmarc@historythinking.com"
+		// BIMI: default._bimi.m.historythinking.com TXT "v=BIMI1; l=https://d3j30mnhwt8cov.cloudfront.net/bimi/historythinking.svg; a=;"
+		// Relay block on Server B (15.204.107.107) → email-smtp.us-west-1.amazonaws.com:587
+		{"seed_ses_historythinking_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'HistoryThinking SES', 'pmta', 'History Thinking', 'hello@m.historythinking.com', 'reply@m.historythinking.com',
+				'm.historythinking.com', '15.204.107.107', 587, 'http://15.204.107.107:19099',
+				1000, 10000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'm.historythinking.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_historythinking_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.historythinking.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.historythinking.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		// --- AWS SES via PMTA relay: m.myownhealth.net ---
+		// DKIM: 3 CNAMEs configured via GoDaddy API (jw25zdlcq4..., zwdem6fdz..., 5xevi2nj5...)
+		// SPF:  m.myownhealth.net TXT "v=spf1 include:amazonses.com ~all"
+		// DMARC: _dmarc.m.myownhealth.net TXT "v=DMARC1; p=reject; rua=mailto:dmarc@myownhealth.net"
+		// BIMI: default._bimi.m.myownhealth.net TXT "v=BIMI1; l=https://d3j30mnhwt8cov.cloudfront.net/bimi/myownhealth.svg; a=;"
+		// Relay block on Server B (15.204.107.107) → email-smtp.us-west-1.amazonaws.com:587
+		{"seed_ses_myownhealth_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint,
+			 hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'MyOwnHealth SES', 'pmta', 'My Own Health', 'hello@m.myownhealth.net', 'reply@m.myownhealth.net',
+				'm.myownhealth.net', '15.204.107.107', 587, 'http://15.204.107.107:19099',
+				1000, 10000, 'warmup-pool', 'active', false, NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE sending_domain = 'm.myownhealth.net'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_myownhealth_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.myownhealth.net', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.myownhealth.net'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
 		// --- em.historythinking.com (PMTA direct) ---
 		// DNS records configured via GoDaddy API 2026-03-16:
 		//   A:     em.historythinking.com → 15.204.101.125
