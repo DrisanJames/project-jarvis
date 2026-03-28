@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,65 +71,7 @@ func NewMailingService(db *sql.DB, sparkpostKey string) *MailingService {
 		signingKey:   signingKey,
 		throttler:    NewMailingThrottler(),
 	}
-	go svc.fixSubscriberCountTrigger()
 	return svc
-}
-
-// fixSubscriberCountTrigger replaces the O(n²) COUNT(*) trigger with O(1) increment
-func (svc *MailingService) fixSubscriberCountTrigger() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Check if already migrated (fast trigger function exists)
-	var exists bool
-	svc.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'update_list_counts_fast')`).Scan(&exists)
-	if exists {
-		return
-	}
-
-	log.Println("[mailing] Applying subscriber count trigger fix (one-time)...")
-
-	svc.db.ExecContext(ctx, `DROP TRIGGER IF EXISTS trigger_update_list_counts ON mailing_subscribers`)
-	svc.db.ExecContext(ctx, `DROP FUNCTION IF EXISTS update_list_counts()`)
-
-	svc.db.ExecContext(ctx, `
-		CREATE OR REPLACE FUNCTION update_list_counts_fast() RETURNS TRIGGER AS $$
-		BEGIN
-			IF TG_OP = 'INSERT' THEN
-				UPDATE mailing_lists SET subscriber_count = subscriber_count + 1,
-					active_count = CASE WHEN NEW.status = 'confirmed' THEN active_count + 1 ELSE active_count END,
-					updated_at = NOW() WHERE id = NEW.list_id;
-			ELSIF TG_OP = 'DELETE' THEN
-				UPDATE mailing_lists SET subscriber_count = GREATEST(subscriber_count - 1, 0),
-					active_count = CASE WHEN OLD.status = 'confirmed' THEN GREATEST(active_count - 1, 0) ELSE active_count END,
-					updated_at = NOW() WHERE id = OLD.list_id;
-			ELSIF TG_OP = 'UPDATE' AND OLD.status != NEW.status THEN
-				UPDATE mailing_lists SET
-					active_count = active_count
-						+ CASE WHEN NEW.status = 'confirmed' THEN 1 ELSE 0 END
-						- CASE WHEN OLD.status = 'confirmed' THEN 1 ELSE 0 END,
-					updated_at = NOW() WHERE id = NEW.list_id;
-			END IF;
-			RETURN NULL;
-		END;
-		$$ LANGUAGE plpgsql
-	`)
-
-	svc.db.ExecContext(ctx, `
-		CREATE TRIGGER trigger_update_list_counts
-			AFTER INSERT OR UPDATE OR DELETE ON mailing_subscribers
-			FOR EACH ROW EXECUTE FUNCTION update_list_counts_fast()
-	`)
-
-	// Recalculate once
-	svc.db.ExecContext(ctx, `
-		UPDATE mailing_lists SET
-			subscriber_count = (SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = mailing_lists.id),
-			active_count = (SELECT COUNT(*) FROM mailing_subscribers WHERE list_id = mailing_lists.id AND status = 'confirmed'),
-			updated_at = NOW()
-	`)
-
-	log.Println("[mailing] Subscriber count trigger fixed — imports will now be fast")
 }
 
 // MailingThrottler controls send rates
@@ -151,7 +94,12 @@ func NewMailingThrottler() *MailingThrottler {
 	}
 }
 
-func (t *MailingThrottler) CanSend() bool {
+// TryAcquire atomically checks capacity and reserves a send slot.
+// Returns true if the send is allowed (slot consumed), false if throttled.
+// This replaces the split CanSend()+RecordSend() pattern which had a
+// TOCTOU race: concurrent callers could all observe CanSend()==true
+// before any incremented the counter.
+func (t *MailingThrottler) TryAcquire() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -165,14 +113,12 @@ func (t *MailingThrottler) CanSend() bool {
 		t.lastHour = now
 	}
 
-	return t.minute < t.minuteLimit && t.hour < t.hourLimit
-}
-
-func (t *MailingThrottler) RecordSend() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	if t.minute >= t.minuteLimit || t.hour >= t.hourLimit {
+		return false
+	}
 	t.minute++
 	t.hour++
+	return true
 }
 
 func (t *MailingThrottler) SetLimits(minute, hour int) {
@@ -182,14 +128,14 @@ func (t *MailingThrottler) SetLimits(minute, hour int) {
 	t.hourLimit = hour
 }
 
-func (t *MailingThrottler) GetStatus() map[string]interface{} {
+func (t *MailingThrottler) GetStatus() ThrottleStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return map[string]interface{}{
-		"minute_used":  t.minute,
-		"minute_limit": t.minuteLimit,
-		"hour_used":    t.hour,
-		"hour_limit":   t.hourLimit,
+	return ThrottleStatus{
+		MinuteUsed:  t.minute,
+		MinuteLimit: t.minuteLimit,
+		HourUsed:    t.hour,
+		HourLimit:   t.hourLimit,
 	}
 }
 
@@ -243,100 +189,159 @@ func RegisterFullMailingRoutes(r chi.Router, db *sql.DB, sparkpostKey string) {
 	})
 }
 
-// HandleDashboard returns mailing dashboard
+// DefaultDailyCapacity is the absolute last-resort capacity.
+// Exposed as a package-level constant so tests and config can override.
+const DefaultDailyCapacity int64 = 500000
+
+// HandleDashboard returns the mailing dashboard with:
+//   - All tenant-owned data scoped to organization_id
+//   - Global-only data (inbox_profiles, audience_metrics) segregated into
+//     platform_intelligence with scope:"global"
+//   - Section-level error handling — a failing section degrades that section,
+//     not the whole response
+//   - Typed response via DashboardResponse (no map[string]interface{})
 func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	dashboard := map[string]interface{}{
-		"overview":           map[string]interface{}{},
-		"performance":        map[string]interface{}{},
-		"recent_campaigns":   []interface{}{},
-		"throttle_status":    svc.throttler.GetStatus(),
-		"inbox_profiles":     0,
-		"total_suppressions": 0,
-		"active_automations": 0,
-		"pmta_connected":     false,
-		"pmta_server_count":  0,
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+	orgStr := orgID.String()
+
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	sectionErrors := make(map[string]string)
+	metricSources := map[string]string{
+		"performance":   "mailing_tracking_events via ComputeMetrics",
+		"overview":      "mailing_lists.active_count + mailing_campaigns COUNT",
+		"revenue":       "mailing_campaigns.revenue SUM",
+		"daily_sending": "mailing_campaigns.sent_count SUM (today, org-scoped)",
+		"capacity":      "mailing_sending_profiles.daily_limit SUM -> pmta_servers fallback -> DefaultDailyCapacity",
+		"suppressions":  "mailing_global_suppressions (org-scoped)",
+		"audience":      "mailing_subscribers (global, not org-scoped)",
+		"churn":         "mailing_audience_metrics (global, not org-scoped)",
 	}
 
-	// Use pre-aggregated counts from mailing_lists to avoid scanning 400k subscribers
-	var totalSubs, totalLists, totalCampaigns int
-	svc.db.QueryRowContext(ctx, `
+	// --- Section: Overview (org-scoped) ---
+	var totalSubs, totalLists int
+	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(active_count), 0)::int, COUNT(*)
-		FROM mailing_lists WHERE status = 'active' AND COALESCE(is_visible, true) = true
-	`).Scan(&totalSubs, &totalLists)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_campaigns").Scan(&totalCampaigns)
+		FROM mailing_lists
+		WHERE organization_id = $1 AND status = 'active' AND COALESCE(is_visible, true) = true
+	`, orgID).Scan(&totalSubs, &totalLists); err != nil {
+		log.Printf("[dashboard] overview/lists error org=%s: %v", orgStr, err)
+		sectionErrors["overview_lists"] = "failed to load list counts"
+	}
 
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	var totalCampaigns int
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_campaigns WHERE organization_id = $1
+	`, orgID).Scan(&totalCampaigns); err != nil {
+		log.Printf("[dashboard] overview/campaigns error org=%s: %v", orgStr, err)
+		sectionErrors["overview_campaigns"] = "failed to load campaign count"
+	}
 
-	perfMetrics, _ := ComputeMetrics(ctx, svc.db, MetricsFilter{
+	// --- Section: Performance (org-scoped via ComputeMetrics) ---
+	perfMetrics, perfErr := ComputeMetrics(ctx, svc.db, MetricsFilter{
+		OrgID:     orgStr,
 		StartDate: todayStart,
 		EndDate:   now,
 	})
-	totalSent := perfMetrics.Sent
-	totalOpens := perfMetrics.Opens
-	totalClicks := perfMetrics.Clicks
-
-	var totalRevenue float64
-	svc.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(revenue),0)
-		FROM mailing_campaigns
-		WHERE COALESCE(started_at, created_at) >= $1
-	`, todayStart).Scan(&totalRevenue)
-
-	var suppressed int
-	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_suppressions WHERE active = true").Scan(&suppressed); err != nil {
-		suppressed = 0
+	if perfErr != nil {
+		log.Printf("[dashboard] performance error org=%s: %v", orgStr, perfErr)
+		sectionErrors["performance"] = "failed to compute performance metrics"
 	}
-	dashboard["total_suppressions"] = suppressed
+
+	// Revenue from org-scoped campaigns in today's window
+	var totalRevenue float64
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(revenue), 0)
+		FROM mailing_campaigns
+		WHERE organization_id = $1 AND COALESCE(started_at, created_at) >= $2
+	`, orgID, todayStart).Scan(&totalRevenue); err != nil {
+		log.Printf("[dashboard] revenue error org=%s: %v", orgStr, err)
+		sectionErrors["revenue"] = "failed to load revenue"
+	}
+
+	// --- Section: Suppressions (org-scoped) ---
+	var suppressed int
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1
+	`, orgID).Scan(&suppressed); err != nil {
+		log.Printf("[dashboard] suppressions error org=%s: %v", orgStr, err)
+		sectionErrors["suppressions"] = "failed to load suppression count"
+	}
 
 	var globalSuppTotal, suppressionsToday, suppressionsYesterday int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions").Scan(&globalSuppTotal)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions WHERE created_at >= CURRENT_DATE").Scan(&suppressionsToday)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_global_suppressions WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' AND created_at < CURRENT_DATE").Scan(&suppressionsYesterday)
-	dashboard["global_suppressions_total"] = globalSuppTotal
-	dashboard["suppressions_today"] = suppressionsToday
-	dashboard["suppressions_yesterday"] = suppressionsYesterday
-
-	// Count inbox profiles — total + built today (calendar day, not rolling 24h)
-	var inboxProfiles, inboxProfilesToday int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles").Scan(&inboxProfiles)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE first_seen_at >= CURRENT_DATE").Scan(&inboxProfilesToday)
-	dashboard["inbox_profiles"] = inboxProfiles
-	dashboard["inbox_profiles_today"] = inboxProfilesToday
-
-	// Count active automations
-	var activeAutomations int
-	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM automation_flows WHERE status = 'active'").Scan(&activeAutomations); err != nil {
-		activeAutomations = 0
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1
+	`, orgID).Scan(&globalSuppTotal); err != nil {
+		log.Printf("[dashboard] global_supp_total error org=%s: %v", orgStr, err)
+		sectionErrors["global_suppressions_total"] = "failed to load global suppression total"
 	}
-	dashboard["active_automations"] = activeAutomations
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_global_suppressions
+		WHERE organization_id = $1 AND created_at >= $2
+	`, orgID, todayStart).Scan(&suppressionsToday); err != nil {
+		log.Printf("[dashboard] suppressions_today error org=%s: %v", orgStr, err)
+		sectionErrors["suppressions_today"] = "failed to load today's suppressions"
+	}
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_global_suppressions
+		WHERE organization_id = $1 AND created_at >= $2 AND created_at < $3
+	`, orgID, yesterdayStart, todayStart).Scan(&suppressionsYesterday); err != nil {
+		log.Printf("[dashboard] suppressions_yesterday error org=%s: %v", orgStr, err)
+		sectionErrors["suppressions_yesterday"] = "failed to load yesterday's suppressions"
+	}
 
+	// --- Section: Active automations (org-scoped) ---
+	var activeAutomations int
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM automation_flows WHERE organization_id = $1 AND status = 'active'
+	`, orgID).Scan(&activeAutomations); err != nil {
+		log.Printf("[dashboard] automations error org=%s: %v", orgStr, err)
+		sectionErrors["automations"] = "failed to load automation count"
+	}
+
+	// --- Section: Daily sending (org-scoped) ---
 	var dailySentToday int64
-	svc.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(sent_count), 0) 
-		FROM mailing_campaigns 
-		WHERE (started_at >= $1 OR (started_at IS NULL AND created_at >= $1))
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(sent_count), 0)
+		FROM mailing_campaigns
+		WHERE organization_id = $1
+		  AND (started_at >= $2 OR (started_at IS NULL AND created_at >= $2))
 		  AND status IN ('sending', 'completed', 'sent', 'paused')
-	`, todayStart).Scan(&dailySentToday)
+	`, orgID, todayStart).Scan(&dailySentToday); err != nil {
+		log.Printf("[dashboard] daily_sending error org=%s: %v", orgStr, err)
+		sectionErrors["daily_sending"] = "failed to load daily sent count"
+	}
 
-	// Get daily capacity from sending profiles (sum of all active profile daily limits)
+	// --- Section: Capacity (not org-scoped — infrastructure is shared) ---
 	var dailyCapacity int64
-	svc.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(daily_limit), 0) 
-		FROM mailing_sending_profiles 
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(daily_limit), 0)
+		FROM mailing_sending_profiles
 		WHERE status = 'active' AND daily_limit > 0
-	`).Scan(&dailyCapacity)
+	`).Scan(&dailyCapacity); err != nil {
+		log.Printf("[dashboard] capacity/profiles error: %v", err)
+		sectionErrors["capacity"] = "failed to load sending profile capacity"
+	}
 	if dailyCapacity == 0 {
-		svc.db.QueryRowContext(ctx, `
+		if err := svc.db.QueryRowContext(ctx, `
 			SELECT COUNT(*) * 100000
 			FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
-		`).Scan(&dailyCapacity)
+		`).Scan(&dailyCapacity); err != nil {
+			log.Printf("[dashboard] capacity/pmta error: %v", err)
+		}
 	}
 	if dailyCapacity == 0 {
-		dailyCapacity = 500000 // fallback default
+		dailyCapacity = DefaultDailyCapacity
+		metricSources["capacity"] = "DefaultDailyCapacity (fallback — no active profiles or PMTA servers found)"
 	}
 
 	dailyUtilization := 0.0
@@ -344,89 +349,70 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		dailyUtilization = float64(dailySentToday) / float64(dailyCapacity) * 100
 	}
 
-	dashboard["overview"] = map[string]interface{}{
-		"total_subscribers":    totalSubs,
-		"total_lists":          totalLists,
-		"total_campaigns":      totalCampaigns,
-		"suppressed_emails":    suppressed,
-		"daily_capacity":       dailyCapacity,
-		"daily_used":           dailySentToday,
-		"daily_utilization":    dailyUtilization,
-	}
-
-	dashboard["total_subscribers"] = totalSubs
-	dashboard["daily_capacity"] = dailyCapacity
-	dashboard["daily_used"] = dailySentToday
-	dashboard["daily_utilization"] = dailyUtilization
-	dashboard["daily_remaining"] = dailyCapacity - dailySentToday
-
-	dashboard["performance"] = map[string]interface{}{
-		"total_sent":       totalSent,
-		"total_opens":      totalOpens,
-		"total_clicks":     totalClicks,
-		"total_revenue":    totalRevenue,
-		"open_rate":        perfMetrics.OpenRate / 100, // frontend expects 0-1 range
-		"click_rate":       perfMetrics.ClickRate / 100,
-		"hard_bounces":     perfMetrics.HardBounces,
-		"soft_bounces":     perfMetrics.SoftBounces,
-		"complaints":       perfMetrics.Complaints,
-		"delivered":        perfMetrics.Delivered,
-		"hard_bounce_rate": perfMetrics.HardBounceRate,
-		"soft_bounce_rate": perfMetrics.SoftBounceRate,
-		"complaint_rate":   perfMetrics.ComplaintRate,
-		"delivery_rate":    perfMetrics.DeliveryRate,
-	}
-
-	var recentCampaigns []map[string]interface{}
+	// --- Section: Recent campaigns (org-scoped) ---
+	var recentCampaigns []DashboardRecentCampaign
 	if rows, qErr := svc.db.QueryContext(ctx, `
 		SELECT id, name, status, sent_count, open_count, click_count, created_at
-		FROM mailing_campaigns ORDER BY created_at DESC LIMIT 5
-	`); qErr == nil {
+		FROM mailing_campaigns
+		WHERE organization_id = $1
+		ORDER BY created_at DESC LIMIT 5
+	`, orgID); qErr != nil {
+		log.Printf("[dashboard] recent_campaigns error org=%s: %v", orgStr, qErr)
+		sectionErrors["recent_campaigns"] = "failed to load recent campaigns"
+	} else {
 		defer rows.Close()
 		for rows.Next() {
+			var c DashboardRecentCampaign
 			var id uuid.UUID
-			var name, status string
-			var sentCount, openCount, clickCount int
-			var createdAt time.Time
-			rows.Scan(&id, &name, &status, &sentCount, &openCount, &clickCount, &createdAt)
-			recentCampaigns = append(recentCampaigns, map[string]interface{}{
-				"id":          id.String(),
-				"name":        name,
-				"status":      status,
-				"sent_count":  sentCount,
-				"open_count":  openCount,
-				"click_count": clickCount,
-				"created_at":  createdAt,
-			})
+			if err := rows.Scan(&id, &c.Name, &c.Status, &c.SentCount, &c.OpenCount, &c.ClickCount, &c.CreatedAt); err != nil {
+				log.Printf("[dashboard] recent_campaigns scan error: %v", err)
+				continue
+			}
+			c.ID = id.String()
+			recentCampaigns = append(recentCampaigns, c)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("[dashboard] recent_campaigns iteration error: %v", err)
+			sectionErrors["recent_campaigns"] = "partial failure reading recent campaigns"
 		}
 	}
-	if recentCampaigns != nil {
-		dashboard["recent_campaigns"] = recentCampaigns
+	if recentCampaigns == nil {
+		recentCampaigns = []DashboardRecentCampaign{}
 	}
 
+	// --- Section: PMTA infrastructure (shared) ---
 	var pmtaServers int
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_delivery_servers WHERE server_type = 'pmta' AND status = 'active'
 	`).Scan(&pmtaServers); err != nil {
-		pmtaServers = 0
+		log.Printf("[dashboard] pmta/delivery_servers error: %v", err)
 	}
 	var smtpProfiles int
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_sending_profiles
 		WHERE (vendor_type = 'pmta' OR vendor_type = 'smtp') AND status = 'active'
 	`).Scan(&smtpProfiles); err != nil {
-		smtpProfiles = 0
+		log.Printf("[dashboard] pmta/sending_profiles error: %v", err)
 	}
 	var pmtaRegistry int
-	svc.db.QueryRowContext(ctx, `
+	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_pmta_servers WHERE status IS NULL OR status != 'inactive'
-	`).Scan(&pmtaRegistry)
+	`).Scan(&pmtaRegistry); err != nil {
+		log.Printf("[dashboard] pmta/registry error: %v", err)
+	}
 	totalPMTA := pmtaServers + smtpProfiles + pmtaRegistry
-	dashboard["pmta_connected"] = totalPMTA > 0
-	dashboard["pmta_server_count"] = totalPMTA
 
-	// Sidebar audience metrics — compute active audience directly from subscriber engagement data.
-	// This counts unique non-seed subscribers who opened or clicked within the last 60 days.
+	// --- Section: Platform Intelligence (global — tables lack org_id) ---
+	var inboxProfiles, inboxProfilesToday int
+	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles").Scan(&inboxProfiles); err != nil {
+		log.Printf("[dashboard] inbox_profiles error: %v", err)
+		sectionErrors["inbox_profiles"] = "failed to load inbox profiles"
+	}
+	if err := svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_inbox_profiles WHERE first_seen_at >= $1", todayStart).Scan(&inboxProfilesToday); err != nil {
+		log.Printf("[dashboard] inbox_profiles_today error: %v", err)
+		sectionErrors["inbox_profiles_today"] = "failed to load today's inbox profiles"
+	}
+
 	var activeAudience int
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -434,69 +420,188 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		WHERE s.status = 'confirmed'
 		  AND (s.last_open_at >= NOW() - INTERVAL '60 days' OR s.last_click_at >= NOW() - INTERVAL '60 days')
 		  AND s.list_id NOT IN (SELECT id FROM mailing_lists WHERE name ILIKE '%seed%')
-	`).Scan(&activeAudience); err == nil {
-		dashboard["active_audience_60d"] = activeAudience
+	`).Scan(&activeAudience); err != nil {
+		log.Printf("[dashboard] active_audience error: %v", err)
+		sectionErrors["active_audience"] = "failed to compute active audience"
 	}
 
-	// Churn & intro from pre-computed Lambda table (fallback 0 if not populated)
 	var churnPct, introPct float64
-	var metricsComputedAt time.Time
+	var metricsComputedAt *time.Time
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT global_churn_pct, global_intro_pct, computed_at
 		FROM mailing_audience_metrics WHERE id = 1
-	`).Scan(&churnPct, &introPct, &metricsComputedAt); err == nil {
-		dashboard["global_churn_pct"] = churnPct
-		dashboard["global_intro_pct"] = introPct
-		dashboard["metrics_computed_at"] = metricsComputedAt
+	`).Scan(&churnPct, &introPct, &metricsComputedAt); err != nil {
+		log.Printf("[dashboard] audience_metrics error: %v", err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(dashboard)
+	platformIntel := &PlatformIntelligence{
+		Scope:              "global",
+		InboxProfiles:      inboxProfiles,
+		InboxProfilesToday: inboxProfilesToday,
+		ActiveAudience60d:  activeAudience,
+		GlobalChurnPct:     churnPct,
+		GlobalIntroPct:     introPct,
+		MetricsComputedAt:  metricsComputedAt,
+	}
+
+	// Assemble typed response — backward-compatible top-level keys preserved
+	openRate := 0.0
+	clickRate := 0.0
+	if perfMetrics.OpenRate > 0 {
+		openRate = perfMetrics.OpenRate / 100
+	}
+	if perfMetrics.ClickRate > 0 {
+		clickRate = perfMetrics.ClickRate / 100
+	}
+
+	resp := DashboardResponse{
+		Overview: DashboardOverview{
+			TotalSubscribers:         totalSubs,
+			TotalLists:               totalLists,
+			TotalCampaigns:           totalCampaigns,
+			SuppressedEmails:         suppressed,
+			PlatformDailyCapacity:    dailyCapacity,
+			DailyUsed:                dailySentToday,
+			PlatformDailyUtilization: dailyUtilization,
+		},
+		Performance: DashboardPerformance{
+			TotalSent:      perfMetrics.Sent,
+			TotalOpens:     perfMetrics.Opens,
+			TotalClicks:    perfMetrics.Clicks,
+			TotalRevenue:   totalRevenue,
+			OpenRate:       openRate,
+			ClickRate:      clickRate,
+			HardBounces:    perfMetrics.HardBounces,
+			SoftBounces:    perfMetrics.SoftBounces,
+			Complaints:     perfMetrics.Complaints,
+			Delivered:      perfMetrics.Delivered,
+			HardBounceRate: perfMetrics.HardBounceRate,
+			SoftBounceRate: perfMetrics.SoftBounceRate,
+			ComplaintRate:  perfMetrics.ComplaintRate,
+			DeliveryRate:   perfMetrics.DeliveryRate,
+		},
+		RecentCampaigns: recentCampaigns,
+		ThrottleStatus:  svc.throttler.GetStatus(),
+
+		TotalSuppressions:       suppressed,
+		GlobalSuppressionsTotal: globalSuppTotal,
+		SuppressionsToday:       suppressionsToday,
+		SuppressionsYesterday:   suppressionsYesterday,
+		ActiveAutomations:       activeAutomations,
+
+		TotalSubscribers:         totalSubs,
+		PlatformDailyCapacity:    dailyCapacity,
+		DailyUsed:                dailySentToday,
+		PlatformDailyUtilization: dailyUtilization,
+		DailyRemaining:           dailyCapacity - dailySentToday,
+
+		PMTAConnected:   totalPMTA > 0,
+		PMTAServerCount: totalPMTA,
+
+		// Global metrics live ONLY in platform_intelligence — no top-level dupes
+		PlatformIntelligence: platformIntel,
+
+		MetricSources: metricSources,
+		GeneratedAt:   now,
+	}
+
+	if len(sectionErrors) > 0 {
+		resp.SectionErrors = sectionErrors
+	}
+
+	respondJSON(w, http.StatusOK, resp)
 }
 
-// HandleGetCampaigns returns campaigns filtered by organization
+// HandleGetCampaigns returns campaigns filtered by organization with real pagination.
+// Total reflects actual campaign count, not just rows returned.
 func (svc *MailingService) HandleGetCampaigns(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
-	orgID := getOrganizationID(r)
-	
-	rows, err := svc.db.QueryContext(ctx, `
-		SELECT id, name, subject, from_name, from_email, status, sent_count, open_count, click_count, revenue, created_at
-		FROM mailing_campaigns 
-		WHERE organization_id = $1
-		ORDER BY created_at DESC LIMIT 50
-	`, orgID)
+
+	orgID, err := GetOrgIDFromRequest(r)
 	if err != nil {
-		http.Error(w, `{"error":"failed to fetch campaigns"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+
+	pag := ParsePagination(r, 50, 200)
+
+	// Real total count for this org
+	var total int64
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_campaigns WHERE organization_id = $1
+	`, orgID).Scan(&total); err != nil {
+		log.Printf("[GetCampaigns] count error org=%s: %v", orgID, err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	rows, err := svc.db.QueryContext(ctx, `
+		SELECT id, name, subject, from_name, from_email, status,
+		       sent_count, open_count, click_count, bounce_count,
+		       hard_bounce_count, soft_bounce_count,
+		       COALESCE(delivered_count, GREATEST(sent_count - bounce_count, 0)),
+		       complaint_count, unsubscribe_count, revenue, created_at
+		FROM mailing_campaigns
+		WHERE organization_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`, orgID, pag.Limit, pag.Offset)
+	if err != nil {
+		log.Printf("[GetCampaigns] query error org=%s: %v", orgID, err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 	defer rows.Close()
 
-	var campaigns []map[string]interface{}
+	campaigns := make([]CampaignListItem, 0)
 	for rows.Next() {
+		var c CampaignListItem
 		var id uuid.UUID
-		var name, subject, fromName, fromEmail, status string
-		var sentCount, openCount, clickCount int
-		var revenue float64
-		var createdAt time.Time
-		rows.Scan(&id, &name, &subject, &fromName, &fromEmail, &status, &sentCount, &openCount, &clickCount, &revenue, &createdAt)
-		campaigns = append(campaigns, map[string]interface{}{
-			"id": id.String(), "name": name, "subject": subject, "from_name": fromName,
-			"from_email": fromEmail, "status": status, "sent_count": sentCount,
-			"open_count": openCount, "click_count": clickCount, "revenue": revenue, "created_at": createdAt,
-		})
+		if err := rows.Scan(&id, &c.Name, &c.Subject, &c.FromName, &c.FromEmail, &c.Status,
+			&c.SentCount, &c.OpenCount, &c.ClickCount, &c.BounceCount,
+			&c.HardBounceCount, &c.SoftBounceCount, &c.DerivedDeliveredCount,
+			&c.ComplaintCount, &c.UnsubscribeCount, &c.Revenue, &c.CreatedAt); err != nil {
+			log.Printf("[GetCampaigns] scan error: %v", err)
+			continue
+		}
+		c.ID = id.String()
+		campaigns = append(campaigns, c)
 	}
-	if campaigns == nil {
-		campaigns = []map[string]interface{}{}
+	if err := rows.Err(); err != nil {
+		log.Printf("[GetCampaigns] iteration error org=%s: %v", orgID, err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"campaigns": campaigns, "total": len(campaigns)})
+	pagMeta := PaginationMeta{
+		Page:       pag.Page,
+		Limit:      pag.Limit,
+		Total:      total,
+		TotalPages: int((total + int64(pag.Limit) - 1) / int64(pag.Limit)),
+		HasMore:    int64(pag.Offset)+int64(len(campaigns)) < total,
+	}
+
+	respondJSON(w, http.StatusOK, CampaignListResponse{
+		Campaigns:  campaigns,
+		Total:      total,
+		Pagination: &pagMeta,
+	})
 }
 
-// HandleCreateCampaign creates a campaign
+// HandleCreateCampaign creates a campaign with full input validation.
+//   - JSON decode errors → 400
+//   - Missing required fields (name, subject, from_name, from_email) → 400
+//   - Invalid from_email format → 400
+//   - Malformed list_id → 400
+//   - list_id not found → 400 (sql.ErrNoRows); DB failure → 500
+//   - list_id belongs to different org → 400 (prevents cross-tenant linkage)
 func (svc *MailingService) HandleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+
 	var input struct {
 		Name        string `json:"name"`
 		Subject     string `json:"subject"`
@@ -505,34 +610,83 @@ func (svc *MailingService) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 		HTMLContent string `json:"html_content"`
 		ListID      string `json:"list_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&input)
-
-	id := uuid.New()
-	orgID, err := GetOrgIDFromRequest(r)
-	if err != nil {
-		http.Error(w, `{"error":"organization context required"}`, http.StatusUnauthorized)
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+
+	// Trim all text inputs
+	input.Name = strings.TrimSpace(input.Name)
+	input.Subject = strings.TrimSpace(input.Subject)
+	input.FromName = strings.TrimSpace(input.FromName)
+	input.FromEmail = strings.TrimSpace(input.FromEmail)
+	input.ListID = strings.TrimSpace(input.ListID)
+
+	if input.Name == "" || input.Subject == "" {
+		respondError(w, http.StatusBadRequest, "name and subject are required")
+		return
+	}
+	if input.FromName == "" || input.FromEmail == "" {
+		respondError(w, http.StatusBadRequest, "from_name and from_email are required")
+		return
+	}
+
+	// Basic email format: must have exactly one @, non-empty local and domain parts
+	if atIdx := strings.IndexByte(input.FromEmail, '@'); atIdx < 1 || atIdx >= len(input.FromEmail)-1 || strings.Count(input.FromEmail, "@") != 1 {
+		respondError(w, http.StatusBadRequest, "from_email is not a valid email address")
+		return
+	}
+
 	var listID *uuid.UUID
 	if input.ListID != "" {
-		lid, _ := uuid.Parse(input.ListID)
+		lid, parseErr := uuid.Parse(input.ListID)
+		if parseErr != nil {
+			respondError(w, http.StatusBadRequest, "list_id is not a valid UUID")
+			return
+		}
+
+		// Verify list exists AND belongs to this org.
+		// Distinguish "not found" (user error) from DB failure (server error).
+		var ownerOrg uuid.UUID
+		err := svc.db.QueryRowContext(ctx, `
+			SELECT organization_id FROM mailing_lists WHERE id = $1
+		`, lid).Scan(&ownerOrg)
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusBadRequest, "list_id does not exist")
+			return
+		}
+		if err != nil {
+			log.Printf("[CreateCampaign] list ownership check error org=%s list=%s: %v", orgID, lid, err)
+			respondError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		if ownerOrg != orgID {
+			respondError(w, http.StatusBadRequest, "list_id does not belong to your organization")
+			return
+		}
 		listID = &lid
 	}
 
+	id := uuid.New()
+	createdAt := time.Now().UTC()
 	_, err = svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (id, organization_id, list_id, name, subject, from_name, from_email, html_content, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', NOW(), NOW())
-	`, id, orgID, listID, input.Name, input.Subject, input.FromName, input.FromEmail, input.HTMLContent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $9)
+	`, id, orgID, listID, input.Name, input.Subject, input.FromName, input.FromEmail, input.HTMLContent, createdAt)
 
 	if err != nil {
-		log.Printf("Error creating campaign: %v", err)
-		http.Error(w, `{"error":"failed to create campaign"}`, http.StatusInternalServerError)
+		log.Printf("[CreateCampaign] insert error org=%s: %v", orgID, err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": id.String(), "name": input.Name, "subject": input.Subject, "status": "draft",
+	respondJSON(w, http.StatusCreated, CampaignCreateResponse{
+		ID:        id.String(),
+		Name:      input.Name,
+		Subject:   input.Subject,
+		FromName:  input.FromName,
+		FromEmail: input.FromEmail,
+		Status:    "draft",
+		CreatedAt: createdAt.Format(time.RFC3339),
 	})
 }

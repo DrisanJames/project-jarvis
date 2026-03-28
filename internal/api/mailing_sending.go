@@ -64,8 +64,8 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Check throttle
-	if !svc.throttler.CanSend() {
+	// Atomic throttle check — reserves the send slot if allowed
+	if !svc.throttler.TryAcquire() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false, "throttled": true, "reason": "Rate limit exceeded",
@@ -353,9 +353,6 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 	result["vendor"] = profile.VendorType
 	result["from_name"] = fromName
 	result["from_email"] = fromEmail
-
-	// Record throttle
-	svc.throttler.RecordSend()
 
 	// Update profile usage
 	if profile.ID != "" {
@@ -1138,8 +1135,9 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			continue
 		}
 
-		// Check throttle
-		if !svc.throttler.CanSend() {
+		// Atomic throttle check — reserves the slot upfront so failed sends
+		// still count against capacity (they consumed an SMTP connection attempt)
+		if !svc.throttler.TryAcquire() {
 			throttled++
 			continue
 		}
@@ -1152,7 +1150,6 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		result, err := svc.sendViaSparkPost(ctx, email, fromEmail, fromName, subject, trackedHTML, "")
 		if err == nil && result["success"] == true {
 			sent++
-			svc.throttler.RecordSend()
 			
 			// Record sent event
 			svc.db.ExecContext(ctx, `

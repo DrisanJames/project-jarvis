@@ -15,85 +15,97 @@ import (
 	"github.com/google/uuid"
 )
 
-// HandleGetLists returns all lists with metadata.
-// Engagement stats (mailed_to, opens, clicks, complaints) are zero-filled here;
+// HandleGetLists returns all lists for the requesting org.
+// Engagement stats (mailed_to, opens, clicks, complaints) are zero-filled;
 // they will be served from mailing_list_engagement_stats once the async
 // aggregation subsystem is in place (Phase 2+).
 func (svc *MailingService) HandleGetLists(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+
 	rows, err := svc.db.QueryContext(ctx, `
 		SELECT l.id, l.name, l.description, l.subscriber_count,
-		       l.subscriber_count AS active_count,
-		       l.status, l.created_at
+		       l.active_count, l.status, l.created_at
 		FROM mailing_lists l
-		WHERE COALESCE(l.is_visible, true) = true
+		WHERE l.organization_id = $1 AND COALESCE(l.is_visible, true) = true
 		ORDER BY l.created_at DESC
-	`)
+	`, orgID)
 	if err != nil {
-		log.Printf("[HandleGetLists] query error: %v", err)
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "database temporarily unavailable"})
+		log.Printf("[HandleGetLists] query error org=%s: %v", orgID, err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 	defer rows.Close()
 
-	var lists []map[string]interface{}
+	lists := make([]ListItem, 0)
 	for rows.Next() {
+		var li ListItem
 		var id uuid.UUID
-		var name, desc, status string
-		var subCount, activeCount int
-		var createdAt time.Time
-		if err := rows.Scan(&id, &name, &desc, &subCount, &activeCount, &status, &createdAt); err != nil {
+		if err := rows.Scan(&id, &li.Name, &li.Description, &li.SubscriberCount,
+			&li.ActiveCount, &li.Status, &li.CreatedAt); err != nil {
+			log.Printf("[HandleGetLists] scan error: %v", err)
 			continue
 		}
-
-		lists = append(lists, map[string]interface{}{
-			"id": id.String(), "name": name, "description": desc,
-			"subscriber_count": subCount, "active_count": activeCount,
-			"status": status, "created_at": createdAt,
-			"mailed_to_count": 0,
-			"open_pct":        0.0,
-			"click_pct":       0.0,
-			"complaint_pct":   0.0,
-		})
+		li.ID = id.String()
+		lists = append(lists, li)
 	}
-	if lists == nil {
-		lists = []map[string]interface{}{}
+	if err := rows.Err(); err != nil {
+		log.Printf("[HandleGetLists] iteration error org=%s: %v", orgID, err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"lists": lists, "total": len(lists)})
+	respondJSON(w, http.StatusOK, ListsResponse{
+		Lists: lists,
+		Total: len(lists),
+	})
 }
 
-// HandleCreateList creates a new list
+// HandleCreateList creates a new list with input validation.
 func (svc *MailingService) HandleCreateList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+
 	var input struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	json.NewDecoder(r.Body).Decode(&input)
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if input.Name == "" {
+		respondError(w, http.StatusBadRequest, "name is required")
+		return
+	}
 
 	id := uuid.New()
-	orgID, err := GetOrgIDFromRequest(r)
-	if err != nil {
-		http.Error(w, `{"error":"organization context required"}`, http.StatusUnauthorized)
-		return
-	}
-
+	createdAt := time.Now().UTC()
 	_, err = svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_lists (id, organization_id, name, description, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, 'active', NOW(), NOW())
-	`, id, orgID, input.Name, input.Description)
+		VALUES ($1, $2, $3, $4, 'active', $5, $5)
+	`, id, orgID, input.Name, input.Description, createdAt)
 
 	if err != nil {
-		http.Error(w, `{"error":"failed to create list"}`, http.StatusInternalServerError)
+		log.Printf("[CreateList] insert error org=%s: %v", orgID, err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": id.String(), "name": input.Name, "description": input.Description, "status": "active",
+	respondJSON(w, http.StatusCreated, ListCreateResponse{
+		ID:          id.String(),
+		Name:        input.Name,
+		Description: input.Description,
+		Status:      "active",
+		CreatedAt:   createdAt.Format(time.RFC3339),
 	})
 }
 

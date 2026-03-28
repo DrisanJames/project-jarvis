@@ -1864,6 +1864,40 @@ func runStartupMigrations(db *sql.DB) {
 				'2902c0f5-b9a3-4771-93a9-2387f1a5d10b'
 			)`},
 
+		// Fast O(1) subscriber count trigger — replaces the old O(n) COUNT(*) trigger.
+		// Moved here from the runtime goroutine in NewMailingService so schema
+		// mutations go through the startup migration system, not background DDL.
+		{"create_fast_list_counts_fn", `
+			CREATE OR REPLACE FUNCTION update_list_counts_fast() RETURNS TRIGGER AS $$
+			BEGIN
+				IF TG_OP = 'INSERT' THEN
+					UPDATE mailing_lists SET subscriber_count = subscriber_count + 1,
+						active_count = CASE WHEN NEW.status = 'confirmed' THEN active_count + 1 ELSE active_count END,
+						updated_at = NOW() WHERE id = NEW.list_id;
+				ELSIF TG_OP = 'DELETE' THEN
+					UPDATE mailing_lists SET subscriber_count = GREATEST(subscriber_count - 1, 0),
+						active_count = CASE WHEN OLD.status = 'confirmed' THEN GREATEST(active_count - 1, 0) ELSE active_count END,
+						updated_at = NOW() WHERE id = OLD.list_id;
+				ELSIF TG_OP = 'UPDATE' AND OLD.status != NEW.status THEN
+					UPDATE mailing_lists SET
+						active_count = active_count
+							+ CASE WHEN NEW.status = 'confirmed' THEN 1 ELSE 0 END
+							- CASE WHEN OLD.status = 'confirmed' THEN 1 ELSE 0 END,
+						updated_at = NOW() WHERE id = NEW.list_id;
+				END IF;
+				RETURN NULL;
+			END;
+			$$ LANGUAGE plpgsql`},
+		{"create_fast_list_counts_trigger", `
+			DO $$ BEGIN
+				IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trigger_update_list_counts') THEN
+					CREATE TRIGGER trigger_update_list_counts
+						AFTER INSERT OR UPDATE OR DELETE ON mailing_subscribers
+						FOR EACH ROW EXECUTE FUNCTION update_list_counts_fast();
+				END IF;
+			END $$`},
+		{"drop_old_list_counts_fn", `DROP FUNCTION IF EXISTS update_list_counts() CASCADE`},
+
 		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
 		{"add_subscriber_bot_cols", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS is_bot BOOLEAN NOT NULL DEFAULT false; ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS bot_detected_at TIMESTAMPTZ`},
@@ -2099,9 +2133,11 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pmta_server_a", `INSERT INTO mailing_pmta_servers (id, organization_id, name, host, smtp_port, mgmt_port, mgmt_api_key, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'PMTA Server A (OVH Original)', '15.204.101.125', 587, 19000, '', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_pmta_servers WHERE host = '15.204.101.125')`},
 		{"seed_pmta_server_b", `INSERT INTO mailing_pmta_servers (id, organization_id, name, host, smtp_port, mgmt_port, mgmt_api_key, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'PMTA Server B (OVH New)', '15.204.107.107', 587, 19000, '', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_pmta_servers WHERE host = '15.204.107.107')`},
 
-		// Step 6.3: Seed 36 ISP sub-pools (9 ISPs x 4 domains)
+		// Step 6.3: Seed ISP sub-pools (10 ISPs x 4 brands = 40 pools).
+		// AOL is a separate pool from Yahoo — see internal/pkg/isp/isp.go for rationale.
 		{"seed_pool_db_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-gmail-pool', 'DiscountBlog Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-yahoo-pool', 'DiscountBlog Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_aol", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-aol-pool', 'DiscountBlog AOL ISP pool — separate from Yahoo for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-aol-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-msft-pool', 'DiscountBlog Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-apple-pool', 'DiscountBlog Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-comcast-pool', 'DiscountBlog Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2111,6 +2147,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_db_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-general-pool', 'DiscountBlog General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-gmail-pool', 'QuizFiesta Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-yahoo-pool', 'QuizFiesta Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_aol", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-aol-pool', 'QuizFiesta AOL ISP pool — separate from Yahoo for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-aol-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-msft-pool', 'QuizFiesta Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-apple-pool', 'QuizFiesta Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-comcast-pool', 'QuizFiesta Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2120,6 +2157,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_qf_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-general-pool', 'QuizFiesta General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-gmail-pool', 'HistoryThinking Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-yahoo-pool', 'HistoryThinking Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_aol", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-aol-pool', 'HistoryThinking AOL ISP pool — separate from Yahoo for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-aol-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-msft-pool', 'HistoryThinking Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-apple-pool', 'HistoryThinking Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-comcast-pool', 'HistoryThinking Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2129,6 +2167,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_ht_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-general-pool', 'HistoryThinking General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_gmail", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-gmail-pool', 'MyOwnHealth Gmail ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-gmail-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_yahoo", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-yahoo-pool', 'MyOwnHealth Yahoo ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_aol", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-aol-pool', 'MyOwnHealth AOL ISP pool — separate from Yahoo for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-aol-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_msft", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-msft-pool', 'MyOwnHealth Microsoft ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-msft-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-apple-pool', 'MyOwnHealth Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-comcast-pool', 'MyOwnHealth Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2259,6 +2298,94 @@ END $$`},
 		{"phase6_ip_pool_qf", `UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_ht", `UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
 		{"phase6_ip_pool_mh", `UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool = 'warmup-pool'`},
+
+		// Step 6.6: Seed AOL pools with IPs.
+		//
+		// For each brand, move the highest-numbered IP from the Yahoo pool into the
+		// AOL pool. This is safe because:
+		//   1. AOL and Yahoo share MX infrastructure — the IP's reputation carries over.
+		//   2. Yahoo pools have 7-8 IPs; losing 1 still leaves ample capacity.
+		//   3. AOL volume is much smaller than Yahoo proper.
+		//   4. This is idempotent: the WHERE clause only matches IPs still in the Yahoo pool.
+		//
+		// The query picks MAX(ip_address) from the brand's yahoo pool so it's deterministic
+		// across restarts and doesn't depend on a specific IP being present.
+		{"seed_aol_ip_db", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    yahoo_pool_id UUID;
+    aol_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO yahoo_pool_id FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = org_id;
+    SELECT id INTO aol_pool_id FROM mailing_ip_pools WHERE name = 'db-aol-pool' AND organization_id = org_id;
+    IF yahoo_pool_id IS NOT NULL AND aol_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = yahoo_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = aol_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = yahoo_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_aol_ip_qf", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    yahoo_pool_id UUID;
+    aol_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO yahoo_pool_id FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = org_id;
+    SELECT id INTO aol_pool_id FROM mailing_ip_pools WHERE name = 'qf-aol-pool' AND organization_id = org_id;
+    IF yahoo_pool_id IS NOT NULL AND aol_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = yahoo_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = aol_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = yahoo_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_aol_ip_ht", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    yahoo_pool_id UUID;
+    aol_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO yahoo_pool_id FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = org_id;
+    SELECT id INTO aol_pool_id FROM mailing_ip_pools WHERE name = 'ht-aol-pool' AND organization_id = org_id;
+    IF yahoo_pool_id IS NOT NULL AND aol_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = yahoo_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = aol_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = yahoo_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_aol_ip_mh", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    yahoo_pool_id UUID;
+    aol_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO yahoo_pool_id FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = org_id;
+    SELECT id INTO aol_pool_id FROM mailing_ip_pools WHERE name = 'mh-aol-pool' AND organization_id = org_id;
+    IF yahoo_pool_id IS NOT NULL AND aol_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = yahoo_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = aol_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = yahoo_pool_id;
+        END IF;
+    END IF;
+END $$`},
 
 		{"drop_subscriber_events_if_stale", `DO $$
 		BEGIN

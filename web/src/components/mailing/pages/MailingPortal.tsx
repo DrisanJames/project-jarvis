@@ -225,15 +225,15 @@ export const MailingPortal: React.FC = () => {
         <div className="sidebar-footer">
           <div className="quick-stats">
             <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.active_audience_60d?.toLocaleString() || '—'}</span>
+              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.active_audience_60d?.toLocaleString() || '—'}</span>
               <span className="quick-stat-label">Active Audience</span>
             </div>
             <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.global_churn_pct != null ? `${realTimeStats.global_churn_pct.toFixed(2)}%` : '—'}</span>
+              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.global_churn_pct != null ? `${realTimeStats.platform_intelligence.global_churn_pct.toFixed(2)}%` : '—'}</span>
               <span className="quick-stat-label">Global Churn</span>
             </div>
             <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.global_intro_pct != null ? `${realTimeStats.global_intro_pct.toFixed(1)}%` : '—'}</span>
+              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.global_intro_pct != null ? `${realTimeStats.platform_intelligence.global_intro_pct.toFixed(1)}%` : '—'}</span>
               <span className="quick-stat-label">Global Intro</span>
             </div>
           </div>
@@ -318,20 +318,20 @@ const EnhancedDashboard: React.FC = () => {
           {/* Daily Cap Gauge */}
           <div className="daily-cap-section">
             <div className="daily-cap-header">
-              <span className="daily-cap-title">Daily Sending Cap</span>
-              <span className={`daily-cap-pct ${(dashboard?.daily_utilization || 0) > 90 ? 'critical' : (dashboard?.daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}>
-                {(dashboard?.daily_utilization || 0).toFixed(1)}% used
+              <span className="daily-cap-title">Platform Sending Cap</span>
+              <span className={`daily-cap-pct ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}>
+                {(dashboard?.platform_daily_utilization || 0).toFixed(1)}% used
               </span>
             </div>
             <div className="daily-cap-bar">
               <div
-                className={`daily-cap-fill ${(dashboard?.daily_utilization || 0) > 90 ? 'critical' : (dashboard?.daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}
-                style={{ width: `${Math.min(dashboard?.daily_utilization || 0, 100)}%` }}
+                className={`daily-cap-fill ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}
+                style={{ width: `${Math.min(dashboard?.platform_daily_utilization || 0, 100)}%` }}
               />
             </div>
             <div className="daily-cap-details">
               <span className="daily-cap-used">{(dashboard?.daily_used || 0).toLocaleString()} sent today</span>
-              <span className="daily-cap-total">{(dashboard?.daily_capacity || 0).toLocaleString()} daily cap</span>
+              <span className="daily-cap-total">{(dashboard?.platform_daily_capacity || 0).toLocaleString()} platform cap</span>
             </div>
             <div className="daily-cap-remaining">
               <strong>{(dashboard?.daily_remaining || 0).toLocaleString()}</strong> emails remaining today
@@ -365,11 +365,11 @@ const EnhancedDashboard: React.FC = () => {
           </div>
           <div className="system-stats">
             <div className="stat">
-              <span className="stat-value">{(dashboard?.inbox_profiles_today || 0).toLocaleString()}</span>
+              <span className="stat-value">{(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()}</span>
               <span className="stat-label">Built Today</span>
             </div>
             <div className="stat">
-              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.inbox_profiles || 0).toLocaleString()}</span>
+              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.platform_intelligence?.inbox_profiles || 0).toLocaleString()}</span>
               <span className="stat-label">Total Profiles</span>
             </div>
           </div>

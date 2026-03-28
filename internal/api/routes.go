@@ -277,9 +277,8 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 			r.Delete("/{id}", h.DeleteSuggestion)
 		})
 
-		// Mailing Platform routes - registered via RegisterMailingRoutes in server.go
-		// Note: Tracking domain routes are registered under /api/mailing/tracking-domains
-		// via RegisterTrackingDomainRoutes in server.go
+		// Mailing Platform routes — registered via SetMailingDB() in server_routes_mailing.go
+		// Tracking domain routes registered under /api/mailing/tracking-domains via same
 
 		// Agent routes
 		r.Route("/agent", func(r chi.Router) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -84,16 +85,39 @@ func (svc *MailingService) HandleUpdateSuggestion(w http.ResponseWriter, r *http
 	json.NewEncoder(w).Encode(map[string]interface{}{"id": id, "status": input.Status})
 }
 
-// HandleGetSendingPlans returns AI sending plans
+// HandleGetSendingPlans returns AI sending plans scoped to the org's subscriber base.
+// Volumes are capped to the org's daily capacity so plans never exceed infrastructure limits.
 func (svc *MailingService) HandleGetSendingPlans(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get subscriber counts
-	var highEng, medEng, lowEng int
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score >= 70").Scan(&highEng)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score >= 30 AND engagement_score < 70").Scan(&medEng)
-	svc.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_subscribers WHERE engagement_score < 30").Scan(&lowEng)
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
 
+	// Org-scoped engagement tier counts
+	var highEng, medEng, lowEng int
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers
+		WHERE organization_id = $1 AND engagement_score >= 70
+	`, orgID).Scan(&highEng); err != nil {
+		log.Printf("[SendingPlans] high_eng query error org=%s: %v", orgID, err)
+	}
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers
+		WHERE organization_id = $1 AND engagement_score >= 30 AND engagement_score < 70
+	`, orgID).Scan(&medEng); err != nil {
+		log.Printf("[SendingPlans] med_eng query error org=%s: %v", orgID, err)
+	}
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_subscribers
+		WHERE organization_id = $1 AND engagement_score < 30
+	`, orgID).Scan(&lowEng); err != nil {
+		log.Printf("[SendingPlans] low_eng query error org=%s: %v", orgID, err)
+	}
+
+	// If the org has no subscribers at all, use modest defaults
 	morningVol := highEng
 	if morningVol == 0 {
 		morningVol = 50000
@@ -107,52 +131,80 @@ func (svc *MailingService) HandleGetSendingPlans(w http.ResponseWriter, r *http.
 		fullDayVol = 125000
 	}
 
-	plans := []map[string]interface{}{
+	// Cap volumes to daily capacity so plans don't recommend exceeding infrastructure
+	var dailyCapacity int64
+	svc.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(daily_limit), 0) FROM mailing_sending_profiles
+		WHERE status = 'active' AND daily_limit > 0
+	`).Scan(&dailyCapacity)
+	if dailyCapacity == 0 {
+		dailyCapacity = DefaultDailyCapacity
+	}
+	cap := int(dailyCapacity)
+	if morningVol > cap {
+		morningVol = cap
+	}
+	if firstHalfVol > cap {
+		firstHalfVol = cap
+	}
+	if fullDayVol > cap {
+		fullDayVol = cap
+	}
+
+	now := time.Now().UTC()
+	plans := []SendingPlan{
 		{
-			"time_period": "morning", "name": "Morning Focus",
-			"description": "High-engagement subscribers during peak hours",
-			"recommended_volume": morningVol,
-			"predictions": map[string]interface{}{
-				"estimated_opens": int(float64(morningVol) * 0.17),
-				"estimated_clicks": int(float64(morningVol) * 0.025),
-				"estimated_revenue": float64(morningVol) * 0.0127,
+			TimePeriod:        "morning",
+			Name:              "Morning Focus",
+			Description:       "High-engagement subscribers during peak hours",
+			RecommendedVolume: morningVol,
+			Predictions: PlanPredictions{
+				EstimatedOpens:   int(float64(morningVol) * 0.17),
+				EstimatedClicks:  int(float64(morningVol) * 0.025),
+				EstimatedRevenue: float64(morningVol) * 0.0127,
 			},
-			"confidence_score": 0.88,
-			"ai_explanation": "Morning sends show 30% higher engagement historically",
-			"recommendations": []string{"Ideal for time-sensitive offers"},
+			ConfidenceScore: 0.88,
+			AIExplanation:   "Morning sends show 30% higher engagement historically",
+			Explanation:     "Morning sends show 30% higher engagement historically",
+			Recommendations: []string{"Ideal for time-sensitive offers"},
 		},
 		{
-			"time_period": "first_half", "name": "First Half Balanced",
-			"description": "Extended morning through early afternoon",
-			"recommended_volume": firstHalfVol,
-			"predictions": map[string]interface{}{
-				"estimated_opens": int(float64(firstHalfVol) * 0.15),
-				"estimated_clicks": int(float64(firstHalfVol) * 0.022),
-				"estimated_revenue": float64(firstHalfVol) * 0.011,
+			TimePeriod:        "first_half",
+			Name:              "First Half Balanced",
+			Description:       "Extended morning through early afternoon",
+			RecommendedVolume: firstHalfVol,
+			Predictions: PlanPredictions{
+				EstimatedOpens:   int(float64(firstHalfVol) * 0.15),
+				EstimatedClicks:  int(float64(firstHalfVol) * 0.022),
+				EstimatedRevenue: float64(firstHalfVol) * 0.011,
 			},
-			"confidence_score": 0.85,
-			"ai_explanation": "Balanced reach and performance",
-			"recommendations": []string{"Good for general campaigns"},
+			ConfidenceScore: 0.85,
+			AIExplanation:   "Balanced reach and performance",
+			Explanation:     "Balanced reach and performance",
+			Recommendations: []string{"Good for general campaigns"},
 		},
 		{
-			"time_period": "full_day", "name": "Full Day Maximum",
-			"description": "Full capacity across all segments",
-			"recommended_volume": fullDayVol,
-			"predictions": map[string]interface{}{
-				"estimated_opens": int(float64(fullDayVol) * 0.14),
-				"estimated_clicks": int(float64(fullDayVol) * 0.021),
-				"estimated_revenue": float64(fullDayVol) * 0.0105,
+			TimePeriod:        "full_day",
+			Name:              "Full Day Maximum",
+			Description:       "Full capacity across all segments",
+			RecommendedVolume: fullDayVol,
+			Predictions: PlanPredictions{
+				EstimatedOpens:   int(float64(fullDayVol) * 0.14),
+				EstimatedClicks:  int(float64(fullDayVol) * 0.021),
+				EstimatedRevenue: float64(fullDayVol) * 0.0105,
 			},
-			"confidence_score": 0.80,
-			"ai_explanation": "Maximum reach plan",
-			"recommendations": []string{"Best for revenue maximization"},
-			"warnings": []string{"Higher complaint risk from low-engagement segment"},
+			ConfidenceScore: 0.80,
+			AIExplanation:   "Maximum reach plan",
+			Explanation:     "Maximum reach plan",
+			Recommendations: []string{"Best for revenue maximization"},
+			Warnings:        []string{"Higher complaint risk from low-engagement segment"},
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"plans": plans, "target_date": time.Now().Format("2006-01-02"),
+	respondJSON(w, http.StatusOK, SendingPlanResponse{
+		Plans:       plans,
+		TargetDate:  now.Format("2006-01-02"),
+		GeneratedAt: now.Format(time.RFC3339),
 	})
 }
 
@@ -427,33 +479,39 @@ func (svc *MailingService) HandleGetISPAgents(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// HandleGetDeliveryServers returns delivery servers
+// HandleGetDeliveryServers returns delivery servers from the database.
+// No fake fallback data — if no servers exist, the frontend sees an empty array.
 func (svc *MailingService) HandleGetDeliveryServers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, _ := svc.db.QueryContext(ctx, `
+
+	rows, err := svc.db.QueryContext(ctx, `
 		SELECT id, name, server_type, hourly_quota, daily_quota, status
 		FROM mailing_delivery_servers ORDER BY priority
 	`)
+	if err != nil {
+		log.Printf("[GetDeliveryServers] query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
 	defer rows.Close()
 
-	var servers []map[string]interface{}
+	servers := make([]DeliveryServerItem, 0)
 	for rows.Next() {
+		var s DeliveryServerItem
 		var id uuid.UUID
-		var name, serverType, status string
-		var hourlyQuota, dailyQuota int
-		rows.Scan(&id, &name, &serverType, &hourlyQuota, &dailyQuota, &status)
-		servers = append(servers, map[string]interface{}{
-			"id": id.String(), "name": name, "server_type": serverType,
-			"hourly_quota": hourlyQuota, "daily_quota": dailyQuota, "status": status,
-		})
-	}
-	if servers == nil {
-		// Add default SparkPost
-		servers = []map[string]interface{}{
-			{"id": "default", "name": "SparkPost Primary", "server_type": "sparkpost", "hourly_quota": 50000, "daily_quota": 500000, "status": "active"},
+		if err := rows.Scan(&id, &s.Name, &s.ServerType, &s.HourlyQuota, &s.DailyQuota, &s.Status); err != nil {
+			log.Printf("[GetDeliveryServers] scan error: %v", err)
+			continue
 		}
+		s.ID = id.String()
+		servers = append(servers, s)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[GetDeliveryServers] iteration error: %v", err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"servers": servers, "total": len(servers)})
+	respondJSON(w, http.StatusOK, DeliveryServersResponse{
+		Servers: servers,
+		Total:   len(servers),
+	})
 }
