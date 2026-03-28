@@ -350,7 +350,8 @@ func (f *AgentFactory) defaultConfigs() []ISPConfig {
 	}
 	defaults := []ispDefault{
 		{ISPGmail, "Gmail", []string{"gmail.com", "googlemail.com"}, 1.5, 3, 0.02, 0.05, 20, 500, []string{"421-4.7.28"}},
-		{ISPYahoo, "Yahoo", []string{"yahoo.com", "ymail.com", "aol.com"}, 2, 5, 0.03, 0.06, 10, 300, []string{"TSS04", "TSS03"}},
+		{ISPYahoo, "Yahoo", []string{"yahoo.com", "ymail.com"}, 2, 5, 0.03, 0.06, 10, 300, []string{"TSS04", "TSS03"}},
+		{ISPAol, "AOL", []string{"aol.com", "aim.com"}, 2, 5, 0.03, 0.06, 10, 300, []string{"TSS04", "TSS03"}},
 		{ISPMicrosoft, "Microsoft", []string{"outlook.com", "hotmail.com"}, 2, 5, 0.03, 0.06, 25, 500, []string{"421 RP-001"}},
 		{ISPApple, "Apple iCloud", []string{"icloud.com", "me.com"}, 2, 5, 0.03, 0.06, 15, 400, []string{"421 4.7.0"}},
 		{ISPComcast, "Comcast", []string{"comcast.net"}, 3, 7, 0.05, 0.1, 20, 500, []string{"421"}},
@@ -397,7 +398,10 @@ func (f *AgentFactory) seedDefaultConfigs(ctx context.Context) {
 		{ISPGmail, "Gmail", []string{"gmail.com", "googlemail.com", "google.com"},
 			[]string{"*.google.com", "*.googlemail.com"}, 1.5, 3, 0.02, 0.05, 20, 500,
 			[]string{"421-4.7.28", "421-4.7.26", "421-4.7.0"}},
-		{ISPYahoo, "Yahoo", []string{"yahoo.com", "ymail.com", "aol.com", "aim.com", "verizon.net"},
+		{ISPYahoo, "Yahoo", []string{"yahoo.com", "ymail.com", "rocketmail.com"},
+			[]string{"*.yahoodns.net"}, 2, 5, 0.03, 0.06, 10, 300,
+			[]string{"TSS04", "TSS03", "TS03", "451 4.7.1"}},
+		{ISPAol, "AOL", []string{"aol.com", "aim.com"},
 			[]string{"*.yahoodns.net"}, 2, 5, 0.03, 0.06, 10, 300,
 			[]string{"TSS04", "TSS03", "TS03", "451 4.7.1"}},
 		{ISPMicrosoft, "Microsoft", []string{"outlook.com", "hotmail.com", "live.com", "msn.com"},

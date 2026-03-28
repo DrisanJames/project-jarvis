@@ -896,11 +896,23 @@ func coalesceString(v, fallback string) string {
 	return fallback
 }
 
+// isCanonicalISP returns true when the ISP name matches one of the 9 major
+// ISP groups that have dedicated sending pools and therefore receive their
+// own ISP plan (quotas, waves, cadence) during campaign deployment.
+//
+// Adding an ISP here means the campaign planner will:
+//   1. Create a dedicated mailing_campaign_isp_plans row for it.
+//   2. Build independent wave specs with separate cadence timing.
+//   3. Route its traffic through a dedicated IP pool (via isp.PoolSuffix).
+//
+// Non-canonical ISPs (verizon, protonmail, zoho, "other", etc.) are still
+// sent — they route through the "general" pool — but they don't get their
+// own plan/wave cadence; they piggyback on the catch-all plan.
 func isCanonicalISP(isp string) bool {
 	switch isp {
-	case string(engine.ISPGmail), string(engine.ISPYahoo), string(engine.ISPMicrosoft),
-		string(engine.ISPApple), string(engine.ISPComcast), string(engine.ISPAtt),
-		string(engine.ISPCox), string(engine.ISPCharter):
+	case string(engine.ISPGmail), string(engine.ISPYahoo), string(engine.ISPAol),
+		string(engine.ISPMicrosoft), string(engine.ISPApple), string(engine.ISPComcast),
+		string(engine.ISPAtt), string(engine.ISPCox), string(engine.ISPCharter):
 		return true
 	default:
 		return false

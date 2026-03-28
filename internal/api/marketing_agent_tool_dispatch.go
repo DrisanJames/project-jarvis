@@ -1450,7 +1450,7 @@ func (a *EmailMarketingAgent) ComputeISPQuotas(ctx context.Context, orgID, domai
 		}
 	}
 
-	allISPs := []string{"gmail", "yahoo", "microsoft", "apple", "comcast", "att", "cox", "charter"}
+	allISPs := []string{"gmail", "yahoo", "aol", "microsoft", "apple", "comcast", "att", "cox", "charter"}
 
 	metricByISP := map[string]*ispMetric{}
 	for i := range metrics {

@@ -26,6 +26,13 @@ import (
 )
 
 // s3FolderToISP maps S3 folder names (case-insensitive) to canonical ISP group names.
+//
+// When the S3 data pipeline ingests a folder named "aol", it now maps to isp.Aol
+// (not isp.Yahoo). This ensures subscribers imported from AOL-specific data files
+// get the correct ISP tag and route through AOL's dedicated sending pool.
+//
+// Verizon maps to isp.Verizon (not Yahoo). The legacy mapping to Yahoo was
+// incorrect; Verizon is a distinct ISP with its own email infrastructure.
 var s3FolderToISP = map[string]string{
 	"google":    isp.Gmail,
 	"gmail":     isp.Gmail,
@@ -38,8 +45,8 @@ var s3FolderToISP = map[string]string{
 	"spectrum":  isp.Charter,
 	"att":       isp.ATT,
 	"cox":       isp.Cox,
-	"aol":       isp.Yahoo,
-	"verizon":   isp.Yahoo,
+	"aol":       isp.Aol,
+	"verizon":   isp.Verizon,
 }
 
 type DataPipeline struct {

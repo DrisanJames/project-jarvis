@@ -29,6 +29,7 @@ async function orgFetch(url: string, orgId?: string, opts?: RequestInit) {
 const ISP_META: Record<string, { label: string; color: string; emoji: string }> = {
   gmail:     { label: 'Gmail',            color: '#ea4335', emoji: '📧' },
   yahoo:     { label: 'Yahoo',            color: '#7b1fa2', emoji: '🟣' },
+  aol:       { label: 'AOL',             color: '#ff6600', emoji: '📬' },
   microsoft: { label: 'Microsoft',        color: '#0078d4', emoji: '🔷' },
   apple:     { label: 'Apple iCloud',     color: '#a2aaad', emoji: '🍎' },
   comcast:   { label: 'Comcast',          color: '#e60000', emoji: '📡' },
@@ -37,11 +38,12 @@ const ISP_META: Record<string, { label: string; color: string; emoji: string }> 
   charter:   { label: 'Charter/Spectrum', color: '#0099d6', emoji: '📺' },
 };
 
-const ALL_ISPS = ['gmail', 'yahoo', 'microsoft', 'apple', 'comcast', 'att', 'cox', 'charter'];
+const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att', 'cox', 'charter'];
 
 const DEFAULT_ISP_QUOTAS: Record<string, number> = {
   gmail:     50000,
   yahoo:     20000,
+  aol:       10000,
   microsoft: 20000,
   apple:     10000,
   comcast:    5000,

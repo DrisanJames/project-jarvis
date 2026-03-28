@@ -3,9 +3,20 @@ package isp
 import "strings"
 
 // Known ISP group names returned by Group and GroupFromDomain.
+//
+// These constants are the single source of truth for ISP classification
+// across the entire platform: analytics, campaign planner, wave builder,
+// sending pipeline, rate registry, and throttle engine all consume them.
+//
+// AOL is intentionally separate from Yahoo. Although AOL mail is hosted on
+// Yahoo infrastructure, we route them through independent sending pools so
+// that reputation issues with one domain family (e.g., yahoo.com TSS04
+// deferrals) do not block volume to the other (aol.com, aim.com). This
+// also enables independent quota and wave cadence control per ISP.
 const (
 	Gmail      = "gmail"
 	Yahoo      = "yahoo"
+	Aol        = "aol"
 	Microsoft  = "microsoft"
 	Apple      = "apple"
 	Comcast    = "comcast"
@@ -19,22 +30,36 @@ const (
 )
 
 // domainToISP is the canonical domain-to-ISP classification map.
-// All consumers in the codebase (analytics, sending pipeline, campaign
-// planning, rate registry) MUST use this map via Group/GroupFromDomain.
+//
+// Every consumer in the codebase — analytics SQL, sending pipeline, campaign
+// planning, rate registry, data pipeline — MUST use this map exclusively via
+// Group() or GroupFromDomain(). Direct domain-to-ISP comparisons elsewhere
+// are a bug waiting to diverge.
+//
+// Design decision: aol.com and aim.com are classified as "aol" (not "yahoo")
+// to enable separate sending pools, quotas, and wave cadences. Yahoo and AOL
+// share MX infrastructure, but their reputation signals are evaluated per
+// source IP — isolating them lets us protect healthy AOL delivery when Yahoo
+// proper is in backoff (TSS04), and vice versa.
 var domainToISP = map[string]string{
 	// Gmail / Google
 	"gmail.com":      Gmail,
 	"googlemail.com": Gmail,
 
-	// Yahoo / Oath family
+	// Yahoo proper — yahoo.com and its international/legacy aliases.
+	// Does NOT include AOL domains; those are classified separately below.
 	"yahoo.com":      Yahoo,
 	"ymail.com":      Yahoo,
 	"rocketmail.com": Yahoo,
 	"yahoo.ca":       Yahoo,
 	"yahoo.co.uk":    Yahoo,
 	"yahoo.co.jp":    Yahoo,
-	"aol.com":        Yahoo,
-	"aim.com":        Yahoo,
+
+	// AOL — separated from Yahoo for independent pool routing and quota control.
+	// AOL mail is hosted on Yahoo MX infrastructure, but reputation is tracked
+	// per source IP, so isolating the sending pool prevents cross-contamination.
+	"aol.com": Aol,
+	"aim.com": Aol,
 
 	// Microsoft
 	"outlook.com": Microsoft,
@@ -47,7 +72,7 @@ var domainToISP = map[string]string{
 	"me.com":     Apple,
 	"mac.com":    Apple,
 
-	// AT&T
+	// AT&T — includes legacy SBC/BellSouth domains acquired through mergers.
 	"att.net":       ATT,
 	"sbcglobal.net": ATT,
 	"bellsouth.net": ATT,
@@ -56,7 +81,7 @@ var domainToISP = map[string]string{
 	"comcast.net": Comcast,
 	"xfinity.com": Comcast,
 
-	// Charter / Spectrum
+	// Charter / Spectrum — includes all Time Warner Cable legacy domains.
 	"charter.net":    Charter,
 	"spectrum.net":   Charter,
 	"rr.com":         Charter,
@@ -67,7 +92,8 @@ var domainToISP = map[string]string{
 	// Cox
 	"cox.net": Cox,
 
-	// Verizon
+	// Verizon — note: verizon.net routes to "general" pool (no dedicated pool).
+	// Verizon email is low volume and does not warrant a dedicated sending pool.
 	"verizon.net": Verizon,
 
 	// Protonmail
@@ -79,10 +105,16 @@ var domainToISP = map[string]string{
 }
 
 // ispToPoolSuffix maps ISP group names to PMTA pool name suffixes.
-// ISPs without a dedicated pool route to "general".
+//
+// Pool names follow the pattern: {brand_prefix}-{suffix}-pool
+// Example: "db-aol-pool" for Discount Blog's AOL sending pool.
+//
+// ISPs without a dedicated pool (verizon, protonmail, zoho, other, etc.)
+// fall through to "general", which maps to {brand_prefix}-general-pool.
 var ispToPoolSuffix = map[string]string{
 	Gmail:     "gmail",
 	Yahoo:     "yahoo",
+	Aol:       "aol",
 	Microsoft: "msft",
 	Apple:     "apple",
 	Comcast:   "comcast",
@@ -93,6 +125,9 @@ var ispToPoolSuffix = map[string]string{
 
 // Group returns the ISP group name for an email address.
 // Returns "other" for unrecognized domains or malformed addresses.
+//
+// This is the primary entry point for ISP classification. All code that
+// needs to know "which ISP does this email belong to?" should call Group().
 func Group(email string) string {
 	at := strings.LastIndexByte(email, '@')
 	if at < 0 || at == len(email)-1 {
@@ -101,12 +136,17 @@ func Group(email string) string {
 	return GroupFromDomain(email[at+1:])
 }
 
-// GroupFromDomain returns the ISP group name for a bare domain.
+// GroupFromDomain returns the ISP group name for a bare domain (no @ prefix).
+//
+// Called by Group() after extracting the domain, and also used directly when
+// only the domain portion is available (e.g., tracking events store
+// recipient_domain separately).
 func GroupFromDomain(domain string) string {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	if g, ok := domainToISP[d]; ok {
 		return g
 	}
+	// Wildcard match for Charter/Spectrum regional subdomains (e.g., nyc.rr.com).
 	if strings.HasSuffix(d, ".rr.com") {
 		return Charter
 	}
@@ -114,8 +154,12 @@ func GroupFromDomain(domain string) string {
 }
 
 // PoolSuffix returns the PMTA pool name suffix for a given ISP group.
-// For example, PoolSuffix("microsoft") returns "msft".
-// Unmapped ISPs (verizon, protonmail, zoho, other, etc.) return "general".
+//
+// Used by the send worker to resolve which DB pool to pull IPs from:
+//   vmtaPool.next(recipientISP) → ISPPoolSuffix(isp) → "{prefix}-{suffix}-pool"
+//
+// Example: PoolSuffix("aol") returns "aol" → pool name "db-aol-pool".
+// Unmapped ISPs return "general" → pool name "db-general-pool".
 func PoolSuffix(isp string) string {
 	if suffix, ok := ispToPoolSuffix[isp]; ok {
 		return suffix
@@ -123,13 +167,16 @@ func PoolSuffix(isp string) string {
 	return "general"
 }
 
-// KnownGroups returns the list of recognized ISP group names
-// (only the 8 major groups with dedicated pool routing).
+// KnownGroups returns the 9 major ISP groups that have dedicated sending pools.
+//
+// Used by analytics aggregation to enumerate all ISP buckets when building
+// per-ISP breakdowns. If you add a new ISP with a dedicated pool, add it here.
 func KnownGroups() []string {
-	return []string{Gmail, Yahoo, Microsoft, Apple, Comcast, Charter, ATT, Cox}
+	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Cox}
 }
 
-// AllGroups returns every ISP group name including minor ones.
+// AllGroups returns every ISP group name including minor ones that route
+// through the "general" pool (verizon, protonmail, zoho).
 func AllGroups() []string {
-	return []string{Gmail, Yahoo, Microsoft, Apple, Comcast, Charter, ATT, Cox, Verizon, Protonmail, Zoho}
+	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Cox, Verizon, Protonmail, Zoho}
 }

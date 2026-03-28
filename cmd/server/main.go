@@ -3296,6 +3296,26 @@ BEGIN
     UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'mh');
 END $$`},
 
+		// m.* SES relay profiles share the same PMTA server and pool
+		// infrastructure as their em.* counterparts but were missed by
+		// the original Phase 6 overrides — they still had ip_pool =
+		// 'warmup-pool' (now empty) and no pool_prefix.
+		{"phase6_final_ip_pool_m_profiles", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool != 'qf-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND ip_pool != 'ht-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool != 'mh-gmail-pool';
+END $$`},
+
+		{"phase6_final_pool_prefix_m", `DO $$
+BEGIN
+    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'm.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'db');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'qf');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'ht');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'mh');
+END $$`},
+
 		{"phase6_final_25_warmup_limits", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 50 WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND status = 'warmup' AND warmup_daily_limit != 50`},
 
 		{"phase6_final_28_reassign", `DO $$

@@ -242,8 +242,10 @@ func TestComputeMetricsByISP_GroupsCorrectly(t *testing.T) {
 	require.NoError(t, err)
 
 	// gmail.com + googlemail.com should be grouped into "gmail"
+	// aol.com is now its own ISP group, separate from yahoo
 	var gmailResult *ISPMetricsResult
 	var yahooResult *ISPMetricsResult
+	var aolResult *ISPMetricsResult
 	var otherResult *ISPMetricsResult
 	for i := range results {
 		switch results[i].ISP {
@@ -251,22 +253,30 @@ func TestComputeMetricsByISP_GroupsCorrectly(t *testing.T) {
 			gmailResult = &results[i]
 		case "yahoo":
 			yahooResult = &results[i]
+		case "aol":
+			aolResult = &results[i]
 		case "other":
 			otherResult = &results[i]
 		}
 	}
 
 	require.NotNil(t, gmailResult, "gmail group missing")
-	assert.Equal(t, 510, gmailResult.Metrics.Sent)   // 500+10
+	assert.Equal(t, 510, gmailResult.Metrics.Sent)     // 500+10
 	assert.Equal(t, 500, gmailResult.Metrics.Delivered) // 490+10
-	assert.Equal(t, 123, gmailResult.Metrics.Opens)    // 120+3
+	assert.Equal(t, 123, gmailResult.Metrics.Opens)     // 120+3
 	assert.Equal(t, "Gmail", gmailResult.DisplayName)
 
 	require.NotNil(t, yahooResult, "yahoo group missing")
-	assert.Equal(t, 400, yahooResult.Metrics.Sent)    // 300+100
-	assert.Equal(t, 375, yahooResult.Metrics.Delivered) // 280+95
-	assert.Equal(t, 80, yahooResult.Metrics.Opens)     // 60+20
-	assert.Equal(t, "Yahoo / AOL", yahooResult.DisplayName)
+	assert.Equal(t, 300, yahooResult.Metrics.Sent)      // yahoo.com only
+	assert.Equal(t, 280, yahooResult.Metrics.Delivered)
+	assert.Equal(t, 60, yahooResult.Metrics.Opens)
+	assert.Equal(t, "Yahoo", yahooResult.DisplayName)
+
+	require.NotNil(t, aolResult, "aol group missing")
+	assert.Equal(t, 100, aolResult.Metrics.Sent)        // aol.com only
+	assert.Equal(t, 95, aolResult.Metrics.Delivered)
+	assert.Equal(t, 20, aolResult.Metrics.Opens)
+	assert.Equal(t, "AOL", aolResult.DisplayName)
 
 	require.NotNil(t, otherResult, "other group missing")
 	assert.Equal(t, 50, otherResult.Metrics.Sent)
@@ -324,7 +334,8 @@ func TestComputeRates_PureFunctionEdgeCases(t *testing.T) {
 
 func TestMetricsISPDisplayName(t *testing.T) {
 	assert.Equal(t, "Gmail", metricsISPDisplayName("gmail"))
-	assert.Equal(t, "Yahoo / AOL", metricsISPDisplayName("yahoo"))
+	assert.Equal(t, "Yahoo", metricsISPDisplayName("yahoo"))
+	assert.Equal(t, "AOL", metricsISPDisplayName("aol"))
 	assert.Equal(t, "AT&T", metricsISPDisplayName("att"))
 	assert.Equal(t, "Other", metricsISPDisplayName("other"))
 	assert.Equal(t, "unknown_isp", metricsISPDisplayName("unknown_isp"))

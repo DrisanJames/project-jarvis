@@ -1686,9 +1686,19 @@ func (s *AdvancedMailingService) HandleStoreCampaignLearning(w http.ResponseWrit
 
 // ================== ISP PERFORMANCE ==================
 
+// ispDomainCaseSQL maps recipient email domains to ISP group names inside SQL.
+//
+// This CASE expression is embedded in analytics queries that operate on raw
+// tracking events (which store recipient_domain as a bare string). It MUST
+// stay in sync with the canonical classifier in internal/pkg/isp/isp.go.
+//
+// AOL (aol.com, aim.com) is intentionally separate from Yahoo. Although they
+// share Yahoo MX infrastructure, we track them independently so analytics
+// show per-ISP performance that matches our per-ISP sending pools and quotas.
 const ispDomainCaseSQL = `CASE
 	WHEN dom IN ('gmail.com','googlemail.com') THEN 'gmail'
-	WHEN dom IN ('yahoo.com','ymail.com','aol.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp') THEN 'yahoo'
+	WHEN dom IN ('yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp') THEN 'yahoo'
+	WHEN dom IN ('aol.com','aim.com') THEN 'aol'
 	WHEN dom IN ('outlook.com','hotmail.com','live.com','msn.com') THEN 'microsoft'
 	WHEN dom IN ('icloud.com','me.com','mac.com') THEN 'apple'
 	WHEN dom IN ('comcast.net','xfinity.com') THEN 'comcast'
@@ -1698,9 +1708,13 @@ const ispDomainCaseSQL = `CASE
 	ELSE 'other'
 END`
 
+// ispDomainFilter maps an ISP key to the SQL IN-clause tuple of domains.
+// Used by HandleISPPerformance when drilling into a single ISP's trend data.
+// Must stay in sync with ispDomainCaseSQL and internal/pkg/isp/isp.go.
 var ispDomainFilter = map[string]string{
 	"gmail":     "('gmail.com','googlemail.com')",
-	"yahoo":     "('yahoo.com','ymail.com','aol.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp')",
+	"yahoo":     "('yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp')",
+	"aol":       "('aol.com','aim.com')",
 	"microsoft": "('outlook.com','hotmail.com','live.com','msn.com')",
 	"apple":     "('icloud.com','me.com','mac.com')",
 	"comcast":   "('comcast.net','xfinity.com')",
@@ -1709,8 +1723,9 @@ var ispDomainFilter = map[string]string{
 	"charter":   "('charter.net','spectrum.net')",
 }
 
+// ispLabels maps ISP keys to human-readable display names for the frontend.
 var ispLabels = map[string]string{
-	"gmail": "Gmail", "yahoo": "Yahoo", "microsoft": "Microsoft",
+	"gmail": "Gmail", "yahoo": "Yahoo", "aol": "AOL", "microsoft": "Microsoft",
 	"apple": "Apple iCloud", "comcast": "Comcast", "att": "AT&T",
 	"cox": "Cox", "charter": "Charter/Spectrum", "other": "Other",
 }
@@ -2010,7 +2025,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 
 	// 5. Build per-ISP insights
 	var isps []map[string]interface{}
-	for _, isp := range []string{"gmail", "yahoo", "microsoft", "apple", "comcast", "att", "cox", "charter", "other"} {
+	for _, isp := range []string{"gmail", "yahoo", "aol", "microsoft", "apple", "comcast", "att", "cox", "charter", "other"} {
 		days := ispDaily[isp]
 		if len(days) == 0 {
 			continue

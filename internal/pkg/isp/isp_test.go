@@ -12,15 +12,17 @@ func TestGroupFromDomain(t *testing.T) {
 		{"googlemail.com", Gmail},
 		{"GMAIL.COM", Gmail},
 
-		// Yahoo / Oath
+		// Yahoo
 		{"yahoo.com", Yahoo},
 		{"ymail.com", Yahoo},
 		{"rocketmail.com", Yahoo},
 		{"yahoo.ca", Yahoo},
 		{"yahoo.co.uk", Yahoo},
 		{"yahoo.co.jp", Yahoo},
-		{"aol.com", Yahoo},
-		{"aim.com", Yahoo},
+
+		// AOL (separated from Yahoo for dedicated pool routing)
+		{"aol.com", Aol},
+		{"aim.com", Aol},
 
 		// Microsoft
 		{"outlook.com", Microsoft},
@@ -113,6 +115,7 @@ func TestPoolSuffix(t *testing.T) {
 	}{
 		{Gmail, "gmail"},
 		{Yahoo, "yahoo"},
+		{Aol, "aol"},
 		{Microsoft, "msft"},
 		{Apple, "apple"},
 		{Comcast, "comcast"},
@@ -138,14 +141,14 @@ func TestPoolSuffix(t *testing.T) {
 
 func TestKnownGroups(t *testing.T) {
 	groups := KnownGroups()
-	if len(groups) != 8 {
-		t.Errorf("KnownGroups() returned %d groups, want 8", len(groups))
+	if len(groups) != 9 {
+		t.Errorf("KnownGroups() returned %d groups, want 9", len(groups))
 	}
 }
 
 func TestAllGroups(t *testing.T) {
 	groups := AllGroups()
-	if len(groups) != 11 {
-		t.Errorf("AllGroups() returned %d groups, want 11", len(groups))
+	if len(groups) != 12 {
+		t.Errorf("AllGroups() returned %d groups, want 12", len(groups))
 	}
 }

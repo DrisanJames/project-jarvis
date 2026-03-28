@@ -196,7 +196,7 @@ After creating recommendations, you MUST:
 **User timezone**: MST (America/Boise, UTC-7). "6am" = 6am MST = 13:00 UTC.
 
 ## ISP Names (use these exact identifiers)
-gmail, yahoo, microsoft, apple, comcast, att, cox, charter
+gmail, yahoo, aol, microsoft, apple, comcast, att, cox, charter
 
 IMPORTANT: Recommendations are NOT campaigns. They live in agent_campaign_recommendations, not mailing_campaigns. Use get_recommendation_details (NOT get_campaign_details) to inspect them. Recommendations become real campaigns only after approval.
 `)

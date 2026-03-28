@@ -290,10 +290,15 @@ func mppOpenClause(excludeMPP bool) string {
 	return ""
 }
 
+// ispDomainsForGroup returns the list of email domains that belong to a given
+// ISP group. Used to build SQL ANY() filters when the MetricsFilter.ISP is set.
+//
+// Must stay in sync with internal/pkg/isp/isp.go domainToISP map.
 func ispDomainsForGroup(group string) []string {
 	domainMap := map[string][]string{
 		"gmail":     {"gmail.com", "googlemail.com"},
-		"yahoo":     {"yahoo.com", "ymail.com", "aol.com"},
+		"yahoo":     {"yahoo.com", "ymail.com", "rocketmail.com", "yahoo.co.uk", "yahoo.ca", "yahoo.co.jp"},
+		"aol":       {"aol.com", "aim.com"},
 		"microsoft": {"outlook.com", "hotmail.com", "live.com", "msn.com"},
 		"apple":     {"icloud.com", "me.com", "mac.com"},
 		"comcast":   {"comcast.net", "xfinity.com"},
@@ -307,9 +312,12 @@ func ispDomainsForGroup(group string) []string {
 	return []string{}
 }
 
+// metricsISPDisplayNames maps ISP group keys to human-readable labels shown
+// in API responses and consumed by the frontend analytics dashboard.
 var metricsISPDisplayNames = map[string]string{
 	"gmail":     "Gmail",
-	"yahoo":     "Yahoo / AOL",
+	"yahoo":     "Yahoo",
+	"aol":       "AOL",
 	"microsoft": "Microsoft / Outlook",
 	"apple":     "Apple / iCloud",
 	"comcast":   "Comcast / Xfinity",
