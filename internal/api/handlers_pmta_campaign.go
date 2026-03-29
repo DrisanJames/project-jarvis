@@ -895,10 +895,22 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 			return "", fmt.Errorf("reserve draft campaign: %w", err)
 		}
 	} else {
-		colList := []string{"id", "organization_id", "name", "status", "created_at", "updated_at"}
-		valList := []string{"$1", "$2", "$3", "'preparing'", "NOW()", "NOW()"}
-		args := []any{campaignID, orgID, input.Name}
-		nextP := 4
+		colList := []string{"id", "organization_id", "name", "status",
+			"scheduled_at", "from_name", "from_email", "subject",
+			"preview_text", "html_content", "plain_content",
+			"created_at", "updated_at"}
+		valList := []string{"$1", "$2", "$3", "'preparing'",
+			"$4", "$5", "$6", "$7",
+			"$8", "$9", "$10",
+			"NOW()", "NOW()"}
+		args := []any{
+			campaignID, orgID, input.Name,
+			normalized.EarliestStart,
+			input.Variants[0].FromName, "", input.Variants[0].Subject,
+			input.Variants[0].PreviewText, input.Variants[0].HTMLContent,
+			input.Variants[0].PlainContent,
+		}
+		nextP := 11
 		if s.colCache.has("pmta_config") {
 			colList = append(colList, "pmta_config")
 			valList = append(valList, fmt.Sprintf("$%d", nextP))
