@@ -940,7 +940,7 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 // the background. On success the campaign transitions to scheduled/sending;
 // on failure it is marked as 'failed'.
 func (s *PMTACampaignService) finalizeDeploy(campaignID, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	defer func() {
@@ -954,7 +954,7 @@ func (s *PMTACampaignService) finalizeDeploy(campaignID, orgID string, input eng
 	var audienceDB dbQuerier = s.db
 	conn, connErr := s.db.Conn(ctx)
 	if connErr == nil {
-		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '300s'"); err == nil {
+		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '600s'"); err == nil {
 			audienceDB = conn
 		}
 		defer func() {
@@ -1039,7 +1039,7 @@ func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *htt
 	var audienceDB dbQuerier = s.db
 	conn, connErr := s.db.Conn(ctx)
 	if connErr == nil {
-		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '300s'"); err == nil {
+		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '600s'"); err == nil {
 			audienceDB = conn
 		}
 		defer func() {
