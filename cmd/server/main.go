@@ -2142,6 +2142,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_db_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-apple-pool', 'DiscountBlog Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-comcast-pool', 'DiscountBlog Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-att-pool', 'DiscountBlog ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_db_sbcglobal", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-sbcglobal-pool', 'DiscountBlog SBC Global/BellSouth ISP pool — separate from ATT for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-sbcglobal-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-cox-pool', 'DiscountBlog Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-charter-pool', 'DiscountBlog Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_db_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'db-general-pool', 'DiscountBlog General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'db-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2152,6 +2153,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_qf_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-apple-pool', 'QuizFiesta Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-comcast-pool', 'QuizFiesta Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-att-pool', 'QuizFiesta ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_qf_sbcglobal", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-sbcglobal-pool', 'QuizFiesta SBC Global/BellSouth ISP pool — separate from ATT for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-sbcglobal-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-cox-pool', 'QuizFiesta Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-charter-pool', 'QuizFiesta Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_qf_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'qf-general-pool', 'QuizFiesta General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'qf-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2162,6 +2164,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_ht_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-apple-pool', 'HistoryThinking Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-comcast-pool', 'HistoryThinking Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-att-pool', 'HistoryThinking ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_ht_sbcglobal", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-sbcglobal-pool', 'HistoryThinking SBC Global/BellSouth ISP pool — separate from ATT for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-sbcglobal-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-cox-pool', 'HistoryThinking Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-charter-pool', 'HistoryThinking Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_ht_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'ht-general-pool', 'HistoryThinking General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'ht-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2172,6 +2175,7 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_pool_mh_apple", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-apple-pool', 'MyOwnHealth Apple ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-apple-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_comcast", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-comcast-pool', 'MyOwnHealth Comcast ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-comcast-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_att", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-att-pool', 'MyOwnHealth ATT ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-att-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_pool_mh_sbcglobal", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-sbcglobal-pool', 'MyOwnHealth SBC Global/BellSouth ISP pool — separate from ATT for independent reputation tracking', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-sbcglobal-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_cox", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-cox-pool', 'MyOwnHealth Cox ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-cox-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_charter", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-charter-pool', 'MyOwnHealth Charter ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-charter-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_pool_mh_general", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'mh-general-pool', 'MyOwnHealth General ISP pool', 'dedicated', 'active', NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools WHERE name = 'mh-general-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
@@ -2383,6 +2387,88 @@ BEGIN
         IF target_ip_id IS NOT NULL THEN
             UPDATE mailing_ip_addresses SET pool_id = aol_pool_id, updated_at = NOW()
                 WHERE id = target_ip_id AND pool_id = yahoo_pool_id;
+        END IF;
+    END IF;
+END $$`},
+
+		// Step 6.7: Seed SBC Global/BellSouth pools with IPs.
+		//
+		// Same pattern as AOL: for each brand, move the highest-numbered IP from the
+		// ATT pool into the SBC Global pool. SBC Global/BellSouth shares ATT MX
+		// infrastructure, so the IP's reputation carries over.
+		{"seed_sbcglobal_ip_db", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    att_pool_id UUID;
+    sbc_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO att_pool_id FROM mailing_ip_pools WHERE name = 'db-att-pool' AND organization_id = org_id;
+    SELECT id INTO sbc_pool_id FROM mailing_ip_pools WHERE name = 'db-sbcglobal-pool' AND organization_id = org_id;
+    IF att_pool_id IS NOT NULL AND sbc_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = att_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = sbc_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = att_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_sbcglobal_ip_qf", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    att_pool_id UUID;
+    sbc_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO att_pool_id FROM mailing_ip_pools WHERE name = 'qf-att-pool' AND organization_id = org_id;
+    SELECT id INTO sbc_pool_id FROM mailing_ip_pools WHERE name = 'qf-sbcglobal-pool' AND organization_id = org_id;
+    IF att_pool_id IS NOT NULL AND sbc_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = att_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = sbc_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = att_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_sbcglobal_ip_ht", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    att_pool_id UUID;
+    sbc_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO att_pool_id FROM mailing_ip_pools WHERE name = 'ht-att-pool' AND organization_id = org_id;
+    SELECT id INTO sbc_pool_id FROM mailing_ip_pools WHERE name = 'ht-sbcglobal-pool' AND organization_id = org_id;
+    IF att_pool_id IS NOT NULL AND sbc_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = att_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = sbc_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = att_pool_id;
+        END IF;
+    END IF;
+END $$`},
+		{"seed_sbcglobal_ip_mh", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    att_pool_id UUID;
+    sbc_pool_id UUID;
+    target_ip_id UUID;
+BEGIN
+    SELECT id INTO att_pool_id FROM mailing_ip_pools WHERE name = 'mh-att-pool' AND organization_id = org_id;
+    SELECT id INTO sbc_pool_id FROM mailing_ip_pools WHERE name = 'mh-sbcglobal-pool' AND organization_id = org_id;
+    IF att_pool_id IS NOT NULL AND sbc_pool_id IS NOT NULL THEN
+        SELECT id INTO target_ip_id FROM mailing_ip_addresses
+            WHERE pool_id = att_pool_id AND organization_id = org_id
+            ORDER BY ip_address DESC LIMIT 1;
+        IF target_ip_id IS NOT NULL THEN
+            UPDATE mailing_ip_addresses SET pool_id = sbc_pool_id, updated_at = NOW()
+                WHERE id = target_ip_id AND pool_id = att_pool_id;
         END IF;
     END IF;
 END $$`},

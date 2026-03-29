@@ -44,6 +44,8 @@ var s3FolderToISP = map[string]string{
 	"charter":   isp.Charter,
 	"spectrum":  isp.Charter,
 	"att":       isp.ATT,
+	"sbcglobal": isp.Sbcglobal,
+	"bellsouth": isp.Sbcglobal,
 	"cox":       isp.Cox,
 	"aol":       isp.Aol,
 	"verizon":   isp.Verizon,

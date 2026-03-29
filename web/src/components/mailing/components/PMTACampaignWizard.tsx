@@ -27,18 +27,19 @@ async function orgFetch(url: string, orgId?: string, opts?: RequestInit) {
 // ── ISP visual config ────────────────────────────────────────────────────────
 
 const ISP_META: Record<string, { label: string; color: string; emoji: string }> = {
-  gmail:     { label: 'Gmail',            color: '#ea4335', emoji: '📧' },
-  yahoo:     { label: 'Yahoo',            color: '#7b1fa2', emoji: '🟣' },
-  aol:       { label: 'AOL',             color: '#ff6600', emoji: '📬' },
-  microsoft: { label: 'Microsoft',        color: '#0078d4', emoji: '🔷' },
-  apple:     { label: 'Apple iCloud',     color: '#a2aaad', emoji: '🍎' },
-  comcast:   { label: 'Comcast',          color: '#e60000', emoji: '📡' },
-  att:       { label: 'AT&T',             color: '#009fdb', emoji: '📶' },
-  cox:       { label: 'Cox',              color: '#f26522', emoji: '🔌' },
-  charter:   { label: 'Charter/Spectrum', color: '#0099d6', emoji: '📺' },
+  gmail:     { label: 'Gmail',               color: '#ea4335', emoji: '📧' },
+  yahoo:     { label: 'Yahoo',               color: '#7b1fa2', emoji: '🟣' },
+  aol:       { label: 'AOL',                 color: '#ff6600', emoji: '📬' },
+  microsoft: { label: 'Microsoft',           color: '#0078d4', emoji: '🔷' },
+  apple:     { label: 'Apple iCloud',        color: '#a2aaad', emoji: '🍎' },
+  comcast:   { label: 'Comcast',             color: '#e60000', emoji: '📡' },
+  att:       { label: 'AT&T',                color: '#009fdb', emoji: '📶' },
+  sbcglobal: { label: 'SBC Global/BellSouth', color: '#00a8e0', emoji: '📞' },
+  cox:       { label: 'Cox',                 color: '#f26522', emoji: '🔌' },
+  charter:   { label: 'Charter/Spectrum',    color: '#0099d6', emoji: '📺' },
 };
 
-const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att', 'cox', 'charter'];
+const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att', 'sbcglobal', 'cox', 'charter'];
 
 const DEFAULT_ISP_QUOTAS: Record<string, number> = {
   gmail:     50000,
@@ -48,6 +49,7 @@ const DEFAULT_ISP_QUOTAS: Record<string, number> = {
   apple:     10000,
   comcast:    5000,
   att:        5000,
+  sbcglobal:  3000,
   cox:        3000,
   charter:    3000,
 };
@@ -1255,9 +1257,24 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       };
     });
 
+    const otherQuota = ispQuotas['other'] || 0;
+    if (otherQuota > 0) {
+      ispPlans.push({
+        isp: 'other',
+        quota: otherQuota,
+        randomize_audience: randomizeAudience,
+        throttle_strategy: 'auto',
+        timezone: globalScheduleTimezone,
+        cadence: { mode: 'single', every_minutes: 0, batch_size: otherQuota },
+        time_spans: ispPlans.length > 0 ? ispPlans[0].time_spans : [],
+      });
+    }
+
+    const targetISPs = otherQuota > 0 ? [...selectedISPs, 'other'] : selectedISPs;
+
     const payload: Record<string, any> = {
       name: campaignName,
-      target_isps: selectedISPs,
+      target_isps: targetISPs,
       sending_domain: selectedDomain,
       variants,
       isp_plans: ispPlans,

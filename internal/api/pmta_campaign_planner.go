@@ -191,7 +191,7 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 			normalized.Plans = append(normalized.Plans, plan)
 			if !targetSeen[plan.ISP] {
 				targetSeen[plan.ISP] = true
-				if isCanonicalISP(plan.ISP) {
+				if isCanonicalISP(plan.ISP) || plan.ISP == "other" {
 					normalized.TargetISPs = append(normalized.TargetISPs, engine.ISP(plan.ISP))
 				}
 			}
@@ -896,7 +896,7 @@ func coalesceString(v, fallback string) string {
 	return fallback
 }
 
-// isCanonicalISP returns true when the ISP name matches one of the 9 major
+// isCanonicalISP returns true when the ISP name matches one of the 10 major
 // ISP groups that have dedicated sending pools and therefore receive their
 // own ISP plan (quotas, waves, cadence) during campaign deployment.
 //
@@ -912,7 +912,7 @@ func isCanonicalISP(isp string) bool {
 	switch isp {
 	case string(engine.ISPGmail), string(engine.ISPYahoo), string(engine.ISPAol),
 		string(engine.ISPMicrosoft), string(engine.ISPApple), string(engine.ISPComcast),
-		string(engine.ISPAtt), string(engine.ISPCox), string(engine.ISPCharter):
+		string(engine.ISPAtt), string(engine.ISPSbcglobal), string(engine.ISPCox), string(engine.ISPCharter):
 		return true
 	default:
 		return false

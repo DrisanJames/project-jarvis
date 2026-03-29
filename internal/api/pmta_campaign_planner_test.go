@@ -10,6 +10,53 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
+func TestIsCanonicalISP(t *testing.T) {
+	canonical := []string{"gmail", "yahoo", "aol", "microsoft", "apple", "comcast", "att", "sbcglobal", "cox", "charter"}
+	for _, isp := range canonical {
+		if !isCanonicalISP(isp) {
+			t.Errorf("isCanonicalISP(%q) = false, want true", isp)
+		}
+	}
+	nonCanonical := []string{"verizon", "protonmail", "zoho", "other", "unknown", ""}
+	for _, isp := range nonCanonical {
+		if isCanonicalISP(isp) {
+			t.Errorf("isCanonicalISP(%q) = true, want false", isp)
+		}
+	}
+}
+
+func TestNormalize_OtherISPIncludedInTargetISPs(t *testing.T) {
+	now := time.Now().UTC()
+	scheduled := now.Add(1 * time.Hour)
+	endTime := scheduled.Add(8 * time.Hour)
+	input := engine.PMTACampaignInput{
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduled,
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 1000, TimeSpans: []engine.PMTATimeSpanInput{{
+				Type: "absolute", StartAt: &scheduled, EndAt: &endTime,
+			}}},
+			{ISP: "other", Quota: 500, TimeSpans: []engine.PMTATimeSpanInput{{
+				Type: "absolute", StartAt: &scheduled, EndAt: &endTime,
+			}}},
+		},
+	}
+	normalized, err := normalizePMTACampaignInput(input)
+	if err != nil {
+		t.Fatalf("normalizePMTACampaignInput: %v", err)
+	}
+	found := false
+	for _, isp := range normalized.TargetISPs {
+		if string(isp) == "other" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("TargetISPs does not include 'other': %v", normalized.TargetISPs)
+	}
+}
+
 func TestMinSpanForVolume(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -20,8 +20,9 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
-// NewISPRegistry creates a registry with all 9 ISP groups mapped.
-// AOL is separate from Yahoo — see internal/pkg/isp/isp.go for rationale.
+// NewISPRegistry creates a registry with all 10 ISP groups mapped.
+// AOL is separate from Yahoo, SBC Global/BellSouth is separate from AT&T.
+// See internal/pkg/isp/isp.go for rationale.
 func NewISPRegistry() *ISPRegistry {
 	r := &ISPRegistry{
 		staticMap: make(map[string]ISP),
@@ -47,8 +48,11 @@ func (r *ISPRegistry) seedStaticMap() {
 	microsoft := []string{"outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com"}
 	apple := []string{"icloud.com", "me.com", "mac.com"}
 	comcast := []string{"comcast.net", "xfinity.com"}
-	att := []string{
-		"att.net", "sbcglobal.net", "pacbell.net", "bellsouth.net",
+	att := []string{"att.net", "pacbell.net"}
+	// SBC Global / BellSouth domains separated from AT&T for independent pool
+	// routing, same rationale as AOL vs Yahoo. These share AT&T MX infra.
+	sbcglobal := []string{
+		"sbcglobal.net", "bellsouth.net",
 		"ameritech.net", "nvbell.net", "prodigy.net",
 	}
 	cox := []string{"cox.net"}
@@ -74,6 +78,9 @@ func (r *ISPRegistry) seedStaticMap() {
 	}
 	for _, d := range att {
 		r.staticMap[d] = ISPAtt
+	}
+	for _, d := range sbcglobal {
+		r.staticMap[d] = ISPSbcglobal
 	}
 	for _, d := range cox {
 		r.staticMap[d] = ISPCox
@@ -135,6 +142,7 @@ var mxPatterns = map[string]ISP{
 	"icloud.com":                ISPApple,
 	"comcast.net":               ISPComcast,
 	"att.net":                   ISPAtt,
+	"sbcglobal.net":             ISPSbcglobal,
 	"cox.net":                   ISPCox,
 	"charter.net":               ISPCharter,
 }
@@ -170,6 +178,7 @@ func ISPDisplayName(isp ISP) string {
 		ISPGmail: "Gmail", ISPYahoo: "Yahoo", ISPAol: "AOL",
 		ISPMicrosoft: "Microsoft", ISPApple: "Apple iCloud",
 		ISPComcast: "Comcast", ISPAtt: "AT&T",
+		ISPSbcglobal: "SBC Global/BellSouth",
 		ISPCox: "Cox", ISPCharter: "Charter/Spectrum",
 	}
 	if n, ok := names[isp]; ok {
@@ -178,9 +187,9 @@ func ISPDisplayName(isp ISP) string {
 	return string(isp)
 }
 
-// AllPoolNames returns all 11 pool names (9 ISP + warmup + quarantine).
+// AllPoolNames returns all 12 pool names (10 ISP + warmup + quarantine).
 func AllPoolNames() []string {
-	pools := make([]string, 0, 11)
+	pools := make([]string, 0, 12)
 	for _, isp := range AllISPs() {
 		pools = append(pools, PoolNameForISP(isp))
 	}

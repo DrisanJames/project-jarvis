@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// ISP identifies one of the 9 supported ISP groups with dedicated sending pools.
+// ISP identifies one of the 10 supported ISP groups with dedicated sending pools.
 //
 // AOL is a separate ISP from Yahoo despite sharing Yahoo's MX infrastructure.
-// This separation enables independent pool routing, quotas, and wave cadences —
-// critical when Yahoo proper is in TSS04 backoff but AOL delivery is healthy.
+// SBC Global/BellSouth is separate from AT&T despite sharing AT&T's MX infra.
+// These separations enable independent pool routing, quotas, and wave cadences.
 // See internal/pkg/isp/isp.go for the full classification rationale.
 type ISP string
 
@@ -22,16 +22,17 @@ const (
 	ISPApple     ISP = "apple"
 	ISPComcast   ISP = "comcast"
 	ISPAtt       ISP = "att"
+	ISPSbcglobal ISP = "sbcglobal"
 	ISPCox       ISP = "cox"
 	ISPCharter   ISP = "charter"
 )
 
-// AllISPs returns all 9 supported ISP groups that have dedicated sending pools.
+// AllISPs returns all 10 supported ISP groups that have dedicated sending pools.
 // This list drives agent instantiation, ISP config seeding, and dashboard
 // enumeration. Adding an ISP here means the conviction system, governance
 // engine, and analytics will begin tracking it independently.
 func AllISPs() []ISP {
-	return []ISP{ISPGmail, ISPYahoo, ISPAol, ISPMicrosoft, ISPApple, ISPComcast, ISPAtt, ISPCox, ISPCharter}
+	return []ISP{ISPGmail, ISPYahoo, ISPAol, ISPMicrosoft, ISPApple, ISPComcast, ISPAtt, ISPSbcglobal, ISPCox, ISPCharter}
 }
 
 // AgentType identifies one of the 6 agent types.

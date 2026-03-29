@@ -13,6 +13,10 @@ import "strings"
 // that reputation issues with one domain family (e.g., yahoo.com TSS04
 // deferrals) do not block volume to the other (aol.com, aim.com). This
 // also enables independent quota and wave cadence control per ISP.
+//
+// SBC Global/BellSouth is intentionally separate from AT&T. Although these
+// legacy domains route through AT&T MX infrastructure, isolating them into
+// their own pool enables independent reputation tracking and quota control.
 const (
 	Gmail      = "gmail"
 	Yahoo      = "yahoo"
@@ -22,6 +26,7 @@ const (
 	Comcast    = "comcast"
 	Charter    = "charter"
 	ATT        = "att"
+	Sbcglobal  = "sbcglobal"
 	Cox        = "cox"
 	Verizon    = "verizon"
 	Protonmail = "protonmail"
@@ -72,10 +77,15 @@ var domainToISP = map[string]string{
 	"me.com":     Apple,
 	"mac.com":    Apple,
 
-	// AT&T — includes legacy SBC/BellSouth domains acquired through mergers.
-	"att.net":       ATT,
-	"sbcglobal.net": ATT,
-	"bellsouth.net": ATT,
+	// AT&T
+	"att.net": ATT,
+
+	// SBC Global / BellSouth — separated from AT&T for independent pool routing
+	// and quota control. These legacy domains route through AT&T MX infrastructure,
+	// but reputation is tracked per source IP, so isolating the sending pool
+	// prevents cross-contamination (same rationale as AOL vs Yahoo).
+	"sbcglobal.net": Sbcglobal,
+	"bellsouth.net": Sbcglobal,
 
 	// Comcast / Xfinity
 	"comcast.net": Comcast,
@@ -119,6 +129,7 @@ var ispToPoolSuffix = map[string]string{
 	Apple:     "apple",
 	Comcast:   "comcast",
 	ATT:       "att",
+	Sbcglobal: "sbcglobal",
 	Cox:       "cox",
 	Charter:   "charter",
 }
@@ -167,16 +178,16 @@ func PoolSuffix(isp string) string {
 	return "general"
 }
 
-// KnownGroups returns the 9 major ISP groups that have dedicated sending pools.
+// KnownGroups returns the 10 major ISP groups that have dedicated sending pools.
 //
 // Used by analytics aggregation to enumerate all ISP buckets when building
 // per-ISP breakdowns. If you add a new ISP with a dedicated pool, add it here.
 func KnownGroups() []string {
-	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Cox}
+	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Sbcglobal, Cox}
 }
 
 // AllGroups returns every ISP group name including minor ones that route
 // through the "general" pool (verizon, protonmail, zoho).
 func AllGroups() []string {
-	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Cox, Verizon, Protonmail, Zoho}
+	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Sbcglobal, Cox, Verizon, Protonmail, Zoho}
 }

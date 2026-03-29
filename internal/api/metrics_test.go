@@ -343,7 +343,8 @@ func TestMetricsISPDisplayName(t *testing.T) {
 
 func TestIspDomainsForGroup(t *testing.T) {
 	assert.Equal(t, []string{"gmail.com", "googlemail.com"}, ispDomainsForGroup("gmail"))
-	assert.Equal(t, []string{"att.net", "sbcglobal.net", "bellsouth.net"}, ispDomainsForGroup("att"))
+	assert.Equal(t, []string{"att.net"}, ispDomainsForGroup("att"))
+	assert.Equal(t, []string{"sbcglobal.net", "bellsouth.net"}, ispDomainsForGroup("sbcglobal"))
 	assert.Empty(t, ispDomainsForGroup("nonexistent"))
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
@@ -414,33 +415,14 @@ func (svc *MailingService) updateEngagementScore(ctx context.Context, subscriber
 	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET engagement_score = $2, updated_at = NOW() WHERE id = $1`, subscriberID, score)
 }
 
-// extractISP derives the ISP name from an email address domain
+// extractISP derives the ISP group name from an email address.
+// Delegates to the canonical isp.Group classifier for consistency.
 func extractISP(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) < 2 {
+	g := isp.Group(email)
+	if g == isp.Other || g == "" {
 		return "unknown"
 	}
-	domain := strings.ToLower(parts[1])
-	switch {
-	case strings.Contains(domain, "gmail"):
-		return "Gmail"
-	case strings.Contains(domain, "yahoo") || strings.Contains(domain, "ymail"):
-		return "Yahoo"
-	case strings.Contains(domain, "outlook") || strings.Contains(domain, "hotmail") || strings.Contains(domain, "live.com") || strings.Contains(domain, "msn.com"):
-		return "Microsoft"
-	case strings.Contains(domain, "aol"):
-		return "AOL"
-	case strings.Contains(domain, "icloud") || strings.Contains(domain, "me.com") || strings.Contains(domain, "mac.com"):
-		return "Apple"
-	case strings.Contains(domain, "comcast"):
-		return "Comcast"
-	case strings.Contains(domain, "att.net"):
-		return "AT&T"
-	case strings.Contains(domain, "verizon"):
-		return "Verizon"
-	default:
-		return domain
-	}
+	return g
 }
 
 // recomputeInboxProfileScore recalculates engagement_score (0–1 scale) for an

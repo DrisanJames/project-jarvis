@@ -37,8 +37,10 @@ func TestGroupFromDomain(t *testing.T) {
 
 		// AT&T
 		{"att.net", ATT},
-		{"sbcglobal.net", ATT},
-		{"bellsouth.net", ATT},
+
+		// SBC Global / BellSouth (separated from AT&T for dedicated pool routing)
+		{"sbcglobal.net", Sbcglobal},
+		{"bellsouth.net", Sbcglobal},
 
 		// Comcast
 		{"comcast.net", Comcast},
@@ -120,6 +122,7 @@ func TestPoolSuffix(t *testing.T) {
 		{Apple, "apple"},
 		{Comcast, "comcast"},
 		{ATT, "att"},
+		{Sbcglobal, "sbcglobal"},
 		{Cox, "cox"},
 		{Charter, "charter"},
 		{Verizon, "general"},
@@ -141,14 +144,14 @@ func TestPoolSuffix(t *testing.T) {
 
 func TestKnownGroups(t *testing.T) {
 	groups := KnownGroups()
-	if len(groups) != 9 {
-		t.Errorf("KnownGroups() returned %d groups, want 9", len(groups))
+	if len(groups) != 10 {
+		t.Errorf("KnownGroups() returned %d groups, want 10", len(groups))
 	}
 }
 
 func TestAllGroups(t *testing.T) {
 	groups := AllGroups()
-	if len(groups) != 12 {
-		t.Errorf("AllGroups() returned %d groups, want 12", len(groups))
+	if len(groups) != 13 {
+		t.Errorf("AllGroups() returned %d groups, want 13", len(groups))
 	}
 }

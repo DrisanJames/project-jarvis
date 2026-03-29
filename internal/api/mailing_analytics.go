@@ -1702,7 +1702,8 @@ const ispDomainCaseSQL = `CASE
 	WHEN dom IN ('outlook.com','hotmail.com','live.com','msn.com') THEN 'microsoft'
 	WHEN dom IN ('icloud.com','me.com','mac.com') THEN 'apple'
 	WHEN dom IN ('comcast.net','xfinity.com') THEN 'comcast'
-	WHEN dom IN ('att.net','sbcglobal.net','bellsouth.net') THEN 'att'
+	WHEN dom IN ('att.net') THEN 'att'
+	WHEN dom IN ('sbcglobal.net','bellsouth.net') THEN 'sbcglobal'
 	WHEN dom IN ('cox.net') THEN 'cox'
 	WHEN dom IN ('charter.net','spectrum.net') THEN 'charter'
 	ELSE 'other'
@@ -1718,7 +1719,8 @@ var ispDomainFilter = map[string]string{
 	"microsoft": "('outlook.com','hotmail.com','live.com','msn.com')",
 	"apple":     "('icloud.com','me.com','mac.com')",
 	"comcast":   "('comcast.net','xfinity.com')",
-	"att":       "('att.net','sbcglobal.net','bellsouth.net')",
+	"att":       "('att.net')",
+	"sbcglobal": "('sbcglobal.net','bellsouth.net')",
 	"cox":       "('cox.net')",
 	"charter":   "('charter.net','spectrum.net')",
 }
@@ -1727,6 +1729,7 @@ var ispDomainFilter = map[string]string{
 var ispLabels = map[string]string{
 	"gmail": "Gmail", "yahoo": "Yahoo", "aol": "AOL", "microsoft": "Microsoft",
 	"apple": "Apple iCloud", "comcast": "Comcast", "att": "AT&T",
+	"sbcglobal": "SBC Global/BellSouth",
 	"cox": "Cox", "charter": "Charter/Spectrum", "other": "Other",
 }
 
@@ -2025,7 +2028,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 
 	// 5. Build per-ISP insights
 	var isps []map[string]interface{}
-	for _, isp := range []string{"gmail", "yahoo", "aol", "microsoft", "apple", "comcast", "att", "cox", "charter", "other"} {
+	for _, isp := range []string{"gmail", "yahoo", "aol", "microsoft", "apple", "comcast", "att", "sbcglobal", "cox", "charter", "other"} {
 		days := ispDaily[isp]
 		if len(days) == 0 {
 			continue

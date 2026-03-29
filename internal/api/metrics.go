@@ -303,7 +303,8 @@ func ispDomainsForGroup(group string) []string {
 		"apple":     {"icloud.com", "me.com", "mac.com"},
 		"comcast":   {"comcast.net", "xfinity.com"},
 		"charter":   {"charter.net", "spectrum.net"},
-		"att":       {"att.net", "sbcglobal.net", "bellsouth.net"},
+		"att":       {"att.net"},
+		"sbcglobal": {"sbcglobal.net", "bellsouth.net"},
 		"cox":       {"cox.net"},
 	}
 	if domains, ok := domainMap[strings.ToLower(group)]; ok {
@@ -323,6 +324,7 @@ var metricsISPDisplayNames = map[string]string{
 	"comcast":   "Comcast / Xfinity",
 	"charter":   "Charter / Spectrum",
 	"att":       "AT&T",
+	"sbcglobal": "SBC Global / BellSouth",
 	"cox":       "Cox",
 	"other":     "Other",
 }
