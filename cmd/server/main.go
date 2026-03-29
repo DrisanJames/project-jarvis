@@ -2930,6 +2930,7 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		// List dashboard performance indexes
 		{"idx_subscribers_list_status", `CREATE INDEX IF NOT EXISTS idx_subscribers_list_status ON mailing_subscribers (list_id, status)`},
 		{"idx_lists_visible_created", `CREATE INDEX IF NOT EXISTS idx_lists_visible_created ON mailing_lists (created_at DESC) WHERE COALESCE(is_visible, true) = true`},
+		{"idx_subscribers_audience_scan", `CREATE INDEX IF NOT EXISTS idx_subscribers_audience_scan ON mailing_subscribers (list_id, status, created_at, id) WHERE status IN ('active','confirmed')`},
 
 		{"create_audience_metrics_table", `
 			CREATE TABLE IF NOT EXISTS mailing_audience_metrics (
