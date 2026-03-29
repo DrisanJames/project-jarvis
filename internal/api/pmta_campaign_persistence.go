@@ -729,6 +729,15 @@ func clearPMTACampaignChildren(ctx context.Context, tx *sql.Tx, campaignID strin
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mailing_ab_tests WHERE campaign_id = $1`, campaignID); err != nil {
 		return fmt.Errorf("delete ab tests: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mailing_campaign_plan_recipients WHERE campaign_id = $1`, campaignID); err != nil {
+		return fmt.Errorf("delete plan recipients: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mailing_campaign_waves WHERE campaign_id = $1`, campaignID); err != nil {
+		return fmt.Errorf("delete waves: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mailing_campaign_isp_time_spans WHERE campaign_id = $1`, campaignID); err != nil {
+		return fmt.Errorf("delete isp time spans: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mailing_campaign_isp_plans WHERE campaign_id = $1`, campaignID); err != nil {
 		return fmt.Errorf("delete PMTA plan rows: %w", err)
 	}
