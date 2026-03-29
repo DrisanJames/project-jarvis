@@ -633,10 +633,13 @@ func planPMTAAudience(
 	}
 
 	if len(input.SendPriority) > 0 {
-		for _, item := range input.SendPriority {
+		log.Printf("[PlanAudience] processing %d send_priority items, elapsed %v", len(input.SendPriority), time.Since(planStart))
+		for idx, item := range input.SendPriority {
 			if allQuotasMet() {
+				log.Printf("[PlanAudience] all quotas met at priority item %d/%d, qualified=%d", idx+1, len(input.SendPriority), len(qualified))
 				break
 			}
+			itemStart := time.Now()
 			switch item.Type {
 			case "list":
 				resolved := resolveListNamesToIDs(ctx, db, orgID, []string{item.ID})
@@ -645,10 +648,12 @@ func planPMTAAudience(
 						return pmtaAudiencePlan{}, err
 					}
 				}
+				log.Printf("[PlanAudience] priority %d/%d list %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), item.ID[:12], time.Since(itemStart), len(qualified))
 			case "segment":
 				if err := streamSegment(item.ID); err != nil {
 					return pmtaAudiencePlan{}, err
 				}
+				log.Printf("[PlanAudience] priority %d/%d segment %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), item.ID[:12], time.Since(itemStart), len(qualified))
 			}
 		}
 	} else {
