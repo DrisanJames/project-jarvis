@@ -302,9 +302,12 @@ const STEPS = [
 
 interface PMTACampaignWizardProps {
   onClose?: () => void;
+  editCampaignId?: string | null;
+  onEditComplete?: () => void;
+  onCampaignPreparing?: (id: string, name: string) => void;
 }
 
-export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose }) => {
+export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose, editCampaignId, onEditComplete, onCampaignPreparing }) => {
   const { organization } = useAuth();
   const orgId = organization?.id || '';
   const { campaignComplete } = useToast();
@@ -1023,7 +1026,36 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showClonePanel]);
 
+  // ── Edit mode: load campaign data when editCampaignId is set ────────
   useEffect(() => {
+    if (!editCampaignId || !orgId) return;
+    let cancelled = false;
+    setLoadingDraft(true);
+    setDraftStatus('');
+    setDraftError('');
+    fetchWithRetry(`${API_BASE}/pmta-campaign/${editCampaignId}/edit-data`)
+      .then(async res => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error || `Failed to load campaign (HTTP ${res.status})`);
+        return data;
+      })
+      .then(data => {
+        if (cancelled) return;
+        hydrateDraft(data);
+        if (data.campaign_id) setCampaignId(data.campaign_id);
+        setDraftStatus(`Editing campaign: ${data.name || editCampaignId}`);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setDraftError(err?.message || 'Failed to load campaign for editing.');
+      })
+      .finally(() => { if (!cancelled) setLoadingDraft(false); });
+    return () => { cancelled = true; };
+  }, [editCampaignId, orgId, fetchWithRetry, hydrateDraft]);
+
+  // ── Load draft on mount (skip when editing an existing campaign) ───
+  useEffect(() => {
+    if (editCampaignId) return;
     let cancelled = false;
 
     if (!orgId) {
@@ -1077,7 +1109,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
     return () => {
       cancelled = true;
     };
-  }, [orgId, fetchWithRetry, hydrateDraft]);
+  }, [editCampaignId, orgId, fetchWithRetry, hydrateDraft]);
 
   const buildDefaultISPPlan = useCallback((isp: string, previous?: ISPPlanFormState): ISPPlanFormState => ({
     isp,
@@ -1293,6 +1325,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       const data = await res.json();
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
+      } else if (res.status === 202) {
+        // Async deploy accepted — campaign is preparing in the background
+        setCampaignId(data.campaign_id || campaignId);
+        setDeployResult({ ...data, status: 'preparing' });
+        campaignComplete(campaignName || 'Campaign');
+        setShowCompleteModal(true);
+        if (onCampaignPreparing && data.campaign_id) {
+          onCampaignPreparing(data.campaign_id, data.name || campaignName || 'Campaign');
+        }
+        if (onEditComplete) onEditComplete();
       } else {
         setDeployResult(data);
         setCampaignId(data.campaign_id || campaignId);
@@ -1303,7 +1345,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose 
       setDeployResult({ error: err?.message || 'Deploy failed — network error. Click Deploy to retry.' });
     }
     setDeploying(false);
-  }, [buildCampaignPayload, campaignComplete, campaignId, campaignName, fetchWithRetry]);
+  }, [buildCampaignPayload, campaignComplete, campaignId, campaignName, fetchWithRetry, onCampaignPreparing, onEditComplete]);
 
   // ── Toggle helpers ───────────────────────────────────────────────────────
 

@@ -39,6 +39,10 @@ type PMTACampaignService struct {
 	// preflightFn overrides preflightDeployCheck for testing (DNS lookups
 	// cannot be mocked via sqlmock). Nil means use the real implementation.
 	preflightFn func(ctx context.Context, db *sql.DB, orgID, domain string) preflightResult
+
+	// skipBackgroundDeploy skips the async goroutine in HandleDeployCampaign.
+	// Used in tests so sqlmock connections aren't accessed after test cleanup.
+	skipBackgroundDeploy bool
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
@@ -105,6 +109,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/{campaignId}/emergency-stop", s.HandleEmergencyCampaignStop)
 		cr.Get("/clone-candidates", s.HandleCloneCandidates)
 		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
+		cr.Get("/{campaignId}/edit-data", s.HandleEditData)
 		cr.Get("/last-quotas", s.HandleLastQuotas)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 	})
@@ -807,10 +812,10 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		}
 	}
 
-	deployCtx, deployCancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer deployCancel()
-	ctx := deployCtx
+	ctx := r.Context()
 	orgID := getOrgID(r)
+
+	// ── Phase 1: synchronous pre-checks (fast, <2s) ─────────────────────
 
 	preflight := s.runPreflight(ctx, orgID, input.SendingDomain)
 	if !preflight.OK {
@@ -830,8 +835,110 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Use a dedicated DB connection with an extended statement_timeout for
-	// audience planning, which can be slow when spanning many lists.
+	// Reserve campaign row as 'preparing' so the dashboard shows it immediately.
+	campaignID, err := s.reserveCampaignForDeploy(ctx, orgID, input, normalized)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Respond immediately — campaign is accepted.
+	respondJSON(w, http.StatusAccepted, map[string]interface{}{
+		"campaign_id":   campaignID,
+		"name":          input.Name,
+		"status":        "preparing",
+		"target_isps":   input.TargetISPs,
+		"variant_count": len(input.Variants),
+	})
+
+	// ── Phase 2: background processing (audience + persistence) ─────────
+	if !s.skipBackgroundDeploy {
+		go s.finalizeDeploy(campaignID, orgID, input, normalized)
+	}
+}
+
+// reserveCampaignForDeploy resolves campaign identity and marks it as
+// 'preparing' with the pmta_config blob persisted. Returns the campaign UUID.
+func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin reservation tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	campaignID, reusingDraft, err := resolvePMTACampaignIdentity(ctx, tx, orgID, input.CampaignID, s.colCache)
+	if err != nil {
+		return "", err
+	}
+
+	configJSON, _ := json.Marshal(pmtaCampaignConfig{
+		CampaignInput: withCampaignID(input, campaignID.String()),
+	})
+
+	if reusingDraft {
+		setClauses := "name = $2, status = 'preparing', updated_at = NOW()"
+		args := []any{campaignID, input.Name}
+		nextP := 3
+		if s.colCache.has("pmta_config") {
+			setClauses += fmt.Sprintf(", pmta_config = $%d", nextP)
+			args = append(args, configJSON)
+			nextP++
+		}
+		if s.colCache.has("execution_mode") {
+			setClauses += fmt.Sprintf(", execution_mode = $%d", nextP)
+			args = append(args, pmtaExecutionModeWave)
+			nextP++
+		}
+		args = append(args, orgID)
+		query := fmt.Sprintf(`UPDATE mailing_campaigns SET %s WHERE id = $1 AND organization_id = $%d`, setClauses, nextP)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return "", fmt.Errorf("reserve draft campaign: %w", err)
+		}
+	} else {
+		colList := []string{"id", "organization_id", "name", "status", "created_at", "updated_at"}
+		valList := []string{"$1", "$2", "$3", "'preparing'", "NOW()", "NOW()"}
+		args := []any{campaignID, orgID, input.Name}
+		nextP := 4
+		if s.colCache.has("pmta_config") {
+			colList = append(colList, "pmta_config")
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			args = append(args, configJSON)
+			nextP++
+		}
+		if s.colCache.has("execution_mode") {
+			colList = append(colList, "execution_mode")
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			args = append(args, pmtaExecutionModeWave)
+			nextP++
+		}
+		query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
+			strings.Join(colList, ", "), strings.Join(valList, ", "))
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return "", fmt.Errorf("insert preparing campaign: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit reservation: %w", err)
+	}
+	return campaignID.String(), nil
+}
+
+// finalizeDeploy runs the slow audience planning and campaign persistence in
+// the background. On success the campaign transitions to scheduled/sending;
+// on failure it is marked as 'failed'.
+func (s *PMTACampaignService) finalizeDeploy(campaignID, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Deploy/BG] PANIC finalizing campaign %s: %v", campaignID, r)
+			s.markCampaignFailed(campaignID, fmt.Sprintf("internal panic: %v", r))
+		}
+	}()
+
+	// Extended statement_timeout for audience queries
 	var audienceDB dbQuerier = s.db
 	conn, connErr := s.db.Conn(ctx)
 	if connErr == nil {
@@ -846,46 +953,53 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 
 	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
 	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[Deploy/BG] audience planning failed for %s: %v", campaignID, err)
+		s.markCampaignFailed(campaignID, "audience planning failed: "+err.Error())
 		return
 	}
 
+	// Force the campaign_id so createPMTAWaveCampaign reuses the reserved row.
+	// The row was set to 'preparing' by reserveCampaignForDeploy; we need to
+	// temporarily set it back to 'draft' so resolvePMTACampaignIdentity accepts it.
+	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'draft' WHERE id = $1`, campaignID); err != nil {
+		log.Printf("[Deploy/BG] failed to reset status for %s: %v", campaignID, err)
+		s.markCampaignFailed(campaignID, "internal error preparing campaign")
+		return
+	}
+	input.CampaignID = campaignID
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[Deploy/BG] begin tx failed for %s: %v", campaignID, err)
+		s.markCampaignFailed(campaignID, "internal error: "+err.Error())
 		return
 	}
 	defer tx.Rollback()
 
 	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience, s.colCache)
 	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[Deploy/BG] create wave campaign failed for %s: %v", campaignID, err)
+		s.markCampaignFailed(campaignID, "campaign creation failed: "+err.Error())
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[Deploy/BG] commit failed for %s: %v", campaignID, err)
+		s.markCampaignFailed(campaignID, "commit failed: "+err.Error())
 		return
 	}
 
-	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"campaign_id":       result.CampaignID,
-		"name":              result.Name,
-		"status":            result.Status,
-		"send_mode":         result.SendMode,
-		"sends_at":          result.SendsAt,
-		"target_isps":       result.TargetISPs,
-		"total_audience":    result.TotalAudience,
-		"variant_count":     result.VariantCount,
-		"isp_plans":         result.ISPPlans,
-		"initial_waves":     result.InitialWaves,
-		"assumptions":       result.Assumptions,
-		"legacy_input":      result.LegacyInput,
-		"queued_count":      0,
-		"after_suppression": audience.AfterSuppression,
-		"suppressed":        audience.TotalSeen - audience.AfterSuppression,
-		"per_isp_selected":  audience.CountsByISP,
-	})
+	log.Printf("[Deploy/BG] campaign %s finalized: status=%s audience=%d variants=%d",
+		campaignID, result.Status, result.TotalAudience, result.VariantCount)
+}
+
+// markCampaignFailed sets a campaign's status to 'failed' after a background
+// deploy error.
+func (s *PMTACampaignService) markCampaignFailed(campaignID, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	log.Printf("[Deploy/BG] marking campaign %s as failed: %s", campaignID, reason)
+	_, _ = s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed', updated_at = NOW() WHERE id = $1`, campaignID)
 }
 
 // HandleDryRunCampaign returns a preview of what a campaign deployment would
@@ -1768,8 +1882,21 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 }
 
 // HandleCloneData returns the full PMTA config for a specific campaign,
-// formatted as a draft response the wizard can hydrate.
+// formatted as a draft response the wizard can hydrate (with identity stripped).
 func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Request) {
+	s.loadCampaignData(w, r, true)
+}
+
+// HandleEditData returns the full PMTA config for a specific campaign,
+// preserving campaign_id so the wizard can edit the existing campaign.
+func (s *PMTACampaignService) HandleEditData(w http.ResponseWriter, r *http.Request) {
+	s.loadCampaignData(w, r, false)
+}
+
+// loadCampaignData is the shared implementation for clone-data and edit-data.
+// When forClone is true, campaign_id is stripped and "(Clone)" is appended.
+// When forClone is false, identity is preserved for editing.
+func (s *PMTACampaignService) loadCampaignData(w http.ResponseWriter, r *http.Request, forClone bool) {
 	ctx := r.Context()
 	campaignID := chi.URLParam(r, "campaignId")
 	orgID := getOrgID(r)
@@ -1785,19 +1912,18 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 			WHERE id = $1 AND organization_id = $2
 		`, campaignID, orgID).Scan(&name, &status, &configJSON, &completedAt)
 		if err != nil {
-			log.Printf("[CloneData] query error for %s: %v", campaignID, err)
+			log.Printf("[CampaignData] query error for %s: %v", campaignID, err)
 			http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
 			return
 		}
 	} else {
-		// Fallback: read base campaign fields without pmta_config
 		err := s.db.QueryRowContext(ctx, `
 			SELECT name, status, completed_at
 			FROM mailing_campaigns
 			WHERE id = $1 AND organization_id = $2
 		`, campaignID, orgID).Scan(&name, &status, &completedAt)
 		if err != nil {
-			log.Printf("[CloneData] query error for %s: %v", campaignID, err)
+			log.Printf("[CampaignData] query error for %s: %v", campaignID, err)
 			http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
 			return
 		}
@@ -1806,7 +1932,6 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 	scheduleMode := "quick"
 	var inputMap map[string]interface{}
 
-	// Primary path: use stored pmta_config blob
 	if configJSON.Valid && configJSON.String != "" && configJSON.String != "{}" {
 		var cfg struct {
 			CampaignInput json.RawMessage `json:"campaign_input"`
@@ -1817,7 +1942,11 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 				inputMap = nil
 			} else {
 				delete(inputMap, "campaign_id")
-				inputMap["name"] = name + " (Clone)"
+				if forClone {
+					inputMap["name"] = name + " (Clone)"
+				} else {
+					inputMap["name"] = name
+				}
 				if cfg.ScheduleMode != "" {
 					scheduleMode = cfg.ScheduleMode
 				}
@@ -1825,25 +1954,35 @@ func (s *PMTACampaignService) HandleCloneData(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Fallback: reconstruct campaign_input from DB columns when pmta_config
-	// is absent, empty, or failed to parse.
 	if inputMap == nil {
 		inputMap = buildCloneInputFromDB(ctx, s.db, campaignID, name)
+		if forClone {
+			inputMap["name"] = name + " (Clone)"
+		}
 	}
 
-	// Enrich: fill any empty/nil fields from authoritative DB sources.
-	// Handles both stale-but-valid pmta_config blobs and fallback gaps.
 	enrichCloneInput(ctx, s.db, campaignID, inputMap)
 
 	clonedJSON, _ := json.Marshal(inputMap)
 
+	respCampaignID := ""
+	respName := name + " (Clone)"
+	respStatus := "draft"
+	respSourceID := campaignID
+	if !forClone {
+		respCampaignID = campaignID
+		respName = name
+		respStatus = status
+		respSourceID = ""
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaign_id":    "",
-		"name":           name + " (Clone)",
-		"status":         "draft",
+		"campaign_id":    respCampaignID,
+		"name":           respName,
+		"status":         respStatus,
 		"schedule_mode":  scheduleMode,
-		"source_id":      campaignID,
+		"source_id":      respSourceID,
 		"source_status":  status,
 		"campaign_input": json.RawMessage(clonedJSON),
 	})

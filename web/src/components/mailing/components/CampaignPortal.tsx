@@ -2628,7 +2628,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
 export const CampaignPortal: React.FC<{
   initialOffer?: { offerId: string; offerName: string } | null;
   onOfferConsumed?: () => void;
-}> = ({ initialOffer, onOfferConsumed }) => {
+  onEditInWizard?: (campaignId: string) => void;
+}> = ({ initialOffer, onOfferConsumed, onEditInWizard }) => {
   const { organization } = useAuth();
   const [view, setView] = useState<ViewType>(initialOffer ? 'create' : 'dashboard');
 
@@ -2740,7 +2741,10 @@ export const CampaignPortal: React.FC<{
   const handleAction = useCallback(async (id: string, action: string) => {
     try {
       if (action === 'edit') {
-        // Load campaign and switch to edit view
+        if (onEditInWizard) {
+          onEditInWizard(id);
+          return;
+        }
         const res = await orgFetch(`${API_BASE}/campaigns/${id}`, organization?.id);
         const campaign = await res.json();
         setSelectedCampaign(campaign);

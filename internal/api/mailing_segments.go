@@ -306,6 +306,20 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 	}
 
 	for _, c := range filtered {
+		// Exclude subscribers whose email appears in lists matching a name pattern
+		if c.Field == "exclude_list_pattern" {
+			clause := fmt.Sprintf(`NOT EXISTS (
+				SELECT 1 FROM mailing_subscribers s_excl
+				JOIN mailing_lists l_excl ON s_excl.list_id = l_excl.id
+				WHERE LOWER(s_excl.email) = LOWER(mailing_subscribers.email)
+				  AND l_excl.name ILIKE $%d
+			)`, argNum)
+			whereClauses = append(whereClauses, clause)
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+			continue
+		}
+
 		if isEventField(c.Field) {
 			clause, newArgs, newArgNum := buildEventWhereClause(c, argNum, domainFilter)
 			if clause != "" {

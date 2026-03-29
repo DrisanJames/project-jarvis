@@ -1212,6 +1212,69 @@ const SuppressionsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: T
 };
 
 // ─── Campaign Center Section ───────────────────────────────────────────────
+interface PreparingCampaign {
+  id: string;
+  name: string;
+  acceptedAt: number;
+}
+
+const PreparationBanner: React.FC<{
+  campaigns: PreparingCampaign[];
+  transitions: { id: string; name: string; status: string }[];
+  onDismissTransition: (id: string) => void;
+}> = ({ campaigns, transitions, onDismissTransition }) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (campaigns.length === 0) return;
+    const iv = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [campaigns.length]);
+
+  if (campaigns.length === 0 && transitions.length === 0) return null;
+
+  const elapsed = (ts: number) => {
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 0 8px 0' }}>
+      {campaigns.map(c => (
+        <div key={c.id} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 16px', borderRadius: 8,
+          background: 'rgba(245, 158, 11, 0.08)', borderLeft: '3px solid #f59e0b',
+          fontSize: 13, color: '#fbbf24',
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 12 }} />
+            <strong>Preparing:</strong> {c.name}
+          </span>
+          <span style={{ color: 'rgba(251,191,36,0.6)', fontSize: 12 }}>{elapsed(c.acceptedAt)}</span>
+        </div>
+      ))}
+      {transitions.map(t => (
+        <div key={t.id} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 16px', borderRadius: 8,
+          background: t.status === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+          borderLeft: `3px solid ${t.status === 'failed' ? '#ef4444' : '#10b981'}`,
+          fontSize: 13, color: t.status === 'failed' ? '#f87171' : '#6ee7b7',
+        }}>
+          <span>
+            {t.status === 'failed' ? `Campaign "${t.name}" failed` : `Campaign "${t.name}" is ready`}
+          </span>
+          <button onClick={() => onDismissTransition(t.id)} style={{
+            background: 'none', border: 'none', color: 'inherit', cursor: 'pointer',
+            opacity: 0.6, fontSize: 12, padding: '2px 6px',
+          }}>dismiss</button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const CampaignCenterSection: React.FC<{
   activeSubTab: TabId;
   onSubTabChange: (t: TabId) => void;
@@ -1220,7 +1283,55 @@ const CampaignCenterSection: React.FC<{
   copilotOpen: boolean;
   setCopilotOpen: (v: boolean) => void;
 }> = ({ activeSubTab, onSubTabChange, pendingOffer, onOfferConsumed, copilotOpen, setCopilotOpen }) => {
+  const { organization } = useAuth();
   const subTab = (['pmta-wizard', 'marketing-agent'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
+  const [editCampaignId, setEditCampaignId] = useState<string | null>(null);
+  const [preparingCampaigns, setPreparingCampaigns] = useState<PreparingCampaign[]>([]);
+  const [transitions, setTransitions] = useState<{ id: string; name: string; status: string }[]>([]);
+
+  const handleEditInWizard = useCallback((id: string) => {
+    setEditCampaignId(id);
+    onSubTabChange('pmta-wizard');
+  }, [onSubTabChange]);
+
+  const handleEditComplete = useCallback(() => {
+    setEditCampaignId(null);
+  }, []);
+
+  const handleCampaignPreparing = useCallback((id: string, name: string) => {
+    setPreparingCampaigns(prev => [...prev.filter(c => c.id !== id), { id, name, acceptedAt: Date.now() }]);
+  }, []);
+
+  // Poll preparing campaigns for status transitions
+  useEffect(() => {
+    if (preparingCampaigns.length === 0) return;
+    const orgId = organization?.id;
+    if (!orgId) return;
+    const iv = setInterval(async () => {
+      for (const c of preparingCampaigns) {
+        try {
+          const res = await fetch(`/api/mailing/campaigns/${c.id}`, {
+            headers: { 'x-organization-id': orgId },
+          });
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (data.status && data.status !== 'preparing') {
+            setPreparingCampaigns(prev => prev.filter(p => p.id !== c.id));
+            setTransitions(prev => [...prev, { id: c.id, name: c.name, status: data.status }]);
+            if (data.status !== 'failed') {
+              setTimeout(() => setTransitions(prev => prev.filter(t => t.id !== c.id)), 5000);
+            }
+          }
+        } catch { /* ignore polling errors */ }
+      }
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [preparingCampaigns, organization?.id]);
+
+  const handleDismissTransition = useCallback((id: string) => {
+    setTransitions(prev => prev.filter(t => t.id !== id));
+  }, []);
+
   return (
     <div>
       <div style={subNavStyle}>
@@ -1228,10 +1339,16 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
         <button style={subNavBtnStyle(subTab === 'marketing-agent')} onClick={() => onSubTabChange('marketing-agent')}>Marketing Agent</button>
       </div>
+      <PreparationBanner campaigns={preparingCampaigns} transitions={transitions} onDismissTransition={handleDismissTransition} />
       <Suspense fallback={<ChunkLoader />}>
         {subTab === 'pmta-wizard' ? (
           <>
-            <PMTACampaignWizard onClose={() => onSubTabChange('campaign-center')} />
+            <PMTACampaignWizard
+              onClose={() => { handleEditComplete(); onSubTabChange('campaign-center'); }}
+              editCampaignId={editCampaignId}
+              onEditComplete={handleEditComplete}
+              onCampaignPreparing={handleCampaignPreparing}
+            />
             <button
               onClick={() => setCopilotOpen(true)}
               title="Campaign Copilot"
@@ -1254,7 +1371,7 @@ const CampaignCenterSection: React.FC<{
         ) : subTab === 'marketing-agent' ? (
           <EmailMarketingAgentPanel />
         ) : (
-          <CampaignPortal initialOffer={pendingOffer} onOfferConsumed={onOfferConsumed} />
+          <CampaignPortal initialOffer={pendingOffer} onOfferConsumed={onOfferConsumed} onEditInWizard={handleEditInWizard} />
         )}
       </Suspense>
     </div>

@@ -223,6 +223,20 @@ func buildRefreshWhereClause(listID *uuid.UUID, conditions []segCondition) (stri
 	}
 
 	for _, c := range filtered {
+		// Exclude subscribers whose email appears in lists matching a name pattern
+		if c.Field == "exclude_list_pattern" {
+			clause := fmt.Sprintf(`NOT EXISTS (
+				SELECT 1 FROM mailing_subscribers s_excl
+				JOIN mailing_lists l_excl ON s_excl.list_id = l_excl.id
+				WHERE LOWER(s_excl.email) = LOWER(mailing_subscribers.email)
+				  AND l_excl.name ILIKE $%d
+			)`, argNum)
+			clauses = append(clauses, clause)
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+			continue
+		}
+
 		col := mapCol(c.Field)
 		if col == "" {
 			continue

@@ -21,16 +21,17 @@ func passingPreflight(_ context.Context, _ *sql.DB, _, _ string) preflightResult
 
 func newTestPMTAService(db *sql.DB, orgID string) *PMTACampaignService {
 	svc := &PMTACampaignService{
-		db:          db,
-		orgID:       orgID,
-		suppMatcher: NewSuppressionMatcher(),
-		colCache:    &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
-		preflightFn: passingPreflight,
+		db:                   db,
+		orgID:                orgID,
+		suppMatcher:          NewSuppressionMatcher(),
+		colCache:             &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
+		preflightFn:          passingPreflight,
+		skipBackgroundDeploy: true,
 	}
 	return svc
 }
 
-func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.T) {
+func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New() error = %v", err)
@@ -40,7 +41,7 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
-		Name:          "Legacy Deploy",
+		Name:          "Async Deploy",
 		TargetISPs:    []engine.ISP{engine.ISPGmail, engine.ISPApple},
 		SendingDomain: "mail.example.com",
 		Variants: []engine.ContentVariant{{
@@ -53,26 +54,11 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 		Timezone:    "UTC",
 	}
 
-	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
+	// Reservation phase: resolve identity (no draft) -> INSERT preparing -> COMMIT
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_ab_tests").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_ab_variants").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_plans").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_time_spans").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_plans").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_time_spans").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -84,7 +70,7 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 
 	service.HandleDeployCampaign(rr, req)
 
-	if rr.Code != http.StatusCreated {
+	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 
@@ -92,14 +78,20 @@ func TestHandleDeployCampaign_LegacyPayloadReturnsNormalizedResponse(t *testing.
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response json: %v", err)
 	}
-	if legacy, ok := payload["legacy_input"].(bool); !ok || !legacy {
-		t.Fatalf("expected legacy_input=true, got %#v", payload["legacy_input"])
+	if payload["status"] != "preparing" {
+		t.Fatalf("expected status=preparing, got %#v", payload["status"])
 	}
-	if plans, ok := payload["isp_plans"].([]any); !ok || len(plans) != 2 {
-		t.Fatalf("expected 2 isp_plans, got %#v", payload["isp_plans"])
+	if payload["name"] != "Async Deploy" {
+		t.Fatalf("expected name='Async Deploy', got %#v", payload["name"])
 	}
-	if _, ok := payload["initial_waves"].([]any); !ok {
-		t.Fatalf("expected initial_waves array, got %#v", payload["initial_waves"])
+	if payload["campaign_id"] == "" {
+		t.Fatalf("expected campaign_id in response")
+	}
+	if targets, ok := payload["target_isps"].([]any); !ok || len(targets) != 2 {
+		t.Fatalf("expected 2 target_isps, got %#v", payload["target_isps"])
+	}
+	if vc, ok := payload["variant_count"].(float64); !ok || vc != 1 {
+		t.Fatalf("expected variant_count=1, got %#v", payload["variant_count"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -195,28 +187,11 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 		Timezone:    "UTC",
 	}
 
-	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
+	// Reservation phase: resolve identity (found draft) -> UPDATE preparing -> COMMIT
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(draftID))
-	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
-	mock.ExpectExec("DELETE FROM mailing_ab_variants").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM mailing_ab_tests").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM mailing_campaign_isp_plans").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE mailing_campaigns").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_ab_tests").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_ab_variants").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_plans").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO mailing_campaign_isp_time_spans").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -228,7 +203,7 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 
 	service.HandleDeployCampaign(rr, req)
 
-	if rr.Code != http.StatusCreated {
+	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 
@@ -238,6 +213,9 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 	}
 	if payload["campaign_id"] != draftID {
 		t.Fatalf("expected campaign_id %s, got %#v", draftID, payload["campaign_id"])
+	}
+	if payload["status"] != "preparing" {
+		t.Fatalf("expected status=preparing, got %#v", payload["status"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
