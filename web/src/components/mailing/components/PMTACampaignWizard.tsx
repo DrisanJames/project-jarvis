@@ -1189,7 +1189,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       .filter(([, v]) => v > 0)
       .map(([isp, volume]) => ({ isp, volume }));
     const globalScheduleISO = scheduledAt ? new Date(scheduledAt).toISOString() : '';
-    const ispPlans = selectedISPs.map(isp => {
+    const ispPlans = selectedISPs.filter(isp => isp !== 'other').map(isp => {
       const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
       const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
       const quota = ispQuotas[isp] || 0;
@@ -1270,7 +1270,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       });
     }
 
-    const targetISPs = otherQuota > 0 ? [...selectedISPs, 'other'] : selectedISPs;
+    const canonicalISPs = selectedISPs.filter(isp => isp !== 'other');
+    const targetISPs = otherQuota > 0 ? [...canonicalISPs, 'other'] : canonicalISPs;
 
     const payload: Record<string, any> = {
       name: campaignName,

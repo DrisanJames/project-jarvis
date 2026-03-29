@@ -188,12 +188,13 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 			if err != nil {
 				return pmtaNormalizedCampaign{}, err
 			}
+			if targetSeen[plan.ISP] {
+				continue // deduplicate — take the first plan per ISP
+			}
 			normalized.Plans = append(normalized.Plans, plan)
-			if !targetSeen[plan.ISP] {
-				targetSeen[plan.ISP] = true
-				if isCanonicalISP(plan.ISP) || plan.ISP == "other" {
-					normalized.TargetISPs = append(normalized.TargetISPs, engine.ISP(plan.ISP))
-				}
+			targetSeen[plan.ISP] = true
+			if isCanonicalISP(plan.ISP) || plan.ISP == "other" {
+				normalized.TargetISPs = append(normalized.TargetISPs, engine.ISP(plan.ISP))
 			}
 		}
 		if len(normalized.Plans) == 0 {
