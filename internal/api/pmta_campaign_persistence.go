@@ -665,19 +665,19 @@ func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, request
 		var query string
 		var args []any
 		if hasExecMode {
-			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status = 'draft' AND execution_mode = $3 LIMIT 1`
+			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status IN ('draft', 'scheduled', 'failed') AND execution_mode = $3 LIMIT 1`
 			args = []any{campaignID, orgID, pmtaExecutionModeWave}
 		} else {
-			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status = 'draft' LIMIT 1`
+			query = `SELECT id FROM mailing_campaigns WHERE id = $1 AND organization_id = $2 AND status IN ('draft', 'scheduled', 'failed') LIMIT 1`
 			args = []any{campaignID, orgID}
 		}
 
 		var existingID uuid.UUID
 		if err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID); err != nil {
 			if err == sql.ErrNoRows {
-				return uuid.Nil, false, fmt.Errorf("PMTA draft %s was not found or is no longer editable", requestedCampaignID)
+				return uuid.Nil, false, fmt.Errorf("campaign %s was not found or is no longer editable (must be draft, scheduled, or failed)", requestedCampaignID)
 			}
-			return uuid.Nil, false, fmt.Errorf("lookup draft campaign: %w", err)
+			return uuid.Nil, false, fmt.Errorf("lookup campaign: %w", err)
 		}
 		return existingID, true, nil
 	}

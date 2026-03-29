@@ -222,3 +222,127 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 		t.Fatalf("sql expectations: %v", err)
 	}
 }
+
+// TestHandleDeployCampaign_ReusesScheduledCampaignID verifies that editing a
+// previously-scheduled campaign and re-deploying it succeeds. The identity
+// resolver now accepts status IN ('draft','scheduled','failed').
+func TestHandleDeployCampaign_ReusesScheduledCampaignID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
+	existingID := uuid.New().String()
+	input := engine.PMTACampaignInput{
+		CampaignID:    existingID,
+		Name:          "Edited Scheduled Campaign",
+		TargetISPs:    []engine.ISP{engine.ISPGmail, engine.ISPYahoo},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Updated Subject",
+			HTMLContent: "<html><body>Updated</body></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(existingID))
+	mock.ExpectExec("UPDATE mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if payload["campaign_id"] != existingID {
+		t.Fatalf("expected campaign_id %s, got %#v", existingID, payload["campaign_id"])
+	}
+	if payload["status"] != "preparing" {
+		t.Fatalf("expected status=preparing, got %#v", payload["status"])
+	}
+	if targets, ok := payload["target_isps"].([]any); !ok || len(targets) != 2 {
+		t.Fatalf("expected 2 target_isps, got %#v", payload["target_isps"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_RejectsNonEditableCampaign verifies that a campaign
+// in a non-editable status (sending, completed, cancelled) is rejected.
+func TestHandleDeployCampaign_RejectsNonEditableCampaign(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
+	completedID := uuid.New().String()
+	input := engine.PMTACampaignInput{
+		CampaignID:    completedID,
+		Name:          "Cannot Redeploy Completed",
+		TargetISPs:    []engine.ISP{engine.ISPGmail},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for non-editable campaign, got %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	errMsg, _ := payload["error"].(string)
+	if errMsg == "" {
+		t.Fatalf("expected error message in response, got %#v", payload)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
