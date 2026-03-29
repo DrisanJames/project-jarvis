@@ -399,6 +399,9 @@ func planPMTAAudience(
 	suppMatcher *SuppressionMatcher,
 	offerSuppMgr ...*OfferSuppressionManager,
 ) (pmtaAudiencePlan, error) {
+	planStart := time.Now()
+	log.Printf("[PlanAudience] starting for campaign %s (%d inclusion lists, %d ISP plans)", input.CampaignID, len(input.InclusionLists), len(normalized.Plans))
+
 	// Resolve offer ID: explicit field takes precedence, otherwise look up from the campaign record
 	offerID := input.OfferID
 	if offerID == "" {
@@ -431,6 +434,7 @@ func planPMTAAudience(
 	} else if useBloomForOffer {
 		log.Printf("[PlanAudience] using Bloom filter for offer %s suppression checks", offerID)
 	}
+	log.Printf("[PlanAudience] offer suppressions loaded in %v", time.Since(planStart))
 
 	globalSuppSet := make(map[string]bool)
 	gsRows, gsErr := db.QueryContext(ctx, "SELECT md5_hash FROM mailing_global_suppressions")
@@ -443,6 +447,7 @@ func planPMTAAudience(
 			}
 		}
 	}
+	log.Printf("[PlanAudience] global suppressions loaded: %d entries in %v", len(globalSuppSet), time.Since(planStart))
 
 	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
 	for _, slID := range exclusionIDs {
@@ -462,6 +467,7 @@ func planPMTAAudience(
 			suppMatcher.LoadList(slID, hashes)
 		}
 	}
+	log.Printf("[PlanAudience] exclusion lists loaded (%d lists) in %v", len(exclusionIDs), time.Since(planStart))
 
 	exclusionSegEmails, err := loadExclusionSegmentEmails(ctx, db, input.ExclusionSegments)
 	if err != nil {
@@ -632,13 +638,16 @@ func planPMTAAudience(
 			}
 		}
 	} else {
-		for _, listID := range inclusionIDs {
+		for i, listID := range inclusionIDs {
 			if allQuotasMet() {
 				break
 			}
+			listStart := time.Now()
 			if err := streamList(listID); err != nil {
 				return pmtaAudiencePlan{}, err
 			}
+			log.Printf("[PlanAudience] list %d/%d (%s) streamed in %v, qualified so far: %d",
+				i+1, len(inclusionIDs), listID[:12], time.Since(listStart), len(qualified))
 		}
 		for _, segmentID := range input.InclusionSegments {
 			if allQuotasMet() {
