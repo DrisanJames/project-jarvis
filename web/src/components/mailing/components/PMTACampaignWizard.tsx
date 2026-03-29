@@ -820,8 +820,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             const validSpans = (plan.timeSpans || []).filter(span => span.startAt && span.endAt);
             if (!hasStartTime && validSpans.length === 0) {
               errors.push(`${label}: set a start time or add a time span`);
-            } else if (hasStartTime && new Date(plan.startTime).getTime() <= now) {
-              errors.push(`${label}: start time must be in the future`);
+            } else if (hasStartTime) {
+              if (new Date(plan.startTime).getTime() <= now) {
+                errors.push(`${label}: start time must be in the future`);
+              }
             } else if (validSpans.length > 0) {
               validSpans.forEach((span, idx) => {
                 if (new Date(span.startAt).getTime() <= now) {
@@ -879,6 +881,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     if (!raw) return '';
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime()) ? '' : toDateTimeLocal(parsed);
+  };
+
+  const nextScheduleDefault = () => {
+    const now = new Date();
+    const mstOffset = -7 * 60;
+    const localOffset = now.getTimezoneOffset();
+    const mstNow = new Date(now.getTime() + (mstOffset + localOffset) * 60000);
+    const tomorrow = new Date(mstNow);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(3, 0, 0, 0);
+    const localTomorrow3am = new Date(tomorrow.getTime() - (mstOffset + localOffset) * 60000);
+    return toDateTimeLocal(localTomorrow3am);
   };
 
   const nextScheduleFromWindow = (window: SendTimeWindowRecommendation) => {
@@ -994,6 +1008,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       setCampaignId('');
       setShowClonePanel(false);
       setStep(1);
+
+      setGlobalScheduleStart(nextScheduleDefault());
+      setGlobalScheduleTimezone('America/Denver');
 
       // Clear stale state from previous wizard sessions
       setStepAttempted({});
@@ -3688,6 +3705,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                               everyMinutes: globalScheduleInterval,
                               durationHours: globalScheduleDuration,
                               startTime: globalScheduleStart,
+                              timeSpans: [],
                             };
                           });
                           return next;
