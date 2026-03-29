@@ -558,16 +558,30 @@ func planPMTAAudience(
 		return true
 	}
 
+	totalQuota := 0
+	for _, q := range ispQuota {
+		if q <= 0 {
+			totalQuota = 0
+			break
+		}
+		totalQuota += q
+	}
+
 	streamList := func(listID string) error {
 		if allQuotasMet() {
 			return nil
 		}
-		rows, err := db.QueryContext(ctx, `
-			SELECT s.id::text, s.email
-			FROM mailing_subscribers s
-			WHERE s.list_id = $1 AND s.status IN ('active','confirmed')
-			ORDER BY s.created_at ASC, s.id ASC
-		`, listID)
+		query := `SELECT s.id::text, s.email FROM mailing_subscribers s WHERE s.list_id = $1 AND s.status IN ('active','confirmed')`
+		var args []any
+		args = append(args, listID)
+		if totalQuota > 0 {
+			scanLimit := totalQuota * 3
+			if scanLimit < 10000 {
+				scanLimit = 10000
+			}
+			query += fmt.Sprintf(` LIMIT %d`, scanLimit)
+		}
+		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return err
 		}
