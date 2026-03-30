@@ -131,14 +131,9 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	log.Printf("[AudienceWorker] campaign %s audience ready: %d recipients across %d ISPs",
 		campaignID, audience.SelectedTotal, len(audience.CountsByISP))
 
-	// Campaign is already in 'preparing' (set during claim). Reset to 'draft'
-	// so resolvePMTACampaignIdentity accepts it for wave creation.
-	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'draft' WHERE id = $1 AND status = 'preparing'`, campaignID); err != nil {
-		log.Printf("[AudienceWorker] failed to reset status for %s: %v", campaignID, err)
-		s.markCampaignFailed(campaignID, "internal error preparing campaign")
-		return
-	}
-
+	// Campaign stays in 'preparing' — resolvePMTACampaignIdentity already
+	// accepts this status, so no reset needed. Avoids a race window where
+	// the UI could show the campaign as an editable 'draft'.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("[AudienceWorker] begin tx failed for %s: %v", campaignID, err)

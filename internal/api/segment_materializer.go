@@ -99,40 +99,38 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 	segCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
+	// Validate segmentID is a proper UUID before embedding as a literal.
+	if len(segmentID) != 36 {
+		return 0, fmt.Errorf("invalid segment ID length: %d", len(segmentID))
+	}
+	for _, c := range segmentID {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == '-') {
+			return 0, fmt.Errorf("invalid segment ID character: %c", c)
+		}
+	}
+
 	conn, err := m.db.Conn(segCtx)
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer func() {
+		conn.ExecContext(context.Background(), "RESET ALL")
+		conn.Close()
+	}()
 
-	if _, err := conn.ExecContext(segCtx, "SET statement_timeout = '600s'"); err != nil {
+	if _, err := conn.ExecContext(segCtx, "SET statement_timeout = '600000'"); err != nil {
 		log.Printf("[SegmentMaterializer] SET statement_timeout failed: %v", err)
 	}
-	defer conn.ExecContext(context.Background(), "RESET statement_timeout")
 
 	var listIDVal interface{}
 	if listID != "" {
 		listIDVal = listID
 	}
-	query, args := buildSegmentQuery(conditionsRaw, listIDVal)
+	segQuery, segArgs := buildSegmentQuery(conditionsRaw, listIDVal)
 
-	rows, err := conn.QueryContext(segCtx, query, args...)
-	if err != nil {
-		return 0, err
-	}
-
-	type member struct {
-		subID, email string
-	}
-	var members []member
-	for rows.Next() {
-		var subID, email string
-		if rows.Scan(&subID, &email) == nil {
-			members = append(members, member{subID, email})
-		}
-	}
-	rows.Close()
-
+	// Server-side INSERT...SELECT: all data stays in PostgreSQL, zero Go memory.
+	// The segment_id is embedded as a validated UUID literal so the inner query's
+	// $N placeholders pass through to segArgs without renumbering.
 	tx, err := conn.BeginTx(segCtx, nil)
 	if err != nil {
 		return 0, err
@@ -140,35 +138,24 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(segCtx, "DELETE FROM mailing_segment_members WHERE segment_id = $1", segmentID); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete old members: %w", err)
 	}
 
-	const batchSize = 500
-	for i := 0; i < len(members); i += batchSize {
-		end := i + batchSize
-		if end > len(members) {
-			end = len(members)
-		}
-		batch := members[i:end]
+	insertSQL := fmt.Sprintf(
+		`INSERT INTO mailing_segment_members (segment_id, subscriber_id, email, materialized_at)
+		 SELECT '%s'::uuid, q.id::uuid, q.email, NOW()
+		 FROM (%s) q`, segmentID, segQuery)
 
-		q := "INSERT INTO mailing_segment_members (segment_id, subscriber_id, email, materialized_at) VALUES "
-		vals := make([]interface{}, 0, len(batch)*3)
-		for j, m := range batch {
-			if j > 0 {
-				q += ", "
-			}
-			base := j*3 + 1
-			q += fmt.Sprintf("($%d, $%d, $%d, NOW())", base, base+1, base+2)
-			vals = append(vals, segmentID, m.subID, m.email)
-		}
-		if _, err := tx.ExecContext(segCtx, q, vals...); err != nil {
-			return 0, err
-		}
+	result, err := tx.ExecContext(segCtx, insertSQL, segArgs...)
+	if err != nil {
+		return 0, fmt.Errorf("insert-select: %w", err)
 	}
+
+	count, _ := result.RowsAffected()
 
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 
-	return len(members), nil
+	return int(count), nil
 }
