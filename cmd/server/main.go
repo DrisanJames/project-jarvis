@@ -3140,7 +3140,11 @@ BEGIN
       AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
 END $$`},
 
-		// ── Segment pre-materialization table (audience architecture refactor) ──
+		// ── Audience architecture refactor: add finalizing_audience status ──
+		{"drop_status_chk_v2", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
+		{"readd_status_chk_v2", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','finalizing_audience','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+
+		// ── Segment pre-materialization table ──
 		{"create_segment_members", `CREATE TABLE IF NOT EXISTS mailing_segment_members (
 			segment_id UUID NOT NULL,
 			subscriber_id UUID NOT NULL,
