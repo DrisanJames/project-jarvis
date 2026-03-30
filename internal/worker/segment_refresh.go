@@ -148,19 +148,51 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 // for the session (not ON COMMIT DROP) so all segments can reuse it.
 func (w *SegmentRefreshWorker) prepareSeedExclusion(ctx context.Context) bool {
 	w.db.ExecContext(ctx, "DROP TABLE IF EXISTS _seed_excl_global")
-	_, err := w.db.ExecContext(ctx, `
-		CREATE TEMP TABLE _seed_excl_global AS
-		SELECT DISTINCT LOWER(s.email) AS email
-		FROM mailing_subscribers s
-		JOIN mailing_lists l ON s.list_id = l.id
-		WHERE l.name ILIKE '%seed%'
-	`)
+
+	// Use a transaction to set an extended timeout for the seed join query,
+	// which touches the 10M+ subscriber table.
+	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("SegmentRefreshWorker: seed exclusion table error: %v", err)
+		log.Printf("SegmentRefreshWorker: seed exclusion begin tx error: %v", err)
 		return false
 	}
-	w.db.ExecContext(ctx, "CREATE INDEX ON _seed_excl_global (email)")
-	log.Printf("SegmentRefreshWorker: seed exclusion table created")
+	defer tx.Rollback()
+
+	tx.ExecContext(ctx, "SET LOCAL statement_timeout = '300s'")
+
+	// Build the seed exclusion set incrementally: first find seed list IDs,
+	// then query subscribers per-list. This avoids the expensive cross-join.
+	_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE _seed_excl_global (email text) ON COMMIT PRESERVE ROWS`)
+	if err != nil {
+		log.Printf("SegmentRefreshWorker: seed exclusion create error: %v", err)
+		return false
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM mailing_lists WHERE name ILIKE '%seed%'`)
+	if err != nil {
+		log.Printf("SegmentRefreshWorker: seed list query error: %v", err)
+		return false
+	}
+	var seedListIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if rows.Scan(&id) == nil {
+			seedListIDs = append(seedListIDs, id)
+		}
+	}
+	rows.Close()
+
+	for _, lid := range seedListIDs {
+		tx.ExecContext(ctx, `INSERT INTO _seed_excl_global SELECT DISTINCT LOWER(email) FROM mailing_subscribers WHERE list_id = $1`, lid)
+	}
+
+	tx.ExecContext(ctx, `CREATE INDEX ON _seed_excl_global (email)`)
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("SegmentRefreshWorker: seed exclusion commit error: %v", err)
+		return false
+	}
+	log.Printf("SegmentRefreshWorker: seed exclusion table created (%d lists)", len(seedListIDs))
 	return true
 }
 
