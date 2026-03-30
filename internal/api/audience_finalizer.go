@@ -31,15 +31,22 @@ func (s *PMTACampaignService) StartAudienceWorker(ctx context.Context) {
 }
 
 func (s *PMTACampaignService) processNextFinalizingCampaign(parentCtx context.Context) {
+	// Atomically claim one campaign: find + update status in one query.
+	// This prevents two ECS containers from processing the same campaign.
 	var campaignID, orgID string
 	var configJSON sql.NullString
 
 	err := s.db.QueryRowContext(parentCtx, `
-		SELECT id::text, organization_id::text, pmta_config::text
-		FROM mailing_campaigns
-		WHERE status = 'finalizing_audience'
-		ORDER BY created_at ASC
-		LIMIT 1
+		UPDATE mailing_campaigns
+		SET status = 'preparing', updated_at = NOW()
+		WHERE id = (
+			SELECT id FROM mailing_campaigns
+			WHERE status = 'finalizing_audience'
+			ORDER BY created_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id::text, organization_id::text, pmta_config::text
 	`).Scan(&campaignID, &orgID, &configJSON)
 
 	if err == sql.ErrNoRows {
@@ -87,6 +94,8 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 
+	// Use a dedicated connection with extended timeouts. The pool-level DSN
+	// sets statement_timeout=30s which is too short for audience planning.
 	conn, connErr := s.db.Conn(ctx)
 	if connErr != nil {
 		log.Printf("[AudienceWorker] get connection failed for %s: %v", campaignID, connErr)
@@ -94,11 +103,14 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 	defer func() {
-		conn.ExecContext(context.Background(), "RESET statement_timeout")
+		conn.ExecContext(context.Background(), "RESET ALL")
 		conn.Close()
 	}()
-	if _, err := conn.ExecContext(ctx, "SET statement_timeout = '1200s'"); err != nil {
+	if _, err := conn.ExecContext(ctx, "SET statement_timeout = '1200000'"); err != nil {
 		log.Printf("[AudienceWorker] SET statement_timeout failed: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET idle_in_transaction_session_timeout = '1200000'"); err != nil {
+		log.Printf("[AudienceWorker] SET idle_in_transaction_session_timeout failed: %v", err)
 	}
 
 	var audienceDB dbQuerier = conn
@@ -119,7 +131,9 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	log.Printf("[AudienceWorker] campaign %s audience ready: %d recipients across %d ISPs",
 		campaignID, audience.SelectedTotal, len(audience.CountsByISP))
 
-	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'draft' WHERE id = $1`, campaignID); err != nil {
+	// Campaign is already in 'preparing' (set during claim). Reset to 'draft'
+	// so resolvePMTACampaignIdentity accepts it for wave creation.
+	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'draft' WHERE id = $1 AND status = 'preparing'`, campaignID); err != nil {
 		log.Printf("[AudienceWorker] failed to reset status for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "internal error preparing campaign")
 		return
