@@ -164,11 +164,21 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 		return -1
 	}
 
-	where, args := buildRefreshWhereClause(seg.ListID, conditions)
+	// Separate exclude_list_pattern from other conditions — it gets optimized
+	// via a temp table instead of the correlated NOT EXISTS subquery.
+	var excludePatterns []string
+	var filteredConds []segCondition
+	for _, c := range conditions {
+		if c.Field == "exclude_list_pattern" {
+			excludePatterns = append(excludePatterns, c.Value)
+		} else {
+			filteredConds = append(filteredConds, c)
+		}
+	}
+
+	where, args := buildRefreshWhereClause(seg.ListID, filteredConds)
 	query := fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
 
-	// Use a transaction with extended statement_timeout for complex segment queries
-	// that may involve multiple NOT EXISTS subqueries over large tables.
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("SegmentRefreshWorker: begin tx error for %s: %v", seg.Name, err)
@@ -176,9 +186,29 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '300s'"); err != nil {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '600s'"); err != nil {
 		log.Printf("SegmentRefreshWorker: set timeout error for %s: %v", seg.Name, err)
 		return -1
+	}
+
+	// For exclude_list_pattern conditions, materialize the exclusion emails
+	// into an indexed temp table to avoid the O(N*M) correlated subquery.
+	if len(excludePatterns) > 0 {
+		for i, pattern := range excludePatterns {
+			tbl := fmt.Sprintf("_seg_excl_%d", i)
+			createQ := fmt.Sprintf(`CREATE TEMP TABLE %s ON COMMIT DROP AS
+				SELECT DISTINCT LOWER(s.email) AS email
+				FROM mailing_subscribers s
+				JOIN mailing_lists l ON s.list_id = l.id
+				WHERE l.name ILIKE $1`, tbl)
+			if _, err := tx.ExecContext(ctx, createQ, "%"+pattern+"%"); err != nil {
+				log.Printf("SegmentRefreshWorker: excl temp table error for %s: %v", seg.Name, err)
+				return -1
+			}
+			idxQ := fmt.Sprintf("CREATE INDEX ON %s (email)", tbl)
+			tx.ExecContext(ctx, idxQ)
+			query += fmt.Sprintf(" AND LOWER(email) NOT IN (SELECT email FROM %s)", tbl)
+		}
 	}
 
 	var count int
