@@ -164,21 +164,6 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 		return -1
 	}
 
-	// Separate exclude_list_pattern from other conditions — it gets optimized
-	// via a temp table instead of the correlated NOT EXISTS subquery.
-	var excludePatterns []string
-	var filteredConds []segCondition
-	for _, c := range conditions {
-		if c.Field == "exclude_list_pattern" {
-			excludePatterns = append(excludePatterns, c.Value)
-		} else {
-			filteredConds = append(filteredConds, c)
-		}
-	}
-
-	where, args := buildRefreshWhereClause(seg.ListID, filteredConds)
-	query := fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
-
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("SegmentRefreshWorker: begin tx error for %s: %v", seg.Name, err)
@@ -191,23 +176,60 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 		return -1
 	}
 
-	// For exclude_list_pattern conditions, materialize the exclusion emails
-	// into an indexed temp table to avoid the O(N*M) correlated subquery.
-	if len(excludePatterns) > 0 {
-		for i, pattern := range excludePatterns {
-			tbl := fmt.Sprintf("_seg_excl_%d", i)
-			createQ := fmt.Sprintf(`CREATE TEMP TABLE %s ON COMMIT DROP AS
-				SELECT DISTINCT LOWER(s.email) AS email
-				FROM mailing_subscribers s
-				JOIN mailing_lists l ON s.list_id = l.id
-				WHERE l.name ILIKE $1`, tbl)
-			if _, err := tx.ExecContext(ctx, createQ, "%"+pattern+"%"); err != nil {
-				log.Printf("SegmentRefreshWorker: excl temp table error for %s: %v", seg.Name, err)
-				return -1
-			}
-			idxQ := fmt.Sprintf("CREATE INDEX ON %s (email)", tbl)
-			tx.ExecContext(ctx, idxQ)
-			query += fmt.Sprintf(" AND LOWER(email) NOT IN (SELECT email FROM %s)", tbl)
+	// Classify conditions into categories for optimized query generation.
+	var excludePatterns []string
+	var eventConds []segCondition
+	var subConds []segCondition
+	var domainFilter string
+	for _, c := range conditions {
+		switch {
+		case c.Field == "exclude_list_pattern":
+			excludePatterns = append(excludePatterns, c.Value)
+		case c.Field == "sending_domain":
+			domainFilter = c.Value
+		case eventMap[c.Field] != "":
+			eventConds = append(eventConds, c)
+		case isDomainScopable(c.Field, c.Operator):
+			eventConds = append(eventConds, c)
+		default:
+			subConds = append(subConds, c)
+		}
+	}
+
+	// Materialize seed exclusion emails into an indexed temp table.
+	for i, pattern := range excludePatterns {
+		tbl := fmt.Sprintf("_seg_excl_%d", i)
+		createQ := fmt.Sprintf(`CREATE TEMP TABLE %s ON COMMIT DROP AS
+			SELECT DISTINCT LOWER(s.email) AS email
+			FROM mailing_subscribers s
+			JOIN mailing_lists l ON s.list_id = l.id
+			WHERE l.name ILIKE $1`, tbl)
+		if _, err := tx.ExecContext(ctx, createQ, "%"+pattern+"%"); err != nil {
+			log.Printf("SegmentRefreshWorker: excl temp table error for %s: %v", seg.Name, err)
+			return -1
+		}
+		tx.ExecContext(ctx, fmt.Sprintf("CREATE INDEX ON %s (email)", tbl))
+	}
+
+	// When event-based conditions exist, use a CTE-driven approach:
+	// materialize qualifying subscriber IDs from tracking events first,
+	// then join to mailing_subscribers for the final count.
+	// This avoids scanning 10M+ subscribers with correlated subqueries.
+	var query string
+	var args []interface{}
+
+	if len(eventConds) > 0 {
+		query, args = w.buildCTEQuery(seg, eventConds, subConds, excludePatterns, domainFilter)
+	} else {
+		fallbackConds := subConds
+		if domainFilter != "" {
+			fallbackConds = append(fallbackConds, segCondition{Field: "sending_domain", Value: domainFilter})
+		}
+		where, whereArgs := buildRefreshWhereClause(seg.ListID, fallbackConds)
+		query = fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
+		args = whereArgs
+		for i := range excludePatterns {
+			query += fmt.Sprintf(" AND LOWER(email) NOT IN (SELECT email FROM _seg_excl_%d)", i)
 		}
 	}
 
@@ -218,6 +240,192 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 	}
 	tx.Commit()
 	return count
+}
+
+// buildCTEQuery generates an optimized query using CTEs to materialize
+// qualifying subscriber IDs from tracking events, then joins to subscribers
+// for the final count. This is dramatically faster for event-heavy segments
+// because it avoids scanning the full 10M+ subscriber table.
+func (w *SegmentRefreshWorker) buildCTEQuery(
+	seg segmentRow,
+	eventConds, subConds []segCondition,
+	excludePatterns []string,
+	domainFilter string,
+) (string, []interface{}) {
+	var ctes []string
+	var args []interface{}
+	argNum := 1
+
+	domainClause := func() string {
+		if domainFilter == "" {
+			return ""
+		}
+		s := fmt.Sprintf(" AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)", argNum, argNum)
+		args = append(args, domainFilter)
+		argNum++
+		return s
+	}
+
+	// Build a CTE for each event condition, collecting subscriber IDs.
+	// EXISTS conditions -> _evt_incl_N (must be IN)
+	// NOT EXISTS conditions -> _evt_excl_N (must NOT be IN)
+	var inclCTEs, exclCTEs []string
+
+	for i, c := range eventConds {
+		var evType string
+		if et, ok := eventMap[c.Field]; ok {
+			evType = et
+		} else if c.Field == "last_open_at" {
+			evType = "opened"
+		} else if c.Field == "last_click_at" {
+			evType = "clicked"
+		} else {
+			continue
+		}
+
+		isNegative := c.Operator == "not_in_last_days" || c.Operator == "more_than_days_ago" ||
+			c.Operator == "not_equals" || c.Operator == "is_not"
+
+		cteName := fmt.Sprintf("_evt_%d", i)
+		var timeClause string
+		switch c.Operator {
+		case "in_last_days", "within_last", "not_in_last_days", "more_than_days_ago":
+			timeClause = fmt.Sprintf(" AND e.event_at >= NOW() - INTERVAL '%s days'", c.Value)
+		}
+
+		args = append(args, evType)
+		dc := domainClause()
+		cte := fmt.Sprintf("%s AS (SELECT DISTINCT e.subscriber_id FROM mailing_tracking_events e WHERE e.event_type = $%d%s%s)",
+			cteName, argNum-1, timeClause, dc)
+		// Fix: domainClause already incremented argNum, but evType didn't
+		// Adjust: evType arg was added before domainClause call
+		// Actually let me redo this more carefully
+		ctes = append(ctes, cte)
+
+		if isNegative {
+			exclCTEs = append(exclCTEs, cteName)
+		} else {
+			inclCTEs = append(inclCTEs, cteName)
+		}
+	}
+
+	// Rebuild with correct arg numbering
+	ctes = nil
+	inclCTEs = nil
+	exclCTEs = nil
+	args = nil
+	argNum = 1
+
+	for i, c := range eventConds {
+		var evType string
+		if et, ok := eventMap[c.Field]; ok {
+			evType = et
+		} else if c.Field == "last_open_at" {
+			evType = "opened"
+		} else if c.Field == "last_click_at" {
+			evType = "clicked"
+		} else {
+			continue
+		}
+
+		isNegative := c.Operator == "not_in_last_days" || c.Operator == "more_than_days_ago" ||
+			c.Operator == "not_equals" || c.Operator == "is_not"
+
+		cteName := fmt.Sprintf("_evt_%d", i)
+		var timeClause string
+		switch c.Operator {
+		case "in_last_days", "within_last", "not_in_last_days", "more_than_days_ago":
+			timeClause = fmt.Sprintf(" AND e.event_at >= NOW() - INTERVAL '%s days'", c.Value)
+		}
+
+		evArg := argNum
+		args = append(args, evType)
+		argNum++
+
+		var dc string
+		if domainFilter != "" {
+			dc = fmt.Sprintf(" AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)", argNum, argNum)
+			args = append(args, domainFilter)
+			argNum++
+		}
+
+		cte := fmt.Sprintf("%s AS (SELECT DISTINCT e.subscriber_id FROM mailing_tracking_events e WHERE e.event_type = $%d%s%s)",
+			cteName, evArg, timeClause, dc)
+		ctes = append(ctes, cte)
+
+		if isNegative {
+			exclCTEs = append(exclCTEs, cteName)
+		} else {
+			inclCTEs = append(inclCTEs, cteName)
+		}
+	}
+
+	// Build the final query. If we have inclusion CTEs, join through them
+	// to narrow the subscriber scan. Then apply exclusion and subscriber-level filters.
+	var sb strings.Builder
+	sb.WriteString("WITH ")
+	sb.WriteString(strings.Join(ctes, ", "))
+
+	// Start from the first inclusion CTE if available (narrows from 10M to ~100K)
+	if len(inclCTEs) > 0 {
+		sb.WriteString(fmt.Sprintf(
+			" SELECT COUNT(DISTINCT LOWER(s.email)) FROM mailing_subscribers s JOIN %s ON %s.subscriber_id = s.id WHERE s.status IN ('active','confirmed')",
+			inclCTEs[0], inclCTEs[0]))
+		// Additional inclusion CTEs
+		for _, ct := range inclCTEs[1:] {
+			sb.WriteString(fmt.Sprintf(" AND s.id IN (SELECT subscriber_id FROM %s)", ct))
+		}
+	} else {
+		sb.WriteString(" SELECT COUNT(DISTINCT LOWER(s.email)) FROM mailing_subscribers s WHERE s.status IN ('active','confirmed')")
+	}
+
+	if seg.ListID != nil {
+		sb.WriteString(fmt.Sprintf(" AND s.list_id = $%d", argNum))
+		args = append(args, *seg.ListID)
+		argNum++
+	}
+
+	// Exclusion CTEs
+	for _, ct := range exclCTEs {
+		sb.WriteString(fmt.Sprintf(" AND s.id NOT IN (SELECT subscriber_id FROM %s)", ct))
+	}
+
+	// Subscriber-level conditions (ISP, email patterns, etc.)
+	for _, c := range subConds {
+		col := mapCol(c.Field)
+		if col == "" {
+			continue
+		}
+		switch c.Operator {
+		case "equals", "is":
+			sb.WriteString(fmt.Sprintf(" AND s.%s = $%d", col, argNum))
+			args = append(args, c.Value)
+			argNum++
+		case "not_equals", "is_not":
+			sb.WriteString(fmt.Sprintf(" AND s.%s != $%d", col, argNum))
+			args = append(args, c.Value)
+			argNum++
+		case "contains":
+			sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
+			args = append(args, "%"+c.Value+"%")
+			argNum++
+		case "ends_with":
+			sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
+			args = append(args, "%"+c.Value)
+			argNum++
+		case "starts_with":
+			sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
+			args = append(args, c.Value+"%")
+			argNum++
+		}
+	}
+
+	// Seed exclusion via temp tables
+	for i := range excludePatterns {
+		sb.WriteString(fmt.Sprintf(" AND LOWER(s.email) NOT IN (SELECT email FROM _seg_excl_%d)", i))
+	}
+
+	return sb.String(), args
 }
 
 type segCondition struct {
