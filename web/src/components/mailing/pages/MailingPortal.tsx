@@ -1249,7 +1249,7 @@ const PreparationBanner: React.FC<{
         }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 12 }} />
-            <strong>Preparing:</strong> {c.name}
+            <strong>Finalizing Audience:</strong> {c.name}
           </span>
           <span style={{ color: 'rgba(251,191,36,0.6)', fontSize: 12 }}>{elapsed(c.acceptedAt)}</span>
         </div>
@@ -1315,7 +1315,7 @@ const CampaignCenterSection: React.FC<{
           });
           if (!res.ok) continue;
           const data = await res.json();
-          if (data.status && data.status !== 'preparing') {
+          if (data.status && data.status !== 'preparing' && data.status !== 'finalizing_audience') {
             setPreparingCampaigns(prev => prev.filter(p => p.id !== c.id));
             setTransitions(prev => [...prev, { id: c.id, name: c.name, status: data.status }]);
             if (data.status !== 'failed') {

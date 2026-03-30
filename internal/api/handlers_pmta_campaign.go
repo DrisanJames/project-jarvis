@@ -843,22 +843,18 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	}
 
 	// Respond immediately — campaign is accepted.
+	// The AudienceFinalizationWorker will pick it up and process it.
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{
 		"campaign_id":   campaignID,
 		"name":          input.Name,
-		"status":        "preparing",
+		"status":        "finalizing_audience",
 		"target_isps":   input.TargetISPs,
 		"variant_count": len(input.Variants),
 	})
-
-	// ── Phase 2: background processing (audience + persistence) ─────────
-	if !s.skipBackgroundDeploy {
-		go s.finalizeDeploy(campaignID, orgID, input, normalized)
-	}
 }
 
 // reserveCampaignForDeploy resolves campaign identity and marks it as
-// 'preparing' with the pmta_config blob persisted. Returns the campaign UUID.
+// 'finalizing_audience' with the pmta_config blob persisted. Returns the campaign UUID.
 func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -876,7 +872,7 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 	})
 
 	if reusingDraft {
-		setClauses := "name = $2, status = 'preparing', updated_at = NOW()"
+		setClauses := "name = $2, status = 'finalizing_audience', updated_at = NOW()"
 		args := []any{campaignID, input.Name}
 		nextP := 3
 		if s.colCache.has("pmta_config") {
@@ -899,7 +895,7 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 			"scheduled_at", "from_name", "from_email", "subject",
 			"preview_text", "html_content", "plain_content",
 			"created_at", "updated_at"}
-		valList := []string{"$1", "$2", "$3", "'preparing'",
+		valList := []string{"$1", "$2", "$3", "'finalizing_audience'",
 			"$4", "$5", "$6", "$7",
 			"$8", "$9", "$10",
 			"NOW()", "NOW()"}

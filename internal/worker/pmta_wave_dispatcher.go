@@ -159,7 +159,28 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 	}
 
 	queuedCount := 0
+	skippedCount := 0
 	for _, rec := range candidates {
+		// Phase D: last-second compliance guard — skip if subscriber is no longer active
+		// or email is globally suppressed. This protects against unsubs/bounces that
+		// occurred between audience snapshot and wave enqueue.
+		var subStatus string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(status, 'active') FROM mailing_subscribers WHERE id = $1`,
+			rec.subscriberID,
+		).Scan(&subStatus); err == nil && subStatus != "active" && subStatus != "confirmed" {
+			skippedCount++
+			continue
+		}
+		var suppExists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = md5($1))`,
+			strings.ToLower(rec.email),
+		).Scan(&suppExists); err == nil && suppExists {
+			skippedCount++
+			continue
+		}
+
 		seed := computeMutationSeed(rec.subscriberID, waveID)
 		recipientHTML := mutateHTMLHash(baseHTML, seed)
 		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
@@ -196,6 +217,10 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 			return 0, err
 		}
 		queuedCount++
+	}
+
+	if skippedCount > 0 {
+		log.Printf("[WaveEnqueue] wave %s: skipped %d recipients (Phase D compliance)", waveID, skippedCount)
 	}
 
 	if _, err := tx.ExecContext(ctx, `

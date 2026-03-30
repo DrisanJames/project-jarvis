@@ -147,46 +147,12 @@ func TestHandleBlogCampaign_HappyPath(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	// Audience planning: global suppression MD5 load
-	mock.ExpectQuery(`SELECT md5_hash FROM mailing_global_suppressions`).
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
-
-	// Audience planning: resolve exclusion list "global-suppression-list"
-	mock.ExpectQuery(`SELECT id FROM mailing_suppression_lists`).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}))
-
-	// Audience planning: subscriber queries for each of 3 seed lists
-	subCols := []string{"id", "email"}
-	for i := 0; i < 3; i++ {
-		mock.ExpectQuery(`SELECT s\.id`).
-			WillReturnRows(sqlmock.NewRows(subCols))
-	}
-
-	// Audience planning: segment resolution (2 segments queried individually)
-	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`SELECT list_id`).
-			WillReturnRows(sqlmock.NewRows([]string{"list_id", "conditions"}))
-	}
-
-	// Campaign creation transaction
+	// Reservation phase: resolve identity (no draft) -> INSERT finalizing_audience -> COMMIT
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id\s+FROM mailing_campaigns`).
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT id, from_email, from_name, reply_email`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
 	mock.ExpectExec(`INSERT INTO mailing_campaigns`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO mailing_ab_tests`).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO mailing_ab_variants`).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	// 8 ISPs = 8 plan + 8 time span inserts
-	for i := 0; i < 8; i++ {
-		mock.ExpectExec(`INSERT INTO mailing_campaign_isp_plans`).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(`INSERT INTO mailing_campaign_isp_time_spans`).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-	}
 	mock.ExpectCommit()
 
 	scheduled := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
@@ -204,14 +170,14 @@ func TestHandleBlogCampaign_HappyPath(t *testing.T) {
 
 	service.HandleBlogCampaign(rr, req)
 
-	require.Equal(t, http.StatusCreated, rr.Code, "body: %s", rr.Body.String())
+	require.Equal(t, http.StatusAccepted, rr.Code, "body: %s", rr.Body.String())
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.NotEmpty(t, resp["campaign_id"])
-	assert.Contains(t, resp["name"], "Discount Blog")
-	assert.Contains(t, resp["name"], "Engaged Audience")
-	assert.Equal(t, true, resp["legacy_input"])
+	assert.Contains(t, resp["name"].(string), "Discount Blog")
+	assert.Contains(t, resp["name"].(string), "Engaged Audience")
+	assert.Equal(t, "finalizing_audience", resp["status"])
 }
 
 func TestHandleBlogCampaign_UnknownDomain(t *testing.T) {

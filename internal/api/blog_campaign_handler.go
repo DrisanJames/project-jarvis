@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -152,6 +151,8 @@ func buildBlogCampaignInput(input BlogCampaignInput) (engine.PMTACampaignInput, 
 
 // HandleBlogCampaign accepts a minimal JSON payload from blog sites and creates
 // a fully configured engaged-audience campaign using per-brand defaults.
+// The campaign is created in 'finalizing_audience' status and processed by
+// the AudienceFinalizationWorker in the background.
 func (s *PMTACampaignService) HandleBlogCampaign(w http.ResponseWriter, r *http.Request) {
 	var input BlogCampaignInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -167,9 +168,7 @@ func (s *PMTACampaignService) HandleBlogCampaign(w http.ResponseWriter, r *http.
 
 	log.Printf("[blog-campaign] creating campaign %q for domain %s", campaignInput.Name, campaignInput.SendingDomain)
 
-	deployCtx, deployCancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer deployCancel()
-	ctx := deployCtx
+	ctx := r.Context()
 	orgID := getOrgID(r)
 
 	preflight := s.runPreflight(ctx, orgID, campaignInput.SendingDomain)
@@ -190,60 +189,19 @@ func (s *PMTACampaignService) HandleBlogCampaign(w http.ResponseWriter, r *http.
 		return
 	}
 
-	var audienceDB dbQuerier = s.db
-	conn, connErr := s.db.Conn(ctx)
-	if connErr == nil {
-		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '300s'"); err == nil {
-			audienceDB = conn
-		}
-		defer func() {
-			conn.ExecContext(context.Background(), "RESET statement_timeout")
-			conn.Close()
-		}()
-	}
-
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, campaignInput, normalized, s.suppMatcher, s.offerSuppMgr)
+	campaignID, err := s.reserveCampaignForDeploy(ctx, orgID, campaignInput, normalized)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	defer tx.Rollback()
+	log.Printf("[blog-campaign] queued %q campaign_id=%s for audience finalization", campaignInput.Name, campaignID)
 
-	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, campaignInput, normalized, audience, s.colCache)
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	log.Printf("[blog-campaign] deployed %q campaign_id=%s audience=%d", campaignInput.Name, result.CampaignID, result.TotalAudience)
-
-	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"campaign_id":       result.CampaignID,
-		"name":              result.Name,
-		"status":            result.Status,
-		"send_mode":         result.SendMode,
-		"sends_at":          result.SendsAt,
-		"target_isps":       result.TargetISPs,
-		"total_audience":    result.TotalAudience,
-		"variant_count":     result.VariantCount,
-		"isp_plans":         result.ISPPlans,
-		"initial_waves":     result.InitialWaves,
-		"assumptions":       result.Assumptions,
-		"legacy_input":      result.LegacyInput,
-		"queued_count":      0,
-		"after_suppression": audience.AfterSuppression,
-		"suppressed":        audience.TotalSeen - audience.AfterSuppression,
-		"per_isp_selected":  audience.CountsByISP,
+	respondJSON(w, http.StatusAccepted, map[string]interface{}{
+		"campaign_id":   campaignID,
+		"name":          campaignInput.Name,
+		"status":        "finalizing_audience",
+		"target_isps":   campaignInput.TargetISPs,
+		"variant_count": len(campaignInput.Variants),
 	})
 }

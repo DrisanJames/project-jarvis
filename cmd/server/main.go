@@ -3139,6 +3139,17 @@ BEGIN
     WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta'
       AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
 END $$`},
+
+		// ── Segment pre-materialization table (audience architecture refactor) ──
+		{"create_segment_members", `CREATE TABLE IF NOT EXISTS mailing_segment_members (
+			segment_id UUID NOT NULL,
+			subscriber_id UUID NOT NULL,
+			email TEXT NOT NULL,
+			materialized_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (segment_id, subscriber_id)
+		)`},
+		{"idx_segment_members_lookup", `CREATE INDEX IF NOT EXISTS idx_segment_members_lookup ON mailing_segment_members(segment_id, email)`},
+		{"idx_tracking_events_segment", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment ON mailing_tracking_events (subscriber_id, event_type, sending_domain, event_at)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

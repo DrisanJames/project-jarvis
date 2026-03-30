@@ -1361,9 +1361,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
       } else if (res.status === 202) {
-        // Async deploy accepted — campaign is preparing in the background
+        // Async deploy accepted — campaign audience is being finalized in the background
         setCampaignId(data.campaign_id || campaignId);
-        setDeployResult({ ...data, status: 'preparing' });
+        setDeployResult({ ...data, status: data.status || 'finalizing_audience' });
         campaignComplete(campaignName || 'Campaign');
         setShowCompleteModal(true);
         if (onCampaignPreparing && data.campaign_id) {

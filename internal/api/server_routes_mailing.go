@@ -762,6 +762,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
 
+			// === AUDIENCE ARCHITECTURE: Background workers ===
+			workerCtx := context.Background()
+			segMaterializer := NewSegmentMaterializer(db, 2*time.Hour)
+			segMaterializer.Start(workerCtx)
+			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
+
 			// === BLOG CAMPAIGN INGEST (minimal JSON → full engaged campaign) ===
 			r.Post("/blog-campaign", pmtaCampaignAPI.HandleBlogCampaign)
 

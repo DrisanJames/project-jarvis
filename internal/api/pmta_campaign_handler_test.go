@@ -54,7 +54,7 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 		Timezone:    "UTC",
 	}
 
-	// Reservation phase: resolve identity (no draft) -> INSERT preparing -> COMMIT
+	// Reservation phase: resolve identity (no draft) -> INSERT finalizing_audience -> COMMIT
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnError(sql.ErrNoRows)
@@ -78,8 +78,8 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response json: %v", err)
 	}
-	if payload["status"] != "preparing" {
-		t.Fatalf("expected status=preparing, got %#v", payload["status"])
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected status=finalizing_audience, got %#v", payload["status"])
 	}
 	if payload["name"] != "Async Deploy" {
 		t.Fatalf("expected name='Async Deploy', got %#v", payload["name"])
@@ -187,7 +187,7 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 		Timezone:    "UTC",
 	}
 
-	// Reservation phase: resolve identity (found draft) -> UPDATE preparing -> COMMIT
+	// Reservation phase: resolve identity (found draft) -> UPDATE finalizing_audience -> COMMIT
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(draftID))
@@ -214,8 +214,8 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 	if payload["campaign_id"] != draftID {
 		t.Fatalf("expected campaign_id %s, got %#v", draftID, payload["campaign_id"])
 	}
-	if payload["status"] != "preparing" {
-		t.Fatalf("expected status=preparing, got %#v", payload["status"])
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected status=finalizing_audience, got %#v", payload["status"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -277,8 +277,8 @@ func TestHandleDeployCampaign_ReusesScheduledCampaignID(t *testing.T) {
 	if payload["campaign_id"] != existingID {
 		t.Fatalf("expected campaign_id %s, got %#v", existingID, payload["campaign_id"])
 	}
-	if payload["status"] != "preparing" {
-		t.Fatalf("expected status=preparing, got %#v", payload["status"])
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected status=finalizing_audience, got %#v", payload["status"])
 	}
 	if targets, ok := payload["target_isps"].([]any); !ok || len(targets) != 2 {
 		t.Fatalf("expected 2 target_isps, got %#v", payload["target_isps"])
