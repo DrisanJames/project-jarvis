@@ -72,8 +72,6 @@ type segmentRow struct {
 	ListID         *uuid.UUID
 	Name           string
 	ConditionsJSON sql.NullString
-	IsSystem       bool
-	SystemQuery    string
 	OrgID          string
 	OldCount       int
 }
@@ -84,8 +82,6 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT s.id, s.list_id, s.name,
 		       COALESCE(s.conditions::text, '[]'),
-		       COALESCE(s.is_system, false),
-		       COALESCE(s.system_query, ''),
 		       s.organization_id::text,
 		       COALESCE(s.subscriber_count, 0)
 		FROM mailing_segments s
@@ -103,7 +99,7 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	var segments []segmentRow
 	for rows.Next() {
 		var s segmentRow
-		if err := rows.Scan(&s.ID, &s.ListID, &s.Name, &s.ConditionsJSON, &s.IsSystem, &s.SystemQuery, &s.OrgID, &s.OldCount); err != nil {
+		if err := rows.Scan(&s.ID, &s.ListID, &s.Name, &s.ConditionsJSON, &s.OrgID, &s.OldCount); err != nil {
 			log.Printf("SegmentRefreshWorker: scan error: %v", err)
 			continue
 		}
@@ -140,16 +136,6 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 
 // recalculate returns the new subscriber count, or -1 on failure.
 func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) int {
-	// System segments with a pre-built SQL query
-	if seg.IsSystem && seg.SystemQuery != "" {
-		var count int
-		if err := w.db.QueryRowContext(ctx, seg.SystemQuery, seg.OrgID).Scan(&count); err != nil {
-			log.Printf("SegmentRefreshWorker: system query error for %s: %v", seg.Name, err)
-			return -1
-		}
-		return count
-	}
-
 	var conditions []segCondition
 	if seg.ConditionsJSON.Valid && seg.ConditionsJSON.String != "" && seg.ConditionsJSON.String != "[]" {
 		json.Unmarshal([]byte(seg.ConditionsJSON.String), &conditions)
