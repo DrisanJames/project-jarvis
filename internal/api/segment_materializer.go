@@ -143,8 +143,9 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 
 	insertSQL := fmt.Sprintf(
 		`INSERT INTO mailing_segment_members (segment_id, subscriber_id, email, materialized_at)
-		 SELECT '%s'::uuid, q.id::uuid, q.email, NOW()
-		 FROM (%s) q`, segmentID, segQuery)
+		 SELECT DISTINCT '%s'::uuid, q.id::uuid, q.email, NOW()
+		 FROM (%s) q
+		 ON CONFLICT (segment_id, subscriber_id) DO NOTHING`, segmentID, segQuery)
 
 	result, err := tx.ExecContext(segCtx, insertSQL, segArgs...)
 	if err != nil {
