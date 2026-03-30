@@ -167,11 +167,26 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow) 
 	where, args := buildRefreshWhereClause(seg.ListID, conditions)
 	query := fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
 
+	// Use a transaction with extended statement_timeout for complex segment queries
+	// that may involve multiple NOT EXISTS subqueries over large tables.
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("SegmentRefreshWorker: begin tx error for %s: %v", seg.Name, err)
+		return -1
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '300s'"); err != nil {
+		log.Printf("SegmentRefreshWorker: set timeout error for %s: %v", seg.Name, err)
+		return -1
+	}
+
 	var count int
-	if err := w.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		log.Printf("SegmentRefreshWorker: count error for %s: %v (q=%s)", seg.Name, err, query)
 		return -1
 	}
+	tx.Commit()
 	return count
 }
 
