@@ -134,7 +134,12 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	// Campaign stays in 'preparing' — resolvePMTACampaignIdentity already
 	// accepts this status, so no reset needed. Avoids a race window where
 	// the UI could show the campaign as an editable 'draft'.
-	tx, err := s.db.BeginTx(ctx, nil)
+	//
+	// Use conn.BeginTx (not s.db.BeginTx) so the transaction inherits the
+	// extended statement_timeout from the dedicated connection. s.db.BeginTx
+	// would grab a different pooled connection with the default 30s timeout,
+	// causing clearPMTACampaignChildren DELETEs to time out on large tables.
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("[AudienceWorker] begin tx failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "internal error: "+err.Error())

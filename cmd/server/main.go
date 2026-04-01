@@ -3821,6 +3821,9 @@ END $$`},
 			  AND pool.status = 'active'
 			  AND ip.status NOT IN ('active', 'paused', 'cold')
 			  AND ip.ip_address != '15.204.22.176'::inet`},
+
+		{"idx_plan_recipients_campaign", `CREATE INDEX IF NOT EXISTS idx_campaign_plan_recipients_campaign ON mailing_campaign_plan_recipients(campaign_id)`},
+		{"idx_isp_time_spans_campaign", `CREATE INDEX IF NOT EXISTS idx_campaign_isp_time_spans_campaign ON mailing_campaign_isp_time_spans(campaign_id)`},
 	}
 
 	var ok, fail int
