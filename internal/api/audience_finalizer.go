@@ -131,21 +131,18 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	log.Printf("[AudienceWorker] campaign %s audience ready: %d recipients across %d ISPs",
 		campaignID, audience.SelectedTotal, len(audience.CountsByISP))
 
-	// Campaign stays in 'preparing' — resolvePMTACampaignIdentity already
-	// accepts this status, so no reset needed. Avoids a race window where
-	// the UI could show the campaign as an editable 'draft'.
-	//
-	// Use conn.BeginTx (not s.db.BeginTx) so the transaction inherits the
-	// extended statement_timeout from the dedicated connection. s.db.BeginTx
-	// would grab a different pooled connection with the default 30s timeout,
-	// causing clearPMTACampaignChildren DELETEs to time out on large tables.
-	tx, err := conn.BeginTx(ctx, nil)
+	// Use a fresh pooled connection for the transaction (conn may be stale
+	// after the long audience planning phase). SET LOCAL raises the timeout
+	// only for this transaction — the pooled connection reverts on commit.
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("[AudienceWorker] begin tx failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "internal error: "+err.Error())
 		return
 	}
 	defer tx.Rollback()
+	tx.ExecContext(ctx, "SET LOCAL statement_timeout = '1200000'")
+	tx.ExecContext(ctx, "SET LOCAL idle_in_transaction_session_timeout = '1200000'")
 
 	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience, s.colCache)
 	if err != nil {
