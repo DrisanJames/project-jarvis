@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // SegmentRefreshWorker periodically recalculates subscriber_count for all
@@ -110,13 +111,16 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		return
 	}
 
-	// Pre-compute seed exclusion emails once for the entire refresh cycle.
-	// This avoids recreating the same temp table for each of the ~127 segments.
-	seedExclReady := w.prepareSeedExclusion(ctx)
+	// Pre-load seed list IDs once for the entire refresh cycle.
+	// We pass these IDs into each segment query as a subquery parameter
+	// rather than using temp tables (which are connection-scoped and break
+	// with Go's connection pool).
+	seedListIDs := w.loadSeedListIDs(ctx)
+	log.Printf("SegmentRefreshWorker: found %d seed lists for exclusion", len(seedListIDs))
 
 	updated := 0
 	for _, seg := range segments {
-		newCount := w.recalculate(ctx, seg, seedExclReady)
+		newCount := w.recalculate(ctx, seg, seedListIDs)
 		if newCount < 0 {
 			continue
 		}
@@ -135,69 +139,29 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		updated++
 	}
 
-	// Clean up the session-level temp table.
-	if seedExclReady {
-		w.db.ExecContext(ctx, "DROP TABLE IF EXISTS _seed_excl_global")
-	}
-
 	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments in %s", updated, len(segments), time.Since(start).Round(time.Millisecond))
 }
 
-// prepareSeedExclusion creates a session-level temp table with all seed
-// subscriber emails. Returns true if created successfully. The table persists
-// for the session (not ON COMMIT DROP) so all segments can reuse it.
-func (w *SegmentRefreshWorker) prepareSeedExclusion(ctx context.Context) bool {
-	w.db.ExecContext(ctx, "DROP TABLE IF EXISTS _seed_excl_global")
-
-	// Use a transaction to set an extended timeout for the seed join query,
-	// which touches the 10M+ subscriber table.
-	tx, err := w.db.BeginTx(ctx, nil)
-	if err != nil {
-		log.Printf("SegmentRefreshWorker: seed exclusion begin tx error: %v", err)
-		return false
-	}
-	defer tx.Rollback()
-
-	tx.ExecContext(ctx, "SET LOCAL statement_timeout = '300s'")
-
-	// Build the seed exclusion set incrementally: first find seed list IDs,
-	// then query subscribers per-list. This avoids the expensive cross-join.
-	_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE _seed_excl_global (email text) ON COMMIT PRESERVE ROWS`)
-	if err != nil {
-		log.Printf("SegmentRefreshWorker: seed exclusion create error: %v", err)
-		return false
-	}
-
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM mailing_lists WHERE name ILIKE '%seed%'`)
+// loadSeedListIDs returns the UUIDs of all lists whose name contains "seed".
+func (w *SegmentRefreshWorker) loadSeedListIDs(ctx context.Context) []uuid.UUID {
+	rows, err := w.db.QueryContext(ctx, `SELECT id FROM mailing_lists WHERE name ILIKE '%seed%'`)
 	if err != nil {
 		log.Printf("SegmentRefreshWorker: seed list query error: %v", err)
-		return false
+		return nil
 	}
-	var seedListIDs []uuid.UUID
+	defer rows.Close()
+	var ids []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		if rows.Scan(&id) == nil {
-			seedListIDs = append(seedListIDs, id)
+			ids = append(ids, id)
 		}
 	}
-	rows.Close()
-
-	for _, lid := range seedListIDs {
-		tx.ExecContext(ctx, `INSERT INTO _seed_excl_global SELECT DISTINCT LOWER(email) FROM mailing_subscribers WHERE list_id = $1`, lid)
-	}
-
-	tx.ExecContext(ctx, `CREATE INDEX ON _seed_excl_global (email)`)
-
-	if err := tx.Commit(); err != nil {
-		log.Printf("SegmentRefreshWorker: seed exclusion commit error: %v", err)
-		return false
-	}
-	log.Printf("SegmentRefreshWorker: seed exclusion table created (%d lists)", len(seedListIDs))
-	return true
+	return ids
 }
 
 // recalculate returns the new subscriber count, or -1 on failure.
-func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, seedExclReady bool) int {
+func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, seedListIDs []uuid.UUID) int {
 	var conditions []segCondition
 	if seg.ConditionsJSON.Valid && seg.ConditionsJSON.String != "" && seg.ConditionsJSON.String != "[]" {
 		json.Unmarshal([]byte(seg.ConditionsJSON.String), &conditions)
@@ -258,20 +222,24 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 		}
 	}
 
-	// Use the pre-computed global seed exclusion table when available.
-	// Only fall back to per-segment temp tables for non-"seed" patterns.
-	hasGlobalSeedExcl := false
+	// Check whether any exclude pattern is a seed exclusion.
+	hasSeedExcl := false
 	for _, pattern := range excludePatterns {
-		if strings.Contains(strings.ToLower(pattern), "seed") && seedExclReady {
-			hasGlobalSeedExcl = true
+		if strings.Contains(strings.ToLower(pattern), "seed") && len(seedListIDs) > 0 {
+			hasSeedExcl = true
 		}
 	}
 
 	var query string
 	var args []interface{}
 
+	var seedIDs []uuid.UUID
+	if hasSeedExcl {
+		seedIDs = seedListIDs
+	}
+
 	if len(eventConds) > 0 {
-		query, args = w.buildCTEQuery(seg, eventConds, subConds, hasGlobalSeedExcl, domainFilter)
+		query, args = w.buildCTEQuery(seg, eventConds, subConds, seedIDs, domainFilter)
 	} else {
 		fallbackConds := subConds
 		if domainFilter != "" {
@@ -280,8 +248,10 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 		where, whereArgs := buildRefreshWhereClause(seg.ListID, fallbackConds)
 		query = fmt.Sprintf("SELECT COUNT(DISTINCT LOWER(email)) FROM mailing_subscribers WHERE %s", where)
 		args = whereArgs
-		if hasGlobalSeedExcl {
-			query += " AND LOWER(email) NOT IN (SELECT email FROM _seed_excl_global)"
+		if len(seedIDs) > 0 {
+			argNum := len(args) + 1
+			query += fmt.Sprintf(" AND LOWER(email) NOT IN (SELECT LOWER(email) FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum)
+			args = append(args, pq.Array(seedIDs))
 		}
 	}
 
@@ -301,72 +271,13 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 func (w *SegmentRefreshWorker) buildCTEQuery(
 	seg segmentRow,
 	eventConds, subConds []segCondition,
-	hasGlobalSeedExcl bool,
+	seedIDs []uuid.UUID,
 	domainFilter string,
 ) (string, []interface{}) {
 	var ctes []string
 	var args []interface{}
 	argNum := 1
-
-	domainClause := func() string {
-		if domainFilter == "" {
-			return ""
-		}
-		s := fmt.Sprintf(" AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)", argNum, argNum)
-		args = append(args, domainFilter)
-		argNum++
-		return s
-	}
-
-	// Build a CTE for each event condition, collecting subscriber IDs.
-	// EXISTS conditions -> _evt_incl_N (must be IN)
-	// NOT EXISTS conditions -> _evt_excl_N (must NOT be IN)
 	var inclCTEs, exclCTEs []string
-
-	for i, c := range eventConds {
-		var evType string
-		if et, ok := eventMap[c.Field]; ok {
-			evType = et
-		} else if c.Field == "last_open_at" {
-			evType = "opened"
-		} else if c.Field == "last_click_at" {
-			evType = "clicked"
-		} else {
-			continue
-		}
-
-		isNegative := c.Operator == "not_in_last_days" || c.Operator == "more_than_days_ago" ||
-			c.Operator == "not_equals" || c.Operator == "is_not"
-
-		cteName := fmt.Sprintf("_evt_%d", i)
-		var timeClause string
-		switch c.Operator {
-		case "in_last_days", "within_last", "not_in_last_days", "more_than_days_ago":
-			timeClause = fmt.Sprintf(" AND e.event_at >= NOW() - INTERVAL '%s days'", c.Value)
-		}
-
-		args = append(args, evType)
-		dc := domainClause()
-		cte := fmt.Sprintf("%s AS (SELECT DISTINCT e.subscriber_id FROM mailing_tracking_events e WHERE e.event_type = $%d%s%s)",
-			cteName, argNum-1, timeClause, dc)
-		// Fix: domainClause already incremented argNum, but evType didn't
-		// Adjust: evType arg was added before domainClause call
-		// Actually let me redo this more carefully
-		ctes = append(ctes, cte)
-
-		if isNegative {
-			exclCTEs = append(exclCTEs, cteName)
-		} else {
-			inclCTEs = append(inclCTEs, cteName)
-		}
-	}
-
-	// Rebuild with correct arg numbering
-	ctes = nil
-	inclCTEs = nil
-	exclCTEs = nil
-	args = nil
-	argNum = 1
 
 	for i, c := range eventConds {
 		var evType string
@@ -472,8 +383,10 @@ func (w *SegmentRefreshWorker) buildCTEQuery(
 		}
 	}
 
-	if hasGlobalSeedExcl {
-		sb.WriteString(" AND LOWER(s.email) NOT IN (SELECT email FROM _seed_excl_global)")
+	if len(seedIDs) > 0 {
+		sb.WriteString(fmt.Sprintf(" AND LOWER(s.email) NOT IN (SELECT LOWER(email) FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum))
+		args = append(args, pq.Array(seedIDs))
+		argNum++
 	}
 
 	return sb.String(), args
