@@ -300,7 +300,11 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Anthropic returned %d: %s", resp.StatusCode, string(body))
+		keySuffix := apiKey
+		if len(keySuffix) > 4 {
+			keySuffix = keySuffix[len(keySuffix)-4:]
+		}
+		return nil, fmt.Errorf("Anthropic returned %d (key …%s): %s", resp.StatusCode, keySuffix, string(body))
 	}
 
 	var aiResp struct {
