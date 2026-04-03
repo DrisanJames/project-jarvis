@@ -432,10 +432,11 @@ func main() {
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
 				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
-				// Concurrency=4 processes 4 segments in parallel, cutting refresh time by ~75%.
-				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(mailingDB, 30*time.Minute, 4)
+				// Concurrency=2 processes 2 segments in parallel. Higher values (4+) cause
+				// statement timeouts on the heavy "Sent XD No Open" segments due to DB contention.
+				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(mailingDB, 30*time.Minute, 2)
 				segRefresh.Start(ctx)
-				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=4)")
+				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
 
 				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
 				ghostVisitorWorker.Start(ctx)
