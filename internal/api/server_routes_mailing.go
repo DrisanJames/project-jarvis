@@ -137,7 +137,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 		})
 
-		s.apiRouter.Route("/mailing", func(r chi.Router) {
+		r := chi.NewRouter()
+		s.apiRouter.Mount("/mailing", r)
+		func(r chi.Router) {
 			// Site pixel management and real-time traffic
 			r.Get("/site-pixel/snippet", siteEventsHandler.HandleGetPixelSnippet)
 			r.Get("/site-pixel/traffic", siteEventsHandler.HandleGetSiteTraffic)
@@ -596,7 +598,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			suppressionRepo := &engine.DBSuppressionRepo{DB: db}
 			suppressionStore := engine.NewSuppressionStore(suppressionRepo, engineOrgID, suppressionDir)
-			_ = suppressionStore.LoadFromDB(context.Background())
+			suppLoadCtx, suppLoadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = suppressionStore.LoadFromDB(suppLoadCtx)
+			suppLoadCancel()
 
 			var engineMemory *engine.MemoryStore
 			if s.s3Client != nil {
@@ -814,7 +818,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === GLOBAL SUPPRESSION HUB — Single Source of Truth ===
 			globalHub := engine.NewGlobalSuppressionHub(db, engineOrgID, suppressionDir)
-			_ = globalHub.LoadFromDB(context.Background())
+			loadCtx, loadCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := globalHub.LoadFromDB(loadCtx); err != nil {
+				log.Printf("[global-suppression] LoadFromDB error (will rely on real-time feed): %v", err)
+			}
+			loadCancel()
 			globalHub.SetExecutor(executor, "/etc/pmta/suppressions")
 			globalHub.StartFileSync(context.Background())
 
@@ -927,6 +935,6 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
 				r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
 			}
-		})
+		}(r)
 	}
 }

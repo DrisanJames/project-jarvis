@@ -3187,6 +3187,9 @@ END $$`},
 			error_message TEXT
 		)`},
 		{"idx_suppression_list_runs_brand", `CREATE INDEX IF NOT EXISTS idx_suppression_list_runs_brand ON suppression_list_runs(brand, started_at DESC)`},
+
+		// One-off: requeue two failed campaigns for audience finalization after pipeline hardening.
+		{"requeue_failed_campaigns_apr03", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status = 'draft'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
