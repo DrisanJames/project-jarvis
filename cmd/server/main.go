@@ -273,8 +273,8 @@ func main() {
 			log.Println("Redis not configured (REDIS_URL not set) — using PG advisory locks for distributed locking")
 		}
 
-		mailingDB.SetMaxOpenConns(25)
-		mailingDB.SetMaxIdleConns(15)
+		mailingDB.SetMaxOpenConns(40)
+		mailingDB.SetMaxIdleConns(25)
 		mailingDB.SetConnMaxLifetime(5 * time.Minute)
 		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
@@ -446,6 +446,10 @@ func main() {
 				listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
 				listRefresh.Start(ctx)
 				log.Println("List Refresh Worker started (updates list counts every 1h)")
+
+				suppressionListWorker := worker.NewSuppressionListWorker(mailingDB, 24*time.Hour)
+				suppressionListWorker.Start(ctx)
+				log.Println("Suppression List Worker started (brand-specific sunset suppression, runs daily)")
 
 				// Start Content Refresh Worker (pre-generates wave email content nightly)
 				contentRefresh := worker.NewContentRefreshWorker(mailingDB, 24*time.Hour)
@@ -3159,6 +3163,30 @@ END $$`},
 
 		// Reset campaigns orphaned in 'preparing' by a previous crash/deploy.
 		{"reset_stale_preparing_v1", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE status = 'preparing' AND updated_at < NOW() - INTERVAL '45 minutes'`},
+
+		// ── Suppression worker infrastructure (Phase: sunset suppression) ──
+
+		// April 2026 tracking partition
+		{"create_tracking_partition_apr26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_04 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-04-01') TO ('2026-05-01')`},
+
+		// Unique constraint on mailing_lists for safe ON CONFLICT upserts
+		{"idx_mailing_lists_org_name", `CREATE UNIQUE INDEX IF NOT EXISTS idx_mailing_lists_org_name ON mailing_lists(organization_id, name)`},
+
+		// base_domain column on sending profiles for reliable brand discovery
+		{"add_sending_profile_base_domain", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS base_domain TEXT`},
+		{"backfill_sending_profile_base_domain", `UPDATE mailing_sending_profiles SET base_domain = REGEXP_REPLACE(sending_domain, '^(em\.|m\.)','') WHERE base_domain IS NULL AND sending_domain IS NOT NULL`},
+
+		// Run-tracking table for suppression list worker (prevents duplicate runs)
+		{"create_suppression_list_runs", `CREATE TABLE IF NOT EXISTS suppression_list_runs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			brand TEXT NOT NULL,
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			completed_at TIMESTAMPTZ,
+			suppressed_count INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'running',
+			error_message TEXT
+		)`},
+		{"idx_suppression_list_runs_brand", `CREATE INDEX IF NOT EXISTS idx_suppression_list_runs_brand ON suppression_list_runs(brand, started_at DESC)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
