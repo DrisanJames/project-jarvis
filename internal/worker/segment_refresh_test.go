@@ -50,13 +50,13 @@ func TestExpandEmailContains_Apple(t *testing.T) {
 	assert.Contains(t, args, "%@mac.com%")
 }
 
-func TestExpandEmailContains_ATT(t *testing.T) {
-	_, args, _ := expandEmailContains("email", "@att.net", 1)
-	assert.Equal(t, 6, len(args))
-	assert.Contains(t, args, "%@att.net%")
-	assert.Contains(t, args, "%@bellsouth.net%")
-	assert.Contains(t, args, "%@pacbell.net%")
-	assert.Contains(t, args, "%@swbell.net%")
+func TestExpandEmailContains_ATT_NoExpansion(t *testing.T) {
+	// ATT sub-brands (bellsouth, pacbell, etc.) are separate ISPs in
+	// daily_acquisition.py — att.net must NOT expand to include them.
+	clause, args, nextArg := expandEmailContains("email", "@att.net", 1)
+	assert.Equal(t, " AND s.email ILIKE $1", clause)
+	assert.Equal(t, []interface{}{"%@att.net%"}, args)
+	assert.Equal(t, 2, nextArg)
 }
 
 func TestExpandEmailContains_NonISPDomain(t *testing.T) {

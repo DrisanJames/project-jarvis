@@ -563,6 +563,9 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 // ispDomainSiblings maps a single email-domain filter (e.g. "@outlook.com")
 // to all domains belonging to the same ISP. Ensures segment conditions like
 // "email contains @outlook.com" also capture @live.com, @msn.com, etc.
+//
+// Must stay 1:1 with daily_acquisition.py DOMAIN_TO_ISP. ATT sub-brands
+// (bellsouth, pacbell, etc.) are separate ISPs and NOT grouped under @att.net.
 var ispDomainSiblings = map[string][]string{
 	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
 	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
@@ -578,8 +581,6 @@ var ispDomainSiblings = map[string][]string{
 	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
 	"@aol.com":        {"@aol.com", "@aim.com"},
 	"@aim.com":        {"@aol.com", "@aim.com"},
-	"@att.net":        {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
-	"@bellsouth.net":  {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
 	"@charter.net":    {"@charter.net", "@spectrum.net"},
 	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
 	"@comcast.net":    {"@comcast.net", "@xfinity.com"},

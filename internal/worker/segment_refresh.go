@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,18 +18,40 @@ import (
 // SegmentRefreshWorker periodically recalculates subscriber_count for all
 // active dynamic segments. Without this, time-relative conditions like
 // "last_open_at within_last 7 days" would show stale counts.
+//
+// Concurrency controls how many segments are recalculated in parallel.
+// Each concurrent recalculation holds its own DB transaction, so this
+// should be sized to avoid overwhelming the connection pool (4-8 is safe
+// for most RDS instances).
 type SegmentRefreshWorker struct {
-	db       *sql.DB
-	interval time.Duration
-	stopChan chan struct{}
-	running  bool
+	db          *sql.DB
+	interval    time.Duration
+	concurrency int
+	stopChan    chan struct{}
+	running     bool
 }
 
 func NewSegmentRefreshWorker(db *sql.DB, interval time.Duration) *SegmentRefreshWorker {
 	return &SegmentRefreshWorker{
-		db:       db,
-		interval: interval,
-		stopChan: make(chan struct{}),
+		db:          db,
+		interval:    interval,
+		concurrency: 1,
+		stopChan:    make(chan struct{}),
+	}
+}
+
+// NewSegmentRefreshWorkerWithConcurrency creates a worker with a specific
+// parallelism level. Each concurrent goroutine holds one DB transaction,
+// so concurrency should stay below the connection pool's max idle conns.
+func NewSegmentRefreshWorkerWithConcurrency(db *sql.DB, interval time.Duration, concurrency int) *SegmentRefreshWorker {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	return &SegmentRefreshWorker{
+		db:          db,
+		interval:    interval,
+		concurrency: concurrency,
+		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -36,7 +60,7 @@ func (w *SegmentRefreshWorker) Start(ctx context.Context) {
 		return
 	}
 	w.running = true
-	log.Printf("SegmentRefreshWorker: started (interval=%s)", w.interval)
+	log.Printf("SegmentRefreshWorker: started (interval=%s, concurrency=%d)", w.interval, w.concurrency)
 
 	go func() {
 		// Small delay on startup to let DB connections settle
@@ -118,28 +142,43 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	seedListIDs := w.loadSeedListIDs(ctx)
 	log.Printf("SegmentRefreshWorker: found %d seed lists for exclusion", len(seedListIDs))
 
-	updated := 0
-	for _, seg := range segments {
-		newCount := w.recalculate(ctx, seg, seedListIDs)
-		if newCount < 0 {
-			continue
-		}
-		_, err := w.db.ExecContext(ctx, `
-			UPDATE mailing_segments
-			SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
-			WHERE id = $1
-		`, seg.ID, newCount)
-		if err != nil {
-			log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", seg.Name, seg.ID, err)
-			continue
-		}
-		if newCount != seg.OldCount {
-			log.Printf("SegmentRefreshWorker: %s — %d → %d", seg.Name, seg.OldCount, newCount)
-		}
-		updated++
-	}
+	var updated int64
+	sem := make(chan struct{}, w.concurrency)
+	var wg sync.WaitGroup
 
-	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments in %s", updated, len(segments), time.Since(start).Round(time.Millisecond))
+	for _, seg := range segments {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(s segmentRow) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			newCount := w.recalculate(ctx, s, seedListIDs)
+			if newCount < 0 {
+				return
+			}
+			_, err := w.db.ExecContext(ctx, `
+				UPDATE mailing_segments
+				SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
+				WHERE id = $1
+			`, s.ID, newCount)
+			if err != nil {
+				log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", s.Name, s.ID, err)
+				return
+			}
+			if newCount != s.OldCount {
+				log.Printf("SegmentRefreshWorker: %s — %d → %d", s.Name, s.OldCount, newCount)
+			}
+			atomic.AddInt64(&updated, 1)
+		}(seg)
+	}
+	wg.Wait()
+
+	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments in %s (concurrency=%d)",
+		atomic.LoadInt64(&updated), len(segments), time.Since(start).Round(time.Millisecond), w.concurrency)
 }
 
 // loadSeedListIDs returns the UUIDs of all lists whose name contains "seed".
@@ -574,11 +613,14 @@ func buildDomainScopedClause(c segCondition, argNum int, domain string) (string,
 	return "", nil, argNum
 }
 
-// ispSiblingDomains maps a single email-domain filter (e.g. "@outlook.com")
+// ispDomainSiblings maps a single email-domain filter (e.g. "@outlook.com")
 // to the full set of domains belonging to the same ISP. This ensures that
 // segment conditions like "email contains @outlook.com" also capture
-// @live.com, @msn.com, etc. — matching the canonical ISP groupings used
-// by the daily_acquisition.py audit script.
+// @live.com, @msn.com, etc.
+//
+// IMPORTANT: This map must stay 1:1 with daily_acquisition.py's DOMAIN_TO_ISP.
+// ATT sub-brands (bellsouth, pacbell, swbell, nvbell, ameritech) are kept
+// as separate ISPs in the script and are NOT grouped under @att.net here.
 var ispDomainSiblings = map[string][]string{
 	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
 	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
@@ -594,8 +636,6 @@ var ispDomainSiblings = map[string][]string{
 	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
 	"@aol.com":        {"@aol.com", "@aim.com"},
 	"@aim.com":        {"@aol.com", "@aim.com"},
-	"@att.net":        {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
-	"@bellsouth.net":  {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
 	"@charter.net":    {"@charter.net", "@spectrum.net"},
 	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
 	"@comcast.net":    {"@comcast.net", "@xfinity.com"},

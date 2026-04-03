@@ -431,10 +431,11 @@ func main() {
 				go dataCleanup.Start(ctx)
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
-				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts)
-				segRefresh := worker.NewSegmentRefreshWorker(mailingDB, 30*time.Minute)
+				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
+				// Concurrency=4 processes 4 segments in parallel, cutting refresh time by ~75%.
+				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(mailingDB, 30*time.Minute, 4)
 				segRefresh.Start(ctx)
-				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m)")
+				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=4)")
 
 				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
 				ghostVisitorWorker.Start(ctx)
