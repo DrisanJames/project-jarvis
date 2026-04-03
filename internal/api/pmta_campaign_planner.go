@@ -473,7 +473,6 @@ func planPMTAAudience(
 	if input.MinRemailHours > 0 {
 		sendingDomains := deriveSendingDomainVariants(input.SendingDomain)
 		rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer rmCancel()
 		domainParams := make([]string, len(sendingDomains))
 		for i := range sendingDomains {
 			domainParams[i] = fmt.Sprintf("$%d", i+2)
@@ -493,17 +492,19 @@ func planPMTAAudience(
 		}
 		rmRows, rmErr := db.QueryContext(rmCtx, rmQuery, rmArgs...)
 		if rmErr == nil {
-			defer rmRows.Close()
 			for rmRows.Next() {
 				var email string
 				if rmRows.Scan(&email) == nil {
 					recentlyMailed[email] = true
 				}
 			}
+			rmRows.Close()
 		} else {
 			log.Printf("[PlanAudience] WARNING: failed to load recently-mailed emails: %v — remail gap NOT enforced", rmErr)
 		}
-		log.Printf("[PlanAudience] loaded %d recently-mailed emails (last %dh) in %v", len(recentlyMailed), input.MinRemailHours, time.Since(planStart))
+		rmCancel()
+		log.Printf("[PlanAudience] loaded %d recently-mailed emails (last %dh, domains=%v) in %v",
+			len(recentlyMailed), input.MinRemailHours, sendingDomains, time.Since(planStart))
 	}
 
 	allowedISPs := make(map[string]bool, len(normalized.Plans))

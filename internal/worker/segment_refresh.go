@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/lib/pq"
 )
 
@@ -613,42 +614,12 @@ func buildDomainScopedClause(c segCondition, argNum int, domain string) (string,
 	return "", nil, argNum
 }
 
-// ispDomainSiblings maps a single email-domain filter (e.g. "@outlook.com")
-// to the full set of domains belonging to the same ISP. This ensures that
-// segment conditions like "email contains @outlook.com" also capture
-// @live.com, @msn.com, etc.
-//
-// IMPORTANT: This map must stay 1:1 with daily_acquisition.py's DOMAIN_TO_ISP.
-// ATT sub-brands (bellsouth, pacbell, swbell, nvbell, ameritech) are kept
-// as separate ISPs in the script and are NOT grouped under @att.net here.
-var ispDomainSiblings = map[string][]string{
-	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
-	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
-	"@msn.com":        {"@outlook.com", "@live.com", "@msn.com"},
-	"@hotmail.com":    {"@hotmail.com", "@hotmail.co.uk"},
-	"@hotmail.co.uk":  {"@hotmail.com", "@hotmail.co.uk"},
-	"@icloud.com":     {"@icloud.com", "@me.com", "@mac.com"},
-	"@me.com":         {"@icloud.com", "@me.com", "@mac.com"},
-	"@mac.com":        {"@icloud.com", "@me.com", "@mac.com"},
-	"@yahoo.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@ymail.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@rocketmail.com": {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@aol.com":        {"@aol.com", "@aim.com"},
-	"@aim.com":        {"@aol.com", "@aim.com"},
-	"@charter.net":    {"@charter.net", "@spectrum.net"},
-	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
-	"@comcast.net":    {"@comcast.net", "@xfinity.com"},
-	"@xfinity.com":    {"@comcast.net", "@xfinity.com"},
-	"@gmail.com":      {"@gmail.com", "@googlemail.com"},
-	"@googlemail.com": {"@gmail.com", "@googlemail.com"},
-}
-
 // expandEmailContains generates a parameterized SQL fragment for an email
 // domain condition, expanding to all sibling domains when applicable.
+// Uses isp.DomainSiblings (auto-derived from the canonical domainToISP map).
 // Returns the clause (with leading " AND "), any new args, and the next argNum.
 func expandEmailContains(col string, value string, argNum int) (string, []interface{}, int) {
-	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	siblings, ok := isp.DomainSiblings[strings.ToLower(value)]
 	if !ok || len(siblings) <= 1 {
 		return fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum),
 			[]interface{}{"%" + value + "%"}, argNum + 1
@@ -666,7 +637,7 @@ func expandEmailContains(col string, value string, argNum int) (string, []interf
 // expandEmailContainsNonPrefixed generates the same expansion but without
 // the "s." table alias prefix, for use in buildRefreshWhereClause.
 func expandEmailContainsNonPrefixed(col string, value string, argNum int) (string, []interface{}, int) {
-	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	siblings, ok := isp.DomainSiblings[strings.ToLower(value)]
 	if !ok || len(siblings) <= 1 {
 		return fmt.Sprintf("%s ILIKE $%d", col, argNum),
 			[]interface{}{"%" + value + "%"}, argNum + 1

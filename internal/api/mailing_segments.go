@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *http.Request) {
@@ -560,39 +561,11 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 	return count
 }
 
-// ispDomainSiblings maps a single email-domain filter (e.g. "@outlook.com")
-// to all domains belonging to the same ISP. Ensures segment conditions like
-// "email contains @outlook.com" also capture @live.com, @msn.com, etc.
-//
-// Must stay 1:1 with daily_acquisition.py DOMAIN_TO_ISP. ATT sub-brands
-// (bellsouth, pacbell, etc.) are separate ISPs and NOT grouped under @att.net.
-var ispDomainSiblings = map[string][]string{
-	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
-	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
-	"@msn.com":        {"@outlook.com", "@live.com", "@msn.com"},
-	"@hotmail.com":    {"@hotmail.com", "@hotmail.co.uk"},
-	"@hotmail.co.uk":  {"@hotmail.com", "@hotmail.co.uk"},
-	"@icloud.com":     {"@icloud.com", "@me.com", "@mac.com"},
-	"@me.com":         {"@icloud.com", "@me.com", "@mac.com"},
-	"@mac.com":        {"@icloud.com", "@me.com", "@mac.com"},
-	"@yahoo.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@ymail.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@rocketmail.com": {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
-	"@aol.com":        {"@aol.com", "@aim.com"},
-	"@aim.com":        {"@aol.com", "@aim.com"},
-	"@charter.net":    {"@charter.net", "@spectrum.net"},
-	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
-	"@comcast.net":    {"@comcast.net", "@xfinity.com"},
-	"@xfinity.com":    {"@comcast.net", "@xfinity.com"},
-	"@gmail.com":      {"@gmail.com", "@googlemail.com"},
-	"@googlemail.com": {"@gmail.com", "@googlemail.com"},
-}
-
 // expandISPEmailContains generates a WHERE clause fragment that expands a
 // single email-domain filter to all sibling domains in the same ISP family.
+// Uses isp.DomainSiblings (auto-derived from the canonical domainToISP map).
 func expandISPEmailContains(col, value string, argNum int) (string, []interface{}, int) {
-	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	siblings, ok := isp.DomainSiblings[strings.ToLower(value)]
 	if !ok || len(siblings) <= 1 {
 		return fmt.Sprintf("%s ILIKE $%d", col, argNum),
 			[]interface{}{"%" + value + "%"}, argNum + 1

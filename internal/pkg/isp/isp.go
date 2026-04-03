@@ -58,6 +58,8 @@ var domainToISP = map[string]string{
 	"rocketmail.com": Yahoo,
 	"yahoo.ca":       Yahoo,
 	"yahoo.co.uk":    Yahoo,
+	"yahoo.co.in":    Yahoo,
+	"yahoo.com.au":   Yahoo,
 	"yahoo.co.jp":    Yahoo,
 
 	// AOL — separated from Yahoo for independent pool routing and quota control.
@@ -66,11 +68,15 @@ var domainToISP = map[string]string{
 	"aol.com": Aol,
 	"aim.com": Aol,
 
-	// Microsoft
-	"outlook.com": Microsoft,
-	"hotmail.com": Microsoft,
-	"live.com":    Microsoft,
-	"msn.com":     Microsoft,
+	// Microsoft — all Outlook/Hotmail/Live/MSN domains unified under one ISP.
+	"outlook.com":   Microsoft,
+	"outlook.co.uk": Microsoft,
+	"hotmail.com":   Microsoft,
+	"hotmail.co.uk": Microsoft,
+	"hotmail.fr":    Microsoft,
+	"live.com":      Microsoft,
+	"live.co.uk":    Microsoft,
+	"msn.com":       Microsoft,
 
 	// Apple
 	"icloud.com": Apple,

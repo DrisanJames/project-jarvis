@@ -18,6 +18,8 @@ func TestGroupFromDomain(t *testing.T) {
 		{"rocketmail.com", Yahoo},
 		{"yahoo.ca", Yahoo},
 		{"yahoo.co.uk", Yahoo},
+		{"yahoo.co.in", Yahoo},
+		{"yahoo.com.au", Yahoo},
 		{"yahoo.co.jp", Yahoo},
 
 		// AOL (separated from Yahoo for dedicated pool routing)
@@ -26,8 +28,12 @@ func TestGroupFromDomain(t *testing.T) {
 
 		// Microsoft
 		{"outlook.com", Microsoft},
+		{"outlook.co.uk", Microsoft},
 		{"hotmail.com", Microsoft},
+		{"hotmail.co.uk", Microsoft},
+		{"hotmail.fr", Microsoft},
 		{"live.com", Microsoft},
+		{"live.co.uk", Microsoft},
 		{"msn.com", Microsoft},
 
 		// Apple
@@ -153,5 +159,54 @@ func TestAllGroups(t *testing.T) {
 	groups := AllGroups()
 	if len(groups) != 13 {
 		t.Errorf("AllGroups() returned %d groups, want 13", len(groups))
+	}
+}
+
+func TestDomainSiblings_MicrosoftUnified(t *testing.T) {
+	siblings, ok := DomainSiblings["@outlook.com"]
+	if !ok {
+		t.Fatal("@outlook.com not in DomainSiblings")
+	}
+	want := map[string]bool{
+		"@outlook.com": true, "@outlook.co.uk": true,
+		"@hotmail.com": true, "@hotmail.co.uk": true, "@hotmail.fr": true,
+		"@live.com": true, "@live.co.uk": true, "@msn.com": true,
+	}
+	if len(siblings) != len(want) {
+		t.Errorf("@outlook.com siblings count = %d, want %d", len(siblings), len(want))
+	}
+	for _, s := range siblings {
+		if !want[s] {
+			t.Errorf("unexpected sibling %q for @outlook.com", s)
+		}
+	}
+	// Hotmail must be in the same group (unified Microsoft)
+	hotmailSiblings, ok := DomainSiblings["@hotmail.com"]
+	if !ok {
+		t.Fatal("@hotmail.com not in DomainSiblings")
+	}
+	if len(hotmailSiblings) != len(siblings) {
+		t.Errorf("@hotmail.com siblings count = %d, want %d (same as @outlook.com)", len(hotmailSiblings), len(siblings))
+	}
+}
+
+func TestDomainSiblings_EveryDomainPresent(t *testing.T) {
+	if len(DomainSiblings) == 0 {
+		t.Fatal("DomainSiblings is empty")
+	}
+	for key, siblings := range DomainSiblings {
+		if len(siblings) == 0 {
+			t.Errorf("DomainSiblings[%q] has no siblings", key)
+		}
+		found := false
+		for _, s := range siblings {
+			if s == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DomainSiblings[%q] does not contain itself", key)
+		}
 	}
 }
