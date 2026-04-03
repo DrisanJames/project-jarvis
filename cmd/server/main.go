@@ -3187,7 +3187,7 @@ END $$`},
 
 		// One-off: requeue two failed campaigns for audience finalization after pipeline hardening.
 		{"drop_status_check_constraint", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
-		{"requeue_failed_campaigns_apr03", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status = 'draft'`},
+		{"requeue_failed_campaigns_apr03_v2", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status IN ('draft','scheduled','failed')`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

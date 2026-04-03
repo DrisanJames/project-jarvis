@@ -58,8 +58,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				respondJSON(w, 404, map[string]string{"error": "campaign not found"})
 				return
 			}
-			if status != "draft" && status != "failed" {
-				respondJSON(w, 409, map[string]string{"error": "can only retry draft or failed campaigns", "status": status})
+			allowedRetryStatuses := map[string]bool{"draft": true, "failed": true, "scheduled": true, "preparing": true}
+			if !allowedRetryStatuses[status] {
+				respondJSON(w, 409, map[string]string{"error": "cannot retry campaigns in this status", "status": status})
 				return
 			}
 			if !configJSON.Valid || configJSON.String == "" || configJSON.String == "{}" {
