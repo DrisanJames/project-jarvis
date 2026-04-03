@@ -522,15 +522,17 @@ func planPMTAAudience(
 	var ispBackfill []struct{ ID, ISP string }
 
 	allQuotasMet := func() bool {
+		hasBounded := false
 		for isp, q := range ispQuota {
 			if q <= 0 {
-				return false // unlimited ISP = never "met"
+				continue // unlimited ISP — always "met" for cutoff purposes
 			}
+			hasBounded = true
 			if qualifiedPerISP[isp] < q {
 				return false
 			}
 		}
-		return true
+		return hasBounded // false if ALL ISPs are unlimited (must scan everything)
 	}
 
 	qualifyEmail := func(subID, email, sourceType, sourceID string) bool {
@@ -539,6 +541,20 @@ func planPMTAAudience(
 			return false
 		}
 		seenEmails[emailLower] = true
+
+		// ISP classification + quota check FIRST (cheap string ops, avoids
+		// expensive MD5/suppression work for quota-met ISPs)
+		domain := emailLower
+		if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
+			domain = emailLower[idx+1:]
+		}
+		isp := domainToISPLookup(domain)
+		if len(allowedISPs) > 0 && !allowedISPs[isp] {
+			return false
+		}
+		if q := ispQuota[isp]; q > 0 && qualifiedPerISP[isp] >= q {
+			return false
+		}
 
 		// Offer suppression: Bloom filter O(1) or DB set fallback
 		if useBloomForOffer {
@@ -554,25 +570,13 @@ func planPMTAAudience(
 		if globalHub != nil && globalHub.IsSuppressedByHash(md5Hex) {
 			return false
 		}
-		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
+		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressedMD5(md5Hex, exclusionIDs) {
 			return false
 		}
 		if exclusionSegEmails[emailLower] {
 			return false
 		}
 		if sourceType == "list" && len(recentlyMailed) > 0 && recentlyMailed[emailLower] {
-			return false
-		}
-		domain := emailLower
-		if idx := strings.LastIndex(emailLower, "@"); idx >= 0 {
-			domain = emailLower[idx+1:]
-		}
-		isp := domainToISPLookup(domain)
-		if len(allowedISPs) > 0 && !allowedISPs[isp] {
-			return false
-		}
-
-		if q := ispQuota[isp]; q > 0 && qualifiedPerISP[isp] >= q {
 			return false
 		}
 
@@ -591,12 +595,16 @@ func planPMTAAudience(
 	}
 
 	totalQuota := 0
+	hasUnlimited := false
 	for _, q := range ispQuota {
 		if q <= 0 {
-			totalQuota = 0
-			break
+			hasUnlimited = true
+			continue
 		}
 		totalQuota += q
+	}
+	if hasUnlimited && totalQuota == 0 {
+		totalQuota = 50000
 	}
 
 	streamList := func(listID string) error {
@@ -618,12 +626,21 @@ func planPMTAAudience(
 			return err
 		}
 		defer rows.Close()
+		staleRows := 0
 		for rows.Next() {
 			var subID, email string
 			if rows.Scan(&subID, &email) == nil {
-				qualifyEmail(subID, email, "list", listID)
+				if qualifyEmail(subID, email, "list", listID) {
+					staleRows = 0
+				} else {
+					staleRows++
+				}
 			}
 			if allQuotasMet() {
+				break
+			}
+			if staleRows > 5000 {
+				log.Printf("[PlanAudience] stale-row exit for list %s after %d consecutive non-qualifying rows", listID, staleRows)
 				break
 			}
 		}
