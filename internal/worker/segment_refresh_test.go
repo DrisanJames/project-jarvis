@@ -1,0 +1,83 @@
+package worker
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestExpandEmailContains_SingleDomain(t *testing.T) {
+	clause, args, nextArg := expandEmailContains("email", "@cox.net", 1)
+	assert.Equal(t, " AND s.email ILIKE $1", clause)
+	assert.Equal(t, []interface{}{"%@cox.net%"}, args)
+	assert.Equal(t, 2, nextArg)
+}
+
+func TestExpandEmailContains_MicrosoftOutlook(t *testing.T) {
+	clause, args, nextArg := expandEmailContains("email", "@outlook.com", 1)
+	assert.Contains(t, clause, "OR")
+	assert.Equal(t, 3, len(args))
+	assert.Contains(t, args, "%@outlook.com%")
+	assert.Contains(t, args, "%@live.com%")
+	assert.Contains(t, args, "%@msn.com%")
+	assert.Equal(t, 4, nextArg)
+}
+
+func TestExpandEmailContains_Charter(t *testing.T) {
+	clause, args, nextArg := expandEmailContains("email", "@charter.net", 1)
+	assert.Contains(t, clause, "OR")
+	assert.Equal(t, 2, len(args))
+	assert.Contains(t, args, "%@charter.net%")
+	assert.Contains(t, args, "%@spectrum.net%")
+	assert.Equal(t, 3, nextArg)
+}
+
+func TestExpandEmailContains_Yahoo(t *testing.T) {
+	_, args, nextArg := expandEmailContains("email", "@yahoo.com", 5)
+	assert.Equal(t, 4, len(args))
+	assert.Contains(t, args, "%@yahoo.com%")
+	assert.Contains(t, args, "%@ymail.com%")
+	assert.Contains(t, args, "%@rocketmail.com%")
+	assert.Contains(t, args, "%@yahoo.co.uk%")
+	assert.Equal(t, 9, nextArg)
+}
+
+func TestExpandEmailContains_Apple(t *testing.T) {
+	_, args, _ := expandEmailContains("email", "@icloud.com", 1)
+	assert.Equal(t, 3, len(args))
+	assert.Contains(t, args, "%@icloud.com%")
+	assert.Contains(t, args, "%@me.com%")
+	assert.Contains(t, args, "%@mac.com%")
+}
+
+func TestExpandEmailContains_ATT(t *testing.T) {
+	_, args, _ := expandEmailContains("email", "@att.net", 1)
+	assert.Equal(t, 6, len(args))
+	assert.Contains(t, args, "%@att.net%")
+	assert.Contains(t, args, "%@bellsouth.net%")
+	assert.Contains(t, args, "%@pacbell.net%")
+	assert.Contains(t, args, "%@swbell.net%")
+}
+
+func TestExpandEmailContains_NonISPDomain(t *testing.T) {
+	clause, args, nextArg := expandEmailContains("email", "@example.com", 1)
+	assert.Equal(t, " AND s.email ILIKE $1", clause)
+	assert.Equal(t, []interface{}{"%@example.com%"}, args)
+	assert.Equal(t, 2, nextArg)
+}
+
+func TestExpandEmailContainsNonPrefixed_Charter(t *testing.T) {
+	clause, args, nextArg := expandEmailContainsNonPrefixed("email", "@charter.net", 1)
+	assert.Contains(t, clause, "OR")
+	assert.NotContains(t, clause, "s.email")
+	assert.Equal(t, 2, len(args))
+	assert.Contains(t, args, "%@charter.net%")
+	assert.Contains(t, args, "%@spectrum.net%")
+	assert.Equal(t, 3, nextArg)
+}
+
+func TestExpandEmailContainsNonPrefixed_CaseInsensitive(t *testing.T) {
+	clause, args, _ := expandEmailContainsNonPrefixed("email", "@Outlook.com", 1)
+	assert.Contains(t, clause, "OR")
+	assert.Equal(t, 3, len(args))
+}

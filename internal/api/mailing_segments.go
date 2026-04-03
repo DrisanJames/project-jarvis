@@ -27,7 +27,8 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.name, s.description, s.segment_type, s.subscriber_count, s.status, s.created_at,
-		       s.list_id, COALESCE(l.name, ''), COALESCE(s.conditions::text, '[]')
+		       s.list_id, COALESCE(l.name, ''), COALESCE(s.conditions::text, '[]'),
+		       s.updated_at, s.last_calculated_at
 		FROM mailing_segments s
 		LEFT JOIN mailing_lists l ON l.id = s.list_id
 		WHERE s.organization_id = $1 ORDER BY s.created_at DESC
@@ -47,12 +48,19 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 		var name, desc, segType, status, listName, conditionsRaw string
 		var subCount int
 		var createdAt time.Time
-		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt, &listID, &listName, &conditionsRaw)
+		var updatedAt, lastCalculatedAt sql.NullTime
+		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt, &listID, &listName, &conditionsRaw, &updatedAt, &lastCalculatedAt)
 
 		seg := map[string]interface{}{
 			"id": id.String(), "name": name, "description": desc, "segment_type": segType,
 			"subscriber_count": subCount, "status": status, "created_at": createdAt,
 			"list_name": listName,
+		}
+		if updatedAt.Valid {
+			seg["updated_at"] = updatedAt.Time
+		}
+		if lastCalculatedAt.Valid {
+			seg["last_calculated_at"] = lastCalculatedAt.Time
 		}
 		if listID != nil {
 			seg["list_id"] = listID.String()
@@ -355,6 +363,15 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 			args = append(args, c.Value)
 			argNum++
 		case "contains":
+			if c.Field == "email" && strings.HasPrefix(c.Value, "@") {
+				clause, newArgs, newArgNum := expandISPEmailContains(dbField, c.Value, argNum)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+				if clause != "" {
+					whereClauses = append(whereClauses, clause)
+				}
+				continue
+			}
 			clause = fmt.Sprintf("%s ILIKE $%d", dbField, argNum)
 			args = append(args, "%"+c.Value+"%")
 			argNum++
@@ -541,6 +558,52 @@ func (s *AdvancedMailingService) calculateSegmentCount(ctx context.Context, segm
 		return 0
 	}
 	return count
+}
+
+// ispDomainSiblings maps a single email-domain filter (e.g. "@outlook.com")
+// to all domains belonging to the same ISP. Ensures segment conditions like
+// "email contains @outlook.com" also capture @live.com, @msn.com, etc.
+var ispDomainSiblings = map[string][]string{
+	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
+	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
+	"@msn.com":        {"@outlook.com", "@live.com", "@msn.com"},
+	"@hotmail.com":    {"@hotmail.com", "@hotmail.co.uk"},
+	"@hotmail.co.uk":  {"@hotmail.com", "@hotmail.co.uk"},
+	"@icloud.com":     {"@icloud.com", "@me.com", "@mac.com"},
+	"@me.com":         {"@icloud.com", "@me.com", "@mac.com"},
+	"@mac.com":        {"@icloud.com", "@me.com", "@mac.com"},
+	"@yahoo.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@ymail.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@rocketmail.com": {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@aol.com":        {"@aol.com", "@aim.com"},
+	"@aim.com":        {"@aol.com", "@aim.com"},
+	"@att.net":        {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
+	"@bellsouth.net":  {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
+	"@charter.net":    {"@charter.net", "@spectrum.net"},
+	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
+	"@comcast.net":    {"@comcast.net", "@xfinity.com"},
+	"@xfinity.com":    {"@comcast.net", "@xfinity.com"},
+	"@gmail.com":      {"@gmail.com", "@googlemail.com"},
+	"@googlemail.com": {"@gmail.com", "@googlemail.com"},
+}
+
+// expandISPEmailContains generates a WHERE clause fragment that expands a
+// single email-domain filter to all sibling domains in the same ISP family.
+func expandISPEmailContains(col, value string, argNum int) (string, []interface{}, int) {
+	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	if !ok || len(siblings) <= 1 {
+		return fmt.Sprintf("%s ILIKE $%d", col, argNum),
+			[]interface{}{"%" + value + "%"}, argNum + 1
+	}
+	var parts []string
+	var args []interface{}
+	for _, dom := range siblings {
+		parts = append(parts, fmt.Sprintf("%s ILIKE $%d", col, argNum))
+		args = append(args, "%"+dom+"%")
+		argNum++
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args, argNum
 }
 
 // mapFieldToColumn maps frontend field names to database column names

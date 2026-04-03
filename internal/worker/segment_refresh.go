@@ -369,9 +369,16 @@ func (w *SegmentRefreshWorker) buildCTEQuery(
 			args = append(args, c.Value)
 			argNum++
 		case "contains":
-			sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
-			args = append(args, "%"+c.Value+"%")
-			argNum++
+			if c.Field == "email" && strings.HasPrefix(c.Value, "@") {
+				clause, newArgs, newArgNum := expandEmailContains(col, c.Value, argNum)
+				sb.WriteString(clause)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			} else {
+				sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
+				args = append(args, "%"+c.Value+"%")
+				argNum++
+			}
 		case "ends_with":
 			sb.WriteString(fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum))
 			args = append(args, "%"+c.Value)
@@ -478,9 +485,16 @@ func buildRefreshWhereClause(listID *uuid.UUID, conditions []segCondition) (stri
 			args = append(args, c.Value)
 			argNum++
 		case "contains":
-			clause = fmt.Sprintf("%s ILIKE $%d", col, argNum)
-			args = append(args, "%"+c.Value+"%")
-			argNum++
+			if c.Field == "email" && strings.HasPrefix(c.Value, "@") {
+				expanded, newArgs, newArgNum := expandEmailContainsNonPrefixed(col, c.Value, argNum)
+				clause = expanded
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			} else {
+				clause = fmt.Sprintf("%s ILIKE $%d", col, argNum)
+				args = append(args, "%"+c.Value+"%")
+				argNum++
+			}
 		case "not_contains":
 			clause = fmt.Sprintf("%s NOT ILIKE $%d", col, argNum)
 			args = append(args, "%"+c.Value+"%")
@@ -558,6 +572,73 @@ func buildDomainScopedClause(c segCondition, argNum int, domain string) (string,
 		return clause, []interface{}{eventType, domain}, argNum + 2
 	}
 	return "", nil, argNum
+}
+
+// ispSiblingDomains maps a single email-domain filter (e.g. "@outlook.com")
+// to the full set of domains belonging to the same ISP. This ensures that
+// segment conditions like "email contains @outlook.com" also capture
+// @live.com, @msn.com, etc. — matching the canonical ISP groupings used
+// by the daily_acquisition.py audit script.
+var ispDomainSiblings = map[string][]string{
+	"@outlook.com":    {"@outlook.com", "@live.com", "@msn.com"},
+	"@live.com":       {"@outlook.com", "@live.com", "@msn.com"},
+	"@msn.com":        {"@outlook.com", "@live.com", "@msn.com"},
+	"@hotmail.com":    {"@hotmail.com", "@hotmail.co.uk"},
+	"@hotmail.co.uk":  {"@hotmail.com", "@hotmail.co.uk"},
+	"@icloud.com":     {"@icloud.com", "@me.com", "@mac.com"},
+	"@me.com":         {"@icloud.com", "@me.com", "@mac.com"},
+	"@mac.com":        {"@icloud.com", "@me.com", "@mac.com"},
+	"@yahoo.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@ymail.com":      {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@rocketmail.com": {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@yahoo.co.uk":    {"@yahoo.com", "@ymail.com", "@rocketmail.com", "@yahoo.co.uk"},
+	"@aol.com":        {"@aol.com", "@aim.com"},
+	"@aim.com":        {"@aol.com", "@aim.com"},
+	"@att.net":        {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
+	"@bellsouth.net":  {"@att.net", "@bellsouth.net", "@pacbell.net", "@swbell.net", "@nvbell.net", "@ameritech.net"},
+	"@charter.net":    {"@charter.net", "@spectrum.net"},
+	"@spectrum.net":   {"@charter.net", "@spectrum.net"},
+	"@comcast.net":    {"@comcast.net", "@xfinity.com"},
+	"@xfinity.com":    {"@comcast.net", "@xfinity.com"},
+	"@gmail.com":      {"@gmail.com", "@googlemail.com"},
+	"@googlemail.com": {"@gmail.com", "@googlemail.com"},
+}
+
+// expandEmailContains generates a parameterized SQL fragment for an email
+// domain condition, expanding to all sibling domains when applicable.
+// Returns the clause (with leading " AND "), any new args, and the next argNum.
+func expandEmailContains(col string, value string, argNum int) (string, []interface{}, int) {
+	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	if !ok || len(siblings) <= 1 {
+		return fmt.Sprintf(" AND s.%s ILIKE $%d", col, argNum),
+			[]interface{}{"%" + value + "%"}, argNum + 1
+	}
+	var parts []string
+	var args []interface{}
+	for _, dom := range siblings {
+		parts = append(parts, fmt.Sprintf("s.%s ILIKE $%d", col, argNum))
+		args = append(args, "%"+dom+"%")
+		argNum++
+	}
+	return " AND (" + strings.Join(parts, " OR ") + ")", args, argNum
+}
+
+// expandEmailContainsNonPrefixed generates the same expansion but without
+// the "s." table alias prefix, for use in buildRefreshWhereClause.
+func expandEmailContainsNonPrefixed(col string, value string, argNum int) (string, []interface{}, int) {
+	siblings, ok := ispDomainSiblings[strings.ToLower(value)]
+	if !ok || len(siblings) <= 1 {
+		return fmt.Sprintf("%s ILIKE $%d", col, argNum),
+			[]interface{}{"%" + value + "%"}, argNum + 1
+	}
+	var parts []string
+	var args []interface{}
+	for _, dom := range siblings {
+		parts = append(parts, fmt.Sprintf("%s ILIKE $%d", col, argNum))
+		args = append(args, "%"+dom+"%")
+		argNum++
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args, argNum
 }
 
 var eventMap = map[string]string{
