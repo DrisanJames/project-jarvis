@@ -1389,6 +1389,7 @@ func (s *PMTACampaignService) HandleRetryCampaign(w http.ResponseWriter, r *http
 		return
 	}
 
+	s.db.ExecContext(ctx, `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`)
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW()
 		WHERE id = $1
