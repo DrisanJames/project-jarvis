@@ -3169,9 +3169,6 @@ END $$`},
 		// April 2026 tracking partition
 		{"create_tracking_partition_apr26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_04 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-04-01') TO ('2026-05-01')`},
 
-		// Unique constraint on mailing_lists for safe ON CONFLICT upserts
-		{"idx_mailing_lists_org_name", `CREATE UNIQUE INDEX IF NOT EXISTS idx_mailing_lists_org_name ON mailing_lists(organization_id, name)`},
-
 		// base_domain column on sending profiles for reliable brand discovery
 		{"add_sending_profile_base_domain", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS base_domain TEXT`},
 		{"backfill_sending_profile_base_domain", `UPDATE mailing_sending_profiles SET base_domain = REGEXP_REPLACE(sending_domain, '^(em\.|m\.)','') WHERE base_domain IS NULL AND sending_domain IS NOT NULL`},

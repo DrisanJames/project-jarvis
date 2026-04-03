@@ -197,7 +197,7 @@ func (w *SuppressionListWorker) processBrand(ctx context.Context, brand brandInf
 }
 
 func (w *SuppressionListWorker) findExhaustedEmails(ctx context.Context, sendingDomains []string) ([]string, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	domainParams := make([]string, len(sendingDomains))
@@ -208,32 +208,37 @@ func (w *SuppressionListWorker) findExhaustedEmails(ctx context.Context, sending
 	}
 	args = append(args, w.minSends)
 	minSendsParam := fmt.Sprintf("$%d", len(sendingDomains)+1)
+	domainList := strings.Join(domainParams, ",")
 
+	// Group by subscriber_id (indexed on tracking events) to avoid joining
+	// mailing_subscribers inside the aggregation. Resolve to email only for
+	// the final result, which is a much smaller set.
 	query := fmt.Sprintf(`
-		WITH delivered AS (
-			SELECT LOWER(s.email) AS email,
+		WITH delivered_subs AS (
+			SELECT te.subscriber_id,
 			       COUNT(DISTINCT te.campaign_id) FILTER (WHERE te.campaign_id IS NOT NULL) AS send_count
 			FROM mailing_tracking_events te
-			JOIN mailing_subscribers s ON s.id = te.subscriber_id
 			WHERE te.event_type = 'delivered'
 			  AND te.sending_domain IN (%s)
 			  AND te.event_at >= NOW() - INTERVAL '%d days'
-			GROUP BY LOWER(s.email)
+			GROUP BY te.subscriber_id
 			HAVING COUNT(DISTINCT te.campaign_id) FILTER (WHERE te.campaign_id IS NOT NULL) >= %s
 		),
-		opened AS (
-			SELECT DISTINCT LOWER(s.email) AS email
+		opened_subs AS (
+			SELECT DISTINCT te.subscriber_id
 			FROM mailing_tracking_events te
-			JOIN mailing_subscribers s ON s.id = te.subscriber_id
 			WHERE te.event_type = 'opened'
 			  AND te.sending_domain IN (%s)
 			  AND te.event_at >= NOW() - INTERVAL '%d days'
 		)
-		SELECT d.email FROM delivered d
-		LEFT JOIN opened o ON o.email = d.email
-		WHERE o.email IS NULL
-	`, strings.Join(domainParams, ","), w.lookbackDays, minSendsParam,
-		strings.Join(domainParams, ","), w.lookbackDays)
+		SELECT DISTINCT LOWER(s.email)
+		FROM delivered_subs d
+		JOIN mailing_subscribers s ON s.id = d.subscriber_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM opened_subs o WHERE o.subscriber_id = d.subscriber_id
+		)
+	`, domainList, w.lookbackDays, minSendsParam,
+		domainList, w.lookbackDays)
 
 	rows, err := w.db.QueryContext(queryCtx, query, args...)
 	if err != nil {
@@ -283,20 +288,24 @@ func (w *SuppressionListWorker) circuitBreakerCheck(ctx context.Context, brand s
 }
 
 func (w *SuppressionListWorker) ensureSuppressionList(ctx context.Context, orgID, name string) (string, error) {
-	listID := uuid.New().String()
-
-	var actualID string
-	err := w.db.QueryRowContext(ctx, `
-		INSERT INTO mailing_lists (id, organization_id, name, list_type, description, created_at, updated_at)
-		VALUES ($1, $2, $3, 'suppression', 'Auto-generated sunset suppression list', NOW(), NOW())
-		ON CONFLICT (organization_id, name) DO UPDATE SET updated_at = NOW()
-		RETURNING id::text
-	`, listID, orgID, name).Scan(&actualID)
-	if err != nil {
-		return "", fmt.Errorf("ensure suppression list %q: %w", name, err)
+	var existingID string
+	err := w.db.QueryRowContext(ctx,
+		`SELECT id::text FROM mailing_lists WHERE organization_id = $1::uuid AND name = $2 LIMIT 1`,
+		orgID, name).Scan(&existingID)
+	if err == nil {
+		w.db.ExecContext(ctx, `UPDATE mailing_lists SET updated_at = NOW() WHERE id = $1::uuid`, existingID)
+		return existingID, nil
 	}
 
-	return actualID, nil
+	listID := uuid.New().String()
+	_, err = w.db.ExecContext(ctx, `
+		INSERT INTO mailing_lists (id, organization_id, name, description, created_at, updated_at)
+		VALUES ($1, $2, $3, 'Auto-generated sunset suppression list', NOW(), NOW())
+	`, listID, orgID, name)
+	if err != nil {
+		return "", fmt.Errorf("create suppression list %q: %w", name, err)
+	}
+	return listID, nil
 }
 
 func (w *SuppressionListWorker) insertHashes(ctx context.Context, listID string, emails []string) (int, error) {
