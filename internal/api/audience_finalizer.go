@@ -80,9 +80,6 @@ func (s *PMTACampaignService) processNextFinalizingCampaign(parentCtx context.Co
 }
 
 func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[AudienceWorker] PANIC finalizing campaign %s: %v", campaignID, r)
@@ -106,30 +103,33 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 
-	// Use a dedicated connection with extended timeouts. The pool-level DSN
-	// sets statement_timeout=30s which is too short for audience planning.
-	conn, connErr := s.db.Conn(ctx)
+	// ── Phase 1: Audience Planning (own 20-min context) ──
+	planStart := time.Now()
+	planCtx, planCancel := context.WithTimeout(context.Background(), 20*time.Minute)
+
+	conn, connErr := s.db.Conn(planCtx)
 	if connErr != nil {
+		planCancel()
 		log.Printf("[AudienceWorker] get connection failed for %s: %v", campaignID, connErr)
 		s.markCampaignFailed(campaignID, "database connection error")
 		return
 	}
-	defer func() {
-		resetCtx, resetCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer resetCancel()
-		conn.ExecContext(resetCtx, "RESET ALL")
-		conn.Close()
-	}()
-	if _, err := conn.ExecContext(ctx, "SET statement_timeout = '1200000'"); err != nil {
+	if _, err := conn.ExecContext(planCtx, "SET statement_timeout = '1200000'"); err != nil {
 		log.Printf("[AudienceWorker] SET statement_timeout failed: %v", err)
 	}
-	if _, err := conn.ExecContext(ctx, "SET idle_in_transaction_session_timeout = '1200000'"); err != nil {
+	if _, err := conn.ExecContext(planCtx, "SET idle_in_transaction_session_timeout = '1200000'"); err != nil {
 		log.Printf("[AudienceWorker] SET idle_in_transaction_session_timeout failed: %v", err)
 	}
 
-	var audienceDB dbQuerier = conn
+	audience, err := planPMTAAudience(planCtx, conn, orgID, input, normalized, s.suppMatcher, s.globalHub, s.offerSuppMgr)
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.globalHub, s.offerSuppMgr)
+	// Close Phase 1 conn immediately to free the pool slot before Phase 2.
+	resetCtx, resetCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn.ExecContext(resetCtx, "RESET ALL")
+	conn.Close()
+	resetCancel()
+	planCancel()
+
 	if err != nil {
 		log.Printf("[AudienceWorker] audience planning failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "audience planning failed: "+err.Error())
@@ -142,30 +142,32 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 
-	log.Printf("[AudienceWorker] campaign %s audience ready: %d recipients across %d ISPs",
-		campaignID, audience.SelectedTotal, len(audience.CountsByISP))
+	log.Printf("[AudienceWorker] campaign %s Phase 1 complete: audience=%d/%d in %v",
+		campaignID, audience.SelectedTotal, audience.TotalSeen, time.Since(planStart))
 
-	// Use a fresh pooled connection for the transaction (conn may be stale
-	// after the long audience planning phase). SET LOCAL raises the timeout
-	// only for this transaction — the pooled connection reverts on commit.
-	tx, err := s.db.BeginTx(ctx, nil)
+	// ── Phase 2: Wave Creation (own 20-min context) ──
+	waveStart := time.Now()
+	waveCtx, waveCancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer waveCancel()
+
+	tx, err := s.db.BeginTx(waveCtx, nil)
 	if err != nil {
 		log.Printf("[AudienceWorker] begin tx failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "internal error: "+err.Error())
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '1200000'"); err != nil {
+	if _, err := tx.ExecContext(waveCtx, "SET LOCAL statement_timeout = '1200000'"); err != nil {
 		log.Printf("[AudienceWorker] SET LOCAL statement_timeout failed for %s: %v — aborting (tx would use 30s default)", campaignID, err)
 		tx.Rollback()
 		s.markCampaignFailed(campaignID, "internal error: could not set transaction timeout")
 		return
 	}
-	if _, err := tx.ExecContext(ctx, "SET LOCAL idle_in_transaction_session_timeout = '1200000'"); err != nil {
+	if _, err := tx.ExecContext(waveCtx, "SET LOCAL idle_in_transaction_session_timeout = '1200000'"); err != nil {
 		log.Printf("[AudienceWorker] SET LOCAL idle_in_transaction failed for %s: %v", campaignID, err)
 	}
 
-	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience, s.colCache)
+	result, err := createPMTAWaveCampaign(waveCtx, tx, s.db, orgID, input, normalized, audience, s.colCache)
 	if err != nil {
 		log.Printf("[AudienceWorker] create wave campaign failed for %s: %v", campaignID, err)
 		tx.Rollback()
@@ -179,6 +181,8 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 
+	log.Printf("[AudienceWorker] campaign %s Phase 2 complete: wave creation in %v",
+		campaignID, time.Since(waveStart))
 	log.Printf("[AudienceWorker] campaign %s finalized: audience=%d status=%s",
 		campaignID, result.TotalAudience, result.Status)
 }

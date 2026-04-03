@@ -97,8 +97,14 @@ func createPMTAWaveCampaign(
 	configJSON, _ := json.Marshal(pmtaCampaignConfig{
 		CampaignInput: withCampaignID(input, campaignID.String()),
 	})
-	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
-	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	inclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
+	if err != nil {
+		return engine.PMTAWavePlanResult{}, fmt.Errorf("resolve inclusion lists: %w", err)
+	}
+	exclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	if err != nil {
+		return engine.PMTAWavePlanResult{}, fmt.Errorf("resolve exclusion lists: %w", err)
+	}
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
 	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
 	suppressionSegmentsJSON, _ := json.Marshal(input.ExclusionSegments)
@@ -437,8 +443,14 @@ func savePMTADraftCampaign(
 	configJSON, _ := json.Marshal(config)
 	quotaPayload, _ := json.Marshal(buildPMTACampaignQuotaPayload(input))
 
-	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
-	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	inclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("resolve inclusion lists: %w", err)
+	}
+	exclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("resolve exclusion lists: %w", err)
+	}
 	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
 	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
 	suppressionSegmentsJSON, _ := json.Marshal(input.ExclusionSegments)
@@ -591,7 +603,7 @@ func batchInsertPlanRecipients(
 	if len(recipients) == 0 {
 		return nil
 	}
-	const batchSize = 200
+	const batchSize = 1000
 	const paramsPerRow = 9
 
 	for i := 0; i < len(recipients); i += batchSize {

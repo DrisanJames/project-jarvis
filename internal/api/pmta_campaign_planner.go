@@ -439,7 +439,10 @@ func planPMTAAudience(
 
 	log.Printf("[PlanAudience] using GlobalSuppressionHub (in-memory, hub=%v) at %v", globalHub != nil, time.Since(planStart))
 
-	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	exclusionIDs, resolveErr := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	if resolveErr != nil {
+		return pmtaAudiencePlan{}, fmt.Errorf("resolve exclusion lists: %w", resolveErr)
+	}
 	for _, slID := range exclusionIDs {
 		slRows, slErr := db.QueryContext(ctx, "SELECT md5_hash FROM mailing_suppression_entries WHERE list_id = $1", slID)
 		if slErr != nil {
@@ -512,7 +515,10 @@ func planPMTAAudience(
 		ispQuota[plan.ISP] = plan.Quota // 0 = unlimited
 	}
 
-	inclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
+	inclusionIDs, inclErr := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
+	if inclErr != nil {
+		return pmtaAudiencePlan{}, fmt.Errorf("resolve inclusion lists: %w", inclErr)
+	}
 	var qualified []pmtaSelectedRecipient
 	seenEmails := make(map[string]bool)
 	selectionRank := 0
@@ -724,7 +730,7 @@ func planPMTAAudience(
 			itemStart := time.Now()
 			switch item.Type {
 			case "list":
-				resolved := resolveListNamesToIDs(ctx, db, orgID, []string{item.ID})
+				resolved, _ := resolveListNamesToIDs(ctx, db, orgID, []string{item.ID})
 				for _, listID := range resolved {
 					if err := streamList(listID); err != nil {
 						return pmtaAudiencePlan{}, err
@@ -929,6 +935,14 @@ func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCou
 	}
 	if batchSize > recipientCount {
 		batchSize = recipientCount
+	}
+	// Guard: if clamped batchSize would produce fewer than minWavesPerISP
+	// waves for a non-trivial audience, recalculate to meet the minimum.
+	if recipientCount >= 500 && batchSize > 0 {
+		estimatedWaves := (recipientCount + batchSize - 1) / batchSize
+		if estimatedWaves < minWavesPerISP {
+			batchSize = (recipientCount + minWavesPerISP - 1) / minWavesPerISP
+		}
 	}
 
 	var waves []pmtaWaveSpec

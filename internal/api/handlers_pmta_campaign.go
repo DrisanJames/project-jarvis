@@ -1274,7 +1274,7 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 			"target_isps":    []map[string]string{{"name": "Gmail", "domain": "gmail.com"}, {"name": "Yahoo", "domain": "yahoo.com"}, {"name": "Microsoft", "domain": "outlook.com"}, {"name": "ATT", "domain": "att.net"}},
 			"sending_domain": c.domain,
 		})
-		inclusionIDs := resolveListNamesToIDs(ctx, s.db, orgID, []string{"PMTA Test List"})
+		inclusionIDs, _ := resolveListNamesToIDs(ctx, s.db, orgID, []string{"PMTA Test List"})
 		inclusionListsJSON, _ := json.Marshal(inclusionIDs)
 
 		html := htmlTemplate(c.fromName, c.color)
@@ -1319,18 +1319,16 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 // resolveListNamesToIDs converts a mix of list names and/or UUIDs into
 // actual list UUIDs. The PMTA wizard UI sends list names (e.g. "PMTA Test List")
 // but the campaign scheduler expects UUIDs in the list_ids JSONB column.
-func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, names []string) []string {
+func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, names []string) ([]string, error) {
 	if len(names) == 0 {
-		return names
+		return names, nil
 	}
 	var ids []string
 	for _, name := range names {
-		// Already a UUID? Keep it.
 		if _, err := uuid.Parse(name); err == nil {
 			ids = append(ids, name)
 			continue
 		}
-		// Look up in mailing_lists first
 		var listID string
 		err := db.QueryRowContext(ctx, `
 			SELECT id::text FROM mailing_lists
@@ -1341,7 +1339,9 @@ func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, name
 			ids = append(ids, listID)
 			continue
 		}
-		// Fallback: mailing_suppression_lists (for exclusions like "Global Suppression", "global-suppression-list")
+		if err != sql.ErrNoRows {
+			return nil, fmt.Errorf("resolve list %q: %w", name, err)
+		}
 		err = db.QueryRowContext(ctx, `
 			SELECT id FROM mailing_suppression_lists
 			WHERE id = $1 OR LOWER(name) = LOWER($1)
@@ -1349,11 +1349,13 @@ func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, name
 		`, name).Scan(&listID)
 		if err == nil {
 			ids = append(ids, listID)
+		} else if err != sql.ErrNoRows {
+			return nil, fmt.Errorf("resolve suppression list %q: %w", name, err)
 		} else {
-			log.Printf("[resolveListNamesToIDs] list %q not found for org %s: %v", name, orgID, err)
+			log.Printf("[resolveListNamesToIDs] list %q not found for org %s", name, orgID)
 		}
 	}
-	return ids
+	return ids, nil
 }
 
 // domainToISPLookup delegates to the canonical isp.GroupFromDomain classifier.
