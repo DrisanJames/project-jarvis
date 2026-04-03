@@ -43,6 +43,38 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
 		s.router.Get("/api/mailing/injection-analytics", injectionAnalytics.HandleGetInjectionAnalytics)
 
+		// Admin: retry a PMTA campaign (moves draft/failed → finalizing_audience)
+		s.router.Post("/api/admin/campaign-retry/{id}", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			campaignID := chi.URLParam(req, "id")
+			var name, status string
+			var configJSON sql.NullString
+			err := db.QueryRowContext(req.Context(), `SELECT COALESCE(name,''), status, pmta_config::text FROM mailing_campaigns WHERE id = $1`, campaignID).Scan(&name, &status, &configJSON)
+			if err != nil {
+				respondJSON(w, 404, map[string]string{"error": "campaign not found"})
+				return
+			}
+			if status != "draft" && status != "failed" {
+				respondJSON(w, 409, map[string]string{"error": "can only retry draft or failed campaigns", "status": status})
+				return
+			}
+			if !configJSON.Valid || configJSON.String == "" || configJSON.String == "{}" {
+				respondJSON(w, 400, map[string]string{"error": "campaign has no pmta_config"})
+				return
+			}
+			_, err = db.ExecContext(req.Context(), `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id = $1`, campaignID)
+			if err != nil {
+				respondJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			log.Printf("[Admin-Retry] campaign %s (%s) requeued for audience finalization", campaignID, name)
+			respondJSON(w, 200, map[string]interface{}{"id": campaignID, "name": name, "status": "finalizing_audience", "message": "Requeued for audience finalization"})
+		})
+
 		// Site engagement events — public (called from coupon-site beacons)
 		eventWriter := datanorm.NewEventWriter(db)
 		siteEventsHandler := NewSiteEventsHandler(db, eventWriter)
@@ -137,9 +169,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 		})
 
-		r := chi.NewRouter()
-		s.apiRouter.Mount("/mailing", r)
-		func(r chi.Router) {
+		s.apiRouter.Route("/mailing", func(r chi.Router) {
 			// Site pixel management and real-time traffic
 			r.Get("/site-pixel/snippet", siteEventsHandler.HandleGetPixelSnippet)
 			r.Get("/site-pixel/traffic", siteEventsHandler.HandleGetSiteTraffic)
@@ -935,6 +965,6 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
 				r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
 			}
-		}(r)
+		})
 	}
 }
