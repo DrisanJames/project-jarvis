@@ -67,7 +67,6 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				respondJSON(w, 400, map[string]string{"error": "campaign has no pmta_config"})
 				return
 			}
-			db.ExecContext(req.Context(), `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`)
 			_, err = db.ExecContext(req.Context(), `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id = $1`, campaignID)
 			if err != nil {
 				respondJSON(w, 500, map[string]string{"error": err.Error()})
