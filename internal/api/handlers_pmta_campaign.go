@@ -959,7 +959,7 @@ func (s *PMTACampaignService) finalizeDeploy(campaignID, orgID string, input eng
 		}()
 	}
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.globalHub, s.offerSuppMgr)
 	if err != nil {
 		log.Printf("[Deploy/BG] audience planning failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "audience planning failed: "+err.Error())
@@ -1046,7 +1046,7 @@ func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *htt
 		}()
 	}
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.globalHub, s.offerSuppMgr)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

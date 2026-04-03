@@ -129,7 +129,7 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 
 	var audienceDB dbQuerier = conn
 
-	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.offerSuppMgr)
+	audience, err := planPMTAAudience(ctx, audienceDB, orgID, input, normalized, s.suppMatcher, s.globalHub, s.offerSuppMgr)
 	if err != nil {
 		log.Printf("[AudienceWorker] audience planning failed for %s: %v", campaignID, err)
 		s.markCampaignFailed(campaignID, "audience planning failed: "+err.Error())

@@ -332,8 +332,6 @@ func TestPlanPMTAAudience_EarlyQuotaCutoff(t *testing.T) {
 		)
 	}
 
-	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
 	mock.ExpectQuery("SELECT s.id::text, s.email").
 		WithArgs(listID).
 		WillReturnRows(subscriberRows)
@@ -352,7 +350,7 @@ func TestPlanPMTAAudience_EarlyQuotaCutoff(t *testing.T) {
 		},
 	}
 
-	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
 	if err != nil {
 		t.Fatalf("planPMTAAudience: %v", err)
 	}
@@ -397,8 +395,6 @@ func TestPlanPMTAAudience_UnlimitedQuotaStreamsAll(t *testing.T) {
 		)
 	}
 
-	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
 	mock.ExpectQuery("SELECT s.id::text, s.email").
 		WithArgs(listID).
 		WillReturnRows(subscriberRows)
@@ -415,7 +411,7 @@ func TestPlanPMTAAudience_UnlimitedQuotaStreamsAll(t *testing.T) {
 		},
 	}
 
-	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
 	if err != nil {
 		t.Fatalf("planPMTAAudience: %v", err)
 	}
@@ -458,8 +454,6 @@ func TestPlanPMTAAudience_RespectsSendPriority(t *testing.T) {
 		)
 	}
 
-	mock.ExpectQuery("SELECT md5_hash FROM mailing_global_suppressions").
-		WillReturnRows(sqlmock.NewRows([]string{"md5_hash"}))
 	// First list streamed (high priority)
 	mock.ExpectQuery("SELECT s.id::text, s.email").
 		WithArgs(list1).
@@ -482,7 +476,7 @@ func TestPlanPMTAAudience_RespectsSendPriority(t *testing.T) {
 		},
 	}
 
-	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher())
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
 	if err != nil {
 		t.Fatalf("planPMTAAudience: %v", err)
 	}

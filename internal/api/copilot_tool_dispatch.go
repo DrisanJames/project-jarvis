@@ -750,7 +750,7 @@ func (c *CampaignCopilot) toolCloneCampaign(ctx context.Context, orgID string, a
 		return map[string]string{"error": "normalization error: " + err.Error()}, ""
 	}
 
-	audience, err := planPMTAAudience(ctx, c.db, orgID, input, normalized, c.pmtaSvc.suppMatcher, c.pmtaSvc.offerSuppMgr)
+	audience, err := planPMTAAudience(ctx, c.db, orgID, input, normalized, c.pmtaSvc.suppMatcher, c.pmtaSvc.globalHub, c.pmtaSvc.offerSuppMgr)
 	if err != nil {
 		return map[string]string{"error": "audience error: " + err.Error()}, ""
 	}
@@ -833,7 +833,7 @@ func (c *CampaignCopilot) toolDeployCampaign(ctx context.Context, orgID string, 
 		return map[string]string{"error": err.Error()}, ""
 	}
 
-	audience, err := planPMTAAudience(ctx, c.db, orgID, input, normalized, c.pmtaSvc.suppMatcher, c.pmtaSvc.offerSuppMgr)
+	audience, err := planPMTAAudience(ctx, c.db, orgID, input, normalized, c.pmtaSvc.suppMatcher, c.pmtaSvc.globalHub, c.pmtaSvc.offerSuppMgr)
 	if err != nil {
 		return map[string]string{"error": err.Error()}, ""
 	}

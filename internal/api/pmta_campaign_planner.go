@@ -397,6 +397,7 @@ func planPMTAAudience(
 	input engine.PMTACampaignInput,
 	normalized pmtaNormalizedCampaign,
 	suppMatcher *SuppressionMatcher,
+	globalHub *engine.GlobalSuppressionHub,
 	offerSuppMgr ...*OfferSuppressionManager,
 ) (pmtaAudiencePlan, error) {
 	planStart := time.Now()
@@ -436,18 +437,7 @@ func planPMTAAudience(
 	}
 	log.Printf("[PlanAudience] offer suppressions loaded in %v", time.Since(planStart))
 
-	globalSuppSet := make(map[string]bool)
-	gsRows, gsErr := db.QueryContext(ctx, "SELECT md5_hash FROM mailing_global_suppressions")
-	if gsErr == nil {
-		defer gsRows.Close()
-		for gsRows.Next() {
-			var h string
-			if gsRows.Scan(&h) == nil {
-				globalSuppSet[strings.ToLower(h)] = true
-			}
-		}
-	}
-	log.Printf("[PlanAudience] global suppressions loaded: %d entries in %v", len(globalSuppSet), time.Since(planStart))
+	log.Printf("[PlanAudience] using GlobalSuppressionHub (in-memory, hub=%v) at %v", globalHub != nil, time.Since(planStart))
 
 	exclusionIDs := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
 	for _, slID := range exclusionIDs {
@@ -472,6 +462,45 @@ func planPMTAAudience(
 	exclusionSegEmails, err := loadExclusionSegmentEmails(ctx, db, input.ExclusionSegments)
 	if err != nil {
 		return pmtaAudiencePlan{}, err
+	}
+
+	// Remail gap: load emails that received a send within the last MinRemailHours.
+	// Only enforced for list-sourced (cold) subscribers, not segment openers.
+	recentlyMailed := map[string]bool{}
+	if input.MinRemailHours > 0 {
+		sendingDomains := deriveSendingDomainVariants(input.SendingDomain)
+		rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer rmCancel()
+		domainParams := make([]string, len(sendingDomains))
+		for i := range sendingDomains {
+			domainParams[i] = fmt.Sprintf("$%d", i+2)
+		}
+		rmQuery := fmt.Sprintf(`
+			SELECT DISTINCT LOWER(s.email)
+			FROM mailing_tracking_events te
+			JOIN mailing_subscribers s ON s.id = te.subscriber_id
+			WHERE te.event_type IN ('sent','delivered')
+			  AND te.sending_domain IN (%s)
+			  AND te.event_at >= NOW() - make_interval(hours => $1)
+		`, strings.Join(domainParams, ","))
+		rmArgs := make([]any, 0, 1+len(sendingDomains))
+		rmArgs = append(rmArgs, input.MinRemailHours)
+		for _, d := range sendingDomains {
+			rmArgs = append(rmArgs, d)
+		}
+		rmRows, rmErr := db.QueryContext(rmCtx, rmQuery, rmArgs...)
+		if rmErr == nil {
+			defer rmRows.Close()
+			for rmRows.Next() {
+				var email string
+				if rmRows.Scan(&email) == nil {
+					recentlyMailed[email] = true
+				}
+			}
+		} else {
+			log.Printf("[PlanAudience] WARNING: failed to load recently-mailed emails: %v — remail gap NOT enforced", rmErr)
+		}
+		log.Printf("[PlanAudience] loaded %d recently-mailed emails (last %dh) in %v", len(recentlyMailed), input.MinRemailHours, time.Since(planStart))
 	}
 
 	allowedISPs := make(map[string]bool, len(normalized.Plans))
@@ -522,13 +551,16 @@ func planPMTAAudience(
 
 		hash := md5.Sum([]byte(emailLower))
 		md5Hex := hex.EncodeToString(hash[:])
-		if globalSuppSet[md5Hex] {
+		if globalHub != nil && globalHub.IsSuppressedByHash(md5Hex) {
 			return false
 		}
 		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressed(emailLower, exclusionIDs) {
 			return false
 		}
 		if exclusionSegEmails[emailLower] {
+			return false
+		}
+		if sourceType == "list" && len(recentlyMailed) > 0 && recentlyMailed[emailLower] {
 			return false
 		}
 		domain := emailLower
@@ -1312,4 +1344,27 @@ func minSpanForVolume(recipients int) time.Duration {
 		return 1 * time.Hour
 	}
 	return proportional
+}
+
+// deriveSendingDomainVariants returns a slice containing the input domain
+// plus its em./m. siblings. For example, "em.discountblog.com" produces
+// ["em.discountblog.com", "m.discountblog.com"]. This ensures remail gap
+// lookups cover all sending domain variants for a given brand.
+func deriveSendingDomainVariants(domain string) []string {
+	prefixes := []string{"em.", "m."}
+	var baseDomain string
+	for _, p := range prefixes {
+		if strings.HasPrefix(domain, p) {
+			baseDomain = domain[len(p):]
+			break
+		}
+	}
+	if baseDomain == "" {
+		return []string{domain}
+	}
+	variants := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		variants = append(variants, p+baseDomain)
+	}
+	return variants
 }

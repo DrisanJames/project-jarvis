@@ -467,7 +467,7 @@ func (a *EmailMarketingAgent) doApproveRecommendation(readCtx context.Context, o
 		return nil, fmt.Errorf("campaign normalization failed: %w", normErr)
 	}
 
-	audience, audErr := planPMTAAudience(deployCtx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher, a.pmtaSvc.offerSuppMgr)
+	audience, audErr := planPMTAAudience(deployCtx, a.db, orgID, deployInput, normalized, a.pmtaSvc.suppMatcher, a.pmtaSvc.globalHub, a.pmtaSvc.offerSuppMgr)
 	if audErr != nil {
 		return nil, fmt.Errorf("audience planning failed: %w", audErr)
 	}
