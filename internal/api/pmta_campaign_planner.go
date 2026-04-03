@@ -469,10 +469,13 @@ func planPMTAAudience(
 
 	// Remail gap: load emails that received a send within the last MinRemailHours.
 	// Only enforced for list-sourced (cold) subscribers, not segment openers.
+	// NOTE: this query uses the main db connection (passed as `db`) with a generous
+	// timeout. Previously a 30s sub-context was used, but when it expired the Go
+	// pq driver cancelled the query on the dedicated *sql.Conn, which poisoned the
+	// connection for all subsequent operations ("sql: connection is already closed").
 	recentlyMailed := map[string]bool{}
 	if input.MinRemailHours > 0 {
 		sendingDomains := deriveSendingDomainVariants(input.SendingDomain)
-		rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
 		domainParams := make([]string, len(sendingDomains))
 		for i := range sendingDomains {
 			domainParams[i] = fmt.Sprintf("$%d", i+2)
@@ -490,7 +493,7 @@ func planPMTAAudience(
 		for _, d := range sendingDomains {
 			rmArgs = append(rmArgs, d)
 		}
-		rmRows, rmErr := db.QueryContext(rmCtx, rmQuery, rmArgs...)
+		rmRows, rmErr := db.QueryContext(ctx, rmQuery, rmArgs...)
 		if rmErr == nil {
 			for rmRows.Next() {
 				var email string
@@ -502,7 +505,6 @@ func planPMTAAudience(
 		} else {
 			log.Printf("[PlanAudience] WARNING: failed to load recently-mailed emails: %v — remail gap NOT enforced", rmErr)
 		}
-		rmCancel()
 		log.Printf("[PlanAudience] loaded %d recently-mailed emails (last %dh, domains=%v) in %v",
 			len(recentlyMailed), input.MinRemailHours, sendingDomains, time.Since(planStart))
 	}
@@ -698,12 +700,10 @@ func planPMTAAudience(
 			listIDVal = *segListID
 		}
 		query, args := buildSegmentQuery(conditionsRaw.String, listIDVal)
-		segCtx, segCancel := context.WithTimeout(ctx, segmentQueryTimeout)
-		defer segCancel()
-		rows, err := db.QueryContext(segCtx, query, args...)
+		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
-			if segCtx.Err() != nil {
-				log.Printf("[PlanAudience] segment %s query timed out after %v, skipping", segmentID, segmentQueryTimeout)
+			if ctx.Err() != nil {
+				log.Printf("[PlanAudience] segment %s query cancelled, skipping", segmentID)
 				return nil
 			}
 			return err
@@ -870,12 +870,10 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 		}
 
 		query, args := buildSegmentQuery(conditionsRaw.String, listIDVal)
-		segCtx, segCancel := context.WithTimeout(ctx, 90*time.Second)
-		rows, err := db.QueryContext(segCtx, query, args...)
+		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
-			segCancel()
-			if segCtx.Err() != nil {
-				log.Printf("[loadExclusionSegmentEmails] segment %s query timed out, skipping", segmentID)
+			if ctx.Err() != nil {
+				log.Printf("[loadExclusionSegmentEmails] segment %s query cancelled, skipping", segmentID)
 				continue
 			}
 			log.Printf("[loadExclusionSegmentEmails] segment %s query error: %v", segmentID, err)
@@ -888,7 +886,6 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 			}
 		}
 		rows.Close()
-		segCancel()
 		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails (live query) in %v",
 			segmentID[:12], len(emails), time.Since(segStart))
 	}
