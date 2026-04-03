@@ -112,6 +112,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/{campaignId}/edit-data", s.HandleEditData)
 		cr.Get("/last-quotas", s.HandleLastQuotas)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
+		cr.Post("/{campaignId}/retry", s.HandleRetryCampaign)
 	})
 }
 
@@ -1361,6 +1362,49 @@ func resolveListNamesToIDs(ctx context.Context, db dbQuerier, orgID string, name
 // domainToISPLookup delegates to the canonical isp.GroupFromDomain classifier.
 func domainToISPLookup(domain string) string {
 	return isp.GroupFromDomain(domain)
+}
+
+// HandleRetryCampaign requeues a failed or draft campaign for audience
+// finalization. The campaign must still have its pmta_config stored.
+func (s *PMTACampaignService) HandleRetryCampaign(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	campaignID := chi.URLParam(r, "campaignId")
+
+	var name, status string
+	var configJSON sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(name,''), status, pmta_config::text
+		FROM mailing_campaigns WHERE id = $1
+	`, campaignID).Scan(&name, &status, &configJSON)
+	if err != nil {
+		respondJSON(w, 404, map[string]string{"error": "campaign not found"})
+		return
+	}
+	if status != "draft" && status != "failed" {
+		respondJSON(w, 409, map[string]string{"error": "can only retry draft or failed campaigns", "status": status})
+		return
+	}
+	if !configJSON.Valid || configJSON.String == "" || configJSON.String == "{}" {
+		respondJSON(w, 400, map[string]string{"error": "campaign has no pmta_config — cannot retry"})
+		return
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW()
+		WHERE id = $1
+	`, campaignID)
+	if err != nil {
+		respondJSON(w, 500, map[string]string{"error": "failed to update status: " + err.Error()})
+		return
+	}
+
+	log.Printf("[PMTA-Retry] campaign %s (%s) requeued for audience finalization", campaignID, name)
+	respondJSON(w, 200, map[string]interface{}{
+		"id":      campaignID,
+		"name":    name,
+		"status":  "finalizing_audience",
+		"message": "Campaign requeued — AudienceWorker will pick it up within 15s",
+	})
 }
 
 // HandleTriggerSend manually enqueues and processes a scheduled campaign,
