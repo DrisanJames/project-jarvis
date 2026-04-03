@@ -289,7 +289,7 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 		args = whereArgs
 		if len(seedIDs) > 0 {
 			argNum := len(args) + 1
-			query += fmt.Sprintf(" AND LOWER(email) NOT IN (SELECT LOWER(email) FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum)
+			query += fmt.Sprintf(" AND id NOT IN (SELECT id FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum)
 			args = append(args, pq.Array(seedIDs))
 		}
 	}
@@ -430,7 +430,7 @@ func (w *SegmentRefreshWorker) buildCTEQuery(
 	}
 
 	if len(seedIDs) > 0 {
-		sb.WriteString(fmt.Sprintf(" AND LOWER(s.email) NOT IN (SELECT LOWER(email) FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum))
+		sb.WriteString(fmt.Sprintf(" AND s.id NOT IN (SELECT id FROM mailing_subscribers WHERE list_id = ANY($%d))", argNum))
 		args = append(args, pq.Array(seedIDs))
 		argNum++
 	}
