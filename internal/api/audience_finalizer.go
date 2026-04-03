@@ -31,8 +31,20 @@ func (s *PMTACampaignService) StartAudienceWorker(ctx context.Context) {
 }
 
 func (s *PMTACampaignService) processNextFinalizingCampaign(parentCtx context.Context) {
-	// Atomically claim one campaign: find + update status in one query.
-	// This prevents two ECS containers from processing the same campaign.
+	// Recover campaigns orphaned in 'preparing' by dead goroutines. The 45-min
+	// threshold exceeds the 30-min processing context + 10-sec markFailed window,
+	// guaranteeing no live goroutine is still working on the campaign.
+	if res, err := s.db.ExecContext(parentCtx, `
+		UPDATE mailing_campaigns
+		SET status = 'finalizing_audience', updated_at = NOW()
+		WHERE status = 'preparing'
+		  AND updated_at < NOW() - INTERVAL '45 minutes'
+	`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("[AudienceWorker] recovered %d stale preparing campaign(s)", n)
+		}
+	}
+
 	var campaignID, orgID string
 	var configJSON sql.NullString
 
@@ -103,7 +115,9 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 	defer func() {
-		conn.ExecContext(context.Background(), "RESET ALL")
+		resetCtx, resetCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer resetCancel()
+		conn.ExecContext(resetCtx, "RESET ALL")
 		conn.Close()
 	}()
 	if _, err := conn.ExecContext(ctx, "SET statement_timeout = '1200000'"); err != nil {
@@ -141,12 +155,20 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		return
 	}
 	defer tx.Rollback()
-	tx.ExecContext(ctx, "SET LOCAL statement_timeout = '1200000'")
-	tx.ExecContext(ctx, "SET LOCAL idle_in_transaction_session_timeout = '1200000'")
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '1200000'"); err != nil {
+		log.Printf("[AudienceWorker] SET LOCAL statement_timeout failed for %s: %v — aborting (tx would use 30s default)", campaignID, err)
+		tx.Rollback()
+		s.markCampaignFailed(campaignID, "internal error: could not set transaction timeout")
+		return
+	}
+	if _, err := tx.ExecContext(ctx, "SET LOCAL idle_in_transaction_session_timeout = '1200000'"); err != nil {
+		log.Printf("[AudienceWorker] SET LOCAL idle_in_transaction failed for %s: %v", campaignID, err)
+	}
 
 	result, err := createPMTAWaveCampaign(ctx, tx, s.db, orgID, input, normalized, audience, s.colCache)
 	if err != nil {
 		log.Printf("[AudienceWorker] create wave campaign failed for %s: %v", campaignID, err)
+		tx.Rollback()
 		s.markCampaignFailed(campaignID, "campaign creation failed: "+err.Error())
 		return
 	}

@@ -1007,7 +1007,9 @@ func (s *PMTACampaignService) markCampaignFailed(campaignID, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	log.Printf("[Deploy/BG] marking campaign %s as failed: %s", campaignID, reason)
-	_, _ = s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed', updated_at = NOW() WHERE id = $1`, campaignID)
+	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed', updated_at = NOW() WHERE id = $1`, campaignID); err != nil {
+		log.Printf("[Deploy/BG] CRITICAL: failed to mark campaign %s as failed: %v (campaign may be orphaned in preparing)", campaignID, err)
+	}
 }
 
 // HandleDryRunCampaign returns a preview of what a campaign deployment would

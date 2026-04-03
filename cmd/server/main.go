@@ -3156,6 +3156,9 @@ END $$`},
 		)`},
 		{"idx_segment_members_lookup", `CREATE INDEX IF NOT EXISTS idx_segment_members_lookup ON mailing_segment_members(segment_id, email)`},
 		{"idx_tracking_events_segment", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment ON mailing_tracking_events (subscriber_id, event_type, sending_domain, event_at)`},
+
+		// Reset campaigns orphaned in 'preparing' by a previous crash/deploy.
+		{"reset_stale_preparing_v1", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE status = 'preparing' AND updated_at < NOW() - INTERVAL '45 minutes'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
