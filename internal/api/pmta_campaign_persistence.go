@@ -289,6 +289,7 @@ func createPMTAWaveCampaign(
 					$8, $9, $10, 'planned', $11,
 					NOW(), NOW()
 				)
+				ON CONFLICT (idempotency_key) DO NOTHING
 			`, waveID, campaignID, planID, wave.WaveNumber, wave.ScheduledAt, wave.WindowStartAt, wave.WindowEndAt,
 				wave.CadenceMinutes, wave.BatchSize, wave.PlannedRecipients, wave.IdempotencyKey,
 			); err != nil {
