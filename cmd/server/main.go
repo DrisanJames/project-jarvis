@@ -3190,6 +3190,18 @@ END $$`},
 		{"requeue_failed_campaigns_apr03_v2", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status IN ('draft','scheduled','failed')`},
 		{"requeue_failed_campaigns_apr03_v3", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status = 'failed'`},
 		{"requeue_failed_campaigns_apr03_v4", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN ('9f4ed554-9c55-4995-add9-b6481e8798b9','bfb79e54-ff6b-409b-861b-d54889199039') AND status = 'failed'`},
+
+		// One-off: requeue all 8 cancelled April-4 campaigns for audience finalization.
+		{"requeue_apr04_cancelled_campaigns", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE id IN (
+			'95d75b85-2712-456b-9d9a-1e8c2053633a',
+			'bf294b87-26e7-4906-9fe1-d95c7ff1eb09',
+			'50213f15-451b-479f-acdd-8fd0a414298f',
+			'9c20495e-28f5-438c-a01d-c8c804e05453',
+			'9f4ed554-9c55-4995-add9-b6481e8798b9',
+			'bfb79e54-ff6b-409b-861b-d54889199039',
+			'365a6ca0-1e74-4ac5-b3d5-3c25f56ed715',
+			'f5f8f4e5-e3b3-43f1-ac77-137fe8a41539'
+		) AND status = 'cancelled'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
