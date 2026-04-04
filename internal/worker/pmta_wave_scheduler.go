@@ -107,6 +107,11 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	}
 
 	for _, waveID := range waveIDs {
+		if blocked, reason := s.checkWaveGate(ctx, waveID); blocked {
+			log.Printf("[WaveGate] wave %s blocked: %s", waveID, reason)
+			continue
+		}
+
 		lock := distlock.NewLock(s.redisClient, s.db, fmt.Sprintf("pmta-wave:%s", waveID), 2*time.Minute)
 		acquired, err := lock.Acquire(ctx)
 		if err != nil || !acquired {
@@ -123,6 +128,99 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 		}
 		lock.Release(ctx)
 	}
+}
+
+type waveGatingConfig struct {
+	DependsOnCampaignID string  `json:"depends_on_campaign_id"`
+	MinAcceptanceRate   float64 `json:"min_acceptance_rate"`
+	GateDeadlineUTC     string  `json:"gate_deadline_utc"`
+}
+
+func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (blocked bool, reason string) {
+	var campaignID, ispPlanID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT w.campaign_id, w.isp_plan_id
+		FROM mailing_campaign_waves w
+		WHERE w.id = $1
+	`, waveID).Scan(&campaignID, &ispPlanID)
+	if err != nil {
+		return false, ""
+	}
+
+	var pmtaConfigRaw sql.NullString
+	err = s.db.QueryRowContext(ctx, `
+		SELECT pmta_config::text
+		FROM mailing_campaigns
+		WHERE id = $1 AND pmta_config IS NOT NULL
+	`, campaignID).Scan(&pmtaConfigRaw)
+	if err != nil || !pmtaConfigRaw.Valid {
+		return false, ""
+	}
+
+	var cfg struct {
+		CampaignInput struct {
+			WaveGating *waveGatingConfig `json:"wave_gating"`
+		} `json:"campaign_input"`
+	}
+	if err := json.Unmarshal([]byte(pmtaConfigRaw.String), &cfg); err != nil || cfg.CampaignInput.WaveGating == nil {
+		return false, ""
+	}
+
+	gate := cfg.CampaignInput.WaveGating
+	if gate.DependsOnCampaignID == "" {
+		return false, ""
+	}
+
+	var waveISP string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT LOWER(isp) FROM mailing_campaign_isp_plans WHERE id = $1
+	`, ispPlanID).Scan(&waveISP)
+	if err != nil {
+		return false, ""
+	}
+
+	if gate.GateDeadlineUTC != "" {
+		deadline, err := time.Parse(time.RFC3339, gate.GateDeadlineUTC)
+		if err == nil && time.Now().UTC().After(deadline) {
+			s.db.ExecContext(ctx, `
+				UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
+				WHERE id = $1 AND status = 'planned'
+			`, waveID)
+			return true, fmt.Sprintf("past gate deadline %s, ISP %s cancelled", gate.GateDeadlineUTC, waveISP)
+		}
+	}
+
+	var delivered, total int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE event_type IN ('delivered', 'bounced', 'deferred'))
+		FROM mailing_tracking_events
+		WHERE campaign_id = $1
+		  AND created_at >= NOW() - INTERVAL '12 hours'
+	`, gate.DependsOnCampaignID).Scan(&delivered, &total)
+	if err != nil || total < 50 {
+		return true, fmt.Sprintf("insufficient data for dependent campaign (total=%d, need 50+), ISP %s held", total, waveISP)
+	}
+
+	acceptanceRate := float64(delivered) / float64(total)
+	minRate := gate.MinAcceptanceRate
+	if minRate <= 0 {
+		minRate = 0.90
+	}
+
+	if acceptanceRate < minRate {
+		s.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
+			WHERE id = $1 AND status = 'planned'
+		`, waveID)
+		return true, fmt.Sprintf("dependent campaign acceptance %.1f%% < %.1f%% threshold, ISP %s suppressed",
+			acceptanceRate*100, minRate*100, waveISP)
+	}
+
+	log.Printf("[WaveGate] ISP %s CLEARED for campaign %s (acceptance=%.1f%%, threshold=%.1f%%)",
+		waveISP, campaignID, acceptanceRate*100, minRate*100)
+	return false, ""
 }
 
 func (s *PMTAWaveScheduler) dispatchWave(ctx context.Context, waveID string) error {

@@ -451,6 +451,11 @@ func main() {
 				suppressionListWorker.Start(ctx)
 				log.Println("Suppression List Worker started (brand-specific sunset suppression, runs daily)")
 
+				healthMonitor := worker.NewCampaignHealthMonitor(mailingDB)
+				healthMonitor.Start()
+				defer healthMonitor.Stop()
+				log.Println("Campaign Health Monitor started (per-ISP threshold auto-pause, checks every 60s)")
+
 				// Start Content Refresh Worker (pre-generates wave email content nightly)
 				contentRefresh := worker.NewContentRefreshWorker(mailingDB, 24*time.Hour)
 				contentRefresh.RegisterBrand(worker.ContentBrand{
@@ -3205,6 +3210,22 @@ END $$`},
 			'365a6ca0-1e74-4ac5-b3d5-3c25f56ed715',
 			'f5f8f4e5-e3b3-43f1-ac77-137fe8a41539'
 		) AND status = 'cancelled'`},
+
+		// Source-level quality tracking: stores per-list quality metrics after campaigns complete.
+		{"create_list_quality_metrics", `CREATE TABLE IF NOT EXISTS mailing_list_quality_metrics (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			list_id UUID NOT NULL,
+			campaign_id UUID,
+			evaluated_at TIMESTAMPTZ DEFAULT NOW(),
+			total_sent INTEGER DEFAULT 0,
+			delivered INTEGER DEFAULT 0,
+			bounced INTEGER DEFAULT 0,
+			complained INTEGER DEFAULT 0,
+			acceptance_rate NUMERIC(5,4) DEFAULT 0,
+			complaint_rate NUMERIC(7,6) DEFAULT 0,
+			bounce_rate NUMERIC(5,4) DEFAULT 0
+		)`},
+		{"idx_list_quality_metrics_list", `CREATE INDEX IF NOT EXISTS idx_list_quality_metrics_list ON mailing_list_quality_metrics(list_id, evaluated_at DESC)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

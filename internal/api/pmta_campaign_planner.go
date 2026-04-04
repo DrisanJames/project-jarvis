@@ -616,8 +616,33 @@ func planPMTAAudience(
 		totalQuota = 50000
 	}
 
+	listQualityCheck := func(listID string) bool {
+		var complaintRate, bounceRate float64
+		var evalCount int
+		err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*), COALESCE(AVG(complaint_rate), 0), COALESCE(AVG(bounce_rate), 0)
+			FROM mailing_list_quality_metrics
+			WHERE list_id = $1 AND evaluated_at >= NOW() - INTERVAL '14 days'
+		`, listID).Scan(&evalCount, &complaintRate, &bounceRate)
+		if err != nil || evalCount == 0 {
+			return true
+		}
+		if complaintRate > 0.0008 {
+			log.Printf("[PlanAudience] EXCLUDING list %s: complaint_rate=%.4f%% (threshold=0.08%%, evals=%d)", listID[:12], complaintRate*100, evalCount)
+			return false
+		}
+		if bounceRate > 0.03 {
+			log.Printf("[PlanAudience] EXCLUDING list %s: bounce_rate=%.2f%% (threshold=3%%, evals=%d)", listID[:12], bounceRate*100, evalCount)
+			return false
+		}
+		return true
+	}
+
 	streamList := func(listID string) error {
 		if allQuotasMet() {
+			return nil
+		}
+		if !listQualityCheck(listID) {
 			return nil
 		}
 		query := `SELECT s.id::text, s.email FROM mailing_subscribers s WHERE s.list_id = $1 AND s.status IN ('active','confirmed')`

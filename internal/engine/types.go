@@ -632,6 +632,26 @@ type PMTAISPScheduleInput struct {
 	TimeSpans         []PMTATimeSpanInput `json:"time_spans,omitempty"`
 }
 
+// DeliveryThresholds defines per-ISP auto-pause thresholds for campaign health monitoring.
+// When any ISP exceeds these rates within the check window, that ISP's plans/waves/queue
+// items are paused while the rest of the campaign continues sending.
+type DeliveryThresholds struct {
+	DeferralPausePct   float64 `json:"deferral_pause_pct,omitempty"`
+	BlockPausePct      float64 `json:"block_pause_pct,omitempty"`
+	ComplaintPausePct  float64 `json:"complaint_pause_pct,omitempty"`
+	CheckWindowMinutes int     `json:"check_window_minutes,omitempty"`
+	MinSentForCheck    int     `json:"min_sent_for_check,omitempty"`
+}
+
+// WaveGating configures welcome-wave dependency on an engaged campaign's metrics.
+// The wave scheduler evaluates the dependent campaign's per-ISP acceptance rate
+// before dispatching each wave. ISPs below the threshold are suppressed.
+type WaveGating struct {
+	DependsOnCampaignID string  `json:"depends_on_campaign_id,omitempty"`
+	MinAcceptanceRate   float64 `json:"min_acceptance_rate,omitempty"`
+	GateDeadlineUTC     string  `json:"gate_deadline_utc,omitempty"`
+}
+
 // PMTACampaignInput is the deploy payload for creating a PMTA-routed campaign.
 type PMTACampaignInput struct {
 	CampaignID        string                 `json:"campaign_id,omitempty"`
@@ -655,6 +675,9 @@ type PMTACampaignInput struct {
 	SendMode          string                 `json:"send_mode"`        // "immediate" or "scheduled"
 	ScheduledAt       *time.Time             `json:"scheduled_at"`     // required when send_mode="scheduled"
 	MinRemailHours    int                    `json:"min_remail_hours"` // 0 = no gap; 48 = 2-day minimum between list-sourced sends
+
+	DeliveryThresholds *DeliveryThresholds `json:"delivery_thresholds,omitempty"`
+	WaveGating         *WaveGating         `json:"wave_gating,omitempty"`
 }
 
 // PMTACampaignDraftInput captures the save-draft payload for the PMTA wizard.
