@@ -628,11 +628,11 @@ func planPMTAAudience(
 			return true
 		}
 		if complaintRate > 0.0008 {
-			log.Printf("[PlanAudience] EXCLUDING list %s: complaint_rate=%.4f%% (threshold=0.08%%, evals=%d)", listID[:12], complaintRate*100, evalCount)
+			log.Printf("[PlanAudience] EXCLUDING list %s: complaint_rate=%.4f%% (threshold=0.08%%, evals=%d)", safePrefix(listID, 12), complaintRate*100, evalCount)
 			return false
 		}
 		if bounceRate > 0.03 {
-			log.Printf("[PlanAudience] EXCLUDING list %s: bounce_rate=%.2f%% (threshold=3%%, evals=%d)", listID[:12], bounceRate*100, evalCount)
+			log.Printf("[PlanAudience] EXCLUDING list %s: bounce_rate=%.2f%% (threshold=3%%, evals=%d)", safePrefix(listID, 12), bounceRate*100, evalCount)
 			return false
 		}
 		return true
@@ -762,12 +762,12 @@ func planPMTAAudience(
 						return pmtaAudiencePlan{}, err
 					}
 				}
-				log.Printf("[PlanAudience] priority %d/%d list %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), item.ID[:12], time.Since(itemStart), len(qualified))
+				log.Printf("[PlanAudience] priority %d/%d list %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), safePrefix(item.ID, 36), time.Since(itemStart), len(qualified))
 			case "segment":
 				if err := streamSegment(item.ID); err != nil {
 					return pmtaAudiencePlan{}, err
 				}
-				log.Printf("[PlanAudience] priority %d/%d segment %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), item.ID[:12], time.Since(itemStart), len(qualified))
+				log.Printf("[PlanAudience] priority %d/%d segment %s streamed in %v, qualified=%d", idx+1, len(input.SendPriority), safePrefix(item.ID, 36), time.Since(itemStart), len(qualified))
 			}
 		}
 	} else {
@@ -780,7 +780,7 @@ func planPMTAAudience(
 				return pmtaAudiencePlan{}, err
 			}
 			log.Printf("[PlanAudience] list %d/%d (%s) streamed in %v, qualified so far: %d",
-				i+1, len(inclusionIDs), listID[:12], time.Since(listStart), len(qualified))
+				i+1, len(inclusionIDs), safePrefix(listID, 12), time.Since(listStart), len(qualified))
 		}
 		for _, segmentID := range input.InclusionSegments {
 			if allQuotasMet() {
@@ -868,7 +868,7 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 				}
 				rows.Close()
 				log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails from materialized cache in %v",
-					segmentID[:12], matCount, time.Since(segStart))
+					safePrefix(segmentID, 12), matCount, time.Since(segStart))
 				continue
 			}
 			log.Printf("[loadExclusionSegmentEmails] segment %s materialized read error: %v, falling back", segmentID, err)
@@ -912,7 +912,7 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 		}
 		rows.Close()
 		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails (live query) in %v",
-			segmentID[:12], len(emails), time.Since(segStart))
+			safePrefix(segmentID, 12), len(emails), time.Since(segStart))
 	}
 	return emails, nil
 }
@@ -1069,6 +1069,13 @@ func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCou
 	}
 
 	return waves
+}
+
+func safePrefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func coalesceString(v, fallback string) string {
