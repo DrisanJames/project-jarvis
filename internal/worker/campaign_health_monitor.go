@@ -235,7 +235,7 @@ func (m *CampaignHealthMonitor) checkISPThresholds() {
 func (m *CampaignHealthMonitor) getISPEventCounts(ctx context.Context, campaignID string) ([]ispEventCounts, error) {
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(p.isp, 'unknown') AS isp,
+			COALESCE(p.recipient_isp, 'unknown') AS isp,
 			COUNT(*) FILTER (WHERE te.event_type = 'delivered') AS delivered,
 			COUNT(*) FILTER (WHERE te.event_type = 'deferred')  AS deferred,
 			COUNT(*) FILTER (WHERE te.event_type = 'bounced')   AS bounced,
@@ -244,7 +244,7 @@ func (m *CampaignHealthMonitor) getISPEventCounts(ctx context.Context, campaignI
 		JOIN mailing_campaign_plan_recipients p
 		  ON p.campaign_id = te.campaign_id AND p.subscriber_id = te.subscriber_id
 		WHERE te.campaign_id = $1
-		GROUP BY COALESCE(p.isp, 'unknown')
+		GROUP BY COALESCE(p.recipient_isp, 'unknown')
 	`, campaignID)
 	if err != nil {
 		return nil, err
@@ -308,7 +308,7 @@ func (m *CampaignHealthMonitor) pauseCampaignISP(ctx context.Context, campaignID
 
 	m.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_queue SET status = 'paused', updated_at = NOW()
-		WHERE campaign_id = $1 AND LOWER(isp) = $2 AND status = 'queued'
+		WHERE campaign_id = $1 AND LOWER(recipient_isp) = $2 AND status = 'queued'
 	`, campaignID, lowerISP)
 
 	log.Printf("[HealthMonitor] paused ISP %s on campaign %s (plans_paused=%d)", isp, campaignID, affected)
@@ -356,18 +356,18 @@ func (m *CampaignHealthMonitor) recordListQualityMetrics() {
 			SELECT
 				pr.audience_source_id AS list_id,
 				pr.campaign_id,
-				COUNT(*) AS total_sent,
-				COUNT(*) FILTER (WHERE te.event_type = 'delivered') AS delivered,
-				COUNT(*) FILTER (WHERE te.event_type = 'bounced') AS bounced,
-				COUNT(*) FILTER (WHERE te.event_type = 'complained') AS complained,
-				CASE WHEN COUNT(*) > 0
-					THEN COUNT(*) FILTER (WHERE te.event_type = 'delivered')::numeric / COUNT(*)
+				COUNT(DISTINCT pr.subscriber_id) AS total_sent,
+				COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'delivered') AS delivered,
+				COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'bounced') AS bounced,
+				COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'complained') AS complained,
+				CASE WHEN COUNT(DISTINCT pr.subscriber_id) > 0
+					THEN COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'delivered')::numeric / COUNT(DISTINCT pr.subscriber_id)
 					ELSE 0 END,
-				CASE WHEN COUNT(*) FILTER (WHERE te.event_type = 'delivered') > 0
-					THEN COUNT(*) FILTER (WHERE te.event_type = 'complained')::numeric / COUNT(*) FILTER (WHERE te.event_type = 'delivered')
+				CASE WHEN COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'delivered') > 0
+					THEN COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'complained')::numeric / COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'delivered')
 					ELSE 0 END,
-				CASE WHEN COUNT(*) > 0
-					THEN COUNT(*) FILTER (WHERE te.event_type = 'bounced')::numeric / COUNT(*)
+				CASE WHEN COUNT(DISTINCT pr.subscriber_id) > 0
+					THEN COUNT(DISTINCT pr.subscriber_id) FILTER (WHERE te.event_type = 'bounced')::numeric / COUNT(DISTINCT pr.subscriber_id)
 					ELSE 0 END
 			FROM mailing_campaign_plan_recipients pr
 			LEFT JOIN mailing_tracking_events te
@@ -376,7 +376,7 @@ func (m *CampaignHealthMonitor) recordListQualityMetrics() {
 			  AND pr.audience_source_type = 'list'
 			  AND pr.audience_source_id IS NOT NULL
 			GROUP BY pr.audience_source_id, pr.campaign_id
-			HAVING COUNT(*) >= 10
+			HAVING COUNT(DISTINCT pr.subscriber_id) >= 10
 		`, campID)
 		log.Printf("[HealthMonitor] recorded list quality metrics for campaign %s", campID)
 	}

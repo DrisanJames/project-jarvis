@@ -84,7 +84,7 @@ func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 		}
 		count, err := m.materializeOne(ctx, seg.id, seg.listID, seg.conditions)
 		if err != nil {
-			log.Printf("[SegmentMaterializer] %s (%s) failed: %v", seg.name, seg.id[:12], err)
+			log.Printf("[SegmentMaterializer] %s (%s) failed: %v", seg.name, safePrefix(seg.id, 12), err)
 			continue
 		}
 		log.Printf("[SegmentMaterializer] %s — %d members", seg.name, count)

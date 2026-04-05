@@ -190,17 +190,22 @@ func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (b
 		}
 	}
 
+	// Per-ISP acceptance: join with plan recipients so we evaluate the
+	// dependent campaign's performance for THIS wave's ISP, not globally.
 	var delivered, total int
 	err = s.db.QueryRowContext(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE event_type = 'delivered'),
-			COUNT(*) FILTER (WHERE event_type IN ('delivered', 'bounced', 'deferred'))
-		FROM mailing_tracking_events
-		WHERE campaign_id = $1
-		  AND created_at >= NOW() - INTERVAL '12 hours'
-	`, gate.DependsOnCampaignID).Scan(&delivered, &total)
-	if err != nil || total < 50 {
-		return true, fmt.Sprintf("insufficient data for dependent campaign (total=%d, need 50+), ISP %s held", total, waveISP)
+			COUNT(*) FILTER (WHERE te.event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE te.event_type IN ('delivered', 'bounced', 'deferred'))
+		FROM mailing_tracking_events te
+		JOIN mailing_campaign_plan_recipients pr
+		  ON pr.campaign_id = te.campaign_id AND pr.subscriber_id = te.subscriber_id
+		WHERE te.campaign_id = $1
+		  AND LOWER(pr.recipient_isp) = $2
+		  AND te.created_at >= NOW() - INTERVAL '12 hours'
+	`, gate.DependsOnCampaignID, waveISP).Scan(&delivered, &total)
+	if err != nil || total < 20 {
+		return true, fmt.Sprintf("insufficient per-ISP data for dependent campaign ISP %s (total=%d, need 20+), held", waveISP, total)
 	}
 
 	acceptanceRate := float64(delivered) / float64(total)
@@ -208,14 +213,18 @@ func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (b
 	if minRate <= 0 {
 		minRate = 0.90
 	}
+	if minRate > 1.0 {
+		log.Printf("[WaveGate] WARNING: min_acceptance_rate=%.2f looks like a percentage, converting to ratio", minRate)
+		minRate = minRate / 100.0
+	}
 
 	if acceptanceRate < minRate {
 		s.db.ExecContext(ctx, `
 			UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
 			WHERE id = $1 AND status = 'planned'
 		`, waveID)
-		return true, fmt.Sprintf("dependent campaign acceptance %.1f%% < %.1f%% threshold, ISP %s suppressed",
-			acceptanceRate*100, minRate*100, waveISP)
+		return true, fmt.Sprintf("dependent campaign ISP %s acceptance %.1f%% < %.1f%% threshold, suppressed",
+			waveISP, acceptanceRate*100, minRate*100)
 	}
 
 	log.Printf("[WaveGate] ISP %s CLEARED for campaign %s (acceptance=%.1f%%, threshold=%.1f%%)",

@@ -200,7 +200,7 @@ func (cb *CampaignBuilder) ensureCampaignColumns(ctx context.Context) {
 	
 	for _, migration := range migrations {
 		if _, err := cb.db.ExecContext(ctx, migration); err != nil {
-			log.Printf("[CampaignBuilder] Migration failed: %s: %v", migration[:60], err)
+			log.Printf("[CampaignBuilder] Migration failed: %s: %v", safePrefix(migration, 60), err)
 		}
 	}
 

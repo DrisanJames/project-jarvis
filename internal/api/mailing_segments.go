@@ -864,7 +864,7 @@ func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter,
 		}
 		if condJSON != "" && condJSON != "[]" {
 			if err := json.Unmarshal([]byte(condJSON), &conditions); err != nil {
-				log.Printf("[SegmentRefresh] JSON parse error for %s: %v (json=%s)", name, err, condJSON[:100])
+				log.Printf("[SegmentRefresh] JSON parse error for %s: %v (json=%s)", name, err, safePrefix(condJSON, 100))
 			}
 		}
 		if len(conditions) == 0 {
