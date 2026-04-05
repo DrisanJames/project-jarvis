@@ -600,9 +600,10 @@ func (p *SendWorkerPool) claimISPBatch(campaignID string, batchCounts map[string
 
 // ispCampaignState tracks the batch plan and remaining quotas for one campaign.
 type ispCampaignState struct {
-	campaignID string
-	plan       map[string]int // per-ISP per-batch target (from ComputeBatchPlan)
-	remaining  map[string]int // per-ISP queued items left (from DB, refreshed each cycle)
+	campaignID    string
+	plan          map[string]int // per-ISP per-batch target (from ComputeBatchPlan)
+	remaining     map[string]int // per-ISP queued items left (from DB, refreshed each cycle)
+	lastRefreshOK bool           // whether the most recent DB refresh succeeded
 }
 
 // ispDispatchLoop is a single coordinator goroutine that discovers ISP-quota
@@ -654,7 +655,7 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		activeCampaigns[campID] = true
 
 		if _, exists := states[campID]; exists {
-			p.refreshRemainingFromDB(ctx, states[campID])
+			p.refreshRemainingFromDB(states[campID])
 			continue
 		}
 
@@ -671,7 +672,7 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		quotas := make(map[string]int, len(qCfg.ISPQuotas))
 		for _, q := range qCfg.ISPQuotas {
 			if q.Volume > 0 {
-				quotas[q.ISP] = q.Volume
+				quotas[strings.ToLower(q.ISP)] = q.Volume
 			}
 		}
 		if len(quotas) == 0 {
@@ -711,7 +712,10 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			plan:       ComputeBatchPlan(quotas, numBatches),
 			remaining:  make(map[string]int, len(quotas)),
 		}
-		p.refreshRemainingFromDB(ctx, state)
+		if !p.refreshRemainingFromDB(state) {
+			log.Printf("[ISPDispatch] Skipping campaign %s on first discovery (refresh failed, will retry next tick)", campID)
+			continue
+		}
 
 		states[campID] = state
 		log.Printf("[ISPDispatch] Tracking campaign %s: quotas=%v plan=%v remaining=%v batches=%d",
@@ -728,17 +732,22 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 
 // refreshRemainingFromDB queries the actual queued item counts per ISP from
 // the database, making the dispatcher resilient to server restarts.
-func (p *SendWorkerPool) refreshRemainingFromDB(ctx context.Context, state *ispCampaignState) {
+// Returns true on success, false on error (so callers can avoid acting on stale data).
+func (p *SendWorkerPool) refreshRemainingFromDB(state *ispCampaignState) bool {
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT COALESCE(recipient_isp, 'other'), COUNT(*)
+		SELECT COALESCE(LOWER(recipient_isp), 'other'), COUNT(*)
 		FROM mailing_campaign_queue
 		WHERE campaign_id = $1
 		  AND status = 'queued'
-		GROUP BY recipient_isp
+		GROUP BY COALESCE(LOWER(recipient_isp), 'other')
 	`, state.campaignID)
 	if err != nil {
 		log.Printf("[ISPDispatch] Error refreshing remaining for %s: %v", state.campaignID, err)
-		return
+		state.lastRefreshOK = false
+		return false
 	}
 	defer rows.Close()
 
@@ -756,6 +765,8 @@ func (p *SendWorkerPool) refreshRemainingFromDB(ctx context.Context, state *ispC
 		state.remaining[isp] = fresh[isp]
 	}
 	state.remaining["other"] = fresh["other"]
+	state.lastRefreshOK = true
+	return true
 }
 
 // dispatchISPBatches runs one batch cycle for every tracked ISP-quota campaign.
@@ -779,6 +790,10 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 			}
 		}
 		if BatchTotal(batchCounts) == 0 {
+			if !state.lastRefreshOK {
+				log.Printf("[ISPDispatch] Campaign %s batch=0 but last refresh failed — keeping (will retry)", campID)
+				continue
+			}
 			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing", campID)
 			delete(states, campID)
 			continue

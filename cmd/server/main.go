@@ -3494,6 +3494,7 @@ func runAdminMigrations() {
 		{"nuke_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold' WHERE hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%'`},
 
 		{"idx_queue_recipient_isp", `CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`},
+		{"idx_queue_campaign_status_queued", `CREATE INDEX IF NOT EXISTS idx_queue_campaign_status_scheduled ON mailing_campaign_queue (campaign_id, status, scheduled_at) WHERE status = 'queued'`},
 
 		{"fix_warmup_ips_177_179_pool", `DO $$
 		DECLARE
