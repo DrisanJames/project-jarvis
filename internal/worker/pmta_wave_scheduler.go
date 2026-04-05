@@ -179,14 +179,11 @@ func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (b
 		return false, ""
 	}
 
+	pastDeadline := false
 	if gate.GateDeadlineUTC != "" {
 		deadline, err := time.Parse(time.RFC3339, gate.GateDeadlineUTC)
 		if err == nil && time.Now().UTC().After(deadline) {
-			s.db.ExecContext(ctx, `
-				UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
-				WHERE id = $1 AND status = 'planned'
-			`, waveID)
-			return true, fmt.Sprintf("past gate deadline %s, ISP %s cancelled", gate.GateDeadlineUTC, waveISP)
+			pastDeadline = true
 		}
 	}
 
@@ -205,6 +202,11 @@ func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (b
 		  AND te.created_at >= NOW() - INTERVAL '12 hours'
 	`, gate.DependsOnCampaignID, waveISP).Scan(&delivered, &total)
 	if err != nil || total < 20 {
+		if pastDeadline {
+			log.Printf("[WaveGate] ISP %s RELEASED for campaign %s (insufficient data total=%d, past deadline — no negative signal, allowing)",
+				waveISP, campaignID, total)
+			return false, ""
+		}
 		return true, fmt.Sprintf("insufficient per-ISP data for dependent campaign ISP %s (total=%d, need 20+), held", waveISP, total)
 	}
 
@@ -219,11 +221,15 @@ func (s *PMTAWaveScheduler) checkWaveGate(ctx context.Context, waveID string) (b
 	}
 
 	if acceptanceRate < minRate {
-		s.db.ExecContext(ctx, `
-			UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
-			WHERE id = $1 AND status = 'planned'
-		`, waveID)
-		return true, fmt.Sprintf("dependent campaign ISP %s acceptance %.1f%% < %.1f%% threshold, suppressed",
+		if pastDeadline {
+			s.db.ExecContext(ctx, `
+				UPDATE mailing_campaign_waves SET status = 'cancelled', updated_at = NOW()
+				WHERE id = $1 AND status = 'planned'
+			`, waveID)
+			return true, fmt.Sprintf("dependent campaign ISP %s acceptance %.1f%% < %.1f%% threshold (past deadline), cancelled",
+				waveISP, acceptanceRate*100, minRate*100)
+		}
+		return true, fmt.Sprintf("dependent campaign ISP %s acceptance %.1f%% < %.1f%% threshold, held",
 			waveISP, acceptanceRate*100, minRate*100)
 	}
 

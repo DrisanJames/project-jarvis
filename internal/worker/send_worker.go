@@ -602,8 +602,9 @@ func (p *SendWorkerPool) claimISPBatch(campaignID string, batchCounts map[string
 type ispCampaignState struct {
 	campaignID    string
 	plan          map[string]int // per-ISP per-batch target (from ComputeBatchPlan)
-	remaining     map[string]int // per-ISP queued items left (from DB, refreshed each cycle)
+	remaining     map[string]int // per-ISP queued items left (from DB, refreshed periodically)
 	lastRefreshOK bool           // whether the most recent DB refresh succeeded
+	lastRefreshAt time.Time      // when remaining was last refreshed from DB
 }
 
 // ispDispatchLoop is a single coordinator goroutine that discovers ISP-quota
@@ -654,8 +655,10 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		}
 		activeCampaigns[campID] = true
 
-		if _, exists := states[campID]; exists {
-			p.refreshRemainingFromDB(states[campID])
+		if st, exists := states[campID]; exists {
+			if time.Since(st.lastRefreshAt) >= 15*time.Second {
+				p.refreshRemainingFromDB(st)
+			}
 			continue
 		}
 
@@ -766,6 +769,7 @@ func (p *SendWorkerPool) refreshRemainingFromDB(state *ispCampaignState) bool {
 	}
 	state.remaining["other"] = fresh["other"]
 	state.lastRefreshOK = true
+	state.lastRefreshAt = time.Now()
 	return true
 }
 
@@ -867,6 +871,12 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 		actualCounts := make(map[string]int)
 		for _, item := range items {
 			actualCounts[ClassifySubscriberISP(item.Email)]++
+		}
+		for isp, n := range actualCounts {
+			state.remaining[isp] -= n
+			if state.remaining[isp] < 0 {
+				state.remaining[isp] = 0
+			}
 		}
 		log.Printf("[ISPDispatch] Campaign %s: claimed %d items (plan=%v actual=%v)",
 			campID, len(items), batchCounts, actualCounts)
