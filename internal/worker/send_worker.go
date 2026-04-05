@@ -615,14 +615,15 @@ func (p *SendWorkerPool) ispDispatchLoop() {
 	defer ticker.Stop()
 
 	states := make(map[string]*ispCampaignState)
+	removedCooldown := make(map[string]time.Time) // campaigns recently removed as fully dispatched
 
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			p.refreshISPCampaigns(states)
-			p.dispatchISPBatches(states)
+			p.refreshISPCampaigns(states, removedCooldown)
+			p.dispatchISPBatches(states, removedCooldown)
 		}
 	}
 }
@@ -630,7 +631,13 @@ func (p *SendWorkerPool) ispDispatchLoop() {
 // refreshISPCampaigns discovers sending campaigns with ISP quotas, initializes
 // batch plans, and queries the DB for actual remaining queued counts per ISP
 // (surviving server restarts). Removes campaigns no longer sending.
-func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState) {
+func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState, removedCooldown map[string]time.Time) {
+	// Expire stale cooldown entries
+	for cid, t := range removedCooldown {
+		if time.Since(t) > 60*time.Second {
+			delete(removedCooldown, cid)
+		}
+	}
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
@@ -659,6 +666,9 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			if time.Since(st.lastRefreshAt) >= 15*time.Second {
 				p.refreshRemainingFromDB(st)
 			}
+			continue
+		}
+		if _, onCooldown := removedCooldown[campID]; onCooldown {
 			continue
 		}
 
@@ -775,7 +785,7 @@ func (p *SendWorkerPool) refreshRemainingFromDB(state *ispCampaignState) bool {
 
 // dispatchISPBatches runs one batch cycle for every tracked ISP-quota campaign.
 // Claimed items are processed concurrently using a bounded goroutine pool.
-func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState) {
+func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState, removedCooldown map[string]time.Time) {
 	for campID, state := range states {
 		select {
 		case <-p.ctx.Done():
@@ -798,8 +808,9 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState)
 				log.Printf("[ISPDispatch] Campaign %s batch=0 but last refresh failed — keeping (will retry)", campID)
 				continue
 			}
-			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing", campID)
+			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing (cooldown 60s)", campID)
 			delete(states, campID)
+			removedCooldown[campID] = time.Now()
 			continue
 		}
 
