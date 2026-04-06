@@ -209,6 +209,18 @@ type isolationResponse struct {
 func (s *PMTACampaignService) HandlePoolIsolationActivate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Auto-create preferences table if it doesn't exist (idempotent)
+	s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mailing_ip_pool_preferences (
+		pool_id UUID REFERENCES mailing_ip_pools(id),
+		preferred_ip_id UUID REFERENCES mailing_ip_addresses(id),
+		standby_ip_id UUID REFERENCES mailing_ip_addresses(id),
+		isolation_mode VARCHAR(20) DEFAULT 'normal' CHECK (isolation_mode IN ('normal', 'strict')),
+		reason TEXT,
+		set_by TEXT DEFAULT 'manual',
+		set_at TIMESTAMPTZ DEFAULT NOW(),
+		PRIMARY KEY (pool_id)
+	)`)
+
 	var reqs []isolationRequest
 	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
