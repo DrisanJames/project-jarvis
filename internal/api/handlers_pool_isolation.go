@@ -227,6 +227,20 @@ func (s *PMTACampaignService) HandlePoolIsolationActivate(w http.ResponseWriter,
 			reason = "strict isolation activated via API"
 		}
 
+		// Move preferred and standby IPs to the target pool if they're in a different pool
+		for _, ipAddr := range []string{req.PreferredIP, req.StandbyIP} {
+			res, err := s.db.ExecContext(ctx, `
+				UPDATE mailing_ip_addresses SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = $1), updated_at = NOW()
+				WHERE ip_address = $2::inet
+					AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = $1)
+			`, req.PoolName, ipAddr)
+			if err != nil {
+				resp.Errors = append(resp.Errors, fmt.Sprintf("reassign %s to %s: %v", ipAddr, req.PoolName, err))
+			} else if n, _ := res.RowsAffected(); n > 0 {
+				resp.Actions = append(resp.Actions, fmt.Sprintf("reassigned %s → %s", ipAddr, req.PoolName))
+			}
+		}
+
 		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO mailing_ip_pool_preferences (pool_id, preferred_ip_id, standby_ip_id, isolation_mode, reason, set_by, set_at)
 			SELECT pool.id, pref_ip.id, standby_ip.id, 'strict', $4, 'pool-isolation-api', NOW()
