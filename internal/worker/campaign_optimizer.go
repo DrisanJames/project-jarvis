@@ -464,7 +464,7 @@ func (co *CampaignOptimizer) executeDecision(ctx context.Context, tracker *Campa
 	// Execute the actual decision
 	switch decision.Type {
 	case "pause_campaign":
-		co.pauseCampaign(ctx, tracker.CampaignID)
+		log.Printf("[CampaignOptimizer] Campaign %s recommended for pause — auto-pause DISABLED, manual intervention required", tracker.CampaignID)
 	case "throughput_increase", "throughput_decrease":
 		co.adjustThrottle(ctx, tracker, decision)
 	case "rotate_creative":

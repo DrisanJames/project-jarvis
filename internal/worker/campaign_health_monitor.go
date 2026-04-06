@@ -99,10 +99,8 @@ func (m *CampaignHealthMonitor) checkCampaigns() {
 		minutesSinceStart := time.Since(startedAt).Minutes()
 
 		if bounceRate > autoPauseBounceRate && minutesSinceStart <= autoPauseWindowMinutes {
-			log.Printf("[HealthMonitor] AUTO-PAUSING campaign %s: bounce_rate=%.2f%% sent=%d bounced=%d (%.0f min since start)",
+			log.Printf("[HealthMonitor] HIGH BOUNCE campaign %s: bounce_rate=%.2f%% sent=%d bounced=%d (%.0f min since start) — auto-pause DISABLED, manual intervention required",
 				id, bounceRate*100, sentCount, bounceCount, minutesSinceStart)
-			m.pauseCampaign(ctx, id)
-			continue
 		}
 
 		if bounceRate > warningBounceRate {

@@ -261,10 +261,7 @@ func (s *SmartSender) OptimizeThrottle(ctx context.Context, campaignID uuid.UUID
 	}
 
 	if recommendation.Action == "pause" {
-		// Pause the campaign
-		if err := s.pauseCampaign(ctx, campaignID, recommendation.Reason); err != nil {
-			log.Printf("[SmartSender] Failed to pause campaign: %v", err)
-		}
+		log.Printf("[SmartSender] Campaign %s recommended for pause: %s — auto-pause DISABLED, manual intervention required", campaignID, recommendation.Reason)
 		result.NewRate = 0
 		result.ChangePercentage = -100
 		return result, nil
@@ -982,8 +979,7 @@ func (s *SmartSender) checkForAnomalies(ctx context.Context, campaignID uuid.UUI
 	if totalSent > 0 {
 		complaintRate := float64(totalComplaints) / float64(totalSent)
 		if complaintRate > settings.ComplaintThreshold && settings.PauseOnHighComplaints {
-			// Auto-pause
-			s.pauseCampaign(ctx, campaignID, fmt.Sprintf("Auto-pause: Complaint rate %.4f%% exceeds threshold", complaintRate*100))
+			log.Printf("[SmartSender] Campaign %s complaint rate %.4f%% exceeds threshold — auto-pause DISABLED, manual intervention required", campaignID, complaintRate*100)
 		}
 	}
 }

@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHealthMonitor_AutoPauseHighBounceRate(t *testing.T) {
+func TestHealthMonitor_LogsWarningButNeverPauses(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
 
-	startedAt := time.Now().Add(-10 * time.Minute) // 10 min ago, within the 30 min window
+	startedAt := time.Now().Add(-10 * time.Minute)
 	campID := "camp-high-bounce"
 
 	mock.ExpectQuery("SELECT id, sent_count").
@@ -23,19 +23,9 @@ func TestHealthMonitor_AutoPauseHighBounceRate(t *testing.T) {
 			"id", "sent_count", "bounce_count", "hard_bounce_count", "started_at",
 		}).AddRow(campID, 200, 25, 20, startedAt)) // 12.5% bounce rate
 
-	// Expect pause: campaign, queue, plans, waves
-	mock.ExpectExec("UPDATE mailing_campaigns SET status = 'paused'").
-		WithArgs(campID).
+	// Auto-pause is disabled — only a health_warning update expected (bounce rate > 5%)
+	mock.ExpectExec("UPDATE mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_campaign_queue SET status = 'paused'").
-		WithArgs(campID).
-		WillReturnResult(sqlmock.NewResult(0, 5))
-	mock.ExpectExec("UPDATE mailing_campaign_isp_plans SET status = 'paused'").
-		WithArgs(campID).
-		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec("UPDATE mailing_campaign_waves SET status = 'cancelled'").
-		WithArgs(campID).
-		WillReturnResult(sqlmock.NewResult(0, 3))
 
 	m := NewCampaignHealthMonitor(db)
 	m.ctx, m.cancel = testContext()

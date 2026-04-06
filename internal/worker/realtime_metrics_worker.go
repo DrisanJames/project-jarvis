@@ -393,10 +393,9 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 	
 	// Decision logic
 	if complaintRate > complaintThreshold*2 {
-		// Critical - pause
 		result.NewRate = 0
-		result.Reason = fmt.Sprintf("Critical complaint rate %.4f%% - pausing", complaintRate*100)
-		w.pauseCampaign(ctx, campaignID, result.Reason)
+		result.Reason = fmt.Sprintf("Critical complaint rate %.4f%% — auto-pause DISABLED, manual intervention required", complaintRate*100)
+		log.Printf("[RealtimeMetricsWorker] Campaign %s: %s", campaignID, result.Reason)
 	} else if complaintRate > complaintThreshold {
 		// High complaints - reduce 50%
 		result.NewRate = int(float64(currentRate) * 0.5)
