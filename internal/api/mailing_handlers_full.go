@@ -571,6 +571,9 @@ func (svc *MailingService) HandleGetCampaigns(w http.ResponseWriter, r *http.Req
 		log.Printf("[GetCampaigns] iteration error org=%s: %v", orgID, err)
 	}
 
+	// Overlay PMTA-authoritative delivery metrics from the summary table.
+	overlayPMTASummary(ctx, svc.db, campaigns)
+
 	pagMeta := PaginationMeta{
 		Page:       pag.Page,
 		Limit:      pag.Limit,
@@ -689,4 +692,36 @@ func (svc *MailingService) HandleCreateCampaign(w http.ResponseWriter, r *http.R
 		Status:    "draft",
 		CreatedAt: createdAt.Format(time.RFC3339),
 	})
+}
+
+// overlayPMTASummary enriches a slice of CampaignListItem with delivery
+// metrics from pmta_acct_daily_summary. Only campaigns with PMTA data are
+// updated; others keep their mailing_campaigns counter values.
+func overlayPMTASummary(ctx context.Context, db *sql.DB, campaigns []CampaignListItem) {
+	if len(campaigns) == 0 || db == nil {
+		return
+	}
+	idIdx := make(map[string]int, len(campaigns))
+	for i, c := range campaigns {
+		idIdx[c.ID] = i
+	}
+
+	for _, c := range campaigns {
+		var del, hb, sb, comp int
+		err := db.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounced),0),
+			       COALESCE(SUM(soft_bounced),0), COALESCE(SUM(complained),0)
+			FROM pmta_acct_daily_summary
+			WHERE campaign_id = $1::uuid
+		`, c.ID).Scan(&del, &hb, &sb, &comp)
+		if err != nil || (del == 0 && hb == 0 && sb == 0 && comp == 0) {
+			continue
+		}
+		idx := idIdx[c.ID]
+		campaigns[idx].DerivedDeliveredCount = del
+		campaigns[idx].HardBounceCount = hb
+		campaigns[idx].SoftBounceCount = sb
+		campaigns[idx].BounceCount = hb + sb
+		campaigns[idx].ComplaintCount = comp
+	}
 }

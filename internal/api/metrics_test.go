@@ -120,17 +120,28 @@ func TestComputeMetrics_CampaignScoped(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	mock.ExpectQuery(`campaign_id`).
-		WithArgs("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").
-		WillReturnRows(sqlmock.NewRows(metricsCols).
-			AddRow(100, 95, 30, 10, 2, 3, 0, 1, 1))
+	campID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	// First query: summary table for delivery metrics
+	mock.ExpectQuery(`pmta_acct_daily_summary`).
+		WithArgs(campID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivered", "hard_bounced", "soft_bounced", "complained", "deferred"}).
+			AddRow(95, 2, 3, 0, 1))
+
+	// Second query: tracking events for engagement metrics
+	mock.ExpectQuery(`mailing_tracking_events`).
+		WithArgs(campID).
+		WillReturnRows(sqlmock.NewRows([]string{"sent", "opens", "clicks", "unsubs"}).
+			AddRow(100, 30, 10, 1))
 
 	m, err := ComputeMetrics(context.Background(), db, MetricsFilter{
-		CampaignID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		CampaignID: campID,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 100, m.Sent)
+	assert.Equal(t, 95, m.Delivered)
 	assert.Equal(t, 30, m.Opens)
+	assert.Equal(t, 2, m.HardBounces)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -344,8 +344,25 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Resolve campaign_id: try jobId first (if it's a UUID), else look up by recipient
 	recipientEmail := strings.ToLower(strings.TrimSpace(rec.Recipient))
+	recipientDomainRaw := ""
+	if parts := strings.SplitN(recipientEmail, "@", 2); len(parts) == 2 {
+		recipientDomainRaw = parts[1]
+	}
+
+	// Buffer every PMTA record to pmta_acct_raw BEFORE campaign resolution.
+	// This table has no foreign keys and no complex lookups — it never drops records.
+	_, bufErr := ing.db.ExecContext(ctx, `
+		INSERT INTO pmta_acct_raw (record_type, recipient, sender, source_ip, vmta, pool,
+			recipient_domain, bounce_cat, dsn_status, dsn_diag, job_id, time_logged)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, rec.Type, recipientEmail, rec.Sender, rec.SourceIP, rec.VMTA, rec.Pool,
+		recipientDomainRaw, rec.BounceCat, rec.DSNStatus, rec.DSNDiag, rec.JobID, rec.DeliveryTime)
+	if bufErr != nil {
+		log.Printf("[ingest-db] pmta_acct_raw buffer insert error: %v", bufErr)
+	}
+
+	// Resolve campaign_id: try jobId first (if it's a UUID), else look up by recipient
 	campaignID := rec.JobID
 	if !isUUID(campaignID) {
 		var resolved sql.NullString

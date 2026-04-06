@@ -3226,6 +3226,45 @@ END $$`},
 			bounce_rate NUMERIC(5,4) DEFAULT 0
 		)`},
 		{"idx_list_quality_metrics_list", `CREATE INDEX IF NOT EXISTS idx_list_quality_metrics_list ON mailing_list_quality_metrics(list_id, evaluated_at DESC)`},
+
+		{"create_pmta_acct_raw", `CREATE TABLE IF NOT EXISTS pmta_acct_raw (
+			id BIGSERIAL PRIMARY KEY,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			record_type TEXT NOT NULL,
+			recipient TEXT NOT NULL,
+			sender TEXT,
+			source_ip TEXT,
+			vmta TEXT,
+			pool TEXT,
+			recipient_domain TEXT,
+			bounce_cat TEXT,
+			dsn_status TEXT,
+			dsn_diag TEXT,
+			job_id TEXT,
+			time_logged TEXT,
+			processed BOOLEAN NOT NULL DEFAULT FALSE,
+			campaign_id UUID,
+			recipient_isp TEXT
+		)`},
+		{"idx_acct_raw_unprocessed", `CREATE INDEX IF NOT EXISTS idx_acct_raw_unprocessed ON pmta_acct_raw (processed, id) WHERE processed = FALSE`},
+		{"idx_acct_raw_received", `CREATE INDEX IF NOT EXISTS idx_acct_raw_received ON pmta_acct_raw (received_at)`},
+
+		{"create_pmta_acct_daily_summary", `CREATE TABLE IF NOT EXISTS pmta_acct_daily_summary (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			summary_date DATE NOT NULL,
+			campaign_id UUID,
+			recipient_isp TEXT NOT NULL DEFAULT 'other',
+			delivered INT NOT NULL DEFAULT 0,
+			hard_bounced INT NOT NULL DEFAULT 0,
+			soft_bounced INT NOT NULL DEFAULT 0,
+			complained INT NOT NULL DEFAULT 0,
+			deferred INT NOT NULL DEFAULT 0,
+			total_records INT NOT NULL DEFAULT 0,
+			last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_acct_summary_campaign", `CREATE INDEX IF NOT EXISTS idx_acct_summary_campaign ON pmta_acct_daily_summary (campaign_id)`},
+		{"idx_acct_summary_date", `CREATE INDEX IF NOT EXISTS idx_acct_summary_date ON pmta_acct_daily_summary (summary_date)`},
+		{"uq_acct_summary_key", `CREATE UNIQUE INDEX IF NOT EXISTS uq_acct_summary_key ON pmta_acct_daily_summary (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

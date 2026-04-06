@@ -575,6 +575,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			pmtaCollector.Start()
 			pmtaSvc := NewPMTAService(db, pmtaCollector)
 			pmtaSvc.RegisterRoutes(r)
+
+			// PMTA accounting summary builder — processes pmta_acct_raw into
+			// pmta_acct_daily_summary every 60s for authoritative delivery metrics.
+			acctSummary := pmta.NewAcctSummaryBuilder(db)
+			acctSummary.Start()
 			
 			// IP warmup scheduler (checks every 15 minutes)
 			warmupScheduler := pmta.NewWarmupScheduler(db, 15*time.Minute)
