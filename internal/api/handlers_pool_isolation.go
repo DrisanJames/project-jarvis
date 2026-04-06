@@ -21,9 +21,19 @@ type poolIPInfo struct {
 	AcceptancePct  *float64 `json:"acceptance_pct"`
 }
 
+type poolSummary struct {
+	PoolName string `json:"pool_name"`
+	PoolID   string `json:"pool_id"`
+	Status   string `json:"status"`
+	PoolType string `json:"pool_type"`
+	IPCount  int    `json:"ip_count"`
+}
+
 type poolIsolationStatus struct {
-	YahooPools []poolIPInfo `json:"yahoo_pools"`
-	MHGmailPool []poolIPInfo `json:"mh_gmail_pool"`
+	AllPools    []poolSummary `json:"all_pools"`
+	YahooPools  []poolIPInfo  `json:"yahoo_pools"`
+	MHGmailPool []poolIPInfo  `json:"mh_gmail_pool"`
+	AllPoolIPs  []poolIPInfo  `json:"all_pool_ips,omitempty"`
 	Preferences []struct {
 		PoolName      string `json:"pool_name"`
 		PreferredIP   string `json:"preferred_ip"`
@@ -37,6 +47,40 @@ type poolIsolationStatus struct {
 func (s *PMTACampaignService) HandlePoolIsolationStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resp := poolIsolationStatus{}
+
+	poolRows, err := s.db.QueryContext(ctx, `
+		SELECT p.name, p.id::text, COALESCE(p.status,''), COALESCE(p.pool_type,''),
+			COUNT(ia.id) FILTER (WHERE ia.status IN ('active','warmup'))
+		FROM mailing_ip_pools p
+		LEFT JOIN mailing_ip_addresses ia ON ia.pool_id = p.id
+		GROUP BY p.name, p.id, p.status, p.pool_type
+		ORDER BY p.name
+	`)
+	if err == nil {
+		defer poolRows.Close()
+		for poolRows.Next() {
+			var ps poolSummary
+			poolRows.Scan(&ps.PoolName, &ps.PoolID, &ps.Status, &ps.PoolType, &ps.IPCount)
+			resp.AllPools = append(resp.AllPools, ps)
+		}
+	}
+
+	if r.URL.Query().Get("all_ips") == "1" {
+		allIPRows, err := s.db.QueryContext(ctx, `
+			SELECT p.name, host(ia.ip_address), ia.id::text, ia.hostname, ia.status, COALESCE(ia.total_sent, 0)
+			FROM mailing_ip_addresses ia
+			JOIN mailing_ip_pools p ON ia.pool_id = p.id
+			ORDER BY p.name, ia.status, ia.total_sent DESC NULLS LAST
+		`)
+		if err == nil {
+			defer allIPRows.Close()
+			for allIPRows.Next() {
+				var ip poolIPInfo
+				allIPRows.Scan(&ip.PoolName, &ip.IPAddress, &ip.IPID, &ip.Hostname, &ip.Status, &ip.TotalSent)
+				resp.AllPoolIPs = append(resp.AllPoolIPs, ip)
+			}
+		}
+	}
 
 	yahooDomains := []string{
 		"yahoo.com", "myyahoo.com", "ymail.com", "rocketmail.com",
