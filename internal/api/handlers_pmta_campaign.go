@@ -115,6 +115,8 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/source-qualification", s.HandleSourceQualification)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 		cr.Post("/{campaignId}/retry", s.HandleRetryCampaign)
+		cr.Get("/pool-isolation-status", s.HandlePoolIsolationStatus)
+		cr.Post("/pool-isolation-activate", s.HandlePoolIsolationActivate)
 	})
 }
 
