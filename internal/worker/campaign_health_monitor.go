@@ -104,16 +104,26 @@ func (m *CampaignHealthMonitor) checkCampaigns() {
 		}
 
 		if bounceRate > warningBounceRate {
-			log.Printf("[HealthMonitor] WARNING campaign %s: bounce_rate=%.2f%% sent=%d bounced=%d",
-				id, bounceRate*100, sentCount, bounceCount)
+			var trueHard, repBlocked, soft int
+			_ = m.db.QueryRowContext(ctx, `
+				SELECT COALESCE(SUM(hard_bounced),0),
+				       COALESCE(SUM(reputation_blocked),0),
+				       COALESCE(SUM(soft_bounced),0)
+				FROM pmta_acct_daily_summary
+				WHERE campaign_id = $1::uuid
+			`, id).Scan(&trueHard, &repBlocked, &soft)
+
+			log.Printf("[HealthMonitor] WARNING campaign %s: bounce_rate=%.2f%% sent=%d bounced=%d (hard=%d reputation_blocked=%d soft=%d)",
+				id, bounceRate*100, sentCount, bounceCount, trueHard, repBlocked, soft)
 			m.db.ExecContext(ctx, `
 				UPDATE mailing_campaigns
 				SET pmta_config = COALESCE(pmta_config, '{}'::jsonb) ||
 				    jsonb_build_object('health_warning',
-				        jsonb_build_object('bounce_rate', $2::text, 'checked_at', NOW()::text)),
+				        jsonb_build_object('bounce_rate', $2::text, 'true_hard', $3::text,
+				            'reputation_blocked', $4::text, 'checked_at', NOW()::text)),
 				    updated_at = NOW()
 				WHERE id = $1
-			`, id, bounceRate)
+			`, id, bounceRate, trueHard, repBlocked)
 		}
 	}
 }

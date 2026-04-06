@@ -111,6 +111,8 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
 		cr.Get("/{campaignId}/edit-data", s.HandleEditData)
 		cr.Get("/last-quotas", s.HandleLastQuotas)
+		cr.Get("/provider-qualification", s.HandleProviderQualification)
+		cr.Get("/source-qualification", s.HandleSourceQualification)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 		cr.Post("/{campaignId}/retry", s.HandleRetryCampaign)
 	})

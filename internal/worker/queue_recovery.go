@@ -30,6 +30,16 @@ const (
 	// MaxRetryCount is the maximum number of times an item can be retried
 	// before it is moved to dead_letter status.
 	MaxRetryCount = 5
+
+	// MaxStrictPoolRetries is the max retries for strict-isolation pool exhaustion.
+	// After this many deferrals, the message moves to dead_letter_strict (not suppressed).
+	MaxStrictPoolRetries = 10
+
+	// StrictPoolBackoffBase is the initial backoff for strict-pool deferrals (30s).
+	StrictPoolBackoffBase = 30 * time.Second
+
+	// StrictPoolBackoffCap is the maximum backoff interval (5 minutes).
+	StrictPoolBackoffCap = 5 * time.Minute
 )
 
 // QueueRecoveryWorker periodically reclaims stuck queue items and enforces

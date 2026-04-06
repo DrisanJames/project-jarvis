@@ -8,6 +8,7 @@ import (
 	"log"
 
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"strings"
 	"sync"
 	"time"
@@ -24,19 +25,23 @@ import (
 // - Automatic backpressure based on bounce/complaint rates
 // - Auto-adjustment of limits based on delivery performance
 
-// ISPDomains maps ISP names to their associated email domains
-var ISPDomains = map[string][]string{
-	"gmail":     {"gmail.com", "googlemail.com"},
-	"yahoo":     {"yahoo.com", "yahoo.co.uk", "ymail.com", "rocketmail.com", "yahoo.fr", "yahoo.de", "yahoo.ca"},
-	"microsoft": {"outlook.com", "hotmail.com", "live.com", "msn.com", "hotmail.co.uk", "live.co.uk"},
-	"aol":       {"aol.com", "aim.com", "aol.co.uk"},
-	"apple":     {"icloud.com", "me.com", "mac.com"},
-	"comcast":   {"comcast.net", "xfinity.com"},
-	"att":       {"att.net", "sbcglobal.net", "bellsouth.net"},
-	"verizon":   {"verizon.net"},
+// ISPDomains maps ISP names to their associated email domains.
+// Delegated to the canonical isp package to prevent drift.
+var ISPDomains = buildISPDomainsFromCanonical()
+
+func buildISPDomainsFromCanonical() map[string][]string {
+	m := make(map[string][]string)
+	for _, group := range isppkg.AllGroups() {
+		domains := isppkg.DomainsForGroup(group)
+		if len(domains) > 0 {
+			m[group] = domains
+		}
+	}
+	return m
 }
 
-// DomainToISP provides reverse lookup from domain to ISP
+// DomainToISP provides reverse lookup from domain to ISP.
+// Delegated to the canonical isp package.
 var DomainToISP = buildDomainToISPMap()
 
 func buildDomainToISPMap() map[string]string {

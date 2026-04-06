@@ -23,6 +23,11 @@ func TestHealthMonitor_LogsWarningButNeverPauses(t *testing.T) {
 			"id", "sent_count", "bounce_count", "hard_bounce_count", "started_at",
 		}).AddRow(campID, 200, 25, 20, startedAt)) // 12.5% bounce rate
 
+	// Bounce breakdown query from pmta_acct_daily_summary
+	mock.ExpectQuery("SELECT COALESCE").
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "rep", "soft"}).
+			AddRow(5, 15, 5))
+
 	// Auto-pause is disabled — only a health_warning update expected (bounce rate > 5%)
 	mock.ExpectExec("UPDATE mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -68,6 +73,11 @@ func TestHealthMonitor_NoPauseAfter30Minutes(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "sent_count", "bounce_count", "hard_bounce_count", "started_at",
 		}).AddRow("camp-old", 500, 60, 50, startedAt)) // 12% bounce rate but past 30 min window
+
+	// Bounce breakdown query from pmta_acct_daily_summary
+	mock.ExpectQuery("SELECT COALESCE").
+		WillReturnRows(sqlmock.NewRows([]string{"hard", "rep", "soft"}).
+			AddRow(10, 40, 10))
 
 	// Expect warning update (>5%) but no auto-pause
 	mock.ExpectExec("UPDATE mailing_campaigns").

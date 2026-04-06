@@ -1265,11 +1265,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// Send the email
 	result, err := sender.Send(ctx, msg)
 	if err != nil || !result.Success {
-		atomic.AddInt64(&p.totalFailed, 1)
 		errMsg := "unknown error"
 		if err != nil {
 			errMsg = err.Error()
 		}
+
+		// Strict-pool exhaustion: defer with bounded backoff, never bounce or suppress.
+		if strings.Contains(errMsg, "deferred_strict_pool") {
+			return p.deferStrictPool(ctx, item, errMsg)
+		}
+
+		atomic.AddInt64(&p.totalFailed, 1)
 
 		if isTransportError(errMsg) {
 			log.Printf("[SendWorkerPool] TRANSPORT ERROR campaign=%s email=%s esp=%s err=%s",
@@ -1426,6 +1432,49 @@ func (p *SendWorkerPool) markFailed(ctx context.Context, itemID uuid.UUID, errMs
 		SET status = 'failed', error_message = $2, attempts = attempts + 1, last_attempt_at = NOW()
 		WHERE id = $1
 	`, itemID, errMsg)
+	return err
+}
+
+// deferStrictPool handles strict-isolation pool exhaustion by deferring the
+// message with bounded exponential backoff. The recipient is NOT suppressed,
+// NOT bounced, and NOT counted as a send failure. This is a capacity/availability
+// constraint on the isolated IP, not a delivery failure.
+func (p *SendWorkerPool) deferStrictPool(ctx context.Context, item QueueItem, errMsg string) error {
+	var attempts int
+	_ = p.db.QueryRowContext(ctx, `
+		SELECT COALESCE(attempts, 0) FROM mailing_campaign_queue WHERE id = $1
+	`, item.ID).Scan(&attempts)
+
+	if attempts+1 >= MaxStrictPoolRetries {
+		// Dead-letter with operator alert — NOT a suppression event.
+		log.Printf("[STRICT_POOL_DEAD_LETTER] campaign=%s email=%s attempts=%d — operator action required: activate standby IP, increase daily limit, or reduce campaign volume",
+			item.CampaignID, logger.RedactEmail(item.Email), attempts+1)
+		_, err := p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue
+			SET status = 'dead_letter_strict', error_message = $2, attempts = attempts + 1, last_attempt_at = NOW()
+			WHERE id = $1
+		`, item.ID, errMsg)
+		return err
+	}
+
+	// Exponential backoff: 30s, 60s, 120s, 240s, 300s, 300s, ...
+	backoff := StrictPoolBackoffBase * time.Duration(1<<uint(attempts))
+	if backoff > StrictPoolBackoffCap {
+		backoff = StrictPoolBackoffCap
+	}
+	retryAt := time.Now().Add(backoff)
+
+	if (attempts+1)%3 == 0 {
+		log.Printf("[STRICT_POOL_EXHAUSTED] campaign=%s ISP=%s attempts=%d next_retry=%s — isolated IP may be at capacity",
+			item.CampaignID, ClassifySubscriberISP(item.Email), attempts+1, retryAt.Format(time.RFC3339))
+	}
+
+	_, err := p.db.ExecContext(ctx, `
+		UPDATE mailing_campaign_queue
+		SET status = 'queued', error_message = $2, attempts = attempts + 1,
+		    last_attempt_at = NOW(), retry_after = $3
+		WHERE id = $1
+	`, item.ID, errMsg, retryAt)
 	return err
 }
 

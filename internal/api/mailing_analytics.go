@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 // ─── API Version Constants ────────────────────────────────────────────────────
@@ -1687,42 +1688,45 @@ func (s *AdvancedMailingService) HandleStoreCampaignLearning(w http.ResponseWrit
 // ================== ISP PERFORMANCE ==================
 
 // ispDomainCaseSQL maps recipient email domains to ISP group names inside SQL.
-//
-// This CASE expression is embedded in analytics queries that operate on raw
-// tracking events (which store recipient_domain as a bare string). It MUST
-// stay in sync with the canonical classifier in internal/pkg/isp/isp.go.
-//
-// AOL (aol.com, aim.com) is intentionally separate from Yahoo. Although they
-// share Yahoo MX infrastructure, we track them independently so analytics
-// show per-ISP performance that matches our per-ISP sending pools and quotas.
-const ispDomainCaseSQL = `CASE
-	WHEN dom IN ('gmail.com','googlemail.com') THEN 'gmail'
-	WHEN dom IN ('yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp') THEN 'yahoo'
-	WHEN dom IN ('aol.com','aim.com') THEN 'aol'
-	WHEN dom IN ('outlook.com','hotmail.com','live.com','msn.com') THEN 'microsoft'
-	WHEN dom IN ('icloud.com','me.com','mac.com') THEN 'apple'
-	WHEN dom IN ('comcast.net','xfinity.com') THEN 'comcast'
-	WHEN dom IN ('att.net') THEN 'att'
-	WHEN dom IN ('sbcglobal.net','bellsouth.net') THEN 'sbcglobal'
-	WHEN dom IN ('cox.net') THEN 'cox'
-	WHEN dom IN ('charter.net','spectrum.net') THEN 'charter'
-	ELSE 'other'
-END`
+// Generated from the canonical isp package to prevent drift.
+var ispDomainCaseSQL = buildISPDomainCaseSQL()
+
+func buildISPDomainCaseSQL() string {
+	var b strings.Builder
+	b.WriteString("CASE\n")
+	for _, group := range isppkg.KnownGroups() {
+		domains := isppkg.DomainsForGroup(group)
+		if len(domains) == 0 {
+			continue
+		}
+		quoted := make([]string, len(domains))
+		for i, d := range domains {
+			quoted[i] = "'" + d + "'"
+		}
+		fmt.Fprintf(&b, "\tWHEN dom IN (%s) THEN '%s'\n", strings.Join(quoted, ","), group)
+	}
+	b.WriteString("\tELSE 'other'\nEND")
+	return b.String()
+}
 
 // ispDomainFilter maps an ISP key to the SQL IN-clause tuple of domains.
-// Used by HandleISPPerformance when drilling into a single ISP's trend data.
-// Must stay in sync with ispDomainCaseSQL and internal/pkg/isp/isp.go.
-var ispDomainFilter = map[string]string{
-	"gmail":     "('gmail.com','googlemail.com')",
-	"yahoo":     "('yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.ca','yahoo.co.jp')",
-	"aol":       "('aol.com','aim.com')",
-	"microsoft": "('outlook.com','hotmail.com','live.com','msn.com')",
-	"apple":     "('icloud.com','me.com','mac.com')",
-	"comcast":   "('comcast.net','xfinity.com')",
-	"att":       "('att.net')",
-	"sbcglobal": "('sbcglobal.net','bellsouth.net')",
-	"cox":       "('cox.net')",
-	"charter":   "('charter.net','spectrum.net')",
+// Generated from the canonical isp package to prevent drift.
+var ispDomainFilter = buildISPDomainFilter()
+
+func buildISPDomainFilter() map[string]string {
+	m := make(map[string]string)
+	for _, group := range isppkg.KnownGroups() {
+		domains := isppkg.DomainsForGroup(group)
+		if len(domains) == 0 {
+			continue
+		}
+		quoted := make([]string, len(domains))
+		for i, d := range domains {
+			quoted[i] = "'" + d + "'"
+		}
+		m[group] = "(" + strings.Join(quoted, ",") + ")"
+	}
+	return m
 }
 
 // ispLabels maps ISP keys to human-readable display names for the frontend.

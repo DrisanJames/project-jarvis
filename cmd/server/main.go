@@ -3936,6 +3936,39 @@ END $$`},
 
 		{"idx_plan_recipients_campaign", `CREATE INDEX IF NOT EXISTS idx_campaign_plan_recipients_campaign ON mailing_campaign_plan_recipients(campaign_id)`},
 		{"idx_isp_time_spans_campaign", `CREATE INDEX IF NOT EXISTS idx_campaign_isp_time_spans_campaign ON mailing_campaign_isp_time_spans(campaign_id)`},
+
+		// Bounce classification: add reputation_blocked column to separate provider blocks from true hard bounces
+		{"add_reputation_blocked_col", `ALTER TABLE pmta_acct_daily_summary ADD COLUMN IF NOT EXISTS reputation_blocked INT NOT NULL DEFAULT 0`},
+
+		// MH Gmail Recovery: pause 5 blocked MH Gmail IPs, keeping only .192 (mta-mh-gm1) and .193 (mta-mh-gm2)
+		{"mh_gmail_recovery_pause_blocked_ips", `UPDATE mailing_ip_addresses
+			SET status = 'paused', updated_at = NOW()
+			WHERE ip_address IN (
+				'144.225.178.194'::inet,
+				'144.225.178.195'::inet,
+				'144.225.178.196'::inet,
+				'144.225.178.198'::inet,
+				'144.225.178.199'::inet
+			) AND status NOT IN ('paused', 'cold')`},
+
+		// IP pool preferences for ops-controlled isolation
+		{"create_ip_pool_preferences", `CREATE TABLE IF NOT EXISTS mailing_ip_pool_preferences (
+			pool_id UUID REFERENCES mailing_ip_pools(id),
+			preferred_ip_id UUID REFERENCES mailing_ip_addresses(id),
+			standby_ip_id UUID REFERENCES mailing_ip_addresses(id),
+			isolation_mode VARCHAR(20) DEFAULT 'normal' CHECK (isolation_mode IN ('normal', 'strict')),
+			reason TEXT,
+			set_by TEXT DEFAULT 'manual',
+			set_at TIMESTAMPTZ DEFAULT NOW(),
+			PRIMARY KEY (pool_id)
+		)`},
+
+		// Add isolation_mode column to mailing_ip_pools
+		{"add_pool_isolation_mode", `ALTER TABLE mailing_ip_pools ADD COLUMN IF NOT EXISTS isolation_mode VARCHAR(20) DEFAULT 'normal'`},
+
+		// Add retry_after column to queue tables for strict-pool backoff scheduling
+		{"add_queue_retry_after", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`},
+		{"add_queue_v2_retry_after", `ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`},
 	}
 
 	var ok, fail int

@@ -36,12 +36,13 @@ func TestExpandEmailContains_Charter(t *testing.T) {
 
 func TestExpandEmailContains_Yahoo(t *testing.T) {
 	_, args, nextArg := expandEmailContains("email", "@yahoo.com", 5)
-	assert.Equal(t, 8, len(args)) // yahoo, ymail, rocketmail, yahoo.ca, yahoo.co.uk, yahoo.co.in, yahoo.com.au, yahoo.co.jp
+	assert.Equal(t, 9, len(args)) // yahoo, myyahoo, ymail, rocketmail, yahoo.ca, yahoo.co.uk, yahoo.co.in, yahoo.com.au, yahoo.co.jp
 	assert.Contains(t, args, "%@yahoo.com%")
+	assert.Contains(t, args, "%@myyahoo.com%")
 	assert.Contains(t, args, "%@ymail.com%")
 	assert.Contains(t, args, "%@rocketmail.com%")
 	assert.Contains(t, args, "%@yahoo.co.uk%")
-	assert.Equal(t, 13, nextArg)
+	assert.Equal(t, 14, nextArg)
 }
 
 func TestExpandEmailContains_Apple(t *testing.T) {

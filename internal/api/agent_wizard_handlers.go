@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 // AgentWizardHandlers provides handlers for the AI-driven campaign configuration wizard.
@@ -629,33 +630,12 @@ type sendWindowRequest struct {
 	AudienceSize int64    `json:"audience_size"`
 }
 
-// domainToISP maps common email domains to ISP display names.
-var domainToISP = map[string]string{
-	"gmail.com":    "Gmail",
-	"yahoo.com":    "Yahoo",
-	"outlook.com":  "Microsoft",
-	"hotmail.com":  "Microsoft",
-	"live.com":     "Microsoft",
-	"msn.com":      "Microsoft",
-	"aol.com":      "AOL",
-	"att.net":      "AT&T",
-	"comcast.net":  "Comcast",
-	"icloud.com":   "Apple",
-	"me.com":       "Apple",
-	"mac.com":      "Apple",
-	"ymail.com":    "Yahoo",
-	"sbcglobal.net": "AT&T",
-	"verizon.net":  "Verizon",
-	"cox.net":      "Cox",
-	"charter.net":  "Charter",
-}
-
 func classifyDomainToISP(domain string) string {
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	if isp, ok := domainToISP[domain]; ok {
-		return isp
+	group := isppkg.GroupFromDomain(domain)
+	if group == isppkg.Other {
+		return "Other"
 	}
-	return "Other"
+	return strings.ToUpper(group[:1]) + group[1:]
 }
 
 type ispScheduleEntry struct {

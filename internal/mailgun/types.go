@@ -3,6 +3,8 @@ package mailgun
 import (
 	"strings"
 	"time"
+
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 // MetricsRequest represents a request to the Mailgun Metrics API
@@ -493,64 +495,14 @@ func DefaultMetrics() []string {
 	}
 }
 
-// domainToISP maps recipient domains to ISP names
-var domainToISP = map[string]string{
-	// Gmail
-	"gmail.com":       "Gmail",
-	"googlemail.com":  "Gmail",
-	"google.com":      "Gmail",
-	// Yahoo
-	"yahoo.com":       "Yahoo",
-	"yahoo.co.uk":     "Yahoo",
-	"yahoo.ca":        "Yahoo",
-	"yahoo.com.au":    "Yahoo",
-	"yahoo.co.in":     "Yahoo",
-	"ymail.com":       "Yahoo",
-	"rocketmail.com":  "Yahoo",
-	// Microsoft / Outlook
-	"hotmail.com":     "Hotmail / Outlook",
-	"outlook.com":     "Hotmail / Outlook",
-	"live.com":        "Hotmail / Outlook",
-	"msn.com":         "Hotmail / Outlook",
-	"hotmail.co.uk":   "Hotmail / Outlook",
-	"live.co.uk":      "Hotmail / Outlook",
-	// Apple
-	"icloud.com":      "Apple",
-	"me.com":          "Apple",
-	"mac.com":         "Apple",
-	// AOL
-	"aol.com":         "AOL",
-	"aim.com":         "AOL",
-	// Comcast
-	"comcast.net":     "Comcast",
-	"xfinity.com":     "Comcast",
-	// AT&T
-	"att.net":         "AT&T",
-	"sbcglobal.net":   "AT&T",
-	"bellsouth.net":   "AT&T",
-	// Verizon
-	"verizon.net":     "Verizon",
-	// Proton
-	"protonmail.com":  "Proton Mail",
-	"proton.me":       "Proton Mail",
-	"pm.me":           "Proton Mail",
-	// Others
-	"zoho.com":        "Zoho",
-	"fastmail.com":    "Fastmail",
-	"gmx.com":         "GMX",
-	"gmx.net":         "GMX",
-	"mail.com":        "Mail.com",
-	"yandex.com":      "Yandex",
-	"yandex.ru":       "Yandex",
-}
-
-// MapDomainToISP maps a recipient domain to its ISP name
+// MapDomainToISP maps a recipient domain to its canonical ISP group name.
+// Delegated to the canonical isp package to prevent drift.
 func MapDomainToISP(domain string) string {
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	if isp, ok := domainToISP[domain]; ok {
-		return isp
+	group := isppkg.GroupFromDomain(domain)
+	if group == isppkg.Other {
+		return "Other"
 	}
-	return "Other"
+	return strings.ToUpper(group[:1]) + group[1:]
 }
 
 // ConvertStatsToProcessedMetrics converts Mailgun stats to ProcessedMetrics

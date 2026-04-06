@@ -1,6 +1,9 @@
 package isp
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Known ISP group names returned by Group and GroupFromDomain.
 //
@@ -56,6 +59,7 @@ var domainToISP = map[string]string{
 	"yahoo.com":      Yahoo,
 	"ymail.com":      Yahoo,
 	"rocketmail.com": Yahoo,
+	"myyahoo.com":    Yahoo,
 	"yahoo.ca":       Yahoo,
 	"yahoo.co.uk":    Yahoo,
 	"yahoo.co.in":    Yahoo,
@@ -92,6 +96,10 @@ var domainToISP = map[string]string{
 	// prevents cross-contamination (same rationale as AOL vs Yahoo).
 	"sbcglobal.net": Sbcglobal,
 	"bellsouth.net": Sbcglobal,
+	"pacbell.net":   Sbcglobal,
+	"swbell.net":    Sbcglobal,
+	"ameritech.net": Sbcglobal,
+	"nvbell.net":    Sbcglobal,
 
 	// Comcast / Xfinity
 	"comcast.net": Comcast,
@@ -196,4 +204,17 @@ func KnownGroups() []string {
 // through the "general" pool (verizon, protonmail, zoho).
 func AllGroups() []string {
 	return []string{Gmail, Yahoo, Aol, Microsoft, Apple, Comcast, Charter, ATT, Sbcglobal, Cox, Verizon, Protonmail, Zoho}
+}
+
+// DomainsForGroup returns all domains classified under the given ISP group.
+// Used by throttle and analytics layers that need domain lists per ISP.
+func DomainsForGroup(group string) []string {
+	var domains []string
+	for domain, g := range domainToISP {
+		if g == group {
+			domains = append(domains, domain)
+		}
+	}
+	sort.Strings(domains)
+	return domains
 }

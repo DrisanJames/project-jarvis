@@ -50,6 +50,7 @@ type vmtaPool struct {
 	mu           sync.RWMutex
 	ips          []vmtaEntry            // all IPs (fallback for legacy profiles)
 	ispGroups    map[string][]vmtaEntry // keyed by pool suffix: "gmail", "yahoo", etc.
+	strictPools  map[string]bool        // pool suffixes with strict isolation (no fallback)
 	idx          uint64
 	ispIdx       map[string]*uint64     // per-ISP round-robin counters
 	loadedAt     time.Time
@@ -61,11 +62,12 @@ type vmtaPool struct {
 
 func newVMTAPool(db *sql.DB, poolPrefix string) *vmtaPool {
 	return &vmtaPool{
-		db:         db,
-		ttl:        30 * time.Second,
-		poolPrefix: poolPrefix,
-		ispGroups:  make(map[string][]vmtaEntry),
-		ispIdx:     make(map[string]*uint64),
+		db:          db,
+		ttl:         30 * time.Second,
+		poolPrefix:  poolPrefix,
+		ispGroups:   make(map[string][]vmtaEntry),
+		strictPools: make(map[string]bool),
+		ispIdx:      make(map[string]*uint64),
 	}
 }
 
@@ -149,10 +151,34 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 			groups[suffix] = append(groups[suffix], e)
 		}
 	}
+
+	// Load strict isolation preferences
+	strictSet := make(map[string]bool)
+	prefRows, prefErr := p.db.QueryContext(ctx, `
+		SELECT pool.name
+		FROM mailing_ip_pool_preferences pref
+		JOIN mailing_ip_pools pool ON pool.id = pref.pool_id
+		WHERE pref.isolation_mode = 'strict'
+		  AND pool.name LIKE $1 || '-%'
+	`, p.poolPrefix)
+	if prefErr == nil {
+		defer prefRows.Close()
+		for prefRows.Next() {
+			var poolName string
+			if prefRows.Scan(&poolName) == nil {
+				suffix := extractPoolSuffix(poolName)
+				if suffix != "" {
+					strictSet[suffix] = true
+				}
+			}
+		}
+	}
+
 	if len(allIPs) > 0 {
 		changed := len(allIPs) != len(p.ips) || !sameIPSet(allIPs, p.ips)
 		p.ips = allIPs
 		p.ispGroups = groups
+		p.strictPools = strictSet
 		idxMap := make(map[string]*uint64, len(groups))
 		for k := range groups {
 			v := uint64(0)
@@ -235,6 +261,13 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 			}
 			return selectIP("isp-group:"+poolSuffix, ip)
 		}
+	}
+
+	// Strict isolation: if this ISP's pool is strict, do NOT fall back.
+	if p.strictPools[poolSuffix] {
+		log.Printf("[vmtaPool] STRICT_POOL_EXHAUSTED: no available IP in strict-isolation pool %s-%s-pool (ISP=%s)",
+			p.poolPrefix, poolSuffix, recipientISP)
+		return vmtaEntry{}, fmt.Errorf("strict_pool_exhausted: no available IP in strict-isolation pool %s-%s-pool", p.poolPrefix, poolSuffix)
 	}
 
 	// Tier 2: general pool fallback
@@ -418,6 +451,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
 		if vmtaErr != nil {
+			if strings.Contains(vmtaErr.Error(), "strict_pool_exhausted") {
+				return nil, fmt.Errorf("deferred_strict_pool: %w", vmtaErr)
+			}
 			if len(s.ipPool.ips) > 0 {
 				return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
 			}

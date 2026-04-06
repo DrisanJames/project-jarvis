@@ -292,6 +292,34 @@ func TestRouteToGlobalSuppression_FBLSuppresses(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestRouteToGlobalSuppression_ReputationBlocksNotSuppressed(t *testing.T) {
+	reputationCategories := []string{"spam-related", "policy-related", "routing-errors"}
+
+	for _, cat := range reputationCategories {
+		t.Run(cat, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+
+			hub := NewGlobalSuppressionHub(db, "org1", "")
+			ing := &Ingestor{globalHub: hub}
+
+			rec := AccountingRecord{
+				Type:      "b",
+				Recipient: "blocked@example.com",
+				BounceCat: cat,
+				DSNStatus: "5.7.1",
+				SourceIP:  "15.204.22.176",
+				JobID:     "campaign-1",
+			}
+
+			ing.routeToGlobalSuppression(rec, ISP("gmail"))
+			assert.NoError(t, mock.ExpectationsWereMet(),
+				"reputation block %q must NOT trigger suppression", cat)
+		})
+	}
+}
+
 // mockTracker records CampaignEvents for assertion in tests.
 type mockTracker struct {
 	events []CampaignEvent

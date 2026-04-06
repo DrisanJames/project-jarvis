@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 // ISPRegistry maps recipient domains to ISP groups using static domain lists
@@ -32,61 +34,25 @@ func NewISPRegistry() *ISPRegistry {
 	return r
 }
 
-// seedStaticMap populates domain-to-ISP mappings.
-// This mirrors the canonical map in internal/pkg/isp/isp.go with additional
-// international and legacy domains for MX fallback coverage.
 func (r *ISPRegistry) seedStaticMap() {
-	gmail := []string{"gmail.com", "googlemail.com", "google.com"}
-	yahoo := []string{
-		"yahoo.com", "yahoo.co.uk", "yahoo.co.jp", "yahoo.co.in", "yahoo.ca",
-		"yahoo.com.au", "yahoo.com.br", "yahoo.fr", "yahoo.de", "yahoo.it",
-		"ymail.com", "rocketmail.com",
-	}
-	// AOL domains are classified separately from Yahoo for independent pool
-	// routing and quota control, even though they share Yahoo MX infrastructure.
-	aol := []string{"aol.com", "aim.com"}
-	microsoft := []string{"outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com"}
-	apple := []string{"icloud.com", "me.com", "mac.com"}
-	comcast := []string{"comcast.net", "xfinity.com"}
-	att := []string{"att.net", "pacbell.net"}
-	// SBC Global / BellSouth domains separated from AT&T for independent pool
-	// routing, same rationale as AOL vs Yahoo. These share AT&T MX infra.
-	sbcglobal := []string{
-		"sbcglobal.net", "bellsouth.net",
-		"ameritech.net", "nvbell.net", "prodigy.net",
-	}
-	cox := []string{"cox.net"}
-	charter := []string{"charter.net", "spectrum.net", "rr.com", "twc.com", "brighthouse.com"}
-
-	for _, d := range gmail {
-		r.staticMap[d] = ISPGmail
-	}
-	for _, d := range yahoo {
-		r.staticMap[d] = ISPYahoo
-	}
-	for _, d := range aol {
-		r.staticMap[d] = ISPAol
-	}
-	for _, d := range microsoft {
-		r.staticMap[d] = ISPMicrosoft
-	}
-	for _, d := range apple {
-		r.staticMap[d] = ISPApple
-	}
-	for _, d := range comcast {
-		r.staticMap[d] = ISPComcast
-	}
-	for _, d := range att {
-		r.staticMap[d] = ISPAtt
-	}
-	for _, d := range sbcglobal {
-		r.staticMap[d] = ISPSbcglobal
-	}
-	for _, d := range cox {
-		r.staticMap[d] = ISPCox
-	}
-	for _, d := range charter {
-		r.staticMap[d] = ISPCharter
+	for _, group := range []struct {
+		domains []string
+		isp     ISP
+	}{
+		{isppkg.DomainsForGroup(isppkg.Gmail), ISPGmail},
+		{isppkg.DomainsForGroup(isppkg.Yahoo), ISPYahoo},
+		{isppkg.DomainsForGroup(isppkg.Aol), ISPAol},
+		{isppkg.DomainsForGroup(isppkg.Microsoft), ISPMicrosoft},
+		{isppkg.DomainsForGroup(isppkg.Apple), ISPApple},
+		{isppkg.DomainsForGroup(isppkg.Comcast), ISPComcast},
+		{isppkg.DomainsForGroup(isppkg.ATT), ISPAtt},
+		{isppkg.DomainsForGroup(isppkg.Sbcglobal), ISPSbcglobal},
+		{isppkg.DomainsForGroup(isppkg.Cox), ISPCox},
+		{isppkg.DomainsForGroup(isppkg.Charter), ISPCharter},
+	} {
+		for _, d := range group.domains {
+			r.staticMap[d] = group.isp
+		}
 	}
 }
 

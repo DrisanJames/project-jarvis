@@ -102,12 +102,13 @@ func (b *AcctSummaryBuilder) processBatch() {
 		recipientISP string
 	}
 	type summaryDelta struct {
-		delivered   int
-		hardBounce  int
-		softBounce  int
-		complained  int
-		deferred    int
-		total       int
+		delivered          int
+		hardBounce         int
+		softBounce         int
+		reputationBlocked  int
+		complained         int
+		deferred           int
+		total              int
 	}
 
 	deltas := make(map[summaryKey]*summaryDelta)
@@ -142,9 +143,12 @@ func (b *AcctSummaryBuilder) processBatch() {
 		case "d":
 			d.delivered++
 		case "b":
-			if isHardBounceCat(r.bounceCat) {
+			switch classifyBounce(r.bounceCat) {
+			case bounceHard:
 				d.hardBounce++
-			} else {
+			case bounceReputation:
+				d.reputationBlocked++
+			default:
 				d.softBounce++
 			}
 		case "f":
@@ -175,19 +179,20 @@ func (b *AcctSummaryBuilder) processBatch() {
 		_, err := b.db.ExecContext(ctx, `
 			INSERT INTO pmta_acct_daily_summary
 				(id, summary_date, campaign_id, recipient_isp, delivered, hard_bounced,
-				 soft_bounced, complained, deferred, total_records, last_updated_at)
-			VALUES (gen_random_uuid(), $1::date, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NOW())
+				 soft_bounced, reputation_blocked, complained, deferred, total_records, last_updated_at)
+			VALUES (gen_random_uuid(), $1::date, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 			ON CONFLICT (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)
 			DO UPDATE SET
 				delivered = pmta_acct_daily_summary.delivered + EXCLUDED.delivered,
 				hard_bounced = pmta_acct_daily_summary.hard_bounced + EXCLUDED.hard_bounced,
 				soft_bounced = pmta_acct_daily_summary.soft_bounced + EXCLUDED.soft_bounced,
+				reputation_blocked = pmta_acct_daily_summary.reputation_blocked + EXCLUDED.reputation_blocked,
 				complained = pmta_acct_daily_summary.complained + EXCLUDED.complained,
 				deferred = pmta_acct_daily_summary.deferred + EXCLUDED.deferred,
 				total_records = pmta_acct_daily_summary.total_records + EXCLUDED.total_records,
 				last_updated_at = NOW()
 		`, key.date, campIDParam, key.recipientISP, d.delivered, d.hardBounce,
-			d.softBounce, d.complained, d.deferred, d.total)
+			d.softBounce, d.reputationBlocked, d.complained, d.deferred, d.total)
 		if err != nil {
 			log.Printf("[AcctSummary] upsert error for %s/%s/%s: %v",
 				key.date, key.campaignID, key.recipientISP, err)
@@ -233,13 +238,29 @@ func (b *AcctSummaryBuilder) resolveCampaign(ctx context.Context, jobID, recipie
 	return ""
 }
 
-// isHardBounceCat mirrors api.IsHardBounceCategory for the summary builder.
-func isHardBounceCat(cat string) bool {
+// bounceClass represents the three-way bounce classification.
+type bounceClass int
+
+const (
+	bounceHard       bounceClass = iota // list hygiene: invalid address, dead domain
+	bounceReputation                    // provider blocks: spam-related, policy rejections
+	bounceSoft                          // transient: quota, rate-limit, temp failures
+)
+
+// classifyBounce separates true hard bounces (list hygiene) from reputation
+// blocks (provider rejections) and transient soft bounces.
+func classifyBounce(cat string) bounceClass {
 	switch cat {
-	case "hard", "bad-mailbox", "bad-domain", "inactive-mailbox",
-		"no-answer-from-host", "routing-errors", "policy-related", "bad-connection":
-		return true
+	case "hard", "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host":
+		return bounceHard
+	case "spam-related", "policy-related", "routing-errors":
+		return bounceReputation
 	default:
-		return false
+		return bounceSoft
 	}
+}
+
+// isHardBounceCat is kept for backward compatibility with existing callers.
+func isHardBounceCat(cat string) bool {
+	return classifyBounce(cat) == bounceHard
 }

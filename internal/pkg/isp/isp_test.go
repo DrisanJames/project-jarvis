@@ -1,6 +1,11 @@
 package isp
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestGroupFromDomain(t *testing.T) {
 	tests := []struct {
@@ -16,6 +21,7 @@ func TestGroupFromDomain(t *testing.T) {
 		{"yahoo.com", Yahoo},
 		{"ymail.com", Yahoo},
 		{"rocketmail.com", Yahoo},
+		{"myyahoo.com", Yahoo},
 		{"yahoo.ca", Yahoo},
 		{"yahoo.co.uk", Yahoo},
 		{"yahoo.co.in", Yahoo},
@@ -47,6 +53,10 @@ func TestGroupFromDomain(t *testing.T) {
 		// SBC Global / BellSouth (separated from AT&T for dedicated pool routing)
 		{"sbcglobal.net", Sbcglobal},
 		{"bellsouth.net", Sbcglobal},
+		{"pacbell.net", Sbcglobal},
+		{"swbell.net", Sbcglobal},
+		{"ameritech.net", Sbcglobal},
+		{"nvbell.net", Sbcglobal},
 
 		// Comcast
 		{"comcast.net", Comcast},
@@ -162,6 +172,37 @@ func TestAllGroups(t *testing.T) {
 	}
 }
 
+func TestDomainsForGroup(t *testing.T) {
+	yahDomains := DomainsForGroup(Yahoo)
+	if len(yahDomains) == 0 {
+		t.Fatal("DomainsForGroup(Yahoo) returned empty")
+	}
+	found := false
+	for _, d := range yahDomains {
+		if d == "myyahoo.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("DomainsForGroup(Yahoo) missing myyahoo.com")
+	}
+
+	sbcDomains := DomainsForGroup(Sbcglobal)
+	wantSBC := map[string]bool{"sbcglobal.net": true, "bellsouth.net": true, "pacbell.net": true, "swbell.net": true, "ameritech.net": true, "nvbell.net": true}
+	for d := range wantSBC {
+		found := false
+		for _, sd := range sbcDomains {
+			if sd == d {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DomainsForGroup(Sbcglobal) missing %q", d)
+		}
+	}
+}
+
 func TestDomainSiblings_MicrosoftUnified(t *testing.T) {
 	siblings, ok := DomainSiblings["@outlook.com"]
 	if !ok {
@@ -208,5 +249,40 @@ func TestDomainSiblings_EveryDomainPresent(t *testing.T) {
 		if !found {
 			t.Errorf("DomainSiblings[%q] does not contain itself", key)
 		}
+	}
+}
+
+func TestExportCanonicalMapJSON(t *testing.T) {
+	// Export the canonical domainToISP map as JSON to testdata/ for cross-language
+	// consistency checks. CI or a developer can diff this against daily_acquisition.py's
+	// DOMAIN_TO_ISP to detect drift.
+	data := make(map[string]string, len(domainToISP))
+	for domain, group := range domainToISP {
+		data[domain] = group
+	}
+
+	jsonBytes, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal canonical map: %v", err)
+	}
+
+	outDir := filepath.Join("testdata")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatalf("failed to create testdata dir: %v", err)
+	}
+
+	outPath := filepath.Join(outDir, "canonical_isp_map.json")
+	if err := os.WriteFile(outPath, jsonBytes, 0644); err != nil {
+		t.Fatalf("failed to write canonical map: %v", err)
+	}
+
+	t.Logf("Wrote %d domain mappings to %s", len(data), outPath)
+
+	// Verify key domains are present
+	if data["myyahoo.com"] != Yahoo {
+		t.Error("canonical map missing myyahoo.com -> yahoo")
+	}
+	if data["pacbell.net"] != Sbcglobal {
+		t.Error("canonical map missing pacbell.net -> sbcglobal")
 	}
 }

@@ -300,10 +300,12 @@ func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	case "b": // bounce
 		switch rec.BounceCat {
 		case "bad-mailbox", "bad-domain", "inactive-mailbox",
-			"no-answer-from-host", "routing-errors", "quota-issues":
+			"no-answer-from-host", "quota-issues":
 			reason = "hard_bounce"
 			source = "pmta_bounce"
 		default:
+			// spam-related, policy-related, routing-errors are reputation
+			// blocks — they do NOT suppress the recipient.
 			return
 		}
 	case "f": // FBL complaint
