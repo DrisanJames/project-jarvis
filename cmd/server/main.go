@@ -3363,6 +3363,32 @@ END $$`},
 		log.Println("[StartupMigration] idx_campaign_queue_recipient_isp: OK")
 	}
 
+	// IP pool preferences for ops-controlled isolation (must be in startup migrations
+	// because DB_ADMIN_URL is not set in production ECS so runAdminMigrations is skipped)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS mailing_ip_pool_preferences (
+		pool_id UUID REFERENCES mailing_ip_pools(id),
+		preferred_ip_id UUID REFERENCES mailing_ip_addresses(id),
+		standby_ip_id UUID REFERENCES mailing_ip_addresses(id),
+		isolation_mode VARCHAR(20) DEFAULT 'normal' CHECK (isolation_mode IN ('normal', 'strict')),
+		reason TEXT,
+		set_by TEXT DEFAULT 'manual',
+		set_at TIMESTAMPTZ DEFAULT NOW(),
+		PRIMARY KEY (pool_id)
+	)`); err != nil {
+		log.Printf("[StartupMigration] create_ip_pool_preferences: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] create_ip_pool_preferences: OK")
+	}
+
+	// Add isolation_mode column to mailing_ip_pools
+	if _, err := db.Exec(`ALTER TABLE mailing_ip_pools ADD COLUMN IF NOT EXISTS isolation_mode VARCHAR(20) DEFAULT 'normal'`); err != nil {
+		log.Printf("[StartupMigration] add_pool_isolation_mode: ERROR %v", err)
+	}
+
+	// Add retry_after column to queue tables for strict-pool backoff scheduling
+	db.Exec(`ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
+	db.Exec(`ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
+
 	// Warn about active PMTA profiles missing an api_endpoint — these
 	// will fall through to SMTP-only mode, which risks DMARC rejection.
 	rows, err := db.Query(`
