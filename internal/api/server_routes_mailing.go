@@ -43,6 +43,25 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
 		s.router.Get("/api/mailing/injection-analytics", injectionAnalytics.HandleGetInjectionAnalytics)
 
+		// Pool isolation admin endpoints — on root router to avoid chi late-registration race
+		poolIsolationSvc := &PMTACampaignService{db: db}
+		s.router.Get("/api/admin/pool-isolation-status", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			poolIsolationSvc.HandlePoolIsolationStatus(w, req)
+		})
+		s.router.Post("/api/admin/pool-isolation-activate", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			poolIsolationSvc.HandlePoolIsolationActivate(w, req)
+		})
+
 		// Admin: retry a PMTA campaign (moves draft/failed → finalizing_audience)
 		s.router.Post("/api/admin/campaign-retry/{id}", func(w http.ResponseWriter, req *http.Request) {
 			adminKey := os.Getenv("ADMIN_API_KEY")
