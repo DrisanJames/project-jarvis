@@ -20,8 +20,8 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "2.0"
-	VersionISPPerformance          = "1.1"
+	VersionAnalyticsOverview       = "3.0"
+	VersionISPPerformance          = "1.2"
 	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "1.0"
 	VersionTopPerformers           = "1.0"

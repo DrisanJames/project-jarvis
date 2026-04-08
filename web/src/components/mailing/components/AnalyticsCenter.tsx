@@ -33,30 +33,6 @@ interface OverviewData {
   api_version?: string;
 }
 
-interface EngagementData {
-  distribution: { high: number; medium: number; low: number; none: number };
-  top_subscribers: { email: string; score: number; opens: number; clicks: number; last_open: string }[];
-  engagement_trend: { date: string; engaged: number }[];
-}
-
-interface DeliverabilityData {
-  totals: { sent: number; delivered: number; bounced?: number; hard_bounces?: number; soft_bounces?: number; hard_bounced?: number; soft_bounced?: number; complaints: number };
-  rates: { delivery_rate: number; bounce_rate?: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number };
-  bounce_breakdown: { type: string; count: number }[];
-  global_suppressions: number;
-  exclude_mpp?: boolean;
-  api_version?: string;
-}
-
-interface RevenueData {
-  period_days: number;
-  total_revenue: number;
-  campaigns_with_revenue: number;
-  total_sent: number;
-  revenue_per_email: number;
-  top_revenue_campaigns: { name: string; sent: number; revenue: number; revenue_per_email: number }[];
-  daily_trend: { date: string; revenue: number }[];
-}
 
 interface CampaignData {
   campaigns: {
@@ -67,36 +43,6 @@ interface CampaignData {
   }[];
 }
 
-interface ProfileStats {
-  total_profiles: number;
-  recently_active: number;
-  avg_engagement: number;
-  avg_open_rate: number;
-  new_this_week: number;
-  total_sends: number; total_opens: number; total_clicks: number;
-  tier_distribution: { high: number; medium: number; low: number; inactive: number };
-  isp_distribution: Record<string, number>;
-}
-
-interface ISPAgentSummary {
-  total_agents: number;
-  active_agents: number;
-  total_profiles: number;
-  total_data_points: number;
-  last_system_learning: string;
-}
-
-interface ISPAgent {
-  isp: string; isp_key: string; domain: string; status: string;
-  profiles_count: number; data_points_total: number; avg_engagement: number;
-  learning_days: number; last_learning_at: string;
-  knowledge: { optimal_send_hour: number; optimal_send_day: number; insights: string[] };
-}
-
-interface OptimalSend {
-  optimal_hour: number; optimal_day: number; optimal_day_name: string;
-  confidence: number; reasoning: string[];
-}
 
 interface InfraRow {
   entity: string;
@@ -139,7 +85,7 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
 
-const PAGE_VERSION = '2.0';
+const PAGE_VERSION = '3.0';
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
@@ -213,17 +159,9 @@ export const AnalyticsCenter: React.FC = () => {
     }
   }, [dateRange.type]);
 
-  // Data
+  // Data — overview is the primary source for KPIs, rates, and deliverability
   const [overview, setOverview] = useState<OverviewData | null>(null);
-  const [_engagement, setEngagement] = useState<EngagementData | null>(null);
-  const [deliverability, setDeliverability] = useState<DeliverabilityData | null>(null);
-  const [revenue, setRevenue] = useState<RevenueData | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignData | null>(null);
-  const [_profileStats, setProfileStats] = useState<ProfileStats | null>(null);
-  const [_agentSummary, setAgentSummary] = useState<ISPAgentSummary | null>(null);
-  const [_agents, setAgents] = useState<ISPAgent[]>([]);
-  const [_optimalSend, setOptimalSend] = useState<OptimalSend | null>(null);
-  const [_dashData, setDashData] = useState<any>(null);
 
   // Infrastructure Breakdown state
   const [infraData, setInfraData] = useState<InfraRow[]>([]);
@@ -259,49 +197,24 @@ export const AnalyticsCenter: React.FC = () => {
       };
       const mppParam = excludeMPP ? '&exclude_mpp=true' : '';
       const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}${mppParam}`;
-      const [ovRes, engRes, delRes, revRes, campRes, profRes, agentRes, optRes, dashRes, ispRes] = await Promise.all([
+      const [ovRes, campRes, ispRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
-        orgFetch(`/api/mailing/reports/engagement${qp}`, orgId),
-        orgFetch(`/api/mailing/reports/deliverability${qp}`, orgId),
-        orgFetch(`/api/mailing/reports/revenue${qp}`, orgId),
         orgFetch(`/api/mailing/reports/campaigns${qp}`, orgId),
-        orgFetch(`/api/mailing/profiles/stats${qp}`, orgId),
-        orgFetch(`/api/mailing/isp-agents${qp}`, orgId),
-        orgFetch(`/api/mailing/analytics/optimal-send${qp}`, orgId),
-        orgFetch(`/api/mailing/dashboard${qp}`, orgId),
         orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId),
       ]);
-      const [ov, eng, del, rev, camp, prof, ag, opt, dash, ispPerf] = await Promise.all([
+      const [ov, camp, ispPerf] = await Promise.all([
         ovRes.json().catch(() => null),
-        engRes.json().catch(() => null),
-        delRes.json().catch(() => null),
-        revRes.json().catch(() => null),
         campRes.json().catch(() => null),
-        profRes.json().catch(() => null),
-        agentRes.json().catch(() => null),
-        optRes.json().catch(() => null),
-        dashRes.json().catch(() => null),
         ispRes.json().catch(() => null),
       ]);
       setOverview(ov);
-      setEngagement(eng);
-      setDeliverability(del);
-      setRevenue(rev);
       setCampaigns(camp);
-      setProfileStats(prof);
-      setAgentSummary(ag?.summary || null);
-      setAgents(ag?.agents || []);
-      setOptimalSend(opt);
-      setDashData(dash);
       setIspCards(ispPerf?.isps || []);
       setSelectedISP(null);
       setIspTrend([]);
       setApiVersions(prev => ({
         ...prev,
         overview: ov?.api_version || '?',
-        engagement: eng?.api_version || '?',
-        deliverability: del?.api_version || '?',
-        revenue: rev?.api_version || '?',
         campaigns: camp?.api_version || '?',
         isp_performance: ispPerf?.api_version || '?',
       }));
@@ -390,8 +303,8 @@ export const AnalyticsCenter: React.FC = () => {
   }, [overview, chartDomain]);
 
   // ─── Derived Values ────────────────────────────────────────────────────────
-  const totals = overview?.totals || { sent: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, revenue: 0 };
-  const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0 };
+  const totals = overview?.totals || { sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, revenue: 0 };
+  const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0, delivery_rate: 0 };
   const trend = overview?.daily_trend || [];
   const granularity = overview?.granularity || 'day';
 
@@ -473,7 +386,7 @@ export const AnalyticsCenter: React.FC = () => {
               <div className="ac-kpi-body">
                 <span className="ac-kpi-value"><AnimatedCounter value={totals.revenue} formatFn={fmtCurrency} /></span>
                 <span className="ac-kpi-label">Revenue</span>
-                <span className="ac-kpi-sub">{fmtCurrency(revenue?.revenue_per_email || 0)}/email</span>
+                <span className="ac-kpi-sub">{fmtCurrency(totals.sent > 0 ? totals.revenue / totals.sent : 0)}/email</span>
               </div>
             </div>
             <div className="ac-kpi bounces ig-card-hover ig-shimmer">
@@ -779,50 +692,36 @@ export const AnalyticsCenter: React.FC = () => {
                 <div className="ac-deliver-grid">
                   <div className="ac-deliver-metric">
                     <div className="ac-deliver-ring" style={{
-                      '--ring-pct': `${deliverability?.rates?.delivery_rate || 0}%`,
-                      '--ring-color': (deliverability?.rates?.delivery_rate || 0) > 98 ? '#10b981' : '#f59e0b'
+                      '--ring-pct': `${rates.delivery_rate ?? 0}%`,
+                      '--ring-color': (rates.delivery_rate ?? 0) > 98 ? '#10b981' : '#f59e0b'
                     } as React.CSSProperties}>
-                      <span>{(deliverability?.rates?.delivery_rate || 0).toFixed(1)}%</span>
+                      <span>{(rates.delivery_rate ?? 0).toFixed(1)}%</span>
                     </div>
                     <span className="ac-deliver-label">Delivery Rate</span>
                   </div>
                   <div className="ac-deliver-details">
                     <div className="ac-dd-row">
                       <span>Total Sent</span>
-                      <strong>{fmt(deliverability?.totals?.sent || 0)}</strong>
+                      <strong>{fmt(totals.sent)}</strong>
                     </div>
                     <div className="ac-dd-row">
                       <span>Delivered</span>
-                      <strong className="ac-good">{fmt(deliverability?.totals?.delivered || 0)}</strong>
+                      <strong className="ac-good">{fmt(overview?.totals?.delivered ?? 0)}</strong>
                     </div>
                     <div className="ac-dd-row">
                       <span>Hard Bounced</span>
-                      <strong className="ac-bad" style={{ color: '#ef4444' }}>{fmt(deliverability?.totals?.hard_bounced || 0)}</strong>
+                      <strong className="ac-bad" style={{ color: '#ef4444' }}>{fmt(totals.hard_bounces)}</strong>
                     </div>
                     <div className="ac-dd-row">
                       <span>Soft Bounced</span>
-                      <strong className="ac-bad" style={{ color: '#f59e0b' }}>{fmt(deliverability?.totals?.soft_bounced || 0)}</strong>
+                      <strong className="ac-bad" style={{ color: '#f59e0b' }}>{fmt(totals.soft_bounces)}</strong>
                     </div>
                     <div className="ac-dd-row">
                       <span>Complaints</span>
-                      <strong className="ac-bad">{fmt(deliverability?.totals?.complaints || 0)}</strong>
-                    </div>
-                    <div className="ac-dd-row">
-                      <span>Total Suppressed</span>
-                      <strong>{fmt(deliverability?.global_suppressions || 0)}</strong>
+                      <strong className="ac-bad">{fmt(totals.complaints)}</strong>
                     </div>
                   </div>
                 </div>
-                {deliverability?.bounce_breakdown && deliverability.bounce_breakdown.length > 0 && (
-                  <div className="ac-bounce-breakdown">
-                    <h4>Bounce Breakdown</h4>
-                    <div className="ac-bounce-tags">
-                      {deliverability.bounce_breakdown.map((b, i) => (
-                        <span key={i} className="ac-bounce-tag">{b.type}: {b.count}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* ─── Infrastructure Breakdown ──────────────────────────────────── */}
