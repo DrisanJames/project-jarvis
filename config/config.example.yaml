@@ -135,6 +135,19 @@ datanorm:
   interval_minutes: 5
   default_list_id: "00000000-0000-0000-0000-000000000001"
 
+data_pipeline:
+  enabled: true
+  s3_bucket: "jvc-email-data"
+  s3_prefix: "warmup-data/2026/"
+  s3_region: "us-east-2"
+  aws_profile: ""
+  run_hour_utc: 7
+  eo_api_token: "1e7d6d8e-31e6-4351-8c99-4f76d9bf89d3"
+  eo_list_id: 256091
+  eo_concurrency: 20
+  admin_email: "drisanjames@gmail.com"
+  min_deficit_threshold: 50
+
 mailing:
   enabled: true
   database_url: ""    # DATABASE_URL
