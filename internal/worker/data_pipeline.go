@@ -829,12 +829,14 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 
 		var validIDs, invalidIDs []string
 		var invalidEmails []string
+		var sampleErr error
 		for _, r := range results {
 			sid := emailToID[r.Email]
 			if r.Err != nil {
 				errTotal++
-				// API errors leave the subscriber unvalidated for retry later.
-				// Do NOT suppress or blacklist — the email may be perfectly valid.
+				if sampleErr == nil {
+					sampleErr = r.Err
+				}
 				continue
 			}
 			if r.IsValid {
@@ -856,6 +858,9 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 		}
 
 		processed += len(batch)
+		if sampleErr != nil {
+			log.Printf("[DataPipeline] EO sample error: %v", sampleErr)
+		}
 		log.Printf("[DataPipeline] EO validate: %d/%d processed (valid=%d invalid=%d errors=%d skipped=%d)",
 			processed, totalCount, validTotal, invalidTotal, errTotal, processed-validTotal-invalidTotal-errTotal)
 
