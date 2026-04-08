@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,7 +24,7 @@ const (
 	VersionAnalyticsOverview       = "3.0"
 	VersionISPPerformance          = "1.2"
 	VersionISPSendingInsights      = "1.2"
-	VersionCampaignComparison      = "1.0"
+	VersionCampaignComparison      = "2.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
 	VersionEngagementReport        = "1.0"
@@ -138,6 +139,171 @@ func trendGranularity(start, end time.Time) string {
 		return "hour"
 	}
 	return "day"
+}
+
+// buildOverviewTrend returns daily_trend data for the analytics overview.
+//
+// For daily granularity, delivery metrics come from pmta_acct_daily_summary
+// (fast, pre-aggregated) and engagement metrics from mailing_tracking_events.
+// For sub-day granularity (10min/hour), tracking events are used for everything
+// since the summary table only has daily resolution — but the time range is
+// naturally small (hours), so the scan is fast.
+func buildOverviewTrend(ctx context.Context, db *sql.DB, start, end time.Time, gran, dateFmt string, excludeMPP bool, trendDomain string) []map[string]interface{} {
+	if gran == "day" {
+		return buildDailyTrendFromSummary(ctx, db, start, end, dateFmt, excludeMPP, trendDomain)
+	}
+	return buildSubDayTrendFromEvents(ctx, db, start, end, gran, dateFmt, excludeMPP, trendDomain)
+}
+
+func buildDailyTrendFromSummary(ctx context.Context, db *sql.DB, start, end time.Time, dateFmt string, excludeMPP bool, trendDomain string) []map[string]interface{} {
+	type bucket struct {
+		sent, delivered, opens, clicks                     int
+		hardBounces, softBounces, complaints, deferred, unsubs int
+	}
+	byDate := make(map[string]*bucket)
+
+	dRows, err := db.QueryContext(ctx, `
+		SELECT summary_date, SUM(delivered), SUM(hard_bounced), SUM(soft_bounced), SUM(complained), SUM(deferred)
+		FROM pmta_acct_daily_summary
+		WHERE summary_date >= $1::date AND summary_date <= $2::date
+		GROUP BY summary_date ORDER BY summary_date
+	`, start, end)
+	if err == nil {
+		defer dRows.Close()
+		for dRows.Next() {
+			var d time.Time
+			var del, hb, sb, comp, def int
+			if dRows.Scan(&d, &del, &hb, &sb, &comp, &def) == nil {
+				key := d.Format(dateFmt)
+				byDate[key] = &bucket{delivered: del, hardBounces: hb, softBounces: sb, complaints: comp, deferred: def}
+			}
+		}
+		dRows.Close()
+	}
+
+	mppClause := ""
+	if excludeMPP {
+		mppClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
+	}
+	engArgs := []interface{}{start, end}
+	engWhere := "event_at >= $1 AND event_at <= $2"
+	if trendDomain != "" {
+		engWhere += " AND sending_domain = $3"
+		engArgs = append(engArgs, trendDomain)
+	}
+
+	eRows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT DATE(event_at) as bucket,
+		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END)
+		FROM mailing_tracking_events
+		WHERE %s AND event_type IN ('sent','opened','clicked','unsubscribed')
+		GROUP BY DATE(event_at) ORDER BY bucket
+	`, mppClause, engWhere), engArgs...)
+	if err == nil {
+		defer eRows.Close()
+		for eRows.Next() {
+			var d time.Time
+			var sent, opens, clicks, unsubs int
+			if eRows.Scan(&d, &sent, &opens, &clicks, &unsubs) == nil {
+				key := d.Format(dateFmt)
+				if b, ok := byDate[key]; ok {
+					b.sent = sent
+					b.opens = opens
+					b.clicks = clicks
+					b.unsubs = unsubs
+				} else {
+					byDate[key] = &bucket{sent: sent, opens: opens, clicks: clicks, unsubs: unsubs}
+				}
+			}
+		}
+		eRows.Close()
+	}
+
+	// Collect sorted keys
+	keys := make([]string, 0, len(byDate))
+	for k := range byDate {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+
+	result := make([]map[string]interface{}, 0, len(keys))
+	for _, k := range keys {
+		b := byDate[k]
+		result = append(result, map[string]interface{}{
+			"date": k, "sent": b.sent, "delivered": b.delivered,
+			"opens": b.opens, "clicks": b.clicks, "hard_bounces": b.hardBounces, "soft_bounces": b.softBounces,
+			"complaints": b.complaints, "deferred": b.deferred, "unsubscribes": b.unsubs,
+		})
+	}
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+	return result
+}
+
+func buildSubDayTrendFromEvents(ctx context.Context, db *sql.DB, start, end time.Time, gran, dateFmt string, excludeMPP bool, trendDomain string) []map[string]interface{} {
+	truncFn := "DATE_TRUNC('hour', event_at)"
+	if gran == "10min" {
+		truncFn = "DATE_TRUNC('hour', event_at) + INTERVAL '10 min' * FLOOR(EXTRACT(MINUTE FROM event_at) / 10)"
+	}
+
+	mppClause := ""
+	if excludeMPP {
+		mppClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
+	}
+	args := []interface{}{start, end}
+	where := "event_at >= $1 AND event_at <= $2"
+	if trendDomain != "" {
+		where += " AND sending_domain = $3"
+		args = append(args, trendDomain)
+	}
+
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s as bucket,
+		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'complained' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END)
+		FROM mailing_tracking_events
+		WHERE %s
+		GROUP BY %s ORDER BY bucket
+	`, truncFn, mppClause, hardBounceSQL, hardBounceSQL, where, truncFn), args...)
+	if err != nil {
+		return []map[string]interface{}{}
+	}
+	defer rows.Close()
+
+	var result []map[string]interface{}
+	for rows.Next() {
+		var bucket time.Time
+		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints, deferred, unsubscribes int
+		rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints, &deferred, &unsubscribes)
+		result = append(result, map[string]interface{}{
+			"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
+			"opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces,
+			"complaints": complaints, "deferred": deferred, "unsubscribes": unsubscribes,
+		})
+	}
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+	return result
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
 }
 
 func (s *AdvancedMailingService) HandleCampaignTimeline(w http.ResponseWriter, r *http.Request) {
@@ -278,61 +444,12 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 	`, start, end).Scan(&totalRevenue)
 
 	gran := trendGranularity(start, end)
-	truncFn := "DATE(event_at)"
 	dateFmt := "2006-01-02"
-	switch gran {
-	case "10min":
-		truncFn = "DATE_TRUNC('hour', event_at) + INTERVAL '10 min' * FLOOR(EXTRACT(MINUTE FROM event_at) / 10)"
-		dateFmt = "2006-01-02T15:04"
-	case "hour":
-		truncFn = "DATE_TRUNC('hour', event_at)"
+	if gran == "10min" || gran == "hour" {
 		dateFmt = "2006-01-02T15:04"
 	}
 
-	mppTrendClause := ""
-	if excludeMPP {
-		mppTrendClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
-	}
-
-	trendArgs := []interface{}{start, end}
-	trendWhere := "event_at >= $1 AND event_at <= $2"
-	trendDomain := r.URL.Query().Get("trend_domain")
-	if trendDomain != "" {
-		trendWhere += " AND sending_domain = $3"
-		trendArgs = append(trendArgs, trendDomain)
-	}
-
-	rows, _ := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT %s as bucket,
-		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END) as opens,
-		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type = 'bounced' AND ` + HardBounceSQL("mailing_tracking_events") + ` THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN event_type = 'bounced' AND NOT (` + HardBounceSQL("mailing_tracking_events") + `) THEN 1 ELSE 0 END) as soft_bounces,
-		       SUM(CASE WHEN event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubscribes
-		FROM mailing_tracking_events
-		WHERE %s
-		GROUP BY %s ORDER BY bucket
-	`, truncFn, mppTrendClause, trendWhere, truncFn), trendArgs...)
-	defer rows.Close()
-
-	var trend []map[string]interface{}
-	for rows.Next() {
-		var bucket time.Time
-		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints, deferred, unsubscribes int
-		rows.Scan(&bucket, &sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints, &deferred, &unsubscribes)
-		trend = append(trend, map[string]interface{}{
-			"date": bucket.Format(dateFmt), "sent": sent, "delivered": delivered,
-			"opens": opens, "clicks": clicks, "hard_bounces": hardBounces, "soft_bounces": softBounces, "complaints": complaints,
-			"deferred": deferred, "unsubscribes": unsubscribes,
-		})
-	}
-	if trend == nil {
-		trend = []map[string]interface{}{}
-	}
+	trend := buildOverviewTrend(ctx, s.db, start, end, gran, dateFmt, excludeMPP, r.URL.Query().Get("trend_domain"))
 
 	var domains []string
 	domRows, _ := s.db.QueryContext(ctx, `
@@ -377,72 +494,154 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 // ================== CROSS-CAMPAIGN REPORTING ==================
 
 // HandleCampaignComparison compares multiple campaigns within a date range.
+// Delivery metrics come from pmta_acct_daily_summary (fast, pre-aggregated).
+// Engagement metrics come from mailing_tracking_events scoped by campaign_id.
 func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start, end := parseAnalyticsRange(r)
 	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
-	mppClause := ""
-	if excludeMPP {
-		mppClause = "AND COALESCE(t.is_machine_open, FALSE) = FALSE"
-	}
-
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT c.id, c.name, c.status, c.revenue,
-			c.created_at, COALESCE(c.started_at, c.created_at), COALESCE(c.completed_at, c.created_at),
-			COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END), 0)
-		FROM mailing_campaigns c
-		JOIN mailing_tracking_events t ON t.campaign_id = c.id
-		WHERE COALESCE(c.started_at, c.created_at) >= $1
-		  AND COALESCE(c.started_at, c.created_at) <= $2
-		GROUP BY c.id, c.name, c.status, c.revenue, c.created_at, c.started_at, c.completed_at
-		HAVING SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) > 0
-		ORDER BY COALESCE(c.started_at, c.created_at) DESC
+	// Step 1: Get campaign metadata
+	cRows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, status, revenue, created_at,
+			COALESCE(started_at, created_at), COALESCE(completed_at, created_at)
+		FROM mailing_campaigns
+		WHERE COALESCE(started_at, created_at) >= $1
+		  AND COALESCE(started_at, created_at) <= $2
+		ORDER BY COALESCE(started_at, created_at) DESC
 		LIMIT 50
-	`, mppClause, hardBounceSQL, hardBounceSQL), start, end)
+	`, start, end)
 	if err != nil {
-		log.Printf("[campaign-comparison] query error: %v", err)
+		log.Printf("[campaign-comparison] campaigns query error: %v", err)
 		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer cRows.Close()
 
+	type campMeta struct {
+		id                           uuid.UUID
+		name, status                 string
+		revenue                      float64
+		created, started, completed  time.Time
+	}
+	type campMetrics struct {
+		sent, delivered, opens, clicks int
+		hardBounces, softBounces, complaints int
+	}
+
+	var campIDs []interface{}
+	metaMap := make(map[string]*campMeta)
+	metricsMap := make(map[string]*campMetrics)
+
+	for cRows.Next() {
+		var cm campMeta
+		if cRows.Scan(&cm.id, &cm.name, &cm.status, &cm.revenue, &cm.created, &cm.started, &cm.completed) == nil {
+			idStr := cm.id.String()
+			metaMap[idStr] = &cm
+			metricsMap[idStr] = &campMetrics{}
+			campIDs = append(campIDs, idStr)
+		}
+	}
+	cRows.Close()
+
+	if len(campIDs) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"api_version": VersionCampaignComparison, "exclude_mpp": excludeMPP,
+			"campaigns": []map[string]interface{}{}, "total": 0,
+		})
+		return
+	}
+
+	// Step 2: Delivery metrics from pmta_acct_daily_summary
+	placeholders := make([]string, len(campIDs))
+	for i := range campIDs {
+		placeholders[i] = fmt.Sprintf("$%d::uuid", i+1)
+	}
+	dRows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT campaign_id, SUM(delivered), SUM(hard_bounced), SUM(soft_bounced), SUM(complained)
+		FROM pmta_acct_daily_summary
+		WHERE campaign_id IN (%s)
+		GROUP BY campaign_id
+	`, strings.Join(placeholders, ",")), campIDs...)
+	if err == nil {
+		defer dRows.Close()
+		for dRows.Next() {
+			var cid string
+			var del, hb, sb, comp int
+			if dRows.Scan(&cid, &del, &hb, &sb, &comp) == nil {
+				if m, ok := metricsMap[cid]; ok {
+					m.delivered = del
+					m.hardBounces = hb
+					m.softBounces = sb
+					m.complaints = comp
+				}
+			}
+		}
+		dRows.Close()
+	}
+
+	// Step 3: Engagement metrics from mailing_tracking_events
+	mppClause := ""
+	if excludeMPP {
+		mppClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
+	}
+	eRows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT campaign_id,
+			SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END),
+			SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END)
+		FROM mailing_tracking_events
+		WHERE campaign_id IN (%s) AND event_type IN ('sent','opened','clicked')
+		GROUP BY campaign_id
+	`, mppClause, strings.Join(placeholders, ",")), campIDs...)
+	if err == nil {
+		defer eRows.Close()
+		for eRows.Next() {
+			var cid string
+			var sent, opens, clicks int
+			if eRows.Scan(&cid, &sent, &opens, &clicks) == nil {
+				if m, ok := metricsMap[cid]; ok {
+					m.sent = sent
+					m.opens = opens
+					m.clicks = clicks
+				}
+			}
+		}
+		eRows.Close()
+	}
+
+	// Step 4: Build response
 	var campaigns []map[string]interface{}
-	for rows.Next() {
-		var id uuid.UUID
-		var name, status string
-		var revenue float64
-		var created, started, completed time.Time
-		var sent, delivered, opens, clicks, hardBounces, softBounces, complaints int
+	for _, cid := range campIDs {
+		idStr := cid.(string)
+		cm := metaMap[idStr]
+		m := metricsMap[idStr]
 
-		rows.Scan(&id, &name, &status, &revenue, &created, &started, &completed,
-			&sent, &delivered, &opens, &clicks, &hardBounces, &softBounces, &complaints)
+		sent := m.sent
+		if sent == 0 && m.delivered > 0 {
+			sent = m.delivered + m.hardBounces + m.softBounces
+		}
 
 		openRate, clickRate := 0.0, 0.0
-		if delivered > 0 {
-			openRate = metricsRound2(float64(opens) / float64(delivered) * 100)
-			clickRate = metricsRound2(float64(clicks) / float64(delivered) * 100)
+		if m.delivered > 0 {
+			openRate = metricsRound2(float64(m.opens) / float64(m.delivered) * 100)
+			clickRate = metricsRound2(float64(m.clicks) / float64(m.delivered) * 100)
 		}
 		hardBounceRate, softBounceRate := 0.0, 0.0
 		if sent > 0 {
-			hardBounceRate = metricsRound2(float64(hardBounces) / float64(sent) * 100)
-			softBounceRate = metricsRound2(float64(softBounces) / float64(sent) * 100)
+			hardBounceRate = metricsRound2(float64(m.hardBounces) / float64(sent) * 100)
+			softBounceRate = metricsRound2(float64(m.softBounces) / float64(sent) * 100)
 		}
 
 		campaigns = append(campaigns, map[string]interface{}{
-			"id": id.String(), "name": name, "status": status,
-			"sent": sent, "delivered": delivered, "opens": opens, "clicks": clicks,
-			"bounces": hardBounces + softBounces, "hard_bounces": hardBounces, "soft_bounces": softBounces,
-			"complaints": complaints, "revenue": revenue,
+			"id": idStr, "name": cm.name, "status": cm.status,
+			"sent": sent, "delivered": m.delivered, "opens": m.opens, "clicks": m.clicks,
+			"bounces": m.hardBounces + m.softBounces, "hard_bounces": m.hardBounces, "soft_bounces": m.softBounces,
+			"complaints": m.complaints, "revenue": cm.revenue,
 			"open_rate": openRate, "click_rate": clickRate,
 			"hard_bounce_rate": hardBounceRate, "soft_bounce_rate": softBounceRate,
-			"created_at": created, "started_at": started, "completed_at": completed,
+			"created_at": cm.created, "started_at": cm.started, "completed_at": cm.completed,
 		})
 	}
 	if campaigns == nil {
