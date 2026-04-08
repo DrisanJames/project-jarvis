@@ -713,10 +713,11 @@ func (dp *DataPipeline) addToGlobalSuppression(ctx context.Context, emails []str
 	for _, email := range emails {
 		h := md5Hash(email)
 		_, err := dp.db.ExecContext(ctx,
-			`INSERT INTO mailing_global_suppressions (email_hash, email, reason, source, created_at)
-			 VALUES ($1, $2, 'eo_invalid', 'data_pipeline', NOW())
-			 ON CONFLICT (email_hash) DO NOTHING`,
-			h, email,
+			`INSERT INTO mailing_global_suppressions (organization_id, email, md5_hash, reason, source, created_at)
+			 VALUES ($1, $2, $3, 'eo_invalid', 'data_pipeline', NOW())
+			 ON CONFLICT (organization_id, md5_hash) DO UPDATE SET
+			   reason = EXCLUDED.reason, source = EXCLUDED.source, updated_at = NOW()`,
+			dp.orgID, email, h,
 		)
 		if err != nil {
 			log.Printf("[DataPipeline] suppress %s: %v", email, err)
@@ -747,6 +748,134 @@ func (dp *DataPipeline) failRun(ctx context.Context, runID string, errMsg string
 		`UPDATE data_pipeline_runs SET status = 'failed', completed_at = NOW(), error_message = $1 WHERE id = $2`,
 		errMsg, runID,
 	)
+}
+
+// ValidateExistingSubscribers runs EmailOversight validation on subscribers
+// that were loaded without EO verification. It processes in batches, tracks
+// progress via eo_validated_at, and suppresses invalid emails globally.
+func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since time.Time) {
+	if !atomic.CompareAndSwapInt32(&dp.running, 0, 1) {
+		log.Println("[DataPipeline] validation already in progress, skipping")
+		return
+	}
+	defer atomic.StoreInt32(&dp.running, 0)
+
+	log.Printf("[DataPipeline] === EO validation of existing subscribers starting (since %s) ===", since.Format("2006-01-02"))
+
+	var totalCount int
+	err := dp.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_subscribers
+		 WHERE eo_validated_at IS NULL AND created_at >= $1 AND status = 'confirmed'`,
+		since,
+	).Scan(&totalCount)
+	if err != nil {
+		log.Printf("[DataPipeline] count unvalidated: %v", err)
+		return
+	}
+	if totalCount == 0 {
+		log.Println("[DataPipeline] no unvalidated subscribers found")
+		return
+	}
+	log.Printf("[DataPipeline] %d unvalidated subscribers to process", totalCount)
+
+	batchSize := 500
+	var processed, validTotal, invalidTotal, errTotal int
+
+	for {
+		if ctx.Err() != nil {
+			log.Printf("[DataPipeline] EO validation cancelled: %v", ctx.Err())
+			break
+		}
+
+		rows, err := dp.db.QueryContext(ctx,
+			`SELECT id::text, email FROM mailing_subscribers
+			 WHERE eo_validated_at IS NULL AND created_at >= $1 AND status = 'confirmed'
+			 ORDER BY created_at ASC
+			 LIMIT $2`,
+			since, batchSize,
+		)
+		if err != nil {
+			log.Printf("[DataPipeline] query batch: %v", err)
+			break
+		}
+
+		type sub struct {
+			id, email string
+		}
+		var batch []sub
+		for rows.Next() {
+			var s sub
+			rows.Scan(&s.id, &s.email)
+			batch = append(batch, s)
+		}
+		rows.Close()
+
+		if len(batch) == 0 {
+			break
+		}
+
+		emails := make([]string, len(batch))
+		emailToID := make(map[string]string, len(batch))
+		for i, s := range batch {
+			emails[i] = s.email
+			emailToID[s.email] = s.id
+		}
+
+		results := dp.eoClient.ValidateBatch(ctx, emails)
+
+		var validIDs, invalidIDs []string
+		var invalidEmails []string
+		for _, r := range results {
+			sid := emailToID[r.Email]
+			if r.Err != nil {
+				errTotal++
+				invalidIDs = append(invalidIDs, sid)
+				invalidEmails = append(invalidEmails, r.Email)
+				continue
+			}
+			if r.IsValid {
+				validTotal++
+				validIDs = append(validIDs, sid)
+			} else {
+				invalidTotal++
+				invalidIDs = append(invalidIDs, sid)
+				invalidEmails = append(invalidEmails, r.Email)
+			}
+		}
+
+		if len(validIDs) > 0 {
+			dp.markValidated(ctx, validIDs)
+		}
+		if len(invalidIDs) > 0 {
+			dp.addToGlobalSuppression(ctx, invalidEmails)
+			dp.blacklistSubscribers(ctx, invalidIDs)
+		}
+
+		processed += len(batch)
+		log.Printf("[DataPipeline] EO validate: %d/%d processed (valid=%d invalid=%d errors=%d)",
+			processed, totalCount, validTotal, invalidTotal, errTotal)
+	}
+
+	log.Printf("[DataPipeline] === EO validation complete: processed=%d valid=%d invalid=%d errors=%d ===",
+		processed, validTotal, invalidTotal, errTotal)
+}
+
+func (dp *DataPipeline) markValidated(ctx context.Context, subscriberIDs []string) {
+	for _, sid := range subscriberIDs {
+		dp.db.ExecContext(ctx,
+			`UPDATE mailing_subscribers SET eo_validated_at = NOW() WHERE id = $1`,
+			sid,
+		)
+	}
+}
+
+func (dp *DataPipeline) blacklistSubscribers(ctx context.Context, subscriberIDs []string) {
+	for _, sid := range subscriberIDs {
+		dp.db.ExecContext(ctx,
+			`UPDATE mailing_subscribers SET status = 'blacklisted', eo_validated_at = NOW() WHERE id = $1`,
+			sid,
+		)
+	}
 }
 
 func md5Hash(s string) string {

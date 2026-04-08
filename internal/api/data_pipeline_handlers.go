@@ -262,8 +262,6 @@ func (h *DataPipelineHandlers) HandleTriggerPipeline(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Use background context — request context cancels when the response is sent,
-	// which would kill the entire pipeline run.
 	go func() {
 		log.Println("[DataPipeline] manual trigger via API")
 		h.pipeline.RunOnce(context.Background())
@@ -273,5 +271,37 @@ func (h *DataPipelineHandlers) HandleTriggerPipeline(w http.ResponseWriter, r *h
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "triggered",
 		"message": "Pipeline run started in background",
+	})
+}
+
+// HandleValidateExisting triggers EO validation for subscribers loaded without
+// prior verification. Pass ?since=2026-04-07 to scope by creation date.
+func (h *DataPipelineHandlers) HandleValidateExisting(w http.ResponseWriter, r *http.Request) {
+	if h.pipeline == nil {
+		http.Error(w, `{"error":"pipeline not initialized"}`, 500)
+		return
+	}
+
+	sinceStr := r.URL.Query().Get("since")
+	if sinceStr == "" {
+		http.Error(w, `{"error":"missing required query parameter: since (YYYY-MM-DD)"}`, 400)
+		return
+	}
+	since, err := time.Parse("2006-01-02", sinceStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid since format, expected YYYY-MM-DD"}`, 400)
+		return
+	}
+
+	go func() {
+		log.Printf("[DataPipeline] manual EO validation trigger via API (since=%s)", sinceStr)
+		h.pipeline.ValidateExistingSubscribers(context.Background(), since)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "triggered",
+		"message": "EO validation of existing subscribers started in background",
+		"since":   sinceStr,
 	})
 }

@@ -989,6 +989,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				r.Get("/pipeline/health", pipelineH.HandleGetDomainHealth)
 				r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
 				r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
+				r.Post("/pipeline/validate-existing", pipelineH.HandleValidateExisting)
 			}
 		})
 	}
