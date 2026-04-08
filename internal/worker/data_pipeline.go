@@ -781,8 +781,9 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 	}
 	log.Printf("[DataPipeline] %d unvalidated subscribers to process", totalCount)
 
-	batchSize := 500
+	batchSize := 100
 	var processed, validTotal, invalidTotal, errTotal int
+	consecutiveHighErrorBatches := 0
 
 	for {
 		if ctx.Err() != nil {
@@ -832,8 +833,8 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 			sid := emailToID[r.Email]
 			if r.Err != nil {
 				errTotal++
-				invalidIDs = append(invalidIDs, sid)
-				invalidEmails = append(invalidEmails, r.Email)
+				// API errors leave the subscriber unvalidated for retry later.
+				// Do NOT suppress or blacklist — the email may be perfectly valid.
 				continue
 			}
 			if r.IsValid {
@@ -855,8 +856,31 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 		}
 
 		processed += len(batch)
-		log.Printf("[DataPipeline] EO validate: %d/%d processed (valid=%d invalid=%d errors=%d)",
-			processed, totalCount, validTotal, invalidTotal, errTotal)
+		log.Printf("[DataPipeline] EO validate: %d/%d processed (valid=%d invalid=%d errors=%d skipped=%d)",
+			processed, totalCount, validTotal, invalidTotal, errTotal, processed-validTotal-invalidTotal-errTotal)
+
+		batchErrors := 0
+		for _, r := range results {
+			if r.Err != nil {
+				batchErrors++
+			}
+		}
+		if batchErrors > len(batch)/2 {
+			consecutiveHighErrorBatches++
+			if consecutiveHighErrorBatches >= 5 {
+				log.Printf("[DataPipeline] 5 consecutive high-error batches — aborting to avoid API abuse. Remaining %d subscribers will be retried later.", totalCount-processed)
+				break
+			}
+			backoff := time.Duration(consecutiveHighErrorBatches) * 30 * time.Second
+			log.Printf("[DataPipeline] high error rate (%d/%d), streak=%d — backing off %v", batchErrors, len(batch), consecutiveHighErrorBatches, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+			}
+		} else {
+			consecutiveHighErrorBatches = 0
+			time.Sleep(2 * time.Second)
+		}
 	}
 
 	log.Printf("[DataPipeline] === EO validation complete: processed=%d valid=%d invalid=%d errors=%d ===",
