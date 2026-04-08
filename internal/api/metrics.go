@@ -97,7 +97,8 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 			return r, fmt.Errorf("ComputeMetrics(engagement): %w", err)
 		}
 	} else if !f.StartDate.IsZero() && f.OrgID == "" && f.SendingDomain == "" && f.ISP == "" {
-		// Date-range aggregate: delivery from summary table (authoritative)
+		// Date-range aggregate: delivery from summary table, engagement from campaign rollups.
+		// Both tables are small/pre-aggregated, no tracking events scan needed.
 		err := db.QueryRowContext(ctx, `
 			SELECT COALESCE(SUM(delivered), 0), COALESCE(SUM(hard_bounced), 0),
 			       COALESCE(SUM(soft_bounced), 0), COALESCE(SUM(complained), 0),
@@ -109,21 +110,15 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 			return r, fmt.Errorf("ComputeMetrics(summary-range): %w", err)
 		}
 
-		mppClause := mppOpenClause(f.ExcludeMPP)
-		engQuery := fmt.Sprintf(`
-			SELECT
-				COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END), 0)
-			FROM mailing_tracking_events t
-			WHERE t.event_at >= $1 AND t.event_at <= $2
-		`, mppClause)
-		err = db.QueryRowContext(ctx, engQuery, f.StartDate, f.EndDate).Scan(
-			&r.Sent, &r.Opens, &r.Clicks, &r.Unsubscribes,
-		)
+		err = db.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(sent_count), 0), COALESCE(SUM(open_count), 0),
+			       COALESCE(SUM(click_count), 0)
+			FROM mailing_campaigns
+			WHERE COALESCE(started_at, created_at) >= $1
+			  AND COALESCE(started_at, created_at) <= $2
+		`, f.StartDate, f.EndDate).Scan(&r.Sent, &r.Opens, &r.Clicks)
 		if err != nil {
-			return r, fmt.Errorf("ComputeMetrics(engagement-range): %w", err)
+			return r, fmt.Errorf("ComputeMetrics(campaigns-range): %w", err)
 		}
 	} else {
 		// Legacy fallback: OrgID/SendingDomain/ISP filters or no dates —
@@ -210,56 +205,46 @@ func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]IS
 		}
 		dRows.Close()
 
-		// Engagement from tracking events grouped by recipient_domain
-		mppClause := mppOpenClause(f.ExcludeMPP)
-		var engQuery string
-		var engArgs []interface{}
+		// Per-campaign engagement from tracking events (scoped by campaign_id, fast/indexed)
 		if f.CampaignID != "" {
-			engQuery = fmt.Sprintf(`
+			mppClause := mppOpenClause(f.ExcludeMPP)
+			engQuery := fmt.Sprintf(`
 				SELECT COALESCE(LOWER(NULLIF(t.recipient_domain,'')), '') AS domain,
 					COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
 					COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0),
 					COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
 					COALESCE(SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END), 0)
 				FROM mailing_tracking_events t
-				WHERE t.campaign_id = $1::uuid
+				WHERE t.campaign_id = $1::uuid AND t.event_type IN ('sent','opened','clicked','unsubscribed')
 				GROUP BY domain
 			`, mppClause)
-			engArgs = []interface{}{f.CampaignID}
-		} else {
-			engQuery = fmt.Sprintf(`
-				SELECT COALESCE(LOWER(NULLIF(t.recipient_domain,'')), '') AS domain,
-					COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
-					COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0),
-					COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
-					COALESCE(SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END), 0)
-				FROM mailing_tracking_events t
-				WHERE t.event_at >= $1 AND t.event_at <= $2
-				GROUP BY domain
-			`, mppClause)
-			engArgs = []interface{}{f.StartDate, f.EndDate}
-		}
-
-		eRows, err := db.QueryContext(ctx, engQuery, engArgs...)
-		if err != nil {
-			return nil, fmt.Errorf("ComputeMetricsByISP(engagement): %w", err)
-		}
-		defer eRows.Close()
-
-		for eRows.Next() {
-			var domain string
-			var sent, opens, clicks, unsubs int
-			if err := eRows.Scan(&domain, &sent, &opens, &clicks, &unsubs); err != nil {
-				continue
+			eRows, err := db.QueryContext(ctx, engQuery, f.CampaignID)
+			if err != nil {
+				return nil, fmt.Errorf("ComputeMetricsByISP(engagement): %w", err)
 			}
-			group := isp.GroupFromDomain(domain)
-			if existing, ok := ispMap[group]; ok {
-				existing.Sent += sent
-				existing.Opens += opens
-				existing.Clicks += clicks
-				existing.Unsubscribes += unsubs
-			} else {
-				ispMap[group] = &MetricsResult{Sent: sent, Opens: opens, Clicks: clicks, Unsubscribes: unsubs}
+			defer eRows.Close()
+
+			for eRows.Next() {
+				var domain string
+				var sent, opens, clicks, unsubs int
+				if err := eRows.Scan(&domain, &sent, &opens, &clicks, &unsubs); err != nil {
+					continue
+				}
+				group := isp.GroupFromDomain(domain)
+				if existing, ok := ispMap[group]; ok {
+					existing.Sent += sent
+					existing.Opens += opens
+					existing.Clicks += clicks
+					existing.Unsubscribes += unsubs
+				} else {
+					ispMap[group] = &MetricsResult{Sent: sent, Opens: opens, Clicks: clicks, Unsubscribes: unsubs}
+				}
+			}
+		} else {
+			// Date-range aggregate: derive sent from delivery data, skip per-ISP opens/clicks
+			// to avoid expensive full-table scans on mailing_tracking_events
+			for _, m := range ispMap {
+				m.Sent = m.Delivered + m.HardBounces + m.SoftBounces
 			}
 		}
 	} else {

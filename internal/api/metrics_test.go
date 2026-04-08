@@ -154,18 +154,18 @@ func TestComputeMetrics_DateRange(t *testing.T) {
 	start := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 3, 13, 23, 59, 59, 0, time.UTC)
 
-	// Date-range with no org/domain/ISP filters -> summary path
+	// Date-range with no org/domain/ISP filters -> summary + campaigns path
 	// First query: delivery from pmta_acct_daily_summary
 	mock.ExpectQuery(`pmta_acct_daily_summary`).
 		WithArgs(start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"delivered", "hard_bounced", "soft_bounced", "complained", "deferred"}).
 			AddRow(240, 3, 5, 1, 2))
 
-	// Second query: engagement from mailing_tracking_events
-	mock.ExpectQuery(`mailing_tracking_events`).
+	// Second query: engagement from mailing_campaigns (not tracking events)
+	mock.ExpectQuery(`mailing_campaigns`).
 		WithArgs(start, end).
-		WillReturnRows(sqlmock.NewRows([]string{"sent", "opens", "clicks", "unsubs"}).
-			AddRow(250, 60, 15, 2))
+		WillReturnRows(sqlmock.NewRows([]string{"sent", "opens", "clicks"}).
+			AddRow(250, 60, 15))
 
 	m, err := ComputeMetrics(context.Background(), db, MetricsFilter{
 		StartDate: start,

@@ -181,41 +181,36 @@ func buildDailyTrendFromSummary(ctx context.Context, db *sql.DB, start, end time
 		dRows.Close()
 	}
 
-	mppClause := ""
-	if excludeMPP {
-		mppClause = "AND COALESCE(is_machine_open, FALSE) = FALSE"
-	}
+	// Engagement from campaign rollups (small table, avoids tracking events scan)
 	engArgs := []interface{}{start, end}
-	engWhere := "event_at >= $1 AND event_at <= $2"
+	engWhere := "COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2"
 	if trendDomain != "" {
-		engWhere += " AND sending_domain = $3"
+		engWhere += " AND LOWER(SPLIT_PART(from_email, '@', 2)) = $3"
 		engArgs = append(engArgs, trendDomain)
 	}
 
 	eRows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT DATE(event_at) as bucket,
-		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN event_type = 'opened' %s THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN event_type = 'unsubscribed' THEN 1 ELSE 0 END)
-		FROM mailing_tracking_events
-		WHERE %s AND event_type IN ('sent','opened','clicked','unsubscribed')
-		GROUP BY DATE(event_at) ORDER BY bucket
-	`, mppClause, engWhere), engArgs...)
+		SELECT DATE(COALESCE(started_at, created_at)) as bucket,
+		       COALESCE(SUM(sent_count), 0),
+		       COALESCE(SUM(open_count), 0),
+		       COALESCE(SUM(click_count), 0)
+		FROM mailing_campaigns
+		WHERE %s
+		GROUP BY DATE(COALESCE(started_at, created_at)) ORDER BY bucket
+	`, engWhere), engArgs...)
 	if err == nil {
 		defer eRows.Close()
 		for eRows.Next() {
 			var d time.Time
-			var sent, opens, clicks, unsubs int
-			if eRows.Scan(&d, &sent, &opens, &clicks, &unsubs) == nil {
+			var sent, opens, clicks int
+			if eRows.Scan(&d, &sent, &opens, &clicks) == nil {
 				key := d.Format(dateFmt)
 				if b, ok := byDate[key]; ok {
 					b.sent = sent
 					b.opens = opens
 					b.clicks = clicks
-					b.unsubs = unsubs
 				} else {
-					byDate[key] = &bucket{sent: sent, opens: opens, clicks: clicks, unsubs: unsubs}
+					byDate[key] = &bucket{sent: sent, opens: opens, clicks: clicks}
 				}
 			}
 		}
