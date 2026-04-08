@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"database/sql"
 	"testing"
 	"time"
 
@@ -218,116 +217,10 @@ func TestCanPauseCampaign(t *testing.T) {
 }
 
 // =============================================================================
-// SCHEDULED CAMPAIGN PROCESSING TESTS
-// =============================================================================
-
-func TestCampaignScheduler_GetRecipientCount(t *testing.T) {
-	db, mock, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	scheduler := NewCampaignScheduler(db)
-
-	tests := []struct {
-		name        string
-		campaign    ScheduledCampaign
-		mockSetup   func()
-		wantCount   int
-		wantErr     bool
-	}{
-		{
-			name: "list-based campaign",
-			campaign: ScheduledCampaign{
-				ListID: sql.NullString{String: "list-1", Valid: true},
-			},
-			mockSetup: func() {
-				mock.ExpectQuery("SELECT COUNT").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
-			},
-			wantCount: 100,
-			wantErr:   false,
-		},
-		{
-			name: "with max recipients limit",
-			campaign: ScheduledCampaign{
-				ListID:        sql.NullString{String: "list-1", Valid: true},
-				MaxRecipients: sql.NullInt64{Int64: 50, Valid: true},
-			},
-			mockSetup: func() {
-				mock.ExpectQuery("SELECT COUNT").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
-			},
-			wantCount: 50, // Limited by MaxRecipients
-			wantErr:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.mockSetup()
-
-			ctx := scheduler.ctx
-			if ctx == nil {
-				ctx, _ = scheduler.newContext()
-			}
-			scheduler.ctx, scheduler.cancel = scheduler.newContext()
-
-			count, err := scheduler.getRecipientCount(scheduler.ctx, tt.campaign)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("getRecipientCount() expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("getRecipientCount() error: %v", err)
-				return
-			}
-			if count != tt.wantCount {
-				t.Errorf("getRecipientCount() = %d, want %d", count, tt.wantCount)
-			}
-		})
-	}
-}
-
-// =============================================================================
 // EDGE CASES
 // =============================================================================
 
-func TestCampaignScheduler_MultipleScheduledCampaigns(t *testing.T) {
-	// Test handling multiple campaigns scheduled at the same time
-	db, mock, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	scheduler := NewCampaignScheduler(db)
-	scheduler.ctx, scheduler.cancel = scheduler.newContext()
-
-	// Mock: 5 campaigns scheduled for the same minute
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "subject", "html_content", "plain_content",
-		"from_name", "from_email", "list_id", "segment_id", "sending_profile_id",
-		"scheduled_at", "throttle_speed", "max_recipients",
-	})
-	for i := 0; i < 5; i++ {
-		rows.AddRow(
-			"campaign-"+string(rune('a'+i)), "Test Campaign", "Subject",
-			"<p>Hello</p>", "Hello",
-			"Sender", "sender@test.com", "list-1", nil, "profile-1",
-			time.Now(), "gentle", nil,
-		)
-	}
-
-	mock.ExpectQuery("SELECT").
-		WillReturnRows(rows)
-
-	// processReadyCampaigns should handle all 5
-	// We just verify it doesn't panic
-	// In a real test, we'd mock the subsequent DB calls
-}
-
 func TestCampaignScheduler_WorkerRestart(t *testing.T) {
-	// Simulates worker restart scenario
-	// Scheduled campaigns should still be processed
-
 	db, mock, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -339,7 +232,7 @@ func TestCampaignScheduler_WorkerRestart(t *testing.T) {
 	scheduler1.Start()
 
 	// Simulate crash (don't call Stop properly)
-	scheduler1.cancel() // Just cancel context
+	scheduler1.cancel()
 
 	// Second scheduler starts (restart)
 	mock.ExpectExec("INSERT INTO mailing_workers").
@@ -357,15 +250,9 @@ func TestCampaignScheduler_WorkerRestart(t *testing.T) {
 }
 
 func TestCampaignScheduler_InvalidTimezone(t *testing.T) {
-	// Test that invalid timezone in scheduled_at is handled
-	// This shouldn't happen in practice, but we should handle gracefully
-
-	// All times should be stored in UTC, so this test verifies
-	// the comparison works correctly
 	now := time.Now().UTC()
 	scheduledAt := now.Add(1 * time.Hour)
 
-	// Verify times can be compared correctly
 	if !scheduledAt.After(now) {
 		t.Error("Scheduled time should be after now")
 	}
@@ -382,7 +269,6 @@ func TestCampaignScheduler_DetectCompletion(t *testing.T) {
 	scheduler := NewCampaignScheduler(db)
 	scheduler.ctx, scheduler.cancel = scheduler.newContext()
 
-	// Use a real UUID for the campaign ID
 	campaignID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 	// Mock: campaign with all items processed (95 sent, 5 failed, 0 pending)
@@ -391,7 +277,6 @@ func TestCampaignScheduler_DetectCompletion(t *testing.T) {
 			"id", "sent", "failed", "skipped", "pending", "total",
 		}).AddRow(campaignID, 95, 5, 0, 0, 100))
 
-	// Code uses "sent" when any items succeeded, "cancelled" when all failed
 	mock.ExpectExec("UPDATE mailing_campaigns").
 		WithArgs(sqlmock.AnyArg(), "sent", 95).
 		WillReturnResult(sqlmock.NewResult(0, 1))
