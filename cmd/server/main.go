@@ -571,9 +571,11 @@ func main() {
 				eventWriter := datanorm.NewEventWriter(mailingDB)
 				_ = eventWriter // will be wired to handlers in subsequent phases
 
-				// Start Data Pipeline (nightly S3 ingestion, EO validation, list replenishment)
-				var dataPipeline *worker.DataPipeline
-				if cfg.DataPipeline.Enabled {
+			// Start Data Pipeline (nightly S3 ingestion, EO validation, list replenishment)
+			var dataPipeline *worker.DataPipeline
+			log.Printf("[DataPipeline] Config: enabled=%v bucket=%q prefix=%q eo_token_set=%v",
+				cfg.DataPipeline.Enabled, cfg.DataPipeline.S3Bucket, cfg.DataPipeline.S3Prefix, cfg.DataPipeline.EOAPIToken != "")
+			if cfg.DataPipeline.Enabled {
 					var err error
 					dataPipeline, err = worker.NewDataPipeline(mailingDB, cfg.DataPipeline, "00000000-0000-0000-0000-000000000001")
 					if err != nil {
