@@ -97,26 +97,18 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 			return r, fmt.Errorf("ComputeMetrics(engagement): %w", err)
 		}
 	} else if !f.StartDate.IsZero() && f.OrgID == "" && f.SendingDomain == "" && f.ISP == "" {
-		// Date-range aggregate: delivery from summary table, engagement from campaign rollups.
-		// Both tables are small/pre-aggregated, no tracking events scan needed.
+		// Date-range aggregate: all metrics from mailing_campaigns (single consistent source).
+		// Using one table avoids denominator mismatches between summary and campaign data.
 		err := db.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(delivered), 0), COALESCE(SUM(hard_bounced), 0),
-			       COALESCE(SUM(soft_bounced), 0), COALESCE(SUM(complained), 0),
-			       COALESCE(SUM(deferred), 0)
-			FROM pmta_acct_daily_summary
-			WHERE summary_date >= $1::date AND summary_date <= $2::date
-		`, f.StartDate, f.EndDate).Scan(&r.Delivered, &r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Deferred)
-		if err != nil {
-			return r, fmt.Errorf("ComputeMetrics(summary-range): %w", err)
-		}
-
-		err = db.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(sent_count), 0), COALESCE(SUM(open_count), 0),
-			       COALESCE(SUM(click_count), 0)
+			SELECT COALESCE(SUM(sent_count), 0), COALESCE(SUM(delivered_count), 0),
+			       COALESCE(SUM(open_count), 0), COALESCE(SUM(click_count), 0),
+			       COALESCE(SUM(hard_bounce_count), 0), COALESCE(SUM(soft_bounce_count), 0),
+			       COALESCE(SUM(complaint_count), 0)
 			FROM mailing_campaigns
 			WHERE COALESCE(started_at, created_at) >= $1
 			  AND COALESCE(started_at, created_at) <= $2
-		`, f.StartDate, f.EndDate).Scan(&r.Sent, &r.Opens, &r.Clicks)
+		`, f.StartDate, f.EndDate).Scan(&r.Sent, &r.Delivered, &r.Opens, &r.Clicks,
+			&r.HardBounces, &r.SoftBounces, &r.Complaints)
 		if err != nil {
 			return r, fmt.Errorf("ComputeMetrics(campaigns-range): %w", err)
 		}

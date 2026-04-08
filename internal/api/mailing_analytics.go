@@ -21,7 +21,7 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "3.0"
+	VersionAnalyticsOverview       = "3.1"
 	VersionISPPerformance          = "1.2"
 	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "2.0"
@@ -162,59 +162,39 @@ func buildDailyTrendFromSummary(ctx context.Context, db *sql.DB, start, end time
 	}
 	byDate := make(map[string]*bucket)
 
-	dRows, err := db.QueryContext(ctx, `
-		SELECT summary_date, SUM(delivered), SUM(hard_bounced), SUM(soft_bounced), SUM(complained), SUM(deferred)
-		FROM pmta_acct_daily_summary
-		WHERE summary_date >= $1::date AND summary_date <= $2::date
-		GROUP BY summary_date ORDER BY summary_date
-	`, start, end)
-	if err == nil {
-		defer dRows.Close()
-		for dRows.Next() {
-			var d time.Time
-			var del, hb, sb, comp, def int
-			if dRows.Scan(&d, &del, &hb, &sb, &comp, &def) == nil {
-				key := d.Format(dateFmt)
-				byDate[key] = &bucket{delivered: del, hardBounces: hb, softBounces: sb, complaints: comp, deferred: def}
-			}
-		}
-		dRows.Close()
-	}
-
-	// Engagement from campaign rollups (small table, avoids tracking events scan)
-	engArgs := []interface{}{start, end}
-	engWhere := "COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2"
+	// All metrics from mailing_campaigns grouped by start date (single consistent source)
+	args := []interface{}{start, end}
+	where := "COALESCE(started_at, created_at) >= $1 AND COALESCE(started_at, created_at) <= $2"
 	if trendDomain != "" {
-		engWhere += " AND LOWER(SPLIT_PART(from_email, '@', 2)) = $3"
-		engArgs = append(engArgs, trendDomain)
+		where += " AND LOWER(SPLIT_PART(from_email, '@', 2)) = $3"
+		args = append(args, trendDomain)
 	}
 
-	eRows, err := db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT DATE(COALESCE(started_at, created_at)) as bucket,
 		       COALESCE(SUM(sent_count), 0),
+		       COALESCE(SUM(delivered_count), 0),
 		       COALESCE(SUM(open_count), 0),
-		       COALESCE(SUM(click_count), 0)
+		       COALESCE(SUM(click_count), 0),
+		       COALESCE(SUM(hard_bounce_count), 0),
+		       COALESCE(SUM(soft_bounce_count), 0),
+		       COALESCE(SUM(complaint_count), 0)
 		FROM mailing_campaigns
 		WHERE %s
 		GROUP BY DATE(COALESCE(started_at, created_at)) ORDER BY bucket
-	`, engWhere), engArgs...)
+	`, where), args...)
 	if err == nil {
-		defer eRows.Close()
-		for eRows.Next() {
+		defer rows.Close()
+		for rows.Next() {
 			var d time.Time
-			var sent, opens, clicks int
-			if eRows.Scan(&d, &sent, &opens, &clicks) == nil {
+			var sent, del, opens, clicks, hb, sb, comp int
+			if rows.Scan(&d, &sent, &del, &opens, &clicks, &hb, &sb, &comp) == nil {
 				key := d.Format(dateFmt)
-				if b, ok := byDate[key]; ok {
-					b.sent = sent
-					b.opens = opens
-					b.clicks = clicks
-				} else {
-					byDate[key] = &bucket{sent: sent, opens: opens, clicks: clicks}
-				}
+				byDate[key] = &bucket{sent: sent, delivered: del, opens: opens, clicks: clicks,
+					hardBounces: hb, softBounces: sb, complaints: comp}
 			}
 		}
-		eRows.Close()
+		rows.Close()
 	}
 
 	// Collect sorted keys
