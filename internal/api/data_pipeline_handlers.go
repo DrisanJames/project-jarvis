@@ -16,10 +16,21 @@ const VersionDataPipeline = "1.0"
 type DataPipelineHandlers struct {
 	db       *sql.DB
 	pipeline *worker.DataPipeline
+	server   *Server
 }
 
 func NewDataPipelineHandlers(db *sql.DB, pipeline *worker.DataPipeline) *DataPipelineHandlers {
 	return &DataPipelineHandlers{db: db, pipeline: pipeline}
+}
+
+func (h *DataPipelineHandlers) getPipeline() *worker.DataPipeline {
+	if h.pipeline != nil {
+		return h.pipeline
+	}
+	if h.server != nil {
+		return h.server.DataPipeline
+	}
+	return nil
 }
 
 type pipelineDailyStat struct {
@@ -257,14 +268,15 @@ func (h *DataPipelineHandlers) HandleGetPipelineChart(w http.ResponseWriter, r *
 
 // HandleTriggerPipeline manually triggers a pipeline run.
 func (h *DataPipelineHandlers) HandleTriggerPipeline(w http.ResponseWriter, r *http.Request) {
-	if h.pipeline == nil {
+	p := h.getPipeline()
+	if p == nil {
 		http.Error(w, `{"error":"pipeline not initialized"}`, 500)
 		return
 	}
 
 	go func() {
 		log.Println("[DataPipeline] manual trigger via API")
-		h.pipeline.RunOnce(context.Background())
+		p.RunOnce(context.Background())
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -277,7 +289,8 @@ func (h *DataPipelineHandlers) HandleTriggerPipeline(w http.ResponseWriter, r *h
 // HandleValidateExisting triggers EO validation for subscribers loaded without
 // prior verification. Pass ?since=2026-04-07 to scope by creation date.
 func (h *DataPipelineHandlers) HandleValidateExisting(w http.ResponseWriter, r *http.Request) {
-	if h.pipeline == nil {
+	p := h.getPipeline()
+	if p == nil {
 		http.Error(w, `{"error":"pipeline not initialized"}`, 500)
 		return
 	}
@@ -295,7 +308,7 @@ func (h *DataPipelineHandlers) HandleValidateExisting(w http.ResponseWriter, r *
 
 	go func() {
 		log.Printf("[DataPipeline] manual EO validation trigger via API (since=%s)", sinceStr)
-		h.pipeline.ValidateExistingSubscribers(context.Background(), since)
+		p.ValidateExistingSubscribers(context.Background(), since)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

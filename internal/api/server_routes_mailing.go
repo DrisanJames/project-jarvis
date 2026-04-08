@@ -981,16 +981,17 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// Injection Analytics registered above (public, no auth)
 
-			// Data Pipeline dashboard endpoints
-			if s.DataPipeline != nil {
-				pipelineH := NewDataPipelineHandlers(db, s.DataPipeline)
-				r.Get("/pipeline/stats", pipelineH.HandleGetPipelineStats)
-				r.Get("/pipeline/runs", pipelineH.HandleGetPipelineRuns)
-				r.Get("/pipeline/health", pipelineH.HandleGetDomainHealth)
-				r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
-				r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
-				r.Post("/pipeline/validate-existing", pipelineH.HandleValidateExisting)
-			}
+			// Data Pipeline dashboard endpoints — registered unconditionally;
+			// handlers check for nil pipeline at request time. s.DataPipeline
+			// is set in main.go after SetMailingDB returns.
+			pipelineH := NewDataPipelineHandlers(db, nil)
+			pipelineH.server = s
+			r.Get("/pipeline/stats", pipelineH.HandleGetPipelineStats)
+			r.Get("/pipeline/runs", pipelineH.HandleGetPipelineRuns)
+			r.Get("/pipeline/health", pipelineH.HandleGetDomainHealth)
+			r.Get("/pipeline/chart", pipelineH.HandleGetPipelineChart)
+			r.Post("/pipeline/trigger", pipelineH.HandleTriggerPipeline)
+			r.Post("/pipeline/validate-existing", pipelineH.HandleValidateExisting)
 		})
 	}
 }
