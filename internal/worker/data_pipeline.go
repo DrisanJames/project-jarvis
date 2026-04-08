@@ -762,6 +762,9 @@ func (dp *DataPipeline) ValidateExistingSubscribers(ctx context.Context, since t
 
 	log.Printf("[DataPipeline] === EO validation of existing subscribers starting (since %s) ===", since.Format("2006-01-02"))
 
+	dp.db.ExecContext(ctx, "SET statement_timeout = '5min'")
+	defer dp.db.ExecContext(ctx, "SET statement_timeout = DEFAULT")
+
 	var totalCount int
 	err := dp.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM mailing_subscribers
