@@ -155,6 +155,7 @@ func (c *Client) ValidateBatch(ctx context.Context, emails []string) []BatchResu
 				Result:  resp.Result,
 				IsValid: ValidResults[resp.Result],
 			}
+			time.Sleep(200 * time.Millisecond)
 		}(i, email)
 	}
 
