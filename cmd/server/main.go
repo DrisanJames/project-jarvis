@@ -3093,6 +3093,13 @@ END $$`},
 		{"tracking_domain_enforce_mh", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.em.myownhealth.net', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.em.myownhealth.net')`},
 		{"tracking_domain_enforce_m_db", `UPDATE mailing_sending_profiles SET tracking_domain = 'trk.m.discountblog.com', updated_at = NOW() WHERE sending_domain = 'm.discountblog.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 'trk.m.discountblog.com')`},
 
+		// Migrate DB/QF tracking domains from trk.em.* (unknown CloudFront account)
+		// to t.em.* (jamesventure CloudFront account). Runs after old enforce entries.
+		{"tracking_domain_migrate_db_v2", `UPDATE mailing_sending_profiles SET tracking_domain = 't.em.discountblog.com', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND tracking_domain != 't.em.discountblog.com'`},
+		{"tracking_domain_migrate_qf_v2", `UPDATE mailing_sending_profiles SET tracking_domain = 't.em.quizfiesta.com', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND tracking_domain != 't.em.quizfiesta.com'`},
+		{"tracking_domain_migrate_m_db_v2", `UPDATE mailing_sending_profiles SET tracking_domain = 't.m.discountblog.com', updated_at = NOW() WHERE sending_domain = 'm.discountblog.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 't.m.discountblog.com')`},
+		{"tracking_domain_migrate_m_qf_v2", `UPDATE mailing_sending_profiles SET tracking_domain = 't.m.quizfiesta.com', updated_at = NOW() WHERE sending_domain = 'm.quizfiesta.com' AND (tracking_domain IS NULL OR tracking_domain = '' OR tracking_domain != 't.m.quizfiesta.com')`},
+
 		// m.* SES relay profiles route through the same PMTA server and
 		// ISP pool infrastructure as their em.* counterparts. These must
 		// be in runStartupMigrations (not runAdminMigrations) because
