@@ -77,7 +77,7 @@ func (s *PMTAWaveScheduler) loop() {
 }
 
 func (s *PMTAWaveScheduler) dispatchDueWaves() {
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, 120*time.Second)
 	defer cancel()
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -86,7 +86,7 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 		WHERE status = 'planned'
 		  AND scheduled_at <= NOW()
 		ORDER BY scheduled_at ASC
-		LIMIT 50
+		LIMIT 100
 	`)
 	if err != nil {
 		log.Printf("[PMTAWaveScheduler] fetch due waves: %v", err)
@@ -102,32 +102,57 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 		}
 	}
 
-	if len(waveIDs) > 0 {
-		log.Printf("[PMTAWaveScheduler] found %d due waves", len(waveIDs))
+	if len(waveIDs) == 0 {
+		return
+	}
+	log.Printf("[PMTAWaveScheduler] found %d due waves, processing with %d parallel workers", len(waveIDs), waveDispatchConcurrency)
+
+	sem := make(chan struct{}, waveDispatchConcurrency)
+	var wg sync.WaitGroup
+
+	for _, wid := range waveIDs {
+		if ctx.Err() != nil {
+			log.Printf("[PMTAWaveScheduler] parent context expired, %d waves remaining unprocessed", len(waveIDs))
+			break
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(waveID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.processOneWave(ctx, waveID)
+		}(wid)
+	}
+	wg.Wait()
+}
+
+const waveDispatchConcurrency = 5
+
+func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID string) {
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
+	defer cancel()
+
+	if blocked, reason := s.checkWaveGate(ctx, waveID); blocked {
+		log.Printf("[WaveGate] wave %s blocked: %s", waveID, reason)
+		return
 	}
 
-	for _, waveID := range waveIDs {
-		if blocked, reason := s.checkWaveGate(ctx, waveID); blocked {
-			log.Printf("[WaveGate] wave %s blocked: %s", waveID, reason)
-			continue
-		}
-
-		lock := distlock.NewLock(s.redisClient, s.db, fmt.Sprintf("pmta-wave:%s", waveID), 2*time.Minute)
-		acquired, err := lock.Acquire(ctx)
-		if err != nil || !acquired {
-			if err != nil {
-				log.Printf("[PMTAWaveScheduler] lock acquire error for wave %s: %v", waveID, err)
-			}
-			continue
-		}
-		enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID)
+	lock := distlock.NewLock(s.redisClient, s.db, fmt.Sprintf("pmta-wave:%s", waveID), 2*time.Minute)
+	acquired, err := lock.Acquire(ctx)
+	if err != nil || !acquired {
 		if err != nil {
-			log.Printf("[PMTAWaveScheduler] enqueue error for wave %s: %v", waveID, err)
-		} else {
-			log.Printf("[PMTAWaveScheduler] wave %s enqueued %d recipients", waveID, enqueued)
+			log.Printf("[PMTAWaveScheduler] lock acquire error for wave %s: %v", waveID, err)
 		}
-		lock.Release(ctx)
+		return
 	}
+	enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID)
+	if err != nil {
+		log.Printf("[PMTAWaveScheduler] enqueue error for wave %s: %v", waveID, err)
+	} else {
+		log.Printf("[PMTAWaveScheduler] wave %s enqueued %d recipients", waveID, enqueued)
+	}
+	lock.Release(ctx)
 }
 
 type waveGatingConfig struct {

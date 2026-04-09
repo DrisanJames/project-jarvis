@@ -36,6 +36,7 @@ func TestDispatchDueWaves_DueWavesFound(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
 
 	wave1, wave2, wave3 := uuid.New(), uuid.New(), uuid.New()
 
@@ -44,8 +45,14 @@ func TestDispatchDueWaves_DueWavesFound(t *testing.T) {
 			AddRow(wave1).AddRow(wave2).AddRow(wave3))
 
 	for _, w := range []uuid.UUID{wave1, wave2, wave3} {
+		// checkWaveGate first query — return ErrNoRows so wave is not blocked
+		mock.ExpectQuery("isp_plan_id\\s+FROM").
+			WithArgs(w.String()).
+			WillReturnError(sql.ErrNoRows)
+
+		// EnqueuePMTAWave (status=completed → early return via tx.Commit)
 		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT w.campaign_id").
+		mock.ExpectQuery("isp_plan_id, w.status").
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
 				"campaign_id", "isp_plan_id", "status", "campaign_status",
@@ -117,6 +124,7 @@ func TestDispatchDueWaves_EnqueueError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
 
 	wave1, wave2 := uuid.New(), uuid.New()
 
@@ -124,16 +132,23 @@ func TestDispatchDueWaves_EnqueueError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).
 			AddRow(wave1).AddRow(wave2))
 
+	// checkWaveGate for both waves — return ErrNoRows so not blocked
+	for _, w := range []uuid.UUID{wave1, wave2} {
+		mock.ExpectQuery("isp_plan_id\\s+FROM").
+			WithArgs(w.String()).
+			WillReturnError(sql.ErrNoRows)
+	}
+
 	// Wave 1: EnqueuePMTAWave fails (DB error on SELECT)
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT w.campaign_id").
+	mock.ExpectQuery("isp_plan_id, w.status").
 		WithArgs(wave1.String()).
 		WillReturnError(fmt.Errorf("connection reset"))
 	mock.ExpectRollback()
 
 	// Wave 2: succeeds (already completed, so returns early)
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT w.campaign_id").
+	mock.ExpectQuery("isp_plan_id, w.status").
 		WithArgs(wave2.String()).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "status", "campaign_status",

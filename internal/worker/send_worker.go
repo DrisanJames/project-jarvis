@@ -86,6 +86,10 @@ type SendWorkerPool struct {
 	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
 	rateRegistry ISPRateLimiter
 	perIPEnabled bool
+
+	// Channel-based work distribution: ISP dispatch loop pushes claimed
+	// items here; worker goroutines consume and call processItem.
+	workCh chan QueueItem
 }
 
 // ISPRateLimiter abstracts the engine.ISPRateRegistry to avoid import cycles.
@@ -330,27 +334,26 @@ func (p *SendWorkerPool) Start() {
 	}
 	p.running = true
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.workCh = make(chan QueueItem, p.batchSize*2)
 	p.mu.Unlock()
 
-	log.Printf("SendWorkerPool: Starting %d workers (batch_size=%d)", p.numWorkers, p.batchSize)
+	log.Printf("SendWorkerPool: Starting %d channel workers (batch_size=%d, channel_buf=%d)", p.numWorkers, p.batchSize, p.batchSize*2)
 
-	// Register this worker
 	p.registerWorker()
 
-	// Start heartbeat
 	go p.heartbeatLoop()
 
-	// Start ISP-proportional dispatch coordinator (single goroutine)
+	// ISP dispatch coordinator: claims items from DB and feeds workCh
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		p.ispDispatchLoop()
 	}()
 
-	// Start workers (handle non-ISP-quota campaigns via flat claiming)
+	// Channel consumer workers: read from workCh and call processItem
 	for i := 0; i < p.numWorkers; i++ {
 		p.wg.Add(1)
-		go p.worker(i)
+		go p.channelWorker(i)
 	}
 }
 
@@ -384,122 +387,25 @@ func (p *SendWorkerPool) Stats() map[string]int64 {
 	}
 }
 
-// worker is the main worker loop
-func (p *SendWorkerPool) worker(workerNum int) {
+// channelWorker consumes QueueItems pushed by the ISP dispatch loop
+// and processes them. This replaces the old flat-claim worker() which
+// independently queried the DB.
+func (p *SendWorkerPool) channelWorker(workerNum int) {
 	defer p.wg.Done()
 
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
-		default:
-			// Claim a batch of items
-			items, err := p.claimBatch()
-			if err != nil {
-				log.Printf("Worker %d: Error claiming batch: %v", workerNum, err)
-				time.Sleep(time.Second)
-				continue
+		case item, ok := <-p.workCh:
+			if !ok {
+				return
 			}
-
-			if len(items) == 0 {
-				// No items available, wait before polling again
-				time.Sleep(p.pollInterval)
-				continue
-			}
-
-			// Process batch
-			for _, item := range items {
-				if err := p.processItem(item); err != nil {
-					log.Printf("Worker %d: Error processing item %s: %v", workerNum, item.ID, err)
-				}
+			if err := p.processItem(item); err != nil {
+				log.Printf("Worker %d: Error processing item %s: %v", workerNum, item.ID, err)
 			}
 		}
 	}
-}
-
-// claimBatch claims a batch of queue items with domain-level staggering.
-// For each sending domain, only the earliest-scheduled active campaign gets
-// items claimed per cycle. This prevents multiple campaigns on the same domain
-// from flooding ISPs simultaneously. Falls back to flat claiming if no profile
-// is set.
-func (p *SendWorkerPool) claimBatch() ([]QueueItem, error) {
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	rows, err := p.db.QueryContext(ctx, `
-		WITH active_campaigns AS (
-			SELECT DISTINCT ON (COALESCE(sp.sending_domain, camp.id::text))
-				camp.id AS campaign_id
-			FROM mailing_campaigns camp
-			LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
-			WHERE camp.status = 'sending'
-			  AND (camp.esp_quotas IS NULL OR NOT (camp.esp_quotas ? 'isp_quotas'))
-			ORDER BY COALESCE(sp.sending_domain, camp.id::text), camp.scheduled_at ASC
-		),
-		claimed AS (
-			UPDATE mailing_campaign_queue
-			SET 
-				status = 'sending',
-				worker_id = $1,
-				locked_at = NOW()
-			WHERE id IN (
-				SELECT q.id FROM mailing_campaign_queue q
-				JOIN active_campaigns ac ON ac.campaign_id = q.campaign_id
-				WHERE q.status = 'queued'
-				  AND q.scheduled_at <= NOW()
-				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
-				ORDER BY q.priority DESC, q.scheduled_at ASC
-				LIMIT $2
-				FOR UPDATE SKIP LOCKED
-			)
-			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id
-		)
-		SELECT 
-			c.id,
-			c.campaign_id,
-			c.subscriber_id,
-			s.email,
-			COALESCE(c.subject, ''),
-			COALESCE(c.html_content, ''),
-			COALESCE(c.plain_content, ''),
-			COALESCE(camp.preview_text, ''),
-			COALESCE(camp.from_name, ''),
-			COALESCE(camp.from_email, ''),
-			COALESCE(camp.reply_to, ''),
-			COALESCE(camp.sending_profile_id::text, ''),
-			COALESCE(sp.vendor_type, 'ses'),
-			COALESCE(s.first_name, ''),
-			COALESCE(s.last_name, ''),
-			s.custom_fields,
-			COALESCE(s.engagement_score, 0),
-			COALESCE(s.total_emails_received, 0),
-			COALESCE(s.total_opens, 0),
-			COALESCE(s.total_clicks, 0),
-			s.last_open_at,
-			s.last_click_at,
-			s.last_email_at,
-			s.optimal_send_hour_utc,
-			COALESCE(s.timezone, ''),
-			COALESCE(s.status, 'confirmed'),
-			COALESCE(s.source, ''),
-			COALESCE(s.subscribed_at, s.created_at),
-			COALESCE(camp.name, ''),
-			COALESCE(c.offer_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.creative_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.subject_line_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000')
-		FROM claimed c
-		JOIN mailing_subscribers s ON s.id = c.subscriber_id
-		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
-		LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
-	`, p.workerID, p.batchSize)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return p.scanQueueRows(rows)
 }
 
 // claimISPForOne claims up to `count` queued items for a specific campaign+ISP.
@@ -741,6 +647,31 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			delete(states, campID)
 		}
 	}
+
+	p.warnOrphanedCampaigns(ctx)
+}
+
+// warnOrphanedCampaigns detects campaigns in "sending" status that lack ISP
+// quotas. These campaigns cannot be processed — the flat claim path has been
+// removed. Logs a warning so operators can investigate and fix the campaign.
+func (p *SendWorkerPool) warnOrphanedCampaigns(ctx context.Context) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(name, '')
+		FROM mailing_campaigns
+		WHERE status = 'sending'
+		  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var campID, campName string
+		if rows.Scan(&campID, &campName) == nil {
+			log.Printf("[ISPDispatch] WARNING: Campaign %s (%s) is 'sending' but has NO ISP quotas — it will NOT be processed. "+
+				"All campaigns must have esp_quotas with isp_quotas set.", campID, campName)
+		}
+	}
 }
 
 // refreshRemainingFromDB queries the actual queued item counts per ISP from
@@ -892,7 +823,19 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState,
 		log.Printf("[ISPDispatch] Campaign %s: claimed %d items (plan=%v actual=%v)",
 			campID, len(items), batchCounts, actualCounts)
 
-		p.processItemsConcurrently(items)
+		p.enqueueForProcessing(items)
+	}
+}
+
+// enqueueForProcessing pushes claimed items into the work channel for
+// consumption by channel workers. Blocks if the channel is full (backpressure).
+func (p *SendWorkerPool) enqueueForProcessing(items []QueueItem) {
+	for _, item := range items {
+		select {
+		case <-p.ctx.Done():
+			return
+		case p.workCh <- item:
+		}
 	}
 }
 
@@ -943,31 +886,6 @@ func assignVMTAsToItems(items []QueueItem, ipAllocations map[string]map[string]i
 	}
 }
 
-// processItemsConcurrently fans items out to a bounded set of goroutines,
-// matching the parallelism the flat workers use.
-func (p *SendWorkerPool) processItemsConcurrently(items []QueueItem) {
-	sem := make(chan struct{}, p.numWorkers)
-	var wg sync.WaitGroup
-
-	for _, item := range items {
-		select {
-		case <-p.ctx.Done():
-			break
-		default:
-		}
-
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(it QueueItem) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if err := p.processItem(it); err != nil {
-				log.Printf("[ISPDispatch] Error processing item %s: %v", it.ID, err)
-			}
-		}(item)
-	}
-	wg.Wait()
-}
 
 func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 	var items []QueueItem
