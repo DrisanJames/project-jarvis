@@ -152,11 +152,13 @@ export const AnalyticsCenter: React.FC = () => {
     // mtd: '30', last30: '30', last60: '90', last90: '90', lastMonth: '30', ytd: '90', custom: '30',
     mtd: '14', last30: '14', last60: '14', last90: '14', lastMonth: '14', ytd: '14', custom: '14',
   };
-  const globalRangeHint: TimeRange = rangeMap[dateRange.type] || 'today';
-  const [range, setRange] = useState<TimeRange>(globalRangeHint);
+  const [range, setRange] = useState<TimeRange>('today');
   const [loading, setLoading] = useState(true);
+  const initialMount = React.useRef(true);
 
   useEffect(() => {
+    // Skip the initial mount — always start with 'today'
+    if (initialMount.current) { initialMount.current = false; return; }
     if (rangeMap[dateRange.type]) {
       setRange(rangeMap[dateRange.type]);
     }
