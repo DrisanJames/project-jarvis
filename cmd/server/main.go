@@ -2997,14 +2997,14 @@ BEGIN
             ('144.225.178.10',  'db-comcast-pool'),
             ('144.225.178.11',  'db-general-pool'),
             ('144.225.178.12',  'db-charter-pool'),
-            ('144.225.178.13',  'db-general-pool'),
+            -- .13 reserved for db-yahoo-pool (Phase 14)
             ('144.225.178.71',  'qf-gmail-pool'),
             ('144.225.178.72',  'qf-msft-pool'),
             ('144.225.178.73',  'qf-apple-pool'),
             ('144.225.178.74',  'qf-comcast-pool'),
             ('144.225.178.75',  'qf-general-pool'),
             ('144.225.178.76',  'qf-charter-pool'),
-            ('144.225.178.77',  'qf-general-pool'),
+            -- .77 reserved for qf-yahoo-pool (Phase 14)
             ('144.225.178.136', 'ht-gmail-pool'),
             ('144.225.178.137', 'ht-msft-pool'),
             ('144.225.178.138', 'ht-apple-pool'),
@@ -3012,15 +3012,15 @@ BEGIN
             ('144.225.178.140', 'ht-general-pool'),
             ('144.225.178.141', 'ht-charter-pool'),
             ('144.225.178.142', 'ht-general-pool'),
-            ('144.225.178.143', 'ht-general-pool'),
+            -- .143 reserved for ht-yahoo-pool (Phase 14)
             ('144.225.178.200', 'mh-gmail-pool'),
             ('144.225.178.201', 'mh-msft-pool'),
             ('144.225.178.202', 'mh-apple-pool'),
             ('144.225.178.203', 'mh-comcast-pool'),
             ('144.225.178.204', 'mh-general-pool'),
             ('144.225.178.205', 'mh-charter-pool'),
-            ('144.225.178.206', 'mh-general-pool'),
-            ('144.225.178.207', 'mh-general-pool')
+            ('144.225.178.206', 'mh-general-pool')
+            -- .207 reserved for mh-yahoo-pool (Phase 14)
         ) AS t(ip_addr, pool_name)
     LOOP
         SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
@@ -3040,6 +3040,31 @@ END $$`},
 			SET status = 'paused', updated_at = NOW()
 			WHERE ip_address <<= '15.204.38.160/28'::inet
 			  AND status NOT IN ('paused', 'cold')`},
+
+		// Phase 14: Assign 1 IPXO IP per brand to each Yahoo pool.
+		// Phase 12 moved all IPXO Yahoo IPs to non-Yahoo pools; Phase 13 paused the
+		// OVH IPs that replaced them. Net result: Yahoo pools had 0 active IPs.
+		// This restores 1 dedicated Yahoo IP per brand from the general pool.
+		{"phase14_yahoo_ip_db", `UPDATE mailing_ip_addresses
+			SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+			    updated_at = NOW()
+			WHERE ip_address = '144.225.178.13'::inet
+			  AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'db-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"phase14_yahoo_ip_qf", `UPDATE mailing_ip_addresses
+			SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+			    updated_at = NOW()
+			WHERE ip_address = '144.225.178.77'::inet
+			  AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'qf-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"phase14_yahoo_ip_ht", `UPDATE mailing_ip_addresses
+			SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+			    updated_at = NOW()
+			WHERE ip_address = '144.225.178.143'::inet
+			  AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'ht-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"phase14_yahoo_ip_mh", `UPDATE mailing_ip_addresses
+			SET pool_id = (SELECT id FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001'),
+			    updated_at = NOW()
+			WHERE ip_address = '144.225.178.207'::inet
+			  AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 
 		// === GHOST VISITOR TRACKING INFRASTRUCTURE ===
 		{"create_mailing_subscriber_tags", `CREATE TABLE IF NOT EXISTS mailing_subscriber_tags (
@@ -3884,7 +3909,7 @@ BEGIN
             ('144.225.178.10',  'db-comcast-pool'),
             ('144.225.178.11',  'db-att-pool'),
             ('144.225.178.12',  'db-cox-pool'),
-            ('144.225.178.13',  'db-charter-pool'),
+            -- .13 reserved for db-yahoo-pool (Phase 14)
             -- Server A: QF IPXO Yahoo IPs → other ISP pools
             ('144.225.178.71',  'qf-gmail-pool'),
             ('144.225.178.72',  'qf-msft-pool'),
@@ -3892,7 +3917,7 @@ BEGIN
             ('144.225.178.74',  'qf-comcast-pool'),
             ('144.225.178.75',  'qf-att-pool'),
             ('144.225.178.76',  'qf-cox-pool'),
-            ('144.225.178.77',  'qf-charter-pool'),
+            -- .77 reserved for qf-yahoo-pool (Phase 14)
             -- Server B: HT IPXO Yahoo IPs → other ISP pools
             ('144.225.178.136', 'ht-gmail-pool'),
             ('144.225.178.137', 'ht-msft-pool'),
@@ -3901,7 +3926,7 @@ BEGIN
             ('144.225.178.140', 'ht-att-pool'),
             ('144.225.178.141', 'ht-cox-pool'),
             ('144.225.178.142', 'ht-charter-pool'),
-            ('144.225.178.143', 'ht-general-pool'),
+            -- .143 reserved for ht-yahoo-pool (Phase 14)
             -- Server B: MH IPXO Yahoo IPs → other ISP pools
             ('144.225.178.200', 'mh-gmail-pool'),
             ('144.225.178.201', 'mh-msft-pool'),
@@ -3909,8 +3934,8 @@ BEGIN
             ('144.225.178.203', 'mh-comcast-pool'),
             ('144.225.178.204', 'mh-att-pool'),
             ('144.225.178.205', 'mh-cox-pool'),
-            ('144.225.178.206', 'mh-charter-pool'),
-            ('144.225.178.207', 'mh-general-pool')
+            ('144.225.178.206', 'mh-charter-pool')
+            -- .207 reserved for mh-yahoo-pool (Phase 14)
         ) AS t(ip_addr, pool_name)
     LOOP
         SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
