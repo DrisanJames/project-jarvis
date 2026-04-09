@@ -692,44 +692,6 @@ export const AnalyticsCenter: React.FC = () => {
                 )}
               </div>
 
-              {/* Deliverability Health */}
-              <div className="ac-card ig-card-hover">
-                <h3><FontAwesomeIcon icon={faShieldAlt} /> Deliverability Health</h3>
-                <div className="ac-deliver-grid">
-                  <div className="ac-deliver-metric">
-                    <div className="ac-deliver-ring" style={{
-                      '--ring-pct': `${rates.delivery_rate ?? 0}%`,
-                      '--ring-color': (rates.delivery_rate ?? 0) > 98 ? '#10b981' : '#f59e0b'
-                    } as React.CSSProperties}>
-                      <span>{(rates.delivery_rate ?? 0).toFixed(1)}%</span>
-                    </div>
-                    <span className="ac-deliver-label">Delivery Rate</span>
-                  </div>
-                  <div className="ac-deliver-details">
-                    <div className="ac-dd-row">
-                      <span>Total Sent</span>
-                      <strong>{fmt(totals.sent)}</strong>
-                    </div>
-                    <div className="ac-dd-row">
-                      <span>Delivered</span>
-                      <strong className="ac-good">{fmt(overview?.totals?.delivered ?? 0)}</strong>
-                    </div>
-                    <div className="ac-dd-row">
-                      <span>Hard Bounced</span>
-                      <strong className="ac-bad" style={{ color: '#ef4444' }}>{fmt(totals.hard_bounces)}</strong>
-                    </div>
-                    <div className="ac-dd-row">
-                      <span>Soft Bounced</span>
-                      <strong className="ac-bad" style={{ color: '#f59e0b' }}>{fmt(totals.soft_bounces)}</strong>
-                    </div>
-                    <div className="ac-dd-row">
-                      <span>Complaints</span>
-                      <strong className="ac-bad">{fmt(totals.complaints)}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* ─── Infrastructure Breakdown ──────────────────────────────────── */}
               <div id="infra-breakdown-section" className="ac-card ig-card-hover">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
