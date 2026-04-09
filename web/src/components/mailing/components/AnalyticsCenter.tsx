@@ -13,7 +13,7 @@ import {
   Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useAuth } from '../../../contexts/AuthContext';
-import { useDateFilter } from '../../../context/DateFilterContext';
+
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import './AnalyticsCenter.css';
 
@@ -83,38 +83,27 @@ const ISP_COLORS: Record<string, string> = {
   cox: '#0070C0', charter: '#0078D4', other: '#6B7280',
 };
 
-type TimeRange = '1h' | '24h' | 'today' | '7' | '14';
-// type TimeRange = '1h' | '24h' | 'today' | '7' | '14' | '30' | '90';
+type TimeRange = 'today' | 'yesterday';
 
-const PAGE_VERSION = '3.0';
+const PAGE_VERSION = '3.1';
+
+// All date boundaries are anchored to America/Denver (MST/MDT).
+// MST = UTC-7, MDT = UTC-6. We use a fixed UTC-7 offset per user spec.
+const MST_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+function mstMidnight(d: Date): Date {
+  const mstDate = new Date(d.getTime() - MST_OFFSET_MS);
+  return new Date(Date.UTC(mstDate.getUTCFullYear(), mstDate.getUTCMonth(), mstDate.getUTCDate()) + MST_OFFSET_MS);
+}
 
 function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
   const now = new Date();
-  const endDate = now.toISOString();
-  let start: Date;
-  switch (range) {
-    case '1h':
-      start = new Date(now.getTime() - 60 * 60 * 1000);
-      return { startDate: start.toISOString(), endDate };
-    case '24h':
-      start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      return { startDate: start.toISOString(), endDate };
-    case 'today':
-      start = new Date(); start.setHours(0, 0, 0, 0);
-      return { startDate: start.toISOString(), endDate };
-    case '7':
-    case '14':
-    // case '30':
-    // case '90':
-    {
-      const days = Number(range);
-      start = new Date(); start.setDate(start.getDate() - days); start.setHours(0, 0, 0, 0);
-      return { startDate: start.toISOString(), endDate };
-    }
-    default:
-      start = new Date(); start.setHours(0, 0, 0, 0);
-      return { startDate: start.toISOString(), endDate };
+  const todayStart = mstMidnight(now);
+  if (range === 'yesterday') {
+    const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
+    return { startDate: yesterdayStart.toISOString(), endDate: todayStart.toISOString() };
   }
+  return { startDate: todayStart.toISOString(), endDate: now.toISOString() };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -144,25 +133,9 @@ const pct = (n: number | undefined | null): string => (n == null || isNaN(n)) ? 
 export const AnalyticsCenter: React.FC = () => {
   const { organization } = useAuth();
   const orgId = organization?.id || '';
-  const { dateRange } = useDateFilter();
 
-  // Map global date filter to closest local range option (max 14d)
-  const rangeMap: Record<string, TimeRange> = {
-    today: 'today', last7: '7', last14: '14',
-    // mtd: '30', last30: '30', last60: '90', last90: '90', lastMonth: '30', ytd: '90', custom: '30',
-    mtd: '14', last30: '14', last60: '14', last90: '14', lastMonth: '14', ytd: '14', custom: '14',
-  };
   const [range, setRange] = useState<TimeRange>('today');
   const [loading, setLoading] = useState(true);
-  const initialMount = React.useRef(true);
-
-  useEffect(() => {
-    // Skip the initial mount — always start with 'today'
-    if (initialMount.current) { initialMount.current = false; return; }
-    if (rangeMap[dateRange.type]) {
-      setRange(rangeMap[dateRange.type]);
-    }
-  }, [dateRange.type]);
 
   // Data — overview is the primary source for KPIs, rates, and deliverability
   const [overview, setOverview] = useState<OverviewData | null>(null);
@@ -197,12 +170,8 @@ export const AnalyticsCenter: React.FC = () => {
     setLoading(true);
     try {
       const { startDate, endDate } = computeDateRange(range);
-      const daysMap: Record<TimeRange, string> = {
-        '1h': '1', '24h': '1', 'today': '1', '7': '7', '14': '14',
-        // '30': '30', '90': '90',
-      };
       const mppParam = excludeMPP ? '&exclude_mpp=true' : '';
-      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=${daysMap[range]}${mppParam}`;
+      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=1${mppParam}`;
       const [ovRes, campRes, ispRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
         orgFetch(`/api/mailing/reports/campaigns${qp}`, orgId),
@@ -229,7 +198,7 @@ export const AnalyticsCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [range, orgId, dateRange.startDate, dateRange.endDate, dateRange.type, excludeMPP]);
+  }, [range, orgId, excludeMPP]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -257,7 +226,7 @@ export const AnalyticsCenter: React.FC = () => {
     };
     load();
     return () => { cancelled = true; };
-  }, [selectedISP, range, orgId, dateRange.startDate, dateRange.endDate]);
+  }, [selectedISP, range, orgId]);
 
   const fetchInfrastructure = useCallback(async (domain: string | null, type: 'ip' | 'isp', campaignId?: string) => {
     setInfraLoading(true);
@@ -328,13 +297,8 @@ export const AnalyticsCenter: React.FC = () => {
         <div className="ac-header-right">
           <div className="ac-range-selector">
             {([
-              { key: '1h' as TimeRange, label: '1h' },
-              { key: '24h' as TimeRange, label: '24h' },
               { key: 'today' as TimeRange, label: 'Today' },
-              { key: '7' as TimeRange, label: '7d' },
-              { key: '14' as TimeRange, label: '14d' },
-              // { key: '30' as TimeRange, label: '30d' },
-              // { key: '90' as TimeRange, label: '90d' },
+              { key: 'yesterday' as TimeRange, label: 'Yesterday' },
             ]).map(r => (
               <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
                 {r.label}
@@ -503,7 +467,6 @@ export const AnalyticsCenter: React.FC = () => {
                               tickFormatter={(value: string) => {
                                 if (ispGranularity === '10min' || ispGranularity === 'hour') {
                                   const t = value.includes('T') ? value.split('T')[1] : value;
-                                  if (range === '1h') return t.slice(0, 5);
                                   const h = parseInt(t.split(':')[0], 10);
                                   const ampm = h >= 12 ? 'PM' : 'AM';
                                   return `${h === 0 ? 12 : h > 12 ? h - 12 : h} ${ampm}`;
@@ -573,7 +536,6 @@ export const AnalyticsCenter: React.FC = () => {
                           tickFormatter={(value: string) => {
                             if (granularity === '10min' || granularity === 'hour') {
                               const t = value.includes('T') ? value.split('T')[1] : value;
-                              if (range === '1h') return t.slice(0, 5);
                               const h = parseInt(t.split(':')[0], 10);
                               const ampm = h >= 12 ? 'PM' : 'AM';
                               return `${h === 0 ? 12 : h > 12 ? h - 12 : h} ${ampm}`;

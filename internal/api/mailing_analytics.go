@@ -34,6 +34,17 @@ const (
 	VersionHistoricalMetrics       = "1.0"
 )
 
+// mstLoc is the canonical timezone for all analytics date logic (America/Denver).
+var mstLoc *time.Location
+
+func init() {
+	var err error
+	mstLoc, err = time.LoadLocation("America/Denver")
+	if err != nil {
+		mstLoc = time.FixedZone("MST", -7*60*60)
+	}
+}
+
 // ─── Pure Functions ───────────────────────────────────────────────────────────
 
 // InfraRates holds computed percentage rates for infrastructure metrics.
@@ -69,24 +80,25 @@ func ComputeInfraRates(sent, delivered, opens, clicks, hardBounces, softBounces,
 	return r
 }
 
-// parseAnalyticsRange extracts start/end times from query params with sub-day support.
-// Supports: start_date + end_date (ISO 8601 or YYYY-MM-DD), range_type (1h, 24h, today, 7, 14, 30, 90), days (legacy).
+// parseAnalyticsRange extracts start/end times from query params.
+// All fallback/default date logic is anchored to America/Denver (MST/MDT).
+// When explicit RFC3339 timestamps are provided, they are used as-is.
 func parseAnalyticsRange(r *http.Request) (start, end time.Time) {
-	now := time.Now().UTC()
+	now := time.Now().In(mstLoc)
 	q := r.URL.Query()
 
 	if sd := q.Get("start_date"); sd != "" {
 		if t, err := time.Parse(time.RFC3339, sd); err == nil {
 			start = t
 		} else if t, err := time.Parse("2006-01-02", sd); err == nil {
-			start = t
+			start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, mstLoc)
 		}
 	}
 	if ed := q.Get("end_date"); ed != "" {
 		if t, err := time.Parse(time.RFC3339, ed); err == nil {
 			end = t
 		} else if t, err := time.Parse("2006-01-02", ed); err == nil {
-			end = t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+			end = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, mstLoc)
 		}
 	}
 
@@ -94,7 +106,6 @@ func parseAnalyticsRange(r *http.Request) (start, end time.Time) {
 		return start, end
 	}
 
-	// If only start is provided, assume end is now
 	if !start.IsZero() && end.IsZero() {
 		return start, now
 	}
@@ -106,26 +117,14 @@ func parseAnalyticsRange(r *http.Request) (start, end time.Time) {
 	}
 
 	switch rt {
-	case "1h":
-		start = now.Add(-1 * time.Hour)
-	case "24h":
-		start = now.Add(-24 * time.Hour)
 	case "today":
-		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	case "7":
-		start = now.AddDate(0, 0, -7)
-	case "14":
-		start = now.AddDate(0, 0, -14)
-	case "90":
-		start = now.AddDate(0, 0, -90)
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	case "yesterday":
+		y := now.AddDate(0, 0, -1)
+		start = time.Date(y.Year(), y.Month(), y.Day(), 0, 0, 0, 0, mstLoc)
+		end = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
 	default:
-		d := 30
-		if ds := q.Get("days"); ds != "" {
-			if v, err := strconv.Atoi(ds); err == nil && v > 0 {
-				d = v
-			}
-		}
-		start = now.AddDate(0, 0, -d)
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
 	}
 	return start, end
 }

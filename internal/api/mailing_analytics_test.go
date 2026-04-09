@@ -36,49 +36,48 @@ func TestParseAnalyticsRange_OnlyStart(t *testing.T) {
 	assert.Equal(t, 2026, s.Year())
 	assert.Equal(t, time.February, s.Month())
 	assert.Equal(t, 1, s.Day())
-	assert.WithinDuration(t, time.Now().UTC(), e, 5*time.Second, "end should default to ~now")
+	assert.WithinDuration(t, time.Now(), e, 5*time.Second, "end should default to ~now")
 }
 
-func TestParseAnalyticsRange_RangeTypes(t *testing.T) {
-	tests := []struct {
-		name      string
-		rangeType string
-		minAgo    time.Duration
-		maxAgo    time.Duration
-	}{
-		{"1h", "1h", 55 * time.Minute, 65 * time.Minute},
-		{"24h", "24h", 23*time.Hour + 55*time.Minute, 24*time.Hour + 5*time.Minute},
-		{"7d", "7", 6*24*time.Hour + 23*time.Hour, 7*24*time.Hour + 1*time.Hour},
-		{"14d", "14", 13*24*time.Hour + 23*time.Hour, 14*24*time.Hour + 1*time.Hour},
-		{"90d", "90", 89*24*time.Hour + 23*time.Hour, 90*24*time.Hour + 1*time.Hour},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/?range_type="+tc.rangeType, nil)
-			s, e := parseAnalyticsRange(req)
-			age := e.Sub(s)
-			assert.True(t, age >= tc.minAgo && age <= tc.maxAgo,
-				"range_type=%s: age=%v not in [%v, %v]", tc.rangeType, age, tc.minAgo, tc.maxAgo)
-		})
-	}
+func TestParseAnalyticsRange_Yesterday(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?range_type=yesterday", nil)
+	s, e := parseAnalyticsRange(req)
+
+	now := time.Now().In(mstLoc)
+	expectedEnd := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	expectedStart := expectedEnd.AddDate(0, 0, -1)
+	assert.Equal(t, expectedStart, s, "yesterday start should be previous day midnight MST")
+	assert.Equal(t, expectedEnd, e, "yesterday end should be today midnight MST")
+}
+
+func TestParseAnalyticsRange_UnknownRangeFallsToToday(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?range_type=7", nil)
+	s, e := parseAnalyticsRange(req)
+
+	now := time.Now().In(mstLoc)
+	expectedStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	assert.Equal(t, expectedStart, s, "unknown range_type should fall back to today MST midnight")
+	assert.WithinDuration(t, now, e, 5*time.Second)
 }
 
 func TestParseAnalyticsRange_Today(t *testing.T) {
 	req := httptest.NewRequest("GET", "/?range_type=today", nil)
 	s, e := parseAnalyticsRange(req)
 
-	now := time.Now().UTC()
-	expectedStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	assert.Equal(t, expectedStart, s)
+	now := time.Now().In(mstLoc)
+	expectedStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	assert.Equal(t, expectedStart, s, "today start should be MST midnight")
 	assert.WithinDuration(t, now, e, 5*time.Second)
 }
 
-func TestParseAnalyticsRange_LegacyDays(t *testing.T) {
+func TestParseAnalyticsRange_LegacyDaysFallsToToday(t *testing.T) {
 	req := httptest.NewRequest("GET", "/?days=45", nil)
 	s, e := parseAnalyticsRange(req)
-	age := e.Sub(s)
-	assert.True(t, age >= 44*24*time.Hour && age <= 45*24*time.Hour+time.Hour,
-		"days=45: age=%v", age)
+
+	now := time.Now().In(mstLoc)
+	expectedStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	assert.Equal(t, expectedStart, s, "legacy days param should fall back to today MST midnight")
+	assert.WithinDuration(t, now, e, 5*time.Second)
 }
 
 func TestParseAnalyticsRange_DateOnlyFormat(t *testing.T) {
@@ -89,18 +88,22 @@ func TestParseAnalyticsRange_DateOnlyFormat(t *testing.T) {
 	assert.Equal(t, time.February, s.Month())
 	assert.Equal(t, 1, s.Day())
 	assert.Equal(t, 0, s.Hour())
+	assert.Equal(t, mstLoc.String(), s.Location().String(), "date-only start should be in MST")
 
 	assert.Equal(t, 28, e.Day())
 	assert.Equal(t, 23, e.Hour(), "date-only end should get 23:59:59")
 	assert.Equal(t, 59, e.Minute())
+	assert.Equal(t, mstLoc.String(), e.Location().String(), "date-only end should be in MST")
 }
 
-func TestParseAnalyticsRange_Default30Days(t *testing.T) {
+func TestParseAnalyticsRange_DefaultIsToday(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	s, e := parseAnalyticsRange(req)
-	age := e.Sub(s)
-	assert.True(t, age >= 29*24*time.Hour && age <= 30*24*time.Hour+time.Hour,
-		"default: age=%v", age)
+
+	now := time.Now().In(mstLoc)
+	expectedStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, mstLoc)
+	assert.Equal(t, expectedStart, s, "default should be today MST midnight")
+	assert.WithinDuration(t, now, e, 5*time.Second)
 }
 
 // ─── ComputeInfraRates Tests ──────────────────────────────────────────────────
