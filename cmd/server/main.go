@@ -3092,6 +3092,17 @@ END $$`},
 			  AND status = 'failed'
 			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
 
+		// Phase 16b: Re-schedule welcome campaigns stuck with scheduled_at in the past.
+		// markCampaignsAsPreparing requires scheduled_at > NOW(). Phase 16 set NOW()
+		// which is already past by the time the scheduler polls.
+		{"phase16b_welcome_reschedule", `UPDATE mailing_campaigns
+			SET scheduled_at = NOW() + INTERVAL '2 minutes',
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status = 'scheduled'
+			  AND scheduled_at <= NOW()
+			  AND esp_quotas ? 'isp_quotas'`},
+
 		// Apr 11 (Day 4, factor 1.464): scheduled Welcome campaigns for Apr 11
 		{"phase16_welcome_quotas_apr11", `UPDATE mailing_campaigns
 			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":2930},{"isp":"Apple","volume":2420},{"isp":"Comcast","volume":950},{"isp":"Charter","volume":770},{"isp":"ATT","volume":510},{"isp":"AOL","volume":510},{"isp":"Cox","volume":510},{"isp":"Other","volume":770}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
