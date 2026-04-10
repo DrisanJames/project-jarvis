@@ -45,12 +45,6 @@ func TestDispatchDueWaves_DueWavesFound(t *testing.T) {
 			AddRow(wave1).AddRow(wave2).AddRow(wave3))
 
 	for _, w := range []uuid.UUID{wave1, wave2, wave3} {
-		// checkWaveGate first query — return ErrNoRows so wave is not blocked
-		mock.ExpectQuery("isp_plan_id\\s+FROM").
-			WithArgs(w.String()).
-			WillReturnError(sql.ErrNoRows)
-
-		// EnqueuePMTAWave (status=completed → early return via tx.Commit)
 		mock.ExpectBegin()
 		mock.ExpectQuery("isp_plan_id, w.status").
 			WithArgs(w.String()).
@@ -131,13 +125,6 @@ func TestDispatchDueWaves_EnqueueError(t *testing.T) {
 	mock.ExpectQuery("SELECT id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).
 			AddRow(wave1).AddRow(wave2))
-
-	// checkWaveGate for both waves — return ErrNoRows so not blocked
-	for _, w := range []uuid.UUID{wave1, wave2} {
-		mock.ExpectQuery("isp_plan_id\\s+FROM").
-			WithArgs(w.String()).
-			WillReturnError(sql.ErrNoRows)
-	}
 
 	// Wave 1: EnqueuePMTAWave fails (DB error on SELECT)
 	mock.ExpectBegin()
