@@ -532,6 +532,9 @@ func LoadFromEnv(path string) (*Config, error) {
 	}
 
 	// Auth overrides
+	if v := os.Getenv("AUTH_ENABLED"); v == "true" || v == "1" {
+		cfg.Auth.Enabled = true
+	}
 	if v := os.Getenv("GOOGLE_CLIENT_ID"); v != "" {
 		cfg.Auth.GoogleClientID = v
 	}
