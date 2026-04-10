@@ -3072,6 +3072,66 @@ END $$`},
 		{"phase15_yahoo_warmup_ht", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.143'::inet AND warmup_daily_limit < 5000`},
 		{"phase15_yahoo_warmup_mh", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.207'::inet AND warmup_daily_limit < 5000`},
 
+		// Phase 16: Fix welcome campaigns missing ISP quotas.
+		// Welcome campaigns created dynamically lack the isp_quotas key in esp_quotas,
+		// making them invisible to the ISP dispatch loop (send_worker.go:550-556).
+		// After 10 min idle, the orphan check marks them 'failed'.
+		// Fix: add proper ISP quotas (8 ISPs, no Gmail/Yahoo — 3rd party warming),
+		// reset failed → scheduled for immediate pickup.
+
+		// Apr 10 (Day 3, factor 1.331): all failed Welcome campaigns → reset & send now
+		{"phase16_welcome_quotas_apr10", `UPDATE mailing_campaigns
+			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":2660},{"isp":"Apple","volume":2200},{"isp":"Comcast","volume":870},{"isp":"Charter","volume":700},{"isp":"ATT","volume":470},{"isp":"AOL","volume":470},{"isp":"Cox","volume":470},{"isp":"Other","volume":700}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    isp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":2660},{"isp":"Apple","volume":2200},{"isp":"Comcast","volume":870},{"isp":"Charter","volume":700},{"isp":"ATT","volume":470},{"isp":"AOL","volume":470},{"isp":"Cox","volume":470},{"isp":"Other","volume":700}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    status = 'scheduled',
+			    scheduled_at = NOW(),
+			    started_at = NULL,
+			    completed_at = NULL,
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status = 'failed'
+			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
+
+		// Apr 11 (Day 4, factor 1.464): scheduled Welcome campaigns for Apr 11
+		{"phase16_welcome_quotas_apr11", `UPDATE mailing_campaigns
+			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":2930},{"isp":"Apple","volume":2420},{"isp":"Comcast","volume":950},{"isp":"Charter","volume":770},{"isp":"ATT","volume":510},{"isp":"AOL","volume":510},{"isp":"Cox","volume":510},{"isp":"Other","volume":770}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    isp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":2930},{"isp":"Apple","volume":2420},{"isp":"Comcast","volume":950},{"isp":"Charter","volume":770},{"isp":"ATT","volume":510},{"isp":"AOL","volume":510},{"isp":"Cox","volume":510},{"isp":"Other","volume":770}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status IN ('scheduled', 'failed')
+			  AND scheduled_at::date = '2026-04-11'
+			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
+
+		// Apr 12 (Day 5, factor 1.611): scheduled Welcome campaigns for Apr 12
+		{"phase16_welcome_quotas_apr12", `UPDATE mailing_campaigns
+			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3220},{"isp":"Apple","volume":2660},{"isp":"Comcast","volume":1050},{"isp":"Charter","volume":850},{"isp":"ATT","volume":560},{"isp":"AOL","volume":560},{"isp":"Cox","volume":560},{"isp":"Other","volume":850}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    isp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3220},{"isp":"Apple","volume":2660},{"isp":"Comcast","volume":1050},{"isp":"Charter","volume":850},{"isp":"ATT","volume":560},{"isp":"AOL","volume":560},{"isp":"Cox","volume":560},{"isp":"Other","volume":850}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status IN ('scheduled', 'failed')
+			  AND scheduled_at::date = '2026-04-12'
+			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
+
+		// Apr 13 (Day 6, factor 1.772): scheduled Welcome campaigns for Apr 13
+		{"phase16_welcome_quotas_apr13", `UPDATE mailing_campaigns
+			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3540},{"isp":"Apple","volume":2920},{"isp":"Comcast","volume":1150},{"isp":"Charter","volume":930},{"isp":"ATT","volume":620},{"isp":"AOL","volume":620},{"isp":"Cox","volume":620},{"isp":"Other","volume":930}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    isp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3540},{"isp":"Apple","volume":2920},{"isp":"Comcast","volume":1150},{"isp":"Charter","volume":930},{"isp":"ATT","volume":620},{"isp":"AOL","volume":620},{"isp":"Cox","volume":620},{"isp":"Other","volume":930}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status IN ('scheduled', 'failed')
+			  AND scheduled_at::date = '2026-04-13'
+			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
+
+		// Apr 14 (Day 7, factor 1.949): scheduled Welcome campaigns for Apr 14
+		{"phase16_welcome_quotas_apr14", `UPDATE mailing_campaigns
+			SET esp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3900},{"isp":"Apple","volume":3220},{"isp":"Comcast","volume":1270},{"isp":"Charter","volume":1020},{"isp":"ATT","volume":680},{"isp":"AOL","volume":680},{"isp":"Cox","volume":680},{"isp":"Other","volume":1020}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    isp_quotas = '{"isp_quotas":[{"isp":"Microsoft","volume":3900},{"isp":"Apple","volume":3220},{"isp":"Comcast","volume":1270},{"isp":"Charter","volume":1020},{"isp":"ATT","volume":680},{"isp":"AOL","volume":680},{"isp":"Cox","volume":680},{"isp":"Other","volume":1020}],"target_isps":["microsoft","apple","comcast","charter","att","aol","cox","other"],"execution_mode":"wave"}'::jsonb,
+			    updated_at = NOW()
+			WHERE name ILIKE '%Welcome%'
+			  AND status IN ('scheduled', 'failed')
+			  AND scheduled_at::date = '2026-04-14'
+			  AND (esp_quotas IS NULL OR NOT (esp_quotas ? 'isp_quotas'))`},
+
 		// === GHOST VISITOR TRACKING INFRASTRUCTURE ===
 		{"create_mailing_subscriber_tags", `CREATE TABLE IF NOT EXISTS mailing_subscriber_tags (
 			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
