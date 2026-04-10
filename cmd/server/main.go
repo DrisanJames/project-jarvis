@@ -3066,6 +3066,12 @@ END $$`},
 			WHERE ip_address = '144.225.178.207'::inet
 			  AND pool_id != (SELECT id FROM mailing_ip_pools WHERE name = 'mh-yahoo-pool' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 
+		// Phase 15: Raise Yahoo pool IP warmup limits to 5000/day for seed campaigns.
+		{"phase15_yahoo_warmup_db", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.13'::inet AND warmup_daily_limit < 5000`},
+		{"phase15_yahoo_warmup_qf", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.77'::inet AND warmup_daily_limit < 5000`},
+		{"phase15_yahoo_warmup_ht", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.143'::inet AND warmup_daily_limit < 5000`},
+		{"phase15_yahoo_warmup_mh", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 5000, updated_at = NOW() WHERE ip_address = '144.225.178.207'::inet AND warmup_daily_limit < 5000`},
+
 		// === GHOST VISITOR TRACKING INFRASTRUCTURE ===
 		{"create_mailing_subscriber_tags", `CREATE TABLE IF NOT EXISTS mailing_subscriber_tags (
 			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
