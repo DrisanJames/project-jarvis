@@ -169,6 +169,7 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 			`SELECT COALESCE(status, 'active') FROM mailing_subscribers WHERE id = $1`,
 			rec.subscriberID,
 		).Scan(&subStatus); err == nil && subStatus != "active" && subStatus != "confirmed" {
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status = 'selected'`, rec.recordID)
 			skippedCount++
 			continue
 		}
@@ -177,6 +178,7 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 			`SELECT EXISTS(SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = md5($1))`,
 			strings.ToLower(rec.email),
 		).Scan(&suppExists); err == nil && suppExists {
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status = 'selected'`, rec.recordID)
 			skippedCount++
 			continue
 		}
