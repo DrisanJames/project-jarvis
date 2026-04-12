@@ -3416,23 +3416,6 @@ END $$`},
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts", ok, fail, skip)
 
-	// Heavy index creation that needs more than 5s — run with dedicated timeout
-	go func() {
-		heavyConn, err := db.Conn(context.Background())
-		if err != nil {
-			log.Printf("[StartupMigration] heavy index: failed to get connection: %v", err)
-			return
-		}
-		defer heavyConn.Close()
-		heavyConn.ExecContext(context.Background(), "SET statement_timeout = '600s'")
-		_, err = heavyConn.ExecContext(context.Background(), `CREATE INDEX IF NOT EXISTS idx_tracking_link_url_trgm ON mailing_tracking_events USING gin (link_url gin_trgm_ops)`)
-		if err != nil {
-			log.Printf("[StartupMigration] idx_tracking_link_url_trgm: %v", err)
-		} else {
-			log.Printf("[StartupMigration] idx_tracking_link_url_trgm: OK (background)")
-		}
-	}()
-
 	// Diagnostic: check for invalid indexes (can happen if CREATE INDEX CONCURRENTLY fails mid-way)
 	var invalidCount int
 	db.QueryRow(`SELECT COUNT(*) FROM pg_class c JOIN pg_index i ON c.oid = i.indexrelid WHERE NOT i.indisvalid`).Scan(&invalidCount)
