@@ -3616,6 +3616,8 @@ func runAdminMigrations() {
 			  AND (t.recipient_domain IS NULL OR t.recipient_domain = '')
 			  AND s.email LIKE '%@%'
 		`},
+		{"enable_pg_trgm", `CREATE EXTENSION IF NOT EXISTS pg_trgm`},
+		{"idx_tracking_link_url_trgm", `CREATE INDEX IF NOT EXISTS idx_tracking_link_url_trgm ON mailing_tracking_events USING gin (link_url gin_trgm_ops)`},
 		{"grant_tracking_events_all", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
 		{"grant_all_mailing_tables", `
 			DO $$ DECLARE r record;
