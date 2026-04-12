@@ -3617,7 +3617,12 @@ func runAdminMigrations() {
 			  AND s.email LIKE '%@%'
 		`},
 		{"enable_pg_trgm", `CREATE EXTENSION IF NOT EXISTS pg_trgm`},
-		{"idx_tracking_link_url_trgm", `CREATE INDEX IF NOT EXISTS idx_tracking_link_url_trgm ON mailing_tracking_events USING gin (link_url gin_trgm_ops)`},
+		{"idx_tracking_link_url_trgm", `DO $$ BEGIN
+			EXECUTE 'SET LOCAL statement_timeout = ''300s''';
+			IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_tracking_link_url_trgm') THEN
+				CREATE INDEX idx_tracking_link_url_trgm ON mailing_tracking_events USING gin (link_url gin_trgm_ops);
+			END IF;
+		END $$`},
 		{"grant_tracking_events_all", `GRANT ALL ON TABLE mailing_tracking_events TO ignite`},
 		{"grant_all_mailing_tables", `
 			DO $$ DECLARE r record;
