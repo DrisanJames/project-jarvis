@@ -329,6 +329,16 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 			continue
 		}
 
+		if c.Field == "email_clicked_url" {
+			clause, newArgs, newArgNum := buildClickedURLWhereClause(c, argNum, domainFilter)
+			if clause != "" {
+				whereClauses = append(whereClauses, clause)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			}
+			continue
+		}
+
 		if isEventField(c.Field) {
 			clause, newArgs, newArgNum := buildEventWhereClause(c, argNum, domainFilter)
 			if clause != "" {
@@ -524,6 +534,45 @@ func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter str
 			  AND e.event_type = $%d
 			  AND e.event_at >= NOW() - INTERVAL '%s days'%s
 		)`, argNum, c.Value, domainClause)
+		return clause, args, argNum + len(args)
+
+	default:
+		return "", nil, argNum
+	}
+}
+
+// buildClickedURLWhereClause generates an EXISTS subquery against
+// mailing_tracking_events for click events filtered by link_url pattern.
+func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilter string) (string, []interface{}, int) {
+	var args []interface{}
+	args = append(args, "%"+c.Value+"%")
+
+	domainClause := ""
+	if domainFilter != "" {
+		domainClause = fmt.Sprintf(
+			" AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)",
+			argNum+len(args), argNum+len(args),
+		)
+		args = append(args, domainFilter)
+	}
+
+	switch c.Operator {
+	case "contains", "equals":
+		clause := fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = 'clicked'
+			  AND e.link_url ILIKE $%d%s
+		)`, argNum, domainClause)
+		return clause, args, argNum + len(args)
+
+	case "not_contains":
+		clause := fmt.Sprintf(`NOT EXISTS (
+			SELECT 1 FROM mailing_tracking_events e
+			WHERE e.subscriber_id = mailing_subscribers.id
+			  AND e.event_type = 'clicked'
+			  AND e.link_url ILIKE $%d%s
+		)`, argNum, domainClause)
 		return clause, args, argNum + len(args)
 
 	default:
