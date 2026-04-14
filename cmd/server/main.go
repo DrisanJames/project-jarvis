@@ -4165,6 +4165,43 @@ END $$`},
 		// Add retry_after column to queue tables for strict-pool backoff scheduling
 		{"add_queue_retry_after", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`},
 		{"add_queue_v2_retry_after", `ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`},
+
+		// Phase 20: Insert the 4 missing Yahoo IPXO IPs that were "reserved" but never inserted.
+		// Phases 12-15 only had UPDATE statements for these IPs, which silently affected 0 rows.
+		// Phase 19 deleted the OVH IPs that previously filled Yahoo pools, leaving them empty.
+		// Without these rows, vmtaPool.next("yahoo") falls through to non-Yahoo VMTAs.
+		{"phase20_insert_yahoo_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+    server_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.13',  'mta-db-yh8.mail.em.discountblog.com',    'db-yahoo-pool',  '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.77',  'mta-qf-yh8.mail.em.quizfiesta.com',     'qf-yahoo-pool',  '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.143', 'mta-ht-yh8.mail.em.historythinking.com', 'ht-yahoo-pool',  '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.207', 'mta-mh-yh8.mail.em.myownhealth.net',    'mh-yahoo-pool',  '15.204.107.107', '144.225.178.128/25')
+        ) AS t(ip_addr, hostname, pool_name, server_host, cidr)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = rec.server_host;
+        IF pool_id_val IS NOT NULL AND server_id_val IS NOT NULL THEN
+            INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+                warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+                cidr_block, rdns_verified, created_at, updated_at)
+            VALUES (gen_random_uuid(), org_id, rec.ip_addr::inet, rec.hostname, 'warmup', pool_id_val, server_id_val,
+                'warming', 1, 5000, NOW(), 'ovh', 'leased', rec.cidr, false, NOW(), NOW())
+            ON CONFLICT (ip_address) DO UPDATE SET
+                hostname = EXCLUDED.hostname,
+                pool_id = EXCLUDED.pool_id,
+                pmta_server_id = EXCLUDED.pmta_server_id,
+                warmup_daily_limit = GREATEST(mailing_ip_addresses.warmup_daily_limit, 5000),
+                updated_at = NOW();
+        END IF;
+    END LOOP;
+END $$`},
 	}
 
 	var ok, fail int
