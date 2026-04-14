@@ -84,8 +84,9 @@ type SendWorkerPool struct {
 	ptdMu                      sync.RWMutex
 
 	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
-	rateRegistry ISPRateLimiter
-	perIPEnabled bool
+	rateRegistry         ISPRateLimiter
+	perIPEnabled         bool
+	rateLimitingDisabled bool
 
 	// Channel-based work distribution: ISP dispatch loop pushes claimed
 	// items here; worker goroutines consume and call processItem.
@@ -109,6 +110,13 @@ func (p *SendWorkerPool) SetRateRegistry(r ISPRateLimiter) {
 // dispatch loop. When enabled, DistributeByIP is used instead of AllowN.
 func (p *SendWorkerPool) SetPerIPRateLimiting(enabled bool) {
 	p.perIPEnabled = enabled
+}
+
+// SetRateLimitingDisabled bypasses the ISP rate registry gating in the dispatch
+// loop. When true, batch counts flow directly to claimISPBatch without token
+// bucket checks — PMTA handles per-domain throttling natively.
+func (p *SendWorkerPool) SetRateLimitingDisabled(disabled bool) {
+	p.rateLimitingDisabled = disabled
 }
 
 // ESPSender interface for sending via different ESPs
@@ -749,7 +757,7 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState,
 		// Populated when per-IP rate limiting is enabled; nil otherwise.
 		var ipAllocations map[string]map[string]int
 
-		if p.rateRegistry != nil {
+		if p.rateRegistry != nil && !p.rateLimitingDisabled {
 			if p.perIPEnabled {
 				ipAllocations = make(map[string]map[string]int)
 				for isp, count := range batchCounts {

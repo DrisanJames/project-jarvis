@@ -396,6 +396,8 @@ func main() {
 					sendWorkerPool.SetRateRegistry(rr)
 					perIPEnabled := os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
 					sendWorkerPool.SetPerIPRateLimiting(perIPEnabled)
+					disableRateLimiting := os.Getenv("DISABLE_ISP_RATE_LIMITING") == "true"
+					sendWorkerPool.SetRateLimitingDisabled(disableRateLimiting)
 					profileSender.SetIPChangeCallback(func(_ string, ispGroups map[string][]worker.VMTAInfo) {
 						for poolSuffix, entries := range ispGroups {
 							isp := engine.ISP(poolSuffix)
@@ -410,7 +412,7 @@ func main() {
 							rr.SetIPList(isp, ips)
 						}
 					})
-					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v)", perIPEnabled)
+					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v, rate limiting disabled: %v)", perIPEnabled, disableRateLimiting)
 				}
 
 				// Wire offer suppression Bloom checker to send worker
@@ -3378,6 +3380,59 @@ END $$`},
 		{"idx_acct_summary_campaign", `CREATE INDEX IF NOT EXISTS idx_acct_summary_campaign ON pmta_acct_daily_summary (campaign_id)`},
 		{"idx_acct_summary_date", `CREATE INDEX IF NOT EXISTS idx_acct_summary_date ON pmta_acct_daily_summary (summary_date)`},
 		{"uq_acct_summary_key", `CREATE UNIQUE INDEX IF NOT EXISTS uq_acct_summary_key ON pmta_acct_daily_summary (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)`},
+
+		// Phase 19: Delete decommissioned OVH IPs and fix IPXO yh hostname renames.
+		// OVH IPs (15.204.22.x and 15.204.38.x) were permanently removed from service.
+		// 26 IPXO IPs originally assigned to yahoo pools were redistributed to other ISP
+		// pools (Phase 10) but their hostnames were never updated in earlier migrations.
+		// This migration corrects hostnames to match the live PMTA config and DNS records.
+		// Runs last so it wins over phase6_seed_all_ips ON CONFLICT DO UPDATE.
+		{"phase19_delete_ovh_ips", `DELETE FROM mailing_ip_addresses WHERE ip_address << '15.204.22.0/24'::inet OR ip_address << '15.204.38.0/24'::inet`},
+		{"phase19_fix_ipxo_yh_hostnames", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.7',   'mta-db-gm9.mail.em.discountblog.com',    'db-gmail-pool'),
+            ('144.225.178.8',   'mta-db-ms9.mail.em.discountblog.com',    'db-msft-pool'),
+            ('144.225.178.9',   'mta-db-ap8.mail.em.discountblog.com',    'db-apple-pool'),
+            ('144.225.178.10',  'mta-db-cc8.mail.em.discountblog.com',    'db-comcast-pool'),
+            ('144.225.178.11',  'mta-db-gn7.mail.em.discountblog.com',    'db-general-pool'),
+            ('144.225.178.12',  'mta-db-ch7.mail.em.discountblog.com',    'db-charter-pool'),
+            ('144.225.178.71',  'mta-qf-gm9.mail.em.quizfiesta.com',     'qf-gmail-pool'),
+            ('144.225.178.72',  'mta-qf-ms9.mail.em.quizfiesta.com',     'qf-msft-pool'),
+            ('144.225.178.73',  'mta-qf-ap8.mail.em.quizfiesta.com',     'qf-apple-pool'),
+            ('144.225.178.74',  'mta-qf-cc8.mail.em.quizfiesta.com',     'qf-comcast-pool'),
+            ('144.225.178.75',  'mta-qf-gn7.mail.em.quizfiesta.com',     'qf-general-pool'),
+            ('144.225.178.76',  'mta-qf-ch7.mail.em.quizfiesta.com',     'qf-charter-pool'),
+            ('144.225.178.136', 'mta-ht-gm9.mail.em.historythinking.com', 'ht-gmail-pool'),
+            ('144.225.178.137', 'mta-ht-ms9.mail.em.historythinking.com', 'ht-msft-pool'),
+            ('144.225.178.138', 'mta-ht-ap8.mail.em.historythinking.com', 'ht-apple-pool'),
+            ('144.225.178.139', 'mta-ht-cc8.mail.em.historythinking.com', 'ht-comcast-pool'),
+            ('144.225.178.140', 'mta-ht-gn7.mail.em.historythinking.com', 'ht-general-pool'),
+            ('144.225.178.141', 'mta-ht-ch7.mail.em.historythinking.com', 'ht-charter-pool'),
+            ('144.225.178.142', 'mta-ht-gn8.mail.em.historythinking.com', 'ht-general-pool'),
+            ('144.225.178.200', 'mta-mh-gm9.mail.em.myownhealth.net',    'mh-gmail-pool'),
+            ('144.225.178.201', 'mta-mh-ms9.mail.em.myownhealth.net',    'mh-msft-pool'),
+            ('144.225.178.202', 'mta-mh-ap8.mail.em.myownhealth.net',    'mh-apple-pool'),
+            ('144.225.178.203', 'mta-mh-cc8.mail.em.myownhealth.net',    'mh-comcast-pool'),
+            ('144.225.178.204', 'mta-mh-gn7.mail.em.myownhealth.net',    'mh-general-pool'),
+            ('144.225.178.205', 'mta-mh-ch7.mail.em.myownhealth.net',    'mh-charter-pool'),
+            ('144.225.178.206', 'mta-mh-gn8.mail.em.myownhealth.net',    'mh-general-pool')
+        ) AS t(ip_addr, correct_hostname, correct_pool)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools
+            WHERE name = rec.correct_pool AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses
+                SET hostname = rec.correct_hostname, pool_id = pool_id_val, updated_at = NOW()
+                WHERE ip_address = rec.ip_addr::inet;
+        END IF;
+    END LOOP;
+END $$`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
