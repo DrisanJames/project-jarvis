@@ -233,7 +233,7 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 		return -1
 	}
 
-	tx, err := w.db.BeginTx(ctx, nil)
+	tx, err := w.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		log.Printf("SegmentRefreshWorker: begin tx error for %s: %v", seg.Name, err)
 		return -1
