@@ -184,7 +184,25 @@ func (s *AdvancedMailingService) HandleCreateSegment(w http.ResponseWriter, r *h
 	s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2, updated_at = NOW() WHERE id = $1`, segmentID, subscriberCount)
 	
 	log.Printf("Segment %s created with %d subscribers", segmentID, subscriberCount)
-	
+
+	if segmentType == "dynamic" {
+		listIDStr := ""
+		if input.ListID != "" {
+			listIDStr = input.ListID
+		}
+		db := s.db
+		sid := segmentID.String()
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			if count, err := MaterializeSegment(bgCtx, db, sid, listIDStr, conditionsJSON); err != nil {
+				log.Printf("[CreateSegment] failed to hydrate segment %s: %v", sid, err)
+			} else {
+				log.Printf("[CreateSegment] hydrated segment %s with %d members", sid, count)
+			}
+		}()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{

@@ -8,29 +8,48 @@ import (
 	"time"
 )
 
-// SegmentMaterializer periodically pre-computes segment membership into
-// mailing_segment_members so that audience planning can read cached results
-// instead of running expensive live queries with correlated EXISTS subqueries.
+// SegmentMaterializer pre-computes segment membership into
+// mailing_segment_members once per day at a fixed UTC time so that audience
+// planning can read cached results instead of running expensive live queries.
 type SegmentMaterializer struct {
-	db       *sql.DB
-	interval time.Duration
+	db         *sql.DB
+	targetHour int
+	targetMin  int
 }
 
-func NewSegmentMaterializer(db *sql.DB, interval time.Duration) *SegmentMaterializer {
-	return &SegmentMaterializer{db: db, interval: interval}
+// NewSegmentMaterializer creates a materializer that runs daily at the given
+// UTC time (e.g. "04:00" for 9 PM MST).
+func NewSegmentMaterializer(db *sql.DB, targetUTC string) *SegmentMaterializer {
+	hour, min := 4, 0
+	if n, _ := fmt.Sscanf(targetUTC, "%d:%d", &hour, &min); n < 2 {
+		log.Printf("[SegmentMaterializer] invalid targetUTC %q, defaulting to 04:00", targetUTC)
+		hour, min = 4, 0
+	}
+	return &SegmentMaterializer{db: db, targetHour: hour, targetMin: min}
+}
+
+// DurationUntilNext calculates the sleep duration from `now` until the next
+// occurrence of the target time. Exported for unit testing.
+func DurationUntilNext(now time.Time, targetHour, targetMin int) time.Duration {
+	next := time.Date(now.Year(), now.Month(), now.Day(), targetHour, targetMin, 0, 0, time.UTC)
+	if !now.Before(next) {
+		next = next.Add(24 * time.Hour)
+	}
+	return next.Sub(now)
 }
 
 func (m *SegmentMaterializer) Start(ctx context.Context) {
-	log.Printf("[SegmentMaterializer] started (interval=%s)", m.interval)
-	go func() {
-		time.Sleep(45 * time.Second)
-		m.materializeAll(ctx)
+	wait := DurationUntilNext(time.Now().UTC(), m.targetHour, m.targetMin)
+	nextRun := time.Now().UTC().Add(wait)
+	log.Printf("[SegmentMaterializer] started — next run at %s (sleeping %s)",
+		nextRun.Format("2006-01-02 15:04 UTC"), wait.Round(time.Second))
 
-		ticker := time.NewTicker(m.interval)
-		defer ticker.Stop()
+	go func() {
 		for {
+			wait = DurationUntilNext(time.Now().UTC(), m.targetHour, m.targetMin)
 			select {
-			case <-ticker.C:
+			case <-time.After(wait):
+				log.Printf("[SegmentMaterializer] nightly cycle starting")
 				m.materializeAll(ctx)
 			case <-ctx.Done():
 				log.Println("[SegmentMaterializer] context cancelled, stopping")
@@ -96,10 +115,15 @@ func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 }
 
 func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, listID, conditionsRaw string) (int, error) {
+	return MaterializeSegment(ctx, m.db, segmentID, listID, conditionsRaw)
+}
+
+// MaterializeSegment populates mailing_segment_members for a single segment.
+// Called by the nightly materializer and by segment-creation handlers.
+func MaterializeSegment(ctx context.Context, db *sql.DB, segmentID, listID, conditionsRaw string) (int, error) {
 	segCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// Validate segmentID is a proper UUID before embedding as a literal.
 	if len(segmentID) != 36 {
 		return 0, fmt.Errorf("invalid segment ID length: %d", len(segmentID))
 	}
@@ -109,7 +133,7 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 		}
 	}
 
-	conn, err := m.db.Conn(segCtx)
+	conn, err := db.Conn(segCtx)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +143,7 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 	}()
 
 	if _, err := conn.ExecContext(segCtx, "SET statement_timeout = '600000'"); err != nil {
-		log.Printf("[SegmentMaterializer] SET statement_timeout failed: %v", err)
+		log.Printf("[MaterializeSegment] SET statement_timeout failed: %v", err)
 	}
 
 	var listIDVal interface{}
@@ -128,9 +152,6 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 	}
 	segQuery, segArgs := buildSegmentQuery(conditionsRaw, listIDVal)
 
-	// Server-side INSERT...SELECT: all data stays in PostgreSQL, zero Go memory.
-	// The segment_id is embedded as a validated UUID literal so the inner query's
-	// $N placeholders pass through to segArgs without renumbering.
 	tx, err := conn.BeginTx(segCtx, nil)
 	if err != nil {
 		return 0, err

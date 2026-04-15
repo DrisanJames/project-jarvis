@@ -233,6 +233,28 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	if segment.SegmentType == "" || segment.SegmentType == "dynamic" {
+		db := api.db
+		sid := segment.ID.String()
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			var listIDStr string
+			var conditionsRaw sql.NullString
+			if err := db.QueryRowContext(bgCtx,
+				`SELECT COALESCE(list_id::text,''), COALESCE(conditions::text,'[]') FROM mailing_segments WHERE id = $1`, sid,
+			).Scan(&listIDStr, &conditionsRaw); err != nil {
+				log.Printf("[CreateSegment] failed to read segment %s for hydration: %v", sid, err)
+				return
+			}
+			if count, err := MaterializeSegment(bgCtx, db, sid, listIDStr, conditionsRaw.String); err != nil {
+				log.Printf("[CreateSegment] failed to hydrate segment %s: %v", sid, err)
+			} else {
+				log.Printf("[CreateSegment] hydrated segment %s with %d members", sid, count)
+			}
+		}()
+	}
+
 	segmentRespondJSON(w, segment)
 }
 

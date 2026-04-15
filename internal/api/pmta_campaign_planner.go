@@ -681,57 +681,26 @@ func planPMTAAudience(
 		return nil
 	}
 
-	const segmentQueryTimeout = 60 * time.Second
-
 	streamSegment := func(segmentID string) error {
 		if allQuotasMet() {
 			return nil
 		}
-		// Phase A: read from pre-materialized segment members (fast indexed lookup).
 		var matCount int
 		if err := db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
-		).Scan(&matCount); err == nil && matCount > 0 {
-			rows, err := db.QueryContext(ctx,
-				`SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
-			if err != nil {
-				log.Printf("[PlanAudience] segment %s materialized read error: %v, falling back to live", segmentID, err)
-			} else {
-				defer rows.Close()
-				for rows.Next() {
-					var subID, email string
-					if rows.Scan(&subID, &email) == nil {
-						qualifyEmail(subID, email, "segment", segmentID)
-					}
-					if allQuotasMet() {
-						break
-					}
-				}
-				return nil
-			}
-		}
-
-		// Fallback: live query (only when no pre-materialized data exists).
-		var segListID *string
-		var conditionsRaw sql.NullString
-		if err := db.QueryRowContext(ctx,
-			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segmentID,
-		).Scan(&segListID, &conditionsRaw); err != nil {
-			log.Printf("[PlanAudience] segment %s not found, skipping: %v", segmentID, err)
+		).Scan(&matCount); err != nil {
+			log.Printf("[PlanAudience] segment %s count query error: %v, skipping", segmentID, err)
 			return nil
 		}
-		var listIDVal interface{}
-		if segListID != nil && *segListID != "" {
-			listIDVal = *segListID
+		if matCount == 0 {
+			log.Printf("[PlanAudience] WARNING: segment %s has 0 materialized members — skipping (segment may not have been hydrated)", segmentID)
+			return nil
 		}
-		query, args := buildSegmentQuery(conditionsRaw.String, listIDVal)
-		rows, err := db.QueryContext(ctx, query, args...)
+		rows, err := db.QueryContext(ctx,
+			`SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
 		if err != nil {
-			if ctx.Err() != nil {
-				log.Printf("[PlanAudience] segment %s query cancelled, skipping", segmentID)
-				return nil
-			}
-			return err
+			log.Printf("[PlanAudience] segment %s materialized read error: %v, skipping", segmentID, err)
+			return nil
 		}
 		defer rows.Close()
 		for rows.Next() {
@@ -852,67 +821,32 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 	for _, segmentID := range segmentIDs {
 		segStart := time.Now()
 
-		// Phase A: read from pre-materialized segment members.
 		var matCount int
 		if err := db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
-		).Scan(&matCount); err == nil && matCount > 0 {
-			rows, err := db.QueryContext(ctx,
-				`SELECT email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
-			if err == nil {
-				for rows.Next() {
-					var email string
-					if rows.Scan(&email) == nil {
-						emails[strings.ToLower(strings.TrimSpace(email))] = true
-					}
-				}
-				rows.Close()
-				log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails from materialized cache in %v",
-					safePrefix(segmentID, 12), matCount, time.Since(segStart))
-				continue
-			}
-			log.Printf("[loadExclusionSegmentEmails] segment %s materialized read error: %v, falling back", segmentID, err)
-		}
-
-		// Fallback: live query with per-segment timeout.
-		var segListID *string
-		var conditionsRaw sql.NullString
-		if err := db.QueryRowContext(ctx,
-			`SELECT list_id::text, conditions::text FROM mailing_segments WHERE id = $1`, segmentID,
-		).Scan(&segListID, &conditionsRaw); err != nil {
-			log.Printf("[loadExclusionSegmentEmails] segment %s not found, skipping: %v", segmentID, err)
+		).Scan(&matCount); err != nil {
+			log.Printf("[loadExclusionSegmentEmails] segment %s count error: %v, skipping", segmentID, err)
 			continue
 		}
-		var listIDVal interface{}
-		if segListID != nil && *segListID != "" {
-			listIDVal = *segListID
-		}
-
-		raw := strings.TrimSpace(conditionsRaw.String)
-		if (raw == "" || raw == "null" || raw == "[]") && listIDVal == nil {
-			log.Printf("[loadExclusionSegmentEmails] segment %s has no conditions and no list, skipping", segmentID)
+		if matCount == 0 {
+			log.Printf("[loadExclusionSegmentEmails] WARNING: segment %s has 0 materialized members — skipping", segmentID)
 			continue
 		}
-
-		query, args := buildSegmentQuery(conditionsRaw.String, listIDVal)
-		rows, err := db.QueryContext(ctx, query, args...)
+		rows, err := db.QueryContext(ctx,
+			`SELECT email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
 		if err != nil {
-			if ctx.Err() != nil {
-				log.Printf("[loadExclusionSegmentEmails] segment %s query cancelled, skipping", segmentID)
-				continue
-			}
-			log.Printf("[loadExclusionSegmentEmails] segment %s query error: %v", segmentID, err)
+			log.Printf("[loadExclusionSegmentEmails] segment %s read error: %v, skipping", segmentID, err)
 			continue
 		}
 		for rows.Next() {
-			var subID, email string
-			if rows.Scan(&subID, &email) == nil {
+			var email string
+			if rows.Scan(&email) == nil {
 				emails[strings.ToLower(strings.TrimSpace(email))] = true
 			}
 		}
 		rows.Close()
-		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails (live query) in %v",
-			safePrefix(segmentID, 12), len(emails), time.Since(segStart))
+		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails from materialized cache in %v",
+			safePrefix(segmentID, 12), matCount, time.Since(segStart))
 	}
 	return emails, nil
 }

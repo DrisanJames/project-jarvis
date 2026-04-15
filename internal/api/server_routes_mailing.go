@@ -823,7 +823,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === AUDIENCE ARCHITECTURE: Background workers ===
 			workerCtx := context.Background()
-			segMaterializer := NewSegmentMaterializer(db, 2*time.Hour)
+			segMaterializer := NewSegmentMaterializer(db, "04:00")
 			segMaterializer.Start(workerCtx)
 			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
 
