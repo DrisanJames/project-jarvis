@@ -81,6 +81,8 @@ def main() -> int:
     upsert_env(env_list, "SUPPRESSION_S3_REGION", "us-west-2")
     upsert_env(env_list, "REDIS_URL", "apex-redis.x9k9ng.0001.usw2.cache.amazonaws.com:6379")
     upsert_env(env_list, "DISABLE_ISP_RATE_LIMITING", "true")
+    upsert_env(env_list, "READ_REPLICA_URL",
+        "postgres://ignite:ignite_secret@apex-postgres-read.cdeieu2uac6b.us-west-2.rds.amazonaws.com:5432/ignite?sslmode=require")
 
     for var_name in PASSTHROUGH_ENV_VARS:
         val = os.environ.get(var_name)

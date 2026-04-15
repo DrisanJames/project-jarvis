@@ -95,6 +95,7 @@ type OVHCloudConfig struct {
 type MailingConfig struct {
 	Enabled            bool   `yaml:"enabled"`
 	DatabaseURL        string `yaml:"database_url"`
+	ReadReplicaURL     string `yaml:"read_replica_url"`
 	GoogleClientID     string `yaml:"google_client_id"`
 	GoogleClientSecret string `yaml:"google_client_secret"`
 	AllowedDomain      string `yaml:"allowed_domain"`
@@ -529,6 +530,9 @@ func LoadFromEnv(path string) (*Config, error) {
 		if !cfg.Mailing.Enabled {
 			cfg.Mailing.Enabled = true
 		}
+	}
+	if dbURL := os.Getenv("READ_REPLICA_URL"); dbURL != "" {
+		cfg.Mailing.ReadReplicaURL = dbURL
 	}
 
 	// Auth overrides

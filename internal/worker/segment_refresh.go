@@ -25,16 +25,18 @@ import (
 // should be sized to avoid overwhelming the connection pool (4-8 is safe
 // for most RDS instances).
 type SegmentRefreshWorker struct {
-	db          *sql.DB
+	db          *sql.DB // heavy analytical reads (points to read replica when available)
+	writeDB     *sql.DB // lightweight count updates (always points to primary)
 	interval    time.Duration
 	concurrency int
 	stopChan    chan struct{}
 	running     bool
 }
 
-func NewSegmentRefreshWorker(db *sql.DB, interval time.Duration) *SegmentRefreshWorker {
+func NewSegmentRefreshWorker(readDB, writeDB *sql.DB, interval time.Duration) *SegmentRefreshWorker {
 	return &SegmentRefreshWorker{
-		db:          db,
+		db:          readDB,
+		writeDB:     writeDB,
 		interval:    interval,
 		concurrency: 1,
 		stopChan:    make(chan struct{}),
@@ -44,12 +46,13 @@ func NewSegmentRefreshWorker(db *sql.DB, interval time.Duration) *SegmentRefresh
 // NewSegmentRefreshWorkerWithConcurrency creates a worker with a specific
 // parallelism level. Each concurrent goroutine holds one DB transaction,
 // so concurrency should stay below the connection pool's max idle conns.
-func NewSegmentRefreshWorkerWithConcurrency(db *sql.DB, interval time.Duration, concurrency int) *SegmentRefreshWorker {
+func NewSegmentRefreshWorkerWithConcurrency(readDB, writeDB *sql.DB, interval time.Duration, concurrency int) *SegmentRefreshWorker {
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	return &SegmentRefreshWorker{
-		db:          db,
+		db:          readDB,
+		writeDB:     writeDB,
 		interval:    interval,
 		concurrency: concurrency,
 		stopChan:    make(chan struct{}),
@@ -161,7 +164,7 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 			if newCount < 0 {
 				return
 			}
-			_, err := w.db.ExecContext(ctx, `
+			_, err := w.writeDB.ExecContext(ctx, `
 				UPDATE mailing_segments
 				SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
 				WHERE id = $1
@@ -237,7 +240,7 @@ func (w *SegmentRefreshWorker) recalculate(ctx context.Context, seg segmentRow, 
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '600s'"); err != nil {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '120s'"); err != nil {
 		log.Printf("SegmentRefreshWorker: set timeout error for %s: %v", seg.Name, err)
 		return -1
 	}

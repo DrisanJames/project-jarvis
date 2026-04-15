@@ -283,6 +283,39 @@ func main() {
 		log.Println("Mailing Platform routes registered")
 	}
 
+	// Read replica pool for analytical workloads (SegmentRefreshWorker).
+	// Falls back to primary when READ_REPLICA_URL is not configured.
+	var readDB *sql.DB
+	if cfg.Mailing.ReadReplicaURL != "" {
+		rURL := cfg.Mailing.ReadReplicaURL
+		sep := "?"
+		if strings.Contains(rURL, "?") {
+			sep = "&"
+		}
+		if !strings.Contains(rURL, "connect_timeout") {
+			rURL += sep + "connect_timeout=5"
+			sep = "&"
+		}
+		rURL += sep + "options=-c%20statement_timeout%3D120000"
+		var err error
+		readDB, err = sql.Open("postgres", rURL)
+		if err != nil {
+			log.Printf("Warning: read replica connect failed: %v — falling back to primary", err)
+		}
+	}
+	if readDB == nil {
+		readDB = mailingDB
+		if mailingDB != nil {
+			log.Println("Read replica not configured — segment refresh uses primary")
+		}
+	} else {
+		readDB.SetMaxOpenConns(15)
+		readDB.SetMaxIdleConns(8)
+		readDB.SetConnMaxLifetime(5 * time.Minute)
+		readDB.SetConnMaxIdleTime(2 * time.Minute)
+		log.Println("Read replica pool initialized (segment refresh will use replica)")
+	}
+
 	// ── Run migrations and start workers (server is already serving) ──
 	if mailingDB != nil {
 		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -434,9 +467,9 @@ func main() {
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
 				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
-				// Concurrency=2 processes 2 segments in parallel. Higher values (4+) cause
-				// statement timeouts on the heavy "Sent XD No Open" segments due to DB contention.
-				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(mailingDB, 30*time.Minute, 2)
+				// Reads heavy COUNT queries from readDB (replica when configured, primary otherwise).
+				// Writes subscriber_count updates back to mailingDB (always the primary).
+				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(readDB, mailingDB, 30*time.Minute, 2)
 				segRefresh.Start(ctx)
 				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
 
@@ -3280,14 +3313,18 @@ END $$`},
 		)`},
 		{"idx_segment_members_lookup", `CREATE INDEX IF NOT EXISTS idx_segment_members_lookup ON mailing_segment_members(segment_id, email)`},
 		{"idx_tracking_events_segment", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment ON mailing_tracking_events (subscriber_id, event_type, sending_domain, event_at)`},
+		{"idx_tracking_events_segment_v2", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment_v2 ON mailing_tracking_events (event_type, event_at, sending_domain, subscriber_id)`},
 
 		// Reset campaigns orphaned in 'preparing' by a previous crash/deploy.
 		{"reset_stale_preparing_v1", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE status = 'preparing' AND updated_at < NOW() - INTERVAL '45 minutes'`},
 
 		// ── Suppression worker infrastructure (Phase: sunset suppression) ──
 
-		// April 2026 tracking partition
+		// Tracking event partitions (monthly range on event_at)
 		{"create_tracking_partition_apr26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_04 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-04-01') TO ('2026-05-01')`},
+		{"create_tracking_partition_may26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_05 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-05-01') TO ('2026-06-01')`},
+		{"create_tracking_partition_jun26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_06 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-06-01') TO ('2026-07-01')`},
+		{"create_tracking_partition_jul26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_07 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-07-01') TO ('2026-08-01')`},
 
 		// base_domain column on sending profiles for reliable brand discovery
 		{"add_sending_profile_base_domain", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS base_domain TEXT`},
