@@ -286,6 +286,7 @@ func (cs *CampaignScheduler) markCampaignsAsPreparing() {
 		WHERE status = 'scheduled'
 		  AND COALESCE(scheduled_at, send_at) <= NOW() + INTERVAL '`+fmt.Sprintf("%d", EditLockMinutes)+` minutes'
 		  AND COALESCE(scheduled_at, send_at) > NOW()
+		  AND COALESCE(execution_mode, '') != 'pmta_isp_wave'
 	`)
 
 	if err != nil {

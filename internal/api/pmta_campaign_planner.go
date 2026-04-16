@@ -132,6 +132,24 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 		LegacyInput: len(input.ISPPlans) == 0,
 	}
 
+	pastDueRecovery := false
+	if sendMode == "scheduled" && input.ScheduledAt != nil {
+		scheduledUTC := input.ScheduledAt.UTC()
+		if scheduledUTC.Before(now) {
+			log.Printf("[normalizePMTA] WARNING: scheduled_at %s is in the past — recovering as immediate send", scheduledUTC.Format(time.RFC3339))
+			recoveredAt := now.Add(2 * time.Minute)
+			input.ScheduledAt = &recoveredAt
+			sendMode = "immediate"
+			pastDueRecovery = true
+		} else if scheduledUTC.Before(now.Add(5 * time.Minute)) {
+			log.Printf("[normalizePMTA] WARNING: scheduled_at %s is < 5 min away — recovering as immediate send", scheduledUTC.Format(time.RFC3339))
+			recoveredAt := now.Add(2 * time.Minute)
+			input.ScheduledAt = &recoveredAt
+			sendMode = "immediate"
+			pastDueRecovery = true
+		}
+	}
+
 	if len(input.ISPPlans) == 0 {
 		if len(input.TargetISPs) == 0 {
 			return pmtaNormalizedCampaign{}, fmt.Errorf("at least one target ISP is required")
@@ -142,9 +160,8 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 				return pmtaNormalizedCampaign{}, fmt.Errorf("scheduled_at is required when send_mode is 'scheduled'")
 			}
 			baseStart = input.ScheduledAt.UTC()
-			if baseStart.Before(now.Add(5 * time.Minute)) {
-				return pmtaNormalizedCampaign{}, fmt.Errorf("scheduled_at must be at least 5 minutes in the future")
-			}
+		} else if pastDueRecovery {
+			baseStart = input.ScheduledAt.UTC()
 		}
 		quotaMap := make(map[string]int, len(input.ISPQuotas))
 		for _, q := range input.ISPQuotas {
@@ -203,6 +220,10 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 		if len(normalized.TargetISPs) == 0 && len(input.TargetISPs) > 0 {
 			normalized.TargetISPs = append(normalized.TargetISPs, input.TargetISPs...)
 		}
+	}
+
+	if pastDueRecovery {
+		normalized.SendMode = sendMode
 	}
 
 	if len(normalized.Plans) == 0 {
