@@ -3470,6 +3470,15 @@ BEGIN
         END IF;
     END LOOP;
 END $$`},
+
+		// Phase 20: Deactivate m.* SES relay profiles that lack A/MX DNS records.
+		// m.historythinking.com, m.quizfiesta.com, m.myownhealth.net all have SPF
+		// but no A or MX record, causing "Domain not found" rejections from Apple
+		// and other strict MTAs. m.discountblog.com is excluded (has valid MX).
+		{"phase20_deactivate_broken_ses_profiles", `UPDATE mailing_sending_profiles
+			SET status = 'inactive', updated_at = NOW()
+			WHERE sending_domain IN ('m.historythinking.com', 'm.quizfiesta.com', 'm.myownhealth.net')
+			  AND status = 'active'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
