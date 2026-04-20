@@ -3777,6 +3777,27 @@ END $$`},
 		{"apr20_bump_cross_brand_cap_to_3", `UPDATE organizations
 			SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{cross_brand_daily_cap}', '3'::jsonb, true)
 			WHERE COALESCE((settings->>'cross_brand_daily_cap')::int, 0) < 3`},
+		// Apr 20 2026 — terminal drop of the legacy mailing_campaigns_status_check
+		// CHECK constraint.
+		//
+		// Context: prior migrations (readd_status_chk at line 1314,
+		// readd_status_chk_v2 at 3348, drop_status_check_constraint at 3390)
+		// together should leave the table with no status CHECK constraint, so
+		// that reserveCampaignForDeploy() can INSERT status='finalizing_audience'
+		// on new campaigns. Production reality: the Apr 20 deploy surfaced
+		// '23514 new row ... violates check constraint "mailing_campaigns_status_check"'
+		// on every INSERT, proving the constraint is live on prod with a
+		// whitelist that does NOT include 'finalizing_audience'. Root cause is
+		// ambiguous — either a migration landed partially during an earlier
+		// rolling deploy, or the 5s statement_timeout clipped an ADD/DROP step.
+		// Either way, the fix is deterministic: DROP IF EXISTS at the end of
+		// the migration sequence guarantees a clean end state regardless of
+		// which of the earlier variants re-added the constraint.
+		//
+		// DROP IF EXISTS is idempotent — safe to re-run forever. If a future
+		// migration intentionally adds back a status check, it must run AFTER
+		// this one.
+		{"apr20_final_drop_status_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
