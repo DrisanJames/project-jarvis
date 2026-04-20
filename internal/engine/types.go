@@ -676,6 +676,13 @@ type PMTACampaignInput struct {
 	ScheduledAt       *time.Time             `json:"scheduled_at"`     // required when send_mode="scheduled"
 	MinRemailHours    int                    `json:"min_remail_hours"` // 0 = no gap; 48 = 2-day minimum between list-sourced sends
 
+	// UseMasterSelection, when non-nil, is written into mailing_campaigns.use_master_selection
+	// at deploy time. nil keeps the column's DB-level default (currently true after phase21).
+	// Welcome/acquisition campaigns typically want true (SDS + cold-fallback). Segment-driven
+	// engager campaigns want false so the planner follows the inclusion_segments path instead
+	// of the SDS pure-pull.
+	UseMasterSelection *bool `json:"use_master_selection,omitempty"`
+
 	DeliveryThresholds *DeliveryThresholds `json:"delivery_thresholds,omitempty"`
 	WaveGating         *WaveGating         `json:"wave_gating,omitempty"`
 }
@@ -745,6 +752,10 @@ type PMTAWavePlanResult struct {
 }
 
 // AudienceEstimateRequest is the input for audience estimation with ISP breakdown.
+// SendingDomain is optional — when present, the estimate excludes subscribers
+// who have brand-scoped unsubscribed from this domain's brand root, matching
+// what the send pipeline will actually filter at send time. When absent, the
+// estimate reflects the pure-global suppression count (legacy behavior).
 type AudienceEstimateRequest struct {
 	SegmentIDs          []string `json:"segment_ids"`
 	ListIDs             []string `json:"list_ids"`
@@ -752,6 +763,7 @@ type AudienceEstimateRequest struct {
 	SuppressionSegments []string `json:"suppression_segments"`
 	ExclusionSegmentIDs []string `json:"exclusion_segment_ids"`
 	TargetISPs          []ISP    `json:"target_isps"`
+	SendingDomain       string   `json:"sending_domain,omitempty"`
 }
 
 // AudienceEstimateResponse is the audience estimate with per-ISP breakdown.

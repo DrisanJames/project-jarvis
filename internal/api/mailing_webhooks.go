@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
@@ -417,6 +418,52 @@ func (s *AdvancedMailingService) addToSuppression(ctx interface{}, email, reason
 }
 
 func (s *AdvancedMailingService) updateSubscriberStatus(ctx interface{}, email, status string) {
-	s.db.Exec(`UPDATE mailing_subscribers SET status = $2, updated_at = NOW() WHERE LOWER(email) = $1`, 
+	s.db.Exec(`UPDATE mailing_subscribers SET status = $2, updated_at = NOW() WHERE LOWER(email) = $1`,
 		strings.ToLower(email), status)
+
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Webhooks give us email + terminal status; resolve subscriber_id and
+	// the sending_domain of the most recent send so the per-domain state
+	// reflects the failure. Hard bounce & complaint also stamp global
+	// timestamps on mailing_subscribers via the helpers. Best-effort —
+	// errors logged inside the helpers, never bubble up to the caller.
+	s.shadowWriteSubscriberStatusSDS(context.Background(), email, status)
+}
+
+// shadowWriteSubscriberStatusSDS resolves (subscriber_id, sending_domain)
+// from the most recent send and forwards the terminal event into SDS.
+// Legacy path is untouched. See master-list migration P2.
+func (s *AdvancedMailingService) shadowWriteSubscriberStatusSDS(ctx context.Context, email, status string) {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" {
+		return
+	}
+	var subscriberID uuid.UUID
+	var sendingDomain string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT sub.id, COALESCE(
+			(SELECT LOWER(SPLIT_PART(c.from_email, '@', 2))
+				FROM mailing_message_log ml
+				JOIN mailing_campaigns c ON c.id = ml.campaign_id
+				WHERE LOWER(ml.email) = $1 AND c.from_email IS NOT NULL
+				ORDER BY ml.sent_at DESC LIMIT 1),
+			''
+		) AS sending_domain
+		FROM mailing_subscribers sub
+		WHERE LOWER(sub.email) = $1
+		LIMIT 1
+	`, normalized).Scan(&subscriberID, &sendingDomain); err != nil {
+		return
+	}
+	if subscriberID == uuid.Nil {
+		return
+	}
+	switch status {
+	case "bounced":
+		mailing.UpsertSDSHardBounce(ctx, s.db, subscriberID, sendingDomain)
+	case "complained":
+		mailing.UpsertSDSComplaint(ctx, s.db, subscriberID, sendingDomain)
+	case "unsubscribed":
+		mailing.UpsertSDSUnsub(ctx, s.db, subscriberID, sendingDomain)
+	}
 }

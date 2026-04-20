@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -97,20 +98,31 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 			return r, fmt.Errorf("ComputeMetrics(engagement): %w", err)
 		}
 	} else if !f.StartDate.IsZero() && f.OrgID == "" && f.SendingDomain == "" && f.ISP == "" {
-		// Date-range aggregate: all metrics from mailing_campaigns (single consistent source).
+		// Date-range aggregate: delivery/engagement from mailing_campaigns (fast, pre-aggregated).
 		// Using one table avoids denominator mismatches between summary and campaign data.
 		err := db.QueryRowContext(ctx, `
 			SELECT COALESCE(SUM(sent_count), 0), COALESCE(SUM(delivered_count), 0),
 			       COALESCE(SUM(open_count), 0), COALESCE(SUM(click_count), 0),
 			       COALESCE(SUM(hard_bounce_count), 0), COALESCE(SUM(soft_bounce_count), 0),
-			       COALESCE(SUM(complaint_count), 0)
+			       COALESCE(SUM(complaint_count), 0), COALESCE(SUM(unsubscribe_count), 0)
 			FROM mailing_campaigns
 			WHERE COALESCE(started_at, created_at) >= $1
 			  AND COALESCE(started_at, created_at) <= $2
 		`, f.StartDate, f.EndDate).Scan(&r.Sent, &r.Delivered, &r.Opens, &r.Clicks,
-			&r.HardBounces, &r.SoftBounces, &r.Complaints)
+			&r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Unsubscribes)
 		if err != nil {
 			return r, fmt.Errorf("ComputeMetrics(campaigns-range): %w", err)
+		}
+
+		// Deferred isn't tracked on mailing_campaigns — source from PMTA daily summary
+		// scoped to the same range. Non-fatal if the summary is unavailable.
+		if err := db.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(deferred), 0)
+			FROM pmta_acct_daily_summary
+			WHERE summary_date >= $1::date AND summary_date <= $2::date
+		`, f.StartDate, f.EndDate).Scan(&r.Deferred); err != nil {
+			log.Printf("[ComputeMetrics] deferred summary query skipped: %v", err)
+			r.Deferred = 0
 		}
 	} else {
 		// Legacy fallback: OrgID/SendingDomain/ISP filters or no dates —

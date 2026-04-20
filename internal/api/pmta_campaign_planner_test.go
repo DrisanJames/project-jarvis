@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -421,6 +422,240 @@ func TestPlanPMTAAudience_UnlimitedQuotaStreamsAll(t *testing.T) {
 	}
 	if result.TotalSeen != 50 {
 		t.Errorf("TotalSeen = %d, want 50", result.TotalSeen)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Master-selection tests (Master List Migration P3b/P5c).
+//
+// These cover the SDS-sourced audience path that fires when the campaign row
+// has use_master_selection=true. The path has two passes:
+//
+//   1. Primary — mailing_subscribers JOIN mailing_subscriber_domain_state on
+//      (subscriber_id, sending_domain). Selects subscribers with an existing
+//      SDS row for this sending domain.
+//
+//   2. Cold-fallback — mailing_subscribers with a NOT EXISTS anti-join on
+//      SDS. Covers two real scenarios:
+//        - Cold-start for a new sending domain (zero SDS rows exist yet)
+//        - Subscribers imported after the P3a backfill who have no SDS row
+//          anywhere yet; first send will mint the row and flip to 'warming'.
+//
+// Both passes must enforce global suppression filters (status,
+// hard_bounced_at, complained_at) and organization scoping.
+// ---------------------------------------------------------------------------
+
+func TestPlanPMTAAudience_MasterSelection_PrimaryPassReturnsCandidates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "bbbbbbbb-0000-0000-0000-000000000001"
+	sendingDomain := "em.discountblog.com"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
+
+	// Primary SDS pass returns 3 gmail subscribers. The query embeds the
+	// sending_domain and org_id as args; we assert both are passed so a
+	// regression dropping either filter is caught immediately.
+	sdsRows := sqlmock.NewRows([]string{"id", "email"}).
+		AddRow("11111111-0000-0000-0000-000000000001", "alice@gmail.com").
+		AddRow("11111111-0000-0000-0000-000000000002", "bob@gmail.com").
+		AddRow("11111111-0000-0000-0000-000000000003", "carol@gmail.com")
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+JOIN mailing_subscriber_domain_state sds`).
+		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
+		WillReturnRows(sdsRows)
+
+	// Cold-fallback still runs after primary (it is allowed to return
+	// nothing once quota is met; here we return empty so quotas stay met
+	// from the primary pass).
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\)`).
+		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
+
+	input := engine.PMTACampaignInput{
+		CampaignID:    campaignID,
+		SendingDomain: sendingDomain,
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 10},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 10}},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if result.CountsByISP["gmail"] != 3 {
+		t.Errorf("gmail count = %d, want 3", result.CountsByISP["gmail"])
+	}
+	for _, rec := range result.RecipientsByISP["gmail"] {
+		if rec.SourceType != "sds" {
+			t.Errorf("expected SourceType=sds, got %q", rec.SourceType)
+		}
+		if rec.SourceID != sendingDomain {
+			t.Errorf("expected SourceID=%q, got %q", sendingDomain, rec.SourceID)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+func TestPlanPMTAAudience_MasterSelection_ColdFallbackWhenPrimaryEmpty(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "bbbbbbbb-0000-0000-0000-000000000002"
+	sendingDomain := "em.brand-new.com"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
+
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+JOIN mailing_subscriber_domain_state sds`).
+		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
+
+	// Cold-fallback fills the audience from mailing_subscribers without
+	// an SDS row for this domain. This is the cold-start scenario:
+	// brand-new sending domain, zero SDS coverage.
+	fallbackRows := sqlmock.NewRows([]string{"id", "email"}).
+		AddRow("22222222-0000-0000-0000-000000000001", "new1@gmail.com").
+		AddRow("22222222-0000-0000-0000-000000000002", "new2@gmail.com")
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\)`).
+		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
+		WillReturnRows(fallbackRows)
+
+	input := engine.PMTACampaignInput{
+		CampaignID:    campaignID,
+		SendingDomain: sendingDomain,
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 10},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 10}},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if result.CountsByISP["gmail"] != 2 {
+		t.Errorf("gmail count = %d, want 2 (cold-fallback)", result.CountsByISP["gmail"])
+	}
+	for _, rec := range result.RecipientsByISP["gmail"] {
+		if rec.SourceType != "sds_cold" {
+			t.Errorf("expected SourceType=sds_cold, got %q", rec.SourceType)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+func TestPlanPMTAAudience_MasterSelection_RequiresSendingDomain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "bbbbbbbb-0000-0000-0000-000000000003"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
+
+	input := engine.PMTACampaignInput{
+		CampaignID:    campaignID,
+		SendingDomain: "", // deliberately empty to trigger the guard
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 10},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 10}},
+	}
+
+	_, err = planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err == nil {
+		t.Fatal("expected error when master selection has no sending_domain, got nil")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+func TestPlanPMTAAudience_MasterSelection_FlagOffSkipsSDSQueries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "bbbbbbbb-0000-0000-0000-000000000004"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+	// Flag is false — SDS path must NOT be invoked and no SDS queries
+	// should be expected. Without any inclusion lists there is nothing
+	// else to run, so the planner returns an empty audience cleanly.
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(false))
+
+	input := engine.PMTACampaignInput{
+		CampaignID:    campaignID,
+		SendingDomain: "em.example.com",
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 10},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 10}},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+	if result.SelectedTotal != 0 {
+		t.Errorf("SelectedTotal = %d, want 0 (no inclusion lists, master flag off)", result.SelectedTotal)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"github.com/lib/pq"
 )
@@ -26,8 +27,12 @@ import (
 // SendWorkerPool manages a pool of workers for sending emails at scale
 // Designed for 8.4M emails/day = 350K/hour = 5.8K/minute = ~100/second
 // GlobalSuppressionChecker checks the global suppression hub (in-memory O(1)).
+// IsSuppressedForBrand combines the global set AND the brand set for the
+// given brand root under a SINGLE read lock — the send hot path pays one
+// sync cost per candidate instead of two.
 type GlobalSuppressionChecker interface {
 	IsSuppressed(email string) bool
+	IsSuppressedForBrand(email, brandRoot string) bool
 }
 
 // GlobalSuppressionSuppressor writes to the global suppression hub when
@@ -50,9 +55,10 @@ type SendWorkerPool struct {
 	pollInterval time.Duration
 
 	// Stats
-	totalSent    int64
-	totalFailed  int64
-	totalSkipped int64
+	totalSent       int64
+	totalFailed     int64
+	totalSkipped    int64
+	totalSkippedCap int64 // subset of totalSkipped — rejected by cross-brand cap
 
 	// Control
 	ctx     context.Context
@@ -91,6 +97,18 @@ type SendWorkerPool struct {
 	// Channel-based work distribution: ISP dispatch loop pushes claimed
 	// items here; worker goroutines consume and call processItem.
 	workCh chan QueueItem
+
+	// Cross-brand daily cap. Optional; nil disables the check.
+	capChecker *mailing.CapChecker
+}
+
+// SetCapChecker wires the cross-brand daily cap enforcer. When set, the
+// dispatch loop filters every claimed batch through Reserve() before
+// pushing items onto the work channel. Subscribers over cap are marked
+// 'skipped' with reason 'cross_brand_cap_exceeded' on the queue row,
+// preventing them from being re-claimed today.
+func (p *SendWorkerPool) SetCapChecker(c *mailing.CapChecker) {
+	p.capChecker = c
 }
 
 // ISPRateLimiter abstracts the engine.ISPRateRegistry to avoid import cycles.
@@ -229,6 +247,11 @@ type QueueItem struct {
 
 	// Pre-assigned VMTA from dispatch-level IP distribution (empty = dynamic selection)
 	AssignedVMTA string
+
+	// BrandRoot is derived from FromEmail once at claim time so the send
+	// hot path (millions of calls per campaign) never recomputes it.
+	// Populated in scanQueueRows via api.BrandRoot.
+	BrandRoot string
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -813,6 +836,17 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState,
 			continue
 		}
 
+		// Cross-brand daily cap filter. Subscribers already at/above the
+		// configured cap today are marked 'skipped' with reason
+		// 'cross_brand_cap_exceeded' and excluded from the wave. Reserve
+		// is atomic against Redis; on Redis outage falls back to Postgres.
+		if p.capChecker != nil {
+			items = p.applyCrossBrandCap(items)
+			if len(items) == 0 {
+				continue
+			}
+		}
+
 		// Assign pre-determined VMTAs to claimed items when per-IP is active
 		if ipAllocations != nil && len(ipAllocations) > 0 {
 			assignVMTAsToItems(items, ipAllocations)
@@ -941,6 +975,7 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 		}
 		item.ProfileID = profileID
 		item.ESPType = espType
+		item.BrandRoot = brand.RootFromEmail(item.FromEmail)
 		items = append(items, item)
 	}
 	return items, nil
@@ -950,6 +985,20 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 func (p *SendWorkerPool) processItem(item QueueItem) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
+
+	// Cross-brand cap slot was reserved in applyCrossBrandCap before this
+	// item was placed on the work channel. If the send does not actually
+	// go out (suppression, validation fail, ESP error) we must release the
+	// slot so the subscriber can be mailed later today. The happy-path
+	// Send call flips capSent=true to skip the release.
+	capSent := false
+	if p.capChecker != nil {
+		defer func() {
+			if !capSent {
+				p.capChecker.Release(ctx, item.SubscriberID.String())
+			}
+		}()
+	}
 
 	// Gate: skip if campaign was cancelled or paused after claim
 	var campStatus string
@@ -975,9 +1024,14 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		}
 	}
 
-	// Global suppression hub — single source of truth (in-memory O(1))
-	if p.globalHub != nil && p.globalHub.IsSuppressed(item.Email) {
+	// Global + brand-scoped suppression — single source of truth, single
+	// read lock covers both axes. When item.BrandRoot is empty (unknown
+	// sending domain), this falls back to a pure global check.
+	if p.globalHub != nil && p.globalHub.IsSuppressedForBrand(item.Email, item.BrandRoot) {
 		atomic.AddInt64(&p.totalSkipped, 1)
+		if item.BrandRoot != "" {
+			return p.markSkipped(ctx, item.ID, "brand_suppressed")
+		}
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 
@@ -1092,9 +1146,19 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 			trackBase,
 		)
 		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), trackBase)
+		// Brand-scoped URL for the TOP unsubscribe link and the HTTPS leg of
+		// List-Unsubscribe. Falls back to the global URL shape when BrandRoot
+		// is empty (unknown sending domain) so there is no broken-link risk.
+		brandUnsubURL := p.generateBrandUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), item.BrandRoot, trackBase)
 
 		// RFC 8058: both mailto: and https: for maximum ISP compatibility.
 		// mailto: must be domain-aligned with the From address for ISP trust.
+		// The HTTPS leg uses the brand-scoped URL so ISP one-click POSTs hit
+		// the brand suppression path. The mailto leg stays 3-part global —
+		// there is no inbound handler for unsub+<token>@<domain> in this repo
+		// (the mailto is ceremonial for ISP trust scoring); extending its
+		// payload shape would propagate the pre-existing unsigned-mailto bug
+		// at a wider scope for zero functional gain.
 		fromDomain := item.FromEmail
 		if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
 			fromDomain = item.FromEmail[atIdx+1:]
@@ -1102,7 +1166,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		unsubData := fmt.Sprintf("%s|%s|%s", p.orgID, item.CampaignID.String(), item.SubscriberID.String())
 		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
 		mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
-		headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, unsubURL)
+		headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, brandUnsubURL)
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
 		// Safety net: replace any unresolved system tokens in both HTML and text
@@ -1110,6 +1174,10 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.unsubscribe_url}}", unsubURL)
 		textContent = strings.ReplaceAll(textContent, "{{ system.unsubscribe_url }}", unsubURL)
 		textContent = strings.ReplaceAll(textContent, "{{system.unsubscribe_url}}", unsubURL)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
+		textContent = strings.ReplaceAll(textContent, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		textContent = strings.ReplaceAll(textContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
 		prefsURL := fmt.Sprintf("%s/preferences?sid=%s", trackBase, item.SubscriberID.String())
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.preferences_url }}", prefsURL)
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.preferences_url}}", prefsURL)
@@ -1217,6 +1285,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 
 	// Mark as sent and update campaign stats
 	atomic.AddInt64(&p.totalSent, 1)
+	capSent = true
 	if err := p.markSent(ctx, item, result.MessageID, result.VMTA); err != nil {
 		log.Printf("Error marking sent: %v", err)
 	}
@@ -1316,6 +1385,11 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
 	}
+
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Additive: legacy list_id selection still owns reads; this mirrors
+	// the per-domain send state so P3 pilot can join against real data.
+	mailing.UpsertSDSSend(ctx, p.db, item.SubscriberID, sendingDomain)
 
 	// Upsert inbox profile for this recipient
 	if recipientDomain != "" {
@@ -1451,6 +1525,13 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 		}
 	}
 
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Hard bounces stamp the per-domain SDS row AND mailing_subscribers
+	// (global hard_bounced_at) per the agreed design.
+	if bounceType == "hard" {
+		mailing.UpsertSDSHardBounce(ctx, p.db, item.SubscriberID, sendingDomain)
+	}
+
 	// Upsert inbox profile for bounced recipient
 	if recipientDomain != "" {
 		eHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(item.Email))))
@@ -1531,6 +1612,36 @@ func (p *SendWorkerPool) markSkipped(ctx context.Context, itemID uuid.UUID, reas
 		WHERE id = $1
 	`, itemID, reason)
 	return err
+}
+
+// applyCrossBrandCap filters a claimed batch against the daily cap. Items
+// that exceed the cap are marked 'skipped' with reason
+// 'cross_brand_cap_exceeded' on the queue and dropped from the returned
+// slice. Counters are updated so AnalyticsCenter can surface a wave-level
+// skipped_cap_exceeded metric.
+func (p *SendWorkerPool) applyCrossBrandCap(items []QueueItem) []QueueItem {
+	if p.capChecker == nil || len(items) == 0 {
+		return items
+	}
+	ctx := p.ctx
+	kept := items[:0]
+	for _, it := range items {
+		allowed, _, err := p.capChecker.Reserve(ctx, p.orgID, it.SubscriberID.String())
+		if err != nil {
+			kept = append(kept, it)
+			continue
+		}
+		if allowed {
+			kept = append(kept, it)
+			continue
+		}
+		atomic.AddInt64(&p.totalSkippedCap, 1)
+		atomic.AddInt64(&p.totalSkipped, 1)
+		if mErr := p.markSkipped(ctx, it.ID, "cross_brand_cap_exceeded"); mErr != nil {
+			log.Printf("[cap] markSkipped failed for item=%s: %v", it.ID, mErr)
+		}
+	}
+	return kept
 }
 
 // registerWorker registers this worker in the database
@@ -1652,9 +1763,27 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 	return InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, p.orgID, p.trackingSecret)
 }
 
-// GenerateUnsubscribeURL builds a signed one-click unsubscribe URL.
+// GenerateUnsubscribeURL builds a signed global one-click unsubscribe URL.
+// Emits a 3-part token (org|campaign|subscriber) that HandleTrackUnsubscribe
+// interprets as "suppress globally, flip subscriber status".
 func GenerateUnsubscribeURL(orgID, campaignID, subscriberID, baseURL, secret string) string {
+	return generateUnsubURL(orgID, campaignID, subscriberID, "", baseURL, secret)
+}
+
+// GenerateBrandUnsubscribeURL builds a signed brand-scoped unsubscribe URL.
+// Emits a 4-part token (org|campaign|subscriber|brandRoot) on the SAME
+// /track/unsubscribe path as the global URL — HandleTrackUnsubscribe branches
+// on the token part count. When brandRoot is empty this falls back to the
+// global 3-part shape for safety.
+func GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRoot, baseURL, secret string) string {
+	return generateUnsubURL(orgID, campaignID, subscriberID, brandRoot, baseURL, secret)
+}
+
+func generateUnsubURL(orgID, campaignID, subscriberID, brandRoot, baseURL, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s", orgID, campaignID, subscriberID)
+	if brandRoot != "" {
+		data += "|" + brandRoot
+	}
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
 	sig := TrackSign(encoded, secret)
 	return fmt.Sprintf("%s/track/unsubscribe/%s/%s", baseURL, encoded, sig)
@@ -1662,6 +1791,10 @@ func GenerateUnsubscribeURL(orgID, campaignID, subscriberID, baseURL, secret str
 
 func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseURL string) string {
 	return GenerateUnsubscribeURL(p.orgID, campaignID, subscriberID, baseURL, p.trackingSecret)
+}
+
+func (p *SendWorkerPool) generateBrandUnsubscribeURL(campaignID, subscriberID, brandRoot, baseURL string) string {
+	return GenerateBrandUnsubscribeURL(p.orgID, campaignID, subscriberID, brandRoot, baseURL, p.trackingSecret)
 }
 
 // buildRenderContext constructs a full Liquid render context from a queue item,
@@ -1716,6 +1849,13 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 	}
 	if tBase != "" {
 		system["unsubscribe_url"] = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), tBase)
+		// Brand-scoped unsubscribe URL — suppresses only for the brand root
+		// (e.g. *.discountblog.com) so the subscriber remains mailable for
+		// other brands. Populated when item.BrandRoot is known (i.e. whenever
+		// the sending domain matches an owned brand). When BrandRoot is empty
+		// this falls back to the same shape as the global URL for safety —
+		// callers that embed it in a template still get a working link.
+		system["brand_unsubscribe_url"] = p.generateBrandUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), item.BrandRoot, tBase)
 		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", tBase, item.SubscriberID.String())
 		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", tBase, item.CampaignID.String(), item.SubscriberID.String())
 	}

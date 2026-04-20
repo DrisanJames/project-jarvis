@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // SegmentMaterializer pre-computes segment membership into
@@ -57,6 +59,87 @@ func (m *SegmentMaterializer) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// CanonicalMasterListSegments enumerates the seeded, user-visible segments
+// that the master-list architecture depends on. The list lives in-code so the
+// set of "first-class" segments is discoverable from a single call site and
+// stays in lock-step with the phase21 seed migrations in main.go.
+//
+// Names MUST match the values inserted by those migrations exactly; this is
+// the join key used by MaterializeCanonicalSegments.
+var CanonicalMasterListSegments = []string{
+	"Master List",
+	"Engaged Openers (30d)",
+	"Engaged Clickers (30d)",
+}
+
+// MaterializeCanonicalSegments runs MaterializeSegment once for each segment
+// whose name matches CanonicalMasterListSegments across all organizations.
+//
+// Called on every server boot (via server_routes_mailing.go) after startup
+// migrations complete. Fresh installs and newly-seeded orgs get member rows
+// populated immediately instead of waiting 24h for the nightly materializer
+// — otherwise the UI's "Master List" and "Engaged Openers/Clickers" tiles
+// would show 0 members until 04:00 UTC the next day.
+//
+// Idempotent: MaterializeSegment internally DELETEs and reinserts members
+// inside a single transaction, so invoking this on every boot is safe. It
+// does re-scan the full subscriber table though — which is the right trade-
+// off for a 3-segment set that every campaign screen reads from, but would
+// not scale to hundreds of segments.
+func (m *SegmentMaterializer) MaterializeCanonicalSegments(ctx context.Context) {
+	start := time.Now()
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT s.id::text, COALESCE(s.list_id::text, ''), s.name, COALESCE(s.conditions::text, '[]')
+		FROM mailing_segments s
+		WHERE s.status = 'active'
+		  AND s.segment_type = 'dynamic'
+		  AND s.name = ANY($1::text[])
+		ORDER BY s.name ASC
+	`, pq.Array(CanonicalMasterListSegments))
+	if err != nil {
+		log.Printf("[SegmentMaterializer] canonical query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type segInfo struct {
+		id, listID, name, conditions string
+	}
+	var segments []segInfo
+	for rows.Next() {
+		var s segInfo
+		if err := rows.Scan(&s.id, &s.listID, &s.name, &s.conditions); err != nil {
+			log.Printf("[SegmentMaterializer] canonical scan error: %v", err)
+			continue
+		}
+		segments = append(segments, s)
+	}
+
+	if len(segments) == 0 {
+		log.Printf("[SegmentMaterializer] no canonical segments found — phase21 seeds may not have run yet")
+		return
+	}
+
+	materialized := 0
+	for _, seg := range segments {
+		if ctx.Err() != nil {
+			break
+		}
+		count, err := MaterializeSegment(ctx, m.db, seg.id, seg.listID, seg.conditions)
+		if err != nil {
+			log.Printf("[SegmentMaterializer] canonical %q (%s) failed: %v",
+				seg.name, safePrefix(seg.id, 12), err)
+			continue
+		}
+		log.Printf("[SegmentMaterializer] canonical %q — %d members", seg.name, count)
+		materialized++
+	}
+
+	log.Printf("[SegmentMaterializer] canonical materialization: %d/%d segments in %s",
+		materialized, len(segments), time.Since(start).Round(time.Millisecond))
 }
 
 func (m *SegmentMaterializer) materializeAll(ctx context.Context) {

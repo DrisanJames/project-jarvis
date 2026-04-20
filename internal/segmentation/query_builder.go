@@ -102,6 +102,13 @@ func (qb *QueryBuilder) BuildQuery(group ConditionGroupBuilder, globalExclusions
 	// Add status filter (default: confirmed only)
 	whereConditions = append(whereConditions, "s.status = 'confirmed'")
 
+	// Master List Migration P7: address-level (global) suppressions must
+	// short-circuit segment membership. These columns are denormalised
+	// onto mailing_subscribers so suppression checks stay an index hit
+	// instead of a join.
+	whereConditions = append(whereConditions, "s.hard_bounced_at IS NULL")
+	whereConditions = append(whereConditions, "s.complained_at IS NULL")
+
 	// Add suppression filter
 	if !qb.includeSupressed {
 		whereConditions = append(whereConditions, `
@@ -168,6 +175,11 @@ func (qb *QueryBuilder) BuildCountQuery(group ConditionGroupBuilder, globalExclu
 	}
 
 	whereConditions = append(whereConditions, "s.status = 'confirmed'")
+
+	// Master List Migration P7: keep BuildCountQuery in lockstep with
+	// BuildQuery so preview counts never drift from live results.
+	whereConditions = append(whereConditions, "s.hard_bounced_at IS NULL")
+	whereConditions = append(whereConditions, "s.complained_at IS NULL")
 
 	if !qb.includeSupressed {
 		whereConditions = append(whereConditions, `

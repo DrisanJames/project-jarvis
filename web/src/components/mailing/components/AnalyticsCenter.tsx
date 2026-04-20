@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faChartLine, faEnvelope, faEye, faMousePointer,
@@ -7,6 +7,8 @@ import {
   faSyncAlt, faSpinner,
   faDatabase,
   faTrophy,
+  faClock, faUserSlash, faBolt, faBroadcastTower,
+  faChevronDown, faChevronRight, faLayerGroup,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -24,6 +26,7 @@ interface OverviewData {
     sent: number; delivered: number; opens: number; clicks: number;
     hard_bounces: number; soft_bounces: number;
     complaints: number; revenue: number;
+    deferred?: number; unsubscribes?: number;
   };
   rates: { open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number; delivery_rate?: number; unsubscribe_rate?: number; deferral_rate?: number; bounce_rate?: number };
   daily_trend: { date: string; sent: number; delivered: number; opens: number; clicks: number; hard_bounces: number; soft_bounces: number; complaints: number; deferred: number; unsubscribes: number }[];
@@ -34,13 +37,83 @@ interface OverviewData {
 }
 
 
+interface CampaignRow {
+  id: string; name: string; status: string;
+  sent: number; delivered?: number; opens: number; clicks: number;
+  hard_bounces: number; soft_bounces: number;
+  deferred?: number; unsubscribes?: number; complaints?: number;
+  revenue: number;
+  open_rate: number; click_rate: number;
+  hard_bounce_rate: number; soft_bounce_rate: number;
+  created_at: string;
+}
+
 interface CampaignData {
-  campaigns: {
-    id: string; name: string; status: string;
-    sent: number; opens: number; clicks: number; hard_bounces: number; soft_bounces: number;
-    revenue: number; open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number;
-    created_at: string;
-  }[];
+  campaigns: CampaignRow[];
+}
+
+// ─── Live Sending types ──────────────────────────────────────────────────────
+
+interface LiveWaveCounts {
+  total: number;
+  planned: number;
+  enqueued: number;
+  running: number;
+  completed: number;
+  cancelled: number;
+  failed: number;
+}
+
+interface LiveTotals {
+  recipients: number; sent: number; delivered: number;
+  deferred: number; hard_bounces: number; soft_bounces: number;
+  opens: number; clicks: number;
+}
+
+interface LiveISPPlan {
+  isp: string; label: string; status: string;
+  sending_domain: string;
+  waves: LiveWaveCounts;
+  totals: LiveTotals;
+  sent_last_1m: number;
+  sent_last_5m: number;
+}
+
+interface LiveCampaign {
+  id: string; name: string; status: string;
+  started_at?: string; scheduled_at?: string;
+  from_email: string;
+  sent_last_1m: number; sent_last_5m: number;
+  totals: LiveTotals;
+  waves: LiveWaveCounts;
+  next_wave_at?: string;
+  isp_plans: LiveISPPlan[];
+}
+
+interface ActiveSendsData {
+  api_version?: string;
+  is_active: boolean;
+  as_of: string;
+  campaigns: LiveCampaign[];
+}
+
+// ─── Bounce reasons types ────────────────────────────────────────────────────
+
+interface BounceReasonISP { isp: string; label: string; count: number; }
+
+interface BounceReasonRow {
+  code: string;
+  label: string;
+  category: string;
+  count: number;
+  pct_of_total: number;
+  by_isp: BounceReasonISP[];
+}
+
+interface BounceReasonsData {
+  api_version?: string;
+  total_bounces: number;
+  reasons: BounceReasonRow[];
 }
 
 
@@ -68,7 +141,39 @@ interface ISPData {
   isp: string; label: string;
   sent: number; delivered: number; opens: number; clicks: number;
   hard_bounces: number; soft_bounces: number; complaints: number;
+  deferred?: number; unsubscribes?: number;
   open_rate: number; click_rate: number; hard_bounce_rate: number; soft_bounce_rate: number; complaint_rate: number;
+  delivery_rate?: number; deferral_rate?: number; unsubscribe_rate?: number;
+}
+
+const BOUNCE_CATEGORY_COLORS: Record<string, string> = {
+  auth: '#ef4444',
+  mailbox: '#f59e0b',
+  reputation: '#dc2626',
+  policy: '#a855f7',
+  system: '#6366f1',
+  transient: '#3b82f6',
+  other: '#64748b',
+};
+
+// Brand keywords we recognise in campaign names. Extend this list as new
+// brands are onboarded — campaigns whose names don't match any of these fall
+// into "Unclassified".
+const KNOWN_BRANDS = [
+  'Discount Blog',
+  'Quiz Fiesta',
+  'History Thinking',
+  'My Own Health',
+] as const;
+
+// Series keywords. Matched case-insensitively.
+const KNOWN_SERIES = ['Welcome', 'Engager', 'Acquisition', 'Reactivation'] as const;
+
+function classifyCampaign(name: string): { brand: string; series: string } {
+  const lower = name.toLowerCase();
+  const brand = KNOWN_BRANDS.find(b => lower.includes(b.toLowerCase())) || 'Unclassified';
+  const series = KNOWN_SERIES.find(s => lower.includes(s.toLowerCase())) || 'Other';
+  return { brand, series };
 }
 
 const ISP_LABELS: Record<string, string> = {
@@ -85,7 +190,23 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = 'today' | 'yesterday';
 
-const PAGE_VERSION = '3.1';
+const PAGE_VERSION = '4.1';
+
+// Master List Migration P6: per-domain SDS audience health row.
+// Mirrors the response shape from GET /api/mailing/analytics/sds-audience-health.
+interface SDSDomainRow {
+  sending_domain: string;
+  total: number;
+  cold: number;
+  warming: number;
+  engaged: number;
+  dormant: number;
+  unsubscribed: number;
+  hard_bounced: number;
+  complained: number;
+  recently_mailed_7d: number;
+  recently_opened_7d: number;
+}
 
 // All date boundaries are anchored to America/Denver (MST/MDT).
 // MST = UTC-7, MDT = UTC-6. We use a fixed UTC-7 offset per user spec.
@@ -128,6 +249,305 @@ const fmtCurrency = (n: number): string => {
 
 const pct = (n: number | undefined | null): string => (n == null || isNaN(n)) ? '0.0%' : n.toFixed(1) + '%';
 
+// Relative "in Xm Ys" for a future ISO timestamp. Returns "—" if already past.
+const relativeFuture = (iso?: string): string => {
+  if (!iso) return '—';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (isNaN(ms) || ms <= 0) return 'due';
+  const totalSec = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins >= 60) {
+    const hours = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return `${hours}h ${rem}m`;
+  }
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+};
+
+// ─── Live Sending Band ─────────────────────────────────────────────────────
+
+interface LiveSendingBandProps {
+  data: ActiveSendsData | null;
+  expanded: string | null;
+  onToggle: (id: string) => void;
+  onRefresh: () => void;
+}
+
+const LiveSendingBand: React.FC<LiveSendingBandProps> = ({ data, expanded, onToggle, onRefresh }) => {
+  if (!data || !data.campaigns || data.campaigns.length === 0) return null;
+
+  return (
+    <div className="ac-card ig-card-hover ac-live-band" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="ac-live-dot" />
+          <FontAwesomeIcon icon={faBroadcastTower} />
+          Live Sending
+          <span style={{ fontSize: '0.7em', color: '#64748b', fontWeight: 'normal', marginLeft: 8 }}>
+            {data.campaigns.length} active · as of {new Date(data.as_of).toLocaleTimeString()}
+          </span>
+        </h3>
+        <button className="ac-btn-refresh" onClick={onRefresh} title="Refresh now">
+          <FontAwesomeIcon icon={faSyncAlt} />
+        </button>
+      </div>
+
+      <div className="ac-live-cards">
+        {data.campaigns.map(c => {
+          const wavePct = c.waves.total > 0 ? Math.round((c.waves.completed / c.waves.total) * 100) : 0;
+          const isExpanded = expanded === c.id;
+          return (
+            <div key={c.id} className="ac-live-card">
+              <div className="ac-live-row1" onClick={() => onToggle(c.id)}>
+                <span className={`ac-live-status ac-live-status-${c.status}`}>{c.status}</span>
+                <span className="ac-live-name">{c.name}</span>
+                <span className="ac-live-throughput">
+                  <FontAwesomeIcon icon={faBolt} /> {fmt(c.sent_last_1m)}/min · {fmt(c.sent_last_5m)}/5m
+                </span>
+                <span className="ac-live-chevron">
+                  <FontAwesomeIcon icon={isExpanded ? faChevronDown : faChevronRight} />
+                </span>
+              </div>
+
+              <div className="ac-live-row2">
+                <div className="ac-live-progress">
+                  <div className="ac-live-progress-bar" style={{ width: `${wavePct}%` }} />
+                </div>
+                <div className="ac-live-wave-badges">
+                  <span className="ac-live-badge" title="Completed">
+                    {c.waves.completed}/{c.waves.total} waves
+                  </span>
+                  {c.waves.running > 0 && <span className="ac-live-badge ac-live-badge-running">{c.waves.running} running</span>}
+                  {c.waves.enqueued > 0 && <span className="ac-live-badge ac-live-badge-enqueued">{c.waves.enqueued} enqueued</span>}
+                  {c.waves.planned > 0 && <span className="ac-live-badge ac-live-badge-planned">{c.waves.planned} planned</span>}
+                  {c.waves.cancelled > 0 && <span className="ac-live-badge ac-live-badge-cancelled">{c.waves.cancelled} cancelled</span>}
+                  {c.waves.failed > 0 && <span className="ac-live-badge ac-live-badge-failed">{c.waves.failed} failed</span>}
+                </div>
+                <div className="ac-live-next-wave">
+                  <FontAwesomeIcon icon={faClock} /> next wave: <strong>{relativeFuture(c.next_wave_at)}</strong>
+                </div>
+              </div>
+
+              {isExpanded && c.isp_plans && c.isp_plans.length > 0 && (
+                <div className="ac-live-isp-rows">
+                  <div className="ac-live-isp-head">
+                    <span>ISP</span>
+                    <span>Status</span>
+                    <span>Waves</span>
+                    <span>1m</span>
+                    <span>5m</span>
+                    <span>Domain</span>
+                  </div>
+                  {c.isp_plans.map(p => (
+                    <div key={`${c.id}-${p.isp}`} className="ac-live-isp-row">
+                      <span className="ac-live-isp-label">{p.label || p.isp}</span>
+                      <span className={`ac-live-isp-status ac-live-status-${p.status}`}>{p.status}</span>
+                      <span>{p.waves.completed}/{p.waves.total}</span>
+                      <span>{fmt(p.sent_last_1m)}</span>
+                      <span>{fmt(p.sent_last_5m)}</span>
+                      <span className="ac-live-isp-domain">{p.sending_domain || '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ─── Bounce Reasons Panel ──────────────────────────────────────────────────
+
+interface BounceReasonsPanelProps {
+  data: BounceReasonsData | null;
+  expandedCode: string | null;
+  onToggle: (key: string) => void;
+}
+
+const BounceReasonsPanel: React.FC<BounceReasonsPanelProps> = ({ data, expandedCode, onToggle }) => {
+  if (!data || !data.reasons || data.reasons.length === 0) {
+    return (
+      <div className="ac-card ig-card-hover">
+        <h3><FontAwesomeIcon icon={faExclamationTriangle} /> Top Bounce Reasons</h3>
+        <div className="ac-empty-mini">No bounce events in this range. Nice.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ac-card ig-card-hover">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} /> Top Bounce Reasons
+        </h3>
+        <span style={{ fontSize: '0.75em', color: '#64748b' }}>{fmt(data.total_bounces)} total bounces</span>
+      </div>
+
+      <div className="ac-bounce-list">
+        {data.reasons.map((r, i) => {
+          const key = `${r.label}-${i}`;
+          const isExpanded = expandedCode === key;
+          return (
+            <div key={key} className="ac-bounce-item">
+              <div className="ac-bounce-head" onClick={() => onToggle(key)}>
+                <span className="ac-bounce-cat-pill" style={{ background: BOUNCE_CATEGORY_COLORS[r.category] || '#64748b' }}>
+                  {r.category}
+                </span>
+                <span className="ac-bounce-code">{r.code || '—'}</span>
+                <span className="ac-bounce-label">{r.label}</span>
+                <span className="ac-bounce-count">{fmt(r.count)}</span>
+                <span className="ac-bounce-pct">{r.pct_of_total.toFixed(1)}%</span>
+                <span className="ac-live-chevron">
+                  <FontAwesomeIcon icon={isExpanded ? faChevronDown : faChevronRight} />
+                </span>
+              </div>
+              {isExpanded && r.by_isp && r.by_isp.length > 0 && (
+                <div className="ac-bounce-isp-grid">
+                  {r.by_isp.map(b => (
+                    <div key={`${key}-${b.isp}`} className="ac-bounce-isp-cell">
+                      <span>{b.label || b.isp}</span>
+                      <strong>{fmt(b.count)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ─── Brand × Series Rollup ─────────────────────────────────────────────────
+
+interface BrandSeriesRollupRow {
+  brand: string; series: string; campaigns: number;
+  sent: number; delivered: number; deferred: number; unsubscribes: number;
+  open_rate: number; click_rate: number;
+  hard_bounce_rate: number; soft_bounce_rate: number; deferral_rate: number; unsubscribe_rate: number;
+  revenue: number;
+}
+
+const BrandSeriesRollup: React.FC<{ rows: BrandSeriesRollupRow[] }> = ({ rows }) => {
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+  return (
+    <div className="ac-card ig-card-hover">
+      <h3><FontAwesomeIcon icon={faLayerGroup} /> Brand × Series Rollup</h3>
+      <div className="ac-table-wrap">
+        <table className="ac-table">
+          <thead>
+            <tr>
+              <th>Brand</th>
+              <th>Series</th>
+              <th>Campaigns</th>
+              <th>Sent</th>
+              <th>Delivered</th>
+              <th>Open %</th>
+              <th>Click %</th>
+              <th>Hard %</th>
+              <th>Soft %</th>
+              <th>Deferred</th>
+              <th>Unsubs</th>
+              <th>Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.brand}-${r.series}-${i}`}>
+                <td><strong>{r.brand}</strong></td>
+                <td>{r.series}</td>
+                <td>{r.campaigns}</td>
+                <td>{fmt(r.sent)}</td>
+                <td>{fmt(r.delivered)}</td>
+                <td className={r.open_rate > 20 ? 'ac-good' : r.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(r.open_rate)}</td>
+                <td className={r.click_rate > 3 ? 'ac-good' : r.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(r.click_rate)}</td>
+                <td className={r.hard_bounce_rate < 2 ? 'ac-good' : r.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(r.hard_bounce_rate)}</td>
+                <td className={r.soft_bounce_rate < 2 ? 'ac-good' : r.soft_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(r.soft_bounce_rate)}</td>
+                <td>{fmt(r.deferred)}</td>
+                <td>{fmt(r.unsubscribes)}</td>
+                <td>{fmtCurrency(r.revenue)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ─── ISP Funnel and Tiles (inside selected-ISP detail) ─────────────────────
+
+const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
+  if (!card) return null;
+  const sent = card.sent || 0;
+  const delivered = card.delivered || 0;
+  const opens = card.opens || 0;
+  const clicks = card.clicks || 0;
+  const base = Math.max(sent, 1);
+  const steps = [
+    { label: 'Sent', value: sent, color: '#a5b4fc' },
+    { label: 'Delivered', value: delivered, color: '#22c55e' },
+    { label: 'Opens', value: opens, color: '#3b82f6' },
+    { label: 'Clicks', value: clicks, color: '#f59e0b' },
+  ];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 12 }}>
+      <div className="ac-funnel">
+        {steps.map(s => (
+          <div key={s.label} className="ac-funnel-step">
+            <div className="ac-funnel-meta">
+              <span className="ac-funnel-label">{s.label}</span>
+              <span className="ac-funnel-value">{fmt(s.value)}</span>
+            </div>
+            <div className="ac-funnel-bar-track">
+              <div className="ac-funnel-bar-fill" style={{ width: `${(s.value / base) * 100}%`, background: s.color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="ac-isp-tile-grid">
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Delivery</span>
+          <span className="ac-isp-tile-value" style={{ color: '#22c55e' }}>{pct(card.delivery_rate || 0)}</span>
+          <span className="ac-isp-tile-sub">{fmt(delivered)}</span>
+        </div>
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Deferred</span>
+          <span className="ac-isp-tile-value" style={{ color: '#3b82f6' }}>{pct(card.deferral_rate || 0)}</span>
+          <span className="ac-isp-tile-sub">{fmt(card.deferred || 0)}</span>
+        </div>
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Hard Bounce</span>
+          <span className="ac-isp-tile-value" style={{ color: '#ef4444' }}>{pct(card.hard_bounce_rate)}</span>
+          <span className="ac-isp-tile-sub">{fmt(card.hard_bounces)}</span>
+        </div>
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Soft Bounce</span>
+          <span className="ac-isp-tile-value" style={{ color: '#f59e0b' }}>{pct(card.soft_bounce_rate)}</span>
+          <span className="ac-isp-tile-sub">{fmt(card.soft_bounces)}</span>
+        </div>
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Unsubscribes</span>
+          <span className="ac-isp-tile-value" style={{ color: '#a855f7' }}>{pct(card.unsubscribe_rate || 0)}</span>
+          <span className="ac-isp-tile-sub">{fmt(card.unsubscribes || 0)}</span>
+        </div>
+        <div className="ac-isp-tile">
+          <span className="ac-isp-tile-label">Complaints</span>
+          <span className="ac-isp-tile-value" style={{ color: '#dc2626' }}>{(card.complaint_rate || 0).toFixed(2)}%</span>
+          <span className="ac-isp-tile-sub">{fmt(card.complaints)}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const AnalyticsCenter: React.FC = () => {
@@ -163,6 +583,21 @@ export const AnalyticsCenter: React.FC = () => {
   // MPP filtering toggle
   const [excludeMPP, setExcludeMPP] = useState(false);
 
+  // Live Sending top band
+  const [liveData, setLiveData] = useState<ActiveSendsData | null>(null);
+  const [expandedLiveCampaign, setExpandedLiveCampaign] = useState<string | null>(null);
+
+  // Bounce reasons panel
+  const [bounceReasons, setBounceReasons] = useState<BounceReasonsData | null>(null);
+  const [expandedBounceReason, setExpandedBounceReason] = useState<string | null>(null);
+
+  // Master List Migration P6: SDS audience health per sending domain.
+  // Source of truth for "who is mailable on which domain" now lives in
+  // mailing_subscriber_domain_state, not the 40+ legacy brand×ISP lists.
+  const [sdsHealth, setSdsHealth] = useState<SDSDomainRow[]>([]);
+  const [sdsTotal, setSdsTotal] = useState<number>(0);
+  const [sdsLoading, setSdsLoading] = useState<boolean>(false);
+
   // Deployment verification: track API versions from responses
   const [apiVersions, setApiVersions] = useState<Record<string, string>>({});
 
@@ -172,19 +607,22 @@ export const AnalyticsCenter: React.FC = () => {
       const { startDate, endDate } = computeDateRange(range);
       const mppParam = excludeMPP ? '&exclude_mpp=true' : '';
       const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=1${mppParam}`;
-      const [ovRes, campRes, ispRes] = await Promise.all([
+      const [ovRes, campRes, ispRes, bounceRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
         orgFetch(`/api/mailing/reports/campaigns${qp}`, orgId),
         orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId),
+        orgFetch(`/api/mailing/analytics/bounce-reasons${qp}`, orgId),
       ]);
-      const [ov, camp, ispPerf] = await Promise.all([
+      const [ov, camp, ispPerf, bounces] = await Promise.all([
         ovRes.json().catch(() => null),
         campRes.json().catch(() => null),
         ispRes.json().catch(() => null),
+        bounceRes.json().catch(() => null),
       ]);
       setOverview(ov);
       setCampaigns(camp);
       setIspCards(ispPerf?.isps || []);
+      setBounceReasons(bounces);
       setSelectedISP(null);
       setIspTrend([]);
       setApiVersions(prev => ({
@@ -192,6 +630,7 @@ export const AnalyticsCenter: React.FC = () => {
         overview: ov?.api_version || '?',
         campaigns: camp?.api_version || '?',
         isp_performance: ispPerf?.api_version || '?',
+        bounce_reasons: bounces?.api_version || '?',
       }));
     } catch (err) {
       console.error('Analytics load error:', err);
@@ -201,6 +640,24 @@ export const AnalyticsCenter: React.FC = () => {
   }, [range, orgId, excludeMPP]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // ─── Live Sending polling (20s) ──────────────────────────────────────────
+  const fetchLive = useCallback(async () => {
+    try {
+      const res = await orgFetch('/api/mailing/analytics/active-sends', orgId);
+      const data: ActiveSendsData = await res.json();
+      setLiveData(data);
+      setApiVersions(prev => ({ ...prev, active_sends: data?.api_version || '?' }));
+    } catch (err) {
+      console.error('Live sends load error:', err);
+    }
+  }, [orgId]);
+
+  useEffect(() => {
+    fetchLive();
+    const id = window.setInterval(fetchLive, 20_000);
+    return () => window.clearInterval(id);
+  }, [fetchLive]);
 
   useEffect(() => {
     if (!selectedISP) { setIspTrend([]); return; }
@@ -251,6 +708,26 @@ export const AnalyticsCenter: React.FC = () => {
     fetchInfrastructure(selectedDomain, drilldownType, selectedCampaign?.id);
   }, [fetchInfrastructure, selectedDomain, drilldownType, range, selectedCampaign?.id]);
 
+  // Master List Migration P6: load SDS audience health. This does not
+  // depend on the date-range selector because SDS is a point-in-time
+  // snapshot of current per-domain subscriber state, not a time-series.
+  const fetchSDSHealth = useCallback(async () => {
+    setSdsLoading(true);
+    try {
+      const res = await orgFetch('/api/mailing/analytics/sds-audience-health', orgId);
+      const data = await res.json();
+      setSdsHealth(Array.isArray(data?.by_domain) ? data.by_domain : []);
+      setSdsTotal(typeof data?.total_rows === 'number' ? data.total_rows : 0);
+      setApiVersions(prev => ({ ...prev, sds_audience_health: data?.api_version || '?' }));
+    } catch (err) {
+      console.error('SDS health load error:', err);
+    } finally {
+      setSdsLoading(false);
+    }
+  }, [orgId]);
+
+  useEffect(() => { fetchSDSHealth(); }, [fetchSDSHealth]);
+
   // Fetch chart-specific trend when domain filter changes
   useEffect(() => {
     if (!chartDomain) {
@@ -278,10 +755,66 @@ export const AnalyticsCenter: React.FC = () => {
   }, [overview, chartDomain]);
 
   // ─── Derived Values ────────────────────────────────────────────────────────
-  const totals = overview?.totals || { sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, revenue: 0 };
-  const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0, delivery_rate: 0 };
+  const totals = overview?.totals || { sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, revenue: 0, deferred: 0, unsubscribes: 0 };
+  const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0, delivery_rate: 0, deferral_rate: 0, unsubscribe_rate: 0 };
   const trend = overview?.daily_trend || [];
   const granularity = overview?.granularity || 'day';
+
+  // ─── Brand × Series rollup (client-side, derived from /reports/campaigns) ──
+  const brandSeriesRollup = useMemo(() => {
+    const rows = campaigns?.campaigns || [];
+    type Bucket = {
+      brand: string; series: string; campaigns: number;
+      sent: number; delivered: number; opens: number; clicks: number;
+      hard_bounces: number; soft_bounces: number; deferred: number; unsubscribes: number;
+      revenue: number;
+    };
+    const map = new Map<string, Bucket>();
+    for (const c of rows) {
+      const { brand, series } = classifyCampaign(c.name || '');
+      const key = `${brand}::${series}`;
+      let b = map.get(key);
+      if (!b) {
+        b = { brand, series, campaigns: 0, sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, deferred: 0, unsubscribes: 0, revenue: 0 };
+        map.set(key, b);
+      }
+      b.campaigns += 1;
+      b.sent += c.sent || 0;
+      b.delivered += c.delivered || 0;
+      b.opens += c.opens || 0;
+      b.clicks += c.clicks || 0;
+      b.hard_bounces += c.hard_bounces || 0;
+      b.soft_bounces += c.soft_bounces || 0;
+      b.deferred += c.deferred || 0;
+      b.unsubscribes += c.unsubscribes || 0;
+      b.revenue += c.revenue || 0;
+    }
+    const out = Array.from(map.values()).map(b => {
+      const base = b.delivered > 0 ? b.delivered : b.sent;
+      const openRate = base > 0 ? (b.opens / base) * 100 : 0;
+      const clickRate = base > 0 ? (b.clicks / base) * 100 : 0;
+      const hardRate = b.sent > 0 ? (b.hard_bounces / b.sent) * 100 : 0;
+      const softRate = b.sent > 0 ? (b.soft_bounces / b.sent) * 100 : 0;
+      const deferralRate = b.sent > 0 ? (b.deferred / b.sent) * 100 : 0;
+      const unsubRate = b.sent > 0 ? (b.unsubscribes / b.sent) * 100 : 0;
+      return { ...b, open_rate: openRate, click_rate: clickRate, hard_bounce_rate: hardRate, soft_bounce_rate: softRate, deferral_rate: deferralRate, unsubscribe_rate: unsubRate };
+    });
+    out.sort((a, b) => (b.sent || 0) - (a.sent || 0));
+    return out;
+  }, [campaigns]);
+
+  // Filter bounce reasons for the selected ISP detail pane.
+  const bounceReasonsForSelectedISP = useMemo(() => {
+    if (!selectedISP || !bounceReasons) return [];
+    return bounceReasons.reasons
+      .map(r => {
+        const hit = r.by_isp.find(b => b.isp === selectedISP);
+        return hit ? { ...r, isp_count: hit.count } : null;
+      })
+      .filter((x): x is BounceReasonRow & { isp_count: number } => !!x && x.isp_count > 0)
+      .sort((a, b) => b.isp_count - a.isp_count)
+      .slice(0, 6);
+  }, [selectedISP, bounceReasons]);
 
   return (
     <div className="ac-container ig-scan-line">
@@ -326,6 +859,14 @@ export const AnalyticsCenter: React.FC = () => {
         </div>
       ) : (
         <>
+          {/* ─── Live Sending Band ────────────────────────────────────── */}
+          <LiveSendingBand
+            data={liveData}
+            expanded={expandedLiveCampaign}
+            onToggle={(id) => setExpandedLiveCampaign(prev => prev === id ? null : id)}
+            onRefresh={fetchLive}
+          />
+
           {/* ─── KPI Hero Cards ─────────────────────────────────────────── */}
           <div className="ac-kpi-grid ig-stagger">
             <div className="ac-kpi sent ig-card-hover ig-shimmer">
@@ -381,6 +922,22 @@ export const AnalyticsCenter: React.FC = () => {
                 <span className="ac-kpi-value"><AnimatedCounter value={rates.complaint_rate} decimals={2} suffix="%" /></span>
                 <span className="ac-kpi-label">Complaint Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.complaints)} complaints</span>
+              </div>
+            </div>
+            <div className="ac-kpi deferred ig-card-hover ig-shimmer">
+              <div className="ac-kpi-icon"><FontAwesomeIcon icon={faClock} /></div>
+              <div className="ac-kpi-body">
+                <span className="ac-kpi-value" style={{ color: '#3b82f6' }}><AnimatedCounter value={rates.deferral_rate || 0} decimals={2} suffix="%" /></span>
+                <span className="ac-kpi-label">Deferral Rate</span>
+                <span className="ac-kpi-sub">{fmt(totals.deferred || 0)} deferred</span>
+              </div>
+            </div>
+            <div className="ac-kpi unsubs ig-card-hover ig-shimmer">
+              <div className="ac-kpi-icon"><FontAwesomeIcon icon={faUserSlash} /></div>
+              <div className="ac-kpi-body">
+                <span className="ac-kpi-value" style={{ color: '#a855f7' }}><AnimatedCounter value={rates.unsubscribe_rate || 0} decimals={2} suffix="%" /></span>
+                <span className="ac-kpi-label">Unsubscribe Rate</span>
+                <span className="ac-kpi-sub">{fmt(totals.unsubscribes || 0)} unsubscribes</span>
               </div>
             </div>
           </div>
@@ -448,6 +1005,31 @@ export const AnalyticsCenter: React.FC = () => {
                       </h4>
                       <button className="ac-isp-close" onClick={() => setSelectedISP(null)}>&times;</button>
                     </div>
+
+                    <ISPFunnelAndTiles
+                      card={ispCards.find(c => c.isp === selectedISP) || null}
+                    />
+
+                    {bounceReasonsForSelectedISP.length > 0 && (
+                      <div className="ac-isp-bounce-block">
+                        <h5 style={{ margin: '12px 0 8px', fontSize: '0.85em', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Top Bounce Reasons ({ISP_LABELS[selectedISP] || selectedISP})
+                        </h5>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {bounceReasonsForSelectedISP.map((r, i) => (
+                            <div key={`${r.label}-${i}`} className="ac-isp-bounce-row">
+                              <span className="ac-bounce-cat-pill" style={{ background: BOUNCE_CATEGORY_COLORS[r.category] || '#64748b' }}>
+                                {r.category}
+                              </span>
+                              <span className="ac-bounce-code">{r.code || '—'}</span>
+                              <span className="ac-bounce-label">{r.label}</span>
+                              <span className="ac-bounce-count">{fmt(r.isp_count)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {ispTrendLoading ? (
                       <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading trend…</div>
                     ) : ispTrend.length === 0 ? (
@@ -600,6 +1182,13 @@ export const AnalyticsCenter: React.FC = () => {
                 )}
               </div>
 
+              {/* Top Bounce Reasons panel */}
+              <BounceReasonsPanel
+                data={bounceReasons}
+                expandedCode={expandedBounceReason}
+                onToggle={(key) => setExpandedBounceReason(prev => prev === key ? null : key)}
+              />
+
               {/* Campaign Performance Table */}
               <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faTrophy} /> Campaign Performance</h3>
@@ -646,6 +1235,63 @@ export const AnalyticsCenter: React.FC = () => {
                                 View Infra
                               </button>
                             </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Brand × Series rollup */}
+              <BrandSeriesRollup rows={brandSeriesRollup} />
+
+              {/* ─── SDS Audience Health (Master List) ───────────────────────── */}
+              <div id="sds-audience-health-section" className="ac-card ig-card-hover">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
+                  <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <FontAwesomeIcon icon={faDatabase} /> Audience Health by Sending Domain
+                    <span style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400 }}>
+                      SDS · {fmt(sdsTotal)} total rows
+                    </span>
+                  </h3>
+                </div>
+                {sdsLoading ? (
+                  <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading SDS audience health...</div>
+                ) : sdsHealth.length === 0 ? (
+                  <div className="ac-empty-mini">No SDS rows yet. Backfill or wait for shadow writes to populate.</div>
+                ) : (
+                  <div className="ac-table-wrap">
+                    <table className="ac-table">
+                      <thead>
+                        <tr>
+                          <th>Sending Domain</th>
+                          <th>Total</th>
+                          <th>Cold</th>
+                          <th>Warming</th>
+                          <th>Engaged</th>
+                          <th>Dormant</th>
+                          <th>Unsub</th>
+                          <th>Hard B.</th>
+                          <th>Comp.</th>
+                          <th>Mailed 7d</th>
+                          <th>Opened 7d</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sdsHealth.map((r) => (
+                          <tr key={r.sending_domain}>
+                            <td style={{ fontWeight: 500 }}>{r.sending_domain}</td>
+                            <td>{fmt(r.total)}</td>
+                            <td style={{ color: '#94a3b8' }}>{fmt(r.cold)}</td>
+                            <td style={{ color: '#f59e0b' }}>{fmt(r.warming)}</td>
+                            <td style={{ color: '#10b981' }}>{fmt(r.engaged)}</td>
+                            <td style={{ color: '#6b7280' }}>{fmt(r.dormant)}</td>
+                            <td>{fmt(r.unsubscribed)}</td>
+                            <td style={{ color: r.hard_bounced > 0 ? '#ef4444' : '#475569' }}>{fmt(r.hard_bounced)}</td>
+                            <td style={{ color: r.complained > 0 ? '#ef4444' : '#475569' }}>{fmt(r.complained)}</td>
+                            <td>{fmt(r.recently_mailed_7d)}</td>
+                            <td style={{ color: '#60a5fa' }}>{fmt(r.recently_opened_7d)}</td>
                           </tr>
                         ))}
                       </tbody>

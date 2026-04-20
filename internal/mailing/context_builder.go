@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 // RenderContext is the data structure exposed to Liquid templates
@@ -122,6 +123,7 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, sub *Subscriber, cam
 	// Generate tracking URLs
 	if campaign != nil {
 		system["unsubscribe_url"] = cb.generateUnsubscribeURL(sub.ID, campaign.ID)
+		system["brand_unsubscribe_url"] = cb.generateBrandUnsubscribeURL(sub.ID, campaign.ID, campaign.FromEmail)
 		system["preferences_url"] = cb.generatePreferencesURL(sub.ID)
 		system["view_in_browser_url"] = cb.generateViewInBrowserURL(campaign.ID, sub.ID)
 	}
@@ -240,9 +242,10 @@ func (cb *ContextBuilder) BuildSampleContext() RenderContext {
 			"current_month":       now.Month().String(),
 			"current_day":         now.Day(),
 			"current_weekday":     now.Weekday().String(),
-			"unsubscribe_url":     cb.baseURL + "/track/unsubscribe/preview",
-			"preferences_url":     cb.baseURL + "/preferences?token=preview",
-			"view_in_browser_url": cb.baseURL + "/view?id=preview",
+			"unsubscribe_url":       cb.baseURL + "/track/unsubscribe/preview",
+			"brand_unsubscribe_url": cb.baseURL + "/track/unsubscribe/preview?scope=brand",
+			"preferences_url":       cb.baseURL + "/preferences?token=preview",
+			"view_in_browser_url":   cb.baseURL + "/view?id=preview",
 		},
 		"now":   now,
 		"today": now.Format("January 2, 2006"),
@@ -417,6 +420,17 @@ func (cb *ContextBuilder) generateUnsubscribeURL(subscriberID, campaignID uuid.U
 		cb.baseURL, subscriberID.String(), campaignID.String(), token)
 }
 
+// generateBrandUnsubscribeURL creates a brand-scoped preview unsubscribe
+// link for the context builder used by previews/test renders. Mirrors the
+// legacy preview URL shape — send-time brand URLs come from send_worker's
+// GenerateBrandUnsubscribeURL which emits a /track/unsubscribe/ token.
+func (cb *ContextBuilder) generateBrandUnsubscribeURL(subscriberID, campaignID uuid.UUID, fromEmail string) string {
+	br := brand.RootFromEmail(fromEmail)
+	token := generateToken(subscriberID.String(), campaignID.String(), br, cb.signingKey)
+	return fmt.Sprintf("%s/unsubscribe?sid=%s&cid=%s&brand=%s&token=%s",
+		cb.baseURL, subscriberID.String(), campaignID.String(), br, token)
+}
+
 // generatePreferencesURL creates a link to email preferences
 func (cb *ContextBuilder) generatePreferencesURL(subscriberID uuid.UUID) string {
 	token := generateToken(subscriberID.String(), "preferences", cb.signingKey)
@@ -478,7 +492,8 @@ func GetAvailableMergeTags() []MergeTagDefinition {
 		// System Tags
 		{Key: "system.current_date", Label: "Current Date", Category: "system", DataType: "string", Sample: "February 1, 2026", Syntax: "{{ system.current_date }}"},
 		{Key: "system.current_year", Label: "Current Year", Category: "system", DataType: "number", Sample: "2026", Syntax: "{{ system.current_year }}"},
-		{Key: "system.unsubscribe_url", Label: "Unsubscribe Link", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.unsubscribe_url }}"},
+		{Key: "system.unsubscribe_url", Label: "Unsubscribe Link (Global)", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.unsubscribe_url }}"},
+		{Key: "system.brand_unsubscribe_url", Label: "Unsubscribe Link (This Brand Only)", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.brand_unsubscribe_url }}"},
 		{Key: "system.preferences_url", Label: "Preferences Link", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.preferences_url }}"},
 
 		// Logic Examples

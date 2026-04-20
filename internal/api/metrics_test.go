@@ -154,11 +154,18 @@ func TestComputeMetrics_DateRange(t *testing.T) {
 	start := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 3, 13, 23, 59, 59, 0, time.UTC)
 
-	// Date-range with no org/domain/ISP filters -> single mailing_campaigns query
+	// Date-range with no org/domain/ISP filters -> mailing_campaigns aggregate
+	// followed by a supplemental pmta_acct_daily_summary aggregate for deferred.
 	mock.ExpectQuery(`mailing_campaigns`).
 		WithArgs(start, end).
-		WillReturnRows(sqlmock.NewRows([]string{"sent", "delivered", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints"}).
-			AddRow(250, 240, 60, 15, 3, 5, 1))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"sent", "delivered", "opens", "clicks",
+			"hard_bounces", "soft_bounces", "complaints", "unsubscribes",
+		}).AddRow(250, 240, 60, 15, 3, 5, 1, 2))
+
+	mock.ExpectQuery(`pmta_acct_daily_summary`).
+		WithArgs(start, end).
+		WillReturnRows(sqlmock.NewRows([]string{"deferred"}).AddRow(7))
 
 	m, err := ComputeMetrics(context.Background(), db, MetricsFilter{
 		StartDate: start,
@@ -169,6 +176,8 @@ func TestComputeMetrics_DateRange(t *testing.T) {
 	assert.Equal(t, 240, m.Delivered)
 	assert.Equal(t, 3, m.HardBounces)
 	assert.Equal(t, 5, m.SoftBounces)
+	assert.Equal(t, 2, m.Unsubscribes)
+	assert.Equal(t, 7, m.Deferred)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

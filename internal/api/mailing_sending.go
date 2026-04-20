@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
@@ -192,15 +193,14 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 
 	testCampaignID := uuid.New().String()
 	testSubID := uuid.New().String()
-	var unsubURL string
+	var unsubURL, brandUnsubURL string
 	if trackBase != "" && svc.signingKey != "" {
-		unsubData := fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", testCampaignID, testSubID)
-		h := hmac.New(sha256.New, []byte(svc.signingKey))
-		h.Write([]byte(unsubData))
-		sig := hex.EncodeToString(h.Sum(nil))[:16]
-		encoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-		unsubURL = fmt.Sprintf("%s/track/unsubscribe/%s/%s", trackBase, encoded, sig)
+		orgID := "00000000-0000-0000-0000-000000000001"
+		unsubURL = worker.GenerateUnsubscribeURL(orgID, testCampaignID, testSubID, trackBase, svc.signingKey)
+		br := brand.RootFromEmail(fromEmail)
+		brandUnsubURL = worker.GenerateBrandUnsubscribeURL(orgID, testCampaignID, testSubID, br, trackBase, svc.signingKey)
 		system["unsubscribe_url"] = unsubURL
+		system["brand_unsubscribe_url"] = brandUnsubURL
 		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, testSubID)
 	}
 
@@ -238,6 +238,12 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{system.unsubscribe_url}}", unsubURL)
 		input.TextContent = strings.ReplaceAll(input.TextContent, "{{ system.unsubscribe_url }}", unsubURL)
 		input.TextContent = strings.ReplaceAll(input.TextContent, "{{system.unsubscribe_url}}", unsubURL)
+	}
+	if brandUnsubURL != "" {
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		input.TextContent = strings.ReplaceAll(input.TextContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
 	}
 	if prefsURL, ok := system["preferences_url"].(string); ok && prefsURL != "" {
 		input.HTMLContent = strings.ReplaceAll(input.HTMLContent, "{{ system.preferences_url }}", prefsURL)
@@ -300,7 +306,14 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			unsubData := fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", testCampaignID, testSubID)
 			unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
 			mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
-			pmtaExtraHeaders["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, unsubURL)
+			// HTTPS leg uses the brand-scoped URL so ISP one-click POSTs land
+			// on the brand suppression path (consistent with send_worker). The
+			// mailto leg stays 3-part global — there is no inbound handler.
+			httpsLeg := unsubURL
+			if brandUnsubURL != "" {
+				httpsLeg = brandUnsubURL
+			}
+			pmtaExtraHeaders["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, httpsLeg)
 			pmtaExtraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 		}
 
@@ -480,12 +493,10 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 
 	// Unsubscribe + preferences URLs
 	if trackBase != "" && svc.signingKey != "" {
-		unsubData := fmt.Sprintf("%s|%s|%s", orgID, txnID, subID)
-		h := hmac.New(sha256.New, []byte(svc.signingKey))
-		h.Write([]byte(unsubData))
-		sig := hex.EncodeToString(h.Sum(nil))[:16]
-		encoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-		system["unsubscribe_url"] = fmt.Sprintf("%s/track/unsubscribe/%s/%s", trackBase, encoded, sig)
+		orgIDStr := orgID.String()
+		system["unsubscribe_url"] = worker.GenerateUnsubscribeURL(orgIDStr, txnID, subID, trackBase, svc.signingKey)
+		br := brand.RootFromEmail(input.FromEmail)
+		system["brand_unsubscribe_url"] = worker.GenerateBrandUnsubscribeURL(orgIDStr, txnID, subID, br, trackBase, svc.signingKey)
 		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, subID)
 	}
 	rc["system"] = system
@@ -506,6 +517,10 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	if unsub, ok := system["unsubscribe_url"].(string); ok && unsub != "" {
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.unsubscribe_url }}", unsub)
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.unsubscribe_url}}", unsub)
+	}
+	if bunsub, ok := system["brand_unsubscribe_url"].(string); ok && bunsub != "" {
+		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.brand_unsubscribe_url }}", bunsub)
+		htmlContent = strings.ReplaceAll(htmlContent, "{{system.brand_unsubscribe_url}}", bunsub)
 	}
 	if prefs, ok := system["preferences_url"].(string); ok && prefs != "" {
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.preferences_url }}", prefs)
@@ -1102,20 +1117,30 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	}
 	campUUID, _ := uuid.Parse(campaignID)
 
+	// Derive the campaign's brand root once. mailing_domain_suppressions
+	// now stores brand-scoped (NOT recipient-domain-scoped) entries; the
+	// legacy recipient-domain concept has been deprecated in favor of the
+	// unified in-memory hub, which checks both global + brand under a
+	// single read lock per candidate.
+	var campFromEmail string
+	svc.db.QueryRowContext(ctx,
+		`SELECT COALESCE(from_email,'') FROM mailing_campaigns WHERE id = $1`, campUUID).Scan(&campFromEmail)
+	sendBrandRoot := brand.RootFromEmail(campFromEmail)
+
 	for rows.Next() {
 		var subscriberID uuid.UUID
 		var email string
 		rows.Scan(&subscriberID, &email)
 
-		// Check legacy suppression (email + domain)
+		// Check legacy email-list suppression (kept for backward compat
+		// with the old mailing_suppressions table — deprecated but not
+		// yet removed because some historical seed scripts still target
+		// it directly). Domain-based legacy check removed; brand scope
+		// is now handled uniformly via globalHub below.
 		var isSuppressed bool
-		svc.db.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM mailing_suppressions WHERE LOWER(email) = LOWER($1) AND active = true
-				UNION ALL
-				SELECT 1 FROM mailing_domain_suppressions WHERE domain = SPLIT_PART(LOWER($1), '@', 2) AND active = true
-			)
-		`, email).Scan(&isSuppressed)
+		svc.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM mailing_suppressions WHERE LOWER(email) = LOWER($1) AND active = true)`,
+			email).Scan(&isSuppressed)
 		if isSuppressed {
 			suppressed++
 			svc.db.ExecContext(ctx, `
@@ -1125,8 +1150,9 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			continue
 		}
 
-		// Check global suppression hub (single source of truth — in-memory O(1))
-		if svc.globalHub != nil && svc.globalHub.IsSuppressed(email) {
+		// Global + brand-scoped suppression check — single source of
+		// truth, O(1) in-memory, covers both axes under one read lock.
+		if svc.globalHub != nil && svc.globalHub.IsSuppressedForBrand(email, sendBrandRoot) {
 			suppressed++
 			svc.db.ExecContext(ctx, `
 				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_time)
@@ -1150,13 +1176,24 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		result, err := svc.sendViaSparkPost(ctx, email, fromEmail, fromName, subject, trackedHTML, "")
 		if err == nil && result["success"] == true {
 			sent++
-			
+
 			// Record sent event
 			svc.db.ExecContext(ctx, `
 				INSERT INTO mailing_tracking_events (id, campaign_id, subscriber_id, email, event_type, event_time, metadata)
 				VALUES ($1, $2, $3, $4, 'sent', NOW(), $5)
 			`, emailID, campUUID, subscriberID, email, fmt.Sprintf(`{"message_id": "%v"}`, result["message_id"]))
-			
+
+			// Master List Migration P2 — shadow write to subscriber_domain_state.
+			mailing.UpsertSDSSend(ctx, svc.db, subscriberID, mailing.NormalizeSendingDomain(
+				func() string {
+					at := strings.LastIndex(fromEmail, "@")
+					if at < 0 {
+						return ""
+					}
+					return fromEmail[at+1:]
+				}(),
+			))
+
 			// Update inbox profile
 			svc.db.ExecContext(ctx, `
 				UPDATE mailing_inbox_profiles SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW()
@@ -1184,16 +1221,22 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// buildSegmentQuery builds a SQL query from segment conditions
+// buildSegmentQuery builds a SQL query from segment conditions.
+//
+// Master List Migration P7: segments are now first-class citizens over the
+// entire master list. A segment's list_id is treated as an OPTIONAL scope
+// hint — if present we still honour it for backward compatibility, but
+// master-list segments (list_id IS NULL) resolve to a query over every
+// subscriber in the org with a baseline suppression filter applied. This
+// matches how the package-level buildSegmentQuery in handlers_pmta_campaign.go
+// behaves during materialization; keeping both paths aligned prevents drift
+// between the materialized set and live queries.
 func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID string) (string, []interface{}) {
-	// Get segment's list_id
 	var listID string
-	err := svc.db.QueryRowContext(ctx, `SELECT COALESCE(list_id::text, '') FROM mailing_segments WHERE id = $1`, segmentID).Scan(&listID)
-	if err != nil || listID == "" {
+	if err := svc.db.QueryRowContext(ctx, `SELECT COALESCE(list_id::text, '') FROM mailing_segments WHERE id = $1`, segmentID).Scan(&listID); err != nil {
 		return "", nil
 	}
-	
-	// Get conditions
+
 	rows, err := svc.db.QueryContext(ctx, `
 		SELECT field, operator, value FROM mailing_segment_conditions WHERE segment_id = $1 ORDER BY condition_group, id
 	`, segmentID)
@@ -1201,15 +1244,59 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 		return "", nil
 	}
 	defer rows.Close()
-	
-	query := `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed'`
-	args := []interface{}{listID}
-	argNum := 2
+
+	var query string
+	var args []interface{}
+	argNum := 1
+	if listID != "" {
+		query = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed'`
+		args = append(args, listID)
+		argNum = 2
+	} else {
+		// Master-list segment: filter global suppressions up front so every
+		// downstream AND clause narrows from a mailable starting set.
+		query = `SELECT id, email FROM mailing_subscribers
+		         WHERE status IN ('active','confirmed')
+		           AND hard_bounced_at IS NULL
+		           AND complained_at IS NULL`
+	}
 	
 	for rows.Next() {
 		var field, operator, value string
 		rows.Scan(&field, &operator, &value)
-		
+
+		// SDS-scoped atoms (Master List Migration P6):
+		//   sending_domain: domain-level match on mailing_subscriber_domain_state
+		//   warmup_status:  'cold' | 'warming' | 'engaged' | 'dormant'
+		// Expressed as EXISTS subqueries so multiple SDS atoms compose
+		// naturally without forcing a specific JOIN order.
+		if field == "sending_domain" {
+			op := "="
+			if operator == "not_equals" {
+				op = "<>"
+			}
+			query += fmt.Sprintf(
+				" AND EXISTS (SELECT 1 FROM mailing_subscriber_domain_state sds "+
+					"WHERE sds.subscriber_id = mailing_subscribers.id "+
+					"AND LOWER(sds.sending_domain) %s LOWER($%d))", op, argNum)
+			args = append(args, value)
+			argNum++
+			continue
+		}
+		if field == "warmup_status" {
+			op := "="
+			if operator == "not_equals" {
+				op = "<>"
+			}
+			query += fmt.Sprintf(
+				" AND EXISTS (SELECT 1 FROM mailing_subscriber_domain_state sds "+
+					"WHERE sds.subscriber_id = mailing_subscribers.id "+
+					"AND sds.warmup_status %s $%d)", op, argNum)
+			args = append(args, value)
+			argNum++
+			continue
+		}
+
 		switch operator {
 		case "equals":
 			query += fmt.Sprintf(" AND %s = $%d", field, argNum)

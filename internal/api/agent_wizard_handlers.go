@@ -421,7 +421,9 @@ func (awh *AgentWizardHandlers) HandleAIAudienceSelection(w http.ResponseWriter,
 	listRows, listErr := awh.db.QueryContext(ctx,
 		`SELECT l.id, l.name, COALESCE(l.subscriber_count, 0),
 			(SELECT COUNT(*) FROM mailing_subscribers s WHERE s.list_id = l.id AND s.status = 'confirmed')
-		 FROM mailing_lists l WHERE l.status = 'active' ORDER BY l.name`)
+		 FROM mailing_lists l
+		 WHERE l.status = 'active' AND COALESCE(l.is_visible, true) = true
+		 ORDER BY l.name`)
 	if listErr == nil {
 		defer listRows.Close()
 		for listRows.Next() {

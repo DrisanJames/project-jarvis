@@ -1024,6 +1024,8 @@ func resolveTestMergeTags(html, subject, previewText, testEmail, firstName strin
 		`{{email}}`, testEmail,
 		`{{ system.unsubscribe_url }}`, "#unsubscribe",
 		`{{system.unsubscribe_url}}`, "#unsubscribe",
+		`{{ system.brand_unsubscribe_url }}`, "#unsubscribe-brand",
+		`{{system.brand_unsubscribe_url}}`, "#unsubscribe-brand",
 		`{{ system.preferences_url }}`, "#preferences",
 		`{{system.preferences_url}}`, "#preferences",
 	)

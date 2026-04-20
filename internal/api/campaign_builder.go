@@ -33,8 +33,18 @@ type CampaignBuilder struct {
 
 // GlobalSuppressionChecker is the interface the send pipeline uses to check
 // the single source of truth before sending. Implemented by engine.GlobalSuppressionHub.
+//
+// IsSuppressedForBrand checks both the global set AND the brand set for the
+// given brand root under a single read lock. Pass brandRoot="" to fall back
+// to a pure global check (identical to IsSuppressed).
+//
+// SuppressScoped writes a brand-scoped suppression: the subscriber stays
+// mailable for other brand roots. Cache + DB are updated atomically.
 type GlobalSuppressionChecker interface {
 	IsSuppressed(email string) bool
+	IsSuppressedForBrand(email, brandRoot string) bool
+	Suppress(ctx context.Context, email, reason, source, isp, dsnCode, dsnDiag, sourceIP, campaign string) (bool, error)
+	SuppressScoped(ctx context.Context, email, brandRoot, reason, source, isp, sourceIP, campaign string) error
 }
 
 // NewCampaignBuilder creates a new campaign builder

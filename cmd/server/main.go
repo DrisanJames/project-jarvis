@@ -454,6 +454,21 @@ func main() {
 					log.Println("Offer suppression Bloom filter wired to send worker pool")
 				}
 
+				// Cross-brand daily cap enforcer (P5a). Redis fast path +
+				// Postgres fallback. Default cap=2; org settings override.
+				// Disable entirely with DISABLE_CROSS_BRAND_CAP=true.
+				if os.Getenv("DISABLE_CROSS_BRAND_CAP") != "true" {
+					capChecker := mailing.NewCapChecker(mailingDB, redisClient, 2)
+					sendWorkerPool.SetCapChecker(capChecker)
+					if redisClient != nil {
+						log.Println("Cross-brand daily cap wired to send worker pool (Redis fast path + PG fallback)")
+					} else {
+						log.Println("Cross-brand daily cap wired to send worker pool (PG-only, not race-safe under high concurrency)")
+					}
+				} else {
+					log.Println("Cross-brand daily cap DISABLED via DISABLE_CROSS_BRAND_CAP env var")
+				}
+
 				sendWorkerPool.Start()
 
 				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
@@ -465,6 +480,14 @@ func main() {
 				dataCleanup := worker.NewDataCleanupWorker(mailingDB)
 				go dataCleanup.Start(ctx)
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
+
+				// Start Warmup Graduation Worker (P5b): nightly sweep that
+				// promotes warming→engaged and demotes engaged→dormant on
+				// the SDS table. First pass runs 2m after boot, then every
+				// 24h aligned to 02:00 UTC.
+				warmupGraduator := mailing.NewWarmupGraduator(mailingDB)
+				warmupGraduator.Start(ctx)
+				log.Println("Warmup Graduation Worker started (nightly sweep on mailing_subscriber_domain_state)")
 
 				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
 				// Reads heavy COUNT queries from readDB (replica when configured, primary otherwise).
@@ -1475,6 +1498,27 @@ func runStartupMigrations(db *sql.DB) {
 			CONSTRAINT mailing_suppressions_email_key UNIQUE (email)
 		)`},
 		{"create_suppressions_index", `CREATE INDEX IF NOT EXISTS idx_suppressions_active_email ON mailing_suppressions(email) WHERE active = true`},
+		// Brand-scoped suppression — subscribers who unsubscribe from the TOP
+		// link of a brand's email (e.g. *.discountblog.com) stay mailable for
+		// other brands. Keyed by (org, email_hash, brand_root) with the same
+		// MD5 convention as mailing_global_suppressions for hub parity.
+		{"create_domain_suppressions_table", `CREATE TABLE IF NOT EXISTS mailing_domain_suppressions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			email_hash VARCHAR(64) NOT NULL,
+			brand_root VARCHAR(253) NOT NULL,
+			reason VARCHAR(50) NOT NULL,
+			source VARCHAR(50),
+			isp VARCHAR(50),
+			source_ip INET,
+			campaign_id UUID,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW(),
+			CONSTRAINT mailing_domain_suppressions_unique UNIQUE (organization_id, email_hash, brand_root)
+		)`},
+		{"create_domain_suppressions_lookup_idx", `CREATE INDEX IF NOT EXISTS idx_domsupp_lookup ON mailing_domain_suppressions (brand_root, email_hash)`},
+		{"create_domain_suppressions_org_idx", `CREATE INDEX IF NOT EXISTS idx_domsupp_org ON mailing_domain_suppressions (organization_id, created_at DESC)`},
 		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
 			WHERE status = 'sending'
 			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
@@ -3479,6 +3523,260 @@ END $$`},
 			SET status = 'inactive', updated_at = NOW()
 			WHERE sending_domain IN ('m.historythinking.com', 'm.quizfiesta.com', 'm.myownhealth.net')
 			  AND status = 'active'`},
+
+		// ---------------------------------------------------------------------
+		// Phase 21: Master List Migration — additive schema (P1)
+		//
+		// Moves audience selection off the 40+ brand×ISP list duplication model
+		// and onto a single master subscriber pool with per-domain operational
+		// state. This block is ADDITIVE ONLY — no writes, no reads, no behavior
+		// change until P2/P3. Reversible by dropping the new table + columns.
+		//
+		// Design (agreed, not speculative):
+		//   - One row per unique email in mailing_subscribers (dedupe in P4).
+		//   - Per-domain state in mailing_subscriber_domain_state keyed on
+		//     (subscriber_id, sending_domain).
+		//   - Hard bounce + complaint stay global on mailing_subscribers.
+		//   - Unsubscribe is domain-scoped (lives in the SDS side table).
+		//   - brand_affinity TEXT[] and engagement_score are reporting-only,
+		//     never selection drivers. Selection always joins SDS.
+		//   - cross_brand_daily_cap is configurable per org; initial default 2.
+		// ---------------------------------------------------------------------
+		{"phase21_add_brand_affinity", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS brand_affinity TEXT[] DEFAULT '{}'`},
+		{"phase21_add_hard_bounced_at", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS hard_bounced_at TIMESTAMPTZ`},
+		{"phase21_add_complained_at", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS complained_at TIMESTAMPTZ`},
+		{"phase21_create_subscriber_domain_state", `CREATE TABLE IF NOT EXISTS mailing_subscriber_domain_state (
+			subscriber_id UUID NOT NULL REFERENCES mailing_subscribers(id) ON DELETE CASCADE,
+			sending_domain TEXT NOT NULL,
+			last_mailed_at TIMESTAMPTZ,
+			total_sent BIGINT NOT NULL DEFAULT 0,
+			total_opens BIGINT NOT NULL DEFAULT 0,
+			total_clicks BIGINT NOT NULL DEFAULT 0,
+			last_open_at TIMESTAMPTZ,
+			last_click_at TIMESTAMPTZ,
+			score_local NUMERIC(5,4) NOT NULL DEFAULT 0,
+			warmup_status TEXT NOT NULL DEFAULT 'cold',
+			warmup_status_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			unsubscribed_at TIMESTAMPTZ,
+			hard_bounced_at TIMESTAMPTZ,
+			complained_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (subscriber_id, sending_domain),
+			CONSTRAINT mailing_sds_warmup_chk CHECK (warmup_status IN ('cold','warming','engaged','dormant'))
+		)`},
+		{"phase21_sds_idx_domain_last_mailed", `CREATE INDEX IF NOT EXISTS idx_sds_domain_last_mailed ON mailing_subscriber_domain_state (sending_domain, last_mailed_at)`},
+		{"phase21_sds_idx_domain_warmup", `CREATE INDEX IF NOT EXISTS idx_sds_domain_warmup ON mailing_subscriber_domain_state (sending_domain, warmup_status)`},
+		{"phase21_sds_idx_domain_score", `CREATE INDEX IF NOT EXISTS idx_sds_domain_score ON mailing_subscriber_domain_state (sending_domain, score_local)`},
+		{"phase21_sds_idx_domain_last_open", `CREATE INDEX IF NOT EXISTS idx_sds_domain_last_open ON mailing_subscriber_domain_state (sending_domain, last_open_at)`},
+		{"phase21_sds_idx_mailable", `CREATE INDEX IF NOT EXISTS idx_sds_mailable ON mailing_subscriber_domain_state (subscriber_id) WHERE unsubscribed_at IS NULL AND hard_bounced_at IS NULL`},
+		{"phase21_sds_idx_subscriber", `CREATE INDEX IF NOT EXISTS idx_sds_subscriber ON mailing_subscriber_domain_state (subscriber_id)`},
+		// Campaign pilot flag. False = legacy list_ids path; true = master-selection path.
+		{"phase21_add_use_master_selection", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS use_master_selection BOOLEAN NOT NULL DEFAULT false`},
+		// P5c: flip the default to true for all future campaigns. Legacy
+		// branches in pmta_campaign_planner.go and campaign_builder_send_async.go
+		// stay in place for one release as a kill switch. After the release
+		// that ships this migration we expect zero campaigns to run with the
+		// flag off; the follow-up deploy deletes the legacy code.
+		{"phase21_default_use_master_selection_true", `ALTER TABLE mailing_campaigns ALTER COLUMN use_master_selection SET DEFAULT true`},
+		// P6: hide the 40+ brand×ISP lists from the UI. They are no longer
+		// the selection driver — SDS is. Lists remain in the DB for
+		// historical queries and as ingestion targets, but the campaign
+		// builder should default to segments going forward.
+		// Name pattern: '<Brand> - <ISP>' where ISP is one of the nine
+		// classifiers this workspace uses. Safe: no non-brand×ISP list
+		// ever matches this regex.
+		{"phase21_hide_brand_isp_lists", `
+			UPDATE mailing_lists
+			SET is_visible = false
+			WHERE name ~ '^.+ - (AOL|ATT|Apple|Charter|Comcast|Cox|Microsoft|Other|SBCGlobal|Yahoo|Gmail)$'
+			  AND is_visible = true`},
+		// Org-level settings JSONB. Seeded with cross_brand_daily_cap=2 per the
+		// agreed initial cap. Ceiling at scale is 4/sub/day; ramp is an ops
+		// decision, not a code deploy.
+		{"phase21_add_org_settings", `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'`},
+		{"phase21_seed_cross_brand_cap", `UPDATE organizations
+			SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{cross_brand_daily_cap}', '2'::jsonb, true)
+			WHERE settings->>'cross_brand_daily_cap' IS NULL`},
+		// ---------------------------------------------------------------------
+		// Master List Migration P7 — subscriber provenance metadata.
+		//
+		// The legacy schema only carries two provenance hints on
+		// mailing_subscribers:
+		//   - source VARCHAR(50)   — often "acquisition_<date>" or empty
+		//   - data_source          — added ad-hoc by import scripts
+		//
+		// Neither scales: they can't distinguish two imports from the same
+		// partner on the same day, they can't carry UTM / referrer / file-
+		// name context, and they can't be queried structurally (source is
+		// pure freetext).
+		//
+		// This migration adds structured provenance that every future
+		// ingest path MUST populate:
+		//   source_system   — canonical bucket:
+		//                     'acquisition_import' | 'web_signup' |
+		//                     'api' | 'automation' | 'manual'
+		//   source_detail   — human-readable provenance string
+		//                     (e.g. "acquisition_04102026",
+		//                      "quiz_fiesta_signup:/landing/history",
+		//                      "everflow_api:offer=42")
+		//   source_metadata — arbitrary JSONB (filename, row offset,
+		//                     UTM params, referrer URL, partner batch id)
+		//   imported_at     — when record was added to master list
+		//                     (distinct from subscribed_at, which is when
+		//                      the subscriber confirmed or opted in)
+		//   imported_from_list_id — the list they came in through. Useful
+		//                     for audit after the dedupe step since a row
+		//                     may be re-pointed to a canonical list_id.
+		//
+		// Backfill rules:
+		//   - source_system defaults to 'legacy_import' for existing rows
+		//     that have any value in source or data_source, else
+		//     'unknown'.
+		//   - source_detail is populated from source for existing rows.
+		//   - imported_at is set to created_at.
+		//   - imported_from_list_id is set to list_id.
+		// ---------------------------------------------------------------------
+		{"phase21_add_source_system", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS source_system VARCHAR(50)`},
+		{"phase21_add_source_detail", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS source_detail VARCHAR(200)`},
+		{"phase21_add_source_metadata", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb`},
+		{"phase21_add_imported_at", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS imported_at TIMESTAMPTZ`},
+		{"phase21_add_imported_from_list_id", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS imported_from_list_id UUID`},
+		{"phase21_idx_source_system", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_system ON mailing_subscribers (source_system) WHERE source_system IS NOT NULL`},
+		{"phase21_idx_source_detail", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_detail ON mailing_subscribers (source_detail) WHERE source_detail IS NOT NULL`},
+		{"phase21_idx_imported_at", `CREATE INDEX IF NOT EXISTS idx_subscribers_imported_at ON mailing_subscribers (imported_at DESC) WHERE imported_at IS NOT NULL`},
+		{"phase21_idx_source_metadata_gin", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_metadata_gin ON mailing_subscribers USING gin (source_metadata)`},
+		// Backfill only rows that haven't been stamped yet. Capped by NOT EXISTS
+		// so the UPDATE is idempotent across server restarts.
+		{"phase21_backfill_source_system", `
+			UPDATE mailing_subscribers
+			SET source_system = CASE
+			  WHEN source IS NOT NULL AND source <> '' THEN 'legacy_import'
+			  ELSE 'unknown'
+			END
+			WHERE source_system IS NULL`},
+		{"phase21_backfill_source_detail", `
+			UPDATE mailing_subscribers
+			SET source_detail = LEFT(source, 200)
+			WHERE source_detail IS NULL AND source IS NOT NULL AND source <> ''`},
+		{"phase21_backfill_imported_at", `
+			UPDATE mailing_subscribers
+			SET imported_at = COALESCE(subscribed_at, created_at)
+			WHERE imported_at IS NULL`},
+		{"phase21_backfill_imported_from_list_id", `
+			UPDATE mailing_subscribers
+			SET imported_from_list_id = list_id
+			WHERE imported_from_list_id IS NULL AND list_id IS NOT NULL`},
+		// ---------------------------------------------------------------------
+		// Master List Migration P8 — canonical segments.
+		//
+		// Seeds three first-class, user-visible segments per organization
+		// so the UI has named handles that express how the master-list
+		// architecture is intended to be used:
+		//
+		//   1. Master List — every eligible subscriber (confirmed, not
+		//      hard-bounced, not complained, not suppressed). This is the
+		//      literal answer to "all subscribers should be associated to
+		//      this list" — one named segment that spans the entire
+		//      mailable pool regardless of which legacy brand×ISP list
+		//      the row was originally imported through.
+		//
+		//   2. Engaged Openers (30d) — last_open_at within 30 days. Pre-
+		//      built so operators don't have to reconstruct it every time.
+		//
+		//   3. Engaged Clickers (30d) — last_click_at within 30 days.
+		//
+		// Implementation notes:
+		//   - These are dynamic V2 segments with conditions expressed as
+		//     ConditionGroupBuilder JSON. The empty-conditions group on
+		//     "Master List" is intentional: buildSegmentQuery's V2 branch
+		//     falls through to the baseline WHERE clause (status +
+		//     suppressions), which is exactly the master-mailable pool.
+		//   - list_id = NULL so segments span the full subscriber table
+		//     rather than a single legacy brand×ISP list.
+		//   - Seed is idempotent via WHERE NOT EXISTS on (name, org_id).
+		//   - Initial member rows are populated on boot by
+		//     SegmentMaterializer.MaterializeCanonicalSegments, then
+		//     refreshed nightly alongside every other dynamic segment.
+		//   - When use_master_selection=true (campaign default), the
+		//     planner sources candidates directly from SDS and honours
+		//     MinRemailHours to exclude recently-mailed subscribers.
+		//     These segments are the surface the UI/operators use to
+		//     pick a cohort; the unmailed guarantee comes from SDS.
+		// ---------------------------------------------------------------------
+		{"seed_master_list_segment_row", `
+			INSERT INTO mailing_segments (
+				id, organization_id, list_id, name, description, segment_type, conditions,
+				status, subscriber_count, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), id, NULL,
+				'Master List',
+				'All eligible subscribers across every source: confirmed status, not hard-bounced, not complained, not suppressed. Use this as the default audience when you want the widest reachable pool; per-domain remail gaps and ISP quotas still apply via master-selection.',
+				'dynamic',
+				'{"logic_operator":"AND","conditions":[]}'::jsonb,
+				'active', 0, NOW(), NOW()
+			FROM organizations
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segments
+				WHERE name = 'Master List' AND organization_id = organizations.id
+			)
+		`},
+		{"seed_engaged_openers_segment_row", `
+			INSERT INTO mailing_segments (
+				id, organization_id, list_id, name, description, segment_type, conditions,
+				status, subscriber_count, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), id, NULL,
+				'Engaged Openers (30d)',
+				'Subscribers whose most recent open was within the last 30 days. High-signal cohort for re-engagement sends and deliverability warmup.',
+				'dynamic',
+				'{"logic_operator":"AND","conditions":[{"condition_type":"profile","field":"last_open_at","field_type":"datetime","operator":"in_last_days","value":"30"}]}'::jsonb,
+				'active', 0, NOW(), NOW()
+			FROM organizations
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segments
+				WHERE name = 'Engaged Openers (30d)' AND organization_id = organizations.id
+			)
+		`},
+		{"seed_engaged_clickers_segment_row", `
+			INSERT INTO mailing_segments (
+				id, organization_id, list_id, name, description, segment_type, conditions,
+				status, subscriber_count, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), id, NULL,
+				'Engaged Clickers (30d)',
+				'Subscribers whose most recent click was within the last 30 days. The tightest deliverability cohort — use for warmup and reputation recovery.',
+				'dynamic',
+				'{"logic_operator":"AND","conditions":[{"condition_type":"profile","field":"last_click_at","field_type":"datetime","operator":"in_last_days","value":"30"}]}'::jsonb,
+				'active', 0, NOW(), NOW()
+			FROM organizations
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segments
+				WHERE name = 'Engaged Clickers (30d)' AND organization_id = organizations.id
+			)
+		`},
+		// ---------------------------------------------------------------------
+		// Apr 20 2026 campaign flight — raise cross_brand_daily_cap from 2 to 3.
+		//
+		// The three-engager-per-day schedule (north-star-loans 3:01 AM,
+		// totalhomeauto 11:01 AM, the-capital-wallet 2:01 PM MDT) requires
+		// each subscriber in a brand's 30D opener/clicker segment to be
+		// able to receive 3 mails from that brand in one day. The original
+		// phase21 seed defaulted to 2, which would cause CapChecker.Reserve
+		// to deny the third send with 'cross_brand_cap_exceeded'.
+		//
+		// Idempotent on value: only raises caps that are currently below 3.
+		// If an operator manually sets a higher cap (6, 12) this migration
+		// is a no-op and will not stomp the larger value. Safe to re-run on
+		// every boot.
+		//
+		// Ceiling design note: at scale the agreed ceiling is 4/sub/day. 3
+		// sits inside that envelope and reserves one slot for cross-brand
+		// overlap on subscribers present in multiple brand segments.
+		// ---------------------------------------------------------------------
+		{"apr20_bump_cross_brand_cap_to_3", `UPDATE organizations
+			SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{cross_brand_daily_cap}', '3'::jsonb, true)
+			WHERE COALESCE((settings->>'cross_brand_daily_cap')::int, 0) < 3`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

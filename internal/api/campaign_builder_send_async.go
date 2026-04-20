@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -186,13 +187,16 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 	// Get campaign details
 	var subject, htmlContent, plainContent, throttleSpeed string
 	var maxRecipients sql.NullInt64
-	
+	var fromEmail sql.NullString
+	var useMasterSelection bool
+
 	err := cb.db.QueryRowContext(ctx, `
 		SELECT subject, COALESCE(html_content, ''), COALESCE(plain_content, ''),
-			   COALESCE(throttle_speed, 'gentle'), max_recipients
+			   COALESCE(throttle_speed, 'gentle'), max_recipients,
+			   COALESCE(from_email, ''), COALESCE(use_master_selection, false)
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&subject, &htmlContent, &plainContent, &throttleSpeed, &maxRecipients)
-	
+	`, campaignID).Scan(&subject, &htmlContent, &plainContent, &throttleSpeed, &maxRecipients, &fromEmail, &useMasterSelection)
+
 	if err != nil {
 		log.Printf("[EnqueueAsync] Failed to get campaign %s: %v", campaignID, err)
 		cb.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed' WHERE id = $1`, campaignID)
@@ -216,7 +220,48 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 	var query string
 	var args []interface{}
 
-	if segmentID.Valid && segmentID.String != "" {
+	// Master List Migration P5c — when use_master_selection=true, source
+	// candidates from mailing_subscriber_domain_state joined to
+	// mailing_subscribers, scoped to this campaign's sending domain
+	// (derived from from_email). Applies the same suppression + warmup
+	// rules as the PMTA planner so behavior is consistent regardless of
+	// the ESP path the campaign happens to flow through.
+	//
+	// KILL SWITCH: if the flag is explicitly false the legacy list_id /
+	// segment_id branches below still run. Kept for one release; delete
+	// after the follow-up deploy along with pmta_campaign_planner.go's
+	// matching branch.
+	sendingDomain := ""
+	if fromEmail.Valid {
+		if at := strings.LastIndex(fromEmail.String, "@"); at >= 0 && at < len(fromEmail.String)-1 {
+			sendingDomain = strings.ToLower(fromEmail.String[at+1:])
+		}
+	}
+	if useMasterSelection && sendingDomain != "" {
+		query = `
+			SELECT sub.id, sub.email
+			FROM mailing_subscribers sub
+			JOIN mailing_subscriber_domain_state sds
+			  ON sds.subscriber_id = sub.id
+			 AND sds.sending_domain = $1
+			WHERE sub.hard_bounced_at IS NULL
+			  AND sub.complained_at IS NULL
+			  AND sds.unsubscribed_at IS NULL
+			  AND sds.hard_bounced_at IS NULL
+			  AND sds.complained_at IS NULL
+			  AND sds.warmup_status <> 'dormant'
+			  AND (
+			        sds.warmup_status = 'cold'
+			     OR (sds.warmup_status = 'warming'
+			         AND sds.last_open_at IS NOT NULL
+			         AND sds.last_open_at > NOW() - INTERVAL '90 days')
+			     OR (sds.warmup_status = 'engaged'
+			         AND sds.score_local >= 0.05)
+			  )
+			ORDER BY sds.score_local DESC NULLS LAST, sds.last_open_at DESC NULLS LAST
+		`
+		args = []interface{}{sendingDomain}
+	} else if segmentID.Valid && segmentID.String != "" {
 		query, args = cb.mailingSvc.buildSegmentQuery(ctx, segmentID.String)
 		if query == "" {
 			log.Printf("[EnqueueAsync] Failed to build segment query for campaign %s", campaignID)

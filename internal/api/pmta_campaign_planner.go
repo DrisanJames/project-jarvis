@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 const (
@@ -458,7 +459,12 @@ func planPMTAAudience(
 	}
 	log.Printf("[PlanAudience] offer suppressions loaded in %v", time.Since(planStart))
 
-	log.Printf("[PlanAudience] using GlobalSuppressionHub (in-memory, hub=%v) at %v", globalHub != nil, time.Since(planStart))
+	// Derive brand root once for this campaign — the planner iterates over
+	// millions of candidates in qualifyEmail, so computing this per-email
+	// would burn CPU on a constant value. Empty brand root collapses brand
+	// checks to pure global checks for unknown sending domains.
+	campaignBrandRoot := brand.Root(input.SendingDomain)
+	log.Printf("[PlanAudience] using GlobalSuppressionHub (in-memory, hub=%v, brand_root=%q) at %v", globalHub != nil, campaignBrandRoot, time.Since(planStart))
 
 	exclusionIDs, resolveErr := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
 	if resolveErr != nil {
@@ -597,7 +603,10 @@ func planPMTAAudience(
 
 		hash := md5.Sum([]byte(emailLower))
 		md5Hex := hex.EncodeToString(hash[:])
-		if globalHub != nil && globalHub.IsSuppressedByHash(md5Hex) {
+		// Single read-lock check covers both global and brand suppressions.
+		// Passing campaignBrandRoot="" falls back to global-only so unknown
+		// sending domains keep behaving exactly as before.
+		if globalHub != nil && globalHub.IsSuppressedForBrand(emailLower, campaignBrandRoot) {
 			return false
 		}
 		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressedMD5(md5Hex, exclusionIDs) {
@@ -736,7 +745,232 @@ func planPMTAAudience(
 		return nil
 	}
 
-	if len(input.SendPriority) > 0 {
+	// Master List Migration P3b/P5c — master-selection path.
+	//
+	// When the campaign has use_master_selection=true (now the default
+	// for all newly-created campaigns) we bypass the legacy list_id /
+	// brand×ISP-list iteration and source candidates from
+	// mailing_subscriber_domain_state scoped to this campaign's sending
+	// domain. Brand×ISP quotas are still enforced downstream by planMap;
+	// SDS selection only decides WHO is mailable for this sending domain
+	// right now.
+	//
+	// KILL SWITCH: the `else` branch below still runs the legacy list_id
+	// path for any campaign with the flag explicitly set to false. It
+	// exists for one release only so operators have an emergency rollback
+	// path if the master-selection query regresses; after the release
+	// following this one, delete everything guarded by !useMasterSelection
+	// and delete the flag column itself.
+	//
+	// Selection gates:
+	//   - subscriber global hard bounce / complaint => excluded
+	//   - SDS unsubscribed / hard bounce on this domain => excluded
+	//   - warmup_status='warming': require at least one observed open in
+	//     the last 90d (stricter while domain is earning reputation)
+	//   - warmup_status='engaged': require score_local >= 0.05 (the post-
+	//     warmup floor; score_local is the 0..1 per-domain signal)
+	//   - warmup_status='cold': allow through (first-touch cohort), the
+	//     per-domain daily cap handles rate-limiting
+	//   - warmup_status='dormant': excluded (deliverability risk)
+	useMasterSelection := false
+	if input.CampaignID != "" {
+		_ = db.QueryRowContext(ctx,
+			`SELECT COALESCE(use_master_selection, false) FROM mailing_campaigns WHERE id = $1::uuid`,
+			input.CampaignID,
+		).Scan(&useMasterSelection)
+	}
+	if useMasterSelection {
+		log.Printf("[PlanAudience] use_master_selection=true — sourcing from mailing_subscriber_domain_state for domain %q (min_remail_hours=%d)", input.SendingDomain, input.MinRemailHours)
+		if strings.TrimSpace(input.SendingDomain) == "" {
+			return pmtaAudiencePlan{}, fmt.Errorf("master selection requires a non-empty sending_domain")
+		}
+		normalizedDomain := strings.ToLower(strings.TrimSpace(input.SendingDomain))
+
+		// Primary pass — subscribers WITH an SDS row for this domain. Fast
+		// and indexed; this is the steady-state query for every established
+		// sending domain. Ordered by per-domain engagement so the best
+		// openers on this domain get picked first.
+		//
+		// Filters applied (see master-list design doc P1/P3b):
+		//   - sub.organization_id: multi-tenant guardrail even though we
+		//     are single-tenant today; protects against future regressions
+		//   - sub.status IN ('active','confirmed'): webhooks globally flip
+		//     status to 'unsubscribed'/'bounced'/'complained' for address-
+		//     level terminal events, so honouring status here blocks a
+		//     cross-brand leak where the SDS row for THIS domain hasn't
+		//     been stamped yet but the address was terminated elsewhere
+		//   - sub.hard_bounced_at / complained_at: denormalised global
+		//     suppressions (index hit instead of join on suppression_list)
+		//   - sds.unsubscribed_at / hard_bounced_at / complained_at:
+		//     per-domain terminal events
+		//   - warmup_status gating: cold → first-touch cohort allowed
+		//     through, warming requires recent opens, engaged requires
+		//     score_local floor, dormant excluded
+		streamSDS := func() error {
+			if allQuotasMet() {
+				return nil
+			}
+			scanLimit := totalQuota * 4
+			if scanLimit < 20000 {
+				scanLimit = 20000
+			}
+			// Master List Migration: honour MinRemailHours as a per-domain
+			// recency gate against SDS.last_mailed_at. This is strictly
+			// better than the legacy mailing_tracking_events scan because
+			// SDS is already scoped to (subscriber, sending_domain) and
+			// has an index on (sending_domain, last_mailed_at).
+			args := []any{normalizedDomain}
+			orgClause := ""
+			if strings.TrimSpace(orgID) != "" {
+				args = append(args, orgID)
+				orgClause = fmt.Sprintf(" AND sub.organization_id = $%d", len(args))
+			}
+			remailClause := ""
+			if input.MinRemailHours > 0 {
+				args = append(args, input.MinRemailHours)
+				remailClause = fmt.Sprintf(" AND (sds.last_mailed_at IS NULL OR sds.last_mailed_at < NOW() - make_interval(hours => $%d))", len(args))
+			}
+			args = append(args, scanLimit)
+			limitParam := fmt.Sprintf("$%d", len(args))
+			query := `
+				SELECT sub.id::text, sub.email
+				FROM mailing_subscribers sub
+				JOIN mailing_subscriber_domain_state sds
+				  ON sds.subscriber_id = sub.id
+				 AND sds.sending_domain = $1
+				WHERE sub.status IN ('active','confirmed')
+				  AND sub.hard_bounced_at IS NULL
+				  AND sub.complained_at IS NULL` + orgClause + `
+				  AND sds.unsubscribed_at IS NULL
+				  AND sds.hard_bounced_at IS NULL
+				  AND sds.complained_at IS NULL
+				  AND sds.warmup_status <> 'dormant'
+				  AND (
+				        sds.warmup_status = 'cold'
+				     OR (sds.warmup_status = 'warming'
+				         AND sds.last_open_at IS NOT NULL
+				         AND sds.last_open_at > NOW() - INTERVAL '90 days')
+				     OR (sds.warmup_status = 'engaged'
+				         AND sds.score_local >= 0.05)
+				  )` + remailClause + `
+				ORDER BY sds.score_local DESC NULLS LAST, sds.last_open_at DESC NULLS LAST
+				LIMIT ` + limitParam
+			rows, err := db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("master selection query: %w", err)
+			}
+			defer rows.Close()
+			streamed := 0
+			for rows.Next() {
+				var subID, email string
+				if rows.Scan(&subID, &email) == nil {
+					qualifyEmail(subID, email, "sds", input.SendingDomain)
+					streamed++
+				}
+				if allQuotasMet() {
+					break
+				}
+			}
+			log.Printf("[PlanAudience] master selection streamed %d candidates from SDS for domain %s", streamed, input.SendingDomain)
+			return nil
+		}
+
+		// Cold-fallback pass — subscribers with NO SDS row for this
+		// sending domain. Two practical scenarios this covers:
+		//   1. Cold-start: a freshly-onboarded sending domain has zero
+		//      SDS rows. The primary pass yields nothing. Without this
+		//      fallback the campaign would deploy with an empty audience.
+		//   2. Partial coverage: subscribers imported after the P3a
+		//      backfill have no SDS row on any domain yet. Treating them
+		//      as cold-cohort lets them enter the warming rotation on
+		//      first send (UpsertSDSSend will create their SDS row and
+		//      flip status to 'warming'). Without this they are
+		//      permanently invisible to master selection.
+		//
+		// The fallback is deliberately a separate query so the primary
+		// hot path stays a clean SDS index lookup. The fallback uses a
+		// NOT EXISTS anti-join, which Postgres plans as a hash anti-join
+		// on sds_pkey. Capped by the remaining quota so we never scan
+		// more subscribers than we actually need.
+		streamSDSColdFallback := func() error {
+			if allQuotasMet() {
+				return nil
+			}
+			// Size the scan to the remaining bounded shortfall. If every
+			// plan is unlimited (remainingQuota stays 0 and hasBounded is
+			// false) we fall back to a modest fixed scan — allQuotasMet
+			// already returned false in that case so we do need candidates,
+			// we just don't have a per-ISP ceiling to size the query.
+			remainingQuota := 0
+			hasBounded := false
+			for isp, q := range ispQuota {
+				if q <= 0 {
+					continue
+				}
+				hasBounded = true
+				shortfall := q - qualifiedPerISP[isp]
+				if shortfall > 0 {
+					remainingQuota += shortfall
+				}
+			}
+			if hasBounded && remainingQuota == 0 {
+				return nil
+			}
+			scanLimit := remainingQuota * 4
+			if scanLimit < 5000 {
+				scanLimit = 5000
+			}
+			args := []any{normalizedDomain}
+			orgClause := ""
+			if strings.TrimSpace(orgID) != "" {
+				args = append(args, orgID)
+				orgClause = fmt.Sprintf(" AND sub.organization_id = $%d", len(args))
+			}
+			args = append(args, scanLimit)
+			limitParam := fmt.Sprintf("$%d", len(args))
+			query := `
+				SELECT sub.id::text, sub.email
+				FROM mailing_subscribers sub
+				WHERE sub.status IN ('active','confirmed')
+				  AND sub.hard_bounced_at IS NULL
+				  AND sub.complained_at IS NULL` + orgClause + `
+				  AND NOT EXISTS (
+				    SELECT 1 FROM mailing_subscriber_domain_state sds
+				    WHERE sds.subscriber_id = sub.id
+				      AND sds.sending_domain = $1
+				  )
+				ORDER BY sub.engagement_score DESC NULLS LAST, sub.created_at DESC
+				LIMIT ` + limitParam
+			rows, err := db.QueryContext(ctx, query, args...)
+			if err != nil {
+				// Non-fatal — log and continue. Primary pass may already
+				// have filled quota and the fallback is defensive.
+				log.Printf("[PlanAudience] cold-fallback query failed for domain %s: %v", normalizedDomain, err)
+				return nil
+			}
+			defer rows.Close()
+			streamed := 0
+			for rows.Next() {
+				var subID, email string
+				if rows.Scan(&subID, &email) == nil {
+					qualifyEmail(subID, email, "sds_cold", input.SendingDomain)
+					streamed++
+				}
+				if allQuotasMet() {
+					break
+				}
+			}
+			log.Printf("[PlanAudience] master selection cold-fallback streamed %d candidates from mailing_subscribers (no SDS row on %s)", streamed, normalizedDomain)
+			return nil
+		}
+
+		if err := streamSDS(); err != nil {
+			return pmtaAudiencePlan{}, err
+		}
+		if err := streamSDSColdFallback(); err != nil {
+			return pmtaAudiencePlan{}, err
+		}
+	} else if len(input.SendPriority) > 0 {
 		log.Printf("[PlanAudience] processing %d send_priority items, elapsed %v", len(input.SendPriority), time.Since(planStart))
 		for idx, item := range input.SendPriority {
 			if allQuotasMet() {

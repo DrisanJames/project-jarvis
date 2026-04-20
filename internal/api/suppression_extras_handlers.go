@@ -12,33 +12,253 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
-// HandleGetDomainSuppressions returns domain-level suppressions
+// VersionDomainSuppressionHandlers tracks the contract version exposed via
+// the api_version field on every response. Bump whenever the response shape
+// changes so clients can detect skew (see .cursor/rules/testing.mdc).
+const VersionDomainSuppressionHandlers = "2.0"
+
+// HandleGetDomainSuppressions returns brand-scoped suppressions. Replaces the
+// original no-op stub (returned empty list). Query params:
+//
+//	?brand_root=<domain>   restrict to one brand (optional)
+//	?email=<address>       restrict to one subscriber (optional, lowercased)
+//	?limit=<int>           page size (default 100, max 1000)
+//	?offset=<int>          page offset (default 0)
+//
+// Response shape is intentionally NOT the legacy {"domains":[]} — this route
+// was dead code. Any caller still hitting it was already getting nothing useful.
 func (s *SuppressionService) HandleGetDomainSuppressions(w http.ResponseWriter, r *http.Request) {
-	// For now, return empty list - can be implemented with a separate table
+	w.Header().Set("X-Api-Version", VersionDomainSuppressionHandlers)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"domains": []interface{}{}})
-}
 
-// HandleAddDomainSuppression adds a domain suppression
-func (s *SuppressionService) HandleAddDomainSuppression(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Domain string `json:"domain"`
-		Reason string `json:"reason"`
+	brandFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("brand_root")))
+	emailFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
+	limit := parsePositiveIntQuery(r, "limit", 100, 1000)
+	offset := parsePositiveIntQuery(r, "offset", 0, 1_000_000)
+
+	// Dynamic WHERE — arguments are always parameterized, never string-interpolated.
+	args := []interface{}{}
+	conds := []string{}
+	if brandFilter != "" {
+		args = append(args, brandFilter)
+		conds = append(conds, fmt.Sprintf("brand_root = $%d", len(args)))
 	}
-	json.NewDecoder(r.Body).Decode(&input)
+	if emailFilter != "" {
+		args = append(args, emailFilter)
+		conds = append(conds, fmt.Sprintf("LOWER(email) = $%d", len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "domain": input.Domain})
+	args = append(args, limit, offset)
+	query := fmt.Sprintf(`
+		SELECT id, organization_id, email, email_hash, brand_root, reason,
+		       COALESCE(source,''), COALESCE(isp,''), COALESCE(host(source_ip),''),
+		       COALESCE(campaign_id::text,''), created_at, updated_at
+		FROM mailing_domain_suppressions%s
+		ORDER BY created_at DESC
+		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		// Graceful: if the table isn't migrated yet return empty rather than 500.
+		log.Printf("[domain-suppressions] query failed: %v", err)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"api_version": VersionDomainSuppressionHandlers,
+			"entries":     []interface{}{},
+			"total":       0,
+			"error":       "query_failed",
+		})
+		return
+	}
+	defer rows.Close()
+
+	entries := []map[string]interface{}{}
+	for rows.Next() {
+		var id, orgID, email, hash, brandRoot, reason, source, isp, ip, campID string
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &orgID, &email, &hash, &brandRoot, &reason,
+			&source, &isp, &ip, &campID, &createdAt, &updatedAt); err != nil {
+			continue
+		}
+		entries = append(entries, map[string]interface{}{
+			"id":              id,
+			"organization_id": orgID,
+			"email":           email,
+			"email_hash":      hash,
+			"brand_root":      brandRoot,
+			"reason":          reason,
+			"source":          source,
+			"isp":             isp,
+			"source_ip":       ip,
+			"campaign_id":     campID,
+			"created_at":      createdAt,
+			"updated_at":      updatedAt,
+		})
+	}
+
+	// Separate count query so large tables don't force a full scan per read.
+	var total int64
+	countArgs := args[:len(args)-2]
+	countQuery := "SELECT COUNT(*) FROM mailing_domain_suppressions" + where
+	s.db.QueryRowContext(r.Context(), countQuery, countArgs...).Scan(&total)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionDomainSuppressionHandlers,
+		"entries":     entries,
+		"total":       total,
+		"limit":       limit,
+		"offset":      offset,
+	})
 }
 
-// HandleRemoveDomainSuppression removes a domain suppression
-func (s *SuppressionService) HandleRemoveDomainSuppression(w http.ResponseWriter, r *http.Request) {
-	domain := chi.URLParam(r, "domain")
+// HandleAddDomainSuppression inserts a brand-scoped suppression via the hub
+// so the in-memory brandSet and the DB row stay in sync. Body:
+//
+//	{"email":"...", "brand_root":"...", "reason":"...", "source":"...", "isp":"...", "campaign_id":"..."}
+//
+// Either brand_root or sending_domain may be supplied; sending_domain is
+// passed through brand.Root() to get the effective eTLD+1. If both are empty
+// the request is rejected — we refuse to guess scope.
+func (s *SuppressionService) HandleAddDomainSuppression(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Api-Version", VersionDomainSuppressionHandlers)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "domain": domain})
+
+	var input struct {
+		Email          string `json:"email"`
+		BrandRoot      string `json:"brand_root"`
+		SendingDomain  string `json:"sending_domain"`
+		Reason         string `json:"reason"`
+		Source         string `json:"source"`
+		ISP            string `json:"isp"`
+		CampaignID     string `json:"campaign_id"`
+		SourceIP       string `json:"source_ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	brandRoot := strings.ToLower(strings.TrimSpace(input.BrandRoot))
+	if brandRoot == "" && input.SendingDomain != "" {
+		brandRoot = brand.Root(input.SendingDomain)
+	}
+	if email == "" || !strings.Contains(email, "@") {
+		http.Error(w, `{"error":"valid email required"}`, http.StatusBadRequest)
+		return
+	}
+	if brandRoot == "" {
+		http.Error(w, `{"error":"brand_root or sending_domain required"}`, http.StatusBadRequest)
+		return
+	}
+	reason := input.Reason
+	if reason == "" {
+		reason = "manual"
+	}
+	source := input.Source
+	if source == "" {
+		source = "admin_api"
+	}
+
+	if s.globalHub == nil {
+		// Fallback: direct insert using the same shape as the hub. Keeps
+		// this endpoint functional during boot before SetGlobalSuppressionHub fires.
+		if _, err := s.db.ExecContext(r.Context(),
+			`INSERT INTO mailing_domain_suppressions
+			 (organization_id, email, email_hash, brand_root, reason, source, isp, source_ip, campaign_id, created_at, updated_at)
+			 VALUES (COALESCE(NULLIF(current_setting('app.org_id', true), ''), '00000000-0000-0000-0000-000000000000')::uuid,
+			         $1, md5(lower($1)), $2, $3, $4, NULLIF($5,''), NULLIF($6,'')::inet, NULLIF($7,'')::uuid, NOW(), NOW())
+			 ON CONFLICT (organization_id, email_hash, brand_root) DO UPDATE
+			 SET reason = EXCLUDED.reason, source = EXCLUDED.source, updated_at = NOW()`,
+			email, brandRoot, reason, source, input.ISP, input.SourceIP, input.CampaignID); err != nil {
+			log.Printf("[domain-suppressions] direct insert failed: %v", err)
+			http.Error(w, `{"error":"insert_failed"}`, http.StatusInternalServerError)
+			return
+		}
+	} else if err := s.globalHub.SuppressScoped(
+		r.Context(), email, brandRoot, reason, source, input.ISP, input.SourceIP, input.CampaignID,
+	); err != nil {
+		log.Printf("[domain-suppressions] hub SuppressScoped failed: %v", err)
+		http.Error(w, `{"error":"suppress_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[domain-suppressions] ADDED email=%s brand=%s reason=%s source=%s",
+		logger.RedactEmail(email), brandRoot, reason, source)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionDomainSuppressionHandlers,
+		"success":     true,
+		"email":       email,
+		"brand_root":  brandRoot,
+		"reason":      reason,
+	})
+}
+
+// HandleRemoveDomainSuppression removes a brand-scoped suppression. The legacy
+// route placed the domain in the URL path; we re-use it as the brand_root and
+// require the ?email= query param to identify the specific row. Removing an
+// entire brand without an email would be catastrophic and is not supported.
+func (s *SuppressionService) HandleRemoveDomainSuppression(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Api-Version", VersionDomainSuppressionHandlers)
+	w.Header().Set("Content-Type", "application/json")
+
+	brandRoot := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "domain")))
+	email := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
+	if brandRoot == "" || email == "" {
+		http.Error(w, `{"error":"brand_root path param and ?email= query required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if s.globalHub != nil {
+		if err := s.globalHub.RemoveScoped(r.Context(), email, brandRoot); err != nil {
+			log.Printf("[domain-suppressions] hub RemoveScoped failed: %v", err)
+			http.Error(w, `{"error":"remove_failed"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if _, err := s.db.ExecContext(r.Context(),
+			`DELETE FROM mailing_domain_suppressions WHERE LOWER(email) = $1 AND brand_root = $2`,
+			email, brandRoot); err != nil {
+			log.Printf("[domain-suppressions] direct delete failed: %v", err)
+			http.Error(w, `{"error":"remove_failed"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	log.Printf("[domain-suppressions] REMOVED email=%s brand=%s",
+		logger.RedactEmail(email), brandRoot)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionDomainSuppressionHandlers,
+		"success":     true,
+		"email":       email,
+		"brand_root":  brandRoot,
+	})
+}
+
+// parsePositiveIntQuery extracts a non-negative integer query param, applying
+// the supplied default and a hard upper bound. Invalid input falls back to def.
+func parsePositiveIntQuery(r *http.Request, key string, def, max int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return def
+	}
+	n := 0
+	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || n < 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
 
 // HandleGetSoftBounces returns soft bounces pending promotion

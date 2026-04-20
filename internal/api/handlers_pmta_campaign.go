@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/lib/pq"
@@ -545,6 +546,12 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
+	// Derive the campaign's brand root once — estimate loops iterate many
+	// thousands of subscribers and the brand root is constant for the whole
+	// estimate. Empty string falls back to pure-global checks, preserving
+	// the legacy behavior for requests that omit sending_domain.
+	estimateBrandRoot := brand.Root(req.SendingDomain)
+
 	// Resolve suppression list names for source breakdown display
 	suppListNames := make(map[string]string)
 	if len(req.SuppressionListIDs) > 0 {
@@ -619,8 +626,12 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 						}
 					}
 				}
-				if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressed(emailLower) {
-					suppressionSources["Global Suppression"]++
+				if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressedForBrand(emailLower, estimateBrandRoot) {
+					if estimateBrandRoot != "" {
+						suppressionSources["Brand Suppression ("+estimateBrandRoot+")"]++
+					} else {
+						suppressionSources["Global Suppression"]++
+					}
 					suppressed = true
 				}
 
@@ -686,8 +697,12 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 					}
 				}
 			}
-			if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressed(emailLower) {
-				suppressionSources["Global Suppression"]++
+			if !suppressed && s.globalHub != nil && s.globalHub.IsSuppressedForBrand(emailLower, estimateBrandRoot) {
+				if estimateBrandRoot != "" {
+					suppressionSources["Brand Suppression ("+estimateBrandRoot+")"]++
+				} else {
+					suppressionSources["Global Suppression"]++
+				}
 				suppressed = true
 			}
 			if suppressed {
@@ -890,6 +905,15 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 			args = append(args, pmtaExecutionModeWave)
 			nextP++
 		}
+		// Honour explicit master-selection override from the payload. Without
+		// this, drafts reused from older rows retain their stored flag and
+		// segment-driven engager campaigns inadvertently run via the SDS
+		// pure-pull path.
+		if input.UseMasterSelection != nil && s.colCache.has("use_master_selection") {
+			setClauses += fmt.Sprintf(", use_master_selection = $%d", nextP)
+			args = append(args, *input.UseMasterSelection)
+			nextP++
+		}
 		args = append(args, orgID)
 		query := fmt.Sprintf(`UPDATE mailing_campaigns SET %s WHERE id = $1 AND organization_id = $%d`, setClauses, nextP)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -922,6 +946,15 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 			colList = append(colList, "execution_mode")
 			valList = append(valList, fmt.Sprintf("$%d", nextP))
 			args = append(args, pmtaExecutionModeWave)
+			nextP++
+		}
+		// Honour explicit master-selection override from the payload. nil
+		// leaves the column to its DB-level default (true post-phase21),
+		// matching the welcome/acquisition default behavior.
+		if input.UseMasterSelection != nil && s.colCache.has("use_master_selection") {
+			colList = append(colList, "use_master_selection")
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			args = append(args, *input.UseMasterSelection)
 			nextP++
 		}
 		query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
@@ -1463,14 +1496,31 @@ func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Enqueue subscribers
+	// Enqueue subscribers.
+	//
+	// Pre-filter BOTH legacy global suppression AND brand-scoped suppression
+	// at enqueue time so we don't waste queue slots and worker cycles on
+	// subscribers who will be skipped at claim time. The brand-scoped check
+	// uses the campaign's sending-domain suffix match against brand_root —
+	// same shape as mailing_analytics.go so the two surfaces report
+	// consistent active audiences. $3 is the sending domain we precompute
+	// from the campaign's from_email.
+	sendingDomain := ""
+	if at := strings.LastIndex(fromEmail, "@"); at >= 0 && at+1 < len(fromEmail) {
+		sendingDomain = strings.ToLower(fromEmail[at+1:])
+	}
 	enqueued := 0
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.email FROM mailing_subscribers s
 		WHERE s.list_id = ANY($1) AND s.status = 'confirmed'
 		  AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue WHERE campaign_id = $2 AND subscriber_id = s.id)
 		  AND NOT EXISTS (SELECT 1 FROM mailing_suppressions WHERE LOWER(email) = LOWER(s.email) AND active = true)
-	`, pq.Array(listIDs), campaignID)
+		  AND NOT EXISTS (
+			SELECT 1 FROM mailing_domain_suppressions ds
+			WHERE ds.email_hash = md5(LOWER(s.email))
+			  AND ($3 = ds.brand_root OR $3 LIKE '%.' || ds.brand_root)
+		  )
+	`, pq.Array(listIDs), campaignID, sendingDomain)
 	if err != nil {
 		respondJSON(w, 500, map[string]string{"error": "query subs: " + err.Error()})
 		return

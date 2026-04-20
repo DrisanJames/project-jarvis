@@ -1,0 +1,204 @@
+package mailing
+
+// Cross-brand daily cap.
+//
+// A subscriber should never receive more than N emails per calendar day
+// across ALL brands combined. Under the legacy list architecture this
+// was physically impossible to enforce (each brand had its own list, no
+// cross-brand view). Under master-list selection the cap lives here.
+//
+// Fast path (Redis): key `cap:{subID}:{YYYYMMDD}`, value = integer count,
+// TTL = 26h so the key self-expires a couple of hours past midnight UTC.
+// Reserve is atomic — INCR then read; if the post-increment value is
+// over the cap we immediately DECR and deny.
+//
+// Slow path (Postgres): if Redis is unavailable we count 'sent' rows in
+// `mailing_tracking_events` for today. This is a best-effort fallback;
+// it is NOT race-safe under high concurrency, so Redis should be on in
+// production.
+//
+// The cap value is pulled per-org from `organizations.settings->>'cross_brand_daily_cap'`.
+// Falls back to the struct default (seeded at 2, ceiling at 4).
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// CapChecker enforces the cross-brand daily cap.
+//
+// Thread-safe. All methods are safe to call concurrently from the send
+// worker pool. The Redis client may be nil — in that case the struct
+// falls back to Postgres-only counting (reconciliation mode).
+type CapChecker struct {
+	db         *sql.DB
+	rdb        *redis.Client
+	defaultCap int
+
+	// cacheMu guards concurrent reads/writes on orgCapCache and
+	// orgCapCachedAt. Reserve() is invoked from the dispatch loop for
+	// every item in a claimed batch, and multiple campaigns can dispatch
+	// concurrently, so a native map without a lock would race under -race
+	// and can corrupt the map under load.
+	cacheMu        sync.RWMutex
+	orgCapCache    map[string]int
+	orgCapCachedAt time.Time
+}
+
+// NewCapChecker constructs a checker with the given default cap (used
+// when org settings do not specify one). Pass nil for rdb to run without
+// the Redis fast path.
+func NewCapChecker(db *sql.DB, rdb *redis.Client, defaultCap int) *CapChecker {
+	if defaultCap <= 0 {
+		defaultCap = 2
+	}
+	return &CapChecker{
+		db:          db,
+		rdb:         rdb,
+		defaultCap:  defaultCap,
+		orgCapCache: map[string]int{},
+	}
+}
+
+// capForOrg reads `settings->>'cross_brand_daily_cap'` from the
+// organizations table. Cached for 60s to keep the hot path cheap.
+//
+// Concurrency: reads are guarded by an RLock and writes take the full
+// Lock. The 60s TTL is shared across all orgs because refresh is per-org
+// (on miss we fetch just that org's value and update the shared timestamp).
+// Under normal load this is fine — the cost of the read-through query is
+// one row lookup on an indexed pk.
+func (c *CapChecker) capForOrg(ctx context.Context, orgID string) int {
+	if orgID == "" {
+		return c.defaultCap
+	}
+	c.cacheMu.RLock()
+	fresh := time.Since(c.orgCapCachedAt) < 60*time.Second
+	v, have := c.orgCapCache[orgID]
+	c.cacheMu.RUnlock()
+	if fresh && have {
+		return v
+	}
+	var raw sql.NullString
+	err := c.db.QueryRowContext(ctx,
+		`SELECT settings->>'cross_brand_daily_cap' FROM organizations WHERE id = $1`, orgID).
+		Scan(&raw)
+	var resolved int
+	if err != nil || !raw.Valid || raw.String == "" {
+		resolved = c.defaultCap
+	} else if _, scanErr := fmt.Sscanf(raw.String, "%d", &resolved); scanErr != nil || resolved <= 0 {
+		resolved = c.defaultCap
+	}
+	c.cacheMu.Lock()
+	c.orgCapCache[orgID] = resolved
+	c.orgCapCachedAt = time.Now()
+	c.cacheMu.Unlock()
+	return resolved
+}
+
+// todayKey returns the cap key for the current UTC date. UTC keeps the
+// key stable regardless of operator timezone and matches the 24h billing
+// window that ISPs use internally.
+func todayKey(subscriberID string) string {
+	return fmt.Sprintf("cap:%s:%s", subscriberID, time.Now().UTC().Format("20060102"))
+}
+
+// Reserve atomically reserves one send for the given subscriber. Returns
+// (true, newCount) if the subscriber is still under cap after this
+// reservation; (false, currentCount) if over cap. When over cap the
+// Redis counter is decremented back so the reservation does not stick.
+//
+// Callers MUST call Release(subscriberID) if the downstream send fails,
+// so the cap slot is freed for a future attempt.
+func (c *CapChecker) Reserve(ctx context.Context, orgID, subscriberID string) (bool, int, error) {
+	cap := c.capForOrg(ctx, orgID)
+	if cap <= 0 {
+		return true, 0, nil
+	}
+	if c.rdb == nil {
+		return c.reservePostgres(ctx, subscriberID, cap)
+	}
+
+	key := todayKey(subscriberID)
+	pipe := c.rdb.TxPipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, 26*time.Hour)
+	if _, err := pipe.Exec(ctx); err != nil {
+		// Redis hiccup — fall back to Postgres so a transient outage
+		// does not stop the send pool entirely.
+		log.Printf("[cap] Redis pipeline error: %v — falling back to Postgres", err)
+		return c.reservePostgres(ctx, subscriberID, cap)
+	}
+	n := int(incr.Val())
+	if n > cap {
+		if err := c.rdb.Decr(ctx, key).Err(); err != nil {
+			log.Printf("[cap] DECR failed after over-cap reserve: %v", err)
+		}
+		return false, n - 1, nil
+	}
+	return true, n, nil
+}
+
+// Release returns a previously reserved cap slot. Call on send failure.
+func (c *CapChecker) Release(ctx context.Context, subscriberID string) {
+	if c.rdb == nil {
+		return
+	}
+	key := todayKey(subscriberID)
+	if err := c.rdb.Decr(ctx, key).Err(); err != nil {
+		log.Printf("[cap] Release DECR failed: %v", err)
+	}
+}
+
+// reservePostgres is the non-Redis fallback. It counts today's 'sent'
+// events from mailing_tracking_events and denies if already at cap.
+// NOT race-safe — concurrent workers can each see the same count and
+// both proceed, breaching the cap by up to (nWorkers-1).
+func (c *CapChecker) reservePostgres(ctx context.Context, subscriberID string, cap int) (bool, int, error) {
+	var count int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_tracking_events
+		WHERE subscriber_id = $1
+		  AND event_type = 'sent'
+		  AND event_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')`,
+		subscriberID,
+	).Scan(&count)
+	if err != nil {
+		return true, 0, err
+	}
+	if count >= cap {
+		return false, count, nil
+	}
+	return true, count + 1, nil
+}
+
+// ReservationResult captures one subscriber's cap decision. Used when
+// filtering a batch of queue items at dispatch time.
+type ReservationResult struct {
+	SubscriberID string
+	Allowed      bool
+	Count        int
+}
+
+// ReserveBatch calls Reserve for every subscriber ID. Returns the same
+// list in the same order with per-item decisions. Errors on individual
+// items are logged but not returned — an over-cap check failing open is
+// less bad than stopping the whole batch.
+func (c *CapChecker) ReserveBatch(ctx context.Context, orgID string, subscriberIDs []string) []ReservationResult {
+	out := make([]ReservationResult, 0, len(subscriberIDs))
+	for _, sid := range subscriberIDs {
+		allowed, n, err := c.Reserve(ctx, orgID, sid)
+		if err != nil {
+			log.Printf("[cap] Reserve error for sub=%s: %v — allowing", sid, err)
+			allowed = true
+		}
+		out = append(out, ReservationResult{SubscriberID: sid, Allowed: allowed, Count: n})
+	}
+	return out
+}

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -21,6 +22,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
@@ -79,6 +82,17 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	subscriberID, _ := uuid.Parse(parts[2])
 	emailID, _ := uuid.Parse(parts[3])
 
+	// Reject malformed/tampered tracking URLs. uuid.Parse returns the
+	// zero UUID (00000000-...) on error, so treating any nil component
+	// as a miss prevents us from writing rows keyed on uuid.Nil (which
+	// would collapse unrelated tracking events onto a single synthetic
+	// row and poison downstream analytics).
+	if campaignID == uuid.Nil || subscriberID == uuid.Nil || emailID == uuid.Nil {
+		log.Printf("TRACK OPEN: rejecting tracking pixel with nil ids (camp=%s sub=%s email_id=%s)", campaignID, subscriberID, emailID)
+		svc.serveTrackingPixel(w)
+		return
+	}
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
@@ -136,6 +150,13 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		WHERE id = $1
 	`, subscriberID)
 
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Sending domain resolved from the campaign's from_email; empty means
+	// the helper is a no-op (defense against campaigns with missing data).
+	sdsSendingDomain := mailing.ResolveSendingDomainForCampaign(ctx, svc.db, campaignID)
+	mailing.UpsertSDSOpen(ctx, svc.db, subscriberID, sdsSendingDomain)
+	mailing.RecomputeSDSScoreLocal(ctx, svc.db, subscriberID, sdsSendingDomain)
+
 	domain := ""
 	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
 		domain = strings.ToLower(email[atIdx+1:])
@@ -185,6 +206,21 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	emailID, _ := uuid.Parse(parts[3])
 	originalURL := parts[4]
 
+	// Reject malformed/tampered tracking URLs before any DB write. Nil
+	// UUID components would either fail FK constraints (logged and
+	// silently dropped) or collapse unrelated events onto a synthetic
+	// zero-UUID row. For click tracking we still redirect when a URL
+	// is present so the user experience is not broken.
+	if campaignID == uuid.Nil || subscriberID == uuid.Nil || emailID == uuid.Nil {
+		log.Printf("TRACK CLICK: rejecting tracking link with nil ids (camp=%s sub=%s email_id=%s)", campaignID, subscriberID, emailID)
+		if originalURL != "" {
+			http.Redirect(w, r, originalURL, http.StatusFound)
+			return
+		}
+		http.Error(w, "Invalid tracking data", http.StatusBadRequest)
+		return
+	}
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
@@ -225,6 +261,11 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 		WHERE id = $1
 	`, subscriberID)
 
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	sdsClickDomain := mailing.ResolveSendingDomainForCampaign(ctx, svc.db, campaignID)
+	mailing.UpsertSDSClick(ctx, svc.db, subscriberID, sdsClickDomain)
+	mailing.RecomputeSDSScoreLocal(ctx, svc.db, subscriberID, sdsClickDomain)
+
 	clickDomain := ""
 	if atIdx := strings.LastIndex(email, "@"); atIdx >= 0 {
 		clickDomain = strings.ToLower(email[atIdx+1:])
@@ -245,10 +286,15 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 }
 
-var ownedDomains = []string{
-	"discountblog.com", "quizfiesta.com", "historythinking.com",
-	"myownhealth.net", "getmecoupons.net",
-}
+// ownedDomains is kept here as a package-local alias for brand.OwnedDomains
+// so that enrichOwnedDomainURL below continues to compile without touching
+// every callsite. All new callers should use brand.OwnedDomains directly.
+var ownedDomains = brand.OwnedDomains
+
+// BrandRoot is a thin wrapper around brand.Root so existing callers in
+// this package can reference api.BrandRoot. New callers should prefer
+// brand.Root / brand.RootFromEmail directly.
+func BrandRoot(sendingDomain string) string { return brand.Root(sendingDomain) }
 
 // enrichOwnedDomainURL encodes subscriber identity into the URL **path** rather
 // than query parameters. ISPs (Apple LTP, Yahoo, Firefox ETP) strip tracking
@@ -283,12 +329,31 @@ func enrichOwnedDomainURL(rawURL string, subscriberID, emailID, campaignID uuid.
 	return u.String()
 }
 
-// HandleTrackUnsubscribe records an unsubscribe event and feeds the single
-// global suppression repository — every unsub, regardless of source, lands here.
+// VersionTrackUnsubscribe tracks handler semantics — bumped to 2.0 with the
+// introduction of brand-scoped tokens (4-part payload).
+const VersionTrackUnsubscribe = "2.0"
+
+// HandleTrackUnsubscribe records an unsubscribe event and feeds the suppression
+// repositories. Branches on token payload shape:
+//
+//   3-part (org|campaign|subscriber)        → GLOBAL unsubscribe. Flips
+//       subscriber.status to 'unsubscribed', writes mailing_suppressions +
+//       mailing_global_suppressions. Classic bottom-link / legacy behaviour.
+//
+//   4-part (org|campaign|subscriber|brand)  → BRAND-SCOPED unsubscribe. Does
+//       NOT touch subscriber.status (they remain mailable for other brands);
+//       writes mailing_domain_suppressions via globalHub.SuppressScoped so the
+//       in-memory hub updates atomically with the DB. Validates the brand
+//       token against the campaign's actual from_email brand root as
+//       defense-in-depth — a signed URL is enough to prove intent, but
+//       validating also catches accidental mis-encoding and forged payloads
+//       that somehow leaked past the HMAC check.
 func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	encoded := chi.URLParam(r, "data")
 	sig := chi.URLParam(r, "sig")
+
+	w.Header().Set("X-Api-Version", VersionTrackUnsubscribe)
 
 	if sig != "" && !svc.verifySig(encoded, sig) {
 		log.Printf("TRACK UNSUB: invalid signature for data=%s", encoded[:min(32, len(encoded))])
@@ -312,42 +377,93 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	campaignID, _ := uuid.Parse(parts[1])
 	subscriberID, _ := uuid.Parse(parts[2])
 
+	// 4-part payload = brand-scoped. Empty brand after trim collapses to
+	// global for safety (never silently accept a malformed brand token).
+	brandRoot := ""
+	if len(parts) >= 4 {
+		brandRoot = strings.ToLower(strings.TrimSpace(parts[3]))
+	}
+
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
-	isp := extractISP(email)
+	ispGroup := extractISP(email)
+	remoteIPPtr := extractIPFromRemoteAddr(r.RemoteAddr)
+	remoteIP := ""
+	if remoteIPPtr != nil {
+		remoteIP = *remoteIPPtr
+	}
 
 	if svc.onTrackingEvent != nil {
-		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, isp)
+		svc.onTrackingEvent(campaignID.String(), "unsubscribe", email, ispGroup)
 	}
 
 	svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent)
 		VALUES ($1, $2, $3, $4, 'unsubscribed', NOW(), $5::inet, $6)
-	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent())
+	`, uuid.New(), orgID, campaignID, subscriberID, remoteIPPtr, r.UserAgent())
 
-	svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1`, subscriberID)
 	svc.db.ExecContext(ctx, `UPDATE mailing_campaigns SET unsubscribe_count = COALESCE(unsubscribe_count, 0) + 1 WHERE id = $1`, campaignID)
 
-	// Feed the single suppression repository — legacy table
-	svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
-		VALUES ($1, $2, 'User unsubscribed', 'unsubscribe', true, NOW(), NOW())
-		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'User unsubscribed', updated_at = NOW()
-	`, uuid.New(), email)
-
-	// Feed the single suppression repository — global hub table (MD5-keyed)
-	if email != "" {
-		emailLower := strings.ToLower(strings.TrimSpace(email))
-		md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
-		svc.db.ExecContext(ctx, `
-			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, isp, created_at)
-			VALUES (gen_random_uuid(), $1, $2, $3, 'unsubscribe', 'tracking_link', $4, NOW())
-			ON CONFLICT (organization_id, md5_hash) DO UPDATE SET reason = 'unsubscribe', updated_at = NOW()
-		`, orgID, emailLower, md5Hash, isp)
+	if brandRoot != "" {
+		// Defense-in-depth: validate the brand token matches the campaign's
+		// actual sending brand. The HMAC alone proves the URL came from us,
+		// but this also catches: (a) accidental copy/paste of a token across
+		// campaigns, (b) forged tokens that slipped past a compromised
+		// signing key. Mismatch → fall through to global so the user is
+		// still unsubscribed (fail-safe for the subscriber).
+		var campFromEmail string
+		svc.db.QueryRowContext(ctx, `SELECT COALESCE(from_email,'') FROM mailing_campaigns WHERE id = $1`, campaignID).Scan(&campFromEmail)
+		expected := brand.RootFromEmail(campFromEmail)
+		if expected == "" || expected == brandRoot {
+			if email != "" && svc.globalHub != nil {
+				if err := svc.globalHub.SuppressScoped(ctx, email, brandRoot, "user_unsubscribe", "tracking_link", ispGroup, remoteIP, campaignID.String()); err != nil {
+					log.Printf("TRACK UNSUB brand=%s: SuppressScoped failed: %v", brandRoot, err)
+				}
+			}
+			log.Printf("TRACK UNSUBSCRIBE (brand): campaign=%s subscriber=%s email=%s brand=%s -> brand suppression", campaignID, subscriberID, logger.RedactEmail(email), brandRoot)
+		} else {
+			log.Printf("TRACK UNSUB brand mismatch: token=%s expected=%s — falling through to GLOBAL as fail-safe", brandRoot, expected)
+			brandRoot = "" // force the global path below
+		}
 	}
 
-	log.Printf("TRACK UNSUBSCRIBE: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
+	if brandRoot == "" {
+		svc.db.ExecContext(ctx, `UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1`, subscriberID)
+
+		svc.db.ExecContext(ctx, `
+			INSERT INTO mailing_suppressions (id, email, reason, source, active, created_at, updated_at)
+			VALUES ($1, $2, 'User unsubscribed', 'unsubscribe', true, NOW(), NOW())
+			ON CONFLICT (email) DO UPDATE SET active = true, reason = 'User unsubscribed', updated_at = NOW()
+		`, uuid.New(), email)
+
+		// Route the global write through the hub so the in-memory cache
+		// updates atomically with the DB (fixes opportunistic cache drift
+		// between boot-time LoadFromDB and per-request writes).
+		if email != "" && svc.globalHub != nil {
+			if _, err := svc.globalHub.Suppress(ctx, email, "unsubscribe", "tracking_link", ispGroup, "", "", remoteIP, campaignID.String()); err != nil {
+				log.Printf("TRACK UNSUB: global hub Suppress failed: %v", err)
+			}
+		} else if email != "" {
+			// Fallback: hub not wired (should not happen in production).
+			emailLower := strings.ToLower(strings.TrimSpace(email))
+			md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(emailLower)))
+			svc.db.ExecContext(ctx, `
+				INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, isp, created_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 'unsubscribe', 'tracking_link', $4, NOW())
+				ON CONFLICT (organization_id, md5_hash) DO UPDATE SET reason = 'unsubscribe', updated_at = NOW()
+			`, orgID, emailLower, md5Hash, ispGroup)
+		}
+
+		log.Printf("TRACK UNSUBSCRIBE (global): campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
+	}
+
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Unsubscribes are domain-scoped in the new model. Brand-scoped
+	// tokens (4-part) stamp the SDS row; legacy 3-part tokens fall back
+	// to global AND stamp SDS for the campaign's sending domain so the
+	// per-domain state also reflects intent.
+	mailing.UpsertSDSUnsub(ctx, svc.db, subscriberID, mailing.ResolveSendingDomainForCampaign(ctx, svc.db, campaignID))
 
 	// RFC 8058: ISP one-click POST expects a minimal 200 response, not HTML.
 	if r.Method == http.MethodPost {
@@ -356,13 +472,23 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<!DOCTYPE html>
+	if brandRoot != "" {
+		w.Write([]byte(fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Unsubscribed</title></head>
+<body style="font-family:system-ui,Arial,sans-serif;text-align:center;padding:60px 20px;background:#f8f9fa;">
+<div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,.08);">
+<h1 style="color:#1a1a2e;font-size:24px;">You have been unsubscribed</h1>
+<p style="color:#64748b;font-size:15px;">You will no longer receive emails from <strong>%s</strong>. This change is effective immediately. You may still receive emails from our other brands.</p>
+</div></body></html>`, html.EscapeString(brandRoot))))
+	} else {
+		w.Write([]byte(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Unsubscribed</title></head>
 <body style="font-family:system-ui,Arial,sans-serif;text-align:center;padding:60px 20px;background:#f8f9fa;">
 <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,.08);">
 <h1 style="color:#1a1a2e;font-size:24px;">You have been unsubscribed</h1>
 <p style="color:#64748b;font-size:15px;">You will no longer receive emails from us. This change is effective immediately.</p>
 </div></body></html>`))
+	}
 }
 
 // serveTrackingPixel returns a 1x1 transparent GIF
@@ -834,6 +960,11 @@ func (svc *MailingService) HandleInboundMailtoUnsubscribe(w http.ResponseWriter,
 			ON CONFLICT (organization_id, md5_hash) DO UPDATE SET reason = 'unsubscribe', updated_at = NOW()
 		`, orgID, emailLower, md5Hash, isp)
 	}
+
+	// Master List Migration P2 — shadow write to subscriber_domain_state.
+	// Mailto/inbound unsubs resolve the sending domain from the campaign
+	// so the per-domain state reflects the user's intent for this brand.
+	mailing.UpsertSDSUnsub(ctx, svc.db, subscriberID, mailing.ResolveSendingDomainForCampaign(ctx, svc.db, campaignID))
 
 	log.Printf("INBOUND MAILTO UNSUB: campaign=%s subscriber=%s email=%s → global suppression", campaignID, subscriberID, logger.RedactEmail(email))
 	w.WriteHeader(http.StatusOK)

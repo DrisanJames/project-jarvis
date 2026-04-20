@@ -21,8 +21,8 @@ import (
 // Bump the version for any handler you modify. The version is included in every
 // JSON response so the frontend can display it for deployment verification.
 const (
-	VersionAnalyticsOverview       = "3.1"
-	VersionISPPerformance          = "1.2"
+	VersionAnalyticsOverview       = "3.2"
+	VersionISPPerformance          = "1.3"
 	VersionISPSendingInsights      = "1.2"
 	VersionCampaignComparison      = "2.0"
 	VersionTopPerformers           = "1.0"
@@ -32,6 +32,8 @@ const (
 	VersionInfrastructureBreakdown = "1.6"
 	VersionRevenueReport           = "1.0"
 	VersionHistoricalMetrics       = "1.0"
+	VersionCrossBrandCapMetrics    = "1.0"
+	VersionSDSAudienceHealth       = "1.0"
 )
 
 // mstLoc is the canonical timezone for all analytics date logic (America/Denver).
@@ -452,16 +454,190 @@ func (s *AdvancedMailingService) HandleAnalyticsOverview(w http.ResponseWriter, 
 			"sent": m.Sent, "delivered": m.Delivered,
 			"opens": m.Opens, "clicks": m.Clicks,
 			"bounces": m.HardBounces + m.SoftBounces, "hard_bounces": m.HardBounces, "soft_bounces": m.SoftBounces,
-			"complaints": m.Complaints, "revenue": totalRevenue,
+			"complaints": m.Complaints, "deferred": m.Deferred, "unsubscribes": m.Unsubscribes,
+			"revenue": totalRevenue,
 		},
 		"rates": map[string]interface{}{
 			"open_rate": m.OpenRate, "click_rate": m.ClickRate,
 			"bounce_rate":      metricsRound2(float64(m.HardBounces+m.SoftBounces) / math.Max(float64(m.Sent), 1) * 100),
 			"hard_bounce_rate": m.HardBounceRate, "soft_bounce_rate": m.SoftBounceRate,
-			"complaint_rate": m.ComplaintRate, "delivery_rate": m.DeliveryRate,
+			"complaint_rate":   m.ComplaintRate, "delivery_rate": m.DeliveryRate,
+			"deferral_rate":    m.DeferralRate, "unsubscribe_rate": m.UnsubRate,
 		},
 		"daily_trend":     trend,
 		"sending_domains": domains,
+	})
+}
+
+// ================== SDS AUDIENCE HEALTH ==================
+
+// HandleSDSAudienceHealth reports per-sending-domain audience health
+// from mailing_subscriber_domain_state. This is the analytics endpoint
+// that replaces the old brand×ISP list dashboards — the SDS table is
+// the authoritative view of who is mailable on which domain and in
+// what warmup state.
+//
+// Response shape:
+//   total_rows: overall row count across all domains
+//   by_domain: per sending_domain {
+//     total, cold, warming, engaged, dormant,
+//     unsubscribed, hard_bounced, complained,
+//     recently_mailed (last 7d), recently_opened (last 7d)
+//   }
+func (s *AdvancedMailingService) HandleSDSAudienceHealth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	type domainRow struct {
+		Domain          string `json:"sending_domain"`
+		Total           int    `json:"total"`
+		Cold            int    `json:"cold"`
+		Warming         int    `json:"warming"`
+		Engaged         int    `json:"engaged"`
+		Dormant         int    `json:"dormant"`
+		Unsubscribed    int    `json:"unsubscribed"`
+		HardBounced     int    `json:"hard_bounced"`
+		Complained      int    `json:"complained"`
+		RecentlyMailed  int    `json:"recently_mailed_7d"`
+		RecentlyOpened  int    `json:"recently_opened_7d"`
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_subscriber_domain_state`).Scan(&total); err != nil {
+		log.Printf("[sds-health] total query error: %v", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT sending_domain,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE warmup_status = 'cold')    AS cold,
+			COUNT(*) FILTER (WHERE warmup_status = 'warming') AS warming,
+			COUNT(*) FILTER (WHERE warmup_status = 'engaged') AS engaged,
+			COUNT(*) FILTER (WHERE warmup_status = 'dormant') AS dormant,
+			COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL) AS unsubscribed,
+			COUNT(*) FILTER (WHERE hard_bounced_at IS NOT NULL) AS hard_bounced,
+			COUNT(*) FILTER (WHERE complained_at IS NOT NULL)    AS complained,
+			COUNT(*) FILTER (WHERE last_mailed_at IS NOT NULL AND last_mailed_at > NOW() - INTERVAL '7 days') AS recently_mailed,
+			COUNT(*) FILTER (WHERE last_open_at   IS NOT NULL AND last_open_at   > NOW() - INTERVAL '7 days') AS recently_opened
+		FROM mailing_subscriber_domain_state
+		GROUP BY sending_domain
+		ORDER BY COUNT(*) DESC
+	`)
+	if err != nil {
+		log.Printf("[sds-health] by-domain query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "sds_health_query_failed")
+		return
+	}
+	defer rows.Close()
+
+	var byDomain []domainRow
+	for rows.Next() {
+		var d domainRow
+		if err := rows.Scan(&d.Domain, &d.Total, &d.Cold, &d.Warming, &d.Engaged, &d.Dormant,
+			&d.Unsubscribed, &d.HardBounced, &d.Complained,
+			&d.RecentlyMailed, &d.RecentlyOpened); err == nil {
+			byDomain = append(byDomain, d)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionSDSAudienceHealth,
+		"total_rows":  total,
+		"by_domain":   byDomain,
+	})
+}
+
+// ================== CROSS-BRAND CAP METRICS ==================
+
+// HandleCrossBrandCapMetrics exposes wave-level skipped_cap_exceeded
+// counts from mailing_campaign_queue. Breakdowns:
+//   - total skipped across the range
+//   - per-campaign count (top 100 by recency)
+//   - per-sending-domain count (derived from campaign.from_email)
+//
+// Query params:
+//   start_date, end_date (ISO8601, defaults to last 24h)
+//
+// This is the P5a visibility metric: if skipped_cap_exceeded is high and
+// rising it means many subscribers are saturating the cross-brand cap
+// and the cap is throttling real volume, which is the intended behavior
+// OR a sign the cap is set too low for the current send plan.
+func (s *AdvancedMailingService) HandleCrossBrandCapMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start, end := parseAnalyticsRange(r)
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_campaign_queue
+		WHERE status = 'skipped' AND error_message = 'cross_brand_cap_exceeded'
+		  AND COALESCE(locked_at, created_at) BETWEEN $1 AND $2
+	`, start, end).Scan(&total); err != nil {
+		log.Printf("[cross-brand-cap] total query error: %v", err)
+	}
+
+	type campRow struct {
+		CampaignID   string `json:"campaign_id"`
+		CampaignName string `json:"campaign_name"`
+		Skipped      int    `json:"skipped_cap_exceeded"`
+	}
+	var byCampaign []campRow
+	cRows, err := s.db.QueryContext(ctx, `
+		SELECT q.campaign_id::text, COALESCE(c.name, '(unknown)'), COUNT(*)
+		FROM mailing_campaign_queue q
+		LEFT JOIN mailing_campaigns c ON c.id = q.campaign_id
+		WHERE q.status = 'skipped' AND q.error_message = 'cross_brand_cap_exceeded'
+		  AND COALESCE(q.locked_at, q.created_at) BETWEEN $1 AND $2
+		GROUP BY q.campaign_id, c.name
+		ORDER BY COUNT(*) DESC
+		LIMIT 100
+	`, start, end)
+	if err != nil {
+		log.Printf("[cross-brand-cap] campaign query error: %v", err)
+	} else {
+		defer cRows.Close()
+		for cRows.Next() {
+			var row campRow
+			if err := cRows.Scan(&row.CampaignID, &row.CampaignName, &row.Skipped); err == nil {
+				byCampaign = append(byCampaign, row)
+			}
+		}
+	}
+
+	type domRow struct {
+		Domain  string `json:"sending_domain"`
+		Skipped int    `json:"skipped_cap_exceeded"`
+	}
+	var byDomain []domRow
+	dRows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown') AS dom,
+		       COUNT(*)
+		FROM mailing_campaign_queue q
+		LEFT JOIN mailing_campaigns c ON c.id = q.campaign_id
+		WHERE q.status = 'skipped' AND q.error_message = 'cross_brand_cap_exceeded'
+		  AND COALESCE(q.locked_at, q.created_at) BETWEEN $1 AND $2
+		GROUP BY dom
+		ORDER BY COUNT(*) DESC
+	`, start, end)
+	if err != nil {
+		log.Printf("[cross-brand-cap] domain query error: %v", err)
+	} else {
+		defer dRows.Close()
+		for dRows.Next() {
+			var row domRow
+			if err := dRows.Scan(&row.Domain, &row.Skipped); err == nil {
+				byDomain = append(byDomain, row)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version":                 VersionCrossBrandCapMetrics,
+		"range":                       map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
+		"total_skipped_cap_exceeded":  total,
+		"by_campaign":                 byCampaign,
+		"by_sending_domain":           byDomain,
 	})
 }
 
@@ -1112,6 +1288,14 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 		distWhere += fmt.Sprintf(" AND COALESCE(NULLIF(LOWER(SPLIT_PART(c.from_email, '@', 2)), ''), 'unknown') = $%d", distIdx)
 		distArgs = append(distArgs, domain)
 
+		// Brand-scoped unsubscribes do NOT flip sub.status (a subscriber
+		// who unsubs from brand A is still 'confirmed' for brand B). To
+		// keep the ISP distribution honest we must subtract rows that
+		// are suppressed for THIS campaign's brand. brand_root is a
+		// suffix of the sending domain by construction (see internal/pkg/brand),
+		// so a suffix match on c.from_email's domain is correct for the
+		// five owned brands. The NOT EXISTS is index-friendly via the
+		// (brand_root, email_hash) lookup index.
 		distRows, distErr := s.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT LOWER(SPLIT_PART(sub.email, '@', 2)) as isp,
 			       COUNT(*) as cnt
@@ -1125,6 +1309,14 @@ func (s *AdvancedMailingService) infraLevel2(ctx context.Context, start, end tim
 			  AND c.from_email IS NOT NULL AND c.from_email LIKE '%%@%%'
 			  AND sub.email LIKE '%%@%%'
 			  AND sub.status = 'confirmed'
+			  AND NOT EXISTS (
+				SELECT 1 FROM mailing_domain_suppressions ds
+				WHERE ds.email_hash = md5(LOWER(sub.email))
+				  AND (
+					LOWER(SPLIT_PART(c.from_email, '@', 2)) = ds.brand_root
+					OR LOWER(SPLIT_PART(c.from_email, '@', 2)) LIKE '%%.' || ds.brand_root
+				  )
+			  )
 			GROUP BY LOWER(SPLIT_PART(sub.email, '@', 2))
 			ORDER BY cnt DESC
 			LIMIT 100
@@ -2040,10 +2232,15 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 			"sent": r.Metrics.Sent, "delivered": r.Metrics.Delivered,
 			"opens": r.Metrics.Opens, "clicks": r.Metrics.Clicks,
 			"hard_bounces": r.Metrics.HardBounces, "soft_bounces": r.Metrics.SoftBounces,
-			"complaints": r.Metrics.Complaints,
-			"open_rate": r.Metrics.OpenRate, "click_rate": r.Metrics.ClickRate,
-			"hard_bounce_rate": r.Metrics.HardBounceRate, "soft_bounce_rate": r.Metrics.SoftBounceRate,
-			"complaint_rate": r.Metrics.ComplaintRate,
+			"complaints":   r.Metrics.Complaints,
+			"deferred":     r.Metrics.Deferred,
+			"unsubscribes": r.Metrics.Unsubscribes,
+			"open_rate":    r.Metrics.OpenRate, "click_rate": r.Metrics.ClickRate,
+			"hard_bounce_rate":  r.Metrics.HardBounceRate, "soft_bounce_rate": r.Metrics.SoftBounceRate,
+			"complaint_rate":    r.Metrics.ComplaintRate,
+			"delivery_rate":     r.Metrics.DeliveryRate,
+			"deferral_rate":     r.Metrics.DeferralRate,
+			"unsubscribe_rate":  r.Metrics.UnsubRate,
 		})
 	}
 	if isps == nil {

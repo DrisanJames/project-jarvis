@@ -14,9 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 // HandleSendCampaign sends a campaign immediately using the selected profile
@@ -255,12 +257,26 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		emailID := uuid.New()
 		trackedHTML := cb.mailingSvc.injectTrackingWithURL(personalizedHTML, orgID, campUUID, sub.ID, emailID, campaignTrackingURL)
 
-		// Generate unsub URL and inject into body + headers
-		unsubData := fmt.Sprintf("%s|%s|%s", orgID, campUUID.String(), sub.ID.String())
-		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-		unsubURL := fmt.Sprintf("%s/track/unsubscribe/%s", campaignTrackingURL, unsubEncoded)
+		// Build SIGNED unsubscribe URLs. Previously this path emitted
+		// 3-part tokens with no HMAC signature — HandleTrackUnsubscribe
+		// rejects unsigned tokens when a signing key is configured,
+		// leaving subscribers with broken unsubscribe links. Now we
+		// delegate to the worker helpers that mint the same signed
+		// token shape HandleTrackUnsubscribe expects, plus a 4-part
+		// brand-scoped variant for the TOP/List-Unsubscribe leg.
+		sendBrandRoot := brand.RootFromEmail(campaign.FromEmail)
+		unsubURL := worker.GenerateUnsubscribeURL(
+			orgID.String(), campUUID.String(), sub.ID.String(),
+			campaignTrackingURL, cb.mailingSvc.signingKey,
+		)
+		brandUnsubURL := worker.GenerateBrandUnsubscribeURL(
+			orgID.String(), campUUID.String(), sub.ID.String(), sendBrandRoot,
+			campaignTrackingURL, cb.mailingSvc.signingKey,
+		)
 		trackedHTML = strings.ReplaceAll(trackedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		trackedHTML = strings.ReplaceAll(trackedHTML, "{{system.unsubscribe_url}}", unsubURL)
+		trackedHTML = strings.ReplaceAll(trackedHTML, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		trackedHTML = strings.ReplaceAll(trackedHTML, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
 
 		if unsubURL != "" && !strings.Contains(strings.ToLower(trackedHTML), "/track/unsubscribe/") && !strings.Contains(strings.ToLower(trackedHTML), "unsubscribe") {
 			unsubBlock := fmt.Sprintf(
@@ -275,7 +291,24 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 
 		unsubHeaders := map[string]string{}
 		if unsubURL != "" {
-			unsubHeaders["List-Unsubscribe"] = fmt.Sprintf("<%s>", unsubURL)
+			// RFC 8058: HTTPS leg is brand-scoped one-click; mailto leg
+			// is global and ceremonial (most clients ignore it).
+			httpsLeg := unsubURL
+			if brandUnsubURL != "" {
+				httpsLeg = brandUnsubURL
+			}
+			mailtoData := base64.URLEncoding.EncodeToString(
+				[]byte(fmt.Sprintf("%s|%s|%s", orgID.String(), campUUID.String(), sub.ID.String())))
+			fromDomain := ""
+			if parts := strings.SplitN(campaign.FromEmail, "@", 2); len(parts) == 2 {
+				fromDomain = parts[1]
+			}
+			if fromDomain != "" {
+				unsubHeaders["List-Unsubscribe"] = fmt.Sprintf(
+					"<mailto:unsub+%s@%s?subject=unsubscribe>, <%s>", mailtoData, fromDomain, httpsLeg)
+			} else {
+				unsubHeaders["List-Unsubscribe"] = fmt.Sprintf("<%s>", httpsLeg)
+			}
 			unsubHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 		}
 
@@ -331,6 +364,9 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 				VALUES ($1, $2, $3, $4, 'sent', NOW(), $5)
 			`, emailID, orgID, campUUID, sub.ID, cbSendDomain)
 
+			// Master List Migration P2 — shadow write to subscriber_domain_state.
+			mailing.UpsertSDSSend(ctx, cb.db, sub.ID, cbSendDomain)
+
 			// Bootstrap inbox profile for this recipient
 			recipientDomain := ""
 			if atIdx := strings.LastIndex(sub.Email, "@"); atIdx >= 0 {
@@ -378,6 +414,12 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 				INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
 			`, uuid.New(), orgID, campUUID, sub.ID, eventType, string(bounceType), sendErr.Error(), cbBounceDomain)
+
+			// Master List Migration P2 — shadow write to subscriber_domain_state.
+			// Hard bounces also stamp the global mailing_subscribers row.
+			if bounceType == smtputil.BounceHard {
+				mailing.UpsertSDSHardBounce(ctx, cb.db, sub.ID, cbBounceDomain)
+			}
 
 			if cb.mailingSvc != nil && cb.mailingSvc.onTrackingEvent != nil {
 				cb.mailingSvc.onTrackingEvent(campUUID.String(), eventType, sub.Email, ispGroup)

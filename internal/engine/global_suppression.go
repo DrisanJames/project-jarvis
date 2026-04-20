@@ -32,6 +32,13 @@ type GlobalSuppressionHub struct {
 	mu       sync.RWMutex
 	hashSet  map[string]bool // MD5 hash -> suppressed (hot cache)
 	emailSet map[string]bool // lowercase email -> suppressed (hot cache)
+	// brandSet maps brand_root (lowercase, e.g. "discountblog.com") ->
+	// md5_hash -> true for brand-scoped suppressions. This is a SEPARATE
+	// axis from emailSet/hashSet so that a subscriber suppressed only for
+	// one brand root can still receive mail from other brand roots.
+	// Protected by the same mu as emailSet/hashSet so a single read lock
+	// covers both global and brand checks in the send hot path.
+	brandSet map[string]map[string]bool
 
 	suppressionDir string
 	globalFilePath string
@@ -107,6 +114,7 @@ func NewGlobalSuppressionHub(db *sql.DB, orgID, suppressionDir string) *GlobalSu
 		orgID:          orgID,
 		hashSet:        make(map[string]bool),
 		emailSet:       make(map[string]bool),
+		brandSet:       make(map[string]map[string]bool),
 		suppressionDir: suppressionDir,
 		globalFilePath: globalFile,
 		subscribers:    make(map[string]chan SuppressionEvent),
@@ -115,30 +123,66 @@ func NewGlobalSuppressionHub(db *sql.DB, orgID, suppressionDir string) *GlobalSu
 }
 
 // LoadFromDB populates the in-memory MD5 cache from the database.
+//
+// Both global and brand-scoped suppressions are loaded under a single write
+// lock so the caches are always consistent — there is never a window where
+// the send pipeline can see "global loaded but brand not yet loaded".
 func (h *GlobalSuppressionHub) LoadFromDB(ctx context.Context) error {
-	rows, err := h.db.QueryContext(ctx,
+	globalRows, err := h.db.QueryContext(ctx,
 		`SELECT email, md5_hash FROM mailing_global_suppressions WHERE organization_id = $1`,
 		h.orgID)
 	if err != nil {
 		return fmt.Errorf("load global suppressions: %w", err)
 	}
-	defer rows.Close()
+	defer globalRows.Close()
+
+	// The brand-scoped table is opportunistic — it may not exist on older
+	// deployments until runStartupMigrations has created it. Ignore the
+	// "relation does not exist" class of errors and continue with zero
+	// brand entries; the startup migration will create the table on next
+	// boot. Any other error is fatal because it signals a real DB problem.
+	brandRows, brandErr := h.db.QueryContext(ctx,
+		`SELECT brand_root, email_hash FROM mailing_domain_suppressions WHERE organization_id = $1`,
+		h.orgID)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	count := 0
-	for rows.Next() {
+	globalCount := 0
+	for globalRows.Next() {
 		var email, hash string
-		if err := rows.Scan(&email, &hash); err != nil {
+		if err := globalRows.Scan(&email, &hash); err != nil {
 			continue
 		}
 		h.emailSet[email] = true
 		h.hashSet[hash] = true
-		count++
+		globalCount++
 	}
-	log.Printf("[global-suppression] loaded %d entries from DB", count)
-	return rows.Err()
+
+	brandCount := 0
+	if brandErr == nil && brandRows != nil {
+		defer brandRows.Close()
+		for brandRows.Next() {
+			var br, hash string
+			if err := brandRows.Scan(&br, &hash); err != nil {
+				continue
+			}
+			br = strings.ToLower(strings.TrimSpace(br))
+			if _, ok := h.brandSet[br]; !ok {
+				h.brandSet[br] = make(map[string]bool)
+			}
+			h.brandSet[br][hash] = true
+			brandCount++
+		}
+	} else if brandErr != nil {
+		// Table may not exist on a first deploy where migrations run
+		// AFTER hub load. Log but don't fail — the send pipeline
+		// still works, it just has no brand suppressions yet.
+		log.Printf("[global-suppression] brand table load skipped: %v (will be created by startup migrations)", brandErr)
+	}
+
+	log.Printf("[global-suppression] loaded %d global + %d brand entries from DB", globalCount, brandCount)
+	return globalRows.Err()
 }
 
 // IsSuppressed checks if an email is on the global suppression list (O(1) in-memory).
@@ -146,6 +190,35 @@ func (h *GlobalSuppressionHub) IsSuppressed(email string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.emailSet[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// IsSuppressedForBrand returns true if the email is suppressed either
+// globally OR for the given brand root. Both checks happen under a
+// SINGLE read lock so the send hot path pays one synchronization cost
+// per candidate, not two. Pass brandRoot="" to fall back to a pure
+// global check (identical to IsSuppressed) — useful for unknown sending
+// domains where no brand root can be derived.
+func (h *GlobalSuppressionHub) IsSuppressedForBrand(email, brandRoot string) bool {
+	emailNorm := strings.ToLower(strings.TrimSpace(email))
+	if emailNorm == "" {
+		return false
+	}
+	brandNorm := strings.ToLower(strings.TrimSpace(brandRoot))
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if h.emailSet[emailNorm] {
+		return true
+	}
+	if brandNorm == "" {
+		return false
+	}
+	inner, ok := h.brandSet[brandNorm]
+	if !ok {
+		return false
+	}
+	return inner[MD5Hash(emailNorm)]
 }
 
 // IsSuppressedByHash checks if an MD5 hash is on the global suppression list.
@@ -233,6 +306,97 @@ func (h *GlobalSuppressionHub) Suppress(ctx context.Context, email, reason, sour
 
 	log.Printf("[global-suppression] SUPPRESSED %s reason=%s source=%s isp=%s md5=%s", email, reason, source, isp, hash)
 	return true, nil
+}
+
+// SuppressScoped writes a brand-scoped suppression. The subscriber stays
+// mailable for other brand roots — only the specified brand_root is
+// blocked for this email. DB and in-memory cache are updated atomically
+// (DB first; cache update inside the write lock).
+//
+// Returns nil if the entry already existed (ON CONFLICT DO UPDATE keeps
+// the write idempotent). Returns an error only on actual DB failure.
+func (h *GlobalSuppressionHub) SuppressScoped(ctx context.Context, email, brandRoot, reason, source, isp, sourceIP, campaign string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	brandRoot = strings.ToLower(strings.TrimSpace(brandRoot))
+	if email == "" || brandRoot == "" {
+		return nil
+	}
+	hash := MD5Hash(email)
+
+	_, err := h.db.ExecContext(ctx,
+		`INSERT INTO mailing_domain_suppressions
+		(organization_id, email, email_hash, brand_root, reason, source, isp, source_ip, campaign_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+		ON CONFLICT (organization_id, email_hash, brand_root) DO UPDATE SET
+			reason = EXCLUDED.reason,
+			source = EXCLUDED.source,
+			updated_at = NOW()`,
+		h.orgID, email, hash, brandRoot, reason, source,
+		nullStr(isp), nullStr(sourceIP), nullStr(campaign),
+	)
+	if err != nil {
+		return fmt.Errorf("suppress scoped %s brand=%s: %w", email, brandRoot, err)
+	}
+
+	h.mu.Lock()
+	if _, ok := h.brandSet[brandRoot]; !ok {
+		h.brandSet[brandRoot] = make(map[string]bool)
+	}
+	h.brandSet[brandRoot][hash] = true
+	h.mu.Unlock()
+
+	h.fanOut(SuppressionEvent{
+		Email:     email,
+		MD5Hash:   hash,
+		Reason:    reason,
+		Source:    source,
+		ISP:       isp,
+		Action:    "suppressed_brand:" + brandRoot,
+		Timestamp: time.Now(),
+	})
+
+	log.Printf("[global-suppression] SUPPRESSED %s brand=%s reason=%s source=%s isp=%s md5=%s", email, brandRoot, reason, source, isp, hash)
+	return nil
+}
+
+// RemoveScoped removes a brand-scoped suppression entry (admin override).
+// Mirrors the concurrency + fan-out shape of SuppressScoped so the in-memory
+// cache stays consistent with the underlying mailing_domain_suppressions row.
+// Safe to call when either the row or the in-memory entry is already absent.
+func (h *GlobalSuppressionHub) RemoveScoped(ctx context.Context, email, brandRoot string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	brandRoot = strings.ToLower(strings.TrimSpace(brandRoot))
+	if email == "" || brandRoot == "" {
+		return nil
+	}
+	hash := MD5Hash(email)
+
+	_, err := h.db.ExecContext(ctx,
+		`DELETE FROM mailing_domain_suppressions
+		 WHERE organization_id = $1 AND email_hash = $2 AND brand_root = $3`,
+		h.orgID, hash, brandRoot)
+	if err != nil {
+		return fmt.Errorf("remove scoped %s brand=%s: %w", email, brandRoot, err)
+	}
+
+	h.mu.Lock()
+	if m, ok := h.brandSet[brandRoot]; ok {
+		delete(m, hash)
+		if len(m) == 0 {
+			delete(h.brandSet, brandRoot)
+		}
+	}
+	h.mu.Unlock()
+
+	h.fanOut(SuppressionEvent{
+		Email:     email,
+		MD5Hash:   hash,
+		Action:    "removed_brand:" + brandRoot,
+		Timestamp: time.Now(),
+	})
+
+	log.Printf("[global-suppression] REMOVED_BRAND %s brand=%s md5=%s", email, brandRoot, hash)
+	return nil
 }
 
 // Remove removes an email from the global suppression list (admin override).

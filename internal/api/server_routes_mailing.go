@@ -330,6 +330,10 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/overview", advSvc.HandleAnalyticsOverview)
 			r.Get("/analytics/isp-performance", advSvc.HandleISPPerformance)
 			r.Get("/analytics/isp-sending-insights", advSvc.HandleISPSendingInsights)
+			r.Get("/analytics/active-sends", advSvc.HandleActiveSends)
+			r.Get("/analytics/bounce-reasons", advSvc.HandleBounceReasons)
+			r.Get("/analytics/cross-brand-cap", advSvc.HandleCrossBrandCapMetrics)
+			r.Get("/analytics/sds-audience-health", advSvc.HandleSDSAudienceHealth)
 			
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)
@@ -825,6 +829,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			workerCtx := context.Background()
 			segMaterializer := NewSegmentMaterializer(db, "04:00")
 			segMaterializer.Start(workerCtx)
+			// Populate the canonical master-list segments (Master List,
+			// Engaged Openers, Engaged Clickers) right away so the UI
+			// shows non-zero counts on first boot after the phase21 seed
+			// migrations run, instead of waiting up to 24h for the
+			// nightly cycle. Runs in its own goroutine — large subscriber
+			// tables can take minutes to scan and we don't want to block
+			// HTTP server startup.
+			go segMaterializer.MaterializeCanonicalSegments(workerCtx)
 			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
 
 			// === BLOG CAMPAIGN INGEST (minimal JSON → full engaged campaign) ===

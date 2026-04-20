@@ -311,7 +311,19 @@ func isEventField(field string) bool {
 // all event subqueries and time-relative subscriber fields (last_open_at,
 // last_click_at) through mailing_tracking_events.sending_domain.
 func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionInput) (string, []interface{}) {
-	whereClauses := []string{"status IN ('active','confirmed')"}
+	// Master List Migration P7: every segment, whether list-scoped or
+	// master-list-wide, must exclude globally hard-bounced and complained
+	// subscribers. These two columns were added to mailing_subscribers in
+	// P1 precisely so selection code has a cheap, denormalized check
+	// instead of re-joining mailing_global_suppressions on every query.
+	// Keeping this in the shared WHERE builder means the segment
+	// materializer, the segment preview UI, and any live segment query
+	// all behave identically.
+	whereClauses := []string{
+		"status IN ('active','confirmed')",
+		"hard_bounced_at IS NULL",
+		"complained_at IS NULL",
+	}
 	args := []interface{}{}
 	argNum := 1
 
