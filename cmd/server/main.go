@@ -1311,7 +1311,19 @@ func runStartupMigrations(db *sql.DB) {
 		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},
 		{"widen_status_col", `DO $$ BEGIN ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
-		{"readd_status_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+		// readd_status_chk whitelist MUST include 'finalizing_audience' because
+		// reserveCampaignForDeploy() inserts new campaigns with that status
+		// (see handlers_pmta_campaign.go). Every boot this runs after
+		// drop_status_chk, so the end state is always the whitelist coded
+		// here. Later v2 migrations (drop_status_chk_v2, readd_status_chk_v2,
+		// drop_status_check_constraint) live ~2000 lines deeper and during
+		// the Apr 20 2026 deploy they were unreachable — intermediate
+		// migrations hit 5s statement_timeout and the runner stalled before
+		// ever reaching them. Result: prod was stuck on the old whitelist
+		// and every PMTA campaign POST threw 23514. Adding 'finalizing_audience'
+		// here makes the early-boot path self-sufficient regardless of how
+		// far down the migration list the runner actually gets.
+		{"readd_status_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','finalizing_audience','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
 		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
 		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
