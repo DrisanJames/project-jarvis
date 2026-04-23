@@ -6,7 +6,7 @@ import {
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faMagic, faSave, faEye, faUpload, faCode, faGripVertical,
-  faCopy, faTrophy, faChevronDown, faChevronUp, faSearch,
+  faCopy, faTrophy, faChevronDown, faChevronUp, faSearch, faLock,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -235,6 +235,7 @@ interface PersistedPMTACampaignInput {
   randomize_audience?: boolean;
   send_mode?: 'immediate' | 'scheduled';
   scheduled_at?: string;
+  content_locked?: boolean;
 }
 
 interface PMTADraftResponse {
@@ -326,6 +327,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [selectedISPs, setSelectedISPs] = useState<string[]>([...ALL_ISPS]);
   const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({ ...DEFAULT_ISP_QUOTAS });
   const [randomizeAudience, setRandomizeAudience] = useState(false);
+  // content_locked: when on, the PMTA wave dispatcher skips subject/HTML
+  // fingerprint mutations at send time. Required for strict advertisers
+  // (e.g. TruGreen) who demand byte-faithful delivery of the approved creative.
+  // Honeypot injection and URL sanitization remain active.
+  const [contentLocked, setContentLocked] = useState(false);
 
   // ISP Sending Health insights
   const [ispInsights, setIspInsights] = useState<ISPInsight[]>([]);
@@ -966,6 +972,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setSelectedISPs(derivedISPs);
     setISPQuotas(nextQuotas);
     setRandomizeAudience(Boolean(input.randomize_audience));
+    setContentLocked(Boolean(input.content_locked));
     setSelectedDomain(input.sending_domain || '');
     setVariants(input.variants && input.variants.length > 0
       ? input.variants
@@ -1291,6 +1298,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       throttle_strategy: 'auto',
       send_mode: sendMode,
+      content_locked: contentLocked,
     };
 
     if (campaignId) {
@@ -1304,6 +1312,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     campaignId,
     campaignName,
     buildDefaultISPPlan,
+    contentLocked,
     ispPlansByKey,
     ispQuotas,
     randomizeAudience,
@@ -2430,6 +2439,48 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </div>
       </div>
       <StepErrorBanner stepNum={3} />
+
+      <div
+        style={{
+          background: contentLocked ? 'rgba(245, 158, 11, 0.08)' : '#0d1526',
+          border: `1px solid ${contentLocked ? 'rgba(245, 158, 11, 0.5)' : 'rgba(0,200,255,0.08)'}`,
+          borderRadius: 10,
+          padding: 14,
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+        }}
+      >
+        <div style={{ flex: '0 0 auto', paddingTop: 2 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={contentLocked}
+              onChange={(e) => setContentLocked(e.target.checked)}
+              style={{
+                width: 18,
+                height: 18,
+                cursor: 'pointer',
+                accentColor: '#f59e0b',
+              }}
+            />
+          </label>
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <FontAwesomeIcon icon={faLock} style={{ color: contentLocked ? '#f59e0b' : 'rgba(180,210,240,0.5)', fontSize: 13 }} />
+            <strong style={{ color: contentLocked ? '#f59e0b' : '#e0e6f0', fontSize: 14 }}>
+              Lock Creative Content (Strict Advertiser Mode)
+            </strong>
+          </div>
+          <p style={{ margin: 0, color: 'rgba(180,210,240,0.7)', fontSize: 12, lineHeight: 1.5 }}>
+            {contentLocked
+              ? 'LOCKED — every recipient receives the approved subject and HTML byte-for-byte. Per-recipient fingerprint mutations (synonym swaps, punctuation rotation, invisible HTML comments) are disabled. Honeypot link and URL sanitization remain on.'
+              : 'Unlocked — the wave dispatcher applies subtle per-recipient subject and HTML mutations to disrupt ISP fingerprinting. Enable this only when the advertiser requires byte-faithful delivery of the approved creative (e.g. TruGreen, brand-compliance partners).'}
+          </p>
+        </div>
+      </div>
 
       {showTemplatePicker && (
         <div style={{ background: '#0d1526', border: '1px solid #00b0ff', borderRadius: 10, padding: 16, marginBottom: 16 }}>

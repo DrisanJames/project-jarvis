@@ -220,7 +220,8 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 			   COALESCE(c.throttle_rate_per_minute, 0),
 			   COALESCE(c.throttle_duration_hours, 0),
 			   c.execution_mode,
-			   c.esp_quotas::text
+			   c.esp_quotas::text,
+			   COALESCE(c.content_locked, FALSE)
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles p ON c.sending_profile_id = p.id
 		LEFT JOIN mailing_lists l ON c.list_id = l.id
@@ -243,6 +244,7 @@ func (cb *CampaignBuilder) HandleGetCampaign(w http.ResponseWriter, r *http.Requ
 		&listIDsJSON, &suppressionListIDsJSON, &suppressionSegmentIDsJSON, &espQuotasJSON,
 		&campaign.ThrottleRatePerMinute, &campaign.ThrottleDurationHours,
 		&executionMode, &ispQuotasJSON,
+		&campaign.ContentLocked,
 	)
 	
 	if err != nil {
@@ -508,6 +510,11 @@ func (cb *CampaignBuilder) HandleUpdateCampaign(w http.ResponseWriter, r *http.R
 	if input.ExecutionMode != "" {
 		updates = append(updates, fmt.Sprintf("execution_mode = $%d", argIdx))
 		args = append(args, input.ExecutionMode)
+		argIdx++
+	}
+	if input.ContentLocked != nil {
+		updates = append(updates, fmt.Sprintf("content_locked = $%d", argIdx))
+		args = append(args, *input.ContentLocked)
 		argIdx++
 	}
 	

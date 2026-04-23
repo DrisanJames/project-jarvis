@@ -664,6 +664,7 @@ func enqueueSubscribersForCampaign(ctx context.Context, db *sql.DB, campaignID u
 		query = `
 			SELECT s.id, s.email FROM mailing_subscribers s
 			WHERE s.status = 'confirmed'
+			AND s.is_bot = false
 			AND NOT EXISTS (
 				SELECT 1 FROM mailing_suppressions sup 
 				WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true
@@ -679,6 +680,7 @@ func enqueueSubscribersForCampaign(ctx context.Context, db *sql.DB, campaignID u
 		query = `
 			SELECT s.id, s.email FROM mailing_subscribers s
 			WHERE s.list_id = $1 AND s.status = 'confirmed'
+			AND s.is_bot = false
 			AND NOT EXISTS (
 				SELECT 1 FROM mailing_suppressions sup 
 				WHERE LOWER(sup.email) = LOWER(s.email) AND sup.active = true

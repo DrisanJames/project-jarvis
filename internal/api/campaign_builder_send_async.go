@@ -246,6 +246,7 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 			 AND sds.sending_domain = $1
 			WHERE sub.hard_bounced_at IS NULL
 			  AND sub.complained_at IS NULL
+			  AND sub.is_bot = false
 			  AND sds.unsubscribed_at IS NULL
 			  AND sds.hard_bounced_at IS NULL
 			  AND sds.complained_at IS NULL
@@ -269,7 +270,7 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 			return
 		}
 	} else if listID.Valid {
-		query = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed'`
+		query = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed' AND is_bot = false`
 		args = []interface{}{listID.String}
 	} else {
 		log.Printf("[EnqueueAsync] Campaign %s has no list or segment", campaignID)

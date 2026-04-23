@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,7 +24,7 @@ import (
 const (
 	VersionAnalyticsOverview       = "3.2"
 	VersionISPPerformance          = "1.3"
-	VersionISPSendingInsights      = "1.2"
+	VersionISPSendingInsights      = "1.4"
 	VersionCampaignComparison      = "2.0"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
@@ -34,6 +35,7 @@ const (
 	VersionHistoricalMetrics       = "1.0"
 	VersionCrossBrandCapMetrics    = "1.0"
 	VersionSDSAudienceHealth       = "1.0"
+	VersionWelcomeCohortAudit      = "1.0"
 )
 
 // mstLoc is the canonical timezone for all analytics date logic (America/Denver).
@@ -545,6 +547,247 @@ func (s *AdvancedMailingService) HandleSDSAudienceHealth(w http.ResponseWriter, 
 		"api_version": VersionSDSAudienceHealth,
 		"total_rows":  total,
 		"by_domain":   byDomain,
+	})
+}
+
+// ================== WELCOME COHORT AUDIT ==================
+
+// parseCohortDays clamps the ?days= param to {3,7,14,30} for this endpoint.
+// Default is 7. Kept as a pure helper so tests can pin the mapping.
+func parseCohortDays(raw string) int {
+	switch strings.TrimSpace(raw) {
+	case "3":
+		return 3
+	case "14":
+		return 14
+	case "30":
+		return 30
+	default:
+		return 7
+	}
+}
+
+// HandleWelcomeCohortAudit answers three operational questions in one call,
+// all anchored to America/Denver calendar days:
+//
+//  1. Are today's welcome recipients truly NET-NEW to the sending domain?
+//     (i.e. SDS row created today, total_sent = 1, never mailed on this
+//     domain before.)
+//  2. What is the day-over-day new-audience acquisition trend (last N MST
+//     days) per sending domain?
+//  3. How large is the current 30d-opener and 30d-clicker engager pool per
+//     domain, and what is the projected additional engager audience we
+//     should expect tomorrow if today's welcome cohort engages at the
+//     assumed open/click rates?
+//
+// Query params:
+//
+//	days          — 3 | 7 | 14 | 30 (default 7) for the daily breakdown
+//	open_rate     — optional override, percent (default 15)
+//	click_rate    — optional override, percent (default 2)
+//
+// Response shape:
+//
+//	{
+//	  "api_version": "1.0",
+//	  "as_of_mst": "2026-04-20",
+//	  "window_mst": { "start": "2026-04-14", "end": "2026-04-20", "days": 7 },
+//	  "assumed_rates_pct": { "open": 15, "click": 2 },
+//	  "by_sending_domain": [{
+//	    "sending_domain": "em.quizfiesta.com",
+//	    "sds_total": 7152,
+//	    "created_today_mst": 2285,
+//	    "created_today_net_new": 2285,   // total_sent = 1
+//	    "created_by_mst_day": [{"date":"2026-04-14","new":450}, ...],
+//	    "engager_pool_30d": { "openers": 0, "clickers": 0 },
+//	    "engager_pool_7d":  { "openers": 0, "clickers": 0 },
+//	    "projected_additions_tomorrow": {
+//	      "new_openers": 343, "new_clickers": 46
+//	    }
+//	  }],
+//	  "totals": { ...same shape, summed across domains... }
+//	}
+func (s *AdvancedMailingService) HandleWelcomeCohortAudit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	days := parseCohortDays(r.URL.Query().Get("days"))
+	start, end := computeMSTWindow(time.Now(), days)
+
+	openRate := 15.0
+	if v := strings.TrimSpace(r.URL.Query().Get("open_rate")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
+			openRate = f
+		}
+	}
+	clickRate := 2.0
+	if v := strings.TrimSpace(r.URL.Query().Get("click_rate")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
+			clickRate = f
+		}
+	}
+
+	type dayBucket struct {
+		Date string `json:"date"`
+		New  int    `json:"new"`
+	}
+	type engagerPool struct {
+		Openers  int `json:"openers"`
+		Clickers int `json:"clickers"`
+	}
+	type projection struct {
+		NewOpeners  int `json:"new_openers"`
+		NewClickers int `json:"new_clickers"`
+	}
+	type domainRow struct {
+		Domain             string       `json:"sending_domain"`
+		SDSTotal           int          `json:"sds_total"`
+		CreatedTodayMST    int          `json:"created_today_mst"`
+		CreatedTodayNetNew int          `json:"created_today_net_new"`
+		CreatedByDay       []dayBucket  `json:"created_by_mst_day"`
+		EngagerPool30d     engagerPool  `json:"engager_pool_30d"`
+		EngagerPool7d      engagerPool  `json:"engager_pool_7d"`
+		Projected          projection   `json:"projected_additions_tomorrow"`
+	}
+
+	// Today midnight MST as the anchor for "today" buckets.
+	nowMST := time.Now().In(mstLoc)
+	todayMidnightMST := time.Date(nowMST.Year(), nowMST.Month(), nowMST.Day(), 0, 0, 0, 0, mstLoc)
+	todayStartUTC := todayMidnightMST.UTC()
+
+	// Query 1: per-domain snapshot (sds_total, engager pools, today counters).
+	// Single scan of mailing_subscriber_domain_state; filters are all on
+	// indexed columns (sending_domain, created_at, last_open_at, last_click_at).
+	snapshotRows, err := s.db.QueryContext(ctx, `
+		SELECT sending_domain,
+			COUNT(*)                                                                          AS sds_total,
+			COUNT(*) FILTER (WHERE created_at >= $1)                                          AS created_today,
+			COUNT(*) FILTER (WHERE created_at >= $1 AND total_sent = 1)                       AS created_today_net_new,
+			COUNT(*) FILTER (WHERE last_open_at  IS NOT NULL AND last_open_at  > NOW() - INTERVAL '30 days') AS openers_30d,
+			COUNT(*) FILTER (WHERE last_click_at IS NOT NULL AND last_click_at > NOW() - INTERVAL '30 days') AS clickers_30d,
+			COUNT(*) FILTER (WHERE last_open_at  IS NOT NULL AND last_open_at  > NOW() - INTERVAL '7 days')  AS openers_7d,
+			COUNT(*) FILTER (WHERE last_click_at IS NOT NULL AND last_click_at > NOW() - INTERVAL '7 days')  AS clickers_7d
+		FROM mailing_subscriber_domain_state
+		WHERE unsubscribed_at IS NULL AND hard_bounced_at IS NULL
+		GROUP BY sending_domain
+		ORDER BY COUNT(*) DESC
+	`, todayStartUTC)
+	if err != nil {
+		log.Printf("[welcome-cohort-audit] snapshot query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "welcome_cohort_snapshot_failed")
+		return
+	}
+	defer snapshotRows.Close()
+
+	domains := make(map[string]*domainRow)
+	order := make([]string, 0, 8)
+	for snapshotRows.Next() {
+		var d domainRow
+		var o30, c30, o7, c7 int
+		if err := snapshotRows.Scan(&d.Domain, &d.SDSTotal, &d.CreatedTodayMST,
+			&d.CreatedTodayNetNew, &o30, &c30, &o7, &c7); err != nil {
+			continue
+		}
+		d.EngagerPool30d = engagerPool{Openers: o30, Clickers: c30}
+		d.EngagerPool7d = engagerPool{Openers: o7, Clickers: c7}
+		// Projected additions: assume today's net-new cohort will open/click
+		// at the provided rates over the 30d window. These do not overlap
+		// with existing pool members (net-new = no prior send to this domain
+		// so no prior open/click attributable to this domain).
+		d.Projected = projection{
+			NewOpeners:  int(math.Round(float64(d.CreatedTodayNetNew) * openRate / 100.0)),
+			NewClickers: int(math.Round(float64(d.CreatedTodayNetNew) * clickRate / 100.0)),
+		}
+		d.CreatedByDay = []dayBucket{}
+		domains[d.Domain] = &d
+		order = append(order, d.Domain)
+	}
+
+	// Query 2: per-domain per-MST-day new-audience count over the window.
+	dailyRows, err := s.db.QueryContext(ctx, `
+		SELECT sending_domain,
+			DATE(created_at AT TIME ZONE 'America/Denver') AS day_mst,
+			COUNT(*) AS new_subs
+		FROM mailing_subscriber_domain_state
+		WHERE created_at >= $1 AND created_at <= $2
+		GROUP BY sending_domain, day_mst
+		ORDER BY sending_domain, day_mst
+	`, start, end)
+	if err != nil {
+		log.Printf("[welcome-cohort-audit] daily query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "welcome_cohort_daily_failed")
+		return
+	}
+	defer dailyRows.Close()
+
+	// Pre-populate every day in the window so the frontend sees zeros on
+	// days where no welcome ran. Days are emitted in chronological order.
+	allDays := make([]string, 0, days)
+	for i := 0; i < days; i++ {
+		d := todayMidnightMST.AddDate(0, 0, -(days-1)+i).Format("2006-01-02")
+		allDays = append(allDays, d)
+	}
+	dailyMap := make(map[string]map[string]int) // domain -> date -> count
+	for dailyRows.Next() {
+		var dom, day string
+		var cnt int
+		var dayT time.Time
+		if err := dailyRows.Scan(&dom, &dayT, &cnt); err != nil {
+			continue
+		}
+		day = dayT.Format("2006-01-02")
+		if _, ok := dailyMap[dom]; !ok {
+			dailyMap[dom] = map[string]int{}
+		}
+		dailyMap[dom][day] = cnt
+	}
+
+	for dom, d := range domains {
+		for _, day := range allDays {
+			d.CreatedByDay = append(d.CreatedByDay, dayBucket{
+				Date: day,
+				New:  dailyMap[dom][day],
+			})
+		}
+	}
+
+	// Build the ordered response slice and totals rollup.
+	byDomain := make([]*domainRow, 0, len(order))
+	totalsByDay := make(map[string]int, days)
+	totals := domainRow{Domain: "__total__", CreatedByDay: []dayBucket{}}
+	for _, name := range order {
+		d := domains[name]
+		byDomain = append(byDomain, d)
+		totals.SDSTotal += d.SDSTotal
+		totals.CreatedTodayMST += d.CreatedTodayMST
+		totals.CreatedTodayNetNew += d.CreatedTodayNetNew
+		totals.EngagerPool30d.Openers += d.EngagerPool30d.Openers
+		totals.EngagerPool30d.Clickers += d.EngagerPool30d.Clickers
+		totals.EngagerPool7d.Openers += d.EngagerPool7d.Openers
+		totals.EngagerPool7d.Clickers += d.EngagerPool7d.Clickers
+		totals.Projected.NewOpeners += d.Projected.NewOpeners
+		totals.Projected.NewClickers += d.Projected.NewClickers
+		for _, b := range d.CreatedByDay {
+			totalsByDay[b.Date] += b.New
+		}
+	}
+	for _, day := range allDays {
+		totals.CreatedByDay = append(totals.CreatedByDay, dayBucket{Date: day, New: totalsByDay[day]})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"api_version": VersionWelcomeCohortAudit,
+		"as_of_mst":   todayMidnightMST.Format("2006-01-02"),
+		"window_mst": map[string]interface{}{
+			"start": start.In(mstLoc).Format("2006-01-02"),
+			"end":   end.In(mstLoc).Format("2006-01-02"),
+			"days":  days,
+		},
+		"assumed_rates_pct": map[string]float64{
+			"open":  openRate,
+			"click": clickRate,
+		},
+		"by_sending_domain": byDomain,
+		"totals":            totals,
 	})
 }
 
@@ -2257,147 +2500,407 @@ func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *
 
 // ================== ISP SENDING INSIGHTS ==================
 
+// parseISPInsightsDays parses the `days` query param for the ISP Insights
+// endpoint. Only 3, 7, and 14 are accepted; anything else (blank, bad value,
+// out-of-range) falls back to 7. The tight whitelist keeps scans bounded and
+// forces the UI to offer an honest, pre-approved set of windows.
+func parseISPInsightsDays(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 7
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 7
+	}
+	switch parsed {
+	case 3, 7, 14:
+		return parsed
+	default:
+		return 7
+	}
+}
+
+// computeMSTWindow produces an analytics window anchored to America/Denver
+// calendar days. The start is MST midnight of (today - days + 1), so a days=7
+// window ending on 2026-04-20 covers Apr 14 through Apr 20 inclusive in MST.
+// `end` is the provided `now` in UTC (up-to-the-minute) so today's partial
+// day is always included. Returning both values in UTC keeps downstream SQL
+// parameter binding unambiguous.
+func computeMSTWindow(now time.Time, days int) (start, end time.Time) {
+	if days < 1 {
+		days = 7
+	}
+	nowMST := now.In(mstLoc)
+	todayMidnightMST := time.Date(nowMST.Year(), nowMST.Month(), nowMST.Day(), 0, 0, 0, 0, mstLoc)
+	start = todayMidnightMST.AddDate(0, 0, -(days - 1)).UTC()
+	end = now.UTC()
+	return start, end
+}
+
+// sanitizeISPKey lowercases and trims an isp query param; returns "" if blank.
+// Kept separate so tests can nail the normalization behaviour independently
+// from the handler.
+func sanitizeISPKey(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
 func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.Header.Get("X-Organization-ID")
 	domainFilter := strings.TrimSpace(r.URL.Query().Get("sending_domain"))
+	ispFilter := sanitizeISPKey(r.URL.Query().Get("isp"))
 
-	end := time.Now()
-	start := end.Add(-3 * 24 * time.Hour)
+	days := parseISPInsightsDays(r.URL.Query().Get("days"))
+	start, end := computeMSTWindow(time.Now(), days)
 
-	domSubquery := `SELECT t.*, LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2))) as dom
+	// Build the shared event subquery. Slim projection + NO subscribers join.
+	// `mailing_tracking_events.recipient_domain` is populated inline by
+	// HandleTrackOpen/HandleTrackClick (patched 2026-04-20) and by send_worker
+	// for sent/bounced, so we can bucket by ISP directly. Historical opens/clicks
+	// written before that patch bucket into 'other' — acceptable tradeoff.
+	domSubquery := `SELECT t.event_type, t.event_at, t.bounce_type, t.is_machine_open,
+			t.sending_domain, t.campaign_id,
+			LOWER(COALESCE(NULLIF(t.recipient_domain,''), 'unknown')) as dom
 		FROM mailing_tracking_events t
-		LEFT JOIN mailing_subscribers s ON t.subscriber_id = s.id
 		WHERE t.event_at >= $1 AND t.event_at <= $2`
 	subqueryArgs := []interface{}{start, end}
-
 	if domainFilter != "" {
 		domSubquery += fmt.Sprintf(` AND LOWER(COALESCE(NULLIF(t.sending_domain,''),'unknown')) = LOWER($%d)`, len(subqueryArgs)+1)
 		subqueryArgs = append(subqueryArgs, domainFilter)
 	}
 
-	// Fetch distinct sending domains for the filter dropdown
-	var sendingDomains []string
-	domRows, _ := s.db.QueryContext(ctx,
-		`SELECT DISTINCT LOWER(COALESCE(NULLIF(sending_domain,''),'unknown')) as sd
-		 FROM mailing_tracking_events
-		 WHERE event_at >= $1 AND event_at <= $2
-		 ORDER BY sd`, start, end)
-	if domRows != nil {
-		defer domRows.Close()
-		for domRows.Next() {
-			var sd string
-			domRows.Scan(&sd)
-			if sd != "unknown" && sd != "" {
-				sendingDomains = append(sendingDomains, sd)
-			}
+	// Run each query on its own pooled connection with a bumped
+	// statement_timeout, in parallel. The handler previously serialised ~4
+	// queries on a single connection + the frontend fanned out 1+N requests
+	// (one per sending_domain), so total wall-clock = N * sum-of-queries.
+	// Parallelising gives us max(query) instead, and moving the per-domain
+	// rollup into this single handler call kills the frontend fan-out.
+	runQ := func(op string, fn func(*sql.Conn) error) error {
+		c, err := s.db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("%s: acquire conn: %w", op, err)
 		}
-	}
-	if sendingDomains == nil {
-		sendingDomains = []string{}
+		defer c.Close()
+		if _, err := c.ExecContext(ctx, "SET statement_timeout = '60s'"); err != nil {
+			log.Printf("[ISPSendingInsights/%s] set statement_timeout: %v", op, err)
+		}
+		return fn(c)
 	}
 
-	// 1. Daily metrics per ISP (hard vs soft bounce split)
-	dailyQ := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at) as day,
-		SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-		SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		SUM(CASE WHEN d.event_type = 'bounced' AND ` + HardBounceSQL("d") + ` THEN 1 ELSE 0 END) as hard_bounces,
-		SUM(CASE WHEN d.event_type = 'bounced' AND NOT (` + HardBounceSQL("d") + `) THEN 1 ELSE 0 END) as soft_bounces,
-		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-		SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complained,
-		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
-		SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open, false) = true THEN 1 ELSE 0 END) as mpp_opens
-	FROM (%s) d
-	GROUP BY isp, day ORDER BY isp, day`, ispDomainCaseSQL, domSubquery)
+	type dailyRow struct {
+		day                                                                               string
+		sent, delivered, hardBounces, softBounces, deferred, complained, opened, mppOpens int
+	}
+	type sdDaily struct {
+		day                                                                         string
+		sent, delivered, hardBounces, softBounces, deferred, opened, clicked int
+	}
 
-	dailyRows, err := s.db.QueryContext(ctx, dailyQ, subqueryArgs...)
-	if err != nil {
-		log.Printf("[ISPSendingInsights] daily query error: %v", err)
+	var (
+		sendingDomains      []string
+		ispDaily            = map[string][]dailyRow{}
+		bySendingDomain     = map[string][]sdDaily{}
+		ispBounceCategories = map[string]map[string]int{}
+		ispHourlyDeferrals  = map[string][24]int{}
+		topCampaigns        = []map[string]interface{}{}
+		currentQuotas       = map[string]int{}
+		errs                = make(chan error, 8)
+	)
+
+	var wg sync.WaitGroup
+
+	// Q1: Distinct sending domains in the window (for the filter dropdown).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := runQ("sending_domains", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx,
+				`SELECT DISTINCT LOWER(COALESCE(NULLIF(sending_domain,''),'unknown')) as sd
+				 FROM mailing_tracking_events
+				 WHERE event_at >= $1 AND event_at <= $2
+				 ORDER BY sd`, start, end)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var sd string
+				if err := rows.Scan(&sd); err == nil && sd != "" && sd != "unknown" {
+					sendingDomains = append(sendingDomains, sd)
+				}
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	// Q2: Daily metrics per ISP (MST-anchored buckets).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`SELECT %s as isp, DATE(d.event_at AT TIME ZONE 'America/Denver') as day,
+			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
+			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
+			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complained,
+			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
+			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open, false) = true THEN 1 ELSE 0 END) as mpp_opens
+		FROM (%s) d
+		GROUP BY isp, day ORDER BY isp, day`, ispDomainCaseSQL, domSubquery)
+		if err := runQ("daily", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, q, subqueryArgs...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var isp string
+				var day time.Time
+				var sent, delivered, hardB, softB, deferred, complained, opened, mpp int
+				if err := rows.Scan(&isp, &day, &sent, &delivered, &hardB, &softB, &deferred, &complained, &opened, &mpp); err != nil {
+					continue
+				}
+				ispDaily[isp] = append(ispDaily[isp], dailyRow{
+					day: day.Format("2006-01-02"), sent: sent, delivered: delivered,
+					hardBounces: hardB, softBounces: softB,
+					deferred: deferred, complained: complained, opened: opened, mppOpens: mpp,
+				})
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	// Q3: Per-sending-domain daily rollup, FILTERED to selected ISP.
+	// Replaces the previous 1+N frontend fan-out: the UI asks once, backend
+	// returns one series per sending_domain already filtered to the chosen ISP.
+	// When ispFilter is empty we skip this query entirely — the panel is
+	// always scoped to a single ISP in the UI.
+	if ispFilter != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			q := fmt.Sprintf(`SELECT LOWER(COALESCE(NULLIF(d.sending_domain,''),'unknown')) as sd,
+				DATE(d.event_at AT TIME ZONE 'America/Denver') as day,
+				SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+				SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+				SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
+				SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
+				SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+				SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opened,
+				SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicked
+			FROM (%s) d
+			WHERE (%s) = $%d
+			GROUP BY sd, day ORDER BY sd, day`, domSubquery, ispDomainCaseSQL, len(subqueryArgs)+1)
+			args := append(append([]interface{}{}, subqueryArgs...), ispFilter)
+			if err := runQ("by_sending_domain", func(c *sql.Conn) error {
+				rows, err := c.QueryContext(ctx, q, args...)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var sd string
+					var day time.Time
+					var sent, delivered, hardB, softB, deferred, opened, clicked int
+					if err := rows.Scan(&sd, &day, &sent, &delivered, &hardB, &softB, &deferred, &opened, &clicked); err != nil {
+						continue
+					}
+					if sd == "" || sd == "unknown" {
+						continue
+					}
+					bySendingDomain[sd] = append(bySendingDomain[sd], sdDaily{
+						day: day.Format("2006-01-02"), sent: sent, delivered: delivered,
+						hardBounces: hardB, softBounces: softB,
+						deferred: deferred, opened: opened, clicked: clicked,
+					})
+				}
+				return nil
+			}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	// Q4: Bounce category breakdown per ISP.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`SELECT %s as isp, COALESCE(NULLIF(d.bounce_type,''), 'unknown') as category, COUNT(*) as cnt
+		FROM (%s) d
+		WHERE d.event_type = 'bounced'
+		GROUP BY isp, category`, ispDomainCaseSQL, domSubquery)
+		if err := runQ("bounce_categories", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, q, subqueryArgs...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var isp, cat string
+				var cnt int
+				if err := rows.Scan(&isp, &cat, &cnt); err != nil {
+					continue
+				}
+				if ispBounceCategories[isp] == nil {
+					ispBounceCategories[isp] = map[string]int{}
+				}
+				ispBounceCategories[isp][cat] = cnt
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	// Q5: Hourly deferral distribution per ISP.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`SELECT %s as isp, EXTRACT(HOUR FROM d.event_at)::int as hr, COUNT(*) as cnt
+		FROM (%s) d
+		WHERE d.event_type IN ('deferred','deferral')
+		GROUP BY isp, hr ORDER BY isp, hr`, ispDomainCaseSQL, domSubquery)
+		if err := runQ("hourly_deferrals", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, q, subqueryArgs...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var isp string
+				var hr, cnt int
+				if err := rows.Scan(&isp, &hr, &cnt); err != nil {
+					continue
+				}
+				if hr >= 0 && hr < 24 {
+					arr := ispHourlyDeferrals[isp]
+					arr[hr] = cnt
+					ispHourlyDeferrals[isp] = arr
+				}
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	// Q6: Top campaigns at the selected ISP (only when ispFilter is present).
+	if ispFilter != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			q := fmt.Sprintf(`SELECT d.campaign_id::text as cid,
+			COALESCE(NULLIF(mc.name,''), d.campaign_id::text) as name,
+			COALESCE(NULLIF(LOWER(MIN(d.sending_domain)),''), '') as sending_domain,
+			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
+			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces
+			FROM (%s) d
+			LEFT JOIN mailing_campaigns mc ON mc.id = d.campaign_id
+			WHERE d.campaign_id IS NOT NULL
+			  AND (%s) = $%d
+			GROUP BY d.campaign_id, mc.name
+			HAVING SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) > 0
+			ORDER BY clicks DESC, opens DESC, sent DESC
+			LIMIT 25`, domSubquery, ispDomainCaseSQL, len(subqueryArgs)+1)
+			args := append(append([]interface{}{}, subqueryArgs...), ispFilter)
+			if err := runQ("top_campaigns", func(c *sql.Conn) error {
+				rows, err := c.QueryContext(ctx, q, args...)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var cid, name, sdom string
+					var sent, delivered, opens, clicks, hardB, softB int
+					if err := rows.Scan(&cid, &name, &sdom, &sent, &delivered, &opens, &clicks, &hardB, &softB); err != nil {
+						continue
+					}
+					rates := ComputeInfraRates(sent, delivered, opens, clicks, hardB, softB, 0, 0)
+					topCampaigns = append(topCampaigns, map[string]interface{}{
+						"campaign_id":      cid,
+						"name":             name,
+						"sending_domain":   sdom,
+						"sent":             sent,
+						"delivered":        delivered,
+						"opens":            opens,
+						"clicks":           clicks,
+						"hard_bounces":     hardB,
+						"soft_bounces":     softB,
+						"open_rate":        rates.OpenRate,
+						"click_rate":       rates.ClickRate,
+						"hard_bounce_rate": rates.HardBounceRate,
+						"soft_bounce_rate": rates.SoftBounceRate,
+					})
+				}
+				return nil
+			}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	// Q7: Current quotas from last campaign (small/fast, parallel anyway).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := runQ("current_quotas", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, `
+				SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
+				JOIN mailing_campaigns c ON p.campaign_id = c.id
+				WHERE ($1 = '' OR c.organization_id::text = $1)
+				  AND c.status IN ('completed','sent','cancelled','completed_with_errors','sending')
+				ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
+			`, orgID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var isp string
+				var quota int
+				if err := rows.Scan(&isp, &quota); err != nil {
+					continue
+				}
+				if _, seen := currentQuotas[isp]; !seen {
+					currentQuotas[isp] = quota
+				}
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+
+	// If the daily query failed we can't build a coherent response — bail.
+	// Non-critical query failures (categories, hourly, top, quotas) are
+	// logged but swallowed: the panel still renders with degraded data.
+	var firstErr error
+	for e := range errs {
+		if firstErr == nil {
+			firstErr = e
+		}
+		log.Printf("[ISPSendingInsights] %v", e)
+	}
+	if len(ispDaily) == 0 && firstErr != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
 		return
 	}
-	defer dailyRows.Close()
 
-	type dailyRow struct {
-		day                                                                        string
-		sent, delivered, hardBounces, softBounces, deferred, complained, opened, mppOpens int
-	}
-	ispDaily := map[string][]dailyRow{}
-	for dailyRows.Next() {
-		var isp string
-		var day time.Time
-		var sent, delivered, hardBounces, softBounces, deferred, complained, opened, mppOpens int
-		dailyRows.Scan(&isp, &day, &sent, &delivered, &hardBounces, &softBounces, &deferred, &complained, &opened, &mppOpens)
-		ispDaily[isp] = append(ispDaily[isp], dailyRow{
-			day: day.Format("2006-01-02"), sent: sent, delivered: delivered,
-			hardBounces: hardBounces, softBounces: softBounces,
-			deferred: deferred, complained: complained,
-			opened: opened, mppOpens: mppOpens,
-		})
-	}
-
-	// 2. Bounce category breakdown per ISP
-	catQ := fmt.Sprintf(`SELECT %s as isp, COALESCE(NULLIF(d.bounce_type,''), 'unknown') as category, COUNT(*) as cnt
-	FROM (%s) d
-	WHERE d.event_type = 'bounced'
-	GROUP BY isp, category`, ispDomainCaseSQL, domSubquery)
-
-	catRows, _ := s.db.QueryContext(ctx, catQ, subqueryArgs...)
-	ispBounceCategories := map[string]map[string]int{}
-	if catRows != nil {
-		defer catRows.Close()
-		for catRows.Next() {
-			var isp, cat string
-			var cnt int
-			catRows.Scan(&isp, &cat, &cnt)
-			if ispBounceCategories[isp] == nil {
-				ispBounceCategories[isp] = map[string]int{}
-			}
-			ispBounceCategories[isp][cat] = cnt
-		}
-	}
-
-	// 3. Hourly deferral distribution per ISP
-	hrQ := fmt.Sprintf(`SELECT %s as isp, EXTRACT(HOUR FROM d.event_at)::int as hr, COUNT(*) as cnt
-	FROM (%s) d
-	WHERE d.event_type IN ('deferred','deferral')
-	GROUP BY isp, hr ORDER BY isp, hr`, ispDomainCaseSQL, domSubquery)
-
-	hrRows, _ := s.db.QueryContext(ctx, hrQ, subqueryArgs...)
-	ispHourlyDeferrals := map[string][24]int{}
-	if hrRows != nil {
-		defer hrRows.Close()
-		for hrRows.Next() {
-			var isp string
-			var hr, cnt int
-			hrRows.Scan(&isp, &hr, &cnt)
-			if hr >= 0 && hr < 24 {
-				arr := ispHourlyDeferrals[isp]
-				arr[hr] = cnt
-				ispHourlyDeferrals[isp] = arr
-			}
-		}
-	}
-
-	// 4. Current quotas from last campaign
-	currentQuotas := map[string]int{}
-	quotaRows, _ := s.db.QueryContext(ctx, `
-		SELECT p.isp, p.quota FROM mailing_campaign_isp_plans p
-		JOIN mailing_campaigns c ON p.campaign_id = c.id
-		WHERE ($1 = '' OR c.organization_id::text = $1)
-		  AND c.status IN ('completed','sent','cancelled','completed_with_errors','sending')
-		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
-	`, orgID)
-	if quotaRows != nil {
-		defer quotaRows.Close()
-		for quotaRows.Next() {
-			var isp string
-			var quota int
-			quotaRows.Scan(&isp, &quota)
-			if _, seen := currentQuotas[isp]; !seen {
-				currentQuotas[isp] = quota
-			}
-		}
+	if sendingDomains == nil {
+		sendingDomains = []string{}
 	}
 
 	// 5. Build per-ISP insights
@@ -2601,14 +3104,83 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		isps = []map[string]interface{}{}
 	}
 
+	// Shape per-sending-domain rollup for the UI. Each entry contains the
+	// MST-anchored daily buckets and pre-aggregated totals so the frontend
+	// doesn't need to fan out one request per domain.
+	bySDOut := map[string]map[string]interface{}{}
+	for sd, days := range bySendingDomain {
+		var tSent, tDelivered, tHard, tSoft, tDeferred, tOpened, tClicked int
+		daily := make([]map[string]interface{}, 0, len(days))
+		for _, d := range days {
+			tSent += d.sent
+			tDelivered += d.delivered
+			tHard += d.hardBounces
+			tSoft += d.softBounces
+			tDeferred += d.deferred
+			tOpened += d.opened
+			tClicked += d.clicked
+			daily = append(daily, map[string]interface{}{
+				"date":         d.day,
+				"sent":         d.sent,
+				"delivered":    d.delivered,
+				"hard_bounces": d.hardBounces,
+				"soft_bounces": d.softBounces,
+				"deferred":     d.deferred,
+				"opens":        d.opened,
+				"clicks":       d.clicked,
+			})
+		}
+		base := tDelivered
+		if base == 0 {
+			base = tSent
+		}
+		inboxRate, openRate, clickRate, hardRate, softRate := 0.0, 0.0, 0.0, 0.0, 0.0
+		if tSent > 0 {
+			inboxRate = math.Round(float64(tDelivered)/float64(tSent)*10000) / 100
+			hardRate = math.Round(float64(tHard)/float64(tSent)*10000) / 100
+			softRate = math.Round(float64(tSoft)/float64(tSent)*10000) / 100
+		}
+		if base > 0 {
+			openRate = math.Round(float64(tOpened)/float64(base)*10000) / 100
+			clickRate = math.Round(float64(tClicked)/float64(base)*10000) / 100
+		}
+		bySDOut[sd] = map[string]interface{}{
+			"daily": daily,
+			"totals": map[string]interface{}{
+				"sent":             tSent,
+				"delivered":        tDelivered,
+				"opens":            tOpened,
+				"clicks":           tClicked,
+				"hard_bounces":     tHard,
+				"soft_bounces":     tSoft,
+				"deferred":         tDeferred,
+				"inbox_rate":       inboxRate,
+				"open_rate":        openRate,
+				"click_rate":       clickRate,
+				"hard_bounce_rate": hardRate,
+				"soft_bounce_rate": softRate,
+			},
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"api_version":     VersionISPSendingInsights,
-		"window":          map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
-		"current_quotas":  currentQuotas,
-		"isps":            isps,
-		"sending_domains": sendingDomains,
-		"domain_filter":   domainFilter,
+		"api_version": VersionISPSendingInsights,
+		"days":        days,
+		"timezone":    "America/Denver",
+		"window": map[string]string{
+			"start":     start.Format(time.RFC3339),
+			"end":       end.Format(time.RFC3339),
+			"start_mst": start.In(mstLoc).Format("2006-01-02 15:04:05 MST"),
+			"end_mst":   end.In(mstLoc).Format("2006-01-02 15:04:05 MST"),
+		},
+		"current_quotas":     currentQuotas,
+		"isps":               isps,
+		"sending_domains":    sendingDomains,
+		"domain_filter":      domainFilter,
+		"isp_filter":         ispFilter,
+		"top_campaigns":      topCampaigns,
+		"by_sending_domain":  bySDOut,
 	})
 }
 

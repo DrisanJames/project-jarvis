@@ -66,6 +66,12 @@ type CampaignInput struct {
 	ISPQuotas     json.RawMessage `json:"isp_quotas,omitempty"`
 	ExecutionMode string          `json:"execution_mode,omitempty"`
 
+	// ContentLocked, when non-nil, is persisted into mailing_campaigns.content_locked.
+	// When true the PMTA wave dispatcher skips subject/HTML fingerprint
+	// mutations — strict advertisers (e.g. TruGreen) receive byte-faithful
+	// creative. See worker/pmta_wave_dispatcher.go EnqueuePMTAWave.
+	ContentLocked *bool `json:"content_locked,omitempty"`
+
 	// Tags for organization
 	Tags []string `json:"tags,omitempty"`
 	
@@ -105,6 +111,10 @@ type Campaign struct {
 	// PMTA ISP wave dispatch
 	ExecutionMode string          `json:"execution_mode,omitempty"`
 	ISPQuotas     json.RawMessage `json:"isp_quotas,omitempty"`
+
+	// ContentLocked surfaces the mailing_campaigns.content_locked flag to the UI.
+	// When true the wave dispatcher skips fingerprint mutations (subject, HTML).
+	ContentLocked bool `json:"content_locked"`
 
 	// Throttling
 	ThrottleSpeed         string `json:"throttle_speed"`

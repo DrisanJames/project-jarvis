@@ -744,20 +744,29 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 	`, winnerID).Scan(&winnerValue, &winnerType)
 	
 	// Route remaining sends to winner
-	// This updates the campaign with the winning variant's content
-	switch winnerType {
-	case "subject":
-		w.db.ExecContext(ctx, `
-			UPDATE mailing_campaigns
-			SET subject = $2, updated_at = NOW()
-			WHERE id = $1
-		`, campaignID, winnerValue)
-	case "from_name":
-		w.db.ExecContext(ctx, `
-			UPDATE mailing_campaigns
-			SET from_name = $2, updated_at = NOW()
-			WHERE id = $1
-		`, campaignID, winnerValue)
+	// This updates the campaign with the winning variant's content.
+	// Skip for content-locked campaigns: strict advertisers require the
+	// approved creative/subject go out unchanged even if an A/B test
+	// picks a winner mid-flight.
+	var campaignContentLocked bool
+	w.db.QueryRowContext(ctx, `SELECT COALESCE(content_locked, FALSE) FROM mailing_campaigns WHERE id = $1`, campaignID).Scan(&campaignContentLocked)
+	if campaignContentLocked {
+		log.Printf("[ABTestWorker] campaign %s content_locked=true — not promoting winning %s value to campaign row", campaignID, winnerType)
+	} else {
+		switch winnerType {
+		case "subject":
+			w.db.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET subject = $2, updated_at = NOW()
+				WHERE id = $1
+			`, campaignID, winnerValue)
+		case "from_name":
+			w.db.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET from_name = $2, updated_at = NOW()
+				WHERE id = $1
+			`, campaignID, winnerValue)
+		}
 	}
 	
 	// Log AI decision

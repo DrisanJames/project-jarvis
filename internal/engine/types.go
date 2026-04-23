@@ -683,6 +683,15 @@ type PMTACampaignInput struct {
 	// of the SDS pure-pull.
 	UseMasterSelection *bool `json:"use_master_selection,omitempty"`
 
+	// ContentLocked, when non-nil, is written into mailing_campaigns.content_locked
+	// at deploy time. When true the PMTA wave dispatcher skips subject/HTML
+	// fingerprint mutations (mutateSubjectLine, mutateHTMLHash) — the approved
+	// creative goes out byte-faithful. Honeypot injection and URL sanitization
+	// remain active. When nil the deploy handler resolves the default from the
+	// linked offer's content_locked flag; for strict advertisers (e.g. TruGreen)
+	// the offer is seeded = TRUE so every campaign inherits the lock.
+	ContentLocked *bool `json:"content_locked,omitempty"`
+
 	DeliveryThresholds *DeliveryThresholds `json:"delivery_thresholds,omitempty"`
 	WaveGating         *WaveGating         `json:"wave_gating,omitempty"`
 }

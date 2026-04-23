@@ -108,6 +108,10 @@ func (qb *QueryBuilder) BuildQuery(group ConditionGroupBuilder, globalExclusions
 	// instead of a join.
 	whereConditions = append(whereConditions, "s.hard_bounced_at IS NULL")
 	whereConditions = append(whereConditions, "s.complained_at IS NULL")
+	// Honeypot-flagged bots are excluded from every V2 segment audience.
+	// The flag is set when a hidden off-screen link in the email body is
+	// followed — only automated scanners ever click it.
+	whereConditions = append(whereConditions, "s.is_bot = false")
 
 	// Add suppression filter
 	if !qb.includeSupressed {
@@ -177,9 +181,12 @@ func (qb *QueryBuilder) BuildCountQuery(group ConditionGroupBuilder, globalExclu
 	whereConditions = append(whereConditions, "s.status = 'confirmed'")
 
 	// Master List Migration P7: keep BuildCountQuery in lockstep with
-	// BuildQuery so preview counts never drift from live results.
+	// BuildQuery so preview counts never drift from live results. The
+	// is_bot filter must track BuildQuery one-for-one or the preview
+	// count will over-report audience size versus what actually sends.
 	whereConditions = append(whereConditions, "s.hard_bounced_at IS NULL")
 	whereConditions = append(whereConditions, "s.complained_at IS NULL")
+	whereConditions = append(whereConditions, "s.is_bot = false")
 
 	if !qb.includeSupressed {
 		whereConditions = append(whereConditions, `

@@ -482,6 +482,45 @@ func main() {
 				go dataCleanup.Start(ctx)
 				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
 
+				// Start Engine Signals Archiver. Keeps mailing_engine_signals
+				// at a 14-day hot window; everything older lands in
+				// s3://$ENGINE_S3_BUCKET/engine-signals/dt=YYYY-MM-DD/isp=<isp>/
+				// with a pointer row in mailing_engine_signals_archive_index.
+				// Cold reads go through internal/engine/signal_archive.go.
+				{
+					engineBucket := os.Getenv("ENGINE_S3_BUCKET")
+					if engineBucket == "" {
+						engineBucket = "ignite-pmta-engine"
+					}
+					engineRegion := os.Getenv("ENGINE_S3_REGION")
+					if engineRegion == "" {
+						engineRegion = "us-west-2"
+					}
+					engAwsCfg, engErr := awsconfig.LoadDefaultConfig(
+						context.Background(),
+						awsconfig.WithRegion(engineRegion),
+					)
+					if engErr != nil {
+						log.Printf("WARNING: Engine Signals Archiver disabled — AWS config failed: %v", engErr)
+					} else {
+						engS3 := s3.NewFromConfig(engAwsCfg)
+						archiver := worker.NewEngineSignalsArchiver(mailingDB, engS3, engineBucket)
+						go archiver.Start(ctx)
+						log.Printf("Engine Signals Archiver started (hot=14d, interval=6h, bucket=%s, region=%s)",
+							engineBucket, engineRegion)
+					}
+				}
+
+				// Start ISP Backfill Worker (classifies mailing_subscribers.isp
+				// for rows with empty/NULL isp). The PMTA campaign planner's
+				// per-ISP cold-fallback stripe relies on this column being
+				// populated, so we eagerly backfill on startup and then hourly.
+				// Uses the canonical isp.SQLCaseFromEmail classifier so the SQL
+				// and Go classifiers never drift.
+				ispBackfill := worker.NewISPBackfillWorker(mailingDB)
+				go ispBackfill.Start(ctx)
+				log.Println("ISP Backfill Worker started (classifies mailing_subscribers.isp hourly)")
+
 				// Start Warmup Graduation Worker (P5b): nightly sweep that
 				// promotes warming→engaged and demotes engaged→dormant on
 				// the SDS table. First pass runs 2m after boot, then every
@@ -2038,6 +2077,50 @@ func runStartupMigrations(db *sql.DB) {
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
 		{"add_subscriber_bot_cols", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS is_bot BOOLEAN NOT NULL DEFAULT false; ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS bot_detected_at TIMESTAMPTZ`},
 		{"idx_subscriber_is_bot", `CREATE INDEX IF NOT EXISTS idx_subscribers_is_bot ON mailing_subscribers(is_bot) WHERE is_bot = true`},
+
+		// Bot-backstop migrations (Apr 2026): every audience-selection query
+		// now carries AND is_bot = false (pmta_campaign_planner.go,
+		// campaign_builder_send_async.go, mailing_sending.go,
+		// handlers_pmta_campaign.go, worker/campaign_processor.go,
+		// segmentation/query_builder.go, mailing_segments.BuildSegmentWhereClause).
+		// These three migrations clean up state that was populated before
+		// the filters were in place. All three are idempotent and bounded
+		// by the partial index idx_subscribers_is_bot so they stay inside
+		// the 5s startup statement_timeout.
+		//
+		// 1) Unsubscribe honeypot-flagged bots as a final backstop even if
+		//    some new selection site is added later without the filter.
+		{"bot_backstop_unsubscribe", `
+			UPDATE mailing_subscribers
+			SET status = 'unsubscribed', updated_at = NOW()
+			WHERE is_bot = true
+			  AND status IN ('active','confirmed')
+		`},
+		// 2) Purge bots from already-materialised segment members. Segments
+		//    re-materialise nightly via segment_materializer.go which now
+		//    excludes bots at the BuildSegmentWhereClause layer, so this
+		//    is just a one-time cleanup of state accumulated before the
+		//    filter existed.
+		{"bot_backstop_purge_segment_members", `
+			DELETE FROM mailing_segment_members sm
+			USING mailing_subscribers s
+			WHERE sm.subscriber_id = s.id
+			  AND s.is_bot = true
+		`},
+		// 3) Zero out lingering inflated score_local values on SDS rows for
+		//    bots. RecomputeSDSScoreLocal will continue to write 0 for bots
+		//    on every future engagement event, but historical scores need
+		//    to be explicitly cleared or the planner's ORDER BY
+		//    sds.score_local DESC will keep picking them until something
+		//    else triggers a recompute on that (subscriber, domain) pair.
+		{"bot_backstop_reset_score_local", `
+			UPDATE mailing_subscriber_domain_state sds
+			SET score_local = 0, updated_at = NOW()
+			FROM mailing_subscribers s
+			WHERE s.id = sds.subscriber_id
+			  AND s.is_bot = true
+			  AND sds.score_local > 0
+		`},
 
 		{"add_subscriber_eo_validated_at", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS eo_validated_at TIMESTAMPTZ`},
 
@@ -3842,6 +3925,36 @@ END $$`},
 		// migration intentionally adds back a status check, it must run AFTER
 		// this one.
 		{"apr20_final_drop_status_check", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
+
+		// =====================================================================
+		// ENGINE SIGNALS ARCHIVE INDEX (Phase 1 storage maintenance, Apr 2026)
+		// =====================================================================
+		// Hot window: mailing_engine_signals retains the last 14 days only.
+		// Cold store: s3://$ENGINE_S3_BUCKET/engine-signals/dt=YYYY-MM-DD/isp=<isp>/*.jsonl.gz
+		// This index table keeps the DB pointer so the cold-read helper
+		// (internal/engine/signal_archive.go) can look up which S3 objects
+		// cover a given (isp, time-range) query.
+		// Written by internal/worker/engine_signals_archiver.go.
+		{"create_engine_signals_archive_index", `CREATE TABLE IF NOT EXISTS mailing_engine_signals_archive_index (
+			id                BIGSERIAL PRIMARY KEY,
+			date_bucket       DATE NOT NULL,
+			isp               VARCHAR(32) NOT NULL,
+			s3_bucket         TEXT NOT NULL,
+			s3_key            TEXT NOT NULL,
+			row_count         BIGINT NOT NULL,
+			min_recorded_at   TIMESTAMPTZ NOT NULL,
+			max_recorded_at   TIMESTAMPTZ NOT NULL,
+			compressed_bytes  BIGINT NOT NULL DEFAULT 0,
+			format            VARCHAR(16) NOT NULL DEFAULT 'jsonl.gz',
+			archived_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CONSTRAINT mailing_engine_signals_archive_index_s3_key_unique UNIQUE (s3_key)
+		)`},
+		{"idx_signals_archive_bucket_isp", `CREATE INDEX IF NOT EXISTS idx_signals_archive_bucket_isp
+			ON mailing_engine_signals_archive_index(date_bucket, isp)`},
+		{"idx_signals_archive_range", `CREATE INDEX IF NOT EXISTS idx_signals_archive_range
+			ON mailing_engine_signals_archive_index(min_recorded_at, max_recorded_at)`},
+		{"idx_signals_archive_isp_range", `CREATE INDEX IF NOT EXISTS idx_signals_archive_isp_range
+			ON mailing_engine_signals_archive_index(isp, min_recorded_at, max_recorded_at)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -3967,6 +4080,24 @@ END $$`},
 	db.Exec(`ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
 
 	// ---------------------------------------------------------------------
+	// content_locked: gate fingerprint-diversification mutations for strict
+	// advertisers who require the approved creative go out byte-faithful.
+	// When true on a campaign row, EnqueuePMTAWave skips mutateSubjectLine
+	// and mutateHTMLHash (honeypot injection remains on).
+	// Offer-level flag seeds campaign default; TruGreen is seeded = TRUE.
+	// ---------------------------------------------------------------------
+	if _, err := db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
+		log.Printf("[StartupMigration] add_campaigns_content_locked: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] add_campaigns_content_locked: OK")
+	}
+	if _, err := db.Exec(`ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
+		log.Printf("[StartupMigration] add_offers_content_locked: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] add_offers_content_locked: OK")
+	}
+
+	// ---------------------------------------------------------------------
 	// late_alert_sent_at: dedup column for the CampaignHealthMonitor's
 	// lateness-SMS pager (internal/worker/campaign_health_monitor.go →
 	// checkLateCampaigns). Stamped only after a successful SMS; suppresses
@@ -3976,6 +4107,106 @@ END $$`},
 		log.Printf("[StartupMigration] add_campaigns_late_alert_sent_at: ERROR %v", err)
 	} else {
 		log.Println("[StartupMigration] add_campaigns_late_alert_sent_at: OK")
+	}
+	// Seed TruGreen offer(s) as content_locked. Idempotent: sets flag only
+	// when not already true. Matches on brand_name or name containing "trugreen".
+	if res, err := db.Exec(`UPDATE mailing_offers
+		SET content_locked = TRUE, updated_at = NOW()
+		WHERE content_locked = FALSE
+		  AND (brand_name ILIKE '%trugreen%' OR name ILIKE '%trugreen%')`); err != nil {
+		log.Printf("[StartupMigration] seed_trugreen_content_locked: ERROR %v", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[StartupMigration] seed_trugreen_content_locked: OK (%d offers locked)", n)
+	} else {
+		log.Println("[StartupMigration] seed_trugreen_content_locked: OK (no change)")
+	}
+
+	// ---------------------------------------------------------------------
+	// Vendor-batch import framework (durable, multi-vendor).
+	//
+	// Every external-vendor subscriber batch (WestCapital Jan 2026, future
+	// LendingTree / SoFi / etc.) lands on a single org-wide master list
+	// "Verified External Imports - Master". Per-batch separation is via
+	// tags (batch:<vendor>_<batch>), source_detail, and custom_fields.
+	// The vendor_batch_audit table is the append-only ledger keyed on
+	// (organization_id, vendor, batch_key); load/suppress/rollback scripts
+	// all read and stamp it so any batch is reversible.
+	//
+	// Docs: docs/VENDOR_BATCH_IMPORT.md
+	// Framework scripts: scripts/import/prepare_vendor_verified.py,
+	//                    load_vendor_verified.py,
+	//                    suppress_vendor_unverified.py,
+	//                    rollback_vendor_batch.py
+	// Planner integration: pmta_campaign_planner.go hybrid path honours
+	//                      send_priority+inclusion_segments BEFORE SDS when
+	//                      use_master_selection=true, so a batch's segment
+	//                      is drained first then master-list fills any
+	//                      remaining ISP quota.
+	// ---------------------------------------------------------------------
+	if _, err := db.Exec(`ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`); err != nil {
+		log.Printf("[StartupMigration] add_subscribers_tags: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] add_subscribers_tags: OK")
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_subscribers_tags_gin ON mailing_subscribers USING gin (tags)`); err != nil {
+		log.Printf("[StartupMigration] idx_subscribers_tags_gin: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] idx_subscribers_tags_gin: OK")
+	}
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS mailing_vendor_batch_audit (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		organization_id UUID NOT NULL,
+		vendor TEXT NOT NULL,
+		batch_key TEXT NOT NULL,
+		datatype TEXT,
+		config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+		verified_count INTEGER NOT NULL DEFAULT 0,
+		merged_count INTEGER NOT NULL DEFAULT 0,
+		inserted_count INTEGER NOT NULL DEFAULT 0,
+		suppressed_count INTEGER NOT NULL DEFAULT 0,
+		segment_id UUID,
+		list_id UUID,
+		imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		rolled_back_at TIMESTAMPTZ,
+		rollback_reason TEXT,
+		notes TEXT,
+		CONSTRAINT uq_vendor_batch_audit UNIQUE (organization_id, vendor, batch_key)
+	)`); err != nil {
+		log.Printf("[StartupMigration] create_vendor_batch_audit: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] create_vendor_batch_audit: OK")
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_vendor_batch_audit_vendor ON mailing_vendor_batch_audit (vendor, batch_key)`); err != nil {
+		log.Printf("[StartupMigration] idx_vendor_batch_audit_vendor: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] idx_vendor_batch_audit_vendor: OK")
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_vendor_batch_audit_live ON mailing_vendor_batch_audit (organization_id, imported_at DESC) WHERE rolled_back_at IS NULL`); err != nil {
+		log.Printf("[StartupMigration] idx_vendor_batch_audit_live: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] idx_vendor_batch_audit_live: OK")
+	}
+
+	// Seed the single org-wide master list row. All vendor batches accumulate
+	// into this list. Per-batch separation happens via tags. Idempotent across
+	// boots; never duplicates per organization.
+	if res, err := db.Exec(`
+		INSERT INTO mailing_lists (organization_id, name, description, status, opt_in_type, created_at, updated_at)
+		SELECT id, 'Verified External Imports - Master',
+			'Org-wide master list for Email Oversight-verified external-vendor imports. All vendor batches accumulate into this list; per-batch separation is via tags (batch:<vendor>_<batch>), source_detail, and custom_fields.provenance. Segments targeting tag batch:<vendor>_<batch> surface each cohort. See docs/VENDOR_BATCH_IMPORT.md.',
+			'active', 'single', NOW(), NOW()
+		FROM organizations
+		WHERE NOT EXISTS (
+			SELECT 1 FROM mailing_lists
+			WHERE name = 'Verified External Imports - Master' AND organization_id = organizations.id
+		)
+	`); err != nil {
+		log.Printf("[StartupMigration] seed_verified_imports_master_list: ERROR %v", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[StartupMigration] seed_verified_imports_master_list: OK (%d lists created)", n)
+	} else {
+		log.Println("[StartupMigration] seed_verified_imports_master_list: OK (no change)")
 	}
 
 	// Warn about active PMTA profiles missing an api_endpoint — these

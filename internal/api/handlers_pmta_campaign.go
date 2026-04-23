@@ -598,7 +598,7 @@ func (s *PMTACampaignService) HandleEstimateAudience(w http.ResponseWriter, r *h
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT s.email
 			FROM mailing_subscribers s
-			WHERE s.list_id = ANY($1) AND s.status IN ('active','confirmed')
+			WHERE s.list_id = ANY($1) AND s.status IN ('active','confirmed') AND s.is_bot = false
 		`, pq.Array(req.ListIDs))
 		if err == nil {
 			defer rows.Close()
@@ -887,8 +887,22 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 		return "", err
 	}
 
+	// Resolve content_locked. Explicit payload wins; else inherit from the
+	// linked offer's flag (seeded TRUE for strict advertisers). If unresolvable
+	// leave as nil so the column's DB default (FALSE) applies.
+	resolvedLocked := resolveContentLocked(ctx, tx, input.ContentLocked, input.OfferID)
+
+	// Persist content_locked into the pmta_config blob so it survives the
+	// config roundtrip in AudienceFinalizationWorker. We write the resolved
+	// value, not input.ContentLocked, so a nil-override with an offer default
+	// still flows through to createPMTAWaveCampaign.
+	inputForConfig := withCampaignID(input, campaignID.String())
+	if resolvedLocked != nil {
+		v := *resolvedLocked
+		inputForConfig.ContentLocked = &v
+	}
 	configJSON, _ := json.Marshal(pmtaCampaignConfig{
-		CampaignInput: withCampaignID(input, campaignID.String()),
+		CampaignInput: inputForConfig,
 	})
 
 	if reusingDraft {
@@ -912,6 +926,11 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 		if input.UseMasterSelection != nil && s.colCache.has("use_master_selection") {
 			setClauses += fmt.Sprintf(", use_master_selection = $%d", nextP)
 			args = append(args, *input.UseMasterSelection)
+			nextP++
+		}
+		if resolvedLocked != nil && s.colCache.has("content_locked") {
+			setClauses += fmt.Sprintf(", content_locked = $%d", nextP)
+			args = append(args, *resolvedLocked)
 			nextP++
 		}
 		args = append(args, orgID)
@@ -955,6 +974,12 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 			colList = append(colList, "use_master_selection")
 			valList = append(valList, fmt.Sprintf("$%d", nextP))
 			args = append(args, *input.UseMasterSelection)
+			nextP++
+		}
+		if resolvedLocked != nil && s.colCache.has("content_locked") {
+			colList = append(colList, "content_locked")
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			args = append(args, *resolvedLocked)
 			nextP++
 		}
 		query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
@@ -1512,7 +1537,7 @@ func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.R
 	enqueued := 0
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.email FROM mailing_subscribers s
-		WHERE s.list_id = ANY($1) AND s.status = 'confirmed'
+		WHERE s.list_id = ANY($1) AND s.status = 'confirmed' AND s.is_bot = false
 		  AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue WHERE campaign_id = $2 AND subscriber_id = s.id)
 		  AND NOT EXISTS (SELECT 1 FROM mailing_suppressions WHERE LOWER(email) = LOWER(s.email) AND active = true)
 		  AND NOT EXISTS (

@@ -143,6 +143,9 @@ func createPMTAWaveCampaign(
 			{"execution_mode", pmtaExecutionModeWave},
 			{"pmta_config", configJSON},
 		}
+		if input.ContentLocked != nil {
+			optionalSets = append(optionalSets, optCol{"content_locked", *input.ContentLocked})
+		}
 		for _, o := range optionalSets {
 			if cc.has(o.col) {
 				setClauses += fmt.Sprintf(", %s = $%d", o.col, nextP)
@@ -192,6 +195,9 @@ func createPMTAWaveCampaign(
 			{"queued_count", 0},
 			{"execution_mode", pmtaExecutionModeWave},
 			{"pmta_config", configJSON},
+		}
+		if input.ContentLocked != nil {
+			optionals = append(optionals, optCol{"content_locked", *input.ContentLocked})
 		}
 		for _, o := range optionals {
 			if cc.has(o.col) {

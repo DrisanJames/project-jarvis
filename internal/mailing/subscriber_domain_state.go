@@ -240,6 +240,13 @@ func UpsertSDSComplaint(ctx context.Context, db *sql.DB, subscriberID uuid.UUID,
 //
 // Formula: 0.4 * open_rate + 0.6 * click_rate, with a recency bonus.
 // Stored as NUMERIC(5,4) — rescaled to 0..1.
+//
+// Bot guard: if the subscriber is flagged as a bot (mailing_subscribers.
+// is_bot = true, set by HandleBotTrap when the honeypot link is followed)
+// we force score_local = 0. Without this guard, every bot open/click
+// would lift score_local toward 1.0, and because the planner orders the
+// SDS primary pass by score_local DESC, bots would monopolise the top
+// of every audience — a self-reinforcing feedback loop.
 func RecomputeSDSScoreLocal(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -250,24 +257,28 @@ func RecomputeSDSScoreLocal(ctx context.Context, db *sql.DB, subscriberID uuid.U
 	}
 	// Single-statement recompute so the function stays cheap on the
 	// tracking hot path. We treat total_sent=0 as score=0 to avoid
-	// division-by-zero.
+	// division-by-zero. The is_bot subquery short-circuits bots to 0
+	// regardless of their open/click counters.
 	if _, err := db.ExecContext(ctx, `
-		UPDATE mailing_subscriber_domain_state
-		SET score_local = LEAST(1.0::numeric,
-			CASE WHEN COALESCE(total_sent, 0) = 0 THEN 0::numeric
-			ELSE (
-				(COALESCE(total_opens, 0)::numeric / GREATEST(total_sent, 1)) * 0.4
-				+ (COALESCE(total_clicks, 0)::numeric / GREATEST(total_sent, 1)) * 0.6
-				+ CASE
-					WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '7 days' THEN 0.20
-					WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '30 days' THEN 0.10
-					ELSE 0
+		UPDATE mailing_subscriber_domain_state sds
+		SET score_local = CASE
+			WHEN (SELECT s.is_bot FROM mailing_subscribers s WHERE s.id = sds.subscriber_id) = true THEN 0::numeric
+			ELSE LEAST(1.0::numeric,
+				CASE WHEN COALESCE(sds.total_sent, 0) = 0 THEN 0::numeric
+				ELSE (
+					(COALESCE(sds.total_opens, 0)::numeric / GREATEST(sds.total_sent, 1)) * 0.4
+					+ (COALESCE(sds.total_clicks, 0)::numeric / GREATEST(sds.total_sent, 1)) * 0.6
+					+ CASE
+						WHEN sds.last_open_at IS NOT NULL AND sds.last_open_at > NOW() - INTERVAL '7 days' THEN 0.20
+						WHEN sds.last_open_at IS NOT NULL AND sds.last_open_at > NOW() - INTERVAL '30 days' THEN 0.10
+						ELSE 0
+					END
+				)
 				END
 			)
-			END
-		),
+		END,
 		updated_at = NOW()
-		WHERE subscriber_id = $1 AND sending_domain = $2
+		WHERE sds.subscriber_id = $1 AND sds.sending_domain = $2
 	`, subscriberID, d); err != nil {
 		log.Printf("[SDS] RecomputeSDSScoreLocal failed sub=%s domain=%s: %v", subscriberID, d, err)
 	}

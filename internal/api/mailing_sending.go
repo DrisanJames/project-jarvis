@@ -1096,7 +1096,7 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			return
 		}
 	} else {
-		subscriberQuery = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed'`
+		subscriberQuery = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed' AND is_bot = false`
 		queryArgs = []interface{}{listID}
 	}
 
@@ -1249,16 +1249,19 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 	var args []interface{}
 	argNum := 1
 	if listID != "" {
-		query = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed'`
+		query = `SELECT id, email FROM mailing_subscribers WHERE list_id = $1 AND status = 'confirmed' AND is_bot = false`
 		args = append(args, listID)
 		argNum = 2
 	} else {
 		// Master-list segment: filter global suppressions up front so every
 		// downstream AND clause narrows from a mailable starting set.
+		// is_bot = false blocks honeypot-detected scanners from landing
+		// in any segment-driven audience.
 		query = `SELECT id, email FROM mailing_subscribers
 		         WHERE status IN ('active','confirmed')
 		           AND hard_bounced_at IS NULL
-		           AND complained_at IS NULL`
+		           AND complained_at IS NULL
+		           AND is_bot = false`
 	}
 	
 	for rows.Next() {

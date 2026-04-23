@@ -9,6 +9,7 @@ import {
   faTrophy,
   faClock, faUserSlash, faBolt, faBroadcastTower,
   faChevronDown, faChevronRight, faLayerGroup,
+  faFilter, faInfoCircle,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -190,7 +191,124 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = 'today' | 'yesterday';
 
-const PAGE_VERSION = '4.1';
+const PAGE_VERSION = '4.3';
+
+// ─── ISP Insights types ──────────────────────────────────────────────────────
+
+// Daily bucket as returned by /analytics/isp-sending-insights for a given
+// sending domain + ISP pair. Dates are MST calendar days (backend casts
+// event_at AT TIME ZONE 'America/Denver').
+interface InsDailyRow {
+  date: string;
+  sent: number;
+  delivered: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  deferred: number;
+  opens: number;
+  clicks: number;
+  bounce_rate?: number;
+}
+
+// Pre-computed totals per sending domain across the selected window.
+interface InsDomainTotals {
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  open_rate: number;  // opens / delivered (falls back to sent)
+  click_rate: number; // clicks / delivered (falls back to sent)
+  inbox_rate: number; // delivered / sent
+  hard_bounce_rate: number; // hard / sent
+  soft_bounce_rate: number; // soft / sent
+}
+
+interface InsDomainSeries {
+  sending_domain: string;
+  daily: InsDailyRow[];
+  totals: InsDomainTotals;
+}
+
+interface InsTopCampaign {
+  campaign_id: string;
+  name: string;
+  sending_domain: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  open_rate: number;
+  click_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
+}
+
+// Metric the user can plot on the daily trend chart. The backend
+// `by_sending_domain` block provides opens and clicks per-day now (v1.4+),
+// so all of these are chartable.
+type InsMetric =
+  | 'delivered'
+  | 'sent'
+  | 'hard_bounces'
+  | 'soft_bounces'
+  | 'deferred'
+  | 'opens'
+  | 'clicks';
+
+// Window lengths the panel supports. Must match parseISPInsightsDays on the
+// backend (whitelisted to 3/7/14).
+type InsWindow = 3 | 7 | 14;
+
+const INS_METRIC_LABELS: Record<InsMetric, string> = {
+  delivered: 'Delivered',
+  sent: 'Sent',
+  hard_bounces: 'Hard Bounces',
+  soft_bounces: 'Soft Bounces',
+  deferred: 'Deferred',
+  opens: 'Opens',
+  clicks: 'Clicks',
+};
+
+// Deterministic color for a sending domain. The ISP palette is reserved for
+// the global ISP cards, so sending-domain lines use a separate set.
+const SENDING_DOMAIN_COLORS = [
+  '#00e5ff', '#a855f7', '#f59e0b', '#22c55e',
+  '#f472b6', '#60a5fa', '#fbbf24', '#10b981',
+];
+function colorForDomain(domain: string): string {
+  let hash = 0;
+  for (let i = 0; i < domain.length; i++) {
+    hash = (hash * 31 + domain.charCodeAt(i)) >>> 0;
+  }
+  return SENDING_DOMAIN_COLORS[hash % SENDING_DOMAIN_COLORS.length];
+}
+
+// Kept only so the existing render path can fall back if the backend
+// response predates v1.4. Primary path uses the `by_sending_domain` block
+// which ships totals directly.
+function computeDomainTotals(daily: InsDailyRow[], opens: number, clicks: number): InsDomainTotals {
+  const sum = (key: keyof InsDailyRow) => daily.reduce((acc, r) => acc + (Number(r[key]) || 0), 0);
+  const sent = sum('sent');
+  const delivered = sum('delivered');
+  const hard = sum('hard_bounces');
+  const soft = sum('soft_bounces');
+  const base = delivered || sent || 1;
+  const sentBase = sent || 1;
+  return {
+    sent, delivered, opens, clicks,
+    hard_bounces: hard,
+    soft_bounces: soft,
+    open_rate: (opens / base) * 100,
+    click_rate: (clicks / base) * 100,
+    inbox_rate: sent > 0 ? (delivered / sent) * 100 : 0,
+    hard_bounce_rate: (hard / sentBase) * 100,
+    soft_bounce_rate: (soft / sentBase) * 100,
+  };
+}
 
 // Master List Migration P6: per-domain SDS audience health row.
 // Mirrors the response shape from GET /api/mailing/analytics/sds-audience-health.
@@ -544,6 +662,339 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
           <span className="ac-isp-tile-sub">{fmt(card.complaints)}</span>
         </div>
       </div>
+    </div>
+  );
+};
+
+// ─── ISP Insights Panel ─────────────────────────────────────────────────────
+
+interface ISPInsightsPanelProps {
+  orgId: string;
+  sendingDomains: string[];
+  onApiVersion: (ver: string) => void;
+}
+
+const INS_WINDOWS: InsWindow[] = [3, 7, 14];
+const INS_ISP_CHOICES: string[] = [
+  'gmail', 'yahoo', 'microsoft', 'apple',
+  'comcast', 'att', 'cox', 'charter',
+];
+
+const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion }) => {
+  const [days, setDays] = useState<InsWindow>(7);
+  const [isp, setIsp] = useState<string>('gmail');
+  const [metric, setMetric] = useState<InsMetric>('delivered');
+  const [loading, setLoading] = useState(false);
+  const [series, setSeries] = useState<InsDomainSeries[]>([]);
+  const [topCampaigns, setTopCampaigns] = useState<InsTopCampaign[]>([]);
+  const [windowMst, setWindowMst] = useState<{ start_mst: string; end_mst: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        // Single fetch. The backend (v1.4+) returns a `by_sending_domain`
+        // block with one series per sending domain, pre-filtered to the
+        // selected ISP. Previously the panel fanned out 1 + N requests
+        // (one per domain), which serialised on the DB pool and left
+        // every request pending for ~60s. Now: 1 request, ~8–15s.
+        const res = await orgFetch(
+          `/api/mailing/analytics/isp-sending-insights?isp=${encodeURIComponent(isp)}&days=${days}`,
+          orgId,
+        );
+        const data = await res.json();
+        if (cancelled) return;
+        onApiVersion(data?.api_version || '?');
+        setTopCampaigns(Array.isArray(data?.top_campaigns) ? data.top_campaigns : []);
+        if (data?.window?.start_mst && data?.window?.end_mst) {
+          setWindowMst({ start_mst: data.window.start_mst, end_mst: data.window.end_mst });
+        } else {
+          setWindowMst(null);
+        }
+
+        const bySD: Record<string, { daily: InsDailyRow[]; totals: InsDomainTotals }> =
+          data?.by_sending_domain || {};
+        const perDomain: InsDomainSeries[] = Object.keys(bySD)
+          .sort()
+          .map(domain => {
+            const entry = bySD[domain] || { daily: [], totals: null as unknown as InsDomainTotals };
+            const daily = Array.isArray(entry.daily) ? entry.daily : [];
+            const t = entry.totals;
+            const totals: InsDomainTotals = t
+              ? {
+                  sent: Number(t.sent || 0),
+                  delivered: Number(t.delivered || 0),
+                  opens: Number(t.opens || 0),
+                  clicks: Number(t.clicks || 0),
+                  hard_bounces: Number(t.hard_bounces || 0),
+                  soft_bounces: Number(t.soft_bounces || 0),
+                  open_rate: Number(t.open_rate || 0),
+                  click_rate: Number(t.click_rate || 0),
+                  inbox_rate: Number(t.inbox_rate || 0),
+                  hard_bounce_rate: Number(t.hard_bounce_rate || 0),
+                  soft_bounce_rate: Number(t.soft_bounce_rate || 0),
+                }
+              : computeDomainTotals(daily, 0, 0);
+            return { sending_domain: domain, daily, totals };
+          });
+
+        setSeries(perDomain);
+      } catch (err) {
+        console.error('ISP Insights load error:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [isp, days, orgId, onApiVersion]);
+
+  const mergedDaily = useMemo(() => {
+    const dateSet = new Set<string>();
+    for (const s of series) s.daily.forEach(r => dateSet.add(r.date));
+    const dates = Array.from(dateSet).sort();
+    const todayMst = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+    return dates.map(date => {
+      const row: Record<string, number | string> = { date, isToday: date === todayMst ? 1 : 0 };
+      for (const s of series) {
+        const hit = s.daily.find(r => r.date === date);
+        row[s.sending_domain] = hit ? Number(hit[metric] || 0) : 0;
+      }
+      return row;
+    });
+  }, [series, metric]);
+
+  const totalsRow = useMemo(() => {
+    const t = series.reduce((acc, s) => ({
+      sent: acc.sent + s.totals.sent,
+      delivered: acc.delivered + s.totals.delivered,
+      opens: acc.opens + s.totals.opens,
+      clicks: acc.clicks + s.totals.clicks,
+      hard_bounces: acc.hard_bounces + s.totals.hard_bounces,
+      soft_bounces: acc.soft_bounces + s.totals.soft_bounces,
+    }), { sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0 });
+    const base = t.delivered || t.sent || 1;
+    const sentBase = t.sent || 1;
+    return {
+      ...t,
+      inbox_rate: t.sent > 0 ? (t.delivered / t.sent) * 100 : 0,
+      open_rate: (t.opens / base) * 100,
+      click_rate: (t.clicks / base) * 100,
+      hard_bounce_rate: (t.hard_bounces / sentBase) * 100,
+      soft_bounce_rate: (t.soft_bounces / sentBase) * 100,
+    };
+  }, [series]);
+
+  const ispLabel = ISP_LABELS[isp] || isp;
+
+  return (
+    <div className="ac-card ig-card-hover" style={{ gridColumn: '1 / -1' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h3 style={{ margin: 0 }}>
+            <FontAwesomeIcon icon={faFilter} /> ISP Insights &mdash; {ispLabel}
+          </h3>
+          <div style={{ fontSize: '0.72em', color: '#64748b', marginTop: 4 }}>
+            Deliverability and engagement by sending domain at the selected ISP &middot; dates in MST
+            {windowMst && (
+              <span style={{ marginLeft: 8, color: '#475569' }}>
+                ({windowMst.start_mst} &rarr; {windowMst.end_mst})
+              </span>
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="ac-range-selector">
+            {INS_WINDOWS.map(w => (
+              <button key={w} className={days === w ? 'active' : ''} onClick={() => setDays(w)}>
+                {w}d
+              </button>
+            ))}
+          </div>
+          <select
+            value={isp}
+            onChange={(e) => setIsp(e.target.value)}
+            style={{
+              background: '#0d1526',
+              color: '#e0e6f0',
+              border: '1px solid rgba(0,200,255,0.15)',
+              borderRadius: 10,
+              padding: '8px 12px',
+              fontSize: 13,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+            }}
+          >
+            {INS_ISP_CHOICES.map(k => (
+              <option key={k} value={k}>{ISP_LABELS[k] || k}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading ISP insights...</div>
+      ) : series.length === 0 ? (
+        <div className="ac-empty-mini">No sending domains detected. Run a campaign first.</div>
+      ) : (
+        <>
+          {/* Per-sending-domain rate table */}
+          <div className="ac-table-wrap" style={{ marginBottom: 16 }}>
+            <table className="ac-table">
+              <thead>
+                <tr>
+                  <th>Sending Domain</th>
+                  <th>Sent</th>
+                  <th>Delivered</th>
+                  <th>Inbox %</th>
+                  <th>Opens</th>
+                  <th>Open %</th>
+                  <th>Clicks</th>
+                  <th>Click %</th>
+                  <th>Hard B <FontAwesomeIcon icon={faInfoCircle} title="Hard bounces indicate invalid addresses and degrade sender reputation. Treat as list hygiene signal." style={{ fontSize: 10, color: '#475569' }} /></th>
+                  <th>Soft B <FontAwesomeIcon icon={faInfoCircle} title="Soft bounces retry through the PMTA deferred queue. Not a list-quality signal." style={{ fontSize: 10, color: '#475569' }} /></th>
+                </tr>
+              </thead>
+              <tbody>
+                {series.map(s => (
+                  <tr key={s.sending_domain}>
+                    <td style={{ fontWeight: 500 }}>
+                      <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: colorForDomain(s.sending_domain), marginRight: 8 }} />
+                      {s.sending_domain}
+                    </td>
+                    <td>{fmt(s.totals.sent)}</td>
+                    <td>{fmt(s.totals.delivered)}</td>
+                    <td className={s.totals.inbox_rate > 95 ? 'ac-good' : s.totals.inbox_rate > 90 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.inbox_rate)}</td>
+                    <td>{fmt(s.totals.opens)}</td>
+                    <td className={s.totals.open_rate > 20 ? 'ac-good' : s.totals.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.open_rate)}</td>
+                    <td>{fmt(s.totals.clicks)}</td>
+                    <td className={s.totals.click_rate > 3 ? 'ac-good' : s.totals.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.click_rate)}</td>
+                    <td className={s.totals.hard_bounce_rate < 2 ? 'ac-good' : s.totals.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.hard_bounce_rate)}</td>
+                    <td style={{ color: '#94a3b8' }}>{pct(s.totals.soft_bounce_rate)}</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: '2px solid rgba(0,200,255,0.15)', fontWeight: 600, color: '#c0c4d0' }}>
+                  <td>All domains</td>
+                  <td>{fmt(totalsRow.sent)}</td>
+                  <td>{fmt(totalsRow.delivered)}</td>
+                  <td className={totalsRow.inbox_rate > 95 ? 'ac-good' : totalsRow.inbox_rate > 90 ? 'ac-ok' : 'ac-bad'}>{pct(totalsRow.inbox_rate)}</td>
+                  <td>{fmt(totalsRow.opens)}</td>
+                  <td>{pct(totalsRow.open_rate)}</td>
+                  <td>{fmt(totalsRow.clicks)}</td>
+                  <td>{pct(totalsRow.click_rate)}</td>
+                  <td>{pct(totalsRow.hard_bounce_rate)}</td>
+                  <td style={{ color: '#94a3b8' }}>{pct(totalsRow.soft_bounce_rate)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Metric selector + daily trend chart */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: '0.8em', color: '#94a3b8' }}>
+              Daily trend ({days}d, {ispLabel})
+            </div>
+            <div className="ac-range-selector">
+              {(Object.keys(INS_METRIC_LABELS) as InsMetric[]).map(k => (
+                <button key={k} className={metric === k ? 'active' : ''} onClick={() => setMetric(k)}>
+                  {INS_METRIC_LABELS[k]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="ac-trend-chart" style={{ marginBottom: 16 }}>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={mergedDaily} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke="#334155"
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={{ stroke: '#1e293b' }}
+                  tickFormatter={(v: string) => v.slice(5)}
+                />
+                <YAxis
+                  stroke="#334155"
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
+                />
+                <RechartsTooltip
+                  contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: '#94a3b8' }}
+                  formatter={(value: number) => fmt(value)}
+                  labelFormatter={(label: string, payload: Array<{ payload?: { isToday?: number } }>) => {
+                    const isToday = payload && payload[0]?.payload?.isToday === 1;
+                    return isToday ? `${label} (today — partial)` : label;
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+                {series.map(s => (
+                  <Line
+                    key={s.sending_domain}
+                    type="monotone"
+                    dataKey={s.sending_domain}
+                    stroke={colorForDomain(s.sending_domain)}
+                    strokeWidth={2}
+                    dot={false}
+                    name={s.sending_domain}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Top campaigns leaderboard */}
+          <div style={{ marginBottom: 4, fontSize: '0.8em', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FontAwesomeIcon icon={faTrophy} style={{ color: '#fbbf24' }} />
+            Top campaigns at {ispLabel} ({days}d window, sorted by clicks)
+          </div>
+          {topCampaigns.length === 0 ? (
+            <div className="ac-empty-mini">No campaign engagement recorded at {ispLabel} in this window.</div>
+          ) : (
+            <div className="ac-table-wrap">
+              <table className="ac-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 40 }}>#</th>
+                    <th>Campaign</th>
+                    <th>Sending Domain</th>
+                    <th>Sent</th>
+                    <th>Delivered</th>
+                    <th>Opens</th>
+                    <th>Open %</th>
+                    <th>Clicks</th>
+                    <th>Click %</th>
+                    <th>Hard B %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topCampaigns.map((c, i) => (
+                    <tr key={c.campaign_id}>
+                      <td style={{ color: i < 3 ? '#fbbf24' : '#475569', fontWeight: 600 }}>{i + 1}</td>
+                      <td style={{ fontWeight: 500 }}>{c.name}</td>
+                      <td style={{ color: '#94a3b8' }}>
+                        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colorForDomain(c.sending_domain), marginRight: 6 }} />
+                        {c.sending_domain || '—'}
+                      </td>
+                      <td>{fmt(c.sent)}</td>
+                      <td>{fmt(c.delivered)}</td>
+                      <td>{fmt(c.opens)}</td>
+                      <td className={c.open_rate > 20 ? 'ac-good' : c.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(c.open_rate)}</td>
+                      <td>{fmt(c.clicks)}</td>
+                      <td className={c.click_rate > 3 ? 'ac-good' : c.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(c.click_rate)}</td>
+                      <td className={c.hard_bounce_rate < 2 ? 'ac-good' : c.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(c.hard_bounce_rate)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };
@@ -1094,6 +1545,13 @@ export const AnalyticsCenter: React.FC = () => {
               </>
             )}
           </div>
+
+          {/* ─── ISP Insights (MST, multi-day, per sending-domain) ──────── */}
+          <ISPInsightsPanel
+            orgId={orgId}
+            sendingDomains={overview?.sending_domains || []}
+            onApiVersion={(ver) => setApiVersions(prev => ({ ...prev, isp_sending_insights: ver }))}
+          />
 
           {/* ─── Main Content (full-width) ────────────────────────────── */}
           <div className="ac-main-content ig-fade-in">

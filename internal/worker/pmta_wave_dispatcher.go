@@ -102,12 +102,18 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 	}
 
 	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML, campaignName, campaignPlain sql.NullString
+	var contentLocked sql.NullBool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(subject, ''),
-		       COALESCE(html_content, ''), COALESCE(name, ''), COALESCE(plain_content, '')
+		       COALESCE(html_content, ''), COALESCE(name, ''), COALESCE(plain_content, ''),
+		       COALESCE(content_locked, FALSE)
 		FROM mailing_campaigns WHERE id = $1
-	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML, &campaignName, &campaignPlain); err != nil {
+	`, campaignID).Scan(&campaignFromName, &campaignFromEmail, &campaignSubject, &campaignHTML, &campaignName, &campaignPlain, &contentLocked); err != nil {
 		return 0, err
+	}
+	isContentLocked := contentLocked.Valid && contentLocked.Bool
+	if isContentLocked {
+		log.Printf("[WaveEnqueue] campaign %s content_locked=true — bypassing subject/HTML fingerprint mutations (honeypot still injected)", campaignID)
 	}
 
 	// Hash Fingerprint Diversification: use the campaign's own content directly.
@@ -184,9 +190,15 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		}
 
 		seed := computeMutationSeed(rec.subscriberID, waveID)
-		recipientHTML := mutateHTMLHash(baseHTML, seed)
+		var recipientHTML, recipientSubject string
+		if isContentLocked {
+			recipientHTML = baseHTML
+			recipientSubject = baseSubject
+		} else {
+			recipientHTML = mutateHTMLHash(baseHTML, seed)
+			recipientSubject = mutateSubjectLine(baseSubject, seed, brandKey)
+		}
 		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
-		recipientSubject := mutateSubjectLine(baseSubject, seed, brandKey)
 
 		var sourceID interface{}
 		if rec.audienceSourceID.Valid {

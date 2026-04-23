@@ -323,6 +323,10 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 		"status IN ('active','confirmed')",
 		"hard_bounced_at IS NULL",
 		"complained_at IS NULL",
+		// Honeypot-flagged scanners are never mailable. Applied at the
+		// shared WHERE layer so the materializer, segment preview, and
+		// live segment-driven sends all agree.
+		"is_bot = false",
 	}
 	args := []interface{}{}
 	argNum := 1

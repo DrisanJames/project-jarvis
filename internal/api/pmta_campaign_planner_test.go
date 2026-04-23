@@ -479,10 +479,17 @@ func TestPlanPMTAAudience_MasterSelection_PrimaryPassReturnsCandidates(t *testin
 		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
 		WillReturnRows(sdsRows)
 
-	// Cold-fallback still runs after primary (it is allowed to return
-	// nothing once quota is met; here we return empty so quotas stay met
-	// from the primary pass).
-	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\)`).
+	// Cold-fallback fires a per-ISP stripe query for each ISP with a
+	// remaining shortfall (gmail here: quota 10, primary supplied 3).
+	// The new shape passes the ISP name as a dedicated argument so the
+	// planner can filter mailing_subscribers.isp directly.
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\).*sub\.isp = \$3`).
+		WithArgs(sendingDomain, orgID, "gmail", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
+
+	// After per-ISP pass, a catch-all scan picks up unclassified
+	// subscribers (isp IS NULL OR isp = ''); also returns empty here.
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\).*sub\.isp IS NULL OR sub\.isp = ''`).
 		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
 
@@ -544,22 +551,25 @@ func TestPlanPMTAAudience_MasterSelection_ColdFallbackWhenPrimaryEmpty(t *testin
 	// Cold-fallback fills the audience from mailing_subscribers without
 	// an SDS row for this domain. This is the cold-start scenario:
 	// brand-new sending domain, zero SDS coverage.
+	//
+	// With the per-ISP + hash-stripe fallback, quota 2 is exhausted by the
+	// gmail per-ISP pass; allQuotasMet() short-circuits the catch-all pass.
 	fallbackRows := sqlmock.NewRows([]string{"id", "email"}).
 		AddRow("22222222-0000-0000-0000-000000000001", "new1@gmail.com").
 		AddRow("22222222-0000-0000-0000-000000000002", "new2@gmail.com")
-	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\)`).
-		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
+	mock.ExpectQuery(`FROM mailing_subscribers sub\s+WHERE sub\.status IN \('active','confirmed'\).*sub\.isp = \$3`).
+		WithArgs(sendingDomain, orgID, "gmail", sqlmock.AnyArg()).
 		WillReturnRows(fallbackRows)
 
 	input := engine.PMTACampaignInput{
 		CampaignID:    campaignID,
 		SendingDomain: sendingDomain,
 		ISPPlans: []engine.PMTAISPScheduleInput{
-			{ISP: "gmail", Quota: 10},
+			{ISP: "gmail", Quota: 2},
 		},
 	}
 	normalized := pmtaNormalizedCampaign{
-		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 10}},
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 2}},
 	}
 
 	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)

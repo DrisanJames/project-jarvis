@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,43 @@ func resolveOfferID(ctx context.Context, db dbQuerier, campaignID string) string
 		return ""
 	}
 	return oid.String
+}
+
+// contentLockResolver abstracts the minimum query surface needed so the helper
+// can be driven by either *sql.Tx or *sql.DB without pulling in dbQuerier's
+// full QueryContext requirement.
+type contentLockResolver interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// resolveContentLocked decides the campaign's content_locked value at deploy
+// time. Precedence:
+//  1. Explicit payload override (non-nil) — used verbatim.
+//  2. Offer-level default — looked up by offer_id if present in the payload.
+//  3. nil — caller should fall through to the column's DB default (FALSE).
+//
+// Content-locked campaigns bypass subject/HTML fingerprint mutations at wave
+// dispatch so strict advertisers (e.g. TruGreen) receive byte-faithful
+// creative. See worker/pmta_wave_dispatcher.go EnqueuePMTAWave.
+func resolveContentLocked(ctx context.Context, q contentLockResolver, explicit *bool, offerID string) *bool {
+	if explicit != nil {
+		v := *explicit
+		return &v
+	}
+	if offerID == "" || offerID == "00000000-0000-0000-0000-000000000000" {
+		return nil
+	}
+	var locked sql.NullBool
+	if err := q.QueryRowContext(ctx,
+		`SELECT content_locked FROM mailing_offers WHERE id = $1`, offerID,
+	).Scan(&locked); err != nil {
+		return nil
+	}
+	if !locked.Valid {
+		return nil
+	}
+	v := locked.Bool
+	return &v
 }
 
 // dbQuerier abstracts the common query methods shared by *sql.DB and *sql.Conn
@@ -675,7 +713,7 @@ func planPMTAAudience(
 		if !listQualityCheck(listID) {
 			return nil
 		}
-		query := `SELECT s.id::text, s.email FROM mailing_subscribers s WHERE s.list_id = $1 AND s.status IN ('active','confirmed')`
+		query := `SELECT s.id::text, s.email FROM mailing_subscribers s WHERE s.list_id = $1 AND s.status IN ('active','confirmed') AND s.is_bot = false`
 		var args []any
 		args = append(args, listID)
 		if totalQuota > 0 {
@@ -801,6 +839,11 @@ func planPMTAAudience(
 		//     been stamped yet but the address was terminated elsewhere
 		//   - sub.hard_bounced_at / complained_at: denormalised global
 		//     suppressions (index hit instead of join on suppression_list)
+		//   - sub.is_bot = false: honeypot-detected scanners. The flag is
+		//     set by HandleBotTrap when the hidden off-screen link in the
+		//     email body is followed (only bots ever do this). Excluding
+		//     here prevents reinforcement-loop selection where bot opens
+		//     inflate score_local → planner prefers bots → more sends.
 		//   - sds.unsubscribed_at / hard_bounced_at / complained_at:
 		//     per-domain terminal events
 		//   - warmup_status gating: cold → first-touch cohort allowed
@@ -840,7 +883,8 @@ func planPMTAAudience(
 				 AND sds.sending_domain = $1
 				WHERE sub.status IN ('active','confirmed')
 				  AND sub.hard_bounced_at IS NULL
-				  AND sub.complained_at IS NULL` + orgClause + `
+				  AND sub.complained_at IS NULL
+				  AND sub.is_bot = false` + orgClause + `
 				  AND sds.unsubscribed_at IS NULL
 				  AND sds.hard_bounced_at IS NULL
 				  AND sds.complained_at IS NULL
@@ -887,81 +931,260 @@ func planPMTAAudience(
 		//      flip status to 'warming'). Without this they are
 		//      permanently invisible to master selection.
 		//
-		// The fallback is deliberately a separate query so the primary
-		// hot path stays a clean SDS index lookup. The fallback uses a
-		// NOT EXISTS anti-join, which Postgres plans as a hash anti-join
-		// on sds_pkey. Capped by the remaining quota so we never scan
-		// more subscribers than we actually need.
+		// Per-ISP + per-brand stripe:
+		// The fallback runs ONE query per ISP that still has a shortfall.
+		// Each query is scoped to `sub.isp = <isp>` and ordered by a
+		// deterministic hash of (sub.id, sending_domain). Two brands
+		// launching welcome campaigns at the same minute hash to disjoint
+		// slices of the same ISP pool instead of both grabbing the top-
+		// engagement records, which was the root cause of the 2026-04-20
+		// cross-brand audience overlap. Quotas, pool configuration at the
+		// application level, and PMTA pools all key on these ISP names,
+		// so the per-ISP filter is also what makes quota math sound when
+		// the pool's ISP mix is skewed (e.g. mostly gmail) relative to
+		// what the campaign needs (e.g. yahoo quota > gmail quota).
+		//
+		// The ISP value used for filtering is mailing_subscribers.isp —
+		// populated at write time by the lazy backfill below, and eagerly
+		// maintained by the ISPBackfillWorker (internal/worker/isp_backfill.go).
+		// A final catch-all pass picks up any stragglers whose isp column
+		// is still NULL/empty, so correctness is preserved even if the
+		// backfill worker hasn't caught up to a recent import.
 		streamSDSColdFallback := func() error {
 			if allQuotasMet() {
 				return nil
 			}
-			// Size the scan to the remaining bounded shortfall. If every
-			// plan is unlimited (remainingQuota stays 0 and hasBounded is
-			// false) we fall back to a modest fixed scan — allQuotasMet
-			// already returned false in that case so we do need candidates,
-			// we just don't have a per-ISP ceiling to size the query.
-			remainingQuota := 0
+
+			runPerISP := func(ispName string, shortfall int, isCatchAll bool) {
+				if shortfall <= 0 {
+					return
+				}
+				// Oversample 4x to absorb suppressions and SDS races.
+				// The hot path has filters (exclusions, suppression, bloom)
+				// that may reject a material fraction of candidates.
+				scanLimit := shortfall * 4
+				if scanLimit < 5000 {
+					scanLimit = 5000
+				}
+				args := []any{normalizedDomain}
+				orgClause := ""
+				if strings.TrimSpace(orgID) != "" {
+					args = append(args, orgID)
+					orgClause = fmt.Sprintf(" AND sub.organization_id = $%d", len(args))
+				}
+
+				var ispClause string
+				if isCatchAll {
+					ispClause = ` AND (sub.isp IS NULL OR sub.isp = '')`
+				} else {
+					args = append(args, ispName)
+					ispClause = fmt.Sprintf(" AND sub.isp = $%d", len(args))
+				}
+
+				args = append(args, scanLimit)
+				limitParam := fmt.Sprintf("$%d", len(args))
+
+				// Deterministic per-(subscriber, sending_domain) stripe.
+				// hashtext() is stable, indexed-friendly when wrapped in
+				// ORDER BY, and gives each brand a disjoint slice of the
+				// eligible pool. Tie-break by engagement_score so within a
+				// brand's slice the higher-engagement records still land
+				// first — preserves the old "top-engagement preferred"
+				// property while eliminating the cross-brand collision.
+				query := `
+					SELECT sub.id::text, sub.email
+					FROM mailing_subscribers sub
+					WHERE sub.status IN ('active','confirmed')
+					  AND sub.hard_bounced_at IS NULL
+					  AND sub.complained_at IS NULL
+					  AND sub.is_bot = false` + orgClause + ispClause + `
+					  AND NOT EXISTS (
+					    SELECT 1 FROM mailing_subscriber_domain_state sds
+					    WHERE sds.subscriber_id = sub.id
+					      AND sds.sending_domain = $1
+					  )
+					ORDER BY hashtext(sub.id::text || $1) ASC,
+					         sub.engagement_score DESC NULLS LAST
+					LIMIT ` + limitParam
+				rows, err := db.QueryContext(ctx, query, args...)
+				if err != nil {
+					// Non-fatal — log and continue. Primary pass may
+					// already have filled quota and the fallback is
+					// defensive.
+					log.Printf("[PlanAudience] cold-fallback query failed for isp=%s domain=%s: %v", ispName, normalizedDomain, err)
+					return
+				}
+				defer rows.Close()
+				streamed := 0
+				for rows.Next() {
+					var subID, email string
+					if rows.Scan(&subID, &email) == nil {
+						qualifyEmail(subID, email, "sds_cold", input.SendingDomain)
+						streamed++
+					}
+					if allQuotasMet() {
+						break
+					}
+				}
+				log.Printf("[PlanAudience] cold-fallback isp=%s streamed=%d shortfall=%d catchall=%v domain=%s", ispName, streamed, shortfall, isCatchAll, normalizedDomain)
+			}
+
+			// Sort ISPs by descending shortfall so the biggest gaps run
+			// first — gives the best chance of hitting allQuotasMet before
+			// smaller gaps even need to fire.
+			type ispShortfall struct {
+				isp       string
+				shortfall int
+			}
+			shortfalls := make([]ispShortfall, 0, len(ispQuota))
 			hasBounded := false
 			for isp, q := range ispQuota {
 				if q <= 0 {
+					// Unlimited plan: no ceiling, so there's no "shortfall"
+					// to size to. Use a modest fixed scan so unlimited plans
+					// still receive per-ISP striped candidates.
+					shortfalls = append(shortfalls, ispShortfall{isp: isp, shortfall: 1250})
 					continue
 				}
 				hasBounded = true
-				shortfall := q - qualifiedPerISP[isp]
-				if shortfall > 0 {
-					remainingQuota += shortfall
+				need := q - qualifiedPerISP[isp]
+				if need > 0 {
+					shortfalls = append(shortfalls, ispShortfall{isp: isp, shortfall: need})
 				}
 			}
-			if hasBounded && remainingQuota == 0 {
+			if hasBounded && len(shortfalls) == 0 {
 				return nil
 			}
-			scanLimit := remainingQuota * 4
-			if scanLimit < 5000 {
-				scanLimit = 5000
-			}
-			args := []any{normalizedDomain}
-			orgClause := ""
-			if strings.TrimSpace(orgID) != "" {
-				args = append(args, orgID)
-				orgClause = fmt.Sprintf(" AND sub.organization_id = $%d", len(args))
-			}
-			args = append(args, scanLimit)
-			limitParam := fmt.Sprintf("$%d", len(args))
-			query := `
-				SELECT sub.id::text, sub.email
-				FROM mailing_subscribers sub
-				WHERE sub.status IN ('active','confirmed')
-				  AND sub.hard_bounced_at IS NULL
-				  AND sub.complained_at IS NULL` + orgClause + `
-				  AND NOT EXISTS (
-				    SELECT 1 FROM mailing_subscriber_domain_state sds
-				    WHERE sds.subscriber_id = sub.id
-				      AND sds.sending_domain = $1
-				  )
-				ORDER BY sub.engagement_score DESC NULLS LAST, sub.created_at DESC
-				LIMIT ` + limitParam
-			rows, err := db.QueryContext(ctx, query, args...)
-			if err != nil {
-				// Non-fatal — log and continue. Primary pass may already
-				// have filled quota and the fallback is defensive.
-				log.Printf("[PlanAudience] cold-fallback query failed for domain %s: %v", normalizedDomain, err)
-				return nil
-			}
-			defer rows.Close()
-			streamed := 0
-			for rows.Next() {
-				var subID, email string
-				if rows.Scan(&subID, &email) == nil {
-					qualifyEmail(subID, email, "sds_cold", input.SendingDomain)
-					streamed++
+			// Deterministic ordering: largest shortfall first, tie-break
+			// by ISP name so logs are reproducible across runs.
+			sort.Slice(shortfalls, func(i, j int) bool {
+				if shortfalls[i].shortfall != shortfalls[j].shortfall {
+					return shortfalls[i].shortfall > shortfalls[j].shortfall
 				}
+				return shortfalls[i].isp < shortfalls[j].isp
+			})
+
+			for _, sf := range shortfalls {
 				if allQuotasMet() {
 					break
 				}
+				// Recompute live shortfall each iteration — earlier ISPs
+				// may have pulled in cross-classified stragglers (shouldn't
+				// happen with the isp filter, but we respect the invariant).
+				live := sf.shortfall
+				if q := ispQuota[sf.isp]; q > 0 {
+					live = q - qualifiedPerISP[sf.isp]
+				}
+				if live <= 0 {
+					continue
+				}
+				runPerISP(sf.isp, live, false)
 			}
-			log.Printf("[PlanAudience] master selection cold-fallback streamed %d candidates from mailing_subscribers (no SDS row on %s)", streamed, normalizedDomain)
+
+			// Catch-all pass for subscribers whose isp column is still
+			// empty — this window should shrink to zero once the
+			// ISPBackfillWorker has completed its first full pass.
+			// Protects correctness for freshly-imported subscribers.
+			if !allQuotasMet() {
+				remaining := 0
+				for isp, q := range ispQuota {
+					if q <= 0 {
+						continue
+					}
+					need := q - qualifiedPerISP[isp]
+					if need > 0 {
+						remaining += need
+					}
+				}
+				if remaining > 0 || !hasBounded {
+					if remaining <= 0 {
+						remaining = 5000
+					}
+					runPerISP("", remaining, true)
+				}
+			}
 			return nil
+		}
+
+		// ------------------------------------------------------------------
+		// Hybrid priority prelude (Master List Migration P7c / vendor-batch
+		// integration). When a master-selection campaign ALSO specifies
+		// send_priority or inclusion_segments, drain those sources FIRST to
+		// fill per-ISP quotas. Whatever quota is still open after the prelude
+		// falls through to the existing SDS + SDS-cold-fallback passes below.
+		//
+		// Use case: a freshly-imported vendor cohort (e.g. "WestCapital
+		// Verified - Homeowners Jan 2026") lives on the Verified External
+		// Imports - Master list with no per-domain SDS rows yet. The operator
+		// points send_priority at the cohort's segment; we drain the segment
+		// first (cold/first-touch path), and any remaining ISP quota is
+		// topped up from the engaged pool via SDS. Strictly additive —
+		// campaigns without send_priority/inclusion_segments run the SDS
+		// passes directly, matching pre-change behaviour.
+		//
+		// Backwards-compat invariants:
+		//   - streamList / streamSegment already apply global suppression,
+		//     hard-bounce, complaint, and per-ISP quota filters via the
+		//     shared qualifyEmail closure. No duplicate filtering here.
+		//   - allQuotasMet() is the shared gate; we stop iterating priority
+		//     sources as soon as every ISP quota is filled.
+		//   - Errors from streamList/streamSegment are logged and skipped
+		//     rather than returned: a mis-specified priority source should
+		//     not block SDS from running. This matches the non-master
+		//     SendPriority branch below.
+		preludePriorities := len(input.SendPriority) + len(input.InclusionSegments) + len(inclusionIDs)
+		if preludePriorities > 0 {
+			preludeStart := time.Now()
+			log.Printf("[PlanAudience/hybrid] prelude start — send_priority=%d inclusion_segments=%d inclusion_lists=%d (master-selection fills remaining quota)",
+				len(input.SendPriority), len(input.InclusionSegments), len(inclusionIDs))
+			for idx, item := range input.SendPriority {
+				if allQuotasMet() {
+					log.Printf("[PlanAudience/hybrid] all quotas met at priority %d/%d, prelude early exit", idx+1, len(input.SendPriority))
+					break
+				}
+				itemStart := time.Now()
+				switch item.Type {
+				case "list":
+					resolved, _ := resolveListNamesToIDs(ctx, db, orgID, []string{item.ID})
+					for _, listID := range resolved {
+						if err := streamList(listID); err != nil {
+							log.Printf("[PlanAudience/hybrid] priority %d/%d list %s stream error (continuing): %v",
+								idx+1, len(input.SendPriority), safePrefix(listID, 36), err)
+						}
+					}
+					log.Printf("[PlanAudience/hybrid] priority %d/%d list %s streamed in %v, qualified=%d",
+						idx+1, len(input.SendPriority), safePrefix(item.ID, 36), time.Since(itemStart), len(qualified))
+				case "segment":
+					if err := streamSegment(item.ID); err != nil {
+						log.Printf("[PlanAudience/hybrid] priority %d/%d segment %s stream error (continuing): %v",
+							idx+1, len(input.SendPriority), safePrefix(item.ID, 36), err)
+					}
+					log.Printf("[PlanAudience/hybrid] priority %d/%d segment %s streamed in %v, qualified=%d",
+						idx+1, len(input.SendPriority), safePrefix(item.ID, 36), time.Since(itemStart), len(qualified))
+				}
+			}
+			for i, listID := range inclusionIDs {
+				if allQuotasMet() {
+					log.Printf("[PlanAudience/hybrid] all quotas met at inclusion_list %d/%d, prelude early exit", i+1, len(inclusionIDs))
+					break
+				}
+				if err := streamList(listID); err != nil {
+					log.Printf("[PlanAudience/hybrid] inclusion_list %d/%d (%s) stream error (continuing): %v",
+						i+1, len(inclusionIDs), safePrefix(listID, 12), err)
+				}
+			}
+			for i, segmentID := range input.InclusionSegments {
+				if allQuotasMet() {
+					log.Printf("[PlanAudience/hybrid] all quotas met at inclusion_segment %d/%d, prelude early exit", i+1, len(input.InclusionSegments))
+					break
+				}
+				if err := streamSegment(segmentID); err != nil {
+					log.Printf("[PlanAudience/hybrid] inclusion_segment %d/%d (%s) stream error (continuing): %v",
+						i+1, len(input.InclusionSegments), safePrefix(segmentID, 12), err)
+				}
+			}
+			log.Printf("[PlanAudience/hybrid] prelude complete in %v, qualified=%d quotas_met=%t — falling through to SDS for remaining quota",
+				time.Since(preludeStart), len(qualified), allQuotasMet())
 		}
 
 		if err := streamSDS(); err != nil {
