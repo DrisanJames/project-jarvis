@@ -151,3 +151,20 @@ data_pipeline:
 mailing:
   enabled: true
   database_url: ""    # DATABASE_URL
+
+alerting:
+  # Campaign-lateness SMS pager. Fires when a scheduled campaign is still
+  # in 'scheduled' or 'preparing' status more than `threshold_minutes` after
+  # its scheduled_at. Dedup via mailing_campaigns.late_alert_sent_at; repeat
+  # alerts suppressed for `realert_after_hours`.
+  campaign_lateness:
+    enabled: false               # ALERT_CAMPAIGN_LATENESS_ENABLED=1
+    threshold_minutes: 5         # ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES
+    realert_after_hours: 6       # ALERT_CAMPAIGN_LATENESS_REALERT_HOURS
+
+  twilio:
+    enabled: false
+    account_sid: ""              # TWILIO_ACCOUNT_SID (e.g. ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)
+    auth_token: ""               # TWILIO_AUTH_TOKEN (never commit)
+    from_number: ""              # TWILIO_FROM_NUMBER (E.164, e.g. +12089841142)
+    to_numbers: []               # TWILIO_TO_NUMBERS=comma,separated,list (E.164)

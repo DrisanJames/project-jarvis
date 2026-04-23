@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -35,6 +37,31 @@ type Config struct {
 	Verification       VerificationConfig      `yaml:"verification"`
 	Automation         AutomationConfig        `yaml:"automation"`
 	Warmup             WarmupConfig            `yaml:"warmup"`
+	Alerting           AlertingConfig          `yaml:"alerting"`
+}
+
+// AlertingConfig holds operational-alert configuration (Twilio SMS, lateness
+// thresholds, etc.). All fields have safe defaults so the zero value is a
+// no-op ("alerting disabled").
+type AlertingConfig struct {
+	Twilio           TwilioConfig           `yaml:"twilio"`
+	CampaignLateness CampaignLatenessConfig `yaml:"campaign_lateness"`
+}
+
+// TwilioConfig holds Twilio REST-API credentials and routing.
+type TwilioConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	AccountSID string   `yaml:"account_sid"`   // TWILIO_ACCOUNT_SID
+	AuthToken  string   `yaml:"auth_token"`    // TWILIO_AUTH_TOKEN
+	FromNumber string   `yaml:"from_number"`   // TWILIO_FROM_NUMBER (E.164, e.g. +12089841142)
+	ToNumbers  []string `yaml:"to_numbers"`    // TWILIO_TO_NUMBERS (comma-separated env var)
+}
+
+// CampaignLatenessConfig controls the campaign-scheduled-time SMS pager.
+type CampaignLatenessConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	ThresholdMinutes  int  `yaml:"threshold_minutes"`   // alert when scheduled_at is older than this
+	ReAlertAfterHours int  `yaml:"realert_after_hours"` // suppress repeat alerts within this window
 }
 
 // DataNormConfig holds S3 data normalization settings (H14).
@@ -458,6 +485,13 @@ func Load(path string) (*Config, error) {
 	if cfg.Agent.MinDataPoints == 0 {
 		cfg.Agent.MinDataPoints = 100
 	}
+	// Alerting defaults: safe no-op unless explicitly enabled.
+	if cfg.Alerting.CampaignLateness.ThresholdMinutes == 0 {
+		cfg.Alerting.CampaignLateness.ThresholdMinutes = 5
+	}
+	if cfg.Alerting.CampaignLateness.ReAlertAfterHours == 0 {
+		cfg.Alerting.CampaignLateness.ReAlertAfterHours = 6
+	}
 
 	return &cfg, nil
 }
@@ -572,5 +606,55 @@ func LoadFromEnv(path string) (*Config, error) {
 		cfg.DataPipeline.AdminEmail = v
 	}
 
+	// Twilio / alerting overrides. Presence of TWILIO_ACCOUNT_SID implies
+	// the operator wants alerting on, so we also flip Enabled=true.
+	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
+		cfg.Alerting.Twilio.AccountSID = v
+		cfg.Alerting.Twilio.Enabled = true
+	}
+	if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
+		cfg.Alerting.Twilio.AuthToken = v
+	}
+	if v := os.Getenv("TWILIO_FROM_NUMBER"); v != "" {
+		cfg.Alerting.Twilio.FromNumber = v
+	}
+	if v := os.Getenv("TWILIO_TO_NUMBERS"); v != "" {
+		var nums []string
+		for _, n := range strings.Split(v, ",") {
+			n = strings.TrimSpace(n)
+			if n != "" {
+				nums = append(nums, n)
+			}
+		}
+		if len(nums) > 0 {
+			cfg.Alerting.Twilio.ToNumbers = nums
+		}
+	}
+	if v := os.Getenv("ALERT_CAMPAIGN_LATENESS_ENABLED"); v == "true" || v == "1" {
+		cfg.Alerting.CampaignLateness.Enabled = true
+	}
+	if v := os.Getenv("ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Alerting.CampaignLateness.ThresholdMinutes = n
+		}
+	}
+	if v := os.Getenv("ALERT_CAMPAIGN_LATENESS_REALERT_HOURS"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Alerting.CampaignLateness.ReAlertAfterHours = n
+		}
+	}
+
 	return cfg, nil
+}
+
+func parsePositiveInt(s string) (int, error) {
+	var n int
+	_, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("value must be > 0")
+	}
+	return n, nil
 }

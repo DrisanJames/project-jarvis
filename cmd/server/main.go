@@ -35,6 +35,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/twilio"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
@@ -510,6 +511,37 @@ func main() {
 				log.Println("Suppression List Worker started (brand-specific sunset suppression, runs daily)")
 
 				healthMonitor := worker.NewCampaignHealthMonitor(mailingDB)
+
+				// Wire Twilio-backed campaign-lateness SMS pager. Feature is
+				// off by default; enable via alerting.campaign_lateness.enabled
+				// (yaml) or ALERT_CAMPAIGN_LATENESS_ENABLED=1 (env).
+				// Requires Twilio creds (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN /
+				// TWILIO_FROM_NUMBER) and at least one recipient in ToNumbers.
+				if cfg.Alerting.CampaignLateness.Enabled && cfg.Alerting.Twilio.Enabled &&
+					len(cfg.Alerting.Twilio.ToNumbers) > 0 {
+					twilioClient := twilio.NewClient(
+						cfg.Alerting.Twilio.AccountSID,
+						cfg.Alerting.Twilio.AuthToken,
+						cfg.Alerting.Twilio.FromNumber,
+					)
+					if twilioClient != nil {
+						threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
+						reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
+						healthMonitor.SetLatenessAlerter(
+							twilioClient,
+							cfg.Alerting.Twilio.ToNumbers,
+							threshold,
+							reAlert,
+						)
+						log.Printf("Campaign lateness SMS alerts ENABLED: threshold=%s realert=%s recipients=%d",
+							threshold, reAlert, len(cfg.Alerting.Twilio.ToNumbers))
+					} else {
+						log.Println("Campaign lateness SMS alerts DISABLED: Twilio credentials incomplete")
+					}
+				} else {
+					log.Println("Campaign lateness SMS alerts DISABLED (alerting.campaign_lateness.enabled=false or no Twilio creds/recipients)")
+				}
+
 				healthMonitor.Start()
 				defer healthMonitor.Stop()
 				log.Println("Campaign Health Monitor started (per-ISP threshold auto-pause, checks every 60s)")
@@ -3933,6 +3965,18 @@ END $$`},
 	// Add retry_after column to queue tables for strict-pool backoff scheduling
 	db.Exec(`ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
 	db.Exec(`ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
+
+	// ---------------------------------------------------------------------
+	// late_alert_sent_at: dedup column for the CampaignHealthMonitor's
+	// lateness-SMS pager (internal/worker/campaign_health_monitor.go →
+	// checkLateCampaigns). Stamped only after a successful SMS; suppresses
+	// repeat alerts within alerting.campaign_lateness.realert_after_hours.
+	// ---------------------------------------------------------------------
+	if _, err := db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS late_alert_sent_at TIMESTAMPTZ`); err != nil {
+		log.Printf("[StartupMigration] add_campaigns_late_alert_sent_at: ERROR %v", err)
+	} else {
+		log.Println("[StartupMigration] add_campaigns_late_alert_sent_at: OK")
+	}
 
 	// Warn about active PMTA profiles missing an api_endpoint — these
 	// will fall through to SMTP-only mode, which risks DMARC rejection.

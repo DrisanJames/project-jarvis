@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -16,6 +17,20 @@ type CampaignHealthMonitor struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+
+	// Lateness-alerting configuration. Zero value = feature disabled.
+	latenessEnabled    bool
+	latenessThreshold  time.Duration // e.g. 5 * time.Minute
+	latenessReAlert    time.Duration // e.g. 6 * time.Hour
+	latenessAlerter    SMSAlerter    // nil = feature disabled
+	latenessRecipients []string      // SMS recipients (E.164)
+}
+
+// SMSAlerter is the minimum surface the health monitor needs in order to
+// page someone when a campaign doesn't fire on time. Implemented by
+// internal/pkg/twilio.Client; also trivially mockable in tests.
+type SMSAlerter interface {
+	SendSMS(ctx context.Context, to, body string) (string, error)
 }
 
 func NewCampaignHealthMonitor(db *sql.DB) *CampaignHealthMonitor {
@@ -23,6 +38,32 @@ func NewCampaignHealthMonitor(db *sql.DB) *CampaignHealthMonitor {
 		db:       db,
 		interval: 60 * time.Second,
 	}
+}
+
+// SetLatenessAlerter enables the campaign-lateness SMS alert. Safe to call
+// after Start; the next tick will pick it up. If alerter is nil or recipients
+// is empty, lateness alerting stays disabled.
+func (m *CampaignHealthMonitor) SetLatenessAlerter(
+	alerter SMSAlerter,
+	recipients []string,
+	threshold time.Duration,
+	reAlert time.Duration,
+) {
+	if alerter == nil || len(recipients) == 0 {
+		m.latenessEnabled = false
+		return
+	}
+	if threshold <= 0 {
+		threshold = 5 * time.Minute
+	}
+	if reAlert <= 0 {
+		reAlert = 6 * time.Hour
+	}
+	m.latenessAlerter = alerter
+	m.latenessRecipients = append([]string(nil), recipients...)
+	m.latenessThreshold = threshold
+	m.latenessReAlert = reAlert
+	m.latenessEnabled = true
 }
 
 func (m *CampaignHealthMonitor) Start() {
@@ -53,6 +94,7 @@ func (m *CampaignHealthMonitor) loop() {
 			m.checkISPThresholds()
 			m.recordCompletedMetrics()
 			m.recordListQualityMetrics()
+			m.checkLateCampaigns()
 		}
 	}
 }
@@ -445,4 +487,106 @@ func (m *CampaignHealthMonitor) recordCompletedMetrics() {
 			WHERE id = $1
 		`, recID, string(metricsJSON), newStatus)
 	}
+}
+
+// checkLateCampaigns pages the on-call operator via SMS when a campaign is
+// still stuck in 'scheduled' or 'preparing' longer than latenessThreshold
+// after its scheduled_at. The CAMPAIGN status transitions to 'sending' only
+// when the first wave's EnqueuePMTAWave runs (pmta_wave_dispatcher.go) —
+// so a stale status here means the wave pipeline is not making progress.
+//
+// Dedup: late_alert_sent_at column on mailing_campaigns is stamped after a
+// successful SMS. We suppress re-alerts until latenessReAlert has elapsed so
+// a stuck campaign doesn't spam the pager every 60s.
+func (m *CampaignHealthMonitor) checkLateCampaigns() {
+	if !m.latenessEnabled || m.latenessAlerter == nil || len(m.latenessRecipients) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(m.ctx, 20*time.Second)
+	defer cancel()
+
+	thresholdSecs := int(m.latenessThreshold.Seconds())
+	reAlertSecs := int(m.latenessReAlert.Seconds())
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id, COALESCE(name, ''), scheduled_at
+		FROM mailing_campaigns
+		WHERE status IN ('scheduled', 'preparing')
+		  AND scheduled_at IS NOT NULL
+		  AND scheduled_at < NOW() - make_interval(secs => $1)
+		  AND (late_alert_sent_at IS NULL
+		       OR late_alert_sent_at < NOW() - make_interval(secs => $2))
+		ORDER BY scheduled_at ASC
+		LIMIT 25
+	`, thresholdSecs, reAlertSecs)
+	if err != nil {
+		if !strings.Contains(err.Error(), "does not exist") {
+			log.Printf("[HealthMonitor] lateness query error: %v", err)
+		}
+		return
+	}
+	defer rows.Close()
+
+	type lateCampaign struct {
+		ID          string
+		Name        string
+		ScheduledAt time.Time
+	}
+	var late []lateCampaign
+	for rows.Next() {
+		var lc lateCampaign
+		if err := rows.Scan(&lc.ID, &lc.Name, &lc.ScheduledAt); err != nil {
+			continue
+		}
+		late = append(late, lc)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[HealthMonitor] lateness rows error: %v", err)
+	}
+
+	for _, lc := range late {
+		delay := time.Since(lc.ScheduledAt).Round(time.Minute)
+		name := lc.Name
+		if name == "" {
+			name = lc.ID
+		}
+		body := fmt.Sprintf(
+			"[IGNITE] Campaign %q did not send at scheduled time (%s UTC, +%s late). id=%s",
+			truncateName(name, 48),
+			lc.ScheduledAt.UTC().Format("2006-01-02 15:04"),
+			delay,
+			lc.ID,
+		)
+
+		var anySuccess bool
+		for _, to := range m.latenessRecipients {
+			sid, err := m.latenessAlerter.SendSMS(ctx, to, body)
+			if err != nil {
+				log.Printf("[HealthMonitor] late-alert SMS FAILED campaign=%s to=%s err=%v", lc.ID, to, err)
+				continue
+			}
+			anySuccess = true
+			log.Printf("[HealthMonitor] late-alert SMS sent campaign=%s to=%s sid=%s", lc.ID, to, sid)
+		}
+
+		// Only stamp the dedup column if at least one SMS actually went out —
+		// otherwise we want to retry on the next tick.
+		if anySuccess {
+			if _, err := m.db.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET late_alert_sent_at = NOW(), updated_at = NOW()
+				WHERE id = $1
+			`, lc.ID); err != nil {
+				log.Printf("[HealthMonitor] late-alert dedup stamp error campaign=%s: %v", lc.ID, err)
+			}
+		}
+	}
+}
+
+func truncateName(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

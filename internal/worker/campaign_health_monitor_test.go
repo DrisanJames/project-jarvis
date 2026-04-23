@@ -122,3 +122,129 @@ func TestRecordCompletedCampaignMetrics(t *testing.T) {
 func testContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
 }
+
+// fakeAlerter records every SendSMS call so tests can assert on them.
+type fakeAlerter struct {
+	calls []struct{ To, Body string }
+	err   error
+}
+
+func (f *fakeAlerter) SendSMS(ctx context.Context, to, body string) (string, error) {
+	f.calls = append(f.calls, struct{ To, Body string }{to, body})
+	if f.err != nil {
+		return "", f.err
+	}
+	return "SM-test", nil
+}
+
+func TestCheckLateCampaigns_FiresSMSAndStampsDedup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	scheduled := time.Now().Add(-12 * time.Minute)
+
+	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
+		WithArgs(300, 21600). // 5min threshold, 6h realert
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
+			AddRow("camp-late-1", "Apr22 QF Welcome", scheduled))
+
+	// Only one recipient → expect exactly one stamp after one successful SMS.
+	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at`).
+		WithArgs("camp-late-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	alerter := &fakeAlerter{}
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	m.SetLatenessAlerter(alerter, []string{"+18777804236"}, 5*time.Minute, 6*time.Hour)
+	m.checkLateCampaigns()
+
+	require.Len(t, alerter.calls, 1, "expected one SMS")
+	assert.Equal(t, "+18777804236", alerter.calls[0].To)
+	assert.Contains(t, alerter.calls[0].Body, "did not send at scheduled time")
+	assert.Contains(t, alerter.calls[0].Body, "camp-late-1")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckLateCampaigns_Disabled_NoQuery(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	// No queries expected — the worker should short-circuit.
+
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	m.checkLateCampaigns()
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckLateCampaigns_AllSMSFailed_DoesNotStampDedup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	scheduled := time.Now().Add(-10 * time.Minute)
+	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
+			AddRow("camp-late-2", "stuck", scheduled))
+	// NO UPDATE expected — dedup is only stamped after a successful SMS.
+
+	alerter := &fakeAlerter{err: assertErr("twilio down")}
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	m.SetLatenessAlerter(alerter, []string{"+18777804236"}, 5*time.Minute, 6*time.Hour)
+	m.checkLateCampaigns()
+
+	require.Len(t, alerter.calls, 1)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckLateCampaigns_MultipleRecipients_OneSuccessStillStamps(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	scheduled := time.Now().Add(-8 * time.Minute)
+	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
+			AddRow("camp-late-3", "", scheduled))
+	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at`).
+		WithArgs("camp-late-3").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Fail first recipient, succeed second. We simulate this by flipping the
+	// alerter's err off after the first call.
+	alerter := &flakyAlerter{failUntil: 1}
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	m.SetLatenessAlerter(alerter, []string{"+15550001", "+15550002"}, 5*time.Minute, 6*time.Hour)
+	m.checkLateCampaigns()
+
+	require.Len(t, alerter.calls, 2)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+type flakyAlerter struct {
+	calls     []struct{ To, Body string }
+	n         int
+	failUntil int // fail the first N calls
+}
+
+func (f *flakyAlerter) SendSMS(ctx context.Context, to, body string) (string, error) {
+	f.calls = append(f.calls, struct{ To, Body string }{to, body})
+	f.n++
+	if f.n <= f.failUntil {
+		return "", assertErr("transient")
+	}
+	return "SM-ok", nil
+}
+
+type assertErr string
+
+func (a assertErr) Error() string { return string(a) }

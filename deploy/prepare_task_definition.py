@@ -20,6 +20,17 @@ PASSTHROUGH_ENV_VARS = [
     "PMTA_SSH_KEY",
     "PMTA_SSH_PASSPHRASE",
     "ANTHROPIC_API_KEY",
+    # Campaign-lateness SMS pager (see internal/worker/campaign_health_monitor.go).
+    # All five must be present in the deploy shell on first rollout; once the
+    # ECS task definition holds them, subsequent deploys inherit them and these
+    # can be left unset unless rotating credentials or changing recipients.
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_FROM_NUMBER",
+    "TWILIO_TO_NUMBERS",
+    "ALERT_CAMPAIGN_LATENESS_ENABLED",
+    "ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES",
+    "ALERT_CAMPAIGN_LATENESS_REALERT_HOURS",
 ]
 
 REMOVE_ENV_VARS = [
