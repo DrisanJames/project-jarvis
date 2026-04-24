@@ -51,7 +51,7 @@ import (
 // VersionHarvestPerformance is bumped on every behaviour change so the
 // frontend can display "backend v1.0" in the dashboard footer and we can
 // verify deploys without guessing.
-const VersionHarvestPerformance = "1.0"
+const VersionHarvestPerformance = "1.1"
 
 // DefaultHarvestCampaignPrefix is the naming prefix the harvest deploy
 // script (scripts/deploy_welcome_harvest.py) applies to every brand
@@ -184,8 +184,11 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	// don't want to drop rows whose campaign_id lookup fails (rare, but
 	// happens during race windows between event ingest and campaign
 	// insert).
+	// NOTE: mailing_tracking_events stores the recipient address in the `email`
+	// column (not `recipient`). We alias it back to `recipient` so the many
+	// downstream aggregates (d.recipient) in this handler keep working.
 	eventSubquery := `SELECT t.event_type, t.event_at, t.bounce_type, t.is_machine_open,
-		t.sending_domain, t.campaign_id, t.recipient, t.subscriber_id,
+		t.sending_domain, t.campaign_id, t.email AS recipient, t.subscriber_id,
 		LOWER(COALESCE(NULLIF(t.recipient_domain,''), 'unknown')) as dom,
 		mc.name as campaign_name
 		FROM mailing_tracking_events t
