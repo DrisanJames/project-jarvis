@@ -335,6 +335,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/cross-brand-cap", advSvc.HandleCrossBrandCapMetrics)
 			r.Get("/analytics/sds-audience-health", advSvc.HandleSDSAudienceHealth)
 			r.Get("/analytics/welcome-cohort-audit", advSvc.HandleWelcomeCohortAudit)
+			r.Get("/analytics/harvest-performance", advSvc.HandleHarvestPerformance)
 			
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)

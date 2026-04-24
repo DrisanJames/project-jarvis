@@ -18,6 +18,7 @@ import {
 import { useAuth } from '../../../contexts/AuthContext';
 
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { HarvestStreamDashboard } from './HarvestStreamDashboard';
 import './AnalyticsCenter.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1391,6 +1392,11 @@ export const AnalyticsCenter: React.FC = () => {
                 <span className="ac-kpi-sub">{fmt(totals.unsubscribes || 0)} unsubscribes</span>
               </div>
             </div>
+          </div>
+
+          {/* ─── Harvest Stream Dashboard ──────────────────────────────── */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <HarvestStreamDashboard orgId={orgId} />
           </div>
 
           {/* ─── ISP Performance Cards ─────────────────────────────────── */}
