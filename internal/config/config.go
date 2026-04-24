@@ -129,6 +129,14 @@ type MailingConfig struct {
 	SessionSecret      string `yaml:"session_secret"`
 	CookieName         string `yaml:"cookie_name"`
 	CookieMaxAge       int    `yaml:"cookie_max_age"`
+
+	// OutboxMode controls the durable injection outbox behavior.
+	//   "legacy"  — current pending->sent transitions, no submitting state, no reconciler.
+	//   "durable" — full state machine (pending|queued -> claimed -> submitting -> accepted |
+	//               failed_retryable | failed_permanent | dead_letter) + reconciler + self-check.
+	// Default is "legacy" so a restart without explicit config change does not flip behavior.
+	// Rollback is as simple as setting this back to legacy and restarting.
+	OutboxMode string `yaml:"outbox_mode"`
 }
 
 // AuthConfig holds Google OAuth authentication configuration
@@ -564,6 +572,13 @@ func LoadFromEnv(path string) (*Config, error) {
 		if !cfg.Mailing.Enabled {
 			cfg.Mailing.Enabled = true
 		}
+	}
+	// OutboxMode override (OUTBOX_MODE=legacy|durable). Default legacy if unset.
+	if v := strings.TrimSpace(os.Getenv("OUTBOX_MODE")); v != "" {
+		cfg.Mailing.OutboxMode = strings.ToLower(v)
+	}
+	if cfg.Mailing.OutboxMode == "" {
+		cfg.Mailing.OutboxMode = "legacy"
 	}
 	if dbURL := os.Getenv("READ_REPLICA_URL"); dbURL != "" {
 		cfg.Mailing.ReadReplicaURL = dbURL

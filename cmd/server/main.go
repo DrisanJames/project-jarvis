@@ -1487,6 +1487,32 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_queue_selection_rank", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS selection_rank INTEGER`},
 		{"add_queue_audience_source_type", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_type VARCHAR(30)`},
 		{"add_queue_audience_source_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS audience_source_id UUID`},
+		// Durable injection outbox columns (2026-04-23). Additive only.
+		// idempotency_key is nullable on existing rows and gets a unique partial
+		// index so new inserts with a populated key are de-duplicated while
+		// legacy rows without a key are untouched.
+		{"outbox_add_idempotency_key", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS idempotency_key UUID`},
+		{"outbox_add_next_attempt_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`},
+		{"outbox_add_submitted_at", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ`},
+		{"outbox_add_pmta_response", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS pmta_response TEXT`},
+		{"outbox_idempotency_unique_idx", `CREATE UNIQUE INDEX IF NOT EXISTS uq_mcq_idempotency_key ON mailing_campaign_queue (idempotency_key) WHERE idempotency_key IS NOT NULL`},
+		{"outbox_stuck_submitting_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_stuck_submitting ON mailing_campaign_queue (locked_at) WHERE status = 'submitting'`},
+		{"outbox_next_attempt_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_next_attempt ON mailing_campaign_queue (priority, created_at) WHERE status = 'failed_retryable' AND next_attempt_at IS NOT NULL`},
+		{"outbox_message_id_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_message_id ON mailing_campaign_queue (message_id) WHERE message_id IS NOT NULL`},
+		// Expand the status CHECK constraint to accept the durable-outbox
+		// state-machine values (submitting, accepted, failed_retryable,
+		// failed_permanent) alongside every value currently in production use.
+		// This runs BEFORE any code writes these states — the state machine is
+		// gated behind OutboxMode=durable which ships legacy by default — so
+		// expanding the constraint now is harmless and unblocks the flip.
+		{"outbox_drop_old_status_chk", `ALTER TABLE mailing_campaign_queue DROP CONSTRAINT IF EXISTS mailing_campaign_queue_status_check`},
+		{"outbox_add_expanded_status_chk", `ALTER TABLE mailing_campaign_queue ADD CONSTRAINT mailing_campaign_queue_status_check CHECK (
+			status::text IN (
+				'queued','claimed','sending','sent','failed','skipped','dead_letter',
+				'submitting','accepted','failed_retryable','failed_permanent',
+				'dead_letter_strict','pending','processing'
+			)
+		)`},
 		{"create_pmta_isp_plans", `CREATE TABLE IF NOT EXISTS mailing_campaign_isp_plans (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,

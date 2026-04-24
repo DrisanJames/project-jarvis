@@ -43,6 +43,14 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
 		s.router.Get("/api/mailing/injection-analytics", injectionAnalytics.HandleGetInjectionAnalytics)
 
+		// Durable injection outbox observability (2026-04-23). These handlers
+		// read mailing_campaign_queue directly — the outbox table is its own
+		// source of truth, no metrics pipeline involved. Register on the root
+		// router so operators can curl them during incidents without going
+		// through the /api auth middleware dance when diagnosing a live send.
+		s.router.Get("/api/outbox/summary", HandleOutboxSummary(db))
+		s.router.Get("/api/outbox/dead-letter", HandleOutboxDeadLetter(db))
+
 		// Pool isolation admin endpoints — on root router to avoid chi late-registration race
 		poolIsolationSvc := &PMTACampaignService{db: db}
 		s.router.Get("/api/admin/pool-isolation-status", func(w http.ResponseWriter, req *http.Request) {

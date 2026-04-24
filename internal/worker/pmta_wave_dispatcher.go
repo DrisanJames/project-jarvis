@@ -207,19 +207,37 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 				sourceID = parsed
 			}
 		}
+		// Deterministic idempotency key: uuidv5 of (campaign, subscriber, wave).
+		// Re-running the wave enqueue for any reason (retry, leader change,
+		// crash recovery) will produce the same key, and the partial unique
+		// index uq_mcq_idempotency_key will reject the duplicate row via
+		// ON CONFLICT DO NOTHING. This is the single largest durability
+		// improvement in this deploy: accidental double-enqueue is now a
+		// no-op at the DB level regardless of what upstream does.
+		waveUUID, waveParseErr := uuid.Parse(waveID)
+		if waveParseErr != nil {
+			// Defensive: a malformed waveID should never reach here because
+			// the caller pulled it from a UUID column, but if it ever did we
+			// must not silently drop the idempotency guarantee. Skip the row
+			// and surface the error so the wave fails loudly.
+			return 0, fmt.Errorf("wave_id %q is not a valid UUID: %w", waveID, waveParseErr)
+		}
+		idempotencyKey := outboxIdempotencyKey(campaignID, rec.subscriberID, waveUUID)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_campaign_queue (
 				id, campaign_id, subscriber_id, subject, html_content, plain_content,
 				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
-				recipient_isp, selection_rank, audience_source_type, audience_source_id
+				recipient_isp, selection_rank, audience_source_type, audience_source_id,
+				idempotency_key
 			) VALUES (
 				$1, $2, $3, $4, $5, $13,
 				'queued', 5, $6, NOW(), $7, $8,
-				$9, $10, $11, $12
+				$9, $10, $11, $12, $14
 			)
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		`, uuid.New(), campaignID, rec.subscriberID, recipientSubject, recipientHTML,
 			scheduledAt, ispPlanID, waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
-			campaignPlain.String,
+			campaignPlain.String, idempotencyKey,
 		); err != nil {
 			return 0, err
 		}
