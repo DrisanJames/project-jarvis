@@ -470,12 +470,34 @@ func main() {
 					log.Println("Cross-brand daily cap DISABLED via DISABLE_CROSS_BRAND_CAP env var")
 				}
 
+				// Durable injection outbox state machine. Controlled by
+				// mailing.outbox_mode in config.yaml (or OUTBOX_MODE env var).
+				// "legacy" preserves historic pending->sending->sent flow;
+				// "durable" activates queued->submitting->accepted with atomic
+				// state guards and the X-Ignite-Idempotency-Key header. This
+				// is the one-line rollback: flip the flag, restart, done.
+				outboxMode := strings.ToLower(strings.TrimSpace(cfg.Mailing.OutboxMode))
+				if outboxMode == "" {
+					outboxMode = "legacy"
+				}
+				sendWorkerPool.SetOutboxMode(outboxMode)
+				log.Printf("Send worker pool outbox mode: %s", outboxMode)
+
 				sendWorkerPool.Start()
 
 				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
 				queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
 				go queueRecovery.Start(ctx)
 				log.Println("Queue Recovery Worker started (scans every 2m for stuck items, max 5 retries)")
+
+				// Durable-outbox reconciler. Only meaningful when OutboxMode=durable
+				// because nothing ever writes 'submitting' in legacy mode. Starting
+				// it unconditionally is cheap (single indexed SELECT, no writes if
+				// no submitting rows exist) and leaves a safety net in place if
+				// durable mode is flipped on without a restart.
+				outboxReconciler := worker.NewOutboxReconciler(mailingDB)
+				go outboxReconciler.Start(ctx)
+				log.Println("Outbox Reconciler started (60s interval, 10m grace, commits crash-window sends + requeues stranded rows)")
 
 				// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
 				dataCleanup := worker.NewDataCleanupWorker(mailingDB)

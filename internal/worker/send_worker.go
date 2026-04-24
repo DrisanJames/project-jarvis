@@ -100,6 +100,37 @@ type SendWorkerPool struct {
 
 	// Cross-brand daily cap. Optional; nil disables the check.
 	capChecker *mailing.CapChecker
+
+	// outboxMode controls the durable injection outbox state machine.
+	//   "" or "legacy" — current pending->sending->sent transitions, no
+	//                    submitting state, no idempotency header.
+	//   "durable"      — queued->submitting->accepted transitions,
+	//                    X-Ignite-Idempotency-Key header injected, atomic
+	//                    state guards on every write.
+	// Default is legacy so pool construction without explicit opt-in is
+	// behavior-preserving. Safe to flip at runtime between drains.
+	outboxMode string
+}
+
+// SetOutboxMode toggles the durable-outbox state machine. Pass "durable" to
+// activate the full state machine, "" or "legacy" (or any other value) to
+// preserve current behavior. Intended to be called once at startup from
+// config, but safe to call while the pool is draining — the mode is read
+// fresh on every claim and every transition.
+func (p *SendWorkerPool) SetOutboxMode(mode string) {
+	if mode == "durable" {
+		p.outboxMode = "durable"
+		return
+	}
+	p.outboxMode = "legacy"
+}
+
+// isDurable returns true when the durable outbox state machine should be
+// active for every claim and transition. Kept as a method (not a bare field
+// read) so future refactors can add per-campaign or per-brand overrides
+// without touching every call site.
+func (p *SendWorkerPool) isDurable() bool {
+	return p.outboxMode == "durable"
 }
 
 // SetCapChecker wires the cross-brand daily cap enforcer. When set, the
@@ -220,6 +251,15 @@ type QueueItem struct {
 	Priority     int
 	FirstName    string
 	LastName     string
+
+	// IdempotencyKey is the deterministic UUIDv5 stamped at wave-enqueue
+	// time (see worker/outbox_idempotency.go). It is zero-valued for rows
+	// inserted by legacy paths that predate the durable outbox.
+	// The send worker rides this key through PMTA as the
+	// X-Ignite-Idempotency-Key header so accounting records can be
+	// correlated back to the originating queue row without relying on the
+	// opaque PMTA message-id.
+	IdempotencyKey uuid.UUID
 
 	// Extended subscriber fields for full Liquid personalization
 	CustomFields        mailing.JSON
@@ -440,17 +480,41 @@ func (p *SendWorkerPool) channelWorker(workerNum int) {
 }
 
 // claimISPForOne claims up to `count` queued items for a specific campaign+ISP.
+//
+// In legacy mode (OutboxMode != "durable") the target status is 'sending',
+// matching historical behavior exactly. In durable mode the target is
+// 'submitting' — skipping the intermediate 'sending' state entirely so the
+// state machine has exactly one row-UPDATE per claim (no perf regression vs
+// legacy) and the reconciler's stuck-submitting query has a clean signal.
+//
+// The idempotency_key column is returned even when NULL (for legacy rows
+// that predate the outbox migration) so scanQueueRows can safely scan every
+// queue row regardless of origin path.
 func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp string, count int) ([]QueueItem, error) {
+	targetStatus := "sending"
+	eligibleStatuses := "q.status = 'queued'"
+	if p.isDurable() {
+		targetStatus = "submitting"
+		// Durable mode also picks rows whose retry backoff has elapsed.
+		// The next_attempt_at predicate ensures we only re-pick
+		// failed_retryable rows after their exponential-backoff window
+		// has passed; legacy 'queued' rows still get picked unconditionally
+		// so first-time-send latency is unaffected.
+		eligibleStatuses = `(
+			q.status = 'queued'
+			OR (q.status = 'failed_retryable' AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= NOW()))
+		)`
+	}
 	rows, err := p.db.QueryContext(ctx, `
 		WITH claimed AS (
 			UPDATE mailing_campaign_queue
-			SET status = 'sending', worker_id = $1, locked_at = NOW()
+			SET status = $5, worker_id = $1, locked_at = NOW()
 			WHERE id IN (
 				SELECT q.id FROM mailing_campaign_queue q
 				JOIN mailing_campaigns camp ON camp.id = q.campaign_id
 				WHERE q.campaign_id = $2
 				  AND q.recipient_isp = $3
-				  AND q.status = 'queued'
+				  AND `+eligibleStatuses+`
 				  AND camp.status = 'sending'
 				  AND q.scheduled_at <= NOW()
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
@@ -458,7 +522,7 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 				LIMIT $4
 				FOR UPDATE SKIP LOCKED
 			)
-			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id
+			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id, idempotency_key
 		)
 		SELECT
 			c.id, c.campaign_id, c.subscriber_id,
@@ -477,12 +541,13 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 			COALESCE(c.offer_id, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.creative_id, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.subject_line_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000')
+			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.idempotency_key, '00000000-0000-0000-0000-000000000000')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
 		LEFT JOIN mailing_sending_profiles sp ON sp.id = camp.sending_profile_id
-	`, p.workerID, campaignID, isp, count)
+	`, p.workerID, campaignID, isp, count, targetStatus)
 	if err != nil {
 		return nil, err
 	}
@@ -968,6 +1033,7 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 			&item.CreativeID,
 			&item.SubjectLineID,
 			&item.FromNameID,
+			&item.IdempotencyKey,
 		)
 		if err != nil {
 			log.Printf("SendWorkerPool: scan error: %v", err)
@@ -1198,6 +1264,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	}
 	headers["X-Job"] = item.CampaignID.String()
 
+	// Idempotency correlation. When the durable outbox is active and the
+	// queue row carries a deterministic idempotency_key, expose it as a
+	// custom SMTP header so PMTA's accounting stream (and by extension the
+	// inbound /engine/webhook pipeline) can correlate each accounting record
+	// back to the exact outbox row that produced it. Nil-UUIDs (legacy rows
+	// inserted before the outbox schema migration) are skipped so legacy
+	// traffic continues to behave verbatim.
+	if item.IdempotencyKey != uuid.Nil {
+		headers["X-Ignite-Idempotency-Key"] = item.IdempotencyKey.String()
+	}
+
 	// Feedback-ID enables Gmail FBL and aids ISP complaint attribution.
 	feedbackDomain := item.FromEmail
 	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
@@ -1345,12 +1422,37 @@ func (p *SendWorkerPool) getCampaignSuppressionListIDs(ctx context.Context, camp
 }
 
 // markSent marks a queue item as sent and records the tracking event with VMTA metadata.
+//
+// In durable mode this is the single atomic commit point for the outbox state
+// machine: submitting -> accepted carrying message_id, sent_at, submitted_at,
+// and pmta_response in one row-UPDATE. The WHERE guard on the prior state
+// makes the transition idempotent — a concurrent worker or a crash-recovery
+// replay cannot flip a row twice.
+//
+// In legacy mode the behavior is byte-for-byte identical to the original
+// pending->sending->sent flow: the status='sending' guard matches what
+// claimISPForOne wrote in legacy mode, so no column is overwritten that the
+// legacy rollback path would need.
 func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID, vmta string) error {
-	_, err := p.db.ExecContext(ctx, `
-		UPDATE mailing_campaign_queue 
-		SET status = 'sent', message_id = $2, sent_at = NOW()
-		WHERE id = $1
-	`, item.ID, messageID)
+	var err error
+	if p.isDurable() {
+		_, err = p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue
+			SET status = 'accepted',
+			    message_id = $2,
+			    sent_at = NOW(),
+			    submitted_at = NOW(),
+			    pmta_response = $3
+			WHERE id = $1
+			  AND status = 'submitting'
+		`, item.ID, messageID, vmta)
+	} else {
+		_, err = p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue
+			SET status = 'sent', message_id = $2, sent_at = NOW()
+			WHERE id = $1
+		`, item.ID, messageID)
+	}
 
 	if err != nil {
 		return err
@@ -1406,15 +1508,62 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	return nil
 }
 
-// markFailed marks a queue item as failed, or as dead_letter if max retries exceeded
+// markFailed marks a queue item as failed, or as dead_letter if max retries exceeded.
+//
+// In durable mode the terminal-vs-retryable decision is the same as legacy —
+// attempts+1 >= MaxRetryCount routes to dead_letter, everything else to
+// failed_retryable with an exponential-backoff next_attempt_at so the claim
+// query naturally re-picks the row when the backoff window elapses. The prior
+// state guard accepts both 'submitting' (claim already flipped) and legacy
+// 'sending' so a mid-flight mode flip between drains cannot strand rows.
+//
+// In legacy mode the behavior is byte-for-byte identical to the pre-outbox
+// implementation.
 func (p *SendWorkerPool) markFailed(ctx context.Context, itemID uuid.UUID, errMsg string) error {
-	// Check current attempt count to decide between 'failed' and 'dead_letter'
 	var attempts int
 	_ = p.db.QueryRowContext(ctx, `
 		SELECT COALESCE(attempts, 0) FROM mailing_campaign_queue WHERE id = $1
 	`, itemID).Scan(&attempts)
 
-	// If we've hit the max retry limit, move to dead_letter instead of failed
+	if p.isDurable() {
+		if attempts+1 >= MaxRetryCount {
+			_, err := p.db.ExecContext(ctx, `
+				UPDATE mailing_campaign_queue
+				SET status = 'dead_letter',
+				    error_message = $2,
+				    attempts = attempts + 1,
+				    last_attempt_at = NOW()
+				WHERE id = $1
+				  AND status IN ('submitting', 'sending', 'claimed', 'failed_retryable')
+			`, itemID, errMsg)
+			if err == nil {
+				log.Printf("[SendWorkerPool] Item %s moved to dead_letter after %d attempts (durable)", itemID, attempts+1)
+			}
+			return err
+		}
+
+		// Exponential backoff capped at 30 minutes, matching the plan's
+		// centralized retry policy. Attempt count is the already-recorded
+		// value; the next attempt_at is set relative to now so the claim
+		// query's (next_attempt_at IS NULL OR next_attempt_at <= NOW())
+		// predicate naturally re-picks this row at the right moment.
+		backoffSeconds := (attempts + 1) * (attempts + 1) * 30
+		if backoffSeconds > 1800 {
+			backoffSeconds = 1800
+		}
+		_, err := p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue
+			SET status = 'failed_retryable',
+			    error_message = $2,
+			    attempts = attempts + 1,
+			    last_attempt_at = NOW(),
+			    next_attempt_at = NOW() + ($3 || ' seconds')::interval
+			WHERE id = $1
+			  AND status IN ('submitting', 'sending', 'claimed', 'failed_retryable')
+		`, itemID, errMsg, fmt.Sprintf("%d", backoffSeconds))
+		return err
+	}
+
 	if attempts+1 >= MaxRetryCount {
 		_, err := p.db.ExecContext(ctx, `
 			UPDATE mailing_campaign_queue 
