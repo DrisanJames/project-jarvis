@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1630,7 +1631,30 @@ func (p *SendWorkerPool) deferStrictPool(ctx context.Context, item QueueItem, er
 // recordBounce inserts a tracking event for the failed send and, for hard
 // bounces, adds the address to the global suppression hub so it is never
 // mailed again.
+//
+// GUARD: Before writing anything, we check that no 'delivered' event
+// already exists for this (campaign, subscriber) pair in the last 24h.
+// PMTA's accounting pipeline is authoritative — if PMTA already reported a
+// successful delivery for this recipient on this campaign, any later
+// "bounce" we observe is a submission-retry artifact and must be
+// discarded. This protects against future classes of phantom-bounce bugs
+// beyond the PMTA HTTP bridge 5xx case (which isTransportError already
+// short-circuits).
 func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMsg string) {
+	var alreadyDelivered bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM mailing_tracking_events
+			WHERE campaign_id = $1 AND subscriber_id = $2
+			  AND event_type = 'delivered'
+			  AND event_at > NOW() - INTERVAL '24 hours'
+		)
+	`, item.CampaignID, item.SubscriberID).Scan(&alreadyDelivered); err == nil && alreadyDelivered {
+		log.Printf("[SendWorkerPool] skip phantom bounce — already delivered: campaign=%s sub=%s err=%s",
+			item.CampaignID, item.SubscriberID, errMsg)
+		return
+	}
+
 	bounceType := classifySendError(errMsg)
 	sendingDomain := ""
 	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
@@ -1694,16 +1718,58 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 	}
 }
 
+// pmtaHTTPStatus parses the HTTP status code embedded in a PMTA bridge error
+// of the form "PMTA API error (HTTP <n>): ...". Returns -1 if not present.
+// The PMTA HTTP bridge uses 5xx to signal its OWN failures (bridge crashed,
+// upstream PMTA unreachable, etc) and 4xx to signal caller errors (bad
+// envelope, missing recipient). 5xx/408/429 must never be treated as ISP
+// rejections — the message was never handed to an ISP.
+func pmtaHTTPStatus(errMsg string) int {
+	lower := strings.ToLower(errMsg)
+	const marker = "pmta api error (http "
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return -1
+	}
+	rest := errMsg[idx+len(marker):]
+	end := strings.IndexByte(rest, ')')
+	if end <= 0 {
+		return -1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
 // isTransportError returns true when the error is an infrastructure/network
 // failure (the message was never presented to any ISP) as opposed to an
 // actual recipient rejection. Transport errors should be retried without
 // inflating bounce counters.
+//
+// WHY THIS MATTERS:
+// The PMTA HTTP bridge on :19099 is a local submission gateway. If it
+// returns a 5xx, times out, or reports "out of connection slots", the
+// message is still in our hand — PMTA never saw it. Previously these were
+// being classified as ISP rejections and written as phantom soft-bounces,
+// inflating the "bounce" metric while PMTA silently retried and delivered
+// the message on the second submission.
 func isTransportError(errMsg string) bool {
 	lower := strings.ToLower(errMsg)
+
+	// Any PMTA HTTP bridge 5xx / 408 / 429 is a bridge-side failure, not
+	// an ISP rejection. The message hasn't been queued yet.
+	if code := pmtaHTTPStatus(errMsg); code >= 500 || code == 408 || code == 429 {
+		return true
+	}
+
 	transportIndicators := []string{
 		"connection refused",
 		"connection reset",
 		"connection timed out",
+		"connection unexpectedly closed", // PMTA bridge drop mid-response
+		"out of connection slots",        // PMTA local-VMTA submission congestion
 		"i/o timeout",
 		"no such host",
 		"no route to host",

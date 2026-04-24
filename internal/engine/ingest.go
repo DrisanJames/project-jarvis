@@ -445,6 +445,40 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
 	}
 
+	// Phantom-bounce reconciliation:
+	// When PMTA reports a real delivery, retroactively remove any prior
+	// send_worker-written "bounced" event for the same (campaign,
+	// subscriber) that came from a PMTA HTTP bridge submission error.
+	// These are phantom bounces — PMTA never actually rejected the
+	// message, the HTTP bridge just timed out / returned 5xx on first
+	// submission and PMTA then delivered on retry. The counters are
+	// decremented to match.
+	if eventType == "delivered" && subIDPtr != nil {
+		var phantomCount int64
+		if err := ing.db.QueryRowContext(ctx, `
+			WITH deleted AS (
+				DELETE FROM mailing_tracking_events
+				WHERE campaign_id = $1
+				  AND subscriber_id = $2
+				  AND event_type = 'bounced'
+				  AND event_at > NOW() - INTERVAL '24 hours'
+				  AND bounce_reason LIKE 'PMTA API error%'
+				RETURNING bounce_type
+			)
+			SELECT COUNT(*) FROM deleted
+		`, campUUID, *subIDPtr).Scan(&phantomCount); err == nil && phantomCount > 0 {
+			ing.db.ExecContext(ctx, `
+				UPDATE mailing_campaigns
+				SET bounce_count = GREATEST(COALESCE(bounce_count, 0) - $2, 0),
+				    soft_bounce_count = GREATEST(COALESCE(soft_bounce_count, 0) - $2, 0),
+				    updated_at = NOW()
+				WHERE id = $1
+			`, campUUID, phantomCount)
+			log.Printf("[ingest-db] reconciled %d phantom bounce(s) for campaign=%s sub=%s (delivered after bridge-error)",
+				phantomCount, campUUID, *subIDPtr)
+		}
+	}
+
 	// Update campaign aggregate counters.
 	hardBounce := false
 	switch eventType {

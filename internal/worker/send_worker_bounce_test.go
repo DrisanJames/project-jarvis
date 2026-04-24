@@ -28,6 +28,18 @@ func TestIsTransportError_TrueForInfrastructureFailures(t *testing.T) {
 		{"pmta api wrapper", `PMTA API request to http://15.204.101.125:19099/api/inject/v1: Post "...": dial tcp ...`},
 		{"no sender", `no sender configured for pmta`},
 		{"dial tcp generic", `dial tcp 10.0.0.1:587: connect: connection refused`},
+		// Production-observed PMTA HTTP bridge failures. These were
+		// previously being written as phantom soft-bounces — a message
+		// that PMTA later successfully delivered appearing in analytics
+		// as a bounce.
+		{"PMTA bridge 502 timeout", `PMTA API error (HTTP 502): {"status": "error", "detail": "Connection unexpectedly closed: timed out"}`},
+		{"PMTA bridge 502 out of slots", `PMTA API error (HTTP 502): {"status": "error", "detail": "(421, b'mta-ht-gn1.mail.em.historythinking.com out of connection slots')"}`},
+		{"PMTA bridge 503", `PMTA API error (HTTP 503): service temporarily unavailable`},
+		{"PMTA bridge 504", `PMTA API error (HTTP 504): gateway timeout`},
+		{"PMTA bridge 408", `PMTA API error (HTTP 408): request timeout`},
+		{"PMTA bridge 429", `PMTA API error (HTTP 429): rate limited`},
+		{"out of connection slots only", `(421, b'host out of connection slots')`},
+		{"connection unexpectedly closed only", `Connection unexpectedly closed: timed out`},
 	}
 
 	for _, tc := range cases {
@@ -35,6 +47,24 @@ func TestIsTransportError_TrueForInfrastructureFailures(t *testing.T) {
 			assert.True(t, isTransportError(tc.errMsg),
 				"expected transport error for: %s", tc.errMsg)
 		})
+	}
+}
+
+func TestPmtaHTTPStatus(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{`PMTA API error (HTTP 502): {"status":"error"}`, 502},
+		{`PMTA API error (HTTP 504): gateway timeout`, 504},
+		{`PMTA API error (HTTP 400): bad request`, 400},
+		{`PMTA API error (HTTP 429): too many`, 429},
+		{`pmta api error (http 500): lowercase`, 500},
+		{`no bridge prefix: 502`, -1},
+		{`PMTA API request to http://...: i/o timeout`, -1},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, pmtaHTTPStatus(tc.in), "input: %s", tc.in)
 	}
 }
 
