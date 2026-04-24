@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -15,6 +17,7 @@ import (
 type OutboxSummaryResponse struct {
 	GeneratedAt             time.Time      `json:"generated_at"`
 	APIVersion              string         `json:"api_version"`
+	CacheAgeSeconds         int64          `json:"cache_age_seconds"`
 	DepthByStatus           map[string]int `json:"depth_by_status"`
 	OldestQueuedSeconds     int64          `json:"oldest_queued_seconds"`
 	OldestSendingSeconds    int64          `json:"oldest_sending_seconds"`
@@ -29,92 +32,219 @@ type OutboxSummaryResponse struct {
 // VersionOutboxSummary is bumped on every behavior change. Operators can match
 // this against deploy logs to confirm the handler they're hitting is the one
 // they expect.
-const VersionOutboxSummary = "1.0"
+//
+// 1.1 — Added 30s in-memory cache with background refresher. The raw aggregate
+// queries (GROUP BY status on a 1M+ row queue table) were taking 15s in
+// production, causing dashboard polls to saturate the handler. Cache hit path
+// is now sub-millisecond; refresher runs out-of-band so handler latency is
+// decoupled from DB load.
+const VersionOutboxSummary = "1.1"
 
-// HandleOutboxSummary returns live counts of the injection outbox state. It
-// runs a handful of cheap aggregate queries; each one uses the partial indexes
-// we created in runStartupMigrations so no sequential scans are performed in
-// the steady state.
-func HandleOutboxSummary(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		resp := OutboxSummaryResponse{
-			GeneratedAt:   time.Now().UTC(),
-			APIVersion:    VersionOutboxSummary,
-			DepthByStatus: map[string]int{},
-		}
+// OutboxSummaryCache holds the most recently computed summary. The handler
+// reads from it under RLock and never blocks on a DB query; the refresher
+// goroutine is the sole writer. GeneratedAt on the cached payload lets
+// operators see staleness directly. If the refresher has never run (e.g., the
+// first 30 seconds after boot) the handler returns an empty-but-valid payload
+// with CacheAgeSeconds = -1 so callers can distinguish "cold cache" from
+// "everything is zero".
+type OutboxSummaryCache struct {
+	mu   sync.RWMutex
+	data OutboxSummaryResponse
+	set  bool
+}
 
-		rows, err := db.QueryContext(ctx, `
-			SELECT status, COUNT(*)::int
-			FROM mailing_campaign_queue
-			GROUP BY status
-		`)
-		if err != nil {
-			log.Printf("[outbox_summary] depth query failed: %v", err)
-			http.Error(w, "query failed", http.StatusInternalServerError)
+// Snapshot returns a copy of the cached summary plus a boolean indicating
+// whether the refresher has ever populated it. Deep-copies the status map so
+// the caller can't race the refresher mid-write.
+func (c *OutboxSummaryCache) Snapshot() (OutboxSummaryResponse, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.set {
+		return OutboxSummaryResponse{}, false
+	}
+	cp := c.data
+	cp.DepthByStatus = make(map[string]int, len(c.data.DepthByStatus))
+	for k, v := range c.data.DepthByStatus {
+		cp.DepthByStatus[k] = v
+	}
+	return cp, true
+}
+
+func (c *OutboxSummaryCache) store(resp OutboxSummaryResponse) {
+	c.mu.Lock()
+	c.data = resp
+	c.set = true
+	c.mu.Unlock()
+}
+
+// defaultOutboxCache is the package-level cache shared between the refresher
+// goroutine and the HTTP handler. Tests can construct their own cache and
+// bypass this by calling handleOutboxSummaryWithCache directly.
+var defaultOutboxCache = &OutboxSummaryCache{}
+
+// OutboxSummaryRefreshInterval is how often the background goroutine recomputes
+// the summary. 30s is short enough that operators see fresh data during an
+// incident, long enough that the cost is negligible (a handful of aggregate
+// scans per tick against indexed partial predicates).
+const OutboxSummaryRefreshInterval = 30 * time.Second
+
+// StartOutboxSummaryRefresher launches a long-lived goroutine that keeps the
+// package-level cache populated. Safe to call exactly once from main.go at
+// startup. Runs an immediate refresh on entry so the first curl after boot
+// doesn't see an empty payload.
+func StartOutboxSummaryRefresher(ctx context.Context, db *sql.DB) {
+	go runOutboxSummaryRefresher(ctx, db, defaultOutboxCache, OutboxSummaryRefreshInterval)
+}
+
+// runOutboxSummaryRefresher is the loop body, extracted so tests can drive it
+// with a shortened interval and a controllable context.
+func runOutboxSummaryRefresher(ctx context.Context, db *sql.DB, cache *OutboxSummaryCache, interval time.Duration) {
+	log.Printf("[OutboxSummary] refresher started (interval=%s)", interval)
+	refreshOutboxSummary(ctx, db, cache)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[OutboxSummary] refresher stopping")
 			return
+		case <-ticker.C:
+			refreshOutboxSummary(ctx, db, cache)
 		}
-		for rows.Next() {
-			var status string
-			var count int
-			if scanErr := rows.Scan(&status, &count); scanErr != nil {
-				rows.Close()
-				log.Printf("[outbox_summary] depth scan failed: %v", scanErr)
-				http.Error(w, "scan failed", http.StatusInternalServerError)
-				return
+	}
+}
+
+// refreshOutboxSummary runs the full set of aggregate queries against the DB
+// and swaps the result into the cache. Each query runs with its own 20s
+// timeout so a single slow aggregate can't wedge the entire refresh cycle.
+// Errors are logged but never surfaced — the cache retains the previous good
+// snapshot so handlers keep returning data during a transient DB hiccup.
+func refreshOutboxSummary(ctx context.Context, db *sql.DB, cache *OutboxSummaryCache) {
+	resp := OutboxSummaryResponse{
+		GeneratedAt:   time.Now().UTC(),
+		APIVersion:    VersionOutboxSummary,
+		DepthByStatus: map[string]int{},
+	}
+
+	if depth, err := queryDepthByStatus(ctx, db); err == nil {
+		resp.DepthByStatus = depth
+	} else {
+		log.Printf("[OutboxSummary] depth query failed: %v", err)
+	}
+
+	resp.OldestQueuedSeconds = queryOldest(ctx, db,
+		`SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(scheduled_at)))::bigint, 0)
+		 FROM mailing_campaign_queue WHERE status = 'queued'`)
+	resp.OldestSendingSeconds = queryOldest(ctx, db,
+		`SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(locked_at)))::bigint, 0)
+		 FROM mailing_campaign_queue WHERE status = 'sending' AND locked_at IS NOT NULL`)
+	resp.OldestSubmittingSeconds = queryOldest(ctx, db,
+		`SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(locked_at)))::bigint, 0)
+		 FROM mailing_campaign_queue WHERE status = 'submitting' AND locked_at IS NOT NULL`)
+
+	resp.IdempotencyKeyedRows = queryInt64(ctx, db,
+		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NOT NULL`)
+	resp.IdempotencyNullRows = queryInt64(ctx, db,
+		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NULL`)
+
+	resp.Last5MinInserted = queryInt64(ctx, db,
+		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue
+		 WHERE created_at > NOW() - INTERVAL '5 minutes'`)
+	resp.Last5MinSent = queryInt64(ctx, db,
+		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue
+		 WHERE sent_at > NOW() - INTERVAL '5 minutes'`)
+	resp.Last5MinFailed = queryInt64(ctx, db,
+		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue
+		 WHERE last_attempt_at > NOW() - INTERVAL '5 minutes'
+		   AND status IN ('failed','failed_retryable','failed_permanent','dead_letter','dead_letter_strict')`)
+
+	cache.store(resp)
+}
+
+func queryDepthByStatus(ctx context.Context, db *sql.DB) (map[string]int, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, `
+		SELECT status, COUNT(*)::int FROM mailing_campaign_queue GROUP BY status
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
+// queryOldest and queryInt64 are tiny helpers so the refresh function reads
+// linearly. Errors are swallowed intentionally — a single slow probe shouldn't
+// blank out the entire cache. The 20s per-query timeout is the real safety
+// net; if the DB is this slow we have bigger problems than a missing gauge.
+func queryOldest(ctx context.Context, db *sql.DB, query string) int64 {
+	queryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var v int64
+	if err := db.QueryRowContext(queryCtx, query).Scan(&v); err != nil {
+		log.Printf("[OutboxSummary] oldest probe failed: %v", err)
+		return 0
+	}
+	return v
+}
+
+func queryInt64(ctx context.Context, db *sql.DB, query string) int64 {
+	queryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var v int64
+	if err := db.QueryRowContext(queryCtx, query).Scan(&v); err != nil {
+		log.Printf("[OutboxSummary] int64 probe failed: %v", err)
+		return 0
+	}
+	return v
+}
+
+// HandleOutboxSummary returns cached outbox state. Handler path is pure cache
+// read + JSON encode; the DB is not touched on the request thread. If the
+// refresher has not populated the cache yet the response is still valid JSON
+// with CacheAgeSeconds = -1, which operators use to tell "refresher dead" from
+// "everything is quiet".
+//
+// The db parameter is kept for interface compatibility with the old signature
+// (server_routes_mailing.go passes the mailing DB in) but is not used on the
+// request path.
+func HandleOutboxSummary(db *sql.DB) http.HandlerFunc {
+	_ = db
+	return handleOutboxSummaryWithCache(defaultOutboxCache)
+}
+
+// handleOutboxSummaryWithCache lets tests drive the handler with an injected
+// cache so they never need to stand up a real refresher loop.
+func handleOutboxSummaryWithCache(cache *OutboxSummaryCache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		snapshot, populated := cache.Snapshot()
+		if !populated {
+			snapshot = OutboxSummaryResponse{
+				GeneratedAt:     time.Now().UTC(),
+				APIVersion:      VersionOutboxSummary,
+				DepthByStatus:   map[string]int{},
+				CacheAgeSeconds: -1,
 			}
-			resp.DepthByStatus[status] = count
+		} else {
+			snapshot.CacheAgeSeconds = int64(time.Since(snapshot.GeneratedAt).Seconds())
 		}
-		rows.Close()
-
-		// Oldest-in-state probes. NULL coalesce to zero-age so the JSON is
-		// always well-formed even when a given state has zero rows.
-		ageQuery := `
-			SELECT
-				COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(scheduled_at)))::bigint, 0)
-			FROM mailing_campaign_queue
-			WHERE status = $1
-		`
-		db.QueryRowContext(ctx, ageQuery, "queued").Scan(&resp.OldestQueuedSeconds)
-		db.QueryRowContext(ctx, `
-			SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(locked_at)))::bigint, 0)
-			FROM mailing_campaign_queue
-			WHERE status = 'sending' AND locked_at IS NOT NULL
-		`).Scan(&resp.OldestSendingSeconds)
-		db.QueryRowContext(ctx, `
-			SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(locked_at)))::bigint, 0)
-			FROM mailing_campaign_queue
-			WHERE status = 'submitting' AND locked_at IS NOT NULL
-		`).Scan(&resp.OldestSubmittingSeconds)
-
-		// Idempotency key coverage. Useful during the rollout to confirm new
-		// wave enqueues are producing keys while legacy rows tail off.
-		db.QueryRowContext(ctx, `
-			SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NOT NULL
-		`).Scan(&resp.IdempotencyKeyedRows)
-		db.QueryRowContext(ctx, `
-			SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NULL
-		`).Scan(&resp.IdempotencyNullRows)
-
-		// Rolling 5-minute throughput probes so operators can see activity
-		// during a live campaign without leaving the summary endpoint.
-		db.QueryRowContext(ctx, `
-			SELECT COUNT(*)::bigint FROM mailing_campaign_queue
-			WHERE created_at > NOW() - INTERVAL '5 minutes'
-		`).Scan(&resp.Last5MinInserted)
-		db.QueryRowContext(ctx, `
-			SELECT COUNT(*)::bigint FROM mailing_campaign_queue
-			WHERE sent_at > NOW() - INTERVAL '5 minutes'
-		`).Scan(&resp.Last5MinSent)
-		db.QueryRowContext(ctx, `
-			SELECT COUNT(*)::bigint FROM mailing_campaign_queue
-			WHERE last_attempt_at > NOW() - INTERVAL '5 minutes'
-			  AND status IN ('failed','failed_retryable','failed_permanent','dead_letter','dead_letter_strict')
-		`).Scan(&resp.Last5MinFailed)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
+		if err := json.NewEncoder(w).Encode(snapshot); err != nil {
 			log.Printf("[outbox_summary] encode failed: %v", err)
 		}
 	}

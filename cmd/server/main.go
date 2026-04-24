@@ -499,6 +499,37 @@ func main() {
 				go outboxReconciler.Start(ctx)
 				log.Println("Outbox Reconciler started (60s interval, 10m grace, commits crash-window sends + requeues stranded rows)")
 
+				// Outbox summary refresher. Keeps /api/outbox/summary on a warm
+				// in-memory cache so dashboard polls never block on the aggregate
+				// scans that previously took ~15s against a 1M+ row queue table.
+				api.StartOutboxSummaryRefresher(ctx, mailingDB)
+				log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
+
+				// Outbox self-check. Evaluates durable-outbox invariants every
+				// 5 minutes and routes breaches through the existing Twilio SMS
+				// pager. Shares the alerting config used by the campaign
+				// lateness monitor; alerting stays off unless both
+				// alerting.twilio.enabled and recipients are configured.
+				outboxSelfCheck := worker.NewOutboxSelfCheck(mailingDB)
+				if cfg.Alerting.Twilio.Enabled && len(cfg.Alerting.Twilio.ToNumbers) > 0 {
+					twilioClientSC := twilio.NewClient(
+						cfg.Alerting.Twilio.AccountSID,
+						cfg.Alerting.Twilio.AuthToken,
+						cfg.Alerting.Twilio.FromNumber,
+					)
+					if twilioClientSC != nil {
+						outboxSelfCheck.SetAlerter(twilioClientSC, cfg.Alerting.Twilio.ToNumbers)
+						log.Printf("Outbox Self-Check SMS alerts ENABLED (recipients=%d)",
+							len(cfg.Alerting.Twilio.ToNumbers))
+					} else {
+						log.Println("Outbox Self-Check SMS alerts DISABLED: Twilio credentials incomplete")
+					}
+				} else {
+					log.Println("Outbox Self-Check SMS alerts DISABLED (alerting.twilio.enabled=false or no recipients)")
+				}
+				go outboxSelfCheck.Start(ctx)
+				log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
+
 				// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
 				dataCleanup := worker.NewDataCleanupWorker(mailingDB)
 				go dataCleanup.Start(ctx)

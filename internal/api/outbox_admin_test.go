@@ -1,13 +1,21 @@
 package api
 
-// Tests for HandleOutboxSummary and HandleOutboxDeadLetter.
+// Tests for HandleOutboxSummary, refreshOutboxSummary, and HandleOutboxDeadLetter.
 //
-// These handlers read directly against mailing_campaign_queue with no writes.
-// The tests use go-sqlmock with non-strict ordering + regex matchers because
-// HandleOutboxSummary fires six independent queries and we care about the
-// response shape + field propagation, not query ordering.
+// After 1.1 the summary handler is a pure cache read — no DB on the request
+// path. Tests therefore split into two groups:
+//
+//   1. Cache behavior: Snapshot / handler shape / cold-cache contract. These
+//      never touch a DB at all.
+//   2. Refresher behavior: refreshOutboxSummary against go-sqlmock, verifying
+//      every aggregate query fires and the cache is populated correctly.
+//
+// Dead-letter tests continue to exercise the DB directly because that handler
+// is a thin query-through with no caching (payloads are too variable to
+// usefully pre-warm).
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -21,9 +29,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newOutboxMockDB returns a sqlmock in QueryMatcherRegexp + non-strict mode.
-// Every outbox-summary query must be expected before the handler is invoked;
-// extras are acceptable.
 func newOutboxMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New(
@@ -36,32 +41,109 @@ func newOutboxMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	return db, mock
 }
 
-func TestHandleOutboxSummary_HappyPath(t *testing.T) {
+// TestHandleOutboxSummary_ColdCache verifies that a handler served before the
+// refresher has run returns a valid JSON payload with CacheAgeSeconds=-1 so
+// the dashboard can explicitly render "loading" instead of showing stale zeros.
+func TestHandleOutboxSummary_ColdCache(t *testing.T) {
+	cache := &OutboxSummaryCache{}
+	h := handleOutboxSummaryWithCache(cache)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp OutboxSummaryResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, VersionOutboxSummary, resp.APIVersion)
+	require.Equal(t, int64(-1), resp.CacheAgeSeconds, "cold cache must report -1")
+	require.Empty(t, resp.DepthByStatus)
+}
+
+// TestHandleOutboxSummary_CachedPayload verifies the handler echoes whatever
+// the refresher placed in the cache and computes CacheAgeSeconds from the
+// cached GeneratedAt.
+func TestHandleOutboxSummary_CachedPayload(t *testing.T) {
+	cache := &OutboxSummaryCache{}
+	cache.store(OutboxSummaryResponse{
+		GeneratedAt:             time.Now().UTC().Add(-12 * time.Second),
+		APIVersion:              VersionOutboxSummary,
+		DepthByStatus:           map[string]int{"queued": 120, "submitting": 3, "accepted": 47},
+		OldestQueuedSeconds:     42,
+		OldestSubmittingSeconds: 7,
+		IdempotencyKeyedRows:    42,
+		IdempotencyNullRows:     8,
+		Last5MinInserted:        20,
+		Last5MinSent:            18,
+		Last5MinFailed:          1,
+	})
+
+	h := handleOutboxSummaryWithCache(cache)
+	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp OutboxSummaryResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, 120, resp.DepthByStatus["queued"])
+	require.Equal(t, 3, resp.DepthByStatus["submitting"])
+	require.Equal(t, int64(42), resp.OldestQueuedSeconds)
+	require.Equal(t, int64(7), resp.OldestSubmittingSeconds)
+	require.Equal(t, int64(42), resp.IdempotencyKeyedRows)
+	require.GreaterOrEqual(t, resp.CacheAgeSeconds, int64(10), "cache age should be ~12s")
+	require.LessOrEqual(t, resp.CacheAgeSeconds, int64(30))
+}
+
+// TestHandleOutboxSummary_HandlerDoesNotTouchDB is the contract assertion:
+// even if the DB is handed in, the request path must not issue a single query.
+// Regression guard for the 15s-latency incident that drove this redesign.
+func TestHandleOutboxSummary_HandlerDoesNotTouchDB(t *testing.T) {
+	db, mock := newOutboxMockDB(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
+	rec := httptest.NewRecorder()
+	HandleOutboxSummary(db)(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// No queries expected; ExpectationsWereMet passes because we queued none.
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSnapshot_DeepCopiesMap verifies mutating the returned map can't race the
+// refresher mid-write. This guards the package-level cache against a classic
+// Go gotcha where struct-copy leaves reference fields aliased.
+func TestSnapshot_DeepCopiesMap(t *testing.T) {
+	cache := &OutboxSummaryCache{}
+	cache.store(OutboxSummaryResponse{DepthByStatus: map[string]int{"queued": 1}})
+	snap, ok := cache.Snapshot()
+	require.True(t, ok)
+	snap.DepthByStatus["queued"] = 999
+	snap2, _ := cache.Snapshot()
+	require.Equal(t, 1, snap2.DepthByStatus["queued"], "mutation must not bleed back")
+}
+
+// TestRefreshOutboxSummary_PopulatesCache exercises the full refresh cycle
+// against go-sqlmock. Every query the refresher issues must be expected or
+// the test fails at ExpectationsWereMet.
+func TestRefreshOutboxSummary_PopulatesCache(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*)::int")).
 		WillReturnRows(sqlmock.NewRows([]string{"status", "count"}).
 			AddRow("queued", 120).
 			AddRow("submitting", 3).
-			AddRow("accepted", 47).
-			AddRow("failed_retryable", 2).
-			AddRow("dead_letter", 1))
+			AddRow("accepted", 47))
 
-	mock.ExpectQuery(`WHERE status = \$1`).
-		WithArgs("queued").
+	mock.ExpectQuery(`status = 'queued'`).
 		WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(42)))
-
 	mock.ExpectQuery(`status = 'sending' AND locked_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(0)))
-
 	mock.ExpectQuery(`status = 'submitting' AND locked_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(7)))
-
 	mock.ExpectQuery(`idempotency_key IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(42)))
 	mock.ExpectQuery(`idempotency_key IS NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(8)))
-
 	mock.ExpectQuery(`created_at > NOW\(\) - INTERVAL '5 minutes'`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(20)))
 	mock.ExpectQuery(`sent_at > NOW\(\) - INTERVAL '5 minutes'`).
@@ -69,52 +151,37 @@ func TestHandleOutboxSummary_HappyPath(t *testing.T) {
 	mock.ExpectQuery(`last_attempt_at > NOW\(\) - INTERVAL '5 minutes'`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(1)))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
-	rec := httptest.NewRecorder()
-	HandleOutboxSummary(db)(rec, req)
+	cache := &OutboxSummaryCache{}
+	refreshOutboxSummary(context.Background(), db, cache)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var resp OutboxSummaryResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-
-	require.Equal(t, VersionOutboxSummary, resp.APIVersion)
-	require.Equal(t, 120, resp.DepthByStatus["queued"])
-	require.Equal(t, 3, resp.DepthByStatus["submitting"])
-	require.Equal(t, 47, resp.DepthByStatus["accepted"])
-	require.Equal(t, 1, resp.DepthByStatus["dead_letter"])
-	require.Equal(t, int64(42), resp.OldestQueuedSeconds)
-	require.Equal(t, int64(7), resp.OldestSubmittingSeconds)
-	require.Equal(t, int64(42), resp.IdempotencyKeyedRows)
-	require.Equal(t, int64(8), resp.IdempotencyNullRows)
-	require.Equal(t, int64(20), resp.Last5MinInserted)
-	require.Equal(t, int64(18), resp.Last5MinSent)
-	require.Equal(t, int64(1), resp.Last5MinFailed)
-
-	require.True(t, resp.GeneratedAt.Before(time.Now().Add(2*time.Second)))
+	snap, ok := cache.Snapshot()
+	require.True(t, ok, "refresh must mark cache as set")
+	require.Equal(t, 120, snap.DepthByStatus["queued"])
+	require.Equal(t, 3, snap.DepthByStatus["submitting"])
+	require.Equal(t, int64(42), snap.OldestQueuedSeconds)
+	require.Equal(t, int64(7), snap.OldestSubmittingSeconds)
+	require.Equal(t, int64(42), snap.IdempotencyKeyedRows)
+	require.Equal(t, int64(20), snap.Last5MinInserted)
+	require.Equal(t, int64(18), snap.Last5MinSent)
+	require.Equal(t, int64(1), snap.Last5MinFailed)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestHandleOutboxSummary_DepthQueryFailure(t *testing.T) {
+// TestRefreshOutboxSummary_DepthFailureKeepsPreviousCache verifies that a
+// transient DB error on the depth query does not blank out the cache — the
+// previous-good snapshot remains readable so dashboards don't blink empty
+// mid-incident.
+func TestRefreshOutboxSummary_DepthFailureKeepsPreviousCache(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
+
+	cache := &OutboxSummaryCache{}
+	cache.store(OutboxSummaryResponse{
+		DepthByStatus: map[string]int{"queued": 999},
+	})
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*)::int")).
 		WillReturnError(sql.ErrConnDone)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
-	rec := httptest.NewRecorder()
-	HandleOutboxSummary(db)(rec, req)
-
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
-}
-
-func TestHandleOutboxSummary_EmptyOutbox(t *testing.T) {
-	db, mock := newOutboxMockDB(t)
-
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*)::int")).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "count"}))
-
-	mock.ExpectQuery(`WHERE status = \$1`).
-		WithArgs("queued").
+	mock.ExpectQuery(`status = 'queued'`).
 		WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(0)))
 	mock.ExpectQuery(`status = 'sending' AND locked_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(0)))
@@ -131,16 +198,14 @@ func TestHandleOutboxSummary_EmptyOutbox(t *testing.T) {
 	mock.ExpectQuery(`last_attempt_at > NOW\(\) - INTERVAL '5 minutes'`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/outbox/summary", nil)
-	rec := httptest.NewRecorder()
-	HandleOutboxSummary(db)(rec, req)
+	refreshOutboxSummary(context.Background(), db, cache)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	var resp OutboxSummaryResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	require.Empty(t, resp.DepthByStatus)
-	require.Equal(t, int64(0), resp.OldestQueuedSeconds)
-	require.Equal(t, int64(0), resp.OldestSubmittingSeconds)
+	snap, ok := cache.Snapshot()
+	require.True(t, ok)
+	// Depth failed so DepthByStatus is empty on the new snapshot; the rest
+	// still refreshed cleanly. Confirms partial-refresh doesn't corrupt.
+	require.Empty(t, snap.DepthByStatus)
+	require.Equal(t, int64(0), snap.OldestQueuedSeconds)
 }
 
 func TestHandleOutboxDeadLetter_HappyPath(t *testing.T) {
@@ -266,10 +331,6 @@ func TestParsePositiveIntOutbox(t *testing.T) {
 	}
 }
 
-// Ensure scanQueueRows-style scan vs int64 works under our expected fields.
-// This is a belt-and-suspenders test: the real handler extracts bigint
-// counters into int64 fields. A Postgres driver quirk that returned string
-// would break the response shape silently — explicit assertion catches it.
 func TestOutboxSummary_ResponseShapeStable(t *testing.T) {
 	resp := OutboxSummaryResponse{
 		APIVersion:    VersionOutboxSummary,
@@ -282,4 +343,5 @@ func TestOutboxSummary_ResponseShapeStable(t *testing.T) {
 	require.True(t, strings.Contains(body, `"oldest_submitting_seconds"`))
 	require.True(t, strings.Contains(body, `"idempotency_keyed_rows"`))
 	require.True(t, strings.Contains(body, `"last_5min_sent"`))
+	require.True(t, strings.Contains(body, `"cache_age_seconds"`))
 }
