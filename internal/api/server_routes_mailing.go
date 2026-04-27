@@ -210,6 +210,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Platform info
 			r.Get("/version", s.HandleVersion)
 
+			// Attribution review — upload Everflow click + conversion CSVs
+			// and resolve them back to subscriber profiles via IP+time
+			// correlation against mailing_tracking_events. Lives under
+			// /api/mailing/* so it inherits the same auth as the rest of
+			// the dashboard.
+			attributionHandler := NewAttributionHandler(svc)
+			r.Post("/attribution/match-csv", attributionHandler.HandleMatchCSV)
+
 			// Core CRUD
 			r.Get("/dashboard", svc.HandleDashboard)
 			r.Get("/lists", svc.HandleGetLists)

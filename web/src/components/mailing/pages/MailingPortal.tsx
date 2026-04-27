@@ -36,6 +36,7 @@ const WarmupDashboard = lazy(() => import('../components/WarmupDashboard').then(
 const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
 const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
+const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -44,7 +45,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match';
 
 interface Tab {
   id: TabId;
@@ -72,6 +73,7 @@ const tabs: Tab[] = [
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
   { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
   { id: 'outbox', label: 'Outbox', icon: faPaperPlane, description: 'Durable injection outbox — live state, stuck rows & dead-letter queue' },
+  { id: 'attribution-match', label: 'Attribution Match', icon: faCrosshairs, description: 'Resolve Everflow click & conversion CSVs back to subscriber profiles' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
 
@@ -179,6 +181,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><DataPipelineDashboard /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
+      case 'attribution-match':
+        return <Suspense fallback={<ChunkLoader />}><AttributionMatchDashboard /></Suspense>;
       case 'site-traffic':
         return <SiteTrafficDashboard />;
       default:
