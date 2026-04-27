@@ -211,12 +211,22 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	}
 	orgStr := orgID.String()
 
-	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// "Today" is the operator's local calendar day, not UTC. Without this,
+	// after 6pm MDT the dashboard's "today" silently rolls forward to a fresh
+	// UTC day and counters appear to reset. America/Denver matches the
+	// operator's working hours; falls back to server-local if the tzdata is
+	// unavailable in the runtime container.
+	loc, locErr := time.LoadLocation("America/Denver")
+	if locErr != nil || loc == nil {
+		loc = time.Now().Location()
+	}
+	now := time.Now()
+	nowLocal := now.In(loc)
+	todayStart := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, loc)
 
 	sectionErrors := make(map[string]string)
 	metricSources := map[string]string{
-		"performance":   "mailing_tracking_events via ComputeMetrics",
+		"performance":   "mailing_campaigns SUM via ComputeMetrics (org+date-range; tracking_events fallback only for legacy filter combos)",
 		"overview":      "mailing_lists.active_count + mailing_campaigns COUNT",
 		"revenue":       "mailing_campaigns.revenue SUM",
 		"daily_sending": "mailing_campaigns.sent_count SUM (today, org-scoped)",
@@ -224,6 +234,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		"suppressions":  "mailing_global_suppressions (org-scoped)",
 		"audience":      "mailing_subscribers (global, not org-scoped)",
 		"churn":         "mailing_audience_metrics (global, not org-scoped)",
+		"today_window":  "America/Denver calendar day (operator-local)",
 	}
 
 	// --- Section: Overview (org-scoped) ---

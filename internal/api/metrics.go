@@ -97,30 +97,56 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 		if err != nil {
 			return r, fmt.Errorf("ComputeMetrics(engagement): %w", err)
 		}
-	} else if !f.StartDate.IsZero() && f.OrgID == "" && f.SendingDomain == "" && f.ISP == "" {
-		// Date-range aggregate: delivery/engagement from mailing_campaigns (fast, pre-aggregated).
-		// Using one table avoids denominator mismatches between summary and campaign data.
-		err := db.QueryRowContext(ctx, `
+	} else if !f.StartDate.IsZero() && f.SendingDomain == "" && f.ISP == "" {
+		// Date-range aggregate (optionally org-scoped): all metrics from
+		// mailing_campaigns. Avoids denominator mismatches and the
+		// double-counting that occurs when raw-counting mailing_tracking_events
+		// rows (multiple rows per campaign+subscriber from retries/reconciles).
+		args := []interface{}{f.StartDate, f.EndDate}
+		orgFilter := ""
+		if f.OrgID != "" {
+			orgFilter = " AND organization_id = $3::uuid"
+			args = append(args, f.OrgID)
+		}
+		query := fmt.Sprintf(`
 			SELECT COALESCE(SUM(sent_count), 0), COALESCE(SUM(delivered_count), 0),
 			       COALESCE(SUM(open_count), 0), COALESCE(SUM(click_count), 0),
 			       COALESCE(SUM(hard_bounce_count), 0), COALESCE(SUM(soft_bounce_count), 0),
 			       COALESCE(SUM(complaint_count), 0), COALESCE(SUM(unsubscribe_count), 0)
 			FROM mailing_campaigns
 			WHERE COALESCE(started_at, created_at) >= $1
-			  AND COALESCE(started_at, created_at) <= $2
-		`, f.StartDate, f.EndDate).Scan(&r.Sent, &r.Delivered, &r.Opens, &r.Clicks,
-			&r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Unsubscribes)
-		if err != nil {
+			  AND COALESCE(started_at, created_at) <= $2%s
+		`, orgFilter)
+		if err := db.QueryRowContext(ctx, query, args...).Scan(
+			&r.Sent, &r.Delivered, &r.Opens, &r.Clicks,
+			&r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Unsubscribes,
+		); err != nil {
 			return r, fmt.Errorf("ComputeMetrics(campaigns-range): %w", err)
 		}
 
 		// Deferred isn't tracked on mailing_campaigns — source from PMTA daily summary
-		// scoped to the same range. Non-fatal if the summary is unavailable.
-		if err := db.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(deferred), 0)
-			FROM pmta_acct_daily_summary
-			WHERE summary_date >= $1::date AND summary_date <= $2::date
-		`, f.StartDate, f.EndDate).Scan(&r.Deferred); err != nil {
+		// scoped to the same range (and same org if set, via campaign_id join).
+		// Non-fatal if the summary is unavailable.
+		var deferredQuery string
+		var deferredArgs []interface{}
+		if f.OrgID != "" {
+			deferredQuery = `
+				SELECT COALESCE(SUM(s.deferred), 0)
+				FROM pmta_acct_daily_summary s
+				JOIN mailing_campaigns c ON c.id = s.campaign_id
+				WHERE s.summary_date >= $1::date AND s.summary_date <= $2::date
+				  AND c.organization_id = $3::uuid
+			`
+			deferredArgs = []interface{}{f.StartDate, f.EndDate, f.OrgID}
+		} else {
+			deferredQuery = `
+				SELECT COALESCE(SUM(deferred), 0)
+				FROM pmta_acct_daily_summary
+				WHERE summary_date >= $1::date AND summary_date <= $2::date
+			`
+			deferredArgs = []interface{}{f.StartDate, f.EndDate}
+		}
+		if err := db.QueryRowContext(ctx, deferredQuery, deferredArgs...).Scan(&r.Deferred); err != nil {
 			log.Printf("[ComputeMetrics] deferred summary query skipped: %v", err)
 			r.Deferred = 0
 		}
@@ -175,18 +201,30 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]ISPMetricsResult, error) {
 	ispMap := make(map[string]*MetricsResult)
 
-	useSummary := f.CampaignID != "" || (!f.StartDate.IsZero() && f.OrgID == "" && f.SendingDomain == "" && f.ISP == "")
+	useSummary := f.CampaignID != "" || (!f.StartDate.IsZero() && f.SendingDomain == "" && f.ISP == "")
 
 	if useSummary {
-		// Delivery from PMTA summary (already grouped by ISP)
+		// Delivery from PMTA summary (already grouped by ISP).
+		// Org-scoping (when set) is applied via JOIN to mailing_campaigns since
+		// pmta_acct_daily_summary itself has no organization_id column.
 		var dQuery string
 		var dArgs []interface{}
-		if f.CampaignID != "" {
+		switch {
+		case f.CampaignID != "":
 			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounced),0),
 				COALESCE(SUM(soft_bounced),0), COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 				FROM pmta_acct_daily_summary WHERE campaign_id = $1::uuid GROUP BY recipient_isp`
 			dArgs = []interface{}{f.CampaignID}
-		} else {
+		case f.OrgID != "":
+			dQuery = `SELECT s.recipient_isp, COALESCE(SUM(s.delivered),0), COALESCE(SUM(s.hard_bounced),0),
+				COALESCE(SUM(s.soft_bounced),0), COALESCE(SUM(s.complained),0), COALESCE(SUM(s.deferred),0)
+				FROM pmta_acct_daily_summary s
+				JOIN mailing_campaigns c ON c.id = s.campaign_id
+				WHERE s.summary_date >= $1::date AND s.summary_date <= $2::date
+				  AND c.organization_id = $3::uuid
+				GROUP BY s.recipient_isp`
+			dArgs = []interface{}{f.StartDate, f.EndDate, f.OrgID}
+		default:
 			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounced),0),
 				COALESCE(SUM(soft_bounced),0), COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 				FROM pmta_acct_daily_summary WHERE summary_date >= $1::date AND summary_date <= $2::date GROUP BY recipient_isp`

@@ -227,6 +227,57 @@ func TestComputeMetrics_ZeroDelivered(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestComputeMetrics_OrgScopedDateRange pins the dashboard regression that was
+// introduced in commit 6b958f4 and silently broken until now: passing OrgID
+// with a date range (and no SendingDomain/ISP) MUST hit the mailing_campaigns
+// aggregate path, not the legacy mailing_tracking_events row-counter that
+// double-counts retries and reconciles. If this test ever falls into the
+// "FROM mailing_tracking_events" path, the dashboard's Performance card will
+// disagree with the daily-sending gauge again.
+func TestComputeMetrics_OrgScopedDateRange(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	orgID := "11111111-2222-3333-4444-555555555555"
+	start := time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 4, 27, 23, 59, 59, 0, time.UTC)
+
+	// Primary aggregate must hit mailing_campaigns with organization_id filter.
+	// Anchoring on `FROM mailing_campaigns` plus `organization_id` proves we are
+	// not in the tracking-events fallback path.
+	mock.ExpectQuery(`FROM mailing_campaigns[\s\S]*organization_id`).
+		WithArgs(start, end, orgID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"sent", "delivered", "opens", "clicks",
+			"hard_bounces", "soft_bounces", "complaints", "unsubscribes",
+		}).AddRow(800, 780, 200, 50, 5, 10, 2, 4))
+
+	// Deferred is org-scoped via JOIN to mailing_campaigns since
+	// pmta_acct_daily_summary has no organization_id of its own.
+	mock.ExpectQuery(`pmta_acct_daily_summary[\s\S]*JOIN mailing_campaigns[\s\S]*organization_id`).
+		WithArgs(start, end, orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"deferred"}).AddRow(11))
+
+	m, err := ComputeMetrics(context.Background(), db, MetricsFilter{
+		OrgID:     orgID,
+		StartDate: start,
+		EndDate:   end,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 800, m.Sent)
+	assert.Equal(t, 780, m.Delivered)
+	assert.Equal(t, 200, m.Opens)
+	assert.Equal(t, 50, m.Clicks)
+	assert.Equal(t, 5, m.HardBounces)
+	assert.Equal(t, 10, m.SoftBounces)
+	assert.Equal(t, 2, m.Complaints)
+	assert.Equal(t, 4, m.Unsubscribes)
+	assert.Equal(t, 11, m.Deferred)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestComputeMetrics_OrgAndDomainFilters(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
