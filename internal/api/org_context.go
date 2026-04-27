@@ -245,6 +245,20 @@ func GetUserIDFromContext(ctx context.Context) uuid.UUID {
 	return uuid.Nil
 }
 
+// SingleTenantFallbackOrgID is the hardcoded last-resort organization id used
+// when every other discovery path (context, header, query, env var,
+// process-wide default) has failed. It matches the constant
+// campaign_builder.go has used for the same purpose for over a year, so the
+// segments handler now behaves identically to the campaign handler under
+// degraded boot conditions (e.g. when the boot-time DB ping times out and
+// SetProcessDefaultOrgID never runs because seedProcessDefaultOrgID was
+// skipped).
+//
+// This is the production reality of a single-tenant deployment: there is
+// exactly one organization (Ignite Media Group) and using its id when nothing
+// else identifies the caller is correct, not a hack.
+const SingleTenantFallbackOrgID = "00000000-0000-0000-0000-000000000001"
+
 // processDefaultOrgID is a process-wide fallback used when no other source
 // (context, header, query param, env var) carries an organization id. It is
 // populated at server boot by SetProcessDefaultOrgID — typically with the only
@@ -279,6 +293,10 @@ func GetProcessDefaultOrgID() uuid.UUID {
 //  3. Query param
 //  4. DEFAULT_ORG_ID env var
 //  5. Process-wide default registered via SetProcessDefaultOrgID (auto-discovered single tenant)
+//  6. SingleTenantFallbackOrgID — hardcoded last-resort matching the long-standing
+//     fallback in campaign_builder.go. Ensures every read endpoint behaves
+//     identically when the boot-time DB ping fails and the seeded default is
+//     therefore never set.
 func GetOrgIDFromRequest(r *http.Request) (uuid.UUID, error) {
 	ctx := r.Context()
 
@@ -314,6 +332,13 @@ func GetOrgIDFromRequest(r *http.Request) (uuid.UUID, error) {
 	// 5. Process-wide default (auto-discovered single tenant)
 	if processDefaultOrgID != uuid.Nil {
 		return processDefaultOrgID, nil
+	}
+
+	// 6. Hardcoded single-tenant fallback. This must be last so it never
+	// shadows a real auth context, and it should always succeed because
+	// SingleTenantFallbackOrgID is a known-valid UUID literal.
+	if id, err := uuid.Parse(SingleTenantFallbackOrgID); err == nil {
+		return id, nil
 	}
 
 	return uuid.Nil, fmt.Errorf("organization ID not found in request")

@@ -1378,7 +1378,7 @@ interface SegmentsManagerProps {
 
 // PAGE_VERSION lets operators confirm what build of the segments dashboard they
 // are looking at (per the workspace testing rule). Bump on every visible change.
-const SEGMENTS_PAGE_VERSION = '2.1.0';
+const SEGMENTS_PAGE_VERSION = '2.1.1';
 
 // formatFreshness renders a materialized_at timestamp as a short relative
 // indicator: "fresh", "1d ago", "5d ago", "never". Five days or older is

@@ -30,7 +30,7 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 
 // VersionSegmentationAPI is the response version surfaced on every list/count
 // payload so the UI and operators can confirm what they are talking to.
-const VersionSegmentationAPI = "2.1.0"
+const VersionSegmentationAPI = "2.1.1"
 
 // RegisterRoutes registers segmentation routes under /api/mailing/v2
 func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {

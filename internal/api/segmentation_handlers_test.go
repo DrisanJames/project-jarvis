@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -147,5 +148,34 @@ func TestVersionSegmentationAPIIsBumped(t *testing.T) {
 	}
 	if !strings.HasPrefix(VersionSegmentationAPI, "2.") {
 		t.Fatalf("expected 2.x version after materialized rollout, got %q", VersionSegmentationAPI)
+	}
+}
+
+// TestGetOrgIDFromRequestFallsBackToSingleTenantConstant verifies that the
+// hardcoded last-resort fallback fires when no other discovery path supplies
+// an organization id. This is the production safety net: under boot-time DB
+// pressure the SetProcessDefaultOrgID seed can be skipped, so the segments
+// dashboard MUST still resolve a valid org id from the bare request.
+func TestGetOrgIDFromRequestFallsBackToSingleTenantConstant(t *testing.T) {
+	prevEnv := os.Getenv("DEFAULT_ORG_ID")
+	os.Unsetenv("DEFAULT_ORG_ID")
+	defer func() {
+		if prevEnv != "" {
+			os.Setenv("DEFAULT_ORG_ID", prevEnv)
+		}
+	}()
+
+	prevDefault := GetProcessDefaultOrgID()
+	SetProcessDefaultOrgID(uuid.Nil)
+	defer SetProcessDefaultOrgID(prevDefault)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/segments/", nil)
+	got, err := GetOrgIDFromRequest(req)
+	if err != nil {
+		t.Fatalf("GetOrgIDFromRequest returned error: %v", err)
+	}
+	want, _ := uuid.Parse(SingleTenantFallbackOrgID)
+	if got != want {
+		t.Fatalf("expected hardcoded fallback %s, got %s", want, got)
 	}
 }
