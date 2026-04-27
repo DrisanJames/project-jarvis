@@ -836,6 +836,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/deliverability/config/{isp}/reset-throttle", delivH.HandleResetThrottle)
 			r.Get("/deliverability/throughput", delivH.HandleGetThroughput)
 
+			// === ISP HEALTH CENTER (v2.0) — read-only views over pmta_acct_raw ===
+			r.Get("/deliverability/timeseries", delivH.HandleGetTimeSeries)
+			r.Get("/deliverability/matrix", delivH.HandleGetMatrix)
+			r.Get("/deliverability/deferrals", delivH.HandleGetDeferrals)
+			r.Get("/deliverability/bounces", delivH.HandleGetBounces)
+			r.Get("/deliverability/fbl", delivH.HandleGetFBL)
+			r.Get("/deliverability/ip-activity", delivH.HandleGetIPActivity)
+
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			if s.OfferSuppMgr != nil {

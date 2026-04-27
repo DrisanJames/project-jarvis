@@ -5,7 +5,7 @@ import {
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
-  faSpinner, faEye, faFire,
+  faSpinner, faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -32,7 +32,11 @@ const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppre
 const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel').then(m => ({ default: m.DataNormalizerPanel })));
 const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
 const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketingAgent').then(m => ({ default: m.EmailMarketingAgent })));
-const WarmupDashboard = lazy(() => import('../components/WarmupDashboard').then(m => ({ default: m.WarmupDashboard })));
+// WarmupDashboard tab retired 2026-04-27. The IP Activity panel inside
+// DeliverabilityControl now surfaces the active/cold/paused IP profile
+// (including never-mailed-on IPs) the operator needs. The component file
+// and /api/mailing/warmup/dashboard backend remain in place as a safety
+// follow-up; nothing else imports them and they cause no harm.
 const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
 const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
@@ -45,7 +49,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'warmup-dashboard' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match';
 
 interface Tab {
   id: TabId;
@@ -67,8 +71,7 @@ const tabs: Tab[] = [
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
-  { id: 'warmup-dashboard', label: 'IP Warmup', icon: faFire, description: 'Per-IP warmup progress, ISP delivery heatmap & pool health' },
-  { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP rate management, throttle control & throughput visibility' },
+  { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP Health Center — per-ISP delivery, deferrals, bounces, FBL, IP activity & rate controls' },
   { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
   { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
@@ -161,8 +164,6 @@ export const MailingPortal: React.FC = () => {
         return <TemplatesManager />;
       case 'delivery-servers':
         return <DeliveryServersManager />;
-      case 'warmup-dashboard':
-        return <Suspense fallback={<ChunkLoader />}><WarmupDashboard /></Suspense>;
       case 'deliverability':
         return <Suspense fallback={<ChunkLoader />}><DeliverabilityControl /></Suspense>;
       case 'offers':
