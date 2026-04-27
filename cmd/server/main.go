@@ -41,6 +41,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
+	"github.com/google/uuid"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/redis/go-redis/v9"
 )
@@ -329,6 +330,7 @@ func main() {
 			log.Println("Mailing Platform database connected successfully")
 			runAdminMigrations()
 			runStartupMigrations(mailingDB)
+			seedProcessDefaultOrgID(mailingDB)
 		}
 
 		// Load offer suppression Bloom filters from S3 at startup.
@@ -1381,6 +1383,54 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+// seedProcessDefaultOrgID configures the process-wide fallback organization id
+// used by api.GetOrgIDFromRequest when no other source supplies one. This
+// guards every read endpoint that scopes by organization_id from silently
+// returning empty results when an auth context fails to hydrate transiently.
+//
+// Resolution order:
+//  1. Explicit DEFAULT_ORG_ID environment variable, if set.
+//  2. Auto-discovery: if exactly one organization exists in the `organizations`
+//     table, use it. (Production is single-tenant — Ignite Media Group.)
+//
+// Logs every outcome so the operational team can confirm what was wired.
+func seedProcessDefaultOrgID(db *sql.DB) {
+	if envID := os.Getenv("DEFAULT_ORG_ID"); envID != "" {
+		if id, err := uuid.Parse(envID); err == nil {
+			api.SetProcessDefaultOrgID(id)
+			log.Printf("[OrgContext] process default org_id set from DEFAULT_ORG_ID env: %s", id)
+			return
+		}
+		log.Printf("[OrgContext] DEFAULT_ORG_ID env set but unparseable: %q", envID)
+	}
+
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int
+	if err := db.QueryRowContext(probeCtx, `SELECT COUNT(*) FROM organizations`).Scan(&count); err != nil {
+		log.Printf("[OrgContext] could not probe organizations table for single-tenant default: %v", err)
+		return
+	}
+	if count != 1 {
+		log.Printf("[OrgContext] organizations table has %d rows; auto-default skipped (set DEFAULT_ORG_ID env to override)", count)
+		return
+	}
+
+	var idStr string
+	if err := db.QueryRowContext(probeCtx, `SELECT id::text FROM organizations LIMIT 1`).Scan(&idStr); err != nil {
+		log.Printf("[OrgContext] failed to read single-tenant org id: %v", err)
+		return
+	}
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		log.Printf("[OrgContext] single-tenant org id %q failed to parse: %v", idStr, err)
+		return
+	}
+	api.SetProcessDefaultOrgID(id)
+	log.Printf("[OrgContext] process default org_id auto-discovered (single tenant): %s", id)
 }
 
 // runStartupMigrations applies critical schema fixes that must run before

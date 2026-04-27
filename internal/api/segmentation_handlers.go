@@ -28,6 +28,10 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 	}
 }
 
+// VersionSegmentationAPI is the response version surfaced on every list/count
+// payload so the UI and operators can confirm what they are talking to.
+const VersionSegmentationAPI = "2.1.0"
+
 // RegisterRoutes registers segmentation routes under /api/mailing/v2
 func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 	r.Route("/v2/segments", func(r chi.Router) {
@@ -39,7 +43,8 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 			r.Get("/", api.GetSegment)
 			r.Put("/", api.UpdateSegment)
 			r.Delete("/", api.DeleteSegment)
-			r.Get("/count", api.GetSegmentCount) // Dedicated count endpoint
+			r.Get("/count", api.GetSegmentCount)        // Cheap materialized count
+			r.Post("/recalculate", api.RecalculateSegment) // Synchronous re-materialize
 			r.Post("/execute", api.ExecuteSegment)
 			r.Post("/snapshot", api.CreateSnapshot)
 			r.Get("/subscribers", api.GetSegmentSubscribers)
@@ -79,7 +84,30 @@ type CreateSegmentRequest struct {
 	GlobalExclusions  []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
 }
 
-// ListSegments returns all segments for the organization
+// ListSegments returns all segments for the organization with a materialized
+// audience snapshot per segment (count + freshness). The hot read path NEVER
+// touches mailing_subscribers; the materialized rollup is read from
+// mailing_segment_members which is indexed by segment_id and refreshed by the
+// nightly + on-boot SegmentMaterializer worker. This keeps the segments page
+// safe to load during 24/7 send hours.
+//
+// Response shape (JSON array):
+//
+//	[
+//	  {
+//	    ...all *segmentation.Segment fields...,
+//	    "materialized_count": 17234,
+//	    "materialized_at":    "2026-04-27T11:02:13Z",
+//	    "audience_count":     17234,         // displayable number — materialized when present, cached fallback
+//	    "audience_source":    "materialized" // or "cached"
+//	  }, ...
+//	]
+//
+// The previous implementation spawned one goroutine per zero-count segment on
+// every page load to run a heavy COUNT(DISTINCT) over mailing_subscribers.
+// Under sending load that herd timed out and added DB pressure for no benefit;
+// it has been removed. Recalculation is now an explicit user action via
+// POST /v2/segments/{id}/recalculate.
 func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := segmentGetOrgIDFromRequest(r)
@@ -101,62 +129,103 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		segments = []*segmentation.Segment{}
 	}
 
-	// Background-refresh counts for segments that show 0
-	for _, seg := range segments {
-		if seg.SubscriberCount == 0 {
-			go func(s *segmentation.Segment) {
-				// System segments use a pre-built SQL query
-				if s.IsSystem && s.SystemQuery != "" {
-					var count int
-					if err := api.db.QueryRowContext(context.Background(), s.SystemQuery, s.OrganizationID).Scan(&count); err != nil {
-						log.Printf("[Segment] system query error for %s (%s): %v", s.Name, s.ID, err)
-						return
-					}
-					if err := api.engine.Store().UpdateSegmentCount(context.Background(), s.ID, count); err != nil {
-						log.Printf("[Segment] system count update error for %s (%s): %v", s.Name, s.ID, err)
-						return
-					}
-					log.Printf("[Segment] refreshed system segment %s (%s): %d subscribers", s.Name, s.ID, count)
-					return
-				}
+	// One cheap aggregate over mailing_segment_members for ALL returned segment ids.
+	// This is an indexed read; no joins to mailing_subscribers, no per-segment loop.
+	matCounts, matTimes := api.fetchMaterializedRollups(ctx, segments)
 
-				conditions, err := api.engine.Store().GetSegmentConditions(context.Background(), s.ID)
-				if err != nil || conditions == nil {
-					log.Printf("[Segment] refresh count for %s (%s): failed to load conditions: %v", s.Name, s.ID, err)
-					return
-				}
-				qb := api.engine.NewQueryBuilder(context.Background())
-				qb.SetOrganizationID(s.OrganizationID.String())
-				if s.ListID != nil {
-					qb.SetListID(s.ListID.String())
-				}
-				qb.SetIncludeSuppressed(s.IncludeSuppressed)
-
-				var ge []segmentation.ConditionBuilder
-				if len(s.GlobalExclusionRules) > 0 {
-					json.Unmarshal(s.GlobalExclusionRules, &ge)
-				}
-
-				cq, args, err := qb.BuildCountQuery(*conditions, ge)
-				if err != nil {
-					log.Printf("[Segment] refresh count for %s (%s): query build error: %v", s.Name, s.ID, err)
-					return
-				}
-				var count int
-				if err := api.db.QueryRowContext(context.Background(), cq, args...).Scan(&count); err != nil {
-					log.Printf("[Segment] refresh count for %s (%s): query exec error: %v", s.Name, s.ID, err)
-					return
-				}
-				if err := api.engine.Store().UpdateSegmentCount(context.Background(), s.ID, count); err != nil {
-					log.Printf("[Segment] refresh count for %s (%s): update error: %v", s.Name, s.ID, err)
-					return
-				}
-				log.Printf("[Segment] refreshed count for %s (%s): %d subscribers", s.Name, s.ID, count)
-			}(seg)
-		}
+	type segmentRow struct {
+		*segmentation.Segment
+		MaterializedCount *int64     `json:"materialized_count,omitempty"`
+		MaterializedAt    *time.Time `json:"materialized_at,omitempty"`
+		AudienceCount     int64      `json:"audience_count"`
+		AudienceSource    string     `json:"audience_source"`
 	}
 
-	segmentRespondJSON(w, segments)
+	rows := make([]segmentRow, 0, len(segments))
+	for _, seg := range segments {
+		row := segmentRow{Segment: seg}
+		key := seg.ID.String()
+		if c, ok := matCounts[key]; ok {
+			row.MaterializedCount = &c
+			row.AudienceCount = c
+			row.AudienceSource = "materialized"
+		} else {
+			row.AudienceCount = int64(seg.SubscriberCount)
+			row.AudienceSource = "cached"
+		}
+		if t, ok := matTimes[key]; ok {
+			row.MaterializedAt = &t
+		}
+		rows = append(rows, row)
+	}
+
+	segmentRespondJSON(w, rows)
+}
+
+// fetchMaterializedRollups returns segment_id → COUNT(*) and segment_id → MAX(materialized_at)
+// for every id in segments, in a single indexed query. Empty maps are returned
+// when the list is empty or the query fails (fail-open: cached count is shown).
+func (api *SegmentationAPI) fetchMaterializedRollups(ctx context.Context, segments []*segmentation.Segment) (map[string]int64, map[string]time.Time) {
+	counts := make(map[string]int64, len(segments))
+	times := make(map[string]time.Time, len(segments))
+	if len(segments) == 0 || api.db == nil {
+		return counts, times
+	}
+
+	ids := make([]string, 0, len(segments))
+	for _, s := range segments {
+		ids = append(ids, s.ID.String())
+	}
+
+	// Strict timeout protects the read from contending with active sends.
+	rollupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := api.db.QueryContext(rollupCtx, `
+		SELECT segment_id::text,
+		       COUNT(*) AS members,
+		       MAX(materialized_at) AS last_at
+		  FROM mailing_segment_members
+		 WHERE segment_id = ANY($1::uuid[])
+		 GROUP BY segment_id
+	`, segmentIDArray(ids))
+	if err != nil {
+		log.Printf("[Segment] materialized rollup query error (returning cached counts): %v", err)
+		return counts, times
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sid string
+		var n int64
+		var at sql.NullTime
+		if err := rows.Scan(&sid, &n, &at); err != nil {
+			continue
+		}
+		counts[sid] = n
+		if at.Valid {
+			times[sid] = at.Time
+		}
+	}
+	return counts, times
+}
+
+// segmentIDArray formats a string slice as a Postgres uuid[] literal.
+// We avoid pulling in lib/pq's Array helper to keep the dependency surface stable.
+func segmentIDArray(ids []string) string {
+	if len(ids) == 0 {
+		return "{}"
+	}
+	var b []byte
+	b = append(b, '{')
+	for i, id := range ids {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, id...)
+	}
+	b = append(b, '}')
+	return string(b)
 }
 
 // CreateSegment creates a new segment
@@ -483,7 +552,12 @@ func (api *SegmentationAPI) GetSegmentSubscribers(w http.ResponseWriter, r *http
 	})
 }
 
-// GetSegmentCount returns just the count for a segment (fast endpoint)
+// GetSegmentCount returns the count for a segment from the materialized
+// rollup (mailing_segment_members). This is a single indexed read and is
+// safe to call repeatedly during sending hours.
+//
+// To trigger a fresh recalculation (which DOES touch mailing_subscribers),
+// call POST /v2/segments/{segmentID}/recalculate explicitly.
 func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := segmentGetOrgIDFromRequest(r)
@@ -499,54 +573,109 @@ func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var count int
+	countCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	if segment.IsSystem && segment.SystemQuery != "" {
-		if err := api.db.QueryRowContext(ctx, segment.SystemQuery, segment.OrganizationID).Scan(&count); err != nil {
-			log.Printf("[Segment] system count error for %s: %v", segment.Name, err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		conditions, err := api.engine.Store().GetSegmentConditions(ctx, segmentID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if conditions == nil {
-			conditions = &segmentation.ConditionGroupBuilder{LogicOperator: segmentation.LogicAnd}
-		}
-
-		var globalExclusions []segmentation.ConditionBuilder
-		if len(segment.GlobalExclusionRules) > 0 {
-			json.Unmarshal(segment.GlobalExclusionRules, &globalExclusions)
-		}
-
-		qb := api.engine.NewQueryBuilder(ctx)
-		qb.SetOrganizationID(segment.OrganizationID.String())
-		if segment.ListID != nil {
-			qb.SetListID(segment.ListID.String())
-		}
-		qb.SetIncludeSuppressed(segment.IncludeSuppressed)
-
-		countQuery, args, err := qb.BuildCountQuery(*conditions, globalExclusions)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if err := api.db.QueryRowContext(ctx, countQuery, args...).Scan(&count); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	var matCount int64
+	var matAt sql.NullTime
+	err = api.db.QueryRowContext(countCtx, `
+		SELECT COUNT(*), MAX(materialized_at)
+		  FROM mailing_segment_members
+		 WHERE segment_id = $1
+	`, segmentID).Scan(&matCount, &matAt)
+	if err != nil {
+		log.Printf("[Segment] materialized count read error for %s: %v", segmentID, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	api.engine.Store().UpdateSegmentCount(ctx, segmentID, count)
+	source := "materialized"
+	if matCount == 0 && matAt.Valid == false {
+		// Never materialized — fall back to cached count without running BuildCountQuery.
+		// Caller can POST /recalculate to populate.
+		matCount = int64(segment.SubscriberCount)
+		source = "cached"
+	}
+
+	resp := map[string]interface{}{
+		"api_version":        VersionSegmentationAPI,
+		"segment_id":         segmentID,
+		"count":              matCount,
+		"audience_count":     matCount,
+		"audience_source":    source,
+		"last_calculated_at": segment.LastCalculatedAt,
+	}
+	if matAt.Valid {
+		resp["materialized_at"] = matAt.Time
+	}
+
+	segmentRespondJSON(w, resp)
+}
+
+// RecalculateSegment synchronously re-materializes a segment by calling
+// MaterializeSegment, which writes fresh rows into mailing_segment_members.
+// This DOES read from mailing_subscribers, so it has its own statement timeout
+// and is intentionally only ever invoked by an explicit user action — never
+// on a page load. Returns the new materialized count and timestamp.
+func (api *SegmentationAPI) RecalculateSegment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
+	segmentID, parseErr := uuid.Parse(chi.URLParam(r, "segmentID"))
+	if parseErr != nil {
+		http.Error(w, "invalid segment id", http.StatusBadRequest)
+		return
+	}
+
+	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if segment == nil {
+		http.Error(w, "segment not found", http.StatusNotFound)
+		return
+	}
+
+	listIDStr := ""
+	if segment.ListID != nil {
+		listIDStr = segment.ListID.String()
+	}
+
+	var conditionsRaw sql.NullString
+	if err := api.db.QueryRowContext(ctx,
+		`SELECT COALESCE(conditions::text, '[]') FROM mailing_segments WHERE id = $1`,
+		segmentID,
+	).Scan(&conditionsRaw); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	matCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer cancel()
+
+	count, err := MaterializeSegment(matCtx, api.db, segmentID.String(), listIDStr, conditionsRaw.String)
+	if err != nil {
+		log.Printf("[Segment] recalculate failed for %s: %v", segmentID, err)
+		segmentRespondJSONStatus(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"api_version": VersionSegmentationAPI,
+			"segment_id":  segmentID,
+			"error":       "recalculate_failed",
+			"detail":      err.Error(),
+		})
+		return
+	}
+
+	if updateErr := api.engine.Store().UpdateSegmentCount(ctx, segmentID, count); updateErr != nil {
+		log.Printf("[Segment] update cached count after recalc failed for %s: %v", segmentID, updateErr)
+	}
 
 	segmentRespondJSON(w, map[string]interface{}{
+		"api_version":     VersionSegmentationAPI,
 		"segment_id":      segmentID,
 		"count":           count,
-		"last_calculated": segment.LastCalculatedAt,
+		"audience_count":  count,
+		"audience_source": "materialized",
+		"materialized_at": time.Now().UTC(),
 	})
 }
 

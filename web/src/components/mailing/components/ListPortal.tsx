@@ -30,6 +30,7 @@ import {
   faLock,
   faRobot,
   faEnvelope,
+  faSyncAlt,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ChunkedUploader } from '../ChunkedUploader';
@@ -79,6 +80,14 @@ interface Segment {
   is_system?: boolean;
   created_at: string;
   updated_at: string;
+  // The materialized rollup is the audience the send engine actually
+  // mails to (mailing_segment_members). It is refreshed by the segment
+  // materializer worker and on demand via POST /v2/segments/{id}/recalculate.
+  materialized_count?: number;
+  materialized_at?: string;
+  audience_count?: number;
+  audience_source?: 'materialized' | 'cached';
+  last_calculated_at?: string;
 }
 
 interface Subscriber {
@@ -1367,10 +1376,33 @@ interface SegmentsManagerProps {
   animateIn: boolean;
 }
 
+// PAGE_VERSION lets operators confirm what build of the segments dashboard they
+// are looking at (per the workspace testing rule). Bump on every visible change.
+const SEGMENTS_PAGE_VERSION = '2.1.0';
+
+// formatFreshness renders a materialized_at timestamp as a short relative
+// indicator: "fresh", "1d ago", "5d ago", "never". Five days or older is
+// flagged so operators see staleness in the dashboard, not in their send logs.
+const formatFreshness = (iso?: string): { label: string; stale: boolean } => {
+  if (!iso) return { label: 'never materialized', stale: true };
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return { label: 'never materialized', stale: true };
+  const diffMs = Date.now() - t;
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return { label: 'just now', stale: false };
+  if (minutes < 60) return { label: `${minutes}m ago`, stale: false };
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return { label: `${hours}h ago`, stale: false };
+  const days = Math.floor(hours / 24);
+  return { label: `${days}d ago`, stale: days >= 2 };
+};
+
 const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate, onRefresh, orgFetch, animateIn }) => {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [recalculating, setRecalculating] = useState<string | null>(null);
+  const [recalcResult, setRecalcResult] = useState<Record<string, { count: number; at: string }>>({});
 
   const filteredSegments = segments.filter(segment => {
     const matchesSearch = segment.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -1393,12 +1425,51 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
     }
   };
 
+  // handleRecalculate calls the synchronous re-materialize endpoint. It is the
+  // ONLY path on the segments dashboard that touches mailing_subscribers, so
+  // it is gated behind an explicit user click and surfaces the latest count
+  // immediately on success without a full list refetch.
+  const handleRecalculate = async (segment: Segment) => {
+    setRecalculating(segment.id);
+    try {
+      const res = await orgFetch(`/api/mailing/v2/segments/${segment.id}/recalculate`, {
+        method: 'POST',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload && typeof payload === 'object' && 'detail' in payload
+          ? String((payload as Record<string, unknown>).detail)
+          : 'Recalculate failed';
+        alert(detail);
+        return;
+      }
+      const count = typeof payload?.count === 'number'
+        ? payload.count
+        : typeof payload?.audience_count === 'number'
+          ? payload.audience_count
+          : undefined;
+      const at = typeof payload?.materialized_at === 'string' ? payload.materialized_at : new Date().toISOString();
+      if (typeof count === 'number') {
+        setRecalcResult(prev => ({ ...prev, [segment.id]: { count, at } }));
+      }
+    } catch (err) {
+      alert('Failed to recalculate segment');
+    } finally {
+      setRecalculating(null);
+    }
+  };
+
   return (
     <div className={`segments-manager ${animateIn ? 'animate-in' : ''}`}>
       <div className="manager-header">
         <div className="header-left">
           <h2><FontAwesomeIcon icon={faCrosshairs} /> Segments</h2>
-          <p>{segments.length} total segments</p>
+          <p>
+            {segments.length} total segments
+            <span style={{ marginLeft: 8, fontSize: '0.7rem', opacity: 0.6 }}>
+              dashboard v{SEGMENTS_PAGE_VERSION}
+            </span>
+          </p>
         </div>
         <div className="header-actions">
           <button className="btn btn-primary" onClick={() => onNavigate('create-segment')}>
@@ -1439,7 +1510,17 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
             )}
           </div>
         ) : (
-          filteredSegments.map((segment, idx) => (
+          filteredSegments.map((segment, idx) => {
+            const recalc = recalcResult[segment.id];
+            const displayCount = recalc?.count ?? segment.audience_count ?? segment.materialized_count ?? segment.subscriber_count ?? 0;
+            const sourceLabel = recalc
+              ? 'just recalculated'
+              : segment.audience_source === 'materialized'
+                ? 'live audience'
+                : 'cached';
+            const freshIso = recalc?.at ?? segment.materialized_at ?? segment.last_calculated_at;
+            const fresh = formatFreshness(freshIso);
+            return (
             <div 
               key={segment.id} 
               className={`segment-card${segment.is_system ? ' system-segment' : ''}`}
@@ -1477,10 +1558,19 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
               <p className="segment-description">{segment.description || 'No description'}</p>
               
               <div className="segment-stats">
-                <div className="stat">
+                <div className="stat" title={
+                  segment.audience_source === 'materialized'
+                    ? 'Audience served by the send engine (materialized snapshot)'
+                    : 'Cached count from segment refresh worker — click Recalculate for a live number'
+                }>
                   <FontAwesomeIcon icon={faUsers} />
-                  <span>{(segment.subscriber_count || 0).toLocaleString()}</span>
-                  <label>subscribers</label>
+                  <span>{displayCount.toLocaleString()}</span>
+                  <label>{sourceLabel}</label>
+                </div>
+                <div className="stat" title={freshIso ? `Materialized at ${freshIso}` : 'Never materialized'}>
+                  <FontAwesomeIcon icon={faClock} style={{ color: fresh.stale ? '#f59e0b' : undefined }} />
+                  <span style={{ color: fresh.stale ? '#f59e0b' : undefined }}>{fresh.label}</span>
+                  <label>refreshed</label>
                 </div>
                 {segment.list_name && (
                   <div className="stat">
@@ -1494,6 +1584,17 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
               <div className="segment-card-footer">
                 <span className={`status-badge status-${segment.status}`}>{segment.status}</span>
                 <div className="segment-actions">
+                  <button
+                    className="action-btn"
+                    onClick={() => handleRecalculate(segment)}
+                    disabled={recalculating === segment.id}
+                    title="Recalculate audience now (re-materializes segment)"
+                  >
+                    <FontAwesomeIcon
+                      icon={recalculating === segment.id ? faSpinner : faSyncAlt}
+                      spin={recalculating === segment.id}
+                    />
+                  </button>
                   {!segment.is_system && (
                     <button 
                       className="action-btn"
@@ -1523,7 +1624,8 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                 </div>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

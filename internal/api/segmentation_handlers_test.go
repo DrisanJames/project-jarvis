@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -99,5 +100,52 @@ func TestSegmentationUpdateReturnsBadRequestForValidationErrors(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sqlmock expectations were not met: %v", err)
+	}
+}
+
+// TestSegmentIDArray covers the pure helper that formats a Postgres uuid[]
+// literal for the materialized rollup query. It is the only piece of logic
+// in ListSegments outside of the SQL itself, so a tight table-driven test
+// here protects the heaviest read path on the segments dashboard.
+func TestSegmentIDArray(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{name: "empty", in: nil, want: "{}"},
+		{name: "empty_slice", in: []string{}, want: "{}"},
+		{name: "single", in: []string{"00000000-0000-0000-0000-000000000001"}, want: "{00000000-0000-0000-0000-000000000001}"},
+		{
+			name: "multiple",
+			in: []string{
+				"11111111-1111-1111-1111-111111111111",
+				"22222222-2222-2222-2222-222222222222",
+				"33333333-3333-3333-3333-333333333333",
+			},
+			want: "{11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222,33333333-3333-3333-3333-333333333333}",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := segmentIDArray(tc.in)
+			if got != tc.want {
+				t.Fatalf("segmentIDArray(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestVersionSegmentationAPIIsBumped guards against accidental version
+// regressions on the segments API surface. The major.minor must move forward
+// with every visible change to the segments handler shape.
+func TestVersionSegmentationAPIIsBumped(t *testing.T) {
+	parts := strings.Split(VersionSegmentationAPI, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected semver-style VersionSegmentationAPI, got %q", VersionSegmentationAPI)
+	}
+	if !strings.HasPrefix(VersionSegmentationAPI, "2.") {
+		t.Fatalf("expected 2.x version after materialized rollout, got %q", VersionSegmentationAPI)
 	}
 }

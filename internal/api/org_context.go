@@ -245,9 +245,40 @@ func GetUserIDFromContext(ctx context.Context) uuid.UUID {
 	return uuid.Nil
 }
 
-// GetOrgIDFromRequest extracts org ID from request with proper fallback chain
-// This is a standalone function that can be used without OrgContextProvider instance
-// Priority: 1. Context (from middleware), 2. X-Organization-ID header, 3. Query param, 4. Dev mode env var
+// processDefaultOrgID is a process-wide fallback used when no other source
+// (context, header, query param, env var) carries an organization id. It is
+// populated at server boot by SetProcessDefaultOrgID — typically with the only
+// organization that exists in the database for this single-tenant deployment.
+//
+// This exists because the production deployment has exactly one organization
+// (Ignite Media Group). When the auth context transiently fails to hydrate
+// (e.g. during a session refresh or under load), every read endpoint that
+// scopes by organization_id was silently filtering by uuid.Nil and returning
+// zero rows — making the UI appear empty even though the data is right there.
+// Setting a process-wide default eliminates that class of bug without changing
+// the auth model.
+var processDefaultOrgID = uuid.Nil
+
+// SetProcessDefaultOrgID sets the process-wide org ID fallback. Safe to call
+// once at startup. Re-callable; latest value wins.
+func SetProcessDefaultOrgID(id uuid.UUID) {
+	processDefaultOrgID = id
+}
+
+// GetProcessDefaultOrgID returns the configured process-wide default, or
+// uuid.Nil if no default has been set.
+func GetProcessDefaultOrgID() uuid.UUID {
+	return processDefaultOrgID
+}
+
+// GetOrgIDFromRequest extracts org ID from request with proper fallback chain.
+// This is a standalone function that can be used without OrgContextProvider instance.
+// Priority:
+//  1. Context (from middleware)
+//  2. X-Organization-ID header
+//  3. Query param
+//  4. DEFAULT_ORG_ID env var
+//  5. Process-wide default registered via SetProcessDefaultOrgID (auto-discovered single tenant)
 func GetOrgIDFromRequest(r *http.Request) (uuid.UUID, error) {
 	ctx := r.Context()
 
@@ -272,15 +303,17 @@ func GetOrgIDFromRequest(r *http.Request) (uuid.UUID, error) {
 		}
 	}
 
-	// 4. Dev mode fallback from environment
-	devMode := os.Getenv("DEV_MODE") == "true" || os.Getenv("ENVIRONMENT") == "development"
-	if devMode {
-		if defaultOrgIDStr := os.Getenv("DEFAULT_ORG_ID"); defaultOrgIDStr != "" {
-			orgID, err := uuid.Parse(defaultOrgIDStr)
-			if err == nil {
-				return orgID, nil
-			}
+	// 4. Explicit env var (no DEV_MODE gate — production single-tenant is real)
+	if defaultOrgIDStr := os.Getenv("DEFAULT_ORG_ID"); defaultOrgIDStr != "" {
+		orgID, err := uuid.Parse(defaultOrgIDStr)
+		if err == nil {
+			return orgID, nil
 		}
+	}
+
+	// 5. Process-wide default (auto-discovered single tenant)
+	if processDefaultOrgID != uuid.Nil {
+		return processDefaultOrgID, nil
 	}
 
 	return uuid.Nil, fmt.Errorf("organization ID not found in request")
