@@ -34,6 +34,13 @@ type JourneyExecutor struct {
 	
 	// Email sender (injected)
 	emailSender func(ctx context.Context, email, subject, htmlContent, fromName, fromEmail string) error
+
+	// Phase 3 (Welcome Series wave-native): when set, every email node
+	// activation produces a tagged shadow campaign in mailing_campaigns
+	// for observability and downstream advancer/watcher correlation.
+	// Optional; nil keeps the legacy inline-send-only behavior so this
+	// rollout is non-breaking.
+	activator *JourneyEmailNodeActivator
 }
 
 // JourneyNode represents a node in a journey
@@ -74,6 +81,14 @@ func NewJourneyExecutor(db *sql.DB) *JourneyExecutor {
 // SetEmailSender sets the email sending function
 func (je *JourneyExecutor) SetEmailSender(sender func(ctx context.Context, email, subject, htmlContent, fromName, fromEmail string) error) {
 	je.emailSender = sender
+}
+
+// SetActivator wires the JourneyEmailNodeActivator. When configured,
+// every email node activation also produces a tagged shadow campaign
+// in mailing_campaigns. Wiring is opt-in so unit tests for executor
+// branching unrelated to activation don't need to stand one up.
+func (je *JourneyExecutor) SetActivator(a *JourneyEmailNodeActivator) {
+	je.activator = a
 }
 
 // Start begins the journey executor
@@ -416,7 +431,23 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 		}
 	}
 	
-	// Send the email
+	// Phase 3 (Welcome Series wave-native): buffer this activation into
+	// a shadow campaign for /node-stats observability + Phase 4
+	// engagement-watcher correlation. Failures here are non-fatal: we
+	// log and fall back to the legacy inline send so journey emails do
+	// not stall on activator infrastructure issues.
+	if je.activator != nil {
+		if err := je.activator.ActivateNode(
+			enrollment.ID, enrollment.JourneyID, node.ID, enrollment.SubscriberEmail,
+			subject, htmlContent, fromName, fromEmail,
+		); err != nil {
+			log.Printf("JourneyExecutor: activator.ActivateNode failed (journey=%s node=%s): %v",
+				enrollment.JourneyID, node.ID, err)
+		}
+	}
+
+	// Send the email (legacy inline path; will be replaced by the
+	// shadow-campaign-driven PMTA wave pipeline in Phase 3.5).
 	if je.emailSender != nil {
 		err := je.emailSender(ctx, enrollment.SubscriberEmail, subject, htmlContent, fromName, fromEmail)
 		if err != nil {
@@ -426,7 +457,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 		// Log for testing
 		log.Printf("JourneyExecutor: Would send email to %s: subject=%s", enrollment.SubscriberEmail, subject)
 	}
-	
+
 	return &NodeExecutionResult{Action: "continue"}, nil
 }
 
@@ -464,56 +495,115 @@ func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email stri
 	return sub
 }
 
-// executeDelayNode handles delay nodes
+// executeDelayNode handles delay nodes.
+//
+// Phase 2 (Welcome Series) extends the original "fixed duration" delay
+// with a "until specific time of day" mode that respects a timezone
+// chosen in the builder UI. The supported delayType values are:
+//
+//   - ""  / "fixed"     (default): wait delayValue * delayUnit
+//   - "until_time":     wait until the next HH:MM in untilTimezone
+//   - "until_day":      reserved for a future iteration; today behaves
+//                       like "fixed days" with delayValue=1 to preserve
+//                       the previous semantics.
+//
+// untilTime is "HH:MM" 24h. untilTimezone is a Go time.LoadLocation name
+// (e.g. America/Denver). Invalid timezone falls back to UTC and is logged
+// so we never block the executor.
 func (je *JourneyExecutor) executeDelayNode(ctx context.Context, enrollment Enrollment, node *JourneyNodeExec) (*NodeExecutionResult, error) {
-	// Check if we've already waited
 	if _, waited := enrollment.Metadata["delay_started"]; waited {
-		// Already waited, continue
 		return &NodeExecutionResult{Action: "continue"}, nil
 	}
-	
-	// Get delay configuration
-	delayValue, _ := node.Config["delayValue"].(float64)
-	delayUnit, _ := node.Config["delayUnit"].(string)
-	
-	if delayValue <= 0 {
-		delayValue = 1
-	}
-	if delayUnit == "" {
-		delayUnit = "hours"
-	}
-	
-	// Calculate wait time
-	var duration time.Duration
-	switch delayUnit {
-	case "minutes":
-		duration = time.Duration(delayValue) * time.Minute
-	case "hours":
-		duration = time.Duration(delayValue) * time.Hour
-	case "days":
-		duration = time.Duration(delayValue) * 24 * time.Hour
-	case "weeks":
-		duration = time.Duration(delayValue) * 7 * 24 * time.Hour
-	default:
-		duration = time.Duration(delayValue) * time.Hour
-	}
-	
-	waitUntil := time.Now().Add(duration)
-	
-	// Mark that we've started the delay
+
+	delayType, _ := node.Config["delayType"].(string)
+	waitUntil := computeDelayWaitUntil(node.Config, delayType, time.Now())
+
 	if enrollment.Metadata == nil {
 		enrollment.Metadata = make(map[string]interface{})
 	}
 	enrollment.Metadata["delay_started"] = true
+	enrollment.Metadata["delay_until"] = waitUntil.UTC().Format(time.RFC3339)
 	metadataJSON, _ := json.Marshal(enrollment.Metadata)
 	je.db.ExecContext(ctx, `
 		UPDATE mailing_journey_enrollments SET metadata = $2 WHERE id = $1
 	`, enrollment.ID, string(metadataJSON))
-	
+
 	return &NodeExecutionResult{
 		Action:    "wait",
 		WaitUntil: waitUntil,
 	}, nil
+}
+
+// computeDelayWaitUntil is a pure function so it can be unit tested
+// without standing up the executor + DB. It mirrors every supported
+// delayType branch above.
+func computeDelayWaitUntil(config map[string]interface{}, delayType string, now time.Time) time.Time {
+	switch delayType {
+	case "until_time":
+		return computeUntilTime(config, now)
+	default:
+		// "fixed" or unknown: legacy behavior.
+		delayValue, _ := config["delayValue"].(float64)
+		delayUnit, _ := config["delayUnit"].(string)
+		if delayValue <= 0 {
+			delayValue = 1
+		}
+		if delayUnit == "" {
+			delayUnit = "hours"
+		}
+		var duration time.Duration
+		switch delayUnit {
+		case "minutes":
+			duration = time.Duration(delayValue) * time.Minute
+		case "hours":
+			duration = time.Duration(delayValue) * time.Hour
+		case "days":
+			duration = time.Duration(delayValue) * 24 * time.Hour
+		case "weeks":
+			duration = time.Duration(delayValue) * 7 * 24 * time.Hour
+		default:
+			duration = time.Duration(delayValue) * time.Hour
+		}
+		return now.Add(duration)
+	}
+}
+
+// computeUntilTime resolves the next HH:MM in the configured timezone.
+// If now is already past today's HH:MM, we roll to tomorrow. The returned
+// time is the wall-clock instant in UTC so the executor's
+// scheduleNextExecution can compare against time.Now() directly.
+func computeUntilTime(config map[string]interface{}, now time.Time) time.Time {
+	hhmm, _ := config["untilTime"].(string)
+	tzName, _ := config["untilTimezone"].(string)
+
+	if hhmm == "" {
+		hhmm = "09:00"
+	}
+	if tzName == "" {
+		tzName = "America/Denver"
+	}
+
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		// Fall back to UTC so we never block. Caller-side logging is fine.
+		loc = time.UTC
+	}
+
+	parsed, err := time.Parse("15:04", hhmm)
+	if err != nil {
+		// Default to 9am if the operator typed something invalid.
+		parsed, _ = time.Parse("15:04", "09:00")
+	}
+
+	nowInTZ := now.In(loc)
+	target := time.Date(
+		nowInTZ.Year(), nowInTZ.Month(), nowInTZ.Day(),
+		parsed.Hour(), parsed.Minute(), 0, 0, loc,
+	)
+	if !target.After(nowInTZ) {
+		target = target.Add(24 * time.Hour)
+	}
+	return target.UTC()
 }
 
 // executeConditionNode evaluates a condition

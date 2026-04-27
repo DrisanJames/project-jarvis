@@ -11,6 +11,20 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// VersionJourneyAnalytics tracks the API version surfaced by the journey
+// analytics endpoints. Bumped whenever the response shape or backing query
+// changes so the frontend can verify it is talking to the right build.
+//
+// History:
+//
+//	1.0 - initial implementation (queried mailing_journey_executions table
+//	      that never existed; all metrics returned zeros)
+//	1.1 - Phase 0 of Welcome Series plan: queries are unchanged but now read
+//	      through the mailing_journey_executions view that bridges the
+//	      executor's mailing_journey_execution_log table; entered/completed/
+//	      exited/failed counts now reflect real executor activity.
+const VersionJourneyAnalytics = "1.1"
+
 // HandleJourneyMetrics returns detailed metrics for a specific journey
 // GET /api/journey-center/journeys/{id}/metrics
 func (jc *JourneyCenter) HandleJourneyMetrics(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +162,7 @@ func (jc *JourneyCenter) HandleJourneyMetrics(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	metrics.APIVersion = VersionJourneyAnalytics
 	respondJSON(w, http.StatusOK, metrics)
 }
 
@@ -214,6 +229,7 @@ func (jc *JourneyCenter) HandleJourneyFunnel(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	response.APIVersion = VersionJourneyAnalytics
 	respondJSON(w, http.StatusOK, response)
 }
 
@@ -332,6 +348,7 @@ func (jc *JourneyCenter) HandleJourneyTrends(w http.ResponseWriter, r *http.Requ
 		response.Summary.ConversionTrend = (float64(totalConversions) - float64(prevConversions)) / float64(prevConversions) * 100
 	}
 
+	response.APIVersion = VersionJourneyAnalytics
 	respondJSON(w, http.StatusOK, response)
 }
 
@@ -360,6 +377,7 @@ func (jc *JourneyCenter) HandleJourneyPerformanceComparison(w http.ResponseWrite
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"performances": performances,
 			"total":        0,
+			"api_version":  VersionJourneyAnalytics,
 		})
 		return
 	}
@@ -407,5 +425,6 @@ func (jc *JourneyCenter) HandleJourneyPerformanceComparison(w http.ResponseWrite
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"performances": performances,
 		"total":        len(performances),
+		"api_version":  VersionJourneyAnalytics,
 	})
 }

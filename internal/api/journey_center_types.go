@@ -73,6 +73,7 @@ type JourneyMetrics struct {
 	EmailMetrics       EmailMetricsSummary  `json:"email_metrics"`
 	NodeMetrics        []NodeMetric         `json:"node_metrics"`
 	HourlyDistribution []HourlyMetric       `json:"hourly_distribution"`
+	APIVersion         string               `json:"api_version,omitempty"`
 }
 
 // EmailMetricsSummary summarizes email performance
@@ -115,6 +116,7 @@ type JourneyFunnelResponse struct {
 	JourneyName string        `json:"journey_name"`
 	TotalStart  int           `json:"total_start"`
 	FunnelSteps []FunnelStep  `json:"funnel_steps"`
+	APIVersion  string        `json:"api_version,omitempty"`
 }
 
 // FunnelStep represents a step in the journey funnel
@@ -136,6 +138,7 @@ type JourneyTrendsResponse struct {
 	Period     string           `json:"period"` // 7d, 30d, 90d
 	DataPoints []TrendDataPoint `json:"data_points"`
 	Summary    TrendSummary     `json:"summary"`
+	APIVersion string           `json:"api_version,omitempty"`
 }
 
 // TrendDataPoint represents a single data point in trends

@@ -39,6 +39,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
 	"github.com/google/uuid"
@@ -590,6 +591,16 @@ func main() {
 				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(readDB, mailingDB, 30*time.Minute, 2)
 				segRefresh.Start(ctx)
 				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
+
+				// Journey Segment Enroller — auto-enrolls subscribers from
+				// segment-triggered journeys (Welcome Series Phase 2). Uses the
+				// segmentation engine for saved segments, and the
+				// "__preset_cleaned_never_mailed__" preset for the UI's
+				// cleaned-never-mailed shortcut. Idempotent via UNIQUE
+				// (journey_id, subscriber_email) ON CONFLICT DO NOTHING.
+				journeySegmentEnroller := worker.NewJourneySegmentEnroller(mailingDB, segmentation.NewEngine(mailingDB))
+				journeySegmentEnroller.Start(ctx)
+				log.Println("Journey Segment Enroller started (auto-enrolls segment-triggered journeys every 5m)")
 
 				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
 				ghostVisitorWorker.Start(ctx)
@@ -4084,6 +4095,92 @@ END $$`},
 			ON mailing_engine_signals_archive_index(min_recorded_at, max_recorded_at)`},
 		{"idx_signals_archive_isp_range", `CREATE INDEX IF NOT EXISTS idx_signals_archive_isp_range
 			ON mailing_engine_signals_archive_index(isp, min_recorded_at, max_recorded_at)`},
+
+		// =====================================================================
+		// Phase 0 (Welcome Series plan): Journey analytics view
+		// =====================================================================
+		// The journey executor (internal/worker/journey_executor.go logExecution)
+		// writes one row per node execution to mailing_journey_execution_log
+		// with action in ('continue', 'wait', 'exit', 'error', 'convert').
+		// However the analytics handlers (internal/api/journey_center_analytics.go
+		// HandleJourneyMetrics / HandleJourneyFunnel / HandleJourneyTrends /
+		// HandleJourneyPerformanceComparison) read from mailing_journey_executions
+		// expecting one row per (entered, completed, exited, failed) outcome plus
+		// a details JSONB column with sent/opens/clicks/etc. That table doesn't
+		// exist, so every journey analytics endpoint silently returns zeros.
+		// This view bridges the two:
+		//   - 'entered' rows: one per log entry (every node touch counts as an entry)
+		//   - outcome rows ('completed', 'exited', 'failed'): emitted for log
+		//     entries with action != 'wait', mapping continue/convert -> completed,
+		//     exit -> exited, error/failed -> failed
+		//   - details: empty for now; Phase 3 will replace this view to pull
+		//     real send/open/click counts from shadow campaigns + tracking events
+		// =====================================================================
+		// Phase 2 (Welcome Series) — extend mailing_journeys with the
+		// engagement-exit policy, hourly per-ISP quotas, and a default
+		// sending profile referenced when an email node leaves its own
+		// sendingProfileId blank. All four columns are idempotent and
+		// have sane defaults so existing journey rows keep working.
+		// =====================================================================
+		{"alter_journeys_add_exit_on_open", `ALTER TABLE mailing_journeys ADD COLUMN IF NOT EXISTS exit_on_open BOOLEAN NOT NULL DEFAULT false`},
+		{"alter_journeys_add_exit_on_click", `ALTER TABLE mailing_journeys ADD COLUMN IF NOT EXISTS exit_on_click BOOLEAN NOT NULL DEFAULT false`},
+		{"alter_journeys_add_isp_quotas", `ALTER TABLE mailing_journeys ADD COLUMN IF NOT EXISTS isp_quotas JSONB NOT NULL DEFAULT '{}'::jsonb`},
+		// sending_profile_id is intentionally nullable (no FK) because the
+		// referenced row may not exist yet during cold-start migrations and
+		// because the journey-level default is optional. We resolve it at
+		// activation time, not insert time.
+		{"alter_journeys_add_sending_profile_id", `ALTER TABLE mailing_journeys ADD COLUMN IF NOT EXISTS sending_profile_id UUID`},
+
+		// Phase 3 (Welcome Series wave-native send) — tag mailing_campaigns
+		// rows that originate from a journey email node. journey_id +
+		// journey_node_id let /api/mailing/journeys/{id}/node-stats group
+		// every shadow campaign produced for a node. journey_wave_index is
+		// the per-node generation counter so re-running a node creates a
+		// distinct row instead of overwriting the prior one. The partial
+		// index keeps the regular-campaign path index-free since the column
+		// is NULL for non-journey rows.
+		{"alter_campaigns_add_journey_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_id UUID`},
+		{"alter_campaigns_add_journey_node_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_node_id TEXT`},
+		{"alter_campaigns_add_journey_wave_index", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_wave_index INTEGER`},
+		{"idx_campaigns_journey_node", `CREATE INDEX IF NOT EXISTS idx_campaigns_journey_node ON mailing_campaigns(journey_id, journey_node_id) WHERE journey_id IS NOT NULL`},
+
+		{"create_journey_executions_view", `CREATE OR REPLACE VIEW mailing_journey_executions AS
+			SELECT
+				enrollment_id,
+				journey_id,
+				node_id,
+				node_type,
+				'entered'::text AS action,
+				result,
+				error_message,
+				'{}'::jsonb AS details,
+				executed_at AS entered_at,
+				NULL::timestamptz AS completed_at,
+				executed_at
+			FROM mailing_journey_execution_log
+			UNION ALL
+			SELECT
+				enrollment_id,
+				journey_id,
+				node_id,
+				node_type,
+				CASE
+					WHEN action IN ('continue', 'convert') THEN 'completed'
+					WHEN action = 'exit' THEN 'exited'
+					WHEN action IN ('error', 'failed') THEN 'failed'
+					ELSE action
+				END AS action,
+				result,
+				error_message,
+				'{}'::jsonb AS details,
+				executed_at AS entered_at,
+				CASE
+					WHEN action IN ('continue', 'convert', 'exit', 'error', 'failed') THEN executed_at
+					ELSE NULL::timestamptz
+				END AS completed_at,
+				executed_at
+			FROM mailing_journey_execution_log
+			WHERE action <> 'wait'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

@@ -65,8 +65,34 @@ func main() {
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
+	// Phase 3 (Welcome Series wave-native): activator buffers email node
+	// firings into shadow campaign rows (mailing_campaigns tagged with
+	// journey_id / journey_node_id / journey_wave_index). Drives the
+	// /api/mailing/journeys/{id}/node-stats endpoint and gives the
+	// engagement watcher (Phase 4) and send advancer a stable
+	// correlation key. 1-minute drain matches the plan.
+	journeyActivator := worker.NewJourneyEmailNodeActivator(db)
+	journeyActivator.Start(ctx)
+	log.Println("JourneyEmailNodeActivator started (drains pending buckets every 1m)")
+
+	// Phase 3 (Welcome Series): journey send advancer polls
+	// mailing_tracking_events for sent/bounced/failed events on shadow
+	// campaigns and advances the corresponding enrollments. Idempotent
+	// via metadata.shadow_campaign_id correlation.
+	journeySendAdvancer := worker.NewJourneySendAdvancer(db)
+	journeySendAdvancer.Start(ctx)
+	log.Println("JourneySendAdvancer started (advances journey enrollments on shadow campaign send events)")
+
+	// Phase 4 (Welcome Series): engagement watcher exits enrollments on
+	// any open or click anywhere in the system, when the journey has
+	// exit_on_open or exit_on_click set.
+	journeyEngagementWatcher := worker.NewJourneyEngagementWatcher(db)
+	journeyEngagementWatcher.Start(ctx)
+	log.Println("JourneyEngagementWatcher started (exits enrollments on any open/click)")
+
 	// Initialize journey executor
 	journeyExecutor := worker.NewJourneyExecutor(db)
+	journeyExecutor.SetActivator(journeyActivator)
 	journeyExecutor.SetEmailSender(func(ctx context.Context, email, subject, htmlContent, fromName, fromEmail string) error {
 		// Wrap the EmailSender to match the expected signature
 		// Use a nil UUID for journey-triggered emails (no campaign association)
