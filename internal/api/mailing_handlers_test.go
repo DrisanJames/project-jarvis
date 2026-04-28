@@ -310,17 +310,33 @@ func TestCreateList_MissingName(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestCreateList_NoOrg(t *testing.T) {
-	svc, _ := newTestService(t)
+// TestCreateList_NoOrgFallsBackToSingleTenant covers the case where no org
+// header / context / query param is supplied. As of segments fix v2.1.1
+// (commit ae47a12) GetOrgIDFromRequest has a hardcoded last-resort fallback
+// to SingleTenantFallbackOrgID so the segments dashboard works under
+// degraded boot conditions. That same fallback applies to every handler,
+// including HandleCreateList — there is no longer a "no org" failure mode.
+// The handler should therefore proceed to the INSERT against the
+// hardcoded org id, and on success return 201 Created.
+func TestCreateList_NoOrgFallsBackToSingleTenant(t *testing.T) {
+	svc, mock := newTestService(t)
+
+	fallbackOrg, err := uuid.Parse(SingleTenantFallbackOrgID)
+	require.NoError(t, err)
+
+	mock.ExpectExec(`INSERT INTO mailing_lists`).
+		WithArgs(sqlmock.AnyArg(), fallbackOrg, "My List", "", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := bytes.NewBufferString(`{"name":"My List"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/mailing/lists", body)
-	// No org header
+	// No org header — handler must still resolve via the hardcoded fallback.
 	rec := httptest.NewRecorder()
 
 	svc.HandleCreateList(rec, req)
-	// Should be 401 unless dev mode fallback kicks in
-	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusCreated}, rec.Code)
+	assert.Equal(t, http.StatusCreated, rec.Code,
+		"with the single-tenant hardcoded fallback in place, no-org requests resolve to the fallback org and create the list")
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // ---------------------------------------------------------------------------
