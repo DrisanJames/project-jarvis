@@ -307,10 +307,10 @@ func HandleOutboxDeadLetter(db *sql.DB) http.HandlerFunc {
 		// default 30s statement_timeout on this connection. Pin a
 		// long-but-bounded per-query timeout so the handler always
 		// returns a real result (or a clear error) instead of a
-		// generic timeout. The startup migration adds the partial
-		// index idempotently so the steady-state cost drops back to
-		// milliseconds; this 90s bound is the safety net for the
-		// first request after an index rebuild.
+		// generic timeout. SET (NOT SET LOCAL — the latter only takes
+		// effect inside an open transaction; we are not in one) on a
+		// dedicated Conn that we Close()/release at end of request, so
+		// no other request inherits this setting.
 		conn, err := db.Conn(ctx)
 		if err != nil {
 			log.Printf("[outbox_dead_letter] db.Conn failed: %v", err)
@@ -318,7 +318,7 @@ func HandleOutboxDeadLetter(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		defer conn.Close()
-		if _, err := conn.ExecContext(ctx, "SET LOCAL statement_timeout = '90000'"); err != nil {
+		if _, err := conn.ExecContext(ctx, "SET statement_timeout = '90000'"); err != nil {
 			log.Printf("[outbox_dead_letter] set timeout failed: %v", err)
 		}
 

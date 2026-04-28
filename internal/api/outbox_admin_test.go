@@ -212,7 +212,7 @@ func TestHandleOutboxDeadLetter_HappyPath(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
 	now := time.Now()
-	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`WHERE q\.status IN \('dead_letter','dead_letter_strict'\)`).
 		WithArgs(200).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -254,7 +254,7 @@ func TestHandleOutboxDeadLetter_HappyPath(t *testing.T) {
 func TestHandleOutboxDeadLetter_EmptyResult(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
-	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`dead_letter`).
 		WithArgs(200).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -275,7 +275,7 @@ func TestHandleOutboxDeadLetter_EmptyResult(t *testing.T) {
 func TestHandleOutboxDeadLetter_CampaignFilter(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
-	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`AND q\.campaign_id = \$2`).
 		WithArgs(200, "c0fe1234-0000-0000-0000-000000000000").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -294,7 +294,7 @@ func TestHandleOutboxDeadLetter_CampaignFilter(t *testing.T) {
 func TestHandleOutboxDeadLetter_LimitClamp(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
-	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`dead_letter`).
 		WithArgs(1000).
 		WillReturnRows(sqlmock.NewRows([]string{
