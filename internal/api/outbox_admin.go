@@ -285,10 +285,19 @@ func HandleOutboxDeadLetter(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
+		// Qualify every column with its alias. mailing_subscribers ALSO
+		// has a `status` column, so an unqualified `WHERE status IN (...)`
+		// after the LEFT JOIN raised
+		//   ERROR: column reference "status" is ambiguous
+		// in production (the local DB never tripped this because there
+		// were zero dead-letter rows and the planner short-circuited
+		// before resolving the predicate). Same risk on `campaign_id`,
+		// `subscriber_id`, `created_at` — qualify all of them so the
+		// query is portable across schema drift.
 		args := []any{limit}
-		where := "WHERE status IN ('dead_letter','dead_letter_strict')"
+		where := "WHERE q.status IN ('dead_letter','dead_letter_strict')"
 		if campaignID != "" {
-			where += " AND campaign_id = $2"
+			where += " AND q.campaign_id = $2"
 			args = append(args, campaignID)
 		}
 

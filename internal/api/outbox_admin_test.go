@@ -212,7 +212,7 @@ func TestHandleOutboxDeadLetter_HappyPath(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
 	now := time.Now()
-	mock.ExpectQuery(`WHERE status IN \('dead_letter','dead_letter_strict'\)`).
+	mock.ExpectQuery(`WHERE q\.status IN \('dead_letter','dead_letter_strict'\)`).
 		WithArgs(200).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "idempotency_key", "campaign_id", "subscriber_id", "email",
@@ -273,7 +273,7 @@ func TestHandleOutboxDeadLetter_EmptyResult(t *testing.T) {
 func TestHandleOutboxDeadLetter_CampaignFilter(t *testing.T) {
 	db, mock := newOutboxMockDB(t)
 
-	mock.ExpectQuery(`AND campaign_id = \$2`).
+	mock.ExpectQuery(`AND q\.campaign_id = \$2`).
 		WithArgs(200, "c0fe1234-0000-0000-0000-000000000000").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "idempotency_key", "campaign_id", "subscriber_id", "email",

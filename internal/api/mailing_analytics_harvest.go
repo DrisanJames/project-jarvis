@@ -51,7 +51,11 @@ import (
 // VersionHarvestPerformance is bumped on every behaviour change so the
 // frontend can display "backend v1.0" in the dashboard footer and we can
 // verify deploys without guessing.
-const VersionHarvestPerformance = "1.1"
+// 1.2 — fixed `column t.email does not exist` regression by switching the
+//       eventSubquery's recipient projection to `email_id::text` (with id
+//       fallback). The earlier 1.1 alias `t.email AS recipient` referenced a
+//       column that has never existed on mailing_tracking_events.
+const VersionHarvestPerformance = "1.2"
 
 // DefaultHarvestCampaignPrefix is the naming prefix the harvest deploy
 // script (scripts/deploy_welcome_harvest.py) applies to every brand
@@ -184,11 +188,26 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	// don't want to drop rows whose campaign_id lookup fails (rare, but
 	// happens during race windows between event ingest and campaign
 	// insert).
-	// NOTE: mailing_tracking_events stores the recipient address in the `email`
-	// column (not `recipient`). We alias it back to `recipient` so the many
-	// downstream aggregates (d.recipient) in this handler keep working.
+	//
+	// `recipient` is the per-row identity used downstream by the
+	//   COUNT(DISTINCT CASE ... THEN COALESCE(d.subscriber_id::text, d.recipient) END)
+	// expressions to compute unique opens/clicks. The previous
+	// implementation read `t.email`, which DOES NOT EXIST on
+	// mailing_tracking_events (verified via information_schema —
+	// recipient address is stored on mailing_subscribers, not the
+	// tracking row). That column reference 500'd the entire harvest
+	// endpoint with `column t.email does not exist`.
+	//
+	// Falling back to `t.email_id::text` preserves the unique-per-send
+	// guarantee: email_id is the FK to mailing_email_messages, set on
+	// every send/delivered/bounced/opened/clicked row. For the rare
+	// pre-link-id row where email_id is null we fall back to the event
+	// row's own id (always populated) so DISTINCT counting still
+	// degrades gracefully instead of silently merging unrelated events.
 	eventSubquery := `SELECT t.event_type, t.event_at, t.bounce_type, t.is_machine_open,
-		t.sending_domain, t.campaign_id, t.email AS recipient, t.subscriber_id,
+		t.sending_domain, t.campaign_id,
+		COALESCE(t.email_id::text, t.id::text) AS recipient,
+		t.subscriber_id,
 		LOWER(COALESCE(NULLIF(t.recipient_domain,''), 'unknown')) as dom,
 		mc.name as campaign_name
 		FROM mailing_tracking_events t

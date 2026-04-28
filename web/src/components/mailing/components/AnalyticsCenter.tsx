@@ -8,7 +8,7 @@ import {
   faDatabase,
   faTrophy,
   faClock, faUserSlash, faBolt, faBroadcastTower,
-  faChevronDown, faChevronRight, faLayerGroup,
+  faChevronDown, faChevronRight,
   faFilter, faInfoCircle,
 } from '@fortawesome/free-solid-svg-icons';
 import {
@@ -99,26 +99,6 @@ interface ActiveSendsData {
   campaigns: LiveCampaign[];
 }
 
-// ─── Bounce reasons types ────────────────────────────────────────────────────
-
-interface BounceReasonISP { isp: string; label: string; count: number; }
-
-interface BounceReasonRow {
-  code: string;
-  label: string;
-  category: string;
-  count: number;
-  pct_of_total: number;
-  by_isp: BounceReasonISP[];
-}
-
-interface BounceReasonsData {
-  api_version?: string;
-  total_bounces: number;
-  reasons: BounceReasonRow[];
-}
-
-
 interface InfraRow {
   entity: string;
   sent: number;
@@ -148,36 +128,6 @@ interface ISPData {
   delivery_rate?: number; deferral_rate?: number; unsubscribe_rate?: number;
 }
 
-const BOUNCE_CATEGORY_COLORS: Record<string, string> = {
-  auth: '#ef4444',
-  mailbox: '#f59e0b',
-  reputation: '#dc2626',
-  policy: '#a855f7',
-  system: '#6366f1',
-  transient: '#3b82f6',
-  other: '#64748b',
-};
-
-// Brand keywords we recognise in campaign names. Extend this list as new
-// brands are onboarded — campaigns whose names don't match any of these fall
-// into "Unclassified".
-const KNOWN_BRANDS = [
-  'Discount Blog',
-  'Quiz Fiesta',
-  'History Thinking',
-  'My Own Health',
-] as const;
-
-// Series keywords. Matched case-insensitively.
-const KNOWN_SERIES = ['Welcome', 'Engager', 'Acquisition', 'Reactivation'] as const;
-
-function classifyCampaign(name: string): { brand: string; series: string } {
-  const lower = name.toLowerCase();
-  const brand = KNOWN_BRANDS.find(b => lower.includes(b.toLowerCase())) || 'Unclassified';
-  const series = KNOWN_SERIES.find(s => lower.includes(s.toLowerCase())) || 'Other';
-  return { brand, series };
-}
-
 const ISP_LABELS: Record<string, string> = {
   gmail: 'Gmail', yahoo: 'Yahoo', microsoft: 'Microsoft',
   apple: 'Apple iCloud', comcast: 'Comcast', att: 'AT&T',
@@ -192,7 +142,15 @@ const ISP_COLORS: Record<string, string> = {
 
 type TimeRange = 'today' | 'yesterday';
 
-const PAGE_VERSION = '4.3';
+// 4.4 — Fixed timezone math regression. The previous build encoded
+//       MST_OFFSET_MS = 7h hard-coded, which is correct only outside DST;
+//       in MDT (April 2026) the dashboard's "today" was anchored 1h late
+//       AND the UTC-instant `endDate` shifted analytics into the next UTC
+//       day. Frontend now sends only `range_type=today/yesterday` and
+//       lets the backend compute MST midnight via `America/Denver`
+//       (parseAnalyticsRange in mailing_analytics.go). Also removed
+//       Top Bounce Reasons and Brand×Series Rollup sections per ops.
+const PAGE_VERSION = '4.4';
 
 // ─── ISP Insights types ──────────────────────────────────────────────────────
 
@@ -327,23 +285,25 @@ interface SDSDomainRow {
   recently_opened_7d: number;
 }
 
-// All date boundaries are anchored to America/Denver (MST/MDT).
-// MST = UTC-7, MDT = UTC-6. We use a fixed UTC-7 offset per user spec.
-const MST_OFFSET_MS = 7 * 60 * 60 * 1000;
-
-function mstMidnight(d: Date): Date {
-  const mstDate = new Date(d.getTime() - MST_OFFSET_MS);
-  return new Date(Date.UTC(mstDate.getUTCFullYear(), mstDate.getUTCMonth(), mstDate.getUTCDate()) + MST_OFFSET_MS);
-}
-
-function computeDateRange(range: TimeRange): { startDate: string; endDate: string } {
-  const now = new Date();
-  const todayStart = mstMidnight(now);
-  if (range === 'yesterday') {
-    const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
-    return { startDate: yesterdayStart.toISOString(), endDate: todayStart.toISOString() };
-  }
-  return { startDate: todayStart.toISOString(), endDate: now.toISOString() };
+// Date range handling intentionally lives on the backend now.
+//
+// The previous build computed MST midnight on the client using a fixed
+// 7-hour offset, which is wrong for ~half the year (MDT = UTC-6 between
+// March and November). At 9:40 PM MDT the client was sending a
+// `start_date` 1h *after* true Mountain midnight AND an `end_date` set
+// to the user's UTC instant — which had already crossed into the next
+// UTC day and bled into tomorrow. Combined effect: analytics for
+// "today" silently dropped the first hour of the day and surfaced
+// tomorrow's date strings.
+//
+// `parseAnalyticsRange` in upside-down/internal/api/mailing_analytics.go
+// already handles `range_type=today/yesterday` correctly using a real
+// IANA `America/Denver` location, which is DST-aware. Sending only
+// `range_type` + `days` defers all wall-clock math to the server where
+// the timezone library is correct, and removes a class of "wrong-by-an-
+// hour" bugs we keep paying for.
+function buildRangeQS(range: TimeRange): string {
+  return `?range_type=${encodeURIComponent(range)}&days=1`;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -474,128 +434,6 @@ const LiveSendingBand: React.FC<LiveSendingBandProps> = ({ data, expanded, onTog
             </div>
           );
         })}
-      </div>
-    </div>
-  );
-};
-
-// ─── Bounce Reasons Panel ──────────────────────────────────────────────────
-
-interface BounceReasonsPanelProps {
-  data: BounceReasonsData | null;
-  expandedCode: string | null;
-  onToggle: (key: string) => void;
-}
-
-const BounceReasonsPanel: React.FC<BounceReasonsPanelProps> = ({ data, expandedCode, onToggle }) => {
-  if (!data || !data.reasons || data.reasons.length === 0) {
-    return (
-      <div className="ac-card ig-card-hover">
-        <h3><FontAwesomeIcon icon={faExclamationTriangle} /> Top Bounce Reasons</h3>
-        <div className="ac-empty-mini">No bounce events in this range. Nice.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="ac-card ig-card-hover">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h3 style={{ margin: 0 }}>
-          <FontAwesomeIcon icon={faExclamationTriangle} /> Top Bounce Reasons
-        </h3>
-        <span style={{ fontSize: '0.75em', color: '#64748b' }}>{fmt(data.total_bounces)} total bounces</span>
-      </div>
-
-      <div className="ac-bounce-list">
-        {data.reasons.map((r, i) => {
-          const key = `${r.label}-${i}`;
-          const isExpanded = expandedCode === key;
-          return (
-            <div key={key} className="ac-bounce-item">
-              <div className="ac-bounce-head" onClick={() => onToggle(key)}>
-                <span className="ac-bounce-cat-pill" style={{ background: BOUNCE_CATEGORY_COLORS[r.category] || '#64748b' }}>
-                  {r.category}
-                </span>
-                <span className="ac-bounce-code">{r.code || '—'}</span>
-                <span className="ac-bounce-label">{r.label}</span>
-                <span className="ac-bounce-count">{fmt(r.count)}</span>
-                <span className="ac-bounce-pct">{r.pct_of_total.toFixed(1)}%</span>
-                <span className="ac-live-chevron">
-                  <FontAwesomeIcon icon={isExpanded ? faChevronDown : faChevronRight} />
-                </span>
-              </div>
-              {isExpanded && r.by_isp && r.by_isp.length > 0 && (
-                <div className="ac-bounce-isp-grid">
-                  {r.by_isp.map(b => (
-                    <div key={`${key}-${b.isp}`} className="ac-bounce-isp-cell">
-                      <span>{b.label || b.isp}</span>
-                      <strong>{fmt(b.count)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-// ─── Brand × Series Rollup ─────────────────────────────────────────────────
-
-interface BrandSeriesRollupRow {
-  brand: string; series: string; campaigns: number;
-  sent: number; delivered: number; deferred: number; unsubscribes: number;
-  open_rate: number; click_rate: number;
-  hard_bounce_rate: number; soft_bounce_rate: number; deferral_rate: number; unsubscribe_rate: number;
-  revenue: number;
-}
-
-const BrandSeriesRollup: React.FC<{ rows: BrandSeriesRollupRow[] }> = ({ rows }) => {
-  if (!rows || rows.length === 0) {
-    return null;
-  }
-  return (
-    <div className="ac-card ig-card-hover">
-      <h3><FontAwesomeIcon icon={faLayerGroup} /> Brand × Series Rollup</h3>
-      <div className="ac-table-wrap">
-        <table className="ac-table">
-          <thead>
-            <tr>
-              <th>Brand</th>
-              <th>Series</th>
-              <th>Campaigns</th>
-              <th>Sent</th>
-              <th>Delivered</th>
-              <th>Open %</th>
-              <th>Click %</th>
-              <th>Hard %</th>
-              <th>Soft %</th>
-              <th>Deferred</th>
-              <th>Unsubs</th>
-              <th>Revenue</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.brand}-${r.series}-${i}`}>
-                <td><strong>{r.brand}</strong></td>
-                <td>{r.series}</td>
-                <td>{r.campaigns}</td>
-                <td>{fmt(r.sent)}</td>
-                <td>{fmt(r.delivered)}</td>
-                <td className={r.open_rate > 20 ? 'ac-good' : r.open_rate > 10 ? 'ac-ok' : 'ac-bad'}>{pct(r.open_rate)}</td>
-                <td className={r.click_rate > 3 ? 'ac-good' : r.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(r.click_rate)}</td>
-                <td className={r.hard_bounce_rate < 2 ? 'ac-good' : r.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(r.hard_bounce_rate)}</td>
-                <td className={r.soft_bounce_rate < 2 ? 'ac-good' : r.soft_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(r.soft_bounce_rate)}</td>
-                <td>{fmt(r.deferred)}</td>
-                <td>{fmt(r.unsubscribes)}</td>
-                <td>{fmtCurrency(r.revenue)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );
@@ -1039,10 +877,6 @@ export const AnalyticsCenter: React.FC = () => {
   const [liveData, setLiveData] = useState<ActiveSendsData | null>(null);
   const [expandedLiveCampaign, setExpandedLiveCampaign] = useState<string | null>(null);
 
-  // Bounce reasons panel
-  const [bounceReasons, setBounceReasons] = useState<BounceReasonsData | null>(null);
-  const [expandedBounceReason, setExpandedBounceReason] = useState<string | null>(null);
-
   // Master List Migration P6: SDS audience health per sending domain.
   // Source of truth for "who is mailable on which domain" now lives in
   // mailing_subscriber_domain_state, not the 40+ legacy brand×ISP lists.
@@ -1056,25 +890,25 @@ export const AnalyticsCenter: React.FC = () => {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const { startDate, endDate } = computeDateRange(range);
       const mppParam = excludeMPP ? '&exclude_mpp=true' : '';
-      const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&days=1${mppParam}`;
-      const [ovRes, campRes, ispRes, bounceRes] = await Promise.all([
+      // Backend resolves `range_type=today/yesterday` to MST midnight
+      // anchors via parseAnalyticsRange. We deliberately omit
+      // start_date/end_date so the IANA-aware backend computes the
+      // window — see PAGE_VERSION comment for the bug we're fixing.
+      const qp = `${buildRangeQS(range)}${mppParam}`;
+      const [ovRes, campRes, ispRes] = await Promise.all([
         orgFetch(`/api/mailing/analytics/overview${qp}`, orgId),
         orgFetch(`/api/mailing/reports/campaigns${qp}`, orgId),
         orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId),
-        orgFetch(`/api/mailing/analytics/bounce-reasons${qp}`, orgId),
       ]);
-      const [ov, camp, ispPerf, bounces] = await Promise.all([
+      const [ov, camp, ispPerf] = await Promise.all([
         ovRes.json().catch(() => null),
         campRes.json().catch(() => null),
         ispRes.json().catch(() => null),
-        bounceRes.json().catch(() => null),
       ]);
       setOverview(ov);
       setCampaigns(camp);
       setIspCards(ispPerf?.isps || []);
-      setBounceReasons(bounces);
       setSelectedISP(null);
       setIspTrend([]);
       setApiVersions(prev => ({
@@ -1082,7 +916,6 @@ export const AnalyticsCenter: React.FC = () => {
         overview: ov?.api_version || '?',
         campaigns: camp?.api_version || '?',
         isp_performance: ispPerf?.api_version || '?',
-        bounce_reasons: bounces?.api_version || '?',
       }));
     } catch (err) {
       console.error('Analytics load error:', err);
@@ -1117,9 +950,8 @@ export const AnalyticsCenter: React.FC = () => {
     const load = async () => {
       setIspTrendLoading(true);
       try {
-        const { startDate, endDate } = computeDateRange(range);
         const mppP = excludeMPP ? '&exclude_mpp=true' : '';
-        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&range_type=${range}&isp=${selectedISP}${mppP}`;
+        const qp = `${buildRangeQS(range)}&isp=${encodeURIComponent(selectedISP)}${mppP}`;
         const res = await orgFetch(`/api/mailing/analytics/isp-performance${qp}`, orgId);
         const data = await res.json();
         if (!cancelled) {
@@ -1140,8 +972,7 @@ export const AnalyticsCenter: React.FC = () => {
   const fetchInfrastructure = useCallback(async (domain: string | null, type: 'ip' | 'isp', campaignId?: string) => {
     setInfraLoading(true);
     try {
-      const { startDate, endDate } = computeDateRange(range);
-      let qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+      let qp = buildRangeQS(range);
       if (domain) qp += `&domain=${encodeURIComponent(domain)}&drilldown=${type}`;
       if (campaignId) qp += `&campaign_id=${encodeURIComponent(campaignId)}`;
 
@@ -1190,8 +1021,7 @@ export const AnalyticsCenter: React.FC = () => {
     (async () => {
       setChartLoading(true);
       try {
-        const { startDate, endDate } = computeDateRange(range);
-        const qp = `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&trend_domain=${encodeURIComponent(chartDomain)}`;
+        const qp = `${buildRangeQS(range)}&trend_domain=${encodeURIComponent(chartDomain)}`;
         const res = await orgFetch(`/api/mailing/analytics/overview${qp}`, orgId);
         const data = await res.json();
         if (!cancelled) setChartTrend(data.daily_trend || []);
@@ -1211,62 +1041,6 @@ export const AnalyticsCenter: React.FC = () => {
   const rates = overview?.rates || { open_rate: 0, click_rate: 0, hard_bounce_rate: 0, soft_bounce_rate: 0, complaint_rate: 0, delivery_rate: 0, deferral_rate: 0, unsubscribe_rate: 0 };
   const trend = overview?.daily_trend || [];
   const granularity = overview?.granularity || 'day';
-
-  // ─── Brand × Series rollup (client-side, derived from /reports/campaigns) ──
-  const brandSeriesRollup = useMemo(() => {
-    const rows = campaigns?.campaigns || [];
-    type Bucket = {
-      brand: string; series: string; campaigns: number;
-      sent: number; delivered: number; opens: number; clicks: number;
-      hard_bounces: number; soft_bounces: number; deferred: number; unsubscribes: number;
-      revenue: number;
-    };
-    const map = new Map<string, Bucket>();
-    for (const c of rows) {
-      const { brand, series } = classifyCampaign(c.name || '');
-      const key = `${brand}::${series}`;
-      let b = map.get(key);
-      if (!b) {
-        b = { brand, series, campaigns: 0, sent: 0, delivered: 0, opens: 0, clicks: 0, hard_bounces: 0, soft_bounces: 0, deferred: 0, unsubscribes: 0, revenue: 0 };
-        map.set(key, b);
-      }
-      b.campaigns += 1;
-      b.sent += c.sent || 0;
-      b.delivered += c.delivered || 0;
-      b.opens += c.opens || 0;
-      b.clicks += c.clicks || 0;
-      b.hard_bounces += c.hard_bounces || 0;
-      b.soft_bounces += c.soft_bounces || 0;
-      b.deferred += c.deferred || 0;
-      b.unsubscribes += c.unsubscribes || 0;
-      b.revenue += c.revenue || 0;
-    }
-    const out = Array.from(map.values()).map(b => {
-      const base = b.delivered > 0 ? b.delivered : b.sent;
-      const openRate = base > 0 ? (b.opens / base) * 100 : 0;
-      const clickRate = base > 0 ? (b.clicks / base) * 100 : 0;
-      const hardRate = b.sent > 0 ? (b.hard_bounces / b.sent) * 100 : 0;
-      const softRate = b.sent > 0 ? (b.soft_bounces / b.sent) * 100 : 0;
-      const deferralRate = b.sent > 0 ? (b.deferred / b.sent) * 100 : 0;
-      const unsubRate = b.sent > 0 ? (b.unsubscribes / b.sent) * 100 : 0;
-      return { ...b, open_rate: openRate, click_rate: clickRate, hard_bounce_rate: hardRate, soft_bounce_rate: softRate, deferral_rate: deferralRate, unsubscribe_rate: unsubRate };
-    });
-    out.sort((a, b) => (b.sent || 0) - (a.sent || 0));
-    return out;
-  }, [campaigns]);
-
-  // Filter bounce reasons for the selected ISP detail pane.
-  const bounceReasonsForSelectedISP = useMemo(() => {
-    if (!selectedISP || !bounceReasons) return [];
-    return bounceReasons.reasons
-      .map(r => {
-        const hit = r.by_isp.find(b => b.isp === selectedISP);
-        return hit ? { ...r, isp_count: hit.count } : null;
-      })
-      .filter((x): x is BounceReasonRow & { isp_count: number } => !!x && x.isp_count > 0)
-      .sort((a, b) => b.isp_count - a.isp_count)
-      .slice(0, 6);
-  }, [selectedISP, bounceReasons]);
 
   return (
     <div className="ac-container ig-scan-line">
@@ -1467,26 +1241,6 @@ export const AnalyticsCenter: React.FC = () => {
                       card={ispCards.find(c => c.isp === selectedISP) || null}
                     />
 
-                    {bounceReasonsForSelectedISP.length > 0 && (
-                      <div className="ac-isp-bounce-block">
-                        <h5 style={{ margin: '12px 0 8px', fontSize: '0.85em', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                          Top Bounce Reasons ({ISP_LABELS[selectedISP] || selectedISP})
-                        </h5>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          {bounceReasonsForSelectedISP.map((r, i) => (
-                            <div key={`${r.label}-${i}`} className="ac-isp-bounce-row">
-                              <span className="ac-bounce-cat-pill" style={{ background: BOUNCE_CATEGORY_COLORS[r.category] || '#64748b' }}>
-                                {r.category}
-                              </span>
-                              <span className="ac-bounce-code">{r.code || '—'}</span>
-                              <span className="ac-bounce-label">{r.label}</span>
-                              <span className="ac-bounce-count">{fmt(r.isp_count)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
                     {ispTrendLoading ? (
                       <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading trend…</div>
                     ) : ispTrend.length === 0 ? (
@@ -1646,13 +1400,6 @@ export const AnalyticsCenter: React.FC = () => {
                 )}
               </div>
 
-              {/* Top Bounce Reasons panel */}
-              <BounceReasonsPanel
-                data={bounceReasons}
-                expandedCode={expandedBounceReason}
-                onToggle={(key) => setExpandedBounceReason(prev => prev === key ? null : key)}
-              />
-
               {/* Campaign Performance Table */}
               <div className="ac-card ig-card-hover">
                 <h3><FontAwesomeIcon icon={faTrophy} /> Campaign Performance</h3>
@@ -1707,18 +1454,21 @@ export const AnalyticsCenter: React.FC = () => {
                 )}
               </div>
 
-              {/* Brand × Series rollup */}
-              <BrandSeriesRollup rows={brandSeriesRollup} />
-
               {/* ─── SDS Audience Health (Master List) ───────────────────────── */}
               <div id="sds-audience-health-section" className="ac-card ig-card-hover">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
                   <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <FontAwesomeIcon icon={faDatabase} /> Audience Health by Sending Domain
                     <span style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400 }}>
-                      SDS · {fmt(sdsTotal)} total rows
+                      SDS · {fmt(sdsTotal)} total subscribers
                     </span>
                   </h3>
+                  <span
+                    style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400, maxWidth: 520, textAlign: 'right' }}
+                    title="These columns count distinct subscribers per sending domain — NOT message volume. 'Subs Mailed 7d' = subscribers who received at least one send in the last 7 days; 'Subs Opened 7d' = subscribers who opened at least once in the last 7 days. For send volume see Analytics Overview / Campaign Performance."
+                  >
+                    <FontAwesomeIcon icon={faInfoCircle} /> Distinct subscribers per domain (last 7d) — not send volume.
+                  </span>
                 </div>
                 {sdsLoading ? (
                   <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading SDS audience health...</div>
@@ -1738,8 +1488,8 @@ export const AnalyticsCenter: React.FC = () => {
                           <th>Unsub</th>
                           <th>Hard B.</th>
                           <th>Comp.</th>
-                          <th>Mailed 7d</th>
-                          <th>Opened 7d</th>
+                          <th title="Distinct subscribers mailed in the last 7 days (not message volume).">Subs Mailed 7d</th>
+                          <th title="Distinct subscribers who opened at least once in the last 7 days.">Subs Opened 7d</th>
                         </tr>
                       </thead>
                       <tbody>

@@ -24,13 +24,31 @@ import (
 const (
 	VersionAnalyticsOverview       = "3.2"
 	VersionISPPerformance          = "1.3"
-	VersionISPSendingInsights      = "1.4"
-	VersionCampaignComparison      = "2.0"
+	// 1.5 — Graceful degradation: per-query failures (timeouts on the
+	//       multi-day daily aggregate against a 100M-row partition,
+	//       statement_timeout hits, etc) no longer turn the whole
+	//       endpoint into HTTP 500. The handler now always returns 200
+	//       with whatever data succeeded plus an `errors{}` map listing
+	//       which sub-queries failed, so the panel renders partially
+	//       instead of showing a blank "query failed" toast. Statement
+	//       timeout bumped from 60s to 120s for the heavy daily query.
+	VersionISPSendingInsights      = "1.5"
+	// 2.1 — Campaign Performance now filters strictly on started_at IS NOT NULL,
+	//       i.e. campaigns that have actually begun sending. Previously the
+	//       handler accepted COALESCE(started_at, created_at), which surfaced
+	//       drafts and future-scheduled campaigns inside today's window
+	//       whenever they were created today (or backfilled from yesterday).
+	//       The user reported seeing tomorrow's scheduled campaigns under
+	//       "Campaign Performance" for today — root cause was that COALESCE.
+	VersionCampaignComparison      = "2.1"
 	VersionTopPerformers           = "1.0"
 	VersionListPerformance         = "1.0"
 	VersionEngagementReport        = "1.0"
 	VersionDeliverabilityReport    = "1.0"
-	VersionInfrastructureBreakdown = "1.6"
+	// 1.7 — added breadcrumb logging for empty results so we can tell
+	// whether the panel is broken or just has no data for a narrow
+	// today-window. The handler itself is unchanged.
+	VersionInfrastructureBreakdown = "1.7"
 	VersionRevenueReport           = "1.0"
 	VersionHistoricalMetrics       = "1.0"
 	VersionCrossBrandCapMetrics    = "1.0"
@@ -894,14 +912,23 @@ func (s *AdvancedMailingService) HandleCampaignComparison(w http.ResponseWriter,
 	start, end := parseAnalyticsRange(r)
 	excludeMPP := r.URL.Query().Get("exclude_mpp") == "true"
 
-	// Step 1: Get campaign metadata
+	// Step 1: Get campaign metadata.
+	//
+	// Filter to campaigns that have actually started — `started_at IS NOT NULL`
+	// AND inside the window. Drafts and future-scheduled campaigns have
+	// `started_at = NULL` (or, for "scheduled", `started_at` set to the future
+	// scheduled time — still excluded if outside the window). This kills the
+	// common confusion where a campaign created today and scheduled to send
+	// tomorrow showed up under today's "Campaign Performance" because the
+	// previous COALESCE(started_at, created_at) fell back to created_at.
 	cRows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, status, revenue, created_at,
-			COALESCE(started_at, created_at), COALESCE(completed_at, created_at)
+			started_at, COALESCE(completed_at, started_at)
 		FROM mailing_campaigns
-		WHERE COALESCE(started_at, created_at) >= $1
-		  AND COALESCE(started_at, created_at) <= $2
-		ORDER BY COALESCE(started_at, created_at) DESC
+		WHERE started_at IS NOT NULL
+		  AND started_at >= $1
+		  AND started_at <= $2
+		ORDER BY started_at DESC
 		LIMIT 50
 	`, start, end)
 	if err != nil {
@@ -1359,12 +1386,24 @@ func (s *AdvancedMailingService) HandleInfrastructureBreakdown(w http.ResponseWr
 	}
 
 	if err != nil {
-		log.Printf("[infrastructure] query error: %v", err)
+		log.Printf("[infrastructure] query error: %v window=%s..%s domain=%q drill=%q campaign=%q",
+			err, start.Format(time.RFC3339), end.Format(time.RFC3339),
+			selectedDomain, drilldownType, campaignID)
 		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
 		return
 	}
 	if results == nil {
 		results = []map[string]interface{}{}
+	}
+	if len(results) == 0 {
+		// 1.7: breadcrumb so empty-vs-broken can be told apart from logs.
+		// The most common cause of an empty Level 1 response is a
+		// today-only window that started after the latest campaign
+		// started_at (e.g. early morning, no sends yet) — which is
+		// correct behavior, not a bug.
+		log.Printf("[infrastructure] empty result window=%s..%s domain=%q drill=%q campaign=%q",
+			start.Format(time.RFC3339), end.Format(time.RFC3339),
+			selectedDomain, drilldownType, campaignID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1374,6 +1413,14 @@ func (s *AdvancedMailingService) HandleInfrastructureBreakdown(w http.ResponseWr
 		"drilldown_type": drilldownType,
 		"campaign_id":    campaignID,
 		"data":           results,
+		// Echo the resolved window so the UI can render an explanatory
+		// "no data between X and Y MST" instead of a generic empty state.
+		"window": map[string]string{
+			"start":     start.Format(time.RFC3339),
+			"end":       end.Format(time.RFC3339),
+			"start_mst": start.In(mstLoc).Format("2006-01-02 15:04:05 MST"),
+			"end_mst":   end.In(mstLoc).Format("2006-01-02 15:04:05 MST"),
+		},
 	})
 }
 
@@ -2576,13 +2623,18 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 	// (one per sending_domain), so total wall-clock = N * sum-of-queries.
 	// Parallelising gives us max(query) instead, and moving the per-domain
 	// rollup into this single handler call kills the frontend fan-out.
+	// Each sub-query runs on its own pooled connection with statement_timeout
+	// bumped to 120s. The previous 60s cap was tight for the daily aggregate
+	// over a 7-day window of mailing_tracking_events on a partition that's
+	// ~100M rows in production — particularly for an `isp=gmail&days=7` call
+	// where Postgres has to scan/group every gmail.com domain bucket.
 	runQ := func(op string, fn func(*sql.Conn) error) error {
 		c, err := s.db.Conn(ctx)
 		if err != nil {
 			return fmt.Errorf("%s: acquire conn: %w", op, err)
 		}
 		defer c.Close()
-		if _, err := c.ExecContext(ctx, "SET statement_timeout = '60s'"); err != nil {
+		if _, err := c.ExecContext(ctx, "SET statement_timeout = '120s'"); err != nil {
 			log.Printf("[ISPSendingInsights/%s] set statement_timeout: %v", op, err)
 		}
 		return fn(c)
@@ -2605,8 +2657,22 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		ispHourlyDeferrals  = map[string][24]int{}
 		topCampaigns        = []map[string]interface{}{}
 		currentQuotas       = map[string]int{}
-		errs                = make(chan error, 8)
+
+		// Per-op error map. The previous channel-of-errors collapsed
+		// every failure into a single "first error wins" bool, which
+		// gave operators no way to tell which sub-query actually
+		// blew up. Now we keep them keyed so the response can list
+		// e.g. {"daily":"timeout", "bounce_categories":"...timeout..."}
+		// and the UI degrades panel-by-panel.
+		opErrs   = map[string]string{}
+		opErrsMu sync.Mutex
 	)
+	recordErr := func(op string, err error) {
+		opErrsMu.Lock()
+		opErrs[op] = err.Error()
+		opErrsMu.Unlock()
+		log.Printf("[ISPSendingInsights/%s] %v", op, err)
+	}
 
 	var wg sync.WaitGroup
 
@@ -2632,7 +2698,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			}
 			return nil
 		}); err != nil {
-			errs <- err
+			recordErr("sending_domains", err)
 		}
 	}()
 
@@ -2672,7 +2738,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			}
 			return nil
 		}); err != nil {
-			errs <- err
+			recordErr("daily", err)
 		}
 	}()
 
@@ -2722,7 +2788,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 				}
 				return nil
 			}); err != nil {
-				errs <- err
+				recordErr("by_sending_domain", err)
 			}
 		}()
 	}
@@ -2754,7 +2820,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			}
 			return nil
 		}); err != nil {
-			errs <- err
+			recordErr("bounce_categories", err)
 		}
 	}()
 
@@ -2786,7 +2852,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			}
 			return nil
 		}); err != nil {
-			errs <- err
+			recordErr("hourly_deferrals", err)
 		}
 	}()
 
@@ -2844,7 +2910,7 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 				}
 				return nil
 			}); err != nil {
-				errs <- err
+				recordErr("top_campaigns", err)
 			}
 		}()
 	}
@@ -2877,27 +2943,27 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 			}
 			return nil
 		}); err != nil {
-			errs <- err
+			recordErr("current_quotas", err)
 		}
 	}()
 
 	wg.Wait()
-	close(errs)
 
-	// If the daily query failed we can't build a coherent response — bail.
-	// Non-critical query failures (categories, hourly, top, quotas) are
-	// logged but swallowed: the panel still renders with degraded data.
-	var firstErr error
-	for e := range errs {
-		if firstErr == nil {
-			firstErr = e
-		}
-		log.Printf("[ISPSendingInsights] %v", e)
+	// We never hard-fail the whole endpoint anymore. Per-op errors are
+	// surfaced in `errors{}` on the response; panels with no data render
+	// as empty (the frontend already handles this) instead of taking down
+	// the entire ISP Insights view.
+	//
+	// Snapshot the per-op errors map under the lock so the response never
+	// races a late-arriving recordErr. (recordErr can fire after wg.Wait
+	// only if a goroutine raced past defer wg.Done() before its
+	// runQ-error check — extremely unlikely, but worth being safe.)
+	opErrsMu.Lock()
+	errorsCopy := make(map[string]string, len(opErrs))
+	for k, v := range opErrs {
+		errorsCopy[k] = v
 	}
-	if len(ispDaily) == 0 && firstErr != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
-		return
-	}
+	opErrsMu.Unlock()
 
 	if sendingDomains == nil {
 		sendingDomains = []string{}
@@ -3181,6 +3247,11 @@ func (s *AdvancedMailingService) HandleISPSendingInsights(w http.ResponseWriter,
 		"isp_filter":         ispFilter,
 		"top_campaigns":      topCampaigns,
 		"by_sending_domain":  bySDOut,
+		// Per-op errors so the UI can flag panels that degraded. Keys
+		// match the recordErr "op" names (daily, by_sending_domain,
+		// bounce_categories, hourly_deferrals, top_campaigns,
+		// current_quotas, sending_domains). Empty map = full data.
+		"errors":             errorsCopy,
 	})
 }
 
