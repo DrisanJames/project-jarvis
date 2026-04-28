@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 )
@@ -94,11 +95,14 @@ type SubscriberProfile struct {
 // MatchedClick pairs an input click row with the tracking event we resolved
 // it to plus the subscriber profile. ConfidenceTier is "tight" when we found
 // the event inside the strict window, "fallback" when only the wide IP-only
-// lookup succeeded.
+// lookup succeeded. SendingDomain surfaces which mailing infrastructure the
+// click traces back to (e.g. "em.discountblog.com") so ops can see which
+// brand/profile is driving conversions on a given offer.
 type MatchedClick struct {
 	Row            ClickRow          `json:"row"`
 	CampaignID     string            `json:"campaign_id"`
 	CampaignName   string            `json:"campaign_name,omitempty"`
+	SendingDomain  string            `json:"sending_domain,omitempty"`
 	LinkURL        string            `json:"link_url,omitempty"`
 	EventAt        time.Time         `json:"event_at"`
 	OffsetSeconds  int64             `json:"offset_seconds"`
@@ -122,6 +126,7 @@ type MatchedConversion struct {
 	Row            ConversionRow     `json:"row"`
 	CampaignID     string            `json:"campaign_id"`
 	CampaignName   string            `json:"campaign_name,omitempty"`
+	SendingDomain  string            `json:"sending_domain,omitempty"`
 	LinkURL        string            `json:"link_url,omitempty"`
 	EventAt        time.Time         `json:"event_at"`
 	OffsetSeconds  int64             `json:"offset_seconds"`
@@ -138,6 +143,11 @@ type UnmatchedConversion struct {
 // AttributionResult is the single payload returned by both the HTTP endpoint
 // and the CLI. The summary block lets the UI render counters without scanning
 // arrays client-side.
+//
+// Slice fields are guaranteed non-nil so the JSON envelope is always
+// `[]` rather than `null`. encoding/json treats a nil slice as `null`,
+// which then crashes any frontend that calls `.length` on it; initializing
+// to empty in MatchAttribution keeps the contract honest end to end.
 type AttributionResult struct {
 	GeneratedAt          time.Time             `json:"generated_at"`
 	OrgID                string                `json:"org_id,omitempty"`
@@ -151,6 +161,21 @@ type AttributionResult struct {
 	MatchedConversions   []MatchedConversion   `json:"matched_conversions"`
 	UnmatchedConversions []UnmatchedConversion `json:"unmatched_conversions"`
 	UnmatchedReasons     map[string]int        `json:"unmatched_reasons"`
+	// SendingDomainCounts counts matched clicks (and conversions) grouped by
+	// the sending_domain we resolved through mailing_sending_profiles. Lets
+	// ops see at a glance which brand / from-domain is driving the offer's
+	// click volume without scanning the matched arrays themselves.
+	SendingDomainCounts []SendingDomainCount `json:"sending_domain_counts"`
+}
+
+// SendingDomainCount is a single bucket in the sending-domain breakdown.
+// "(unknown)" is used when the matched event's campaign has no sending
+// profile and no parseable from_email — those are typically test sends or
+// pre-platform legacy events.
+type SendingDomainCount struct {
+	SendingDomain string `json:"sending_domain"`
+	Clicks        int    `json:"clicks"`
+	Conversions   int    `json:"conversions"`
 }
 
 // AttributionOptions tunes the matcher. Zero-value uses production defaults.
@@ -257,7 +282,14 @@ func MatchAttribution(
 		OfferLinkPattern:    opts.OfferLikePattern,
 		TotalClicks:         len(clicks),
 		TotalConversions:    len(conversions),
-		UnmatchedReasons:    map[string]int{},
+		// Pre-allocate as empty so JSON encoding always produces [] not null.
+		// The frontend relies on .length on every render — null would crash it.
+		MatchedClicks:        []MatchedClick{},
+		UnmatchedClicks:      []UnmatchedClick{},
+		MatchedConversions:   []MatchedConversion{},
+		UnmatchedConversions: []UnmatchedConversion{},
+		UnmatchedReasons:     map[string]int{},
+		SendingDomainCounts:  []SendingDomainCount{},
 	}
 
 	for _, row := range clicks {
@@ -298,7 +330,52 @@ func MatchAttribution(
 		res.UnmatchedReasons[unmatched.Reason]++
 	}
 
+	res.SendingDomainCounts = aggregateSendingDomainCounts(res.MatchedClicks, res.MatchedConversions)
 	return res, nil
+}
+
+// aggregateSendingDomainCounts produces a sorted breakdown of matched clicks
+// and conversions by sending domain. The output is sorted by clicks desc
+// (then conversions desc) so the UI can render a top-N table without
+// re-sorting client-side.
+func aggregateSendingDomainCounts(clicks []MatchedClick, conversions []MatchedConversion) []SendingDomainCount {
+	counts := map[string]*SendingDomainCount{}
+	bump := func(domain string, isClick bool) {
+		key := strings.TrimSpace(strings.ToLower(domain))
+		if key == "" {
+			key = "(unknown)"
+		}
+		c, ok := counts[key]
+		if !ok {
+			c = &SendingDomainCount{SendingDomain: key}
+			counts[key] = c
+		}
+		if isClick {
+			c.Clicks++
+		} else {
+			c.Conversions++
+		}
+	}
+	for _, m := range clicks {
+		bump(m.SendingDomain, true)
+	}
+	for _, m := range conversions {
+		bump(m.SendingDomain, false)
+	}
+	out := make([]SendingDomainCount, 0, len(counts))
+	for _, c := range counts {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Clicks != out[j].Clicks {
+			return out[i].Clicks > out[j].Clicks
+		}
+		if out[i].Conversions != out[j].Conversions {
+			return out[i].Conversions > out[j].Conversions
+		}
+		return out[i].SendingDomain < out[j].SendingDomain
+	})
+	return out
 }
 
 func matchSingleClick(
@@ -336,6 +413,7 @@ func matchSingleClick(
 			Row:            row,
 			CampaignID:     rec.CampaignID,
 			CampaignName:   rec.CampaignName,
+			SendingDomain:  rec.SendingDomain,
 			LinkURL:        rec.LinkURL,
 			EventAt:        rec.EventAt,
 			OffsetSeconds:  int64(rec.EventAt.Sub(row.Timestamp).Seconds()),
@@ -365,6 +443,7 @@ func matchSingleClick(
 			Row:            row,
 			CampaignID:     rec.CampaignID,
 			CampaignName:   rec.CampaignName,
+			SendingDomain:  rec.SendingDomain,
 			LinkURL:        rec.LinkURL,
 			EventAt:        rec.EventAt,
 			OffsetSeconds:  int64(rec.EventAt.Sub(row.Timestamp).Seconds()),
@@ -426,6 +505,7 @@ func matchSingleConversion(
 			Row:            row,
 			CampaignID:     rec.CampaignID,
 			CampaignName:   rec.CampaignName,
+			SendingDomain:  rec.SendingDomain,
 			LinkURL:        rec.LinkURL,
 			EventAt:        rec.EventAt,
 			OffsetSeconds:  int64(rec.EventAt.Sub(row.ClickTime).Seconds()),
@@ -454,6 +534,7 @@ func matchSingleConversion(
 			Row:            row,
 			CampaignID:     rec.CampaignID,
 			CampaignName:   rec.CampaignName,
+			SendingDomain:  rec.SendingDomain,
 			LinkURL:        rec.LinkURL,
 			EventAt:        rec.EventAt,
 			OffsetSeconds:  int64(rec.EventAt.Sub(row.ClickTime).Seconds()),
@@ -479,12 +560,13 @@ func matchSingleConversion(
 
 // trackingEventRecord is the trimmed mailing_tracking_events row we need.
 type trackingEventRecord struct {
-	EventID      string
-	SubscriberID string
-	CampaignID   string
-	CampaignName string
-	LinkURL      string
-	EventAt      time.Time
+	EventID       string
+	SubscriberID  string
+	CampaignID    string
+	CampaignName  string
+	SendingDomain string
+	LinkURL       string
+	EventAt       time.Time
 }
 
 // lookupClickEvent runs the actual SQL. The query is deliberately structured
@@ -518,15 +600,27 @@ func lookupClickEvent(
 		args = append(args, opts.OrgID)
 	}
 
+	// sending_domain resolves through mailing_sending_profiles when the
+	// campaign has a profile attached; otherwise we fall back to the part
+	// after the @ in mailing_campaigns.from_email. Empty string means we
+	// genuinely couldn't determine it (legacy event, missing profile,
+	// non-conformant from_email) and the UI buckets it as "(unknown)".
 	q := fmt.Sprintf(`
 		SELECT e.id::text,
 		       COALESCE(e.subscriber_id::text, ''),
 		       COALESCE(e.campaign_id::text, ''),
 		       COALESCE(c.name, ''),
+		       COALESCE(
+		         NULLIF(sp.sending_domain, ''),
+		         NULLIF(c.tracking_domain, ''),
+		         CASE WHEN c.from_email LIKE '%%@%%' THEN split_part(c.from_email, '@', 2) END,
+		         ''
+		       ) AS sending_domain,
 		       COALESCE(e.link_url, ''),
 		       e.event_at
 		FROM mailing_tracking_events e
-		LEFT JOIN mailing_campaigns c ON c.id = e.campaign_id
+		LEFT JOIN mailing_campaigns c        ON c.id  = e.campaign_id
+		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
 		WHERE e.event_type = 'clicked'
 		  AND e.ip_address = $1::inet
 		  AND e.event_at BETWEEN ($2::timestamptz - ($3 || ' seconds')::interval)
@@ -538,7 +632,7 @@ func lookupClickEvent(
 
 	row := db.QueryRowContext(ctx, q, args...)
 	var rec trackingEventRecord
-	err := row.Scan(&rec.EventID, &rec.SubscriberID, &rec.CampaignID, &rec.CampaignName, &rec.LinkURL, &rec.EventAt)
+	err := row.Scan(&rec.EventID, &rec.SubscriberID, &rec.CampaignID, &rec.CampaignName, &rec.SendingDomain, &rec.LinkURL, &rec.EventAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
