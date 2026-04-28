@@ -301,7 +301,28 @@ func HandleOutboxDeadLetter(db *sql.DB) http.HandlerFunc {
 			args = append(args, campaignID)
 		}
 
-		rows, err := db.QueryContext(ctx, `
+		// mailing_campaign_queue is partitioned and >>1M rows in prod.
+		// Without a partial index on (status, last_attempt_at) the
+		// planner falls back to a heap scan + sort and trips the
+		// default 30s statement_timeout on this connection. Pin a
+		// long-but-bounded per-query timeout so the handler always
+		// returns a real result (or a clear error) instead of a
+		// generic timeout. The startup migration adds the partial
+		// index idempotently so the steady-state cost drops back to
+		// milliseconds; this 90s bound is the safety net for the
+		// first request after an index rebuild.
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			log.Printf("[outbox_dead_letter] db.Conn failed: %v", err)
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET LOCAL statement_timeout = '90000'"); err != nil {
+			log.Printf("[outbox_dead_letter] set timeout failed: %v", err)
+		}
+
+		rows, err := conn.QueryContext(ctx, `
 			SELECT
 				q.id::text,
 				COALESCE(q.idempotency_key::text, ''),

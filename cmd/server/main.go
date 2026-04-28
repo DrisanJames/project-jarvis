@@ -1613,6 +1613,16 @@ func runStartupMigrations(db *sql.DB) {
 		{"outbox_stuck_submitting_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_stuck_submitting ON mailing_campaign_queue (locked_at) WHERE status = 'submitting'`},
 		{"outbox_next_attempt_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_next_attempt ON mailing_campaign_queue (priority, created_at) WHERE status = 'failed_retryable' AND next_attempt_at IS NOT NULL`},
 		{"outbox_message_id_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_message_id ON mailing_campaign_queue (message_id) WHERE message_id IS NOT NULL`},
+		// Partial index that backs the Outbox dead-letter listing query
+		// in HandleOutboxDeadLetter. Without this the planner falls back
+		// to a heap scan + external sort and the handler trips its 30s
+		// statement_timeout in production (mailing_campaign_queue is
+		// partitioned, >>1M live rows). The DESC + NULLS LAST shape
+		// matches the ORDER BY exactly so the planner can serve it as
+		// an index-only scan with the LIMIT applied at the storage layer.
+		// COALESCE on a partial index is safe because both columns are
+		// stored on the same row.
+		{"outbox_dead_letter_listing_idx", `CREATE INDEX IF NOT EXISTS idx_mcq_dead_letter_recent ON mailing_campaign_queue (COALESCE(last_attempt_at, created_at) DESC) WHERE status IN ('dead_letter','dead_letter_strict')`},
 		// Expand the status CHECK constraint to accept the durable-outbox
 		// state-machine values (submitting, accepted, failed_retryable,
 		// failed_permanent) alongside every value currently in production use.
