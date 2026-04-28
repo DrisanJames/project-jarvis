@@ -4273,21 +4273,35 @@ END $$`},
 		log.Printf("[StartupMigration] besmed_suppression_import: already loaded (%d entries)", besmedCount)
 	}
 
-	// Outbox dead-letter listing index. Lives outside the 5s-timeout
-	// migration loop because mailing_campaign_queue is partitioned and
-	// >>1M rows — CREATE INDEX is non-trivial and will always trip the
-	// short loop's timeout. Using db.Exec here picks up the pool's
-	// default timeout (long enough for the build) and CREATE INDEX
-	// IF NOT EXISTS is idempotent so the second boot is a fast no-op.
-	// Backs HandleOutboxDeadLetter's query directly: shape matches
-	// ORDER BY COALESCE(last_attempt_at, created_at) DESC + WHERE
-	// status IN ('dead_letter','dead_letter_strict') so the planner
-	// can serve it index-only with LIMIT pushed down.
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_mcq_dead_letter_recent ON mailing_campaign_queue (COALESCE(last_attempt_at, created_at) DESC) WHERE status IN ('dead_letter','dead_letter_strict')`); err != nil {
-		log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: ERROR %v", err)
+	// Outbox dead-letter listing index. mailing_campaign_queue is
+	// partitioned and >>1M rows; CREATE INDEX timed out at the pool
+	// default (~30s), so we run it on a dedicated connection with a
+	// 10-minute statement_timeout AND use CONCURRENTLY so we don't
+	// take an AccessExclusiveLock on every partition during the build.
+	// CONCURRENTLY cannot run inside a transaction (sql.DB autocommit
+	// each Exec is one statement, so this is fine — but it does need
+	// a fresh Conn so the SET applies). IF NOT EXISTS makes it a fast
+	// no-op on subsequent boots once built.
+	//
+	// Index shape matches HandleOutboxDeadLetter exactly: ORDER BY
+	// COALESCE(last_attempt_at, created_at) DESC, WHERE status IN
+	// ('dead_letter','dead_letter_strict'). Query becomes index-only
+	// scan with LIMIT pushed down.
+	idxCtx, idxCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	if idxConn, idxConnErr := db.Conn(idxCtx); idxConnErr == nil {
+		defer idxConn.Close()
+		if _, err := idxConn.ExecContext(idxCtx, "SET statement_timeout = '600000'"); err != nil {
+			log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: SET timeout failed: %v", err)
+		}
+		if _, err := idxConn.ExecContext(idxCtx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_dead_letter_recent ON mailing_campaign_queue (COALESCE(last_attempt_at, created_at) DESC) WHERE status IN ('dead_letter','dead_letter_strict')`); err != nil {
+			log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: ERROR %v", err)
+		} else {
+			log.Println("[StartupMigration] idx_mcq_dead_letter_recent: OK")
+		}
 	} else {
-		log.Println("[StartupMigration] idx_mcq_dead_letter_recent: OK")
+		log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: db.Conn failed: %v", idxConnErr)
 	}
+	idxCancel()
 
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`); err != nil {
 		log.Printf("[StartupMigration] idx_campaign_queue_recipient_isp: ERROR %v", err)
