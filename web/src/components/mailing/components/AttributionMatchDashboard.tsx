@@ -23,7 +23,10 @@ import {
 // that correlation server-side and returns matched subscriber profiles plus
 // a categorized list of rows that could not be attributed.
 
-const PAGE_VERSION = '1.0';
+// 1.1 — Hardened against nil-slice JSON responses (Go encodes nil slices as
+//       null which crashed `.length`); added Sending Domain breakdown card
+//       and sending_domain column on the matched table.
+const PAGE_VERSION = '1.1';
 
 interface ApiSubscriber {
   subscriber_id: string;
@@ -50,6 +53,7 @@ interface ApiMatchedRow {
   };
   campaign_id: string;
   campaign_name?: string;
+  sending_domain?: string;
   link_url?: string;
   event_at: string;
   offset_seconds: number;
@@ -61,6 +65,12 @@ interface ApiUnmatchedRow {
   row: ApiMatchedRow['row'];
   reason: string;
   detail?: string;
+}
+
+interface ApiSendingDomainCount {
+  sending_domain: string;
+  clicks: number;
+  conversions: number;
 }
 
 interface AttributionResult {
@@ -76,7 +86,27 @@ interface AttributionResult {
   matched_conversions: ApiMatchedRow[];
   unmatched_conversions: ApiUnmatchedRow[];
   unmatched_reasons: Record<string, number>;
+  sending_domain_counts?: ApiSendingDomainCount[];
 }
+
+// normalizeResult coerces every array field to a real array so .length and
+// .map can never throw when the backend (or a proxy) replaces a slice with
+// null. Mirrors the contract written into MatchAttribution server-side; lives
+// on the client too as belt-and-suspenders.
+const normalizeResult = (raw: any): AttributionResult => ({
+  ...raw,
+  matched_clicks: Array.isArray(raw?.matched_clicks) ? raw.matched_clicks : [],
+  unmatched_clicks: Array.isArray(raw?.unmatched_clicks) ? raw.unmatched_clicks : [],
+  matched_conversions: Array.isArray(raw?.matched_conversions) ? raw.matched_conversions : [],
+  unmatched_conversions: Array.isArray(raw?.unmatched_conversions) ? raw.unmatched_conversions : [],
+  unmatched_reasons:
+    raw?.unmatched_reasons && typeof raw.unmatched_reasons === 'object'
+      ? raw.unmatched_reasons
+      : {},
+  sending_domain_counts: Array.isArray(raw?.sending_domain_counts)
+    ? raw.sending_domain_counts
+    : [],
+});
 
 const REASON_LABELS: Record<string, string> = {
   invalid_ip: 'Invalid IP',
@@ -145,7 +175,8 @@ export const AttributionMatchDashboard: React.FC = () => {
         const body = await resp.json().catch(() => ({}));
         throw new Error(body.detail || body.error || `HTTP ${resp.status}`);
       }
-      const data: AttributionResult = await resp.json();
+      const raw = await resp.json();
+      const data = normalizeResult(raw);
       setResult(data);
       setActiveTab(
         data.matched_clicks.length > 0 || data.matched_conversions.length > 0
@@ -316,6 +347,9 @@ export const AttributionMatchDashboard: React.FC = () => {
             </div>
           </section>
 
+          <SendingDomainBreakdown counts={result.sending_domain_counts ?? []} />
+
+
           <section style={{ ...cardStyle, marginTop: 16, padding: 0, overflow: 'hidden' }}>
             <div style={tabBarStyle}>
               <TabButton
@@ -443,6 +477,128 @@ const TabButton: React.FC<{
   </button>
 );
 
+// SendingDomainBreakdown shows which sending infrastructure produced the
+// matched clicks and conversions. Sorted server-side by clicks desc; we
+// just render the first 12 rows with bars normalized to the top click
+// count so it's easy to eyeball relative volume across brands.
+const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({ counts }) => {
+  if (!counts || counts.length === 0) return null;
+  const max = Math.max(...counts.map((c) => c.clicks), 1);
+  const totalClicks = counts.reduce((sum, c) => sum + c.clicks, 0);
+  const totalConv = counts.reduce((sum, c) => sum + c.conversions, 0);
+  const top = counts.slice(0, 12);
+  return (
+    <section style={{ ...cardStyle, marginTop: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          marginBottom: 12,
+        }}
+      >
+        <h3 style={{ ...tableTitleStyle, margin: 0 }}>Clicks by sending domain</h3>
+        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+          {counts.length} domain{counts.length === 1 ? '' : 's'} · {totalClicks} click
+          {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
+        </div>
+      </div>
+      <table style={tableStyle}>
+        <thead>
+          <tr style={trHeaderStyle}>
+            <th style={thStyle}>Sending domain</th>
+            <th style={{ ...thStyle, width: '45%' }}>Clicks</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Conversions</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {top.map((c) => {
+            const share = totalClicks > 0 ? (c.clicks / totalClicks) * 100 : 0;
+            const barPct = (c.clicks / max) * 100;
+            return (
+              <tr key={c.sending_domain} style={trBodyStyle}>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>
+                  {c.sending_domain}
+                </td>
+                <td style={tdStyle}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 8,
+                        background: 'rgba(99, 102, 241, 0.12)',
+                        borderRadius: 4,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${barPct}%`,
+                          height: '100%',
+                          background:
+                            'linear-gradient(90deg, #6366f1 0%, #818cf8 100%)',
+                        }}
+                      />
+                    </div>
+                    <span
+                      style={{
+                        minWidth: 36,
+                        textAlign: 'right',
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      }}
+                    >
+                      {c.clicks}
+                    </span>
+                  </div>
+                </td>
+                <td
+                  style={{
+                    ...tdStyle,
+                    textAlign: 'right',
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    color: c.conversions > 0 ? '#22c55e' : 'rgba(180,210,240,0.5)',
+                  }}
+                >
+                  {c.conversions}
+                </td>
+                <td
+                  style={{
+                    ...tdStyle,
+                    textAlign: 'right',
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    color: 'rgba(180,210,240,0.65)',
+                  }}
+                >
+                  {share.toFixed(1)}%
+                </td>
+              </tr>
+            );
+          })}
+          {counts.length > top.length && (
+            <tr style={trBodyStyle}>
+              <td colSpan={4} style={{ ...tdStyle, color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>
+                +{counts.length - top.length} more domain
+                {counts.length - top.length === 1 ? '' : 's'} hidden — full list in the JSON
+                download.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </section>
+  );
+};
+
 const MatchedTables: React.FC<{ result: AttributionResult }> = ({ result }) => (
   <div>
     {result.matched_clicks.length > 0 && (
@@ -499,10 +655,11 @@ const MatchedTable: React.FC<{
         <thead>
           <tr style={trHeaderStyle}>
             <th style={thStyle}>#</th>
-            <th style={thStyle}>{kind === 'click' ? 'Click time (UTC)' : 'Click time (UTC)'}</th>
+            <th style={thStyle}>Click time (UTC)</th>
             <th style={thStyle}>IP</th>
             <th style={thStyle}>Tier</th>
             <th style={thStyle}>Δ (s)</th>
+            <th style={thStyle}>Sending domain</th>
             <th style={thStyle}>Email</th>
             <th style={thStyle}>Subscriber ID</th>
             <th style={thStyle}>Campaign</th>
@@ -513,6 +670,8 @@ const MatchedTable: React.FC<{
           {rows.map((m, i) => {
             const ts = kind === 'click' ? m.row.timestamp : m.row.click_time;
             const ip = kind === 'click' ? m.row.ip_address : m.row.session_user_ip;
+            const sendingDomain = m.sending_domain && m.sending_domain.length > 0 ? m.sending_domain : '—';
+            const subId = m.subscriber?.subscriber_id ?? '';
             return (
               <tr key={i} style={trBodyStyle}>
                 <td style={tdStyle}>{m.row.row_index}</td>
@@ -535,11 +694,14 @@ const MatchedTable: React.FC<{
                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>
                   {m.offset_seconds}
                 </td>
-                <td style={tdStyle}>{m.subscriber.email || '—'}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
-                  {m.subscriber.subscriber_id.slice(0, 8)}
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>
+                  {sendingDomain}
                 </td>
-                <td style={tdStyle}>{m.campaign_name || m.campaign_id.slice(0, 8) || '—'}</td>
+                <td style={tdStyle}>{m.subscriber?.email || '—'}</td>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                  {subId ? subId.slice(0, 8) : '—'}
+                </td>
+                <td style={tdStyle}>{m.campaign_name || (m.campaign_id ? m.campaign_id.slice(0, 8) : '—')}</td>
                 {kind === 'conversion' && (
                   <td style={{ ...tdStyle, textAlign: 'right', color: '#22c55e' }}>
                     ${(m.row.revenue ?? 0).toFixed(2)}

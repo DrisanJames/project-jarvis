@@ -88,8 +88,11 @@ func TestIsBotScannerIP(t *testing.T) {
 
 // trackingEventCols is the projection used by lookupClickEvent. Kept in
 // sync by hand because go-sqlmock doesn't introspect the SELECT clause.
+// Keep this in lockstep with the SELECT list in lookupClickEvent — adding
+// or reordering columns there requires updating this slice and every
+// AddRow call below.
 var trackingEventCols = []string{
-	"event_id", "subscriber_id", "campaign_id", "campaign_name", "link_url", "event_at",
+	"event_id", "subscriber_id", "campaign_id", "campaign_name", "sending_domain", "link_url", "event_at",
 }
 
 var subscriberCols = []string{
@@ -111,7 +114,7 @@ func TestMatchAttribution_TightWindowMatchesClick(t *testing.T) {
 	// matching a different SELECT.
 	mock.ExpectQuery(`FROM mailing_tracking_events[\s\S]*event_at BETWEEN`).
 		WillReturnRows(sqlmock.NewRows(trackingEventCols).
-			AddRow("evt-1", subID, camID, "TruGreen Daily", "https://5620.example/?aff=tracker", eventAt))
+			AddRow("evt-1", subID, camID, "TruGreen Daily", "em.discountblog.com", "https://5620.example/?aff=tracker", eventAt))
 
 	// Subscriber lookup follows.
 	mock.ExpectQuery(`FROM mailing_subscribers`).
@@ -136,6 +139,13 @@ func TestMatchAttribution_TightWindowMatchesClick(t *testing.T) {
 	assert.Equal(t, "user@example.com", m.Subscriber.Email)
 	assert.Equal(t, subID, m.Subscriber.SubscriberID)
 	assert.Equal(t, int64(3), m.OffsetSeconds)
+	assert.Equal(t, "em.discountblog.com", m.SendingDomain)
+
+	// Sending domain breakdown should reflect the single matched click.
+	require.Len(t, res.SendingDomainCounts, 1)
+	assert.Equal(t, "em.discountblog.com", res.SendingDomainCounts[0].SendingDomain)
+	assert.Equal(t, 1, res.SendingDomainCounts[0].Clicks)
+	assert.Equal(t, 0, res.SendingDomainCounts[0].Conversions)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -186,7 +196,7 @@ func TestMatchAttribution_FallbackTierWhenTightMisses(t *testing.T) {
 	// Fallback: hit.
 	mock.ExpectQuery(`FROM mailing_tracking_events`).
 		WillReturnRows(sqlmock.NewRows(trackingEventCols).
-			AddRow("evt-1", subID, camID, "TruGreen Daily", "https://5620.example/", eventAt))
+			AddRow("evt-1", subID, camID, "TruGreen Daily", "em.quizfiesta.com", "https://5620.example/", eventAt))
 	// Subscriber lookup.
 	mock.ExpectQuery(`FROM mailing_subscribers`).
 		WithArgs(subID).
@@ -219,7 +229,7 @@ func TestMatchAttribution_OrgScopeFlowsThroughBothQueries(t *testing.T) {
 	// Tight click query must include the e.organization_id filter.
 	mock.ExpectQuery(`FROM mailing_tracking_events[\s\S]*organization_id`).
 		WillReturnRows(sqlmock.NewRows(trackingEventCols).
-			AddRow("evt-1", subID, "cam-1", "TruGreen", "https://5620.example/", clickTS))
+			AddRow("evt-1", subID, "cam-1", "TruGreen", "em.discountblog.com", "https://5620.example/", clickTS))
 	// Subscriber query must also be org-scoped.
 	mock.ExpectQuery(`FROM mailing_subscribers[\s\S]*organization_id`).
 		WillReturnRows(sqlmock.NewRows(subscriberCols).
@@ -249,6 +259,52 @@ func TestMatchAttribution_HandlesNeitherClicksNorConversions(t *testing.T) {
 	assert.Equal(t, 0, res.TotalConversions)
 	assert.Empty(t, res.MatchedClicks)
 	assert.Empty(t, res.MatchedConversions)
+}
+
+// Regression for the dashboard crash where matched_* came back as JSON null:
+// every slice on the result must be non-nil so encoding/json emits [] rather
+// than null. The frontend calls .length on every render — null crashes.
+func TestMatchAttribution_AllSlicesAreNonNilEvenOnEmptyMatch(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	res, err := MatchAttribution(context.Background(), db, nil, nil, AttributionOptions{})
+	require.NoError(t, err)
+	assert.NotNil(t, res.MatchedClicks, "matched_clicks must be []")
+	assert.NotNil(t, res.UnmatchedClicks, "unmatched_clicks must be []")
+	assert.NotNil(t, res.MatchedConversions, "matched_conversions must be []")
+	assert.NotNil(t, res.UnmatchedConversions, "unmatched_conversions must be []")
+	assert.NotNil(t, res.UnmatchedReasons, "unmatched_reasons must be {}")
+	assert.NotNil(t, res.SendingDomainCounts, "sending_domain_counts must be []")
+}
+
+// Aggregation correctness: when multiple matches share a sending domain,
+// counts roll up; sort order is clicks desc.
+func TestAggregateSendingDomainCounts_RollsUpAndSorts(t *testing.T) {
+	clicks := []MatchedClick{
+		{SendingDomain: "em.discountblog.com"},
+		{SendingDomain: "em.discountblog.com"},
+		{SendingDomain: "em.quizfiesta.com"},
+		{SendingDomain: ""}, // bucket as (unknown)
+	}
+	conversions := []MatchedConversion{
+		{SendingDomain: "em.discountblog.com"},
+	}
+	got := aggregateSendingDomainCounts(clicks, conversions)
+	require.Len(t, got, 3)
+	// First bucket is the highest-click one.
+	assert.Equal(t, "em.discountblog.com", got[0].SendingDomain)
+	assert.Equal(t, 2, got[0].Clicks)
+	assert.Equal(t, 1, got[0].Conversions)
+	// Empty domain becomes (unknown).
+	hasUnknown := false
+	for _, c := range got {
+		if c.SendingDomain == "(unknown)" {
+			hasUnknown = true
+		}
+	}
+	assert.True(t, hasUnknown, "empty domain should be bucketed as (unknown)")
 }
 
 func TestMatchAttribution_InvalidIPCategorized(t *testing.T) {
