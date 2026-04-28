@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 // HandleGetLists returns all lists for the requesting org.
@@ -168,6 +169,17 @@ func (svc *MailingService) HandleAddSubscriber(w http.ResponseWriter, r *http.Re
 	json.NewDecoder(r.Body).Decode(&input)
 
 	email := strings.ToLower(strings.TrimSpace(input.Email))
+
+	// Layer-1 ingest guard: reject typo-trap, disposable, and role-based
+	// addresses before they ever enter mailing_subscribers. Runs before
+	// the suppression check so we return a specific reason to the caller.
+	if decision := mailing.ClassifyEmailForIngest(email); !decision.Accept {
+		log.Printf("[IngestGuard] rejected add-subscriber email=%s reason=%s category=%s",
+			email, decision.Reason, decision.Category)
+		http.Error(w, fmt.Sprintf(`{"error":"email rejected","reason":%q,"category":%q}`,
+			decision.Reason, decision.Category), http.StatusBadRequest)
+		return
+	}
 
 	// Check suppression
 	var suppressed bool

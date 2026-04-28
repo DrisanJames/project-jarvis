@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 func (s *AdvancedMailingService) HandleImportSubscribers(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +110,12 @@ func (s *AdvancedMailingService) processCSVImport(jobID, listID, orgID uuid.UUID
 		
 		email := strings.ToLower(strings.TrimSpace(record[emailIdx]))
 		if email == "" || !strings.Contains(email, "@") {
+			skipped++
+			continue
+		}
+
+		// Layer-1 ingest guard (typo-traps, disposable, role-based).
+		if decision := mailing.ClassifyEmailForIngest(email); !decision.Accept {
 			skipped++
 			continue
 		}
@@ -364,6 +371,14 @@ func (s *AdvancedMailingService) processCSVImportEnhanced(jobID, listID, orgID u
 		}
 		
 		if !validateEmailFormat(email) {
+			skippedCount++
+			continue
+		}
+
+		// Layer-1 ingest guard (typo-traps, disposable, role-based).
+		// Runs before dedupe so the first occurrence of a bad address
+		// is rejected and doesn't poison seenEmails with useless work.
+		if decision := mailing.ClassifyEmailForIngest(email); !decision.Accept {
 			skippedCount++
 			continue
 		}
