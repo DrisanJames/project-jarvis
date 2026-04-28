@@ -71,6 +71,47 @@ func TestParseISPInsightsDays(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// buildISPDomainCaseSQL — unresolved_subscriber bucket
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildISPDomainCaseSQL_UnresolvedBucketLeadsCase(t *testing.T) {
+	sql := buildISPDomainCaseSQL()
+
+	// The unresolved_subscriber check must be emitted BEFORE any IN-list
+	// branches: dom can only be NULL/'' here, so checking it first avoids
+	// any chance of NULL slipping into an IN-comparison and falling through
+	// to ELSE 'other'.
+	idxUnresolved := strings.Index(sql, "'unresolved_subscriber'")
+	idxFirstIn := strings.Index(sql, "WHEN dom IN")
+	if idxUnresolved == -1 {
+		t.Fatalf("expected 'unresolved_subscriber' bucket in CASE SQL; got:\n%s", sql)
+	}
+	if idxFirstIn == -1 {
+		t.Fatalf("expected at least one 'WHEN dom IN' branch; got:\n%s", sql)
+	}
+	if idxUnresolved >= idxFirstIn {
+		t.Errorf("'unresolved_subscriber' WHEN must come before 'WHEN dom IN' branches\nsql=%s",
+			sql)
+	}
+	if !strings.Contains(sql, "WHEN dom IS NULL OR dom = '' THEN 'unresolved_subscriber'") {
+		t.Errorf("expected NULL/empty guard for unresolved_subscriber; got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "ELSE 'other'") {
+		t.Errorf("expected ELSE 'other' fallthrough; got:\n%s", sql)
+	}
+}
+
+func TestISPLabels_HasUnresolvedDisplayName(t *testing.T) {
+	got, ok := ispLabels["unresolved_subscriber"]
+	if !ok {
+		t.Fatalf("ispLabels missing 'unresolved_subscriber'")
+	}
+	if got == "" || got == "unresolved_subscriber" {
+		t.Errorf("ispLabels[unresolved_subscriber] should be human-readable, got %q", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // sanitizeISPKey
 // ─────────────────────────────────────────────────────────────────────────────
 

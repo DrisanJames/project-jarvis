@@ -2122,6 +2122,7 @@ func runStartupMigrations(db *sql.DB) {
 			  AND o.event_at <= s.event_at + INTERVAL '120 seconds'
 		`},
 
+
 		{"create_wave_content_cache", `CREATE TABLE IF NOT EXISTS mailing_wave_content_cache (
 			id            SERIAL PRIMARY KEY,
 			brand_key     TEXT NOT NULL,
@@ -4302,6 +4303,52 @@ END $$`},
 		log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: db.Conn failed: %v", idxConnErr)
 	}
 	idxCancel()
+
+	// ---------------------------------------------------------------------
+	// P2a — backfill recipient_domain on the last 7 days of 'opened' and
+	// 'clicked' rows. Before tracking/consumer.go was fixed (commit
+	// 7dfa4c3 / 2026-04-28), the SQS consumer wrote these rows without
+	// populating recipient_domain, forcing per-ISP analytics to
+	// reconstruct the bucket via a join-back to mailing_subscribers and
+	// silently bucketing orphaned rows into 'other'. This pass reconciles
+	// the recent history so the post-fix diagnostic (P4) operates on
+	// clean data.
+	//
+	// Sized in production at ~403k rows over 7 days. The main migration
+	// loop runs at statement_timeout=5s so we use a dedicated connection
+	// here with a 15-minute timeout, mirroring idx_mcq_dead_letter_recent
+	// above. The UPDATE is idempotent (recipient_domain IS NULL) so
+	// subsequent boots do effectively zero work.
+	//
+	// The 30-day extension (backfill_open_recipient_domain_v1_w2) only
+	// ships once P4 confirms the fix solves the issue.
+	// ---------------------------------------------------------------------
+	bfCtx, bfCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	if bfConn, bfConnErr := db.Conn(bfCtx); bfConnErr == nil {
+		if _, err := bfConn.ExecContext(bfCtx, "SET statement_timeout = '600000'"); err != nil {
+			log.Printf("[StartupMigration] backfill_open_recipient_domain_v1_w1: SET timeout failed: %v", err)
+		}
+		bfStart := time.Now()
+		res, err := bfConn.ExecContext(bfCtx, `
+			UPDATE mailing_tracking_events te
+			SET recipient_domain = LOWER(SPLIT_PART(s.email, '@', 2))
+			FROM mailing_subscribers s
+			WHERE te.subscriber_id = s.id
+			  AND te.event_type IN ('opened', 'clicked')
+			  AND te.recipient_domain IS NULL
+			  AND te.event_at >= NOW() - INTERVAL '7 days'
+		`)
+		if err != nil {
+			log.Printf("[StartupMigration] backfill_open_recipient_domain_v1_w1: ERROR %v (took %s)", err, time.Since(bfStart))
+		} else {
+			n, _ := res.RowsAffected()
+			log.Printf("[StartupMigration] backfill_open_recipient_domain_v1_w1: OK rows=%d (took %s)", n, time.Since(bfStart))
+		}
+		bfConn.Close()
+	} else {
+		log.Printf("[StartupMigration] backfill_open_recipient_domain_v1_w1: db.Conn failed: %v", bfConnErr)
+	}
+	bfCancel()
 
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`); err != nil {
 		log.Printf("[StartupMigration] idx_campaign_queue_recipient_isp: ERROR %v", err)

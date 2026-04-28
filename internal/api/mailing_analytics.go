@@ -2349,6 +2349,18 @@ var ispDomainCaseSQL = buildISPDomainCaseSQL()
 func buildISPDomainCaseSQL() string {
 	var b strings.Builder
 	b.WriteString("CASE\n")
+	// dom is computed as
+	//   LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2)))
+	// so it is NULL/empty when:
+	//   1. recipient_domain is NULL/empty (pre-fix rows or unmapped events),
+	//      AND
+	//   2. the subscriber row is missing or has a NULL email.
+	// Previously these rows fell through to ELSE 'other', silently
+	// inflating the "other" bucket and hiding a data-quality issue.
+	// Bucketing them explicitly as 'unresolved_subscriber' surfaces the
+	// problem and keeps the real "other" bucket clean for genuine
+	// long-tail ISPs.
+	b.WriteString("\tWHEN dom IS NULL OR dom = '' THEN 'unresolved_subscriber'\n")
 	for _, group := range isppkg.KnownGroups() {
 		domains := isppkg.DomainsForGroup(group)
 		if len(domains) == 0 {
@@ -2385,11 +2397,15 @@ func buildISPDomainFilter() map[string]string {
 }
 
 // ispLabels maps ISP keys to human-readable display names for the frontend.
+// 'unresolved_subscriber' is the explicit bucket for tracking events whose
+// recipient_domain is unknown — see buildISPDomainCaseSQL.
 var ispLabels = map[string]string{
 	"gmail": "Gmail", "yahoo": "Yahoo", "aol": "AOL", "microsoft": "Microsoft",
 	"apple": "Apple iCloud", "comcast": "Comcast", "att": "AT&T",
 	"sbcglobal": "SBC Global/BellSouth",
-	"cox": "Cox", "charter": "Charter/Spectrum", "other": "Other",
+	"cox": "Cox", "charter": "Charter/Spectrum",
+	"other":                 "Other",
+	"unresolved_subscriber": "Unresolved Subscriber",
 }
 
 func (s *AdvancedMailingService) HandleISPPerformance(w http.ResponseWriter, r *http.Request) {
