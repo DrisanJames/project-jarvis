@@ -161,11 +161,22 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 		}
 	}
 
+	// Self-contained event row: recipient_domain and email are populated via
+	// LEFT JOIN to mailing_subscribers so per-ISP analytics never has to
+	// reconstruct the bucket via a join-back at report time. If the
+	// subscriber row is missing (deleted / migrated), recipient_domain and
+	// email stay NULL on this row and the report layer surfaces it as
+	// `unresolved_subscriber` instead of silently folding into `other`.
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, is_machine_open)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, recipient_domain, email, is_machine_open)
 		SELECT $1, $2, $3, $4, 'opened', $5, $6, $7, $8,
-			LOWER(SPLIT_PART(c.from_email, '@', 2)), $9
-		FROM mailing_campaigns c WHERE c.id = $3
+			LOWER(SPLIT_PART(c.from_email, '@', 2)),
+			LOWER(SPLIT_PART(s.email, '@', 2)),
+			s.email,
+			$9
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
+		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
 	`, emailID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), isMachineOpen)
 	if err != nil {
@@ -220,11 +231,16 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	var email string
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
+	// Self-contained event row — see processOpen for the same rationale.
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, email)
 		SELECT $1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9,
-			LOWER(SPLIT_PART(c.from_email, '@', 2))
-		FROM mailing_campaigns c WHERE c.id = $3
+			LOWER(SPLIT_PART(c.from_email, '@', 2)),
+			LOWER(SPLIT_PART(s.email, '@', 2)),
+			s.email
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
+		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
 	`, clickID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL)
 	if err != nil {
