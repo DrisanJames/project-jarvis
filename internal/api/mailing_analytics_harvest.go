@@ -3,28 +3,31 @@ package api
 // Harvest Stream analytics.
 //
 // This handler powers the HarvestStreamDashboard in AnalyticsCenter. It is
-// READ ONLY — no writes, no side effects. The design goal is surgical
-// over-build: given the always-on Welcome Harvest stream is sending 24/7
-// across four sending domains and eleven ISP buckets, we need multi-axis
-// visibility at 1h / 3h / 5h granularities with ZERO gaps on the frontend.
-//
-// Response shape is intentionally large. The frontend can pick-and-choose
-// sections to render; the price of over-fetching is small vs the price of
-// an under-delivered metric the user can't see.
+// READ ONLY — no writes, no side effects.
 //
 // Data sources:
-//   * mailing_tracking_events      — sent, opens, clicks, complaints, unsubs
-//   * mailing_tracking_events t (bounced + bounce_type) — hard/soft bounces
-//     via HardBounceSQL() for consistency with existing reports.
+//   * mailing_tracking_events  — sent, delivered, opens, clicks, bounces,
+//                                complaints, unsubs (post-send lifecycle)
+//   * mailing_subscribers      — recipient identity + acquisition metrics
 //
 // Parallelism model: each sub-query runs on its own pooled connection with
-// statement_timeout = 60s, mirroring HandleISPSendingInsights. This bounds
-// wall-clock at max(query) instead of sum(query).
+// statement_timeout = 60s. Wall-clock is bounded by max(query) instead of
+// sum(query).
 //
-// Time buckets: the `bucket` param accepts "1h" / "3h" / "5h". PostgreSQL
-// DATE_TRUNC only goes to 'hour', so 3h/5h buckets are computed as
-//   to_timestamp(floor(extract(epoch from event_at) / (N*3600)) * N*3600)
-// which gives monotonic UTC-aligned buckets without timezone drift.
+// Aggregation rules (the *contract* the dashboard relies on):
+//   * Sent / Delivered / Hard Bounce / Soft Bounce / Complaint / Unsub
+//     counts are dedup'd via COUNT(DISTINCT recipient) so duplicate
+//     webhook callbacks (PMTA + SES + retries) cannot push delivered above
+//     sent. The "recipient" is COALESCE(email_id, id) — email_id is the
+//     canonical per-message identifier; id falls back per-row when
+//     email_id is null.
+//   * Opens / Clicks are reported in two flavors:
+//       - opens / clicks (gross)        — every event, useful for raw load
+//       - unique_opens / unique_clicks  — distinct recipients
+//   * Per-ISP bucketing reads recipient_domain from the tracking event,
+//     falling back to the subscriber's email domain. Without this fallback
+//     opens and clicks (which historically wrote a NULL recipient_domain)
+//     were ALL collapsed into the "other" ISP bucket.
 //
 // Filters:
 //   * campaign_prefix  — defaults to "Welcome Harvest" to scope to the
@@ -51,11 +54,19 @@ import (
 // VersionHarvestPerformance is bumped on every behaviour change so the
 // frontend can display "backend v1.0" in the dashboard footer and we can
 // verify deploys without guessing.
+//
 // 1.2 — fixed `column t.email does not exist` regression by switching the
-//       eventSubquery's recipient projection to `email_id::text` (with id
-//       fallback). The earlier 1.1 alias `t.email AS recipient` referenced a
-//       column that has never existed on mailing_tracking_events.
-const VersionHarvestPerformance = "1.2"
+//       eventSubquery's recipient projection to `email_id::text`.
+// 1.3 — accuracy overhaul:
+//        a) per-recipient dedup via COUNT(DISTINCT recipient) for sent /
+//           delivered / hard / soft / complaints / unsubs (fixes the
+//           "delivery > sent" inversion caused by duplicate webhook rows).
+//        b) JOIN mailing_subscribers and fall back to subscriber email
+//           domain when t.recipient_domain is NULL/empty (fixes the
+//           "all opens land in 'other'" bug for opens/clicks rows).
+//        c) acquisition metrics (newly created subscribers) per-ISP and
+//           per time-bucket within the same window.
+const VersionHarvestPerformance = "1.3"
 
 // DefaultHarvestCampaignPrefix is the naming prefix the harvest deploy
 // script (scripts/deploy_welcome_harvest.py) applies to every brand
@@ -84,7 +95,9 @@ func parseHarvestBucket(raw string) (string, int) {
 
 // parseHarvestHours clamps the lookback to [1, 720] hours (30 days).
 // Default is 72h which covers the "most recent 3 day window" UX while
-// keeping the heatmap readable.
+// keeping the heatmap readable. The frontend offers presets (1h, 3h, 5h,
+// 24h, 72h, 120h, 168h, 720h) but ANY integer in range is accepted so a
+// custom-day workflow doesn't need a backend release.
 func parseHarvestHours(raw string) int {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -119,20 +132,20 @@ func sanitizeCampaignPrefix(raw string) string {
 // HarvestMetrics is the per-row metric shape we return everywhere. Rates
 // are pre-computed on the server so the frontend is pure presentation.
 type HarvestMetrics struct {
-	Sent         int     `json:"sent"`
-	Delivered    int     `json:"delivered"`
-	HardBounces  int     `json:"hard_bounces"`
-	SoftBounces  int     `json:"soft_bounces"`
-	Opens        int     `json:"opens"`
-	UniqueOpens  int     `json:"unique_opens"`
-	Clicks       int     `json:"clicks"`
-	UniqueClicks int     `json:"unique_clicks"`
-	Complaints   int     `json:"complaints"`
-	Unsubs       int     `json:"unsubs"`
-	Deferred     int     `json:"deferred"`
-	MPPOpens     int     `json:"mpp_opens"`
-	OpenRate     float64 `json:"open_rate"`
-	ClickRate    float64 `json:"click_rate"`
+	Sent           int     `json:"sent"`
+	Delivered      int     `json:"delivered"`
+	HardBounces    int     `json:"hard_bounces"`
+	SoftBounces    int     `json:"soft_bounces"`
+	Opens          int     `json:"opens"`
+	UniqueOpens    int     `json:"unique_opens"`
+	Clicks         int     `json:"clicks"`
+	UniqueClicks   int     `json:"unique_clicks"`
+	Complaints     int     `json:"complaints"`
+	Unsubs         int     `json:"unsubs"`
+	Deferred       int     `json:"deferred"`
+	MPPOpens       int     `json:"mpp_opens"`
+	OpenRate       float64 `json:"open_rate"`
+	ClickRate      float64 `json:"click_rate"`
 	HardBounceRate float64 `json:"hard_bounce_rate"`
 	SoftBounceRate float64 `json:"soft_bounce_rate"`
 	ComplaintRate  float64 `json:"complaint_rate"`
@@ -142,6 +155,11 @@ type HarvestMetrics struct {
 // computeHarvestRates fills the Rate fields based on Sent/Delivered. Open
 // and click rates use unique_opens/unique_clicks over delivered per the
 // mailing-saas "bounce-metrics" and engagement conventions.
+//
+// Defensive clamp: with the v1.3 dedup we no longer expect delivered to
+// exceed sent, but if upstream data still produces that anomaly we cap
+// the delivery rate at 100% so the UI never shows a >100% impossible
+// figure — better to under-report than to mislead the operator.
 func computeHarvestRates(m *HarvestMetrics) {
 	base := float64(m.Delivered)
 	if base == 0 {
@@ -156,7 +174,11 @@ func computeHarvestRates(m *HarvestMetrics) {
 		m.HardBounceRate = metricsRound2(float64(m.HardBounces) / s * 100)
 		m.SoftBounceRate = metricsRound2(float64(m.SoftBounces) / s * 100)
 		m.ComplaintRate = metricsRound3(float64(m.Complaints) / s * 100)
-		m.DeliveryRate = metricsRound2(float64(m.Delivered) / s * 100)
+		dr := metricsRound2(float64(m.Delivered) / s * 100)
+		if dr > 100 {
+			dr = 100
+		}
+		m.DeliveryRate = dr
 	}
 }
 
@@ -184,34 +206,31 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	start := end.Add(-time.Duration(hours) * time.Hour)
 
 	// Subquery: every tracking-event row in the window, joined to the
-	// campaign so we can filter by campaign_prefix. LEFT JOIN because we
-	// don't want to drop rows whose campaign_id lookup fails (rare, but
-	// happens during race windows between event ingest and campaign
-	// insert).
+	// campaign so we can filter by campaign_prefix, AND to mailing_subscribers
+	// so we can recover the recipient's email domain when the event row
+	// itself doesn't carry recipient_domain (legacy/track-pixel rows).
+	//
+	// The `dom` projection is the canonical fallback used elsewhere in
+	// mailing_analytics.go — keeping the same expression here guarantees
+	// the harvest dashboard buckets ISPs the same way as every other
+	// per-ISP report on the platform.
 	//
 	// `recipient` is the per-row identity used downstream by the
-	//   COUNT(DISTINCT CASE ... THEN COALESCE(d.subscriber_id::text, d.recipient) END)
-	// expressions to compute unique opens/clicks. The previous
-	// implementation read `t.email`, which DOES NOT EXIST on
-	// mailing_tracking_events (verified via information_schema —
-	// recipient address is stored on mailing_subscribers, not the
-	// tracking row). That column reference 500'd the entire harvest
-	// endpoint with `column t.email does not exist`.
-	//
-	// Falling back to `t.email_id::text` preserves the unique-per-send
-	// guarantee: email_id is the FK to mailing_email_messages, set on
-	// every send/delivered/bounced/opened/clicked row. For the rare
-	// pre-link-id row where email_id is null we fall back to the event
-	// row's own id (always populated) so DISTINCT counting still
-	// degrades gracefully instead of silently merging unrelated events.
+	//   COUNT(DISTINCT CASE ... THEN d.recipient END)
+	// expressions for dedup'd counts and unique opens/clicks. Each
+	// logical message gets a stable `recipient` value via email_id; the
+	// per-row id fallback applies only to legacy rows where email_id was
+	// never populated, in which case DISTINCT degrades to row-distinct
+	// (still safe — never *more* than the row count).
 	eventSubquery := `SELECT t.event_type, t.event_at, t.bounce_type, t.is_machine_open,
 		t.sending_domain, t.campaign_id,
 		COALESCE(t.email_id::text, t.id::text) AS recipient,
 		t.subscriber_id,
-		LOWER(COALESCE(NULLIF(t.recipient_domain,''), 'unknown')) as dom,
+		LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2), 'unknown')) as dom,
 		mc.name as campaign_name
 		FROM mailing_tracking_events t
 		LEFT JOIN mailing_campaigns mc ON mc.id = t.campaign_id
+		LEFT JOIN mailing_subscribers s ON s.id = t.subscriber_id
 		WHERE t.event_at >= $1 AND t.event_at <= $2`
 	args := []interface{}{start, end}
 
@@ -225,10 +244,45 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	}
 	if ispFilter != "" {
 		// Apply ISP via the canonical CASE so the filter matches the
-		// bucketing elsewhere in this handler.
-		eventSubquery += fmt.Sprintf(" AND (%s) = $%d", strings.ReplaceAll(ispDomainCaseSQL, "dom", "LOWER(COALESCE(NULLIF(t.recipient_domain,''),'unknown'))"), len(args)+1)
+		// bucketing elsewhere in this handler. We re-use the same dom
+		// expression (recipient_domain → fallback to subscriber email
+		// domain) so a request like ?isp=gmail catches gmail-domained
+		// recipients regardless of which webhook wrote the row.
+		domExpr := "LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2), 'unknown'))"
+		eventSubquery += fmt.Sprintf(" AND (%s) = $%d",
+			strings.ReplaceAll(ispDomainCaseSQL, "dom", domExpr),
+			len(args)+1)
 		args = append(args, ispFilter)
 	}
+
+	// Shared metric SELECT-list. Every aggregation query (by_isp,
+	// by_domain, time_series, time_series_by_isp, hour_of_day,
+	// by_campaign) emits the same 12-column metric block in the same
+	// order, so the scan signatures are identical.
+	//
+	// Note: opens/clicks are gross row counts (SUM CASE) because every
+	// open event represents a real beacon hit — duplicates ARE the data
+	// point we want for "how many opens did this subscriber generate".
+	// unique_opens/unique_clicks dedup to per-recipient.
+	//
+	// Sent / Delivered / Hard / Soft / Complaints / Unsubs are dedup'd
+	// to per-recipient via DISTINCT recipient. Without this dedup,
+	// duplicate PMTA delivery callbacks pushed delivered above sent.
+	hb := HardBounceSQL("d")
+	metricSelect := fmt.Sprintf(`
+		COUNT(DISTINCT CASE WHEN d.event_type = 'sent' THEN d.recipient END) as sent,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'delivered' THEN d.recipient END) as delivered,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'bounced' AND %s THEN d.recipient END) as hard_bounces,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'bounced' AND NOT (%s) THEN d.recipient END) as soft_bounces,
+		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
+		SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'complained' THEN d.recipient END) as complaints,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'unsubscribed' THEN d.recipient END) as unsubs,
+		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN COALESCE(d.subscriber_id::text, d.recipient) END) as mpp_opens
+		`, hb, hb)
 
 	// Parallel query runner. Mirrors HandleISPSendingInsights.runQ.
 	runQ := func(op string, fn func(*sql.Conn) error) error {
@@ -267,36 +321,36 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		sendingDomain string
 		m             HarvestMetrics
 	}
+	type acqIspRow struct {
+		isp           string
+		newCount      int
+		confirmedNew  int
+	}
+	type acqBucketRow struct {
+		tsUTC        time.Time
+		newCount     int
+		confirmedNew int
+	}
 
 	var (
-		byISP         []ispRow
-		byDomain      []domainRow
-		byBucket      []bucketRow
-		byBucketISP   []bucketRow
-		byHour        []hourRow
-		byCampaign    []campaignRow
-		errs          = make(chan error, 8)
-		wg            sync.WaitGroup
+		byISP       []ispRow
+		byDomain    []domainRow
+		byBucket    []bucketRow
+		byBucketISP []bucketRow
+		byHour      []hourRow
+		byCampaign  []campaignRow
+		acqByISP    []acqIspRow
+		acqTS       []acqBucketRow
+		errs        = make(chan error, 16)
+		wg          sync.WaitGroup
 	)
 
 	// Q1: by-ISP rollup.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		qsql := fmt.Sprintf(`SELECT %s as isp,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
-		FROM (%s) d GROUP BY isp ORDER BY isp`, ispDomainCaseSQL, eventSubquery)
+		qsql := fmt.Sprintf(`SELECT %s as isp, %s
+			FROM (%s) d GROUP BY isp ORDER BY isp`, ispDomainCaseSQL, metricSelect, eventSubquery)
 		if err := runQ("by_isp", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -324,20 +378,8 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		qsql := fmt.Sprintf(`SELECT LOWER(COALESCE(NULLIF(d.sending_domain,''),'unknown')) as sd,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
-		FROM (%s) d GROUP BY sd ORDER BY sd`, eventSubquery)
+		qsql := fmt.Sprintf(`SELECT LOWER(COALESCE(NULLIF(d.sending_domain,''),'unknown')) as sd, %s
+			FROM (%s) d GROUP BY sd ORDER BY sd`, metricSelect, eventSubquery)
 		if err := runQ("by_domain", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -366,20 +408,8 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	go func() {
 		defer wg.Done()
 		qsql := fmt.Sprintf(`SELECT
-			to_timestamp(floor(extract(epoch from d.event_at) / %d) * %d) as ts,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
-		FROM (%s) d GROUP BY ts ORDER BY ts`, bucketWidthSec, bucketWidthSec, eventSubquery)
+			to_timestamp(floor(extract(epoch from d.event_at) / %d) * %d) as ts, %s
+			FROM (%s) d GROUP BY ts ORDER BY ts`, bucketWidthSec, bucketWidthSec, metricSelect, eventSubquery)
 		if err := runQ("time_series", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -410,20 +440,8 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		defer wg.Done()
 		qsql := fmt.Sprintf(`SELECT
 			to_timestamp(floor(extract(epoch from d.event_at) / %d) * %d) as ts,
-			%s as isp,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
-		FROM (%s) d GROUP BY ts, isp ORDER BY ts, isp`, bucketWidthSec, bucketWidthSec, ispDomainCaseSQL, eventSubquery)
+			%s as isp, %s
+			FROM (%s) d GROUP BY ts, isp ORDER BY ts, isp`, bucketWidthSec, bucketWidthSec, ispDomainCaseSQL, metricSelect, eventSubquery)
 		if err := runQ("time_series_by_isp", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -454,20 +472,8 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		defer wg.Done()
 		qsql := fmt.Sprintf(`SELECT
 			EXTRACT(HOUR FROM d.event_at AT TIME ZONE 'America/Denver')::int as hr,
-			%s as isp,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
-		FROM (%s) d GROUP BY hr, isp ORDER BY hr, isp`, ispDomainCaseSQL, eventSubquery)
+			%s as isp, %s
+			FROM (%s) d GROUP BY hr, isp ORDER BY hr, isp`, ispDomainCaseSQL, metricSelect, eventSubquery)
 		if err := runQ("hour_of_day", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -499,23 +505,12 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		qsql := fmt.Sprintf(`SELECT d.campaign_id::text as cid,
 			COALESCE(NULLIF(d.campaign_name,''), d.campaign_id::text) as name,
 			COALESCE(NULLIF(LOWER(MIN(d.sending_domain)),''),'') as sending_domain,
-			SUM(CASE WHEN d.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-			SUM(CASE WHEN d.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-			SUM(CASE WHEN d.event_type = 'bounced' AND `+HardBounceSQL("d")+` THEN 1 ELSE 0 END) as hard_bounces,
-			SUM(CASE WHEN d.event_type = 'bounced' AND NOT (`+HardBounceSQL("d")+`) THEN 1 ELSE 0 END) as soft_bounces,
-			SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
-			SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-			COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
-			SUM(CASE WHEN d.event_type = 'complained' THEN 1 ELSE 0 END) as complaints,
-			SUM(CASE WHEN d.event_type = 'unsubscribed' THEN 1 ELSE 0 END) as unsubs,
-			SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-			SUM(CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN 1 ELSE 0 END) as mpp_opens
+			%s
 		FROM (%s) d
 		WHERE d.campaign_id IS NOT NULL
 		GROUP BY d.campaign_id, d.campaign_name
 		ORDER BY sent DESC
-		LIMIT 50`, eventSubquery)
+		LIMIT 50`, metricSelect, eventSubquery)
 		if err := runQ("by_campaign", func(c *sql.Conn) error {
 			rows, err := c.QueryContext(ctx, qsql, args...)
 			if err != nil {
@@ -539,6 +534,83 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		}
 	}()
 
+	// Q7: acquisition by ISP.
+	//
+	// "Newly introduced audience members" within the same window. Groups
+	// by the same ISP CASE used everywhere else so a row like
+	// "12 new Gmail subscribers in the last 24h" lines up exactly with
+	// the engagement table above it.
+	//
+	// We do NOT apply the ISP/sending_domain/campaign_prefix filters here
+	// because acquisition is a list-level event — it can't be attributed
+	// to a specific campaign. The frontend treats this as cross-campaign
+	// context regardless of the rest of the filter selection.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		qsql := fmt.Sprintf(`SELECT %s as isp,
+			COUNT(*) as new_count,
+			COUNT(*) FILTER (WHERE LOWER(COALESCE(s.status,'')) IN ('active','confirmed')) as confirmed_new
+			FROM (
+				SELECT s.id, s.status,
+				       LOWER(SPLIT_PART(s.email, '@', 2)) as dom
+				FROM mailing_subscribers s
+				WHERE s.created_at >= $1 AND s.created_at <= $2
+				  AND s.email LIKE '%%@%%'
+			) s
+			GROUP BY isp ORDER BY isp`, ispDomainCaseSQL)
+		if err := runQ("acq_by_isp", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, qsql, start, end)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var r acqIspRow
+				if err := rows.Scan(&r.isp, &r.newCount, &r.confirmedNew); err != nil {
+					continue
+				}
+				acqByISP = append(acqByISP, r)
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
+	// Q8: acquisition time-series (overall).
+	//
+	// Same bucketing as the engagement time-series so the dashboard can
+	// overlay an "audience growth" line on the existing chart.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		qsql := fmt.Sprintf(`SELECT
+			to_timestamp(floor(extract(epoch from s.created_at) / %d) * %d) as ts,
+			COUNT(*) as new_count,
+			COUNT(*) FILTER (WHERE LOWER(COALESCE(s.status,'')) IN ('active','confirmed')) as confirmed_new
+			FROM mailing_subscribers s
+			WHERE s.created_at >= $1 AND s.created_at <= $2
+			GROUP BY ts ORDER BY ts`, bucketWidthSec, bucketWidthSec)
+		if err := runQ("acq_time_series", func(c *sql.Conn) error {
+			rows, err := c.QueryContext(ctx, qsql, start, end)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var r acqBucketRow
+				if err := rows.Scan(&r.tsUTC, &r.newCount, &r.confirmedNew); err != nil {
+					continue
+				}
+				acqTS = append(acqTS, r)
+			}
+			return nil
+		}); err != nil {
+			errs <- err
+		}
+	}()
+
 	wg.Wait()
 	close(errs)
 
@@ -551,7 +623,7 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		}
 	}
 
-	// Compute overall from byISP (cheaper than running a seventh query,
+	// Compute overall from byISP (cheaper than running another query,
 	// and numerically identical because the CASE…ELSE 'other' partitions
 	// every row into exactly one bucket).
 	var overall HarvestMetrics
@@ -571,9 +643,7 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 	}
 	computeHarvestRates(&overall)
 
-	// Shape the response. We preserve all sub-rollups even when filters
-	// are applied so the frontend can run its own sparkline / ratio math
-	// without needing a second request.
+	// Shape the response.
 	respByISP := make([]map[string]interface{}, 0, len(byISP))
 	for _, r := range byISP {
 		label, ok := ispLabels[r.isp]
@@ -635,6 +705,36 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		})
 	}
 
+	// Acquisition response shape: a per-ISP card row, a time-series, and
+	// a single overall total. The frontend renders a small "+N new
+	// subscribers" KPI block plus an additional line on the chart.
+	respAcqByISP := make([]map[string]interface{}, 0, len(acqByISP))
+	var acqTotalNew, acqTotalConfirmed int
+	for _, r := range acqByISP {
+		label, ok := ispLabels[r.isp]
+		if !ok {
+			label = r.isp
+		}
+		respAcqByISP = append(respAcqByISP, map[string]interface{}{
+			"isp":            r.isp,
+			"display_name":   label,
+			"new_count":      r.newCount,
+			"confirmed_new":  r.confirmedNew,
+		})
+		acqTotalNew += r.newCount
+		acqTotalConfirmed += r.confirmedNew
+	}
+
+	respAcqTS := make([]map[string]interface{}, 0, len(acqTS))
+	for _, b := range acqTS {
+		respAcqTS = append(respAcqTS, map[string]interface{}{
+			"ts_utc":        b.tsUTC.UTC().Format(time.RFC3339),
+			"ts_mst":        b.tsUTC.In(mstLoc).Format(time.RFC3339),
+			"new_count":     b.newCount,
+			"confirmed_new": b.confirmedNew,
+		})
+	}
+
 	// Engagement-vs-damage: a single ratio card that tells the operator
 	// if the stream is winning or leaking. Engagement is unique opens +
 	// unique clicks. Damage is hard bounces + complaints. We deliberately
@@ -653,11 +753,13 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		"api_version":     VersionHarvestPerformance,
 		"campaign_prefix": campaignPrefix,
 		"window": map[string]interface{}{
-			"start_utc":       start.Format(time.RFC3339),
-			"end_utc":         end.Format(time.RFC3339),
-			"hours":           hours,
-			"bucket":          bucketKey,
-			"bucket_seconds":  bucketWidthSec,
+			"start_utc":      start.Format(time.RFC3339),
+			"end_utc":        end.Format(time.RFC3339),
+			"start_mst":      start.In(mstLoc).Format(time.RFC3339),
+			"end_mst":        end.In(mstLoc).Format(time.RFC3339),
+			"hours":          hours,
+			"bucket":         bucketKey,
+			"bucket_seconds": bucketWidthSec,
 		},
 		"filters": map[string]interface{}{
 			"isp":            ispFilter,
@@ -670,14 +772,20 @@ func (s *AdvancedMailingService) HandleHarvestPerformance(w http.ResponseWriter,
 		"time_series_by_isp": tsByISP,
 		"hour_of_day":        heatmap,
 		"by_campaign":        respByCampaign,
+		"acquisition": map[string]interface{}{
+			"total_new":       acqTotalNew,
+			"total_confirmed": acqTotalConfirmed,
+			"by_isp":          respAcqByISP,
+			"time_series":     respAcqTS,
+		},
 		"engagement_vs_damage": map[string]interface{}{
-			"engagement":     engagement,
-			"damage":         damage,
-			"ratio":          ratio,
-			"hard_bounces":   overall.HardBounces,
-			"complaints":     overall.Complaints,
-			"unique_opens":   overall.UniqueOpens,
-			"unique_clicks":  overall.UniqueClicks,
+			"engagement":    engagement,
+			"damage":        damage,
+			"ratio":         ratio,
+			"hard_bounces":  overall.HardBounces,
+			"complaints":    overall.Complaints,
+			"unique_opens":  overall.UniqueOpens,
+			"unique_clicks": overall.UniqueClicks,
 		},
 	}
 

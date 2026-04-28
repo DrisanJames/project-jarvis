@@ -224,7 +224,40 @@ var harvestCampaignColumns = []string{
 	"complaints", "unsubs", "deferred", "mpp_opens",
 }
 
-// setupHarvestMock returns a DB handle + mock where every one of the 6
+// acquisitionISPColumns is the column set for the acq_by_isp query.
+var acquisitionISPColumns = []string{"isp", "new_count", "confirmed_new"}
+
+// acquisitionTSColumns is the column set for the acq_time_series query.
+var acquisitionTSColumns = []string{"ts", "new_count", "confirmed_new"}
+
+// numHarvestQueries is the count of dedicated SQL connections (and
+// therefore SET statement_timeout calls) the handler issues. Update this
+// when adding/removing parallel queries to keep the mock contract in
+// sync.
+const numHarvestQueries = 8
+
+// Regex anchors that uniquely identify each of the 8 parallel queries
+// the handler dispatches. Anchored on SQL artifacts that appear in
+// EXACTLY one query family:
+//   * `t\.event_type` is in the engagement eventSubquery (Q1..Q6).
+//   * `s\.created_at` is in the acquisition queries (Q7..Q8).
+// Without these disambiguators, `GROUP BY isp` would match BOTH the
+// harvest by_isp query AND the acquisition by_isp query (they both end
+// the same way), causing flaky non-deterministic test failures when the
+// 8 goroutines race. With them, every actual query maps to exactly one
+// expectation regardless of arrival order.
+const (
+	rxQByISP        = `t\.event_type.*GROUP BY isp ORDER BY isp`
+	rxQBySD         = `t\.event_type.*GROUP BY sd ORDER BY sd`
+	rxQTimeSeries   = `t\.event_type.*GROUP BY ts ORDER BY ts`
+	rxQTimeSeriesBy = `t\.event_type.*GROUP BY ts, isp`
+	rxQHourOfDay    = `t\.event_type.*GROUP BY hr, isp`
+	rxQByCampaign   = `t\.event_type.*GROUP BY d.campaign_id`
+	rxQAcqByISP     = `s\.created_at.*GROUP BY isp`
+	rxQAcqTS        = `s\.created_at.*GROUP BY ts`
+)
+
+// setupHarvestMock returns a DB handle + mock where every one of the
 // handler queries is satisfied with the zero-row result set. Individual
 // tests can override before calling the handler.
 func setupHarvestMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
@@ -233,7 +266,7 @@ func setupHarvestMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	require.NoError(t, err)
 
 	mock.MatchExpectationsInOrder(false)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < numHarvestQueries; i++ {
 		mock.ExpectExec("SET statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	return db, mock
@@ -244,42 +277,59 @@ func TestHandleHarvestPerformance_HappyPath(t *testing.T) {
 	defer db.Close()
 
 	// Q1 by_isp — 2 ISP rows
-	mock.ExpectQuery("SELECT.*as isp.*GROUP BY isp").WillReturnRows(
+	mock.ExpectQuery(rxQByISP).WillReturnRows(
 		sqlmock.NewRows(harvestISPColumns).
 			AddRow("gmail", 1000, 900, 50, 50, 400, 350, 40, 35, 2, 1, 5, 30).
 			AddRow("yahoo", 500, 440, 30, 30, 180, 160, 18, 15, 1, 0, 8, 20),
 	)
 	// Q2 by_sending_domain
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(
+	mock.ExpectQuery(rxQBySD).WillReturnRows(
 		sqlmock.NewRows(harvestISPColumns).
 			AddRow("em.discountblog.com", 900, 820, 40, 40, 360, 320, 36, 31, 2, 0, 6, 25).
 			AddRow("em.quizfiesta.com", 600, 520, 40, 40, 220, 190, 22, 19, 1, 1, 7, 25),
 	)
 	// Q3 time_series — 3 buckets
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(
 		sqlmock.NewRows(harvestBucketColumns).
 			AddRow(mustTimeUTC(t, "2026-04-22T00:00:00Z"), 300, 260, 20, 20, 120, 110, 12, 10, 1, 0, 3, 10).
 			AddRow(mustTimeUTC(t, "2026-04-22T01:00:00Z"), 400, 360, 20, 20, 160, 150, 16, 14, 1, 1, 4, 15).
 			AddRow(mustTimeUTC(t, "2026-04-22T02:00:00Z"), 800, 720, 40, 40, 300, 250, 30, 26, 1, 0, 6, 25),
 	)
 	// Q4 time_series_by_isp
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(
 		sqlmock.NewRows(harvestBucketISPColumns).
 			AddRow(mustTimeUTC(t, "2026-04-22T00:00:00Z"), "gmail", 300, 260, 20, 20, 120, 110, 12, 10, 1, 0, 3, 10).
 			AddRow(mustTimeUTC(t, "2026-04-22T00:00:00Z"), "yahoo", 150, 130, 10, 10, 50, 45, 5, 4, 0, 0, 2, 5),
 	)
 	// Q5 hour_of_day
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(
 		sqlmock.NewRows(harvestHourColumns).
 			AddRow(9, "gmail", 500, 450, 25, 25, 200, 180, 20, 17, 1, 0, 2, 15).
 			AddRow(9, "yahoo", 250, 220, 15, 15, 90, 80, 9, 7, 0, 0, 4, 10),
 	)
 	// Q6 by_campaign
-	mock.ExpectQuery("GROUP BY d.campaign_id, d.campaign_name").WillReturnRows(
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(
 		sqlmock.NewRows(harvestCampaignColumns).
 			AddRow("11111111-1111-1111-1111-111111111111", "Welcome Harvest — em.discountblog.com",
 				"em.discountblog.com",
 				900, 820, 40, 40, 360, 320, 36, 31, 2, 0, 6, 25),
+	)
+	// Q7 acq_by_isp — newly introduced subscribers per ISP within window.
+	// The `new_count` column name is unique to the acquisition queries
+	// (the harvest event aggregations use `sent`/`delivered`/etc.), so
+	// matching on it disambiguates from the harvest by_isp / time_series
+	// matchers above which would otherwise greedily match the now-shared
+	// `mailing_subscribers` LEFT JOIN.
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(
+		sqlmock.NewRows(acquisitionISPColumns).
+			AddRow("gmail", 12, 9).
+			AddRow("yahoo", 5, 3),
+	)
+	// Q8 acq_time_series
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(
+		sqlmock.NewRows(acquisitionTSColumns).
+			AddRow(mustTimeUTC(t, "2026-04-22T00:00:00Z"), 10, 7).
+			AddRow(mustTimeUTC(t, "2026-04-22T01:00:00Z"), 7, 5),
 	)
 
 	svc := &AdvancedMailingService{db: db}
@@ -329,6 +379,16 @@ func TestHandleHarvestPerformance_HappyPath(t *testing.T) {
 	require.EqualValues(t, 80+3, engagement["damage"]) // hard_bounces 50+30 + complaints 2+1 = 83
 	require.EqualValues(t, 83, engagement["damage"])
 
+	// Acquisition pane: per-ISP rows + a totals block + a time series.
+	// Ensures the v1.3 contract is intact for the frontend.
+	acq := resp["acquisition"].(map[string]interface{})
+	require.EqualValues(t, 17, acq["total_new"])       // 12 + 5
+	require.EqualValues(t, 12, acq["total_confirmed"]) // 9 + 3
+	acqByISP := acq["by_isp"].([]interface{})
+	require.Len(t, acqByISP, 2)
+	acqTS := acq["time_series"].([]interface{})
+	require.Len(t, acqTS, 2)
+
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -336,12 +396,14 @@ func TestHandleHarvestPerformance_EmptyResults(t *testing.T) {
 	db, mock := setupHarvestMock(t)
 	defer db.Close()
 
-	mock.ExpectQuery("GROUP BY isp").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(sqlmock.NewRows(harvestHourColumns))
-	mock.ExpectQuery("GROUP BY d.campaign_id").WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQByISP).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQBySD).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(sqlmock.NewRows(harvestHourColumns))
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(sqlmock.NewRows(acquisitionISPColumns))
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(sqlmock.NewRows(acquisitionTSColumns))
 
 	svc := &AdvancedMailingService{db: db}
 	req := httptest.NewRequest("GET", "/api/mailing/analytics/harvest-performance", nil)
@@ -359,6 +421,7 @@ func TestHandleHarvestPerformance_EmptyResults(t *testing.T) {
 	require.NotNil(t, resp["time_series_by_isp"])
 	require.NotNil(t, resp["hour_of_day"])
 	require.NotNil(t, resp["by_campaign"])
+	require.NotNil(t, resp["acquisition"])
 
 	overall := resp["overall"].(map[string]interface{})
 	require.EqualValues(t, 0, overall["sent"])
@@ -367,12 +430,14 @@ func TestHandleHarvestPerformance_EmptyResults(t *testing.T) {
 func TestHandleHarvestPerformance_BucketDefaulting(t *testing.T) {
 	db, mock := setupHarvestMock(t)
 	defer db.Close()
-	mock.ExpectQuery("GROUP BY isp").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(sqlmock.NewRows(harvestHourColumns))
-	mock.ExpectQuery("GROUP BY d.campaign_id").WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQByISP).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQBySD).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(sqlmock.NewRows(harvestHourColumns))
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(sqlmock.NewRows(acquisitionISPColumns))
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(sqlmock.NewRows(acquisitionTSColumns))
 
 	svc := &AdvancedMailingService{db: db}
 	// A nonsense bucket value — handler must snap to 1h, not error.
@@ -393,12 +458,14 @@ func TestHandleHarvestPerformance_ExplicitEmptyCampaignPrefix(t *testing.T) {
 	// shows cross-campaign totals.
 	db, mock := setupHarvestMock(t)
 	defer db.Close()
-	mock.ExpectQuery("GROUP BY isp").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(sqlmock.NewRows(harvestHourColumns))
-	mock.ExpectQuery("GROUP BY d.campaign_id").WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQByISP).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQBySD).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(sqlmock.NewRows(harvestHourColumns))
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(sqlmock.NewRows(acquisitionISPColumns))
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(sqlmock.NewRows(acquisitionTSColumns))
 
 	svc := &AdvancedMailingService{db: db}
 	req := httptest.NewRequest("GET", "/api/mailing/analytics/harvest-performance?campaign_prefix=", nil)
@@ -415,12 +482,14 @@ func TestHandleHarvestPerformance_DBError(t *testing.T) {
 	db, mock := setupHarvestMock(t)
 	defer db.Close()
 	// Any one failing query should yield a 500 and no partial body.
-	mock.ExpectQuery("GROUP BY isp").WillReturnError(driver.ErrBadConn)
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(sqlmock.NewRows(harvestHourColumns))
-	mock.ExpectQuery("GROUP BY d.campaign_id").WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQByISP).WillReturnError(driver.ErrBadConn)
+	mock.ExpectQuery(rxQBySD).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(sqlmock.NewRows(harvestHourColumns))
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(sqlmock.NewRows(acquisitionISPColumns))
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(sqlmock.NewRows(acquisitionTSColumns))
 
 	svc := &AdvancedMailingService{db: db}
 	req := httptest.NewRequest("GET", "/api/mailing/analytics/harvest-performance", nil)
@@ -435,14 +504,18 @@ func TestHandleHarvestPerformance_AppliesISPFilter(t *testing.T) {
 	defer db.Close()
 
 	// The handler should inject the ispFilter as a $N parameter. We
-	// verify by using sqlmock's argument matcher.
-	mock.ExpectQuery("GROUP BY isp").WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Welcome Harvest%", "gmail").
+	// verify by using sqlmock's argument matcher. The exact arg list is
+	// (start, end, campaign_prefix_pattern, isp_filter) because
+	// domainFilter is empty in this test path.
+	mock.ExpectQuery(rxQByISP).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Welcome Harvest%", "gmail").
 		WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY sd").WillReturnRows(sqlmock.NewRows(harvestISPColumns))
-	mock.ExpectQuery("GROUP BY ts ORDER BY ts").WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
-	mock.ExpectQuery("GROUP BY ts, isp").WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
-	mock.ExpectQuery("GROUP BY hr, isp").WillReturnRows(sqlmock.NewRows(harvestHourColumns))
-	mock.ExpectQuery("GROUP BY d.campaign_id").WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQBySD).WillReturnRows(sqlmock.NewRows(harvestISPColumns))
+	mock.ExpectQuery(rxQTimeSeries).WillReturnRows(sqlmock.NewRows(harvestBucketColumns))
+	mock.ExpectQuery(rxQTimeSeriesBy).WillReturnRows(sqlmock.NewRows(harvestBucketISPColumns))
+	mock.ExpectQuery(rxQHourOfDay).WillReturnRows(sqlmock.NewRows(harvestHourColumns))
+	mock.ExpectQuery(rxQByCampaign).WillReturnRows(sqlmock.NewRows(harvestCampaignColumns))
+	mock.ExpectQuery(rxQAcqByISP).WillReturnRows(sqlmock.NewRows(acquisitionISPColumns))
+	mock.ExpectQuery(rxQAcqTS).WillReturnRows(sqlmock.NewRows(acquisitionTSColumns))
 
 	svc := &AdvancedMailingService{db: db}
 	req := httptest.NewRequest("GET", "/api/mailing/analytics/harvest-performance?isp=GMAIL", nil)

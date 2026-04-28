@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faBroadcastTower, faSpinner, faSyncAlt,
   faClock, faChartArea, faHeart, faSkullCrossbones,
+  faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -11,17 +12,24 @@ import {
 
 // HarvestStreamDashboard — always-on Welcome Harvest stream analytics.
 //
-// Over-built by design: renders 5 panels from a single /harvest-performance
-// response so the operator has surgical visibility with ZERO gaps:
+// Renders 6 panels from a single /harvest-performance response so the
+// operator has surgical visibility with ZERO gaps:
 //   1. KPI strip       — overall totals and rates
 //   2. Engagement vs   — single ratio card, hard-bounce / complaint damage
 //      Damage             against unique opens+clicks
-//   3. ISP health      — per-ISP table (sent/delivered/hard/soft/unique
-//      table             opens/unique clicks/rates, color-coded)
-//   4. Hour-of-day     — 24-col heatmap per ISP showing optimal send hours
-//      heatmap
-//   5. Time-series     — stacked line chart, overall + per-ISP; switches
-//      chart             between 1h / 3h / 5h buckets
+//   3. Acquisition     — newly-introduced subscribers in the window,
+//      pane              broken out per ISP. Confirms that the harvest
+//                        stream is actually growing audience, not just
+//                        re-mailing the same subs.
+//   4. ISP health      — per-ISP table (sent/delivered/hard/soft/unique
+//      table             opens/unique clicks/rates, color-coded). The
+//                        v1.3 backend dedup'd to per-recipient counts
+//                        so delivery_rate is bounded at 100%.
+//   5. Hour-of-day     — 24-col heatmap per ISP showing optimal send hours
+//      heatmap          (12-hour clock labels for human readability)
+//   6. Time-series     — stacked line chart, overall + per-ISP; switches
+//      chart             between 1h / 3h / 5h buckets. X-axis uses
+//                        12-hour clock per the operator's preference.
 //
 // All data shaping happens in useMemo hooks so Recharts gets stable refs
 // and doesn't re-render on every keystroke.
@@ -56,10 +64,19 @@ interface HourRow  { hour: number; isp: string; metrics: HarvestMetrics; }
 interface CampRow  { campaign_id: string; name: string; sending_domain: string; metrics: HarvestMetrics; }
 interface EngVsDmg { engagement: number; damage: number; ratio: number; hard_bounces: number; complaints: number; unique_opens: number; unique_clicks: number; }
 
+interface AcqISPRow { isp: string; display_name: string; new_count: number; confirmed_new: number; }
+interface AcqTSRow  { ts_utc: string; ts_mst: string; new_count: number; confirmed_new: number; }
+interface Acquisition {
+  total_new: number;
+  total_confirmed: number;
+  by_isp: AcqISPRow[];
+  time_series: AcqTSRow[];
+}
+
 export interface HarvestResponse {
   api_version: string;
   campaign_prefix: string;
-  window: { start_utc: string; end_utc: string; hours: number; bucket: string; bucket_seconds: number };
+  window: { start_utc: string; end_utc: string; start_mst?: string; end_mst?: string; hours: number; bucket: string; bucket_seconds: number };
   filters: { isp: string; sending_domain: string };
   overall: HarvestMetrics;
   by_isp: ISPRow[];
@@ -69,10 +86,18 @@ export interface HarvestResponse {
   hour_of_day: HourRow[];
   by_campaign: CampRow[];
   engagement_vs_damage: EngVsDmg;
+  acquisition?: Acquisition;
 }
 
 type BucketChoice = '1h' | '3h' | '5h';
-type HoursChoice  = 24 | 72 | 120;
+// Hours selector covers both fine-grain (1/3/5h for live monitoring of the
+// last few hours) and day-grain (24/72/120h plus 7d=168h and 30d=720h)
+// for trend review. ANY positive integer ≤720 is accepted by the backend
+// (parseHarvestHours), so this list is purely a UX preset.
+const HOURS_PRESETS: number[] = [1, 3, 5, 24, 72, 120, 168, 720];
+const PRESET_LABELS: Record<number, string> = {
+  1: '1h', 3: '3h', 5: '5h', 24: '24h', 72: '72h', 120: '120h', 168: '7d', 720: '30d',
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -84,6 +109,33 @@ const fmt = (n: number): string => {
 };
 const pct = (n: number | undefined | null): string =>
   (n == null || isNaN(n)) ? '0.0%' : n.toFixed(2) + '%';
+
+// to12HourClock converts a 24-hour `HH:MM` (or `HH:MM:SS`) string to a
+// short 12-hour clock format like `9:30a` / `12:00p` / `5:45p`. The tail
+// suffix (a/p) is intentionally compact for tight chart x-axes; we drop
+// minutes when they're zero to reduce visual noise on hourly buckets.
+//
+// Falls back to the input when parsing fails so we never render `NaN:NaN`
+// on the chart.
+const to12HourClock = (hhmm: string): string => {
+  if (!hhmm || hhmm.length < 4) return hhmm;
+  const h = parseInt(hhmm.slice(0, 2), 10);
+  const m = parseInt(hhmm.slice(3, 5), 10);
+  if (isNaN(h) || isNaN(m)) return hhmm;
+  const suffix = h >= 12 ? 'p' : 'a';
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  return m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, '0')}${suffix}`;
+};
+
+// hour24To12 converts a single 0-23 hour-of-day index to a 12-hour clock
+// string for the heatmap header row. e.g. 0 -> '12a', 13 -> '1p'.
+const hour24To12 = (h: number): string => {
+  const suffix = h >= 12 ? 'p' : 'a';
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  return `${h12}${suffix}`;
+};
 
 // Rate color rules (mailing-saas bounce-metrics conventions):
 //   Hard bounce:  <1 good, <2 ok, else bad
@@ -120,7 +172,7 @@ async function fetchHarvest(params: URLSearchParams, orgId?: string): Promise<Ha
 
 export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixOverride }) => {
   const [bucket, setBucket] = useState<BucketChoice>('1h');
-  const [hours, setHours]   = useState<HoursChoice>(72);
+  const [hours, setHours]   = useState<number>(72);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
   const [data, setData]       = useState<HarvestResponse | null>(null);
@@ -159,18 +211,45 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
   // Build the combined line chart shape: rows indexed by timestamp, one
   // column per ISP for "sent" plus overall. Recharts needs a flat array
   // of rows, not a per-series array of points.
+  //
+  // The acquisition time-series is overlaid on the same bucket map under
+  // `__new_subscribers` so a single chart shows engagement and growth in
+  // lockstep — when the operator scrubs the timeline they see "audience
+  // gained" and "messages sent" together.
   const chartData = useMemo(() => {
     if (!data) return [];
     const buckets = new Map<string, Record<string, number | string>>();
     for (const row of data.time_series) {
-      const ts = row.ts_mst.slice(11, 16); // HH:MM in MST for readability
-      buckets.set(row.ts_utc, { ts_utc: row.ts_utc, label: ts, __overall_sent: row.metrics.sent, __overall_delivered: row.metrics.delivered });
+      // 12-hour clock (e.g. "9:30a") instead of military time per the
+      // operator's preference. ts_mst is RFC3339 in America/Denver, so
+      // characters 11..16 are the HH:MM portion.
+      const label = to12HourClock(row.ts_mst.slice(11, 16));
+      buckets.set(row.ts_utc, {
+        ts_utc: row.ts_utc,
+        label,
+        __overall_sent: row.metrics.sent,
+        __overall_delivered: row.metrics.delivered,
+      });
     }
     for (const [isp, rows] of Object.entries(data.time_series_by_isp)) {
       for (const row of rows) {
-        const b = buckets.get(row.ts_utc) || { ts_utc: row.ts_utc, label: row.ts_mst.slice(11, 16) };
+        const b = buckets.get(row.ts_utc) || {
+          ts_utc: row.ts_utc,
+          label: to12HourClock(row.ts_mst.slice(11, 16)),
+        };
         b[`${isp}_sent`] = row.metrics.sent;
         b[`${isp}_delivered`] = row.metrics.delivered;
+        buckets.set(row.ts_utc, b);
+      }
+    }
+    if (data.acquisition?.time_series) {
+      for (const row of data.acquisition.time_series) {
+        const b = buckets.get(row.ts_utc) || {
+          ts_utc: row.ts_utc,
+          label: to12HourClock(row.ts_mst.slice(11, 16)),
+        };
+        b['__new_subscribers'] = row.new_count;
+        b['__confirmed_new'] = row.confirmed_new;
         buckets.set(row.ts_utc, b);
       }
     }
@@ -242,19 +321,19 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           )}
         </h3>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <div className="ac-range-selector">
-            {([24, 72, 120] as HoursChoice[]).map(h => (
+          <div className="ac-range-selector" title="Lookback window. Use the small values for live monitoring of the most recent activity, or the day-grain values to review trends.">
+            {HOURS_PRESETS.map(h => (
               <button
                 key={h}
                 className={hours === h ? 'active' : ''}
                 onClick={() => setHours(h)}
                 title={`Last ${h} hours`}
               >
-                {h}h
+                {PRESET_LABELS[h] || `${h}h`}
               </button>
             ))}
           </div>
-          <div className="ac-range-selector">
+          <div className="ac-range-selector" title="Time-series bucket width. 1h gives the densest chart; 5h smooths over noise on long lookbacks.">
             {(['1h', '3h', '5h'] as BucketChoice[]).map(b => (
               <button
                 key={b}
@@ -295,7 +374,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
             <KPI label="Complaint"    value={pct(data.overall.complaint_rate)}   color={cmpColor(data.overall.complaint_rate)} sub={fmt(data.overall.complaints)} />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '20px' }}>
             <div style={{ padding: '12px', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '8px', background: 'rgba(16,185,129,0.05)' }}>
               <div style={{ fontSize: '0.75em', color: '#10b981', fontWeight: 600, marginBottom: '4px' }}>
                 <FontAwesomeIcon icon={faHeart} /> ENGAGEMENT
@@ -317,7 +396,54 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                 ratio engagement : damage = {data.engagement_vs_damage.ratio === -1 ? '∞' : data.engagement_vs_damage.ratio.toFixed(2)} : 1
               </div>
             </div>
+            <div
+              style={{ padding: '12px', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px', background: 'rgba(99,102,241,0.05)' }}
+              title="Newly created subscriber rows whose created_at falls inside the selected window. Confirmed = status active/confirmed at query time."
+            >
+              <div style={{ fontSize: '0.75em', color: '#818cf8', fontWeight: 600, marginBottom: '4px' }}>
+                <FontAwesomeIcon icon={faUserPlus} /> ACQUISITION
+              </div>
+              <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.acquisition?.total_new ?? 0)}</div>
+              <div style={{ fontSize: '0.75em', color: '#94a3b8' }}>
+                {fmt(data.acquisition?.total_confirmed ?? 0)} confirmed · across {data.acquisition?.by_isp?.length ?? 0} ISP buckets
+              </div>
+            </div>
           </div>
+
+          {/* ─── Acquisition by ISP ──────────────────────────────────── */}
+          {data.acquisition && data.acquisition.by_isp.length > 0 && (
+            <div className="ac-table-wrap" style={{ marginBottom: '20px' }}>
+              <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+                <FontAwesomeIcon icon={faUserPlus} /> Newly introduced audience (last {hours}h, by ISP)
+              </div>
+              <table className="ac-table">
+                <thead>
+                  <tr>
+                    <th>ISP</th>
+                    <th>New subs</th>
+                    <th>Confirmed</th>
+                    <th>Confirm rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.acquisition.by_isp.map(r => {
+                    const rate = r.new_count > 0 ? (r.confirmed_new / r.new_count) * 100 : 0;
+                    return (
+                      <tr key={`acq-${r.isp}`}>
+                        <td style={{ fontWeight: 500 }}>
+                          <span style={{ display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: ispColors[r.isp] || '#9e9e9e', marginRight: '6px' }} />
+                          {r.display_name}
+                        </td>
+                        <td>{fmt(r.new_count)}</td>
+                        <td>{fmt(r.confirmed_new)}</td>
+                        <td style={{ color: rate >= 90 ? '#10b981' : rate >= 70 ? '#f59e0b' : '#94a3b8' }}>{pct(rate)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* ─── ISP health table ─────────────────────────────────────── */}
           <div className="ac-table-wrap" style={{ marginBottom: '20px' }}>
@@ -369,7 +495,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           {/* ─── Time-series chart ────────────────────────────────────── */}
           <div style={{ marginBottom: '20px' }}>
             <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
-              <FontAwesomeIcon icon={faChartArea} /> Sent over time · bucket {bucket} · last {hours}h
+              <FontAwesomeIcon icon={faChartArea} /> Sent over time · bucket {bucket} · last {hours}h · MST (12-hr)
             </div>
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={chartData as Array<Record<string, number | string>>}>
@@ -382,6 +508,17 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                 />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Line type="monotone" dataKey="__overall_sent" name="Overall" stroke="#fff" strokeWidth={2} dot={false} />
+                {/* Audience growth line (dashed indigo) so the operator
+                    sees acquisition pacing alongside outbound volume. */}
+                <Line
+                  type="monotone"
+                  dataKey="__new_subscribers"
+                  name="New subscribers"
+                  stroke="#818cf8"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  dot={false}
+                />
                 {isps.map(isp => (
                   <Line
                     key={isp}
@@ -400,7 +537,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           {/* ─── Hour-of-day heatmap ──────────────────────────────────── */}
           <div style={{ marginBottom: '20px' }}>
             <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
-              <FontAwesomeIcon icon={faClock} /> Hour-of-day sent volume (MST) · aggregated over {hours}h
+              <FontAwesomeIcon icon={faClock} /> Hour-of-day sent volume (MST, 12-hr) · aggregated over {hours}h
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table className="ac-table" style={{ tableLayout: 'fixed', minWidth: '720px', fontSize: '0.75em' }}>
@@ -408,7 +545,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                   <tr>
                     <th style={{ width: '90px' }}>ISP</th>
                     {Array.from({ length: 24 }).map((_, h) => (
-                      <th key={h} style={{ textAlign: 'center', padding: '3px', color: h >= 3 && h <= 19 ? '#e2e8f0' : '#64748b' }}>{h}</th>
+                      <th key={h} style={{ textAlign: 'center', padding: '3px', color: h >= 3 && h <= 19 ? '#e2e8f0' : '#64748b' }}>{hour24To12(h)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -425,10 +562,11 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                         const color = `rgba(59, 130, 246, ${0.1 + intensity * 0.8})`;
                         const openR = cell ? cell.metrics.open_rate : 0;
                         const hardR = cell ? cell.metrics.hard_bounce_rate : 0;
+                        const hLabel = hour24To12(h);
                         return (
                           <td
                             key={h}
-                            title={cell ? `${isp} @ ${h}:00 MST\nsent=${v}\ndelivered=${cell.metrics.delivered}\nopen_rate=${openR.toFixed(2)}%\nhard_bounce_rate=${hardR.toFixed(2)}%` : `${isp} @ ${h}:00 MST — no data`}
+                            title={cell ? `${isp} @ ${hLabel} MST\nsent=${v}\ndelivered=${cell.metrics.delivered}\nopen_rate=${openR.toFixed(2)}%\nhard_bounce_rate=${hardR.toFixed(2)}%` : `${isp} @ ${hLabel} MST — no data`}
                             style={{
                               background: v > 0 ? color : 'transparent',
                               textAlign: 'center',
