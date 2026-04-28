@@ -161,18 +161,20 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 		}
 	}
 
-	// Self-contained event row: recipient_domain and email are populated via
-	// LEFT JOIN to mailing_subscribers so per-ISP analytics never has to
-	// reconstruct the bucket via a join-back at report time. If the
-	// subscriber row is missing (deleted / migrated), recipient_domain and
-	// email stay NULL on this row and the report layer surfaces it as
-	// `unresolved_subscriber` instead of silently folding into `other`.
+	// Self-contained event row: recipient_domain is populated at insert
+	// time via LEFT JOIN to mailing_subscribers so per-ISP analytics
+	// never has to reconstruct the bucket via a join-back at report
+	// time. If the subscriber row is missing (deleted / migrated),
+	// recipient_domain stays NULL on this row and the report layer
+	// surfaces it as `unresolved_subscriber` instead of silently folding
+	// into `other`. We deliberately do NOT also write a denormalized
+	// `email` column: the schema does not have one, and subscriber_id
+	// is already the canonical FK to recover the email when needed.
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, recipient_domain, email, is_machine_open)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, recipient_domain, is_machine_open)
 		SELECT $1, $2, $3, $4, 'opened', $5, $6, $7, $8,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
 			LOWER(SPLIT_PART(s.email, '@', 2)),
-			s.email,
 			$9
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
@@ -233,11 +235,10 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 
 	// Self-contained event row — see processOpen for the same rationale.
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, email)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain)
 		SELECT $1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
-			LOWER(SPLIT_PART(s.email, '@', 2)),
-			s.email
+			LOWER(SPLIT_PART(s.email, '@', 2))
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3

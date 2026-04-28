@@ -4,19 +4,22 @@ package tracking
 //
 // The consumer is the dominant production write path for 'opened' and
 // 'clicked' rows. Before this fix, its INSERT statements omitted
-// recipient_domain (and email), which forced every per-ISP report to
-// reconstruct the bucket via a join-back to mailing_subscribers at
-// query time — and silently folded the ~28% of rows whose subscriber_id
-// no longer matched into 'other'.
+// recipient_domain, which forced every per-ISP report to reconstruct
+// the bucket via a join-back to mailing_subscribers at query time —
+// and silently folded the ~28% of rows whose subscriber_id no longer
+// matched into 'other'.
 //
 // These tests lock in two invariants:
 //
 //  1. Every 'opened' / 'clicked' INSERT includes recipient_domain and
-//     email columns and references mailing_subscribers via LEFT JOIN.
+//     references mailing_subscribers via LEFT JOIN.
 //  2. The LEFT JOIN is by-design: when the subscriber row is missing,
 //     the row still writes (recipient_domain stays NULL) and downstream
 //     reporting surfaces it as `unresolved_subscriber`. The INSERT must
 //     not return an error in that case.
+//
+// We deliberately do NOT also write a denormalized `email` column: the
+// schema does not have one, and subscriber_id is the canonical FK.
 
 import (
 	"context"
@@ -49,7 +52,7 @@ func newConsumer(t *testing.T) (*Consumer, sqlmock.Sqlmock) {
 
 // openInsertRegex asserts the open INSERT shape the SQS consumer
 // MUST produce post-fix:
-//   - column list contains recipient_domain AND email
+//   - column list contains recipient_domain
 //   - SELECT contains LOWER(SPLIT_PART(s.email, '@', 2))
 //   - FROM clause includes LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 //
@@ -57,18 +60,18 @@ func newConsumer(t *testing.T) (*Consumer, sqlmock.Sqlmock) {
 // insensitive. Any regression that drops one of these substrings
 // will fail the test before the row is ever written in production.
 var openInsertRegex = regexp.MustCompile(
-	`(?is)INSERT\s+INTO\s+mailing_tracking_events\s*\(.*recipient_domain.*email.*\)` +
+	`(?is)INSERT\s+INTO\s+mailing_tracking_events\s*\(.*recipient_domain.*\)` +
 		`.*SELECT.*'opened'.*LOWER\(\s*SPLIT_PART\(\s*s\.email\s*,\s*'@'\s*,\s*2\s*\)\s*\).*` +
 		`FROM\s+mailing_campaigns\s+c\s+LEFT\s+JOIN\s+mailing_subscribers\s+s\s+ON\s+s\.id\s*=\s*\$4::uuid`,
 )
 
 var clickInsertRegex = regexp.MustCompile(
-	`(?is)INSERT\s+INTO\s+mailing_tracking_events\s*\(.*recipient_domain.*email.*\)` +
+	`(?is)INSERT\s+INTO\s+mailing_tracking_events\s*\(.*recipient_domain.*\)` +
 		`.*SELECT.*'clicked'.*LOWER\(\s*SPLIT_PART\(\s*s\.email\s*,\s*'@'\s*,\s*2\s*\)\s*\).*` +
 		`FROM\s+mailing_campaigns\s+c\s+LEFT\s+JOIN\s+mailing_subscribers\s+s\s+ON\s+s\.id\s*=\s*\$4::uuid`,
 )
 
-func TestProcessOpen_InsertsRecipientDomainAndEmail(t *testing.T) {
+func TestProcessOpen_InsertsRecipientDomain(t *testing.T) {
 	c, mock := newConsumer(t)
 	now := time.Now().UTC()
 
@@ -189,7 +192,7 @@ func TestProcessOpen_InsertSucceedsWhenSubscriberMissing(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestProcessClick_InsertsRecipientDomainAndEmail(t *testing.T) {
+func TestProcessClick_InsertsRecipientDomain(t *testing.T) {
 	c, mock := newConsumer(t)
 	now := time.Now().UTC()
 
