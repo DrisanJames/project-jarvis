@@ -95,8 +95,14 @@ var trackingEventCols = []string{
 	"event_id", "subscriber_id", "campaign_id", "campaign_name", "sending_domain", "link_url", "event_at",
 }
 
+// subscriberCols mirrors the SELECT in loadSubscriber. It now includes
+// list_id and list_name (LEFT JOIN mailing_lists) so attribution responses
+// can surface which upload list a matched subscriber came from. Update this
+// slice and every AddRow below in lockstep with loadSubscriber.
 var subscriberCols = []string{
-	"id", "email", "first_name", "last_name", "status", "created_at", "last_engaged_at",
+	"id", "email", "first_name", "last_name", "status",
+	"list_id", "list_name",
+	"created_at", "last_engaged_at",
 }
 
 func TestMatchAttribution_TightWindowMatchesClick(t *testing.T) {
@@ -120,7 +126,9 @@ func TestMatchAttribution_TightWindowMatchesClick(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_subscribers`).
 		WithArgs(subID).
 		WillReturnRows(sqlmock.NewRows(subscriberCols).
-			AddRow(subID, "user@example.com", "Pat", "Doe", "confirmed", clickTS.Add(-30*24*time.Hour), eventAt))
+			AddRow(subID, "user@example.com", "Pat", "Doe", "confirmed",
+				"99999999-aaaa-bbbb-cccc-dddddddddddd", "Welcome Harvest 2026-04-25",
+				clickTS.Add(-30*24*time.Hour), eventAt))
 
 	clicks := []ClickRow{{
 		RowIndex:  1,
@@ -140,6 +148,11 @@ func TestMatchAttribution_TightWindowMatchesClick(t *testing.T) {
 	assert.Equal(t, subID, m.Subscriber.SubscriberID)
 	assert.Equal(t, int64(3), m.OffsetSeconds)
 	assert.Equal(t, "em.discountblog.com", m.SendingDomain)
+	// Upload list (mailing_lists.name) should round-trip from the
+	// loadSubscriber JOIN — surfacing this on matched rows is what lets
+	// ops answer "which upload seeded this conversion?".
+	assert.Equal(t, "Welcome Harvest 2026-04-25", m.Subscriber.ListName)
+	assert.Equal(t, "99999999-aaaa-bbbb-cccc-dddddddddddd", m.Subscriber.ListID)
 
 	// Sending domain breakdown should reflect the single matched click.
 	require.Len(t, res.SendingDomainCounts, 1)
@@ -201,7 +214,9 @@ func TestMatchAttribution_FallbackTierWhenTightMisses(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_subscribers`).
 		WithArgs(subID).
 		WillReturnRows(sqlmock.NewRows(subscriberCols).
-			AddRow(subID, "user@example.com", "", "", "confirmed", clickTS, eventAt))
+			AddRow(subID, "user@example.com", "", "", "confirmed",
+				"", "",
+				clickTS, eventAt))
 
 	clicks := []ClickRow{{
 		RowIndex:  1,
@@ -230,10 +245,13 @@ func TestMatchAttribution_OrgScopeFlowsThroughBothQueries(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_tracking_events[\s\S]*organization_id`).
 		WillReturnRows(sqlmock.NewRows(trackingEventCols).
 			AddRow("evt-1", subID, "cam-1", "TruGreen", "em.discountblog.com", "https://5620.example/", clickTS))
-	// Subscriber query must also be org-scoped.
+	// Subscriber query must also be org-scoped (now `s.organization_id`
+	// since loadSubscriber JOINs mailing_lists and aliases the table).
 	mock.ExpectQuery(`FROM mailing_subscribers[\s\S]*organization_id`).
 		WillReturnRows(sqlmock.NewRows(subscriberCols).
-			AddRow(subID, "u@example.com", "", "", "confirmed", clickTS, clickTS))
+			AddRow(subID, "u@example.com", "", "", "confirmed",
+				"", "",
+				clickTS, clickTS))
 
 	clicks := []ClickRow{{
 		RowIndex: 1, Timestamp: clickTS, IPAddress: "169.197.59.74",

@@ -23,10 +23,15 @@ import {
 // that correlation server-side and returns matched subscriber profiles plus
 // a categorized list of rows that could not be attributed.
 
+// 1.2 — Surface upload list (mailing_lists.name + id) on every matched row.
+//       Backend loadSubscriber now LEFT JOINs mailing_lists and returns
+//       list_id/list_name so ops can answer "which upload seeded this
+//       conversion?" without leaving the screen. Adds a "Subscribers by
+//       upload list" breakdown card alongside the sending-domain card.
 // 1.1 — Hardened against nil-slice JSON responses (Go encodes nil slices as
 //       null which crashed `.length`); added Sending Domain breakdown card
 //       and sending_domain column on the matched table.
-const PAGE_VERSION = '1.1';
+const PAGE_VERSION = '1.2';
 
 interface ApiSubscriber {
   subscriber_id: string;
@@ -34,6 +39,8 @@ interface ApiSubscriber {
   first_name?: string;
   last_name?: string;
   status?: string;
+  list_id?: string;
+  list_name?: string;
   created_at?: string;
   last_engaged_at?: string;
 }
@@ -348,6 +355,10 @@ export const AttributionMatchDashboard: React.FC = () => {
           </section>
 
           <SendingDomainBreakdown counts={result.sending_domain_counts ?? []} />
+          <UploadListBreakdown
+            matchedClicks={result.matched_clicks}
+            matchedConversions={result.matched_conversions}
+          />
 
 
           <section style={{ ...cardStyle, marginTop: 16, padding: 0, overflow: 'hidden' }}>
@@ -599,6 +610,140 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
   );
 };
 
+// UploadListBreakdown rolls matched rows up by mailing_lists.name (sourced
+// from the subscriber's list_id). Computed client-side from the matched
+// arrays so we don't add a backend round-trip; the matched arrays are
+// already loaded and capped, so this is cheap. Subscribers with no list
+// (legacy rows or import-time orphans) bucket as "(no upload list)".
+const UploadListBreakdown: React.FC<{
+  matchedClicks: ApiMatchedRow[];
+  matchedConversions: ApiMatchedRow[];
+}> = ({ matchedClicks, matchedConversions }) => {
+  const tally = useMemo(() => {
+    type Bucket = {
+      key: string;
+      listName: string;
+      listID: string;
+      clicks: number;
+      conversions: number;
+    };
+    const map = new Map<string, Bucket>();
+    const bump = (m: ApiMatchedRow, kind: 'click' | 'conversion') => {
+      const listID = m.subscriber?.list_id || '';
+      const listName = m.subscriber?.list_name || '';
+      const key = listID || `(name:${listName || '(no upload list)'})`;
+      let b = map.get(key);
+      if (!b) {
+        b = {
+          key,
+          listName: listName || '(no upload list)',
+          listID,
+          clicks: 0,
+          conversions: 0,
+        };
+        map.set(key, b);
+      }
+      if (kind === 'click') b.clicks += 1;
+      else b.conversions += 1;
+    };
+    matchedClicks.forEach((m) => bump(m, 'click'));
+    matchedConversions.forEach((m) => bump(m, 'conversion'));
+    return Array.from(map.values()).sort((a, b) => {
+      if (b.clicks !== a.clicks) return b.clicks - a.clicks;
+      return b.conversions - a.conversions;
+    });
+  }, [matchedClicks, matchedConversions]);
+
+  if (tally.length === 0) return null;
+  const max = Math.max(...tally.map((b) => b.clicks), 1);
+  const totalClicks = tally.reduce((s, b) => s + b.clicks, 0);
+  const totalConv = tally.reduce((s, b) => s + b.conversions, 0);
+  const top = tally.slice(0, 12);
+
+  return (
+    <section style={{ ...cardStyle, marginTop: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          marginBottom: 12,
+        }}
+      >
+        <h3 style={{ ...tableTitleStyle, margin: 0 }}>Matched subscribers by upload list</h3>
+        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+          {tally.length} list{tally.length === 1 ? '' : 's'} · {totalClicks} click
+          {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
+        </div>
+      </div>
+      <table style={tableStyle}>
+        <thead>
+          <tr style={trHeaderStyle}>
+            <th style={thStyle}>Upload list</th>
+            <th style={{ ...thStyle, width: '45%' }}>Clicks</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Conversions</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {top.map((b) => {
+            const share = totalClicks > 0 ? (b.clicks / totalClicks) * 100 : 0;
+            const barPct = (b.clicks / max) * 100;
+            return (
+              <tr key={b.key} style={trBodyStyle}>
+                <td style={{ ...tdStyle, fontSize: 12 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ color: '#e2e8f0' }}>{b.listName}</span>
+                    {b.listID && (
+                      <span
+                        style={{
+                          color: 'rgba(180,210,240,0.4)',
+                          fontFamily: 'monospace',
+                          fontSize: 10,
+                        }}
+                      >
+                        {b.listID.slice(0, 8)}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td style={tdStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 6,
+                        borderRadius: 3,
+                        background: 'rgba(56,189,248,0.15)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${barPct}%`,
+                          height: '100%',
+                          background: '#22d3ee',
+                        }}
+                      />
+                    </div>
+                    <strong style={{ minWidth: 36, textAlign: 'right' }}>{b.clicks}</strong>
+                  </div>
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'right', color: '#22c55e' }}>
+                  {b.conversions}
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'rgba(180,210,240,0.7)' }}>
+                  {share.toFixed(1)}%
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+};
+
 const MatchedTables: React.FC<{ result: AttributionResult }> = ({ result }) => (
   <div>
     {result.matched_clicks.length > 0 && (
@@ -660,6 +805,7 @@ const MatchedTable: React.FC<{
             <th style={thStyle}>Tier</th>
             <th style={thStyle}>Δ (s)</th>
             <th style={thStyle}>Sending domain</th>
+            <th style={thStyle} title="Upload list (mailing_lists.name) the subscriber was originally imported into.">Upload list</th>
             <th style={thStyle}>Email</th>
             <th style={thStyle}>Subscriber ID</th>
             <th style={thStyle}>Campaign</th>
@@ -672,6 +818,9 @@ const MatchedTable: React.FC<{
             const ip = kind === 'click' ? m.row.ip_address : m.row.session_user_ip;
             const sendingDomain = m.sending_domain && m.sending_domain.length > 0 ? m.sending_domain : '—';
             const subId = m.subscriber?.subscriber_id ?? '';
+            const listName = m.subscriber?.list_name && m.subscriber.list_name.length > 0
+              ? m.subscriber.list_name
+              : '—';
             return (
               <tr key={i} style={trBodyStyle}>
                 <td style={tdStyle}>{m.row.row_index}</td>
@@ -696,6 +845,12 @@ const MatchedTable: React.FC<{
                 </td>
                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>
                   {sendingDomain}
+                </td>
+                <td
+                  style={{ ...tdStyle, fontSize: 12, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={m.subscriber?.list_name || ''}
+                >
+                  {listName}
                 </td>
                 <td style={tdStyle}>{m.subscriber?.email || '—'}</td>
                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>

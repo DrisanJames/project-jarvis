@@ -82,12 +82,19 @@ type ConversionRow struct {
 // for matched rows. Kept narrow on purpose — the consumer of this attribution
 // review is QA / ops, not a CRM, so we expose what's needed to identify and
 // triage the user without dumping every column on the table.
+//
+// ListID / ListName identify the upload (mailing_lists) the subscriber was
+// originally imported into. This is the field operators ask for first: "which
+// upload was this conversion seeded by?" — surfacing it directly avoids a
+// round-trip to the lists screen.
 type SubscriberProfile struct {
 	SubscriberID  string     `json:"subscriber_id"`
 	Email         string     `json:"email"`
 	FirstName     string     `json:"first_name,omitempty"`
 	LastName      string     `json:"last_name,omitempty"`
 	Status        string     `json:"status,omitempty"`
+	ListID        string     `json:"list_id,omitempty"`
+	ListName      string     `json:"list_name,omitempty"`
 	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	LastEngagedAt *time.Time `json:"last_engaged_at,omitempty"`
 }
@@ -664,24 +671,32 @@ func loadSubscriber(ctx context.Context, db *sql.DB, subscriberID, orgID string)
 	// last_engaged_at is computed as GREATEST(last_click_at, last_open_at) —
 	// neither exists alone on the table; this matches the convention used
 	// elsewhere when surfacing a single "engagement recency" value.
+	//
+	// LEFT JOIN mailing_lists so a subscriber whose source list was deleted
+	// still loads (we just leave list_name empty rather than dropping the
+	// row entirely).
 	q := fmt.Sprintf(`
-		SELECT id::text,
-		       email,
-		       COALESCE(first_name, ''),
-		       COALESCE(last_name, ''),
-		       COALESCE(status, ''),
-		       created_at,
-		       GREATEST(last_click_at, last_open_at) AS last_engaged_at
-		FROM mailing_subscribers
-		WHERE id = $1::uuid%s
+		SELECT s.id::text,
+		       s.email,
+		       COALESCE(s.first_name, ''),
+		       COALESCE(s.last_name, ''),
+		       COALESCE(s.status, ''),
+		       COALESCE(s.list_id::text, ''),
+		       COALESCE(l.name, ''),
+		       s.created_at,
+		       GREATEST(s.last_click_at, s.last_open_at) AS last_engaged_at
+		FROM mailing_subscribers s
+		LEFT JOIN mailing_lists l ON l.id = s.list_id
+		WHERE s.id = $1::uuid%s
 		LIMIT 1
-	`, orgFilter)
+	`, strings.ReplaceAll(orgFilter, "organization_id", "s.organization_id"))
 
 	var p SubscriberProfile
 	var createdAt sql.NullTime
 	var lastEngaged sql.NullTime
 	err := db.QueryRowContext(ctx, q, args...).Scan(
 		&p.SubscriberID, &p.Email, &p.FirstName, &p.LastName, &p.Status,
+		&p.ListID, &p.ListName,
 		&createdAt, &lastEngaged,
 	)
 	if err == sql.ErrNoRows {
