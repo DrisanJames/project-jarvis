@@ -1521,6 +1521,29 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 // In legacy mode the behavior is byte-for-byte identical to the pre-outbox
 // implementation.
 func (p *SendWorkerPool) markFailed(ctx context.Context, itemID uuid.UUID, errMsg string) error {
+	// PMTA-local transient errors (bridge unreachable, pmtad crash window,
+	// resolver stall) must not burn recipient retry budget. Requeue with a
+	// 10-minute scheduled_at cooldown so the dispatcher's `scheduled_at <=
+	// NOW()` gate naturally re-picks the row after PMTA recovers. attempts
+	// is intentionally left untouched. See IsPMTATransient for the
+	// classification and the rationale.
+	if IsPMTATransient(errMsg) {
+		_, err := p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue
+			SET status = 'queued',
+			    error_message = $2,
+			    last_attempt_at = NOW(),
+			    scheduled_at = GREATEST(scheduled_at, NOW() + ($3 || ' minutes')::interval),
+			    worker_id = NULL,
+			    locked_at = NULL
+			WHERE id = $1
+		`, itemID, errMsg, fmt.Sprintf("%d", PMTATransientBackoffMinutes))
+		if err == nil {
+			log.Printf("[SendWorkerPool] PMTA transient: item %s requeued in %dm, attempts unchanged", itemID, PMTATransientBackoffMinutes)
+		}
+		return err
+	}
+
 	var attempts int
 	_ = p.db.QueryRowContext(ctx, `
 		SELECT COALESCE(attempts, 0) FROM mailing_campaign_queue WHERE id = $1

@@ -605,6 +605,27 @@ func (p *SendWorkerPoolV2) markFailed(ctx context.Context, id uuid.UUID, errorMs
 		truncated = truncated[:50]
 	}
 
+	// PMTA-local transient errors (bridge unreachable, pmtad crash window,
+	// resolver stall) must not burn recipient retry budget. Requeue with a
+	// 10-minute scheduled_at cooldown so the dispatcher's `scheduled_at <=
+	// NOW()` gate naturally re-picks the row after PMTA recovers.
+	// retry_count is intentionally left untouched.
+	if IsPMTATransient(errorMsg) {
+		_, err := p.db.ExecContext(ctx, `
+			UPDATE mailing_campaign_queue_v2
+			SET status = 'queued',
+			    error_code = $2,
+			    scheduled_at = GREATEST(scheduled_at, NOW() + ($3 || ' minutes')::interval),
+			    worker_id = NULL,
+			    claimed_at = NULL
+			WHERE id = $1
+		`, id, truncated, fmt.Sprintf("%d", PMTATransientBackoffMinutes))
+		if err == nil {
+			log.Printf("[SendWorkerPoolV2] PMTA transient: item %s requeued in %dm, retry_count unchanged", id, PMTATransientBackoffMinutes)
+		}
+		return err
+	}
+
 	// Check current retry count to decide between 'failed' and 'dead_letter'
 	var retryCount int
 	_ = p.db.QueryRowContext(ctx, `
