@@ -1967,16 +1967,53 @@ func (p *SendWorkerPool) trackSign(data string) string {
 // InjectTrackingPixelAndLinks adds an open-tracking pixel and rewrites href
 // links to click-tracking URLs. orgID and secret are passed explicitly so this
 // function can be called outside of a SendWorkerPool context (e.g. proof sends).
+//
+// Pixel placement strategy (post 2026-04-28):
+//   - One pixel near the TOP of <body> wrapped in a hidden DIV. Gmail's image
+//     proxy walks INTO display:none wrappers but skips display:none directly
+//     on an <img>. Top placement also survives Gmail's 102KB clipping rule
+//     that drops anything past the clip point.
+//   - One pixel before </body> with the same wrapper for redundancy.
+//
+// Both pixel SRCs are byte-identical so the consumer dedupes them via
+// ON CONFLICT DO NOTHING (the partition PK includes the event id which is
+// derived from emailID; the second fetch is a no-op at the DB level).
+//
+// Hiding uses position:absolute + opacity:0 (visually invisible) on the
+// wrapper rather than display:none on the <img>, matching the SparkPost /
+// HistoryFacts pattern that we have empirical evidence Gmail proxies
+// reliably fetch.
 func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
 	sig := TrackSign(encoded, secret)
 
-	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`, baseURL, encoded, sig)
-	if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx >= 0 {
-		html = html[:idx] + pixel + html[idx:]
+	// Wrap the <img> in a hidden DIV so Gmail's image proxy walks the DOM
+	// into the wrapper and fetches the IMG. display:none directly on the
+	// IMG element causes the proxy to skip the element entirely.
+	pixelHTML := fmt.Sprintf(
+		`<div style="display:none;font-size:1px;color:transparent;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;" aria-hidden="true"><img src="%s/track/open/%s/%s" width="1" height="1" border="0" alt="" /></div>`,
+		baseURL, encoded, sig,
+	)
+
+	htmlLower := strings.ToLower(html)
+
+	// Top placement — right after <body...> open tag. Survives Gmail
+	// clipping when the email body is large.
+	if bodyIdx := strings.Index(htmlLower, "<body"); bodyIdx >= 0 {
+		// Find the matching '>' that closes the <body ...> tag.
+		if closeIdx := strings.Index(html[bodyIdx:], ">"); closeIdx >= 0 {
+			insertAt := bodyIdx + closeIdx + 1
+			html = html[:insertAt] + pixelHTML + html[insertAt:]
+			htmlLower = strings.ToLower(html)
+		}
+	}
+
+	// Bottom placement — right before </body>. Redundant fallback.
+	if idx := strings.LastIndex(htmlLower, "</body>"); idx >= 0 {
+		html = html[:idx] + pixelHTML + html[idx:]
 	} else {
-		html += pixel
+		html += pixelHTML
 	}
 
 	html = linkRe.ReplaceAllStringFunc(html, func(match string) string {
