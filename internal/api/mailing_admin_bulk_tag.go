@@ -52,10 +52,12 @@ package api
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -75,7 +77,7 @@ const (
 	// VersionBulkTagCanonical is the handler version. Bump on any
 	// behavior change so log greps and clients can confirm the running
 	// build matches what they expect.
-	VersionBulkTagCanonical = "1.1"
+	VersionBulkTagCanonical = "1.2"
 )
 
 // HandleBulkTagCanonical streams a canonical CSV into mailing_subscribers
@@ -232,9 +234,25 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// Body decoding — supports raw text/csv and Content-Encoding: gzip.
+		// Gzip-encoded bodies are dramatically smaller (~10x) which
+		// matters when the operator is on a slow uplink (cellular
+		// hotspot, hotel wifi, etc.) and a 50 MB raw POST would not
+		// finish before the TLS write timeout fires.
+		var rawBody io.Reader = r.Body
+		if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				_ = copyTx.Rollback()
+				emit(map[string]interface{}{"phase": "error", "where": "gzip_decode", "error": err.Error()})
+				return
+			}
+			defer gz.Close()
+			rawBody = gz
+		}
 		// Robust line reader — supports very long lines (custom_fields
 		// can be multi-KB JSON per row).
-		bodyReader := bufio.NewReaderSize(r.Body, 1<<20) // 1 MiB read buffer
+		bodyReader := bufio.NewReaderSize(rawBody, 1<<20) // 1 MiB read buffer
 		// CSV with quotes, commas inside JSON tags & metadata, etc.
 		// We need a CSV decoder that handles RFC 4180 quoting.
 		// Use encoding/csv with field_size_limit equivalent (Go has no
