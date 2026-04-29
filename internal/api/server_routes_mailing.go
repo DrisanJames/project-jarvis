@@ -70,6 +70,15 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			poolIsolationSvc.HandlePoolIsolationActivate(w, req)
 		})
 
+		// Admin: bulk-tag canonical CSV loader. Mirrors the local
+		// Python loader (scripts/import/load_eo_harvest_keepers.py and
+		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
+		// can be imported from a laptop that can reach projectjarvis.io
+		// over HTTPS without needing direct RDS connectivity. See
+		// upside-down/internal/api/mailing_admin_bulk_tag.go for the
+		// full wire-format documentation.
+		s.router.Post("/api/admin/bulk-tag-canonical", HandleBulkTagCanonical(db))
+
 		// Admin: retry a PMTA campaign (moves draft/failed → finalizing_audience)
 		s.router.Post("/api/admin/campaign-retry/{id}", func(w http.ResponseWriter, req *http.Request) {
 			adminKey := os.Getenv("ADMIN_API_KEY")
