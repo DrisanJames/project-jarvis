@@ -5,9 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -92,6 +94,48 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		svc.serveTrackingPixel(w)
 		return
 	}
+
+	// Dedupe gate (post 2026-04-28). Two pixels per render (top + bottom)
+	// plus the long-standing PK quirk on mailing_tracking_events
+	// (id, event_at composite — same id with different microseconds
+	// inserts a new row, never conflicts) means the existing
+	// ON CONFLICT DO NOTHING on the events INSERT does NOT dedupe opens.
+	// We use a small auxiliary table mailing_open_dedupe keyed exactly
+	// on (campaign_id, subscriber_id) to gate ALL side effects on the
+	// first time we see this pair. Subsequent pixel fetches still serve
+	// the GIF but no counters move.
+	var dedupeOK bool
+	derr := svc.db.QueryRowContext(ctx, `
+		INSERT INTO mailing_open_dedupe (campaign_id, subscriber_id, email_id, first_seen_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
+		RETURNING true
+	`, campaignID, subscriberID, emailID).Scan(&dedupeOK)
+	switch {
+	case errors.Is(derr, sql.ErrNoRows):
+		// Already counted this (campaign, subscriber). Serve the pixel
+		// and exit — counters and tracking_events stay untouched.
+		svc.serveTrackingPixel(w)
+		return
+	case derr != nil:
+		// DB error on the dedupe gate itself. Failing closed (skipping
+		// side effects) is safer than failing open (uncontrolled
+		// double-counting), since this is the gate that protects every
+		// downstream counter.
+		log.Printf("TRACK OPEN DEDUPE ERROR: %v — skipping side effects camp=%s sub=%s", derr, campaignID, subscriberID)
+		svc.serveTrackingPixel(w)
+		return
+	case !dedupeOK:
+		// RETURNING returned a row but the value wasn't true. Should
+		// be impossible with the literal `RETURNING true` above; treat
+		// as duplicate to stay safe.
+		svc.serveTrackingPixel(w)
+		return
+	}
+
+	// First open for this (campaign, subscriber). Run the side-effect
+	// path: subscriber lookup → in-memory tracker → MPP detection →
+	// tracking_events INSERT → all counter updates → scoring.
 
 	var email string
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)

@@ -80,6 +80,18 @@ func TestProcessOpen_InsertsRecipientDomain(t *testing.T) {
 		WithArgs(uuid.MustParse(testEmailID), now).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
+	// 1b. Cross-source dedupe gate: this is the first time we've seen
+	// (campaign_id, subscriber_id), so the INSERT inserts and RETURNING
+	// yields true. All downstream side effects then run.
+	mock.ExpectQuery(`(?is)INSERT\s+INTO\s+mailing_open_dedupe`).
+		WithArgs(
+			uuid.MustParse(testCampaignID),
+			uuid.MustParse(testSubscriberID),
+			uuid.MustParse(testEmailID),
+			now,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"true"}).AddRow(true))
+
 	// 2. Subscriber email lookup (used downstream for inbox_profiles UPDATE).
 	mock.ExpectQuery(`(?is)SELECT\s+email\s+FROM\s+mailing_subscribers\s+WHERE\s+id\s*=\s*\$1`).
 		WithArgs(uuid.MustParse(testSubscriberID)).
@@ -149,6 +161,16 @@ func TestProcessOpen_InsertSucceedsWhenSubscriberMissing(t *testing.T) {
 		WithArgs(uuid.MustParse(testEmailID), now).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
+	// Cross-source dedupe gate — first open, RETURNING yields a row.
+	mock.ExpectQuery(`(?is)INSERT\s+INTO\s+mailing_open_dedupe`).
+		WithArgs(
+			uuid.MustParse(testCampaignID),
+			uuid.MustParse(testSubscriberID),
+			uuid.MustParse(testEmailID),
+			now,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"true"}).AddRow(true))
+
 	// Subscriber email lookup returns no rows — Scan leaves email = "".
 	mock.ExpectQuery(`(?is)SELECT\s+email\s+FROM\s+mailing_subscribers`).
 		WithArgs(uuid.MustParse(testSubscriberID)).
@@ -188,6 +210,75 @@ func TestProcessOpen_InsertSucceedsWhenSubscriberMissing(t *testing.T) {
 		UserAgent:    "GoogleImageProxy",
 		Timestamp:    now,
 	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestProcessOpen_DuplicateDedupe_SkipsSideEffects asserts that when the
+// dedupe gate finds an existing (campaign_id, subscriber_id) row, the
+// consumer returns BEFORE running the subscriber lookup, MPP detection,
+// tracking_events INSERT, or any of the aggregate UPDATEs. Strict sqlmock
+// fails the test if any of those queries fire.
+func TestProcessOpen_DuplicateDedupe_SkipsSideEffects(t *testing.T) {
+	c, mock := newConsumer(t)
+	now := time.Now().UTC()
+
+	// Fast-path EXISTS — row not present, so we proceed to the dedupe gate.
+	mock.ExpectQuery(`(?is)SELECT\s+EXISTS.*event_type\s*=\s*'opened'`).
+		WithArgs(uuid.MustParse(testEmailID), now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	// Dedupe gate hits the existing row → RETURNING yields no rows →
+	// Scan returns sql.ErrNoRows → consumer returns nil immediately.
+	mock.ExpectQuery(`(?is)INSERT\s+INTO\s+mailing_open_dedupe`).
+		WithArgs(
+			uuid.MustParse(testCampaignID),
+			uuid.MustParse(testSubscriberID),
+			uuid.MustParse(testEmailID),
+			now,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"true"})) // empty -> ErrNoRows
+
+	err := c.processOpen(context.Background(), TrackingEvent{
+		EventType:    EventOpen,
+		OrgID:        testOrgID,
+		CampaignID:   testCampaignID,
+		SubscriberID: testSubscriberID,
+		EmailID:      testEmailID,
+		Timestamp:    now,
+	})
+	require.NoError(t, err)
+	// CRITICAL: no other queries fired — the dedupe gate short-circuited
+	// the entire side-effect path.
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestProcessOpen_DedupeError_FailsClosed asserts the fail-closed posture:
+// any error from the dedupe gate skips all side effects. Failing open
+// would let dual-pixel renders silently double-count counters whenever
+// the gate is flaky.
+func TestProcessOpen_DedupeError_FailsClosed(t *testing.T) {
+	c, mock := newConsumer(t)
+	now := time.Now().UTC()
+
+	mock.ExpectQuery(`(?is)SELECT\s+EXISTS.*event_type\s*=\s*'opened'`).
+		WithArgs(uuid.MustParse(testEmailID), now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	mock.ExpectQuery(`(?is)INSERT\s+INTO\s+mailing_open_dedupe`).
+		WillReturnError(context.DeadlineExceeded)
+
+	err := c.processOpen(context.Background(), TrackingEvent{
+		EventType:    EventOpen,
+		OrgID:        testOrgID,
+		CampaignID:   testCampaignID,
+		SubscriberID: testSubscriberID,
+		EmailID:      testEmailID,
+		Timestamp:    now,
+	})
+	// Returns nil — we logged + skipped, did not fail the SQS message.
+	// Bubbling the error up would re-deliver and the dedupe gate would
+	// fail again on the same row.
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

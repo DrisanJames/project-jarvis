@@ -4182,6 +4182,22 @@ END $$`},
 				executed_at
 			FROM mailing_journey_execution_log
 			WHERE action <> 'wait'`},
+
+		// Open dedupe table — gates side effects in HandleTrackOpen and
+		// processOpen so the dual-pixel rollout (top + bottom) doesn't
+		// double-count, and so the long-standing (id, event_at) PK quirk
+		// (which lets multiple opens of the same message create distinct
+		// rows because event_at differs by microseconds) stops inflating
+		// counters. One row per (campaign_id, subscriber_id) means
+		// "this subscriber opened this campaign at least once".
+		{"create_mailing_open_dedupe", `CREATE TABLE IF NOT EXISTS mailing_open_dedupe (
+			campaign_id UUID NOT NULL,
+			subscriber_id UUID NOT NULL,
+			email_id UUID,
+			first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (campaign_id, subscriber_id)
+		)`},
+		{"idx_mailing_open_dedupe_first_seen", `CREATE INDEX IF NOT EXISTS idx_mailing_open_dedupe_first_seen ON mailing_open_dedupe(first_seen_at DESC)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

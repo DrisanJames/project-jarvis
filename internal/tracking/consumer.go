@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -142,6 +143,33 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 			WHERE id = $1 AND event_at = $2 AND event_type = 'opened'
 		)
 	`, emailID, evt.Timestamp).Scan(&exists); err == nil && exists {
+		return nil
+	}
+
+	// Cross-source dedupe: the (id, event_at) PK on mailing_tracking_events
+	// only catches exact-timestamp duplicate webhook deliveries. A pixel
+	// fire (via api.HandleTrackOpen) followed by a provider webhook for
+	// the same open would slip past the fast-path above. mailing_open_dedupe
+	// is keyed on (campaign_id, subscriber_id) and is the single source of
+	// truth for "have we counted this subscriber's open of this campaign
+	// at least once". If the row already exists we assume the API path
+	// already moved every counter and we should not move them again here.
+	var dedupeOK bool
+	derr := c.db.QueryRowContext(ctx, `
+		INSERT INTO mailing_open_dedupe (campaign_id, subscriber_id, email_id, first_seen_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
+		RETURNING true
+	`, campaignID, subscriberID, emailID, evt.Timestamp).Scan(&dedupeOK)
+	switch {
+	case errors.Is(derr, sql.ErrNoRows):
+		return nil
+	case derr != nil:
+		// Fail closed on dedupe gate errors — same posture as the API handler.
+		log.Printf("processOpen dedupe error: %v — skipping side effects camp=%s sub=%s",
+			derr, campaignID, subscriberID)
+		return nil
+	case !dedupeOK:
 		return nil
 	}
 

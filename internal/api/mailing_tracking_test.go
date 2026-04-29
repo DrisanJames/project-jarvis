@@ -16,6 +16,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -206,6 +207,123 @@ func TestHandleTrackClick_RejectsNilUUIDs_NoURL_Returns400(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// =============================================================================
+// Open dedupe gate tests
+// =============================================================================
+//
+// HandleTrackOpen must gate ALL side effects (counter UPDATEs, tracking_events
+// INSERT, scoring updates, in-memory tracker fires) on a successful insert
+// into mailing_open_dedupe. The two pixels emitted per render (top + bottom)
+// share an identical URL, and the long-standing (id, event_at) PK on
+// mailing_tracking_events does not dedupe distinct pixel fires (microseconds
+// differ). The dedupe table is the SOLE protection against double-counting.
+//
+// These tests assert the two non-happy paths: duplicate (ErrNoRows from
+// RETURNING) and DB error on the dedupe gate. Both must short-circuit
+// before any other DB work runs.
+
+const (
+	validOrgUUID  = "11111111-1111-1111-1111-111111111111"
+	validCampUUID = "22222222-2222-2222-2222-222222222222"
+	validSubUUID  = "33333333-3333-3333-3333-333333333333"
+	validMailUUID = "44444444-4444-4444-4444-444444444444"
+)
+
+// TestHandleTrackOpen_DuplicatePixel_SkipsAllSideEffects asserts that when
+// the dedupe gate INSERT hits the existing row (RETURNING returns no rows
+// → sql.ErrNoRows from Scan), no further DB queries are issued. Strict
+// sqlmock will fail the test if any unexpected query is attempted.
+func TestHandleTrackOpen_DuplicatePixel_SkipsAllSideEffects(t *testing.T) {
+	svc, mock, _ := newTrackingTestService(t)
+
+	// The only DB call we expect is the dedupe INSERT itself, which
+	// returns NO rows (the (camp, sub) was already in mailing_open_dedupe).
+	mock.ExpectQuery(`INSERT INTO mailing_open_dedupe`).
+		WithArgs(
+			sqlmock.AnyArg(), // campaignID
+			sqlmock.AnyArg(), // subscriberID
+			sqlmock.AnyArg(), // emailID
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"true"})) // empty -> ErrNoRows
+
+	data := encodeTrackingPayload(validOrgUUID, validCampUUID, validSubUUID, validMailUUID)
+	req := httptest.NewRequest(http.MethodGet, "/track/open/"+data, nil)
+	req = withChiURLParam(req, map[string]string{"data": data})
+	rec := httptest.NewRecorder()
+
+	svc.HandleTrackOpen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (pixel must still be served on dup)", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/gif" {
+		t.Errorf("content-type = %q, want image/gif", ct)
+	}
+
+	// CRITICAL: no other DB calls. If a counter UPDATE or tracking_events
+	// INSERT slipped through, ExpectationsWereMet would surface it.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected DB calls after duplicate dedupe gate: %v", err)
+	}
+}
+
+// TestHandleTrackOpen_DedupeDBError_SkipsAllSideEffects asserts the
+// fail-closed posture: any error on the dedupe gate (connection blip,
+// constraint violation, etc.) must skip everything that follows. Failing
+// open here would let dual-pixel renders silently double-count whenever
+// the gate is flaky.
+func TestHandleTrackOpen_DedupeDBError_SkipsAllSideEffects(t *testing.T) {
+	svc, mock, _ := newTrackingTestService(t)
+
+	mock.ExpectQuery(`INSERT INTO mailing_open_dedupe`).
+		WillReturnError(errors.New("connection reset by peer"))
+
+	data := encodeTrackingPayload(validOrgUUID, validCampUUID, validSubUUID, validMailUUID)
+	req := httptest.NewRequest(http.MethodGet, "/track/open/"+data, nil)
+	req = withChiURLParam(req, map[string]string{"data": data})
+	rec := httptest.NewRecorder()
+
+	svc.HandleTrackOpen(rec, req)
+
+	// Pixel is still served (Gmail's image proxy must always get a 200
+	// or it may flag the URL as broken on retry).
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/gif" {
+		t.Errorf("content-type = %q, want image/gif", ct)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected DB calls after dedupe error: %v", err)
+	}
+}
+
+// TestHandleTrackOpen_DedupeReturningFalse_SkipsSideEffects guards against
+// a defensive corner case where RETURNING somehow yields a row whose
+// scanned value is false. This should be impossible with the literal
+// `RETURNING true` SQL but the handler still treats it as a duplicate.
+func TestHandleTrackOpen_DedupeReturningFalse_SkipsSideEffects(t *testing.T) {
+	svc, mock, _ := newTrackingTestService(t)
+
+	mock.ExpectQuery(`INSERT INTO mailing_open_dedupe`).
+		WillReturnRows(sqlmock.NewRows([]string{"true"}).AddRow(false))
+
+	data := encodeTrackingPayload(validOrgUUID, validCampUUID, validSubUUID, validMailUUID)
+	req := httptest.NewRequest(http.MethodGet, "/track/open/"+data, nil)
+	req = withChiURLParam(req, map[string]string{"data": data})
+	rec := httptest.NewRecorder()
+
+	svc.HandleTrackOpen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected DB calls: %v", err)
 	}
 }
 
