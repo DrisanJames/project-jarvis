@@ -222,7 +222,27 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	if !isMachineOpen {
 		c.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = open_count + 1 WHERE id = $1`, campaignID)
 		c.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE id = $1`, subscriberID)
-		c.db.ExecContext(ctx, `UPDATE mailing_inbox_profiles SET total_opens = total_opens + 1, last_open_at = NOW(), updated_at = NOW() WHERE email = $1`, email)
+		// Inbox-profile counter goes through the email_hash UNIQUE key, matching
+		// every other writer of this table (pixel handler, send_worker, ingest,
+		// campaign_builder_send_sync, mailing_lists_handlers). The previous
+		// `WHERE email = $1` form was AWS RDS Performance Insights' top SQL —
+		// non-unique TEXT index, mixed casing, fan-out on empty-string lookups.
+		// See plan: .cursor/plans/inbox_profile_update_hot_path_*.plan.md
+		if email != "" {
+			emailLower := strings.ToLower(strings.TrimSpace(email))
+			eHash := hashEmail(emailLower)
+			domain := domainFromEmail(emailLower)
+			c.db.ExecContext(ctx, `
+				INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_opens, last_open_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
+				ON CONFLICT (email_hash) DO UPDATE SET
+					total_opens = mailing_inbox_profiles.total_opens + 1,
+					last_open_at = NOW(),
+					updated_at = NOW()
+			`, eHash, emailLower, domain)
+		} else {
+			log.Printf("PROCESSED OPEN: empty subscriber email, skipping inbox_profile upsert campaign=%s subscriber=%s", campaignID, subscriberID)
+		}
 		c.updateEngagementScore(ctx, subscriberID)
 		log.Printf("PROCESSED OPEN: campaign=%s subscriber=%s email=%s mpp=false", campaignID, subscriberID, email)
 	} else {
@@ -282,7 +302,23 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 
 	c.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = click_count + 1 WHERE id = $1`, campaignID)
 	c.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_clicks = total_clicks + 1, last_click_at = NOW(), updated_at = NOW() WHERE id = $1`, subscriberID)
-	c.db.ExecContext(ctx, `UPDATE mailing_inbox_profiles SET total_clicks = total_clicks + 1, last_click_at = NOW(), updated_at = NOW() WHERE email = $1`, email)
+	// Inbox-profile counter via email_hash UNIQUE key — matches every other
+	// writer of this table. See processOpen for the full rationale.
+	if email != "" {
+		emailLower := strings.ToLower(strings.TrimSpace(email))
+		eHash := hashEmail(emailLower)
+		domain := domainFromEmail(emailLower)
+		c.db.ExecContext(ctx, `
+			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, total_clicks, last_click_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
+			ON CONFLICT (email_hash) DO UPDATE SET
+				total_clicks = mailing_inbox_profiles.total_clicks + 1,
+				last_click_at = NOW(),
+				updated_at = NOW()
+		`, eHash, emailLower, domain)
+	} else {
+		log.Printf("PROCESSED CLICK: empty subscriber email, skipping inbox_profile upsert campaign=%s subscriber=%s", campaignID, subscriberID)
+	}
 	c.updateEngagementScore(ctx, subscriberID)
 
 	log.Printf("PROCESSED CLICK: campaign=%s subscriber=%s url=%s", campaignID, subscriberID, evt.LinkURL)

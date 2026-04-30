@@ -126,7 +126,11 @@ func TestProcessOpen_InsertsRecipientDomain(t *testing.T) {
 	// which performs a SELECT ... FROM mailing_subscribers first.
 	mock.ExpectExec(`UPDATE\s+mailing_campaigns`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+total_opens`).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE\s+mailing_inbox_profiles`).WillReturnResult(sqlmock.NewResult(0, 1))
+	// Inbox-profile counter is now an upsert keyed on email_hash UNIQUE
+	// index, not a WHERE-by-email UPDATE. Lock the new shape so any
+	// regression to the old (slow) form fails the test.
+	mock.ExpectExec(`(?is)INSERT\s+INTO\s+mailing_inbox_profiles.*email_hash.*ON\s+CONFLICT\s*\(\s*email_hash\s*\).*total_opens\s*=\s*mailing_inbox_profiles\.total_opens\s*\+\s*1`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(total_opens,0\)`).
 		WithArgs(uuid.MustParse(testSubscriberID)).
 		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails", "last_open_at"}).
@@ -208,6 +212,83 @@ func TestProcessOpen_InsertSucceedsWhenSubscriberMissing(t *testing.T) {
 		EmailID:      testEmailID,
 		IPAddress:    "5.6.7.8",
 		UserAgent:    "GoogleImageProxy",
+		Timestamp:    now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestProcessOpen_EmptyEmail_SkipsInboxProfileUpsert covers the case where
+// the subscriber lookup returns no row (deleted/migrated subscriber). The
+// downstream tracking_events INSERT still fires (LEFT JOIN handles the
+// missing row by writing NULL recipient_domain), and after the INSERT
+// reports RowsAffected=1 we run the campaign + subscriber UPDATEs. But
+// the inbox_profile upsert MUST be skipped — sending an empty string to
+// the previous WHERE-by-email form fanned out across every NULL/empty
+// row in the table, which was a measurable production hot spot.
+//
+// Strict sqlmock fails the test if any unexpected exec fires, so the
+// absence of an inbox_profiles ExpectExec is what proves the skip.
+func TestProcessOpen_EmptyEmail_SkipsInboxProfileUpsert(t *testing.T) {
+	c, mock := newConsumer(t)
+	now := time.Now().UTC()
+
+	mock.ExpectQuery(`(?is)SELECT\s+EXISTS.*event_type\s*=\s*'opened'`).
+		WithArgs(uuid.MustParse(testEmailID), now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	mock.ExpectQuery(`(?is)INSERT\s+INTO\s+mailing_open_dedupe`).
+		WithArgs(
+			uuid.MustParse(testCampaignID),
+			uuid.MustParse(testSubscriberID),
+			uuid.MustParse(testEmailID),
+			now,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"true"}).AddRow(true))
+
+	// Subscriber lookup returns zero rows — Scan leaves email = "".
+	mock.ExpectQuery(`(?is)SELECT\s+email\s+FROM\s+mailing_subscribers`).
+		WithArgs(uuid.MustParse(testSubscriberID)).
+		WillReturnRows(sqlmock.NewRows([]string{"email"}))
+
+	mock.ExpectQuery(`(?is)SELECT\s+event_at.*event_type\s*=\s*'sent'`).
+		WithArgs(uuid.MustParse(testSubscriberID), uuid.MustParse(testCampaignID)).
+		WillReturnRows(sqlmock.NewRows([]string{"event_at"}))
+
+	// INSERT succeeds (RowsAffected=1) so the aggregate UPDATEs run.
+	mock.ExpectExec(openInsertRegex.String()).
+		WithArgs(
+			uuid.MustParse(testEmailID),
+			uuid.MustParse(testOrgID),
+			uuid.MustParse(testCampaignID),
+			uuid.MustParse(testSubscriberID),
+			now,
+			"1.2.3.4",
+			"Mozilla/5.0",
+			"desktop",
+			false,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectExec(`UPDATE\s+mailing_campaigns`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+total_opens`).WillReturnResult(sqlmock.NewResult(0, 1))
+	// CRITICAL: NO ExpectExec for INSERT INTO mailing_inbox_profiles — the
+	// empty email guard must short-circuit the upsert.
+	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(total_opens,0\)`).
+		WithArgs(uuid.MustParse(testSubscriberID)).
+		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails", "last_open_at"}).
+			AddRow(1, 0, 1, nil))
+	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+engagement_score`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := c.processOpen(context.Background(), TrackingEvent{
+		EventType:    EventOpen,
+		OrgID:        testOrgID,
+		CampaignID:   testCampaignID,
+		SubscriberID: testSubscriberID,
+		EmailID:      testEmailID,
+		IPAddress:    "1.2.3.4",
+		UserAgent:    "Mozilla/5.0",
 		Timestamp:    now,
 	})
 	require.NoError(t, err)
@@ -306,7 +387,10 @@ func TestProcessClick_InsertsRecipientDomain(t *testing.T) {
 	// Aggregate UPDATEs and engagement recompute.
 	mock.ExpectExec(`UPDATE\s+mailing_campaigns`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+total_clicks`).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE\s+mailing_inbox_profiles`).WillReturnResult(sqlmock.NewResult(0, 1))
+	// Inbox-profile counter is now an upsert keyed on email_hash UNIQUE
+	// index — see processOpen test for the rationale.
+	mock.ExpectExec(`(?is)INSERT\s+INTO\s+mailing_inbox_profiles.*email_hash.*ON\s+CONFLICT\s*\(\s*email_hash\s*\).*total_clicks\s*=\s*mailing_inbox_profiles\.total_clicks\s*\+\s*1`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(total_opens,0\)`).
 		WithArgs(uuid.MustParse(testSubscriberID)).
 		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails", "last_open_at"}).
