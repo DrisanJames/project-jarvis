@@ -521,11 +521,17 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		sendingIP = rec.VMTA
 	}
 
+	// event_at must be deterministic so drainer retries dedupe via ON CONFLICT.
+	// PMTA's time_logged is the canonical event timestamp; fall back to NOW()
+	// only when it's missing/unparseable. The PK on the partitioned table is
+	// (id, event_at), so both columns must match for ON CONFLICT to fire.
+	eventAt := parseDeliveryTime(rec.DeliveryTime)
+
 	res, err := ing.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, sending_ip, recipient_domain)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)
-		ON CONFLICT (id) DO NOTHING
-	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus, sendingDomain, sendingIP, recipientDomain)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id, event_at) DO NOTHING
+	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus, eventAt, sendingDomain, sendingIP, recipientDomain)
 	if err != nil {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
 		return
@@ -738,6 +744,36 @@ func isHardBounceCategory(cat string) bool {
 func isUUID(s string) bool {
 	_, err := uuid.Parse(s)
 	return err == nil
+}
+
+// parseDeliveryTime converts PMTA's time_logged string to a time.Time. PMTA
+// emits the format "2006-01-02 15:04:05-0700" by default, but operators can
+// configure ISO 8601 or unix-epoch output. We try the common formats in
+// order; if none match we fall back to time.Now() so an INSERT still lands.
+//
+// Determinism is required: the deterministic event UUID embeds the raw
+// time_logged string, so re-shipped records hit the same (id, event_at)
+// tuple and ON CONFLICT (id, event_at) DO NOTHING dedupes them.
+func parseDeliveryTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Now().UTC()
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05-0700",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		time.RFC3339Nano,
+		time.RFC3339,
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	if epoch, err := strconv.ParseInt(s, 10, 64); err == nil && epoch > 1_000_000_000 {
+		return time.Unix(epoch, 0).UTC()
+	}
+	return time.Now().UTC()
 }
 
 func sanitizeJSON(s string) string {

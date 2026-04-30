@@ -2,11 +2,39 @@ package engine
 
 import (
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestParseDeliveryTime locks in the formats PMTA's accounting feed emits
+// for time_logged. The deterministic event ID embeds the raw string and
+// the INSERT uses (id, event_at) as the conflict key, so consistent
+// parsing is required for ON CONFLICT dedupe to fire on drainer retries.
+func TestParseDeliveryTime(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string // RFC3339 representation in UTC
+	}{
+		{"2026-04-30 16:02:33+0000", "2026-04-30T16:02:33Z"},
+		{"2026-04-30 16:02:33-0600", "2026-04-30T22:02:33Z"},
+		{"2026-04-30T16:02:33Z", "2026-04-30T16:02:33Z"},
+		{"2026-04-30T16:02:33.123456789Z", "2026-04-30T16:02:33.123456789Z"},
+		{"1714492800", "2024-04-30T16:00:00Z"},
+	}
+	for _, tc := range cases {
+		got := parseDeliveryTime(tc.in)
+		assert.Equal(t, tc.want, got.UTC().Format(time.RFC3339Nano), "input %q", tc.in)
+	}
+
+	// Empty / unparseable inputs fall back to ~now (no panic, returns valid time)
+	for _, in := range []string{"", "garbage", "not-a-date"} {
+		got := parseDeliveryTime(in)
+		assert.WithinDuration(t, time.Now().UTC(), got, 5*time.Second, "input %q should fall back to ~now", in)
+	}
+}
 
 // TestPersistToDB_DeferralTypes verifies that PMTA transient records (type "t"
 // and "tq") are persisted to mailing_tracking_events with event_type "deferred".
@@ -55,6 +83,10 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 				return
 			}
 
+			// persistToDB unconditionally buffers to pmta_acct_raw first.
+			mock.ExpectExec("INSERT INTO pmta_acct_raw").
+				WillReturnResult(sqlmock.NewResult(0, 1))
+
 			// Campaign ID is a valid UUID, so it skips the message_log lookup.
 			// Expect the subscriber + org lookup via mailing_message_log.
 			mock.ExpectQuery("SELECT subscriber_id::text, organization_id::text").
@@ -74,6 +106,7 @@ func TestPersistToDB_DeferralTypes(t *testing.T) {
 					tc.wantEventType,
 					sqlmock.AnyArg(), // bounce_type
 					sqlmock.AnyArg(), // bounce_reason (dsn_status)
+					sqlmock.AnyArg(), // event_at (parsed from time_logged, falls back to NOW())
 					sqlmock.AnyArg(), // sending_domain
 					sqlmock.AnyArg(), // sending_ip
 					sqlmock.AnyArg(), // recipient_domain
@@ -192,12 +225,14 @@ func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
 		DSNStatus: "5.1.1",
 	}
 
+	mock.ExpectExec("INSERT INTO pmta_acct_raw").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT subscriber_id::text, organization_id::text").
 		WithArgs(sqlmock.AnyArg(), "user@gmail.com").
 		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "organization_id"}).AddRow(subUUID, orgUUID))
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			"bounced", "bad-mailbox", "5.1.1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+			"bounced", "bad-mailbox", "5.1.1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
 		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
