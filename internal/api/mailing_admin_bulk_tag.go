@@ -77,7 +77,7 @@ const (
 	// VersionBulkTagCanonical is the handler version. Bump on any
 	// behavior change so log greps and clients can confirm the running
 	// build matches what they expect.
-	VersionBulkTagCanonical = "1.2"
+	VersionBulkTagCanonical = "1.3"
 )
 
 // HandleBulkTagCanonical streams a canonical CSV into mailing_subscribers
@@ -128,6 +128,16 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 				batchSize = n
 			}
 		}
+		// Source URL — when set, the server fetches the gzipped
+		// canonical CSV from this URL instead of reading the request
+		// body. Designed for operators on slow/flaky uplinks who
+		// cannot keep a streaming POST alive for ~5 min.
+		// Workflow: upload to S3 with `aws s3 cp` (multipart,
+		// resumable), generate a presigned URL with `aws s3 presign`,
+		// then POST a near-empty body with this query param set. The
+		// server pulls the CSV from S3 (us-west-2 → us-west-2 ECS is
+		// fast and reliable) and processes normally.
+		csvURL := strings.TrimSpace(q.Get("csv_url"))
 
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("X-Handler-Version", VersionBulkTagCanonical)
@@ -234,13 +244,59 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Body decoding — supports raw text/csv and Content-Encoding: gzip.
-		// Gzip-encoded bodies are dramatically smaller (~10x) which
-		// matters when the operator is on a slow uplink (cellular
-		// hotspot, hotel wifi, etc.) and a 50 MB raw POST would not
-		// finish before the TLS write timeout fires.
+		// Body decoding — three modes:
+		//   1. csv_url query param set → server GETs that URL (intended
+		//      for S3 presigned URLs). Always treated as gzip.
+		//   2. Content-Encoding: gzip header set → request body is
+		//      decoded through gzip.NewReader.
+		//   3. Plain text/csv body.
+		// Mode 1 exists because operators on slow uplinks cannot reliably
+		// keep a streaming POST alive long enough to upload 5+ MB of
+		// gzipped CSV. `aws s3 cp` handles their hotspot's flakiness via
+		// multipart resumable upload, then this handler does the
+		// us-west-2 → us-west-2 fetch in seconds.
 		var rawBody io.Reader = r.Body
-		if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		var bodyCloser io.Closer
+		if csvURL != "" {
+			emit(map[string]interface{}{"phase": "csv_url_fetching", "csv_url": csvURL})
+			fetchStart := time.Now()
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer fetchCancel()
+			req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, csvURL, nil)
+			if err != nil {
+				_ = copyTx.Rollback()
+				emit(map[string]interface{}{"phase": "error", "where": "csv_url_request_build", "error": err.Error()})
+				return
+			}
+			httpClient := &http.Client{Timeout: 5 * time.Minute}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				_ = copyTx.Rollback()
+				emit(map[string]interface{}{"phase": "error", "where": "csv_url_fetch", "error": err.Error()})
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				_ = copyTx.Rollback()
+				emit(map[string]interface{}{"phase": "error", "where": "csv_url_status", "status": resp.StatusCode})
+				return
+			}
+			bodyCloser = resp.Body
+			gz, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				resp.Body.Close()
+				_ = copyTx.Rollback()
+				emit(map[string]interface{}{"phase": "error", "where": "csv_url_gzip_decode", "error": err.Error()})
+				return
+			}
+			defer gz.Close()
+			rawBody = gz
+			emit(map[string]interface{}{
+				"phase":          "csv_url_fetched",
+				"fetch_seconds":  time.Since(fetchStart).Seconds(),
+				"content_length": resp.ContentLength,
+			})
+		} else if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
 			gz, err := gzip.NewReader(r.Body)
 			if err != nil {
 				_ = copyTx.Rollback()
@@ -249,6 +305,9 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			}
 			defer gz.Close()
 			rawBody = gz
+		}
+		if bodyCloser != nil {
+			defer bodyCloser.Close()
 		}
 		// Robust line reader — supports very long lines (custom_fields
 		// can be multi-KB JSON per row).
