@@ -206,6 +206,73 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 		})
 
 		s.apiRouter.Route("/mailing", func(r chi.Router) {
+			// Engine ingestor + PMTA accounting webhook first — the rest of this group registers
+			// hundreds of routes; main is blocked for that whole time while ListenAndServe is live.
+			// === PMTA MULTI-AGENT GOVERNANCE ENGINE ===
+			engineOrgID := "00000000-0000-0000-0000-000000000001"
+			ispClassifier := engine.NewISPRegistry()
+			signalStore := &engine.DBSignalStore{DB: db}
+			signalProcessor := engine.NewSignalProcessor(signalStore, engineOrgID, ispClassifier)
+
+			// Alerter + ingestor + accounting webhook before suppression/agent DB restores — those can
+			// take minutes; ListenAndServe runs concurrently and PMTA accounting must not 503 that long.
+			alertSMTPPort := 587
+			if p := os.Getenv("ALERT_SMTP_PORT"); p != "" {
+				if parsed, err := strconv.Atoi(p); err == nil {
+					alertSMTPPort = parsed
+				}
+			}
+			alertFrom := os.Getenv("ALERT_FROM")
+			if alertFrom == "" {
+				alertFrom = "alerts@projectjarvis.io"
+			}
+			alertTo := os.Getenv("ALERT_TO")
+			if alertTo == "" {
+				alertTo = "drisan@jamesventurescorp.com"
+			}
+			alerterCfg := engine.AlerterConfig{
+				SMTPHost: os.Getenv("ALERT_SMTP_HOST"),
+				SMTPPort: alertSMTPPort,
+				From:     alertFrom,
+				To:       []string{alertTo},
+			}
+			alerter := engine.NewAlerter(alerterCfg)
+
+			pmtaMgmtHost := os.Getenv("PMTA_MGMT_HOST")
+			pmtaMgmtPort := 19000
+			pmtaMgmtUser := os.Getenv("PMTA_MGMT_USER")
+			pmtaMgmtPass := os.Getenv("PMTA_MGMT_PASSWORD")
+			ingestorCfg := engine.IngestorConfig{
+				PMTAHost:     pmtaMgmtHost,
+				PMTAPort:     pmtaMgmtPort,
+				PMTAUser:     pmtaMgmtUser,
+				PMTAPassword: pmtaMgmtPass,
+			}
+			if pmtaMgmtHost == "" {
+				log.Println("[WARNING] PMTA_MGMT_HOST not set — engine signal polling DISABLED. Agents will not receive live data.")
+			} else {
+				log.Printf("[engine] PMTA polling configured: host=%s port=%d", pmtaMgmtHost, pmtaMgmtPort)
+			}
+			ingestor := engine.NewIngestor(ispClassifier, signalProcessor, ingestorCfg)
+			ingestor.SetDB(db)
+			ingestor.SetAlerter(alerter)
+
+			if s.redisClient != nil {
+				signalProcessor.SetRedisClient(s.redisClient)
+				ingestor.SetRedisClient(s.redisClient)
+				svc.SetRedisClient(s.redisClient)
+				log.Println("[engine] Engagement telemetry bridge enabled (Redis-backed)")
+			}
+
+			acctCtx := context.Background()
+			if s.shutdownCtx != nil {
+				acctCtx = s.shutdownCtx
+			}
+			ingestor.StartAccountingWebhookWorkers(acctCtx)
+			r.Post("/engine/webhook", ingestor.HandleWebhook)
+			s.pmtaAccountingWebhook = ingestor.HandleWebhook
+			log.Println("[engine] PMTA accounting webhook ready (public /engine/webhook)")
+
 			// Site pixel management and real-time traffic
 			r.Get("/site-pixel/snippet", siteEventsHandler.HandleGetPixelSnippet)
 			r.Get("/site-pixel/traffic", siteEventsHandler.HandleGetSiteTraffic)
@@ -672,11 +739,6 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			ovhAPI := NewOVHService(ovhClient)
 			ovhAPI.RegisterRoutes(r)
 
-			// === PMTA MULTI-AGENT GOVERNANCE ENGINE ===
-			engineOrgID := "00000000-0000-0000-0000-000000000001"
-			ispClassifier := engine.NewISPRegistry()
-			signalStore := &engine.DBSignalStore{DB: db}
-			signalProcessor := engine.NewSignalProcessor(signalStore, engineOrgID, ispClassifier)
 			suppressionDir := os.Getenv("PMTA_SUPPRESSION_DIR")
 			if suppressionDir == "" {
 				suppressionDir = os.TempDir() + "/pmta-suppressions"
@@ -741,55 +803,6 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			executor := engine.NewExecutor(pmtaHost, pmtaSSHPort, pmtaSSHUser, pmtaSSHKey)
 			executor.SetDB(db)
-
-		alertSMTPPort := 587
-		if p := os.Getenv("ALERT_SMTP_PORT"); p != "" {
-			if parsed, err := strconv.Atoi(p); err == nil {
-				alertSMTPPort = parsed
-			}
-		}
-		alertFrom := os.Getenv("ALERT_FROM")
-		if alertFrom == "" {
-			alertFrom = "alerts@projectjarvis.io"
-		}
-		alertTo := os.Getenv("ALERT_TO")
-		if alertTo == "" {
-			alertTo = "drisan@jamesventurescorp.com"
-		}
-		alerterCfg := engine.AlerterConfig{
-			SMTPHost: os.Getenv("ALERT_SMTP_HOST"),
-			SMTPPort: alertSMTPPort,
-			From:     alertFrom,
-			To:       []string{alertTo},
-		}
-			alerter := engine.NewAlerter(alerterCfg)
-
-			pmtaMgmtHost := os.Getenv("PMTA_MGMT_HOST")
-			pmtaMgmtPort := 19000
-			pmtaMgmtUser := os.Getenv("PMTA_MGMT_USER")
-			pmtaMgmtPass := os.Getenv("PMTA_MGMT_PASSWORD")
-			ingestorCfg := engine.IngestorConfig{
-				PMTAHost:     pmtaMgmtHost,
-				PMTAPort:     pmtaMgmtPort,
-				PMTAUser:     pmtaMgmtUser,
-				PMTAPassword: pmtaMgmtPass,
-			}
-			if pmtaMgmtHost == "" {
-				log.Println("[WARNING] PMTA_MGMT_HOST not set — engine signal polling DISABLED. Agents will not receive live data.")
-			} else {
-				log.Printf("[engine] PMTA polling configured: host=%s port=%d", pmtaMgmtHost, pmtaMgmtPort)
-			}
-			ingestor := engine.NewIngestor(ispClassifier, signalProcessor, ingestorCfg)
-			ingestor.SetDB(db)
-			ingestor.SetAlerter(alerter)
-
-			// Wire Redis engagement telemetry bridge
-			if s.redisClient != nil {
-				signalProcessor.SetRedisClient(s.redisClient)
-				ingestor.SetRedisClient(s.redisClient)
-				svc.SetRedisClient(s.redisClient)
-				log.Println("[engine] Engagement telemetry bridge enabled (Redis-backed)")
-			}
 
 			decisionStore := &engine.DBDecisionStore{DB: db}
 			orchestrator := engine.NewOrchestrator(
@@ -1006,18 +1019,6 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				}
 				})
 			}
-
-			// Accounting webhook + worker pool — wire before orchestrator/consciousness startup so
-			// rolling deploys and concurrent ListenAndServe do not see a multi-minute "engine not ready"
-			// window while those subsystems initialize.
-			acctCtx := context.Background()
-			if s.shutdownCtx != nil {
-				acctCtx = s.shutdownCtx
-			}
-			ingestor.StartAccountingWebhookWorkers(acctCtx)
-			r.Post("/engine/webhook", ingestor.HandleWebhook)
-			s.pmtaAccountingWebhook = ingestor.HandleWebhook
-			log.Println("[engine] PMTA accounting webhook ready (public /engine/webhook)")
 
 			// Wire campaign tracker to consciousness for campaign-aware thoughts
 			consciousness.SetCampaignTracker(campaignTracker)
