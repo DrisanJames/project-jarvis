@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""PMTA accounting pipe -> local spool only (v5, non-blocking).
+
+Canonical copy for OVH deploy — verify SHA256 matches sending-throttle rule after install.
+
+v5 removes the inline POST entirely. Webhook delivery is handled by pmta-acct-drainer.
+
+If you need inline POSTs for debugging, set PMTA_ACCT_FORWARD_INLINE=1.
+"""
+import csv
+import json
+import os
+import sys
+import time
+import uuid
+import socket
+import datetime
+import urllib.request
+import urllib.error
+
+WEBHOOK_URL = 'https://projectjarvis.io/engine/webhook'
+LOG_FILE = '/var/log/pmta/acct-forward.log'
+SPOOL_DIR = '/var/spool/pmta-forward'
+INLINE_POST = os.environ.get('PMTA_ACCT_FORWARD_INLINE') == '1'
+POST_TIMEOUT_SECS = 20
+BATCH_SIZE = 5
+
+FIELD_MAP = {
+    'type': 'type',
+    'timeLogged': 'time_logged',
+    'orig': 'sender',
+    'rcpt': 'recipient',
+    'dsnStatus': 'dsn_status',
+    'dsnDiag': 'dsn_diag',
+    'dsnMta': 'dsn_mta',
+    'bounceCat': 'bounce_cat',
+    'dlvSourceIp': 'source_ip',
+    'dlvDestinationIp': 'dest_ip',
+    'vmta': 'vmta',
+    'jobId': 'job_id',
+    'queue': 'domain',
+    'vmtaPool': 'pool',
+    'feedbackType': 'feedback_type',
+    'dlvSize': 'size',
+    'dsnAction': 'dsn_action',
+}
+
+
+def log(msg):
+    try:
+        with open(LOG_FILE, 'a') as f:
+            f.write(f'{datetime.datetime.now().isoformat()} {msg}\n')
+    except Exception:
+        pass
+
+
+def ensure_spool():
+    try:
+        os.makedirs(SPOOL_DIR, exist_ok=True)
+    except Exception as e:
+        log(f'SPOOL MKDIR FAILED: {e}')
+
+
+def spool_write(batch):
+    if not batch:
+        return None
+    name = f'{int(time.time()*1000)}-{os.getpid()}-{uuid.uuid4().hex[:8]}.json'
+    final = os.path.join(SPOOL_DIR, name)
+    tmp = final + '.tmp'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(batch, f, separators=(',', ':'))
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, final)
+        return final
+    except Exception as e:
+        log(f'SPOOL WRITE FAILED ({len(batch)} recs): {type(e).__name__}: {e}')
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        return None
+
+
+def try_post_inline(batch, spool_path):
+    if not batch:
+        return
+    try:
+        body = json.dumps(batch, separators=(',', ':')).encode('utf-8')
+        req = urllib.request.Request(
+            WEBHOOK_URL,
+            data=body,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        resp = urllib.request.urlopen(req, timeout=POST_TIMEOUT_SECS)
+        result = resp.read().decode('utf-8', errors='replace')[:200]
+        log(f'POST {len(batch)} records -> {resp.status} {result}')
+        if spool_path:
+            try:
+                os.unlink(spool_path)
+            except Exception as e:
+                log(f'SPOOL UNLINK FAILED: {e}')
+    except socket.timeout:
+        log(f'SPOOLED-ON-TIMEOUT: {len(batch)} records kept at {spool_path}')
+    except urllib.error.HTTPError as e:
+        body_text = ''
+        try:
+            body_text = e.read().decode('utf-8', errors='replace')[:200]
+        except Exception:
+            pass
+        log(f'SPOOLED-ON-HTTP-{e.code}: {len(batch)} records kept at {spool_path} body={body_text}')
+    except urllib.error.URLError as e:
+        log(f'SPOOLED-ON-URLERROR: {e} records kept at {spool_path}')
+    except Exception as e:
+        log(f'SPOOLED-ON-ERROR: {type(e).__name__}: {e} records kept at {spool_path}')
+
+
+def main():
+    ensure_spool()
+    log(f'--- pipe invoked (inline_post={INLINE_POST}) ---')
+    header = None
+    reader = csv.reader(sys.stdin)
+    batch = []
+    total_rows = 0
+    bounce_rows = 0
+
+    def flush():
+        nonlocal batch
+        if not batch:
+            return
+        spool_path = spool_write(batch)
+        if INLINE_POST:
+            try_post_inline(batch, spool_path)
+        batch = []
+
+    for row in reader:
+        if not row or row[0].startswith('#'):
+            continue
+
+        if header is None:
+            if row[0] == 'type':
+                header = row
+                log(f'Header detected: {len(header)} columns')
+                continue
+            header = [
+                'type', 'timeLogged', 'timeQueued', 'orig', 'rcpt', 'orcpt',
+                'dsnAction', 'dsnStatus', 'dsnDiag', 'dsnMta', 'bounceCat',
+                'srcType', 'srcMta', 'dlvType', 'dlvSourceIp',
+                'dlvDestinationIp', 'dlvEsmtpAvailable', 'dlvSize', 'vmta',
+                'jobId', 'envId', 'queue', 'vmtaPool'
+            ]
+            log(f'No header row, using default {len(header)} columns')
+
+        total_rows += 1
+        record = {}
+        for i, val in enumerate(row):
+            if i < len(header):
+                key = header[i]
+                mapped = FIELD_MAP.get(key)
+                if mapped:
+                    record[mapped] = val
+
+        domain = record.get('domain', '')
+        if '/' in domain:
+            record['domain'] = domain.split('/')[0]
+
+        rec_type = record.get('type', '')
+        if rec_type == 'b':
+            bounce_rows += 1
+            log(f'BOUNCE: {record.get("recipient", "")} cat={record.get("bounce_cat", "")} status={record.get("dsn_status", "")}')
+
+        batch.append(record)
+        if len(batch) >= BATCH_SIZE:
+            flush()
+
+    flush()
+    log(f'--- done: {total_rows} rows ({bounce_rows} bounces) ---')
+
+
+if __name__ == '__main__':
+    main()

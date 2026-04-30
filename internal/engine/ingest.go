@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +52,14 @@ func newBounceWindow() *bounceWindow {
 const bounceWindowDuration = 5 * time.Minute
 const hardBounceRateThreshold = 0.02   // 2%
 const softBounceRateThreshold = 0.10   // 10%
+
+// VersionEngineAccountingWebhook is the /engine/webhook response contract; bump on behavior change.
+const VersionEngineAccountingWebhook = "2.0"
+
+const (
+	defaultAccountingWebhookWorkers = 12
+	defaultAccountingWebhookQueue   = 4096
+)
 
 func (bw *bounceWindow) record(campaignID, campaignName, eventType string, isHardBounce bool) (rate float64, exceeded bool) {
 	bw.mu.Lock()
@@ -108,6 +118,9 @@ type Ingestor struct {
 	httpClient   *http.Client
 
 	redisClient *redis.Client
+
+	// Async accounting webhook (PMTA drainer POSTs). Nil disables queue — HandleWebhook runs synchronously.
+	webhookJobs chan []AccountingRecord
 }
 
 // IngestorConfig holds configuration for the ingestor.
@@ -176,48 +189,59 @@ func (ing *Ingestor) SubscribeISP(isp ISP, ch chan<- AccountingRecord) {
 	ing.listeners[isp] = append(ing.listeners[isp], ch)
 }
 
-// HandleWebhook is the HTTP handler for PMTA accounting webhook POSTs.
-// Expects JSON array of AccountingRecord objects.
-func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// StartAccountingWebhookWorkers starts goroutines that process PMTA JSON batches
+// from the drainer. Idempotent with multiple calls.
+func (ing *Ingestor) StartAccountingWebhookWorkers(ctx context.Context) {
+	if ing.webhookJobs != nil {
 		return
 	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
-	if err != nil {
-		http.Error(w, "read error", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	var records []AccountingRecord
-	if err := json.Unmarshal(body, &records); err != nil {
-		// Try single record
-		var single AccountingRecord
-		if err2 := json.Unmarshal(body, &single); err2 == nil {
-			records = []AccountingRecord{single}
-		} else {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
+	q := defaultAccountingWebhookQueue
+	if v := os.Getenv("ENGINE_ACCOUNTING_WEBHOOK_QUEUE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			q = n
 		}
 	}
+	w := defaultAccountingWebhookWorkers
+	if v := os.Getenv("ENGINE_ACCOUNTING_WEBHOOK_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			w = n
+		}
+	}
+	ing.webhookJobs = make(chan []AccountingRecord, q)
+	for i := 0; i < w; i++ {
+		go ing.accountingWebhookWorker(ctx)
+	}
+	log.Printf("[ingest] accounting webhook async: workers=%d queue=%d version=%s", w, q, VersionEngineAccountingWebhook)
+}
 
+func (ing *Ingestor) accountingWebhookWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case batch := <-ing.webhookJobs:
+			if len(batch) == 0 {
+				continue
+			}
+			ing.processAccountingWebhookBatch(batch)
+		}
+	}
+}
+
+// processAccountingWebhookBatch runs the full per-record accounting pipeline (formerly inline in HandleWebhook).
+// Returns the same processed count semantics as the legacy handler (one count per record in batch).
+func (ing *Ingestor) processAccountingWebhookBatch(records []AccountingRecord) int {
 	processed := 0
 	defaultPoolCount := 0
 	for _, rec := range records {
 		isp := ing.classifyRecord(rec)
 
-		// Detect {default} pool leaks — any message routed here
-		// will fail DMARC because the server IP has no domain-specific DKIM.
 		if rec.VMTA == "{default}" || rec.Pool == "{default}" {
 			defaultPoolCount++
 			log.Printf("[ingest-ALERT] default-pool leak: recipient=%s vmta=%s pool=%s type=%s",
 				rec.Recipient, rec.VMTA, rec.Pool, rec.Type)
 		}
 
-		// Global suppression and DB persistence fire for ALL records,
-		// even if the domain doesn't map to a known ISP.
 		if ing.globalHub != nil {
 			ing.routeToGlobalSuppression(rec, isp)
 		}
@@ -230,7 +254,6 @@ func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// ISP-specific processing only for classified domains
 		ing.processor.Ingest(isp, rec)
 
 		for _, ch := range ing.listeners[isp] {
@@ -250,12 +273,72 @@ func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if defaultPoolCount > 0 && ing.alerter != nil {
 		ing.alerter.SendDefaultPoolAlert(defaultPoolCount, "{default}")
 	}
+	return processed
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"received":  len(records),
-		"processed": processed,
-	})
+// HandleWebhook is the HTTP handler for PMTA accounting webhook POSTs.
+// Expects JSON array of AccountingRecord objects.
+func (ing *Ingestor) HandleWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var records []AccountingRecord
+	if err := json.Unmarshal(body, &records); err != nil {
+		var single AccountingRecord
+		if err2 := json.Unmarshal(body, &single); err2 == nil {
+			records = []AccountingRecord{single}
+		} else {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if len(records) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Engine-Accounting-Version", VersionEngineAccountingWebhook)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"received":    0,
+			"queued":      0,
+			"api_version": VersionEngineAccountingWebhook,
+		})
+		return
+	}
+
+	sync := os.Getenv("ENGINE_ACCOUNTING_WEBHOOK_SYNC") == "1" || ing.webhookJobs == nil
+	if sync {
+		n := ing.processAccountingWebhookBatch(records)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Engine-Accounting-Version", VersionEngineAccountingWebhook)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"received":     len(records),
+			"processed":    n,
+			"api_version":  VersionEngineAccountingWebhook,
+			"synchronous": true,
+		})
+		return
+	}
+
+	select {
+	case ing.webhookJobs <- records:
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Engine-Accounting-Version", VersionEngineAccountingWebhook)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"received":    len(records),
+			"queued":      len(records),
+			"api_version": VersionEngineAccountingWebhook,
+		})
+	default:
+		http.Error(w, "accounting queue saturated", http.StatusServiceUnavailable)
+	}
 }
 
 func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
@@ -409,7 +492,9 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		return
 	}
 
-	eventID := uuid.New()
+	dedupeSrc := fmt.Sprintf("pmta|%s|%s|%s|%s|%s|%s|%s",
+		strings.ToLower(recipientEmail), campaignID, eventType, rec.Type, rec.BounceCat, rec.DSNStatus, rec.DeliveryTime)
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(dedupeSrc))
 	var subIDPtr *uuid.UUID
 	orgUUID, _ := uuid.Parse(orgID.String)
 	orgIDPtr := &orgUUID
@@ -436,13 +521,18 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		sendingIP = rec.VMTA
 	}
 
-	_, err = ing.db.ExecContext(ctx, `
+	res, err := ing.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, bounce_reason, event_at, sending_domain, sending_ip, recipient_domain)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)
-		ON CONFLICT DO NOTHING
+		ON CONFLICT (id) DO NOTHING
 	`, eventID, orgIDPtr, campUUID, subIDPtr, eventType, rec.BounceCat, rec.DSNStatus, sendingDomain, sendingIP, recipientDomain)
 	if err != nil {
 		log.Printf("[ingest-db] tracking event insert error: %v", err)
+		return
+	}
+	rowsAff, err := res.RowsAffected()
+	if err != nil || rowsAff == 0 {
+		return
 	}
 
 	// Phantom-bounce reconciliation:

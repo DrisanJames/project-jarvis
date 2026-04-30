@@ -1014,6 +1014,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			consciousnessAPI := NewConsciousnessService(consciousness, campaignTracker, convictionStore, signalProcessor, engineOrgID)
 			consciousnessAPI.RegisterRoutes(r)
 
+			acctCtx := context.Background()
+			if s.shutdownCtx != nil {
+				acctCtx = s.shutdownCtx
+			}
+			ingestor.StartAccountingWebhookWorkers(acctCtx)
+
 			// Webhook endpoint for PMTA accounting records (also available on the authenticated path)
 			r.Post("/engine/webhook", ingestor.HandleWebhook)
 

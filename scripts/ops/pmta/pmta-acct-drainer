@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""PMTA accounting spool drainer.
+
+Reads JSON batches from /var/spool/pmta-forward (written by pmta-acct-forward v5)
+and POSTs them to the engine webhook. Timer-driven (see pmta-acct-drainer.timer).
+
+Deploy: sudo install -m755 pmta-acct-drainer /usr/local/bin/
+"""
+import glob
+import json
+import os
+import sys
+import time
+import socket
+import datetime
+import urllib.request
+import urllib.error
+
+WEBHOOK_URL = 'https://projectjarvis.io/engine/webhook'
+LOG_FILE = '/var/log/pmta/acct-forward.log'
+SPOOL_DIR = '/var/spool/pmta-forward'
+POST_TIMEOUT_SECS = 45
+SUB_BATCH_SIZE = 5
+MAX_FILES_PER_RUN = 400
+MAX_AGE_SECONDS = 7 * 24 * 3600
+# Wall-clock budget per drainer run — raise with engine throughput tuning.
+MAX_RUN_SECONDS = 480
+# Prioritize recent files first (half of max files) to reduce dashboard lag during backlog.
+FRESH_SLICE_CAP = 150
+
+
+def log(msg):
+    try:
+        with open(LOG_FILE, 'a') as f:
+            f.write(f'{datetime.datetime.now().isoformat()} [drainer] {msg}\n')
+    except Exception:
+        pass
+
+
+def ordered_spool_files(spool_dir):
+    """Two-pass ordering: newest mtime first (fresh stats), then oldest backfill."""
+    files = glob.glob(os.path.join(spool_dir, '*.json'))
+    if not files:
+        return []
+    fresh_cap = min(MAX_FILES_PER_RUN // 2, FRESH_SLICE_CAP)
+    by_mtime_desc = sorted(files, key=os.path.getmtime, reverse=True)
+    fresh = by_mtime_desc[:fresh_cap]
+    fresh_set = set(fresh)
+    backfill = sorted([f for f in files if f not in fresh_set], key=os.path.getmtime)
+    return fresh + backfill
+
+
+def post_batch(batch):
+    body = json.dumps(batch, separators=(',', ':')).encode('utf-8')
+    req = urllib.request.Request(
+        WEBHOOK_URL,
+        data=body,
+        headers={'Content-Type': 'application/json'},
+        method='POST'
+    )
+    resp = urllib.request.urlopen(req, timeout=POST_TIMEOUT_SECS)
+    return resp.status, resp.read().decode('utf-8', errors='replace')[:200]
+
+
+def main():
+    if not os.path.isdir(SPOOL_DIR):
+        return 0
+
+    files_ordered = ordered_spool_files(SPOOL_DIR)
+    if not files_ordered:
+        return 0
+
+    shipped = 0
+    failed = 0
+    dropped_old = 0
+    now = time.time()
+    deadline = now + MAX_RUN_SECONDS
+
+    for path in files_ordered[:MAX_FILES_PER_RUN]:
+        if time.time() > deadline:
+            log(f'run budget exhausted at {shipped} shipped / {failed} failed; stopping')
+            break
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            continue
+
+        if now - st.st_mtime > MAX_AGE_SECONDS:
+            try:
+                os.unlink(path)
+                dropped_old += 1
+            except Exception:
+                pass
+            continue
+
+        try:
+            with open(path, 'r') as f:
+                batch = json.load(f)
+        except Exception as e:
+            log(f'BAD SPOOL FILE {path}: {e}')
+            try:
+                os.rename(path, path + '.corrupt')
+            except Exception:
+                pass
+            continue
+
+        if not isinstance(batch, list) or not batch:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+            continue
+
+        sub_batches = [batch[i:i + SUB_BATCH_SIZE] for i in range(0, len(batch), SUB_BATCH_SIZE)]
+        remaining = []
+        file_failed = False
+        for sub_idx, sub in enumerate(sub_batches):
+            if time.time() > deadline:
+                for leftover in sub_batches[sub_idx:]:
+                    remaining.append(leftover)
+                file_failed = True
+                break
+            try:
+                status, body = post_batch(sub)
+                if status != 200:
+                    if 500 <= status <= 599:
+                        remaining.append(sub)
+                        file_failed = True
+                    else:
+                        log(f'PERMANENT-SUB-FAIL {status}: {body}')
+            except socket.timeout:
+                remaining.append(sub)
+                file_failed = True
+                # Preserve not-yet-attempted sub-batches for rewrite.
+                for later in sub_batches[sub_idx + 1:]:
+                    remaining.append(later)
+                break
+            except urllib.error.HTTPError as e:
+                if 500 <= e.code <= 599:
+                    remaining.append(sub)
+                    file_failed = True
+                else:
+                    try:
+                        body = e.read().decode('utf-8', errors='replace')[:200]
+                    except Exception:
+                        body = ''
+                    log(f'HTTP {e.code}: {body}')
+            except Exception as e:
+                remaining.append(sub)
+                file_failed = True
+                log(f'ERROR {type(e).__name__}: {e}')
+
+        if not file_failed and not remaining:
+            try:
+                os.unlink(path)
+                shipped += 1
+            except Exception:
+                pass
+        else:
+            failed += 1
+            flat = [r for sub in remaining for r in sub]
+            if flat:
+                try:
+                    with open(path, 'w') as f:
+                        json.dump(flat, f, separators=(',', ':'))
+                except Exception as e:
+                    log(f'REWRITE FAILED {path}: {e}')
+            else:
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+            if failed >= 5:
+                break
+
+    if shipped or failed or dropped_old:
+        remaining_ct = len(glob.glob(os.path.join(SPOOL_DIR, '*.json')))
+        log(f'run complete: shipped={shipped} failed={failed} dropped_old={dropped_old} remaining={remaining_ct}')
+
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

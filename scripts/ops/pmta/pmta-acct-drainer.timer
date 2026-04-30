@@ -1,0 +1,12 @@
+[Unit]
+Description=Drain PMTA accounting spool shortly after each drainer run completes
+Documentation=internal
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=pmta-acct-drainer.service
+
+[Install]
+WantedBy=timers.target
