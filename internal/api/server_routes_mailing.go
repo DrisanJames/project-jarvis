@@ -137,10 +137,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Get("/api/v1/content-learnings/recommend", contentInsights.HandleGetRecommendation)
 
 		// PMTA webhook — public, called by the accounting pipe forwarder on the PMTA server.
-		var pmtaWebhookHandler http.HandlerFunc
 		s.router.Post("/engine/webhook", func(w http.ResponseWriter, r *http.Request) {
-			if pmtaWebhookHandler != nil {
-				pmtaWebhookHandler(w, r)
+			if s.pmtaAccountingWebhook != nil {
+				s.pmtaAccountingWebhook(w, r)
 				return
 			}
 			http.Error(w, "engine not ready", http.StatusServiceUnavailable)
@@ -1008,23 +1007,23 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				})
 			}
 
-			// Wire campaign tracker to consciousness for campaign-aware thoughts
-			consciousness.SetCampaignTracker(campaignTracker)
-
-			consciousnessAPI := NewConsciousnessService(consciousness, campaignTracker, convictionStore, signalProcessor, engineOrgID)
-			consciousnessAPI.RegisterRoutes(r)
-
+			// Accounting webhook + worker pool — wire before orchestrator/consciousness startup so
+			// rolling deploys and concurrent ListenAndServe do not see a multi-minute "engine not ready"
+			// window while those subsystems initialize.
 			acctCtx := context.Background()
 			if s.shutdownCtx != nil {
 				acctCtx = s.shutdownCtx
 			}
 			ingestor.StartAccountingWebhookWorkers(acctCtx)
-
-			// Webhook endpoint for PMTA accounting records (also available on the authenticated path)
 			r.Post("/engine/webhook", ingestor.HandleWebhook)
+			s.pmtaAccountingWebhook = ingestor.HandleWebhook
+			log.Println("[engine] PMTA accounting webhook ready (public /engine/webhook)")
 
-			// Wire the public webhook handler now that ingestor exists
-			pmtaWebhookHandler = ingestor.HandleWebhook
+			// Wire campaign tracker to consciousness for campaign-aware thoughts
+			consciousness.SetCampaignTracker(campaignTracker)
+
+			consciousnessAPI := NewConsciousnessService(consciousness, campaignTracker, convictionStore, signalProcessor, engineOrgID)
+			consciousnessAPI.RegisterRoutes(r)
 
 			// Start the orchestrator (launches all 48 agents)
 			orchestrator.Start(context.Background())

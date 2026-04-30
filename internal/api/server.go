@@ -60,6 +60,8 @@ type Server struct {
 	OfferSuppMgr *OfferSuppressionManager
 	// Data pipeline reference — exported so main.go can wire it
 	DataPipeline *worker.DataPipeline
+	// PMTA accounting — public POST /engine/webhook; set when ingestor + workers are ready
+	pmtaAccountingWebhook http.HandlerFunc
 }
 
 // NewServer creates a new API server
