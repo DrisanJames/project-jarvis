@@ -23,7 +23,14 @@ import (
 //	subscribers. Added Vertical-Finance-Engaged to the pool list (186k net-new
 //	subs, 99% never-mailed) to absorb the supply contraction. Bucket key names
 //	preserved for frontend-compat; ranges reinterpret against the new threshold.
-const VersionWelcomeAudienceHealth = "1.1"
+//	1.2 (2026-05-07): query plan stability fix. Adding Finance roughly doubled
+//	`eligible` from ~250k to ~503k confirmed subscribers and the previous
+//	`WHERE subscriber_id IN (SELECT id FROM eligible)` shape regressed to >60s
+//	timeouts. Switched to MATERIALIZED CTE + INNER JOIN so Postgres builds
+//	`eligible` once and hash-joins it against mailing_message_log. Cadence
+//	query (section 3) given the same treatment preemptively. No semantic
+//	change to outputs.
+const VersionWelcomeAudienceHealth = "1.2"
 
 // welcomePoolSegmentIDs are the source segments that feed the Welcome slots.
 // Must mirror WELCOME_POOL_SEGMENT_IDS in refresh_welcome_saturation_segment.py
@@ -127,10 +134,19 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 
 	// ─── 2. Build the per-subscriber send-count snapshot for the pool ──────
 	// Single CTE computes prior_sends + opened-flag for every distinct
-	// confirmed subscriber across all 6 inclusion segments. Indexed columns
-	// (subscriber_id, segment_id, last_open_at) — runs in ~10s on production.
+	// confirmed subscriber across all 7 inclusion segments. Indexed columns
+	// (subscriber_id, segment_id, last_open_at).
+	//
+	// Performance note (2026-05-07): adding Vertical-Finance-Engaged to the
+	// pool roughly doubled `eligible` from ~250k to ~503k subscribers. The
+	// previous shape used `WHERE subscriber_id IN (SELECT id FROM eligible)`
+	// which Postgres planned as a sequential scan + filter against the
+	// in-line subquery — at 503k IDs it timed out at the HTTP layer (>60s).
+	// Switching to MATERIALIZED + INNER JOIN forces a single eligible-set
+	// build followed by a hash join against mailing_message_log. Same
+	// semantics, but plan stability is restored.
 	rows, err := s.db.QueryContext(ctx, `
-		WITH eligible AS (
+		WITH eligible AS MATERIALIZED (
 			SELECT DISTINCT s.id, s.last_open_at
 			FROM mailing_segment_members m
 			JOIN mailing_subscribers s ON s.id = m.subscriber_id
@@ -138,10 +154,10 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 			  AND s.status = 'confirmed'
 		),
 		sends AS (
-			SELECT subscriber_id, COUNT(*) AS prior_sends
-			FROM mailing_message_log
-			WHERE subscriber_id IN (SELECT id FROM eligible)
-			GROUP BY subscriber_id
+			SELECT m.subscriber_id, COUNT(*) AS prior_sends
+			FROM mailing_message_log m
+			JOIN eligible e ON e.id = m.subscriber_id
+			GROUP BY m.subscriber_id
 		)
 		SELECT
 			COALESCE(s.prior_sends, 0) AS prior_sends,
@@ -234,17 +250,19 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 	}
 
 	// ─── 3. Cadence over last 14 days (sends per active subscriber per day) ─
-	// Bounded by the pool to keep the calc representative.
+	// Bounded by the pool to keep the calc representative. Same MATERIALIZED
+	// + JOIN treatment as section 2 — the IN-subquery shape was tolerable
+	// before Finance was added but degrades unpredictably at 503k pool size.
 	var sends14d, activeSubs14d int
 	if err := s.db.QueryRowContext(ctx, `
-		WITH pool AS (
+		WITH pool AS MATERIALIZED (
 			SELECT DISTINCT subscriber_id FROM mailing_segment_members
 			WHERE segment_id = ANY($1::uuid[])
 		)
-		SELECT COUNT(*), COUNT(DISTINCT subscriber_id)
-		FROM mailing_message_log
-		WHERE created_at >= NOW() - INTERVAL '14 days'
-		  AND subscriber_id IN (SELECT subscriber_id FROM pool)
+		SELECT COUNT(*), COUNT(DISTINCT m.subscriber_id)
+		FROM mailing_message_log m
+		JOIN pool p ON p.subscriber_id = m.subscriber_id
+		WHERE m.created_at >= NOW() - INTERVAL '14 days'
 	`, pq.Array(welcomePoolSegmentIDs)).Scan(&sends14d, &activeSubs14d); err != nil {
 		log.Printf("[welcome-audience-health] cadence query error: %v", err)
 	}
