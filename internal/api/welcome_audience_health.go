@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,7 +32,13 @@ import (
 //	`eligible` once and hash-joins it against mailing_message_log. Cadence
 //	query (section 3) given the same treatment preemptively. No semantic
 //	change to outputs.
-const VersionWelcomeAudienceHealth = "1.2"
+//	1.3 (2026-05-07): connection-level statement_timeout fix. The mailing DB
+//	pool sets statement_timeout=30s but the pool-snapshot query naturally
+//	runs ~60-90s on cold cache (503k subs × 3.6M message_log rows). Wrapped
+//	the heavy query in a read-only tx with `SET LOCAL statement_timeout =
+//	'120s'` so the elevated timeout is scoped to the query and doesn't leak
+//	to other handlers on the same connection. tx.Rollback() at the end.
+const VersionWelcomeAudienceHealth = "1.3"
 
 // welcomePoolSegmentIDs are the source segments that feed the Welcome slots.
 // Must mirror WELCOME_POOL_SEGMENT_IDS in refresh_welcome_saturation_segment.py
@@ -137,15 +145,34 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 	// confirmed subscriber across all 7 inclusion segments. Indexed columns
 	// (subscriber_id, segment_id, last_open_at).
 	//
-	// Performance note (2026-05-07): adding Vertical-Finance-Engaged to the
-	// pool roughly doubled `eligible` from ~250k to ~503k subscribers. The
-	// previous shape used `WHERE subscriber_id IN (SELECT id FROM eligible)`
-	// which Postgres planned as a sequential scan + filter against the
-	// in-line subquery — at 503k IDs it timed out at the HTTP layer (>60s).
-	// Switching to MATERIALIZED + INNER JOIN forces a single eligible-set
-	// build followed by a hash join against mailing_message_log. Same
-	// semantics, but plan stability is restored.
-	rows, err := s.db.QueryContext(ctx, `
+	// Performance notes (2026-05-07):
+	//   1. Adding Vertical-Finance-Engaged to the pool roughly doubled
+	//      `eligible` from ~250k to ~503k subscribers. Switched to
+	//      MATERIALIZED + INNER JOIN instead of `IN (SELECT...)` for plan
+	//      stability — same semantics, predictable hash join.
+	//   2. The mailing DB connection pool sets statement_timeout=30s for
+	//      transactional safety. This analytical query scans 503k subs
+	//      against 3.6M+ message_log rows and naturally runs ~60-90s on
+	//      cold cache. Wrapping in a read-only tx and bumping
+	//      statement_timeout to 120s with `SET LOCAL` lets it complete
+	//      without leaking the elevated timeout to other handlers on the
+	//      same connection. Tx is rolled back at the end (read-only,
+	//      nothing to commit).
+	queryCtx, queryCancel := context.WithTimeout(ctx, 110*time.Second)
+	defer queryCancel()
+	tx, err := s.db.BeginTx(queryCtx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		log.Printf("[welcome-audience-health] begin read-only tx error: %v", err)
+		respondError(w, http.StatusInternalServerError, "welcome_audience_health_snapshot_failed")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(queryCtx, "SET LOCAL statement_timeout = '120s'"); err != nil {
+		log.Printf("[welcome-audience-health] failed to elevate statement_timeout: %v", err)
+		respondError(w, http.StatusInternalServerError, "welcome_audience_health_snapshot_failed")
+		return
+	}
+	rows, err := tx.QueryContext(queryCtx, `
 		WITH eligible AS MATERIALIZED (
 			SELECT DISTINCT s.id, s.last_open_at
 			FROM mailing_segment_members m
