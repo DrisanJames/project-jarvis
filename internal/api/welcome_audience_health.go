@@ -8,10 +8,29 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
 )
+
+// welcomeAudienceHealthCache holds the most recent successful snapshot of the
+// welcome-audience-health response. The endpoint runs four heavy analytical
+// queries against ~3.6M-row mailing_message_log; without caching, each
+// dashboard refresh blows the connection budget. Cache TTL is 5 minutes —
+// short enough to reflect operator actions (segment refresh, deploys), long
+// enough to absorb dashboard polling.
+//
+// Cache is process-local. Each ECS task warms its own copy on first hit.
+// That is acceptable: the underlying numbers are eventually-consistent
+// snapshots, not transactional state.
+var (
+	welcomeAudienceHealthCacheMu      sync.RWMutex
+	welcomeAudienceHealthCacheBody    []byte
+	welcomeAudienceHealthCacheStoredAt time.Time
+)
+
+const welcomeAudienceHealthCacheTTL = 5 * time.Minute
 
 // VersionWelcomeAudienceHealth is the response version for /api/mailing/analytics/welcome-audience-health.
 //
@@ -38,7 +57,17 @@ import (
 //	the heavy query in a read-only tx with `SET LOCAL statement_timeout =
 //	'120s'` so the elevated timeout is scoped to the query and doesn't leak
 //	to other handlers on the same connection. tx.Rollback() at the end.
-const VersionWelcomeAudienceHealth = "1.3"
+//	1.4 (2026-05-07): full-handler timeout fix + 5-min cache. v1.3 only
+//	elevated the timeout for the pool-snapshot query; the three follow-on
+//	queries (cadence, per-segment, daily-burn) still ran on the default
+//	pool connection with statement_timeout=30s. Combined wall time exceeded
+//	the ALB idle window, leaving the request hanging with no response. Now:
+//	(a) all four heavy queries share a single read-only tx with SET LOCAL
+//	statement_timeout=120s so they all get the elevated budget on one
+//	connection; (b) a process-local 5-min response cache absorbs dashboard
+//	polling so the heavy work runs at most once per 5 minutes per task,
+//	not on every refresh.
+const VersionWelcomeAudienceHealth = "1.4"
 
 // welcomePoolSegmentIDs are the source segments that feed the Welcome slots.
 // Must mirror WELCOME_POOL_SEGMENT_IDS in refresh_welcome_saturation_segment.py
@@ -100,6 +129,23 @@ const welcomeSaturationThreshold = 4
 //	  "projection":      { "never_mailed_remaining": 381461, "days_until_upload_needed": 49, "upload_recommended_date": "2026-06-25", "trigger_threshold": 50000 }
 //	}
 func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWriter, r *http.Request) {
+	// ─── Cache check ──────────────────────────────────────────────────────
+	// Serve cached response if it's still fresh. Heavy work (4 analytical
+	// queries × ~30s each) runs at most once per TTL per task. Dashboard
+	// polling does not re-trigger the queries.
+	welcomeAudienceHealthCacheMu.RLock()
+	if welcomeAudienceHealthCacheBody != nil && time.Since(welcomeAudienceHealthCacheStoredAt) < welcomeAudienceHealthCacheTTL {
+		body := welcomeAudienceHealthCacheBody
+		age := time.Since(welcomeAudienceHealthCacheStoredAt)
+		welcomeAudienceHealthCacheMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Cache-Age-Seconds", fmt.Sprintf("%.1f", age.Seconds()))
+		_, _ = w.Write(body)
+		return
+	}
+	welcomeAudienceHealthCacheMu.RUnlock()
+
 	ctx := r.Context()
 	asOf := time.Now().UTC()
 
@@ -277,11 +323,11 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 	}
 
 	// ─── 3. Cadence over last 14 days (sends per active subscriber per day) ─
-	// Bounded by the pool to keep the calc representative. Same MATERIALIZED
-	// + JOIN treatment as section 2 — the IN-subquery shape was tolerable
-	// before Finance was added but degrades unpredictably at 503k pool size.
+	// Bounded by the pool to keep the calc representative. Runs inside the
+	// same elevated tx (1.4) so it inherits statement_timeout=120s and
+	// shares the single connection — no pool starvation under load.
 	var sends14d, activeSubs14d int
-	if err := s.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(queryCtx, `
 		WITH pool AS MATERIALIZED (
 			SELECT DISTINCT subscriber_id FROM mailing_segment_members
 			WHERE segment_id = ANY($1::uuid[])
@@ -356,7 +402,10 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 	}
 
 	// ─── 5. Per-segment breakdown ─────────────────────────────────────────
-	segRows, err := s.db.QueryContext(ctx, `
+	// Runs inside the elevated tx (1.4). The retired/never_mailed sub-CTEs
+	// scan mailing_segment_members + mailing_message_log, both of which can
+	// be slow under cold cache; the 120s budget is needed.
+	segRows, err := tx.QueryContext(queryCtx, `
 		WITH per_seg AS (
 			SELECT m.segment_id,
 				COUNT(DISTINCT s.id) AS total,
@@ -416,8 +465,11 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 	// ─── 6. Daily burn (last 14 days) ─────────────────────────────────────
 	// Two parts: (a) unique never-mailed-at-time-of-send subscribers picked by
 	// Welcome campaigns per day, and (b) approximate daily retirements
-	// derived as count of subscribers whose 9th send fell on each calendar day.
-	burnRows, err := s.db.QueryContext(ctx, `
+	// derived as count of subscribers whose Nth send (where N = threshold+1)
+	// fell on each calendar day. The retirements CTE windows ROW_NUMBER over
+	// 21 days of mailing_message_log — the heaviest of the four queries.
+	// Runs inside the elevated tx (1.4) for the 120s budget.
+	burnRows, err := tx.QueryContext(queryCtx, `
 		WITH welcome_picks AS (
 			SELECT DATE_TRUNC('day', c.scheduled_at)::date AS day,
 				COUNT(DISTINCT r.subscriber_id) FILTER (
@@ -538,8 +590,23 @@ func (s *AdvancedMailingService) HandleWelcomeAudienceHealth(w http.ResponseWrit
 		"pool_segment_ids": welcomePoolSegmentIDs,
 	}
 
+	// Marshal once so we can both serve and cache the same bytes. If
+	// Marshal succeeds, populate the cache before writing the response so
+	// concurrent requests can short-circuit on the freshly-stored body.
+	body, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("[welcome-audience-health] marshal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "welcome_audience_health_encode_failed")
+		return
+	}
+	welcomeAudienceHealthCacheMu.Lock()
+	welcomeAudienceHealthCacheBody = body
+	welcomeAudienceHealthCacheStoredAt = time.Now()
+	welcomeAudienceHealthCacheMu.Unlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[welcome-audience-health] encode error: %v", err)
+	w.Header().Set("X-Cache", "MISS")
+	if _, err := w.Write(body); err != nil {
+		log.Printf("[welcome-audience-health] write error: %v", err)
 	}
 }
