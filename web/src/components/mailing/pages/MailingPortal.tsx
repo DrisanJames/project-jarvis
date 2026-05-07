@@ -5,7 +5,7 @@ import {
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
-  faSpinner, faEye,
+  faSpinner, faEye, faSeedling,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -39,6 +39,8 @@ const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketing
 // follow-up; nothing else imports them and they cause no harm.
 const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
 const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
+const WelcomeAudienceHealth = lazy(() => import('../components/WelcomeAudienceHealth').then(m => ({ default: m.WelcomeAudienceHealth })));
+const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
 
@@ -49,7 +51,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match' | 'audience-health' | 'audience-cadence';
 
 interface Tab {
   id: TabId;
@@ -69,6 +71,8 @@ const tabs: Tab[] = [
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
+  { id: 'audience-health', label: 'Audience Health', icon: faSeedling, description: 'Welcome pool freshness, sunset trajectory & next-list-upload signal' },
+  { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
   { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP Health Center — per-ISP delivery, deferrals, bounces, FBL, IP activity & rate controls' },
@@ -160,6 +164,10 @@ export const MailingPortal: React.FC = () => {
         return <SendTestEmail />;
       case 'analytics':
         return <AnalyticsCenter />;
+      case 'audience-health':
+        return <Suspense fallback={<ChunkLoader />}><WelcomeAudienceHealth /></Suspense>;
+      case 'audience-cadence':
+        return <Suspense fallback={<ChunkLoader />}><AudienceCadenceByCell /></Suspense>;
       case 'content-library':
         return <TemplatesManager />;
       case 'delivery-servers':

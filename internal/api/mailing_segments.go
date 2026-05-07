@@ -348,6 +348,18 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 		}
 	}
 
+	// Fail-closed guard: a segment whose only condition is sending_domain has
+	// no event/click/engagement field for the domain scope to attach to. The
+	// loop below would emit no domain-scoped predicate, leaving only the base
+	// subscriber gates — which match every active subscriber in the org. That
+	// silently turns the segment into an org-wide blast list. Refuse to
+	// compile by returning a FALSE sentinel; the materializer logs 0 members
+	// and the operator gets a visible signal in the UI / next deploy.
+	if domainFilter != "" && len(filtered) == 0 {
+		log.Printf("[BuildSegmentWhereClause] refusing sending_domain-only segment (domainFilter=%q): no engagement condition to scope. Returning FALSE sentinel.", domainFilter)
+		return "FALSE", nil
+	}
+
 	for _, c := range filtered {
 		// Exclude subscribers whose email appears in lists matching a name pattern
 		if c.Field == "exclude_list_pattern" {

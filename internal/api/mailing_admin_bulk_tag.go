@@ -65,6 +65,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/lib/pq"
 )
 
@@ -77,7 +78,12 @@ const (
 	// VersionBulkTagCanonical is the handler version. Bump on any
 	// behavior change so log greps and clients can confirm the running
 	// build matches what they expect.
-	VersionBulkTagCanonical = "1.3"
+	//
+	// 1.4 — 2026-05-06: rejects rows whose email fails
+	//        mailing.ClassifyEmailForIngest (typo-trap, disposable,
+	//        litigator, role-based). Skipped rows are reported per
+	//        reason in the audit summary.
+	VersionBulkTagCanonical = "1.4"
 )
 
 // HandleBulkTagCanonical streams a canonical CSV into mailing_subscribers
@@ -331,6 +337,8 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 		}
 
 		copied := 0
+		ingestSkipped := 0
+		ingestSkippedByReason := map[string]int{}
 		lastEmit := time.Now()
 		for {
 			rec, err := csvReader.Read()
@@ -349,6 +357,19 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			if email == "" {
 				continue
 			}
+
+			// Layer-1 ingest guard. Same set the legacy
+			// /api/mailing/lists/{id}/subscribers/import path uses, so
+			// vendor batches POSTed via canonical CSV cannot smuggle
+			// litigator / honeypot / disposable / role-based addresses
+			// into mailing_subscribers. Pre-existing rows are
+			// untouched — this only filters new MERGE candidates.
+			if decision := mailing.ClassifyEmailForIngest(email); !decision.Accept {
+				ingestSkipped++
+				ingestSkippedByReason[decision.Reason]++
+				continue
+			}
+
 			tagsLit := strings.TrimSpace(rec[colIdx["tags"]])
 			if tagsLit == "" {
 				tagsLit = "{}"
@@ -410,9 +431,20 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			emit(map[string]interface{}{"phase": "error", "where": "stage_count", "error": err.Error()})
 			return
 		}
-		emit(map[string]interface{}{"phase": "staged", "rows": staged, "copy_seconds": copyDur.Seconds()})
+		emit(map[string]interface{}{
+			"phase":                    "staged",
+			"rows":                     staged,
+			"copy_seconds":             copyDur.Seconds(),
+			"ingest_skipped":           ingestSkipped,
+			"ingest_skipped_by_reason": ingestSkippedByReason,
+		})
 		if staged == 0 {
-			emit(map[string]interface{}{"phase": "error", "where": "stage_empty"})
+			emit(map[string]interface{}{
+				"phase":                    "error",
+				"where":                    "stage_empty",
+				"ingest_skipped":           ingestSkipped,
+				"ingest_skipped_by_reason": ingestSkippedByReason,
+			})
 			return
 		}
 
@@ -660,21 +692,23 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 		}
 
 		emit(map[string]interface{}{
-			"phase":               "done",
-			"version":             VersionBulkTagCanonical,
-			"list_id":             listID,
-			"segment_id":          segmentID,
-			"segment_name":        segmentName,
-			"segment_tag":         segmentTag,
-			"staged":              staged,
-			"inserted":            inserted,
-			"merged":              merged,
-			"materialized":        members,
-			"audit_id":            auditID,
-			"copy_seconds":        copyDur.Seconds(),
-			"merge_seconds":       time.Since(mergeStart).Seconds(),
-			"materialize_seconds": time.Since(matStart).Seconds(),
-			"total_seconds":       time.Since(started).Seconds(),
+			"phase":                    "done",
+			"version":                  VersionBulkTagCanonical,
+			"list_id":                  listID,
+			"segment_id":               segmentID,
+			"segment_name":             segmentName,
+			"segment_tag":              segmentTag,
+			"staged":                   staged,
+			"inserted":                 inserted,
+			"merged":                   merged,
+			"materialized":             members,
+			"ingest_skipped":           ingestSkipped,
+			"ingest_skipped_by_reason": ingestSkippedByReason,
+			"audit_id":                 auditID,
+			"copy_seconds":             copyDur.Seconds(),
+			"merge_seconds":            time.Since(mergeStart).Seconds(),
+			"materialize_seconds":      time.Since(matStart).Seconds(),
+			"total_seconds":            time.Since(started).Seconds(),
 		})
 	}
 }

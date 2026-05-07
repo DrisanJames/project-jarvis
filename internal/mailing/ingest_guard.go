@@ -82,6 +82,10 @@ func ClassifyEmailForIngest(email string) IngestDecision {
 		return rejectIngest("disposable_domain", "Disposable / temporary mailbox provider")
 	}
 
+	if _, bad := litigatorDomains[domain]; bad {
+		return rejectIngest("litigator_domain", "Known litigator / anti-spam honeypot domain")
+	}
+
 	return acceptIngest()
 }
 
@@ -95,6 +99,14 @@ func IsTypoTrapDomain(domain string) bool {
 // IsDisposableDomain exposes the disposable check.
 func IsDisposableDomain(domain string) bool {
 	_, bad := disposableDomains[strings.ToLower(domain)]
+	return bad
+}
+
+// IsLitigatorDomain exposes the litigator-domain check. Use for retroactive
+// suppression migrations or manual scrub passes that need to filter
+// existing subscriber rows by domain alone.
+func IsLitigatorDomain(domain string) bool {
+	_, bad := litigatorDomains[strings.ToLower(domain)]
 	return bad
 }
 
@@ -119,6 +131,15 @@ func TypoTrapDomainList() []string {
 func DisposableDomainList() []string {
 	out := make([]string, 0, len(disposableDomains))
 	for d := range disposableDomains {
+		out = append(out, d)
+	}
+	return out
+}
+
+// LitigatorDomainList returns a snapshot of the litigator-domain list.
+func LitigatorDomainList() []string {
+	out := make([]string, 0, len(litigatorDomains))
+	for d := range litigatorDomains {
 		out = append(out, d)
 	}
 	return out
@@ -520,4 +541,32 @@ var disposableDomains = map[string]struct{}{
 	"zoemail.com":          {},
 	"zoemail.net":          {},
 	"zoemail.org":          {},
+}
+
+// litigatorDomains — known anti-spam litigator and honeypot domains.
+// Sending to ANY address at these domains has historically resulted in
+// CAN-SPAM / state-AG complaints, RBL listings, or both. The list is
+// curated from:
+//   - Optizmo "Ignite_Global_Suppression_-_Litigators" feed (Mar 2026)
+//   - Public deliverability-industry reporting on Mark Mumma (sorehands.com)
+//     and Daniel Balsam (danbalsam.com / danhatesspam.com).
+//   - Honeypot domains operated by the California Spam Reporter
+//     (calspam.com) and ZooBuh's anti-spam program (zoobuh.com / zoobah.com).
+//
+// When adding: confirm the domain is a known litigator/honeypot
+// operator with public reporting OR appears in a paid Optizmo /
+// HC500 / similar suppression feed. Do not add ISPs that merely
+// have aggressive spam filters (e.g. proton.me) — those are handled
+// by ISP-specific routing rules, not blocked outright.
+//
+// First seeded: 2026-05-06 (Ignite_Global_Suppression_-_Litigators-20260313).
+var litigatorDomains = map[string]struct{}{
+	"aquaconnect.net":  {},
+	"barbieslapp.com":  {},
+	"calspam.com":      {},
+	"danbalsam.com":    {},
+	"danhatesspam.com": {},
+	"sorehands.com":    {},
+	"zoobah.com":       {},
+	"zoobuh.com":       {},
 }

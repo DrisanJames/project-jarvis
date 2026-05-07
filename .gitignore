@@ -51,3 +51,6 @@ data/
 .cursor/
 fix_exclusion_segments
 /pmta-gateway
+
+# Operator scratch space (forensics, drafts, audits)
+.scratch/

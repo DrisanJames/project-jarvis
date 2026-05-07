@@ -3306,6 +3306,65 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		{"seed_audience_metrics_row", `
 			INSERT INTO mailing_audience_metrics (id) VALUES (1) ON CONFLICT DO NOTHING`},
 
+		// Per-cell audience cadence snapshot (2026-05-05). Materialised by
+		// AdvancedMailingService.RefreshAudienceCadenceSnapshot every 15min.
+		// Backs the /api/mailing/analytics/audience-cadence-by-cell endpoint
+		// and the Audience Cadence frontend tab. See SCHEDULING_INTEGRITY_PLAYBOOK §15.
+		{"create_audience_cadence_snapshot_table", `
+			CREATE TABLE IF NOT EXISTS mailing_audience_cadence_snapshot (
+				brand                   TEXT NOT NULL,
+				sending_domain          TEXT NOT NULL,
+				isp                     TEXT NOT NULL,
+				touched_total           INTEGER NOT NULL DEFAULT 0,
+				welcome_eligible_1_3    INTEGER NOT NULL DEFAULT 0,
+				welcome_eligible_4_7    INTEGER NOT NULL DEFAULT 0,
+				saturated               INTEGER NOT NULL DEFAULT 0,
+				opener_pool             INTEGER NOT NULL DEFAULT 0,
+				cold_never_opened       INTEGER NOT NULL DEFAULT 0,
+				unsubscribed_30d        INTEGER NOT NULL DEFAULT 0,
+				hard_bounced_30d        INTEGER NOT NULL DEFAULT 0,
+				complained_30d          INTEGER NOT NULL DEFAULT 0,
+				daily_unique_burn_7d    INTEGER NOT NULL DEFAULT 0,
+				refreshed_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (sending_domain, isp)
+			)`},
+		{"idx_audience_cadence_snapshot_brand", `CREATE INDEX IF NOT EXISTS idx_audience_cadence_snapshot_brand ON mailing_audience_cadence_snapshot (brand)`},
+		{"idx_audience_cadence_snapshot_refreshed", `CREATE INDEX IF NOT EXISTS idx_audience_cadence_snapshot_refreshed ON mailing_audience_cadence_snapshot (refreshed_at DESC)`},
+
+		// =====================================================================
+		// 2026-05-05 v2: Global per-ISP audience cadence snapshot.
+		// =====================================================================
+		// Replaces the per-(brand × ISP) snapshot above. Operator clarified that
+		// the welcome pool is a SINGLE shared bucket across all four brands —
+		// the deploy scripts hand the same six inclusion segments to every
+		// brand and the planner shuffles by ISP across brands as it picks
+		// recipients. The per-cell snapshot above double-counted subscribers
+		// touched by multiple brands (one row per subscriber × sending_domain
+		// in mailing_subscriber_domain_state). Real exhaustion question is
+		// global per ISP. New table groups directly on subscriber → ISP and
+		// pulls prior_sends from mailing_message_log (same source the planner
+		// uses to enforce welcomeSaturationThreshold). Drop the old table to
+		// prevent confusion — the new one is the only source of truth.
+		{"drop_legacy_audience_cadence_snapshot", `DROP TABLE IF EXISTS mailing_audience_cadence_snapshot`},
+		{"create_audience_cadence_isp_snapshot", `
+			CREATE TABLE IF NOT EXISTS mailing_audience_cadence_isp_snapshot (
+				isp                     TEXT PRIMARY KEY,
+				pool_total              INTEGER NOT NULL DEFAULT 0,
+				exempt_opened           INTEGER NOT NULL DEFAULT 0,
+				retired_saturated       INTEGER NOT NULL DEFAULT 0,
+				never_mailed            INTEGER NOT NULL DEFAULT 0,
+				one_send_away           INTEGER NOT NULL DEFAULT 0,
+				two_to_three_away       INTEGER NOT NULL DEFAULT 0,
+				four_to_five_away       INTEGER NOT NULL DEFAULT 0,
+				six_to_eight_away       INTEGER NOT NULL DEFAULT 0,
+				daily_unique_burn_7d    INTEGER NOT NULL DEFAULT 0,
+				unsubscribed_30d        INTEGER NOT NULL DEFAULT 0,
+				hard_bounced_30d        INTEGER NOT NULL DEFAULT 0,
+				complained_30d          INTEGER NOT NULL DEFAULT 0,
+				refreshed_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+		{"idx_audience_cadence_isp_snapshot_refreshed", `CREATE INDEX IF NOT EXISTS idx_audience_cadence_isp_snapshot_refreshed ON mailing_audience_cadence_isp_snapshot (refreshed_at DESC)`},
+
 		// =====================================================================
 		// Phase 12: Force-correct OVH→Yahoo and IPXO→non-Yahoo pool assignments.
 		// Phase 10 migrations didn't take effect because of ordering issues.

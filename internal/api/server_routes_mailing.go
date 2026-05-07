@@ -38,6 +38,11 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		svc := NewMailingService(db, sparkpostKey)
 		s.mailingSvc = svc
 		advSvc := NewAdvancedMailingService(db)
+		// Start the audience-cadence snapshot refresher (read-only background
+		// worker that materialises mailing_audience_cadence_snapshot every
+		// audienceCadenceRefreshInterval). Read SCHEDULING_INTEGRITY_PLAYBOOK
+		// §15 for context. Cancellation tied to process lifetime.
+		advSvc.StartAudienceCadenceWorker(context.Background())
 		
 		// Injection Analytics — public (no auth required)
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
@@ -426,6 +431,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/cross-brand-cap", advSvc.HandleCrossBrandCapMetrics)
 			r.Get("/analytics/sds-audience-health", advSvc.HandleSDSAudienceHealth)
 			r.Get("/analytics/welcome-cohort-audit", advSvc.HandleWelcomeCohortAudit)
+			r.Get("/analytics/welcome-audience-health", advSvc.HandleWelcomeAudienceHealth)
+			r.Get("/analytics/audience-cadence-by-isp", advSvc.HandleAudienceCadenceByISP)
+			r.Post("/analytics/audience-cadence-by-isp/refresh", advSvc.HandleAudienceCadenceRefresh)
 			r.Get("/analytics/harvest-performance", advSvc.HandleHarvestPerformance)
 			
 			// Cross-Campaign Reporting

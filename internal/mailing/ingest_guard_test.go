@@ -39,6 +39,19 @@ func TestClassifyEmailForIngest(t *testing.T) {
 		{"temp-mail.io", "baz@temp-mail.io", false, "disposable_domain"},
 		{"getnada", "qux@getnada.com", false, "disposable_domain"},
 
+		// Litigator / honeypot — must reject (Optizmo Ignite litigator
+		// list, May 2026). These are real registered domains and a
+		// missing block is a complaint magnet.
+		{"sorehands", "anything@sorehands.com", false, "litigator_domain"},
+		{"danbalsam", "x@danbalsam.com", false, "litigator_domain"},
+		{"danhatesspam", "y@danhatesspam.com", false, "litigator_domain"},
+		{"calspam", "z@calspam.com", false, "litigator_domain"},
+		{"barbieslapp", "a@barbieslapp.com", false, "litigator_domain"},
+		{"zoobuh", "b@zoobuh.com", false, "litigator_domain"},
+		{"zoobah typo-squat", "c@zoobah.com", false, "litigator_domain"},
+		{"aquaconnect", "d@aquaconnect.net", false, "litigator_domain"},
+		{"litigator uppercase", "User@SOREHANDS.COM", false, "litigator_domain"},
+
 		// Role-based — must reject even on legit domains
 		{"abuse@gmail", "abuse@gmail.com", false, "role_based_local_part"},
 		{"postmaster", "postmaster@mycompany.io", false, "role_based_local_part"},
@@ -91,6 +104,26 @@ func TestIsDisposableDomain(t *testing.T) {
 	}
 	if IsDisposableDomain("gmail.com") {
 		t.Error("gmail.com should NOT be disposable")
+	}
+}
+
+func TestIsLitigatorDomain(t *testing.T) {
+	for _, d := range []string{
+		"sorehands.com", "danbalsam.com", "danhatesspam.com",
+		"calspam.com", "barbieslapp.com", "zoobuh.com",
+		"zoobah.com", "aquaconnect.net",
+	} {
+		if !IsLitigatorDomain(d) {
+			t.Errorf("%q should be a litigator domain", d)
+		}
+	}
+	for _, d := range []string{"gmail.com", "yahoo.com", "outlook.com", "comcast.net"} {
+		if IsLitigatorDomain(d) {
+			t.Errorf("%q should NOT be a litigator domain", d)
+		}
+	}
+	if !IsLitigatorDomain("SOREHANDS.COM") {
+		t.Error("uppercase litigator domain should match")
 	}
 }
 
