@@ -3137,6 +3137,113 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		{"phase8_startup_route_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_startup_ipxo_warmup", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
 
+		// =====================================================================
+		// May 8 2026: Seven new sending domains.
+		// Harvest 21 IPs from existing brand general pools (db, qf, ht, mh)
+		// and assign them to new <prefix>-general-pool per new domain.
+		// IPs themselves are kept on the same physical PMTA server; only
+		// pool_id, hostname, and the corresponding sending profile change.
+		// PMTA config on Server A and Server B is updated separately and
+		// the new VMTAs (mta-bw-gn1..3, etc.) already exist in PMTA.
+		// =====================================================================
+		{"may08_create_new_general_pools", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.pool_name, t.descr, 'dedicated', 'active', NOW(), NOW()
+FROM (VALUES
+    ('bw-general-pool', 'BusinessWeeklyPro general ISP pool'),
+    ('fc-general-pool', 'FinancialCalculate general ISP pool'),
+    ('cp-general-pool', 'ConsumerPro general ISP pool'),
+    ('hw-general-pool', 'HomeWarrantyServices general ISP pool'),
+    ('rr-general-pool', 'RefinanceRatesUSA general ISP pool'),
+    ('tt-general-pool', 'ThingOfTheDay general ISP pool'),
+    ('yi-general-pool', 'YourInsuranceHub general ISP pool')
+) AS t(pool_name, descr)
+WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.name = t.pool_name AND p.organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		{"may08_reassign_harvested_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            -- Server A harvests
+            ('144.225.178.51',  'mta-bw-gn1.mail.em.businessweeklypro.com',     'bw-general-pool'),
+            ('144.225.178.52',  'mta-bw-gn2.mail.em.businessweeklypro.com',     'bw-general-pool'),
+            ('144.225.178.53',  'mta-bw-gn3.mail.em.businessweeklypro.com',     'bw-general-pool'),
+            ('144.225.178.115', 'mta-fc-gn1.mail.em.financialcalculate.com',    'fc-general-pool'),
+            ('144.225.178.116', 'mta-fc-gn2.mail.em.financialcalculate.com',    'fc-general-pool'),
+            ('144.225.178.117', 'mta-fc-gn3.mail.em.financialcalculate.com',    'fc-general-pool'),
+            ('144.225.178.54',  'mta-cp-gn1.mail.em.consumerpro.net',           'cp-general-pool'),
+            ('144.225.178.118', 'mta-cp-gn2.mail.em.consumerpro.net',           'cp-general-pool'),
+            ('144.225.178.119', 'mta-cp-gn3.mail.em.consumerpro.net',           'cp-general-pool'),
+            -- Server B harvests
+            ('144.225.178.186', 'mta-hw-gn1.mail.em.homewarrantyservices.org',  'hw-general-pool'),
+            ('144.225.178.187', 'mta-hw-gn2.mail.em.homewarrantyservices.org',  'hw-general-pool'),
+            ('144.225.178.188', 'mta-hw-gn3.mail.em.homewarrantyservices.org',  'hw-general-pool'),
+            ('144.225.178.189', 'mta-rr-gn1.mail.em.refinanceratesusa.com',     'rr-general-pool'),
+            ('144.225.178.190', 'mta-rr-gn2.mail.em.refinanceratesusa.com',     'rr-general-pool'),
+            ('144.225.178.191', 'mta-rr-gn3.mail.em.refinanceratesusa.com',     'rr-general-pool'),
+            ('144.225.178.250', 'mta-tt-gn1.mail.em.thingoftheday.org',         'tt-general-pool'),
+            ('144.225.178.251', 'mta-tt-gn2.mail.em.thingoftheday.org',         'tt-general-pool'),
+            ('144.225.178.252', 'mta-tt-gn3.mail.em.thingoftheday.org',         'tt-general-pool'),
+            ('144.225.178.253', 'mta-yi-gn1.mail.em.yourinsurancehub.com',      'yi-general-pool'),
+            ('144.225.178.254', 'mta-yi-gn2.mail.em.yourinsurancehub.com',      'yi-general-pool'),
+            ('144.225.178.255', 'mta-yi-gn3.mail.em.yourinsurancehub.com',      'yi-general-pool')
+        ) AS t(ip_addr, hostname, pool_name)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses
+               SET pool_id = pool_id_val,
+                   hostname = rec.hostname,
+                   status = 'active',
+                   warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'early'),
+                   updated_at = NOW()
+             WHERE ip_address = rec.ip_addr::inet;
+        END IF;
+    END LOOP;
+END $$`},
+
+		{"may08_seed_sending_profiles", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.name, 'pmta', t.from_name, t.from_email, t.reply_email, t.sending_domain, t.smtp_host, 587, t.api_endpoint, t.tracking_domain, 1500, 12000, t.ip_pool, t.prefix, 'active', false, NOW(), NOW()
+FROM (VALUES
+    ('BusinessWeeklyPro PMTA',  'Business Weekly Pro',     'hello@em.businessweeklypro.com',     'reply@em.businessweeklypro.com',     'em.businessweeklypro.com',     '15.204.101.125', 'http://15.204.101.125:19099', 't.em.businessweeklypro.com',     'bw-general-pool', 'bw'),
+    ('FinancialCalculate PMTA', 'Financial Calculate',     'hello@em.financialcalculate.com',    'reply@em.financialcalculate.com',    'em.financialcalculate.com',    '15.204.101.125', 'http://15.204.101.125:19099', 't.em.financialcalculate.com',    'fc-general-pool', 'fc'),
+    ('ConsumerPro PMTA',        'Consumer Pro',            'hello@em.consumerpro.net',           'reply@em.consumerpro.net',           'em.consumerpro.net',           '15.204.101.125', 'http://15.204.101.125:19099', 't.em.consumerpro.net',           'cp-general-pool', 'cp'),
+    ('HomeWarrantyServices PMTA','Home Warranty Services', 'hello@em.homewarrantyservices.org',  'reply@em.homewarrantyservices.org',  'em.homewarrantyservices.org',  '15.204.107.107', 'http://15.204.107.107:19099', 't.em.homewarrantyservices.org',  'hw-general-pool', 'hw'),
+    ('RefinanceRatesUSA PMTA',  'Refinance Rates USA',     'hello@em.refinanceratesusa.com',     'reply@em.refinanceratesusa.com',     'em.refinanceratesusa.com',     '15.204.107.107', 'http://15.204.107.107:19099', 't.em.refinanceratesusa.com',     'rr-general-pool', 'rr'),
+    ('ThingOfTheDay PMTA',      'Thing of the Day',        'hello@em.thingoftheday.org',         'reply@em.thingoftheday.org',         'em.thingoftheday.org',         '15.204.107.107', 'http://15.204.107.107:19099', 't.em.thingoftheday.org',         'tt-general-pool', 'tt'),
+    ('YourInsuranceHub PMTA',   'Your Insurance Hub',      'hello@em.yourinsurancehub.com',      'reply@em.yourinsurancehub.com',      'em.yourinsurancehub.com',      '15.204.107.107', 'http://15.204.107.107:19099', 't.em.yourinsurancehub.com',      'yi-general-pool', 'yi')
+) AS t(name, from_name, from_email, reply_email, sending_domain, smtp_host, api_endpoint, tracking_domain, ip_pool, prefix)
+WHERE NOT EXISTS (
+    SELECT 1 FROM mailing_sending_profiles p
+    WHERE p.sending_domain = t.sending_domain
+      AND p.organization_id = '00000000-0000-0000-0000-000000000001'
+)`},
+
+		// Idempotent re-anchor: if profiles existed but pointing at wrong server / missing pool_prefix, fix them.
+		{"may08_reassert_pool_prefix", `UPDATE mailing_sending_profiles SET pool_prefix = sub.prefix, smtp_host = sub.smtp_host, api_endpoint = sub.api_endpoint, ip_pool = sub.ip_pool, tracking_domain = sub.tracking_domain, updated_at = NOW()
+FROM (VALUES
+    ('em.businessweeklypro.com',  'bw', '15.204.101.125', 'http://15.204.101.125:19099', 'bw-general-pool', 't.em.businessweeklypro.com'),
+    ('em.financialcalculate.com', 'fc', '15.204.101.125', 'http://15.204.101.125:19099', 'fc-general-pool', 't.em.financialcalculate.com'),
+    ('em.consumerpro.net',        'cp', '15.204.101.125', 'http://15.204.101.125:19099', 'cp-general-pool', 't.em.consumerpro.net'),
+    ('em.homewarrantyservices.org','hw','15.204.107.107', 'http://15.204.107.107:19099', 'hw-general-pool', 't.em.homewarrantyservices.org'),
+    ('em.refinanceratesusa.com',  'rr', '15.204.107.107', 'http://15.204.107.107:19099', 'rr-general-pool', 't.em.refinanceratesusa.com'),
+    ('em.thingoftheday.org',      'tt', '15.204.107.107', 'http://15.204.107.107:19099', 'tt-general-pool', 't.em.thingoftheday.org'),
+    ('em.yourinsurancehub.com',   'yi', '15.204.107.107', 'http://15.204.107.107:19099', 'yi-general-pool', 't.em.yourinsurancehub.com')
+) AS sub(sending_domain, prefix, smtp_host, api_endpoint, ip_pool, tracking_domain)
+WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
+  AND mailing_sending_profiles.vendor_type = 'pmta'
+  AND mailing_sending_profiles.organization_id = '00000000-0000-0000-0000-000000000001'
+  AND (
+        COALESCE(mailing_sending_profiles.pool_prefix, '') != sub.prefix
+        OR COALESCE(mailing_sending_profiles.smtp_host, '') != sub.smtp_host
+        OR COALESCE(mailing_sending_profiles.api_endpoint, '') != sub.api_endpoint
+        OR COALESCE(mailing_sending_profiles.ip_pool, '') != sub.ip_pool
+        OR COALESCE(mailing_sending_profiles.tracking_domain, '') != sub.tracking_domain
+  )`},
+
 		// Phase 9: ThrottleAgent state persistence
 		{"create_throttle_agent_state", `CREATE TABLE IF NOT EXISTS mailing_engine_throttle_agent_state (
 			isp TEXT PRIMARY KEY,
@@ -5232,113 +5339,6 @@ BEGIN
         END IF;
     END LOOP;
 END $$`},
-
-		// =====================================================================
-		// May 8 2026: Seven new sending domains.
-		// Harvest 21 IPs from existing brand general pools (db, qf, ht, mh)
-		// and assign them to new <prefix>-general-pool per new domain.
-		// IPs themselves are kept on the same physical PMTA server; only
-		// pool_id, hostname, and the corresponding sending profile change.
-		// PMTA config on Server A and Server B is updated separately and
-		// the new VMTAs (mta-bw-gn1..3, etc.) already exist in PMTA.
-		// =====================================================================
-		{"may08_create_new_general_pools", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at)
-SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.pool_name, t.descr, 'dedicated', 'active', NOW(), NOW()
-FROM (VALUES
-    ('bw-general-pool', 'BusinessWeeklyPro general ISP pool'),
-    ('fc-general-pool', 'FinancialCalculate general ISP pool'),
-    ('cp-general-pool', 'ConsumerPro general ISP pool'),
-    ('hw-general-pool', 'HomeWarrantyServices general ISP pool'),
-    ('rr-general-pool', 'RefinanceRatesUSA general ISP pool'),
-    ('tt-general-pool', 'ThingOfTheDay general ISP pool'),
-    ('yi-general-pool', 'YourInsuranceHub general ISP pool')
-) AS t(pool_name, descr)
-WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.name = t.pool_name AND p.organization_id = '00000000-0000-0000-0000-000000000001')`},
-
-		{"may08_reassign_harvested_ips", `DO $$
-DECLARE
-    org_id UUID := '00000000-0000-0000-0000-000000000001';
-    rec RECORD;
-    pool_id_val UUID;
-BEGIN
-    FOR rec IN
-        SELECT * FROM (VALUES
-            -- Server A harvests
-            ('144.225.178.51',  'mta-bw-gn1.mail.em.businessweeklypro.com',     'bw-general-pool'),
-            ('144.225.178.52',  'mta-bw-gn2.mail.em.businessweeklypro.com',     'bw-general-pool'),
-            ('144.225.178.53',  'mta-bw-gn3.mail.em.businessweeklypro.com',     'bw-general-pool'),
-            ('144.225.178.115', 'mta-fc-gn1.mail.em.financialcalculate.com',    'fc-general-pool'),
-            ('144.225.178.116', 'mta-fc-gn2.mail.em.financialcalculate.com',    'fc-general-pool'),
-            ('144.225.178.117', 'mta-fc-gn3.mail.em.financialcalculate.com',    'fc-general-pool'),
-            ('144.225.178.54',  'mta-cp-gn1.mail.em.consumerpro.net',           'cp-general-pool'),
-            ('144.225.178.118', 'mta-cp-gn2.mail.em.consumerpro.net',           'cp-general-pool'),
-            ('144.225.178.119', 'mta-cp-gn3.mail.em.consumerpro.net',           'cp-general-pool'),
-            -- Server B harvests
-            ('144.225.178.186', 'mta-hw-gn1.mail.em.homewarrantyservices.org',  'hw-general-pool'),
-            ('144.225.178.187', 'mta-hw-gn2.mail.em.homewarrantyservices.org',  'hw-general-pool'),
-            ('144.225.178.188', 'mta-hw-gn3.mail.em.homewarrantyservices.org',  'hw-general-pool'),
-            ('144.225.178.189', 'mta-rr-gn1.mail.em.refinanceratesusa.com',     'rr-general-pool'),
-            ('144.225.178.190', 'mta-rr-gn2.mail.em.refinanceratesusa.com',     'rr-general-pool'),
-            ('144.225.178.191', 'mta-rr-gn3.mail.em.refinanceratesusa.com',     'rr-general-pool'),
-            ('144.225.178.250', 'mta-tt-gn1.mail.em.thingoftheday.org',         'tt-general-pool'),
-            ('144.225.178.251', 'mta-tt-gn2.mail.em.thingoftheday.org',         'tt-general-pool'),
-            ('144.225.178.252', 'mta-tt-gn3.mail.em.thingoftheday.org',         'tt-general-pool'),
-            ('144.225.178.253', 'mta-yi-gn1.mail.em.yourinsurancehub.com',      'yi-general-pool'),
-            ('144.225.178.254', 'mta-yi-gn2.mail.em.yourinsurancehub.com',      'yi-general-pool'),
-            ('144.225.178.255', 'mta-yi-gn3.mail.em.yourinsurancehub.com',      'yi-general-pool')
-        ) AS t(ip_addr, hostname, pool_name)
-    LOOP
-        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
-        IF pool_id_val IS NOT NULL THEN
-            UPDATE mailing_ip_addresses
-               SET pool_id = pool_id_val,
-                   hostname = rec.hostname,
-                   status = 'active',
-                   warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'early'),
-                   updated_at = NOW()
-             WHERE ip_address = rec.ip_addr::inet;
-        END IF;
-    END LOOP;
-END $$`},
-
-		{"may08_seed_sending_profiles", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
-SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.name, 'pmta', t.from_name, t.from_email, t.reply_email, t.sending_domain, t.smtp_host, 587, t.api_endpoint, t.tracking_domain, 1500, 12000, t.ip_pool, t.prefix, 'active', false, NOW(), NOW()
-FROM (VALUES
-    ('BusinessWeeklyPro PMTA',  'Business Weekly Pro',     'hello@em.businessweeklypro.com',     'reply@em.businessweeklypro.com',     'em.businessweeklypro.com',     '15.204.101.125', 'http://15.204.101.125:19099', 't.em.businessweeklypro.com',     'bw-general-pool', 'bw'),
-    ('FinancialCalculate PMTA', 'Financial Calculate',     'hello@em.financialcalculate.com',    'reply@em.financialcalculate.com',    'em.financialcalculate.com',    '15.204.101.125', 'http://15.204.101.125:19099', 't.em.financialcalculate.com',    'fc-general-pool', 'fc'),
-    ('ConsumerPro PMTA',        'Consumer Pro',            'hello@em.consumerpro.net',           'reply@em.consumerpro.net',           'em.consumerpro.net',           '15.204.101.125', 'http://15.204.101.125:19099', 't.em.consumerpro.net',           'cp-general-pool', 'cp'),
-    ('HomeWarrantyServices PMTA','Home Warranty Services', 'hello@em.homewarrantyservices.org',  'reply@em.homewarrantyservices.org',  'em.homewarrantyservices.org',  '15.204.107.107', 'http://15.204.107.107:19099', 't.em.homewarrantyservices.org',  'hw-general-pool', 'hw'),
-    ('RefinanceRatesUSA PMTA',  'Refinance Rates USA',     'hello@em.refinanceratesusa.com',     'reply@em.refinanceratesusa.com',     'em.refinanceratesusa.com',     '15.204.107.107', 'http://15.204.107.107:19099', 't.em.refinanceratesusa.com',     'rr-general-pool', 'rr'),
-    ('ThingOfTheDay PMTA',      'Thing of the Day',        'hello@em.thingoftheday.org',         'reply@em.thingoftheday.org',         'em.thingoftheday.org',         '15.204.107.107', 'http://15.204.107.107:19099', 't.em.thingoftheday.org',         'tt-general-pool', 'tt'),
-    ('YourInsuranceHub PMTA',   'Your Insurance Hub',      'hello@em.yourinsurancehub.com',      'reply@em.yourinsurancehub.com',      'em.yourinsurancehub.com',      '15.204.107.107', 'http://15.204.107.107:19099', 't.em.yourinsurancehub.com',      'yi-general-pool', 'yi')
-) AS t(name, from_name, from_email, reply_email, sending_domain, smtp_host, api_endpoint, tracking_domain, ip_pool, prefix)
-WHERE NOT EXISTS (
-    SELECT 1 FROM mailing_sending_profiles p
-    WHERE p.sending_domain = t.sending_domain
-      AND p.organization_id = '00000000-0000-0000-0000-000000000001'
-)`},
-
-		// Idempotent re-anchor: if profiles existed but pointing at wrong server / missing pool_prefix, fix them.
-		{"may08_reassert_pool_prefix", `UPDATE mailing_sending_profiles SET pool_prefix = sub.prefix, smtp_host = sub.smtp_host, api_endpoint = sub.api_endpoint, ip_pool = sub.ip_pool, tracking_domain = sub.tracking_domain, updated_at = NOW()
-FROM (VALUES
-    ('em.businessweeklypro.com',  'bw', '15.204.101.125', 'http://15.204.101.125:19099', 'bw-general-pool', 't.em.businessweeklypro.com'),
-    ('em.financialcalculate.com', 'fc', '15.204.101.125', 'http://15.204.101.125:19099', 'fc-general-pool', 't.em.financialcalculate.com'),
-    ('em.consumerpro.net',        'cp', '15.204.101.125', 'http://15.204.101.125:19099', 'cp-general-pool', 't.em.consumerpro.net'),
-    ('em.homewarrantyservices.org','hw','15.204.107.107', 'http://15.204.107.107:19099', 'hw-general-pool', 't.em.homewarrantyservices.org'),
-    ('em.refinanceratesusa.com',  'rr', '15.204.107.107', 'http://15.204.107.107:19099', 'rr-general-pool', 't.em.refinanceratesusa.com'),
-    ('em.thingoftheday.org',      'tt', '15.204.107.107', 'http://15.204.107.107:19099', 'tt-general-pool', 't.em.thingoftheday.org'),
-    ('em.yourinsurancehub.com',   'yi', '15.204.107.107', 'http://15.204.107.107:19099', 'yi-general-pool', 't.em.yourinsurancehub.com')
-) AS sub(sending_domain, prefix, smtp_host, api_endpoint, ip_pool, tracking_domain)
-WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
-  AND mailing_sending_profiles.vendor_type = 'pmta'
-  AND mailing_sending_profiles.organization_id = '00000000-0000-0000-0000-000000000001'
-  AND (
-        COALESCE(mailing_sending_profiles.pool_prefix, '') != sub.prefix
-        OR COALESCE(mailing_sending_profiles.smtp_host, '') != sub.smtp_host
-        OR COALESCE(mailing_sending_profiles.api_endpoint, '') != sub.api_endpoint
-        OR COALESCE(mailing_sending_profiles.ip_pool, '') != sub.ip_pool
-        OR COALESCE(mailing_sending_profiles.tracking_domain, '') != sub.tracking_domain
-  )`},
 	}
 
 	var ok, fail int
