@@ -286,12 +286,29 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		result, err = svc.sendViaSendGrid(ctx, apiKey, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent)
 
 	case "pmta":
-		// Determine ISP-aware VMTA pool from profile's pool_prefix + recipient ISP
+		// Determine ISP-aware VMTA pool from profile's pool_prefix + recipient ISP.
+		// New brands ship with only <prefix>-general-pool — no per-ISP pools — so
+		// fall back to the general pool when the ISP-specific pool has zero
+		// active/warmup IPs in the database. This mirrors the production worker's
+		// vmtaPool.SelectIP() Tier-1→Tier-2 fallback (esp_pmta.go:253-286) and
+		// prevents PMTA "5.5.0 specified Virtual MTA does not exist" rejects.
 		var pmtaExtraHeaders map[string]string
 		if profile.PoolPrefix != nil && *profile.PoolPrefix != "" {
 			recipientISP := worker.ClassifySubscriberISP(input.To)
 			ispSuffix := worker.ISPPoolSuffix(recipientISP)
 			vmtaPool := fmt.Sprintf("%s-%s-pool", *profile.PoolPrefix, ispSuffix)
+			if ispSuffix != "general" {
+				var ipCount int
+				err := svc.db.QueryRowContext(ctx, `
+					SELECT COUNT(*) FROM mailing_ip_addresses ia
+					JOIN mailing_ip_pools p ON p.id = ia.pool_id
+					WHERE p.name = $1 AND ia.status IN ('active','warmup')`, vmtaPool).Scan(&ipCount)
+				if err != nil || ipCount == 0 {
+					generalPool := fmt.Sprintf("%s-general-pool", *profile.PoolPrefix)
+					log.Printf("[SendTest] Pool %s has %d active IPs (err=%v) — falling back to %s", vmtaPool, ipCount, err, generalPool)
+					vmtaPool = generalPool
+				}
+			}
 			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": vmtaPool}
 			log.Printf("[SendTest] Routing via VMTA pool %s (recipient ISP: %s)", vmtaPool, recipientISP)
 		}
