@@ -83,6 +83,7 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		TrackingDomain sql.NullString
 		SendingDomain  sql.NullString
 		IPPool         sql.NullString
+		PoolPrefix     sql.NullString
 	}
 	
 	if campaign.ProfileID.Valid {
@@ -91,12 +92,13 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 			       api_endpoint,
 			       COALESCE(tracking_domain, ''),
 			       COALESCE(sending_domain, ''),
-			       COALESCE(ip_pool, '')
+			       COALESCE(ip_pool, ''),
+			       COALESCE(pool_prefix, '')
 			FROM mailing_sending_profiles WHERE id = $1
 		`, campaign.ProfileID.String).Scan(&profile.ID, &profile.VendorType, &profile.APIKey,
 			&profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
 			&profile.APIEndpoint, &profile.TrackingDomain, &profile.SendingDomain,
-			&profile.IPPool)
+			&profile.IPPool, &profile.PoolPrefix)
 		if profileErr != nil {
 			log.Printf("ERROR loading sending profile %s: %v", campaign.ProfileID.String, profileErr)
 		} else {
@@ -328,8 +330,20 @@ func (cb *CampaignBuilder) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 		case "pmta":
 			// Try HTTP bridge first (bypasses AWS SMTP port blocking), fall back to SMTP
 			if profile.APIEndpoint.Valid && profile.APIEndpoint.String != "" {
-				pmtaHeaders := map[string]string{"X-Job": id}
-				if profile.IPPool.Valid && profile.IPPool.String != "" {
+				pmtaHeaders := map[string]string{
+					"X-Job":         id,
+					"X-Campaign-ID": id,
+				}
+				// ISP-aware VMTA pool selection: prefer pool_prefix + recipient ISP
+				// (e.g. "db" + "yahoo" -> "db-yahoo-pool"). This routes Yahoo to
+				// strict-isolated *-yahoo-pool, AOL to *-aol-pool, etc., instead of
+				// blindly injecting via the profile's generic ip_pool which leaks
+				// Yahoo recipients onto *-msft-pool VMTAs (mta-db-ms9 etc.).
+				if profile.PoolPrefix.Valid && profile.PoolPrefix.String != "" {
+					recipientISP := worker.ClassifySubscriberISP(sub.Email)
+					ispSuffix := worker.ISPPoolSuffix(recipientISP)
+					pmtaHeaders["X-Virtual-MTA"] = fmt.Sprintf("%s-%s-pool", profile.PoolPrefix.String, ispSuffix)
+				} else if profile.IPPool.Valid && profile.IPPool.String != "" {
 					pmtaHeaders["X-Virtual-MTA"] = profile.IPPool.String
 				}
 				for k, v := range unsubHeaders {
