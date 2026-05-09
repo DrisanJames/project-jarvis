@@ -46,6 +46,8 @@ var OwnedDomains = []string{
 	"casainsure.com",
 	"learnpersonalloans.com",
 	"ratesbazar.com",
+	// May 9 2026 (B) — single-brand follow-up expansion (Server B donor: mh-*).
+	"warrantyforyou.com",
 }
 
 // Root maps a sending domain to its brand root.

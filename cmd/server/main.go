@@ -3484,6 +3484,107 @@ VALUES
     ('ratesbazar.com',         'RB', 'Rates Bazar',            'em.ratesbazar.com',         't.em.ratesbazar.com',         'img.ratesbazar.com',         'Sam @ Rates Bazar',            'hello@em.ratesbazar.com',         'reply@em.ratesbazar.com',         '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 expansion')
 ON CONFLICT (brand_root) DO NOTHING`},
 
+		// =====================================================================
+		// May 9 2026 (B): warrantyforyou.com (single-brand follow-up to may09).
+		// Same surgical pattern: 3 IPs harvested from over-provisioned mh-* ISP-tier
+		// pools (Server B donor: mh apple/comcast/charter), renamed to
+		// mta-wf-gn[1-3], placed in wf-general-pool. PMTA config on Server B
+		// already updated (DKIM key + VMTA renames + new pool + reload).
+		// Tracking + img CDN dedicated CloudFront distros provisioned in
+		// us-east-1 (E19T9Q3SSOV4ET tracking, E3KPT8YQNLASCR img). SES inbound
+		// MX swap + SES identity + receipt-rule recipient already live.
+		// =====================================================================
+		{"may09b_create_wf_general_pool", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'wf-general-pool', 'WarrantyForYou general ISP pool', 'dedicated', 'active', NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.name = 'wf-general-pool' AND p.organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		{"may09b_reassign_wf_harvested_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.202', 'mta-wf-gn1.mail.em.warrantyforyou.com', 'wf-general-pool'),
+            ('144.225.178.203', 'mta-wf-gn2.mail.em.warrantyforyou.com', 'wf-general-pool'),
+            ('144.225.178.205', 'mta-wf-gn3.mail.em.warrantyforyou.com', 'wf-general-pool')
+        ) AS t(ip_addr, hostname, pool_name)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses
+               SET pool_id = pool_id_val,
+                   hostname = rec.hostname,
+                   status = 'active',
+                   warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'early'),
+                   updated_at = NOW()
+             WHERE ip_address = rec.ip_addr::inet;
+        END IF;
+    END LOOP;
+END $$`},
+
+		{"may09b_seed_wf_sending_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'WarrantyForYou PMTA', 'pmta', 'Warranty For You', 'hello@em.warrantyforyou.com', 'reply@em.warrantyforyou.com', 'em.warrantyforyou.com', '15.204.107.107', 587, 'http://15.204.107.107:19099', 't.em.warrantyforyou.com', 1500, 12000, 'wf-general-pool', 'wf', 'active', false, NOW(), NOW()
+WHERE NOT EXISTS (
+    SELECT 1 FROM mailing_sending_profiles p
+    WHERE p.sending_domain = 'em.warrantyforyou.com'
+      AND p.organization_id = '00000000-0000-0000-0000-000000000001'
+)`},
+
+		// Idempotent re-anchor (mirrors may09_reassert_pool_prefix).
+		{"may09b_reassert_wf_pool_prefix", `UPDATE mailing_sending_profiles SET pool_prefix = 'wf', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', ip_pool = 'wf-general-pool', tracking_domain = 't.em.warrantyforyou.com', updated_at = NOW()
+WHERE sending_domain = 'em.warrantyforyou.com'
+  AND vendor_type = 'pmta'
+  AND organization_id = '00000000-0000-0000-0000-000000000001'
+  AND (
+        COALESCE(pool_prefix, '') != 'wf'
+        OR COALESCE(smtp_host, '') != '15.204.107.107'
+        OR COALESCE(api_endpoint, '') != 'http://15.204.107.107:19099'
+        OR COALESCE(ip_pool, '') != 'wf-general-pool'
+        OR COALESCE(tracking_domain, '') != 't.em.warrantyforyou.com'
+  )`},
+
+		// Persona alias for WF.
+		{"may09b_seed_wf_persona_from_name", `UPDATE mailing_sending_profiles
+SET from_name = 'Greg @ Warranty For You', updated_at = NOW()
+WHERE sending_domain = 'em.warrantyforyou.com'
+  AND vendor_type = 'pmta'
+  AND organization_id = '00000000-0000-0000-0000-000000000001'
+  AND COALESCE(from_name, '') = 'Warranty For You'`},
+
+		// Image-CDN seed for WF — dedicated CloudFront distro from day one.
+		{"may09b_seed_wf_img_domain", `INSERT INTO mailing_image_domains
+(id, org_id, domain, verified, ssl_status, s3_bucket, cloudfront_distribution_id, cloudfront_domain, acm_cert_arn, last_verified_at, created_at, updated_at)
+VALUES
+    ('d0000000-0000-0000-0001-000000000024', '00000000-0000-0000-0000-000000000001', 'img.warrantyforyou.com', true, 'active', 'jarvis-image-cdn', 'E3KPT8YQNLASCR', 'dfe0srr0ch1xd.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/9b7aca67-9866-480e-82b5-c0ec40a3ca33', NOW(), NOW(), NOW())
+ON CONFLICT (id) DO NOTHING`},
+
+		// Idempotent re-anchor for WF image_domains row.
+		{"may09b_reassert_wf_img_domain_dedicated", `UPDATE mailing_image_domains
+SET cloudfront_distribution_id = 'E3KPT8YQNLASCR',
+    cloudfront_domain          = 'dfe0srr0ch1xd.cloudfront.net',
+    acm_cert_arn               = 'arn:aws:acm:us-east-1:146361001621:certificate/9b7aca67-9866-480e-82b5-c0ec40a3ca33',
+    verified                   = true,
+    ssl_status                 = 'active',
+    last_verified_at           = NOW(),
+    updated_at                 = NOW()
+WHERE domain = 'img.warrantyforyou.com'
+  AND (
+        COALESCE(cloudfront_distribution_id, '') != 'E3KPT8YQNLASCR'
+     OR COALESCE(cloudfront_domain, '')          != 'dfe0srr0ch1xd.cloudfront.net'
+     OR COALESCE(acm_cert_arn, '')               != 'arn:aws:acm:us-east-1:146361001621:certificate/9b7aca67-9866-480e-82b5-c0ec40a3ca33'
+     OR COALESCE(verified, false)                != true
+     OR COALESCE(ssl_status, '')                 != 'active'
+  )`},
+
+		// Seed WF brand metadata.
+		{"may09b_seed_wf_brand_metadata", `INSERT INTO mailing_brand_metadata
+(brand_root, brand_code, brand_label, sending_domain, tracking_domain, image_domain, from_name, from_email, reply_email, physical_address, notes)
+VALUES
+    ('warrantyforyou.com', 'WF', 'Warranty For You', 'em.warrantyforyou.com', 't.em.warrantyforyou.com', 'img.warrantyforyou.com', 'Greg @ Warranty For You', 'hello@em.warrantyforyou.com', 'reply@em.warrantyforyou.com', '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 (B) follow-up expansion to may09 batch')
+ON CONFLICT (brand_root) DO NOTHING`},
+
 		// Phase 9: ThrottleAgent state persistence
 		{"create_throttle_agent_state", `CREATE TABLE IF NOT EXISTS mailing_engine_throttle_agent_state (
 			isp TEXT PRIMARY KEY,
