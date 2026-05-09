@@ -39,6 +39,13 @@ var OwnedDomains = []string{
 	"refinanceratesusa.com",
 	"thingoftheday.org",
 	"yourinsurancehub.com",
+	// May 9 2026 brand expansion — IPXO-hosted PMTA sending domains.
+	// Same pattern as the May 8 batch; tracking on t.em.<apex>, sending
+	// from em.<apex>, brand-scoped suppression rooted at the apex.
+	"myrepairdiy.com",
+	"casainsure.com",
+	"learnpersonalloans.com",
+	"ratesbazar.com",
 }
 
 // Root maps a sending domain to its brand root.

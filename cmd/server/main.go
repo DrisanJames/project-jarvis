@@ -3270,16 +3270,21 @@ WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
 		// dedicated img.<brand> CloudFront is provisioned, the seed-row
 		// can be UPDATEd to point at the brand-specific distribution
 		// without touching application code.
+		// Seed values reflect the dedicated per-brand CloudFront distros provisioned 2026-05-08.
+		// All 7 share OAC E1SXZG33G45K6R, S3 origin jarvis-image-cdn.s3.us-west-2, Managed-CachingOptimized
+		// cache policy 658327ea-f89d-4fab-a63d-7e88639e58f6, ACM certs in us-east-1.
+		// Production rows already have these values; INSERT is a no-op via ON CONFLICT (id).
+		// If the table is ever re-seeded from scratch, these values are correct as of 2026-05-08.
 		{"may08_seed_img_domains_new_brands", `INSERT INTO mailing_image_domains
-(id, org_id, domain, verified, ssl_status, s3_bucket, cloudfront_distribution_id, cloudfront_domain, last_verified_at, created_at, updated_at)
+(id, org_id, domain, verified, ssl_status, s3_bucket, cloudfront_distribution_id, cloudfront_domain, acm_cert_arn, last_verified_at, created_at, updated_at)
 VALUES
-    ('d0000000-0000-0000-0001-000000000010', '00000000-0000-0000-0000-000000000001', 'img.businessweeklypro.com',    true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000011', '00000000-0000-0000-0000-000000000001', 'img.financialcalculate.com',   true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000012', '00000000-0000-0000-0000-000000000001', 'img.consumerpro.net',          true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000013', '00000000-0000-0000-0000-000000000001', 'img.homewarrantyservices.org', true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000014', '00000000-0000-0000-0000-000000000001', 'img.refinanceratesusa.com',    true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000015', '00000000-0000-0000-0000-000000000001', 'img.thingoftheday.org',        true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
-    ('d0000000-0000-0000-0001-000000000016', '00000000-0000-0000-0000-000000000001', 'img.yourinsurancehub.com',     true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW())
+    ('d0000000-0000-0000-0001-000000000010', '00000000-0000-0000-0000-000000000001', 'img.businessweeklypro.com',    true, 'active', 'jarvis-image-cdn', 'E1MBWGFE62ND38', 'd7z6gova229dh.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/083c1055-25a5-49c8-af67-8a9d897be278', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000011', '00000000-0000-0000-0000-000000000001', 'img.financialcalculate.com',   true, 'active', 'jarvis-image-cdn', 'E2ON5XDX85OJ3',  'd3wzevxq8a765.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/75ebddb7-7589-4382-a7b2-e10f501c8e16', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000012', '00000000-0000-0000-0000-000000000001', 'img.consumerpro.net',          true, 'active', 'jarvis-image-cdn', 'E2AR0753VUOS08', 'd2iwzeqyecpo3h.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/3cb8db0b-5ce8-41fb-9dea-e7cefaf8e32d', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000013', '00000000-0000-0000-0000-000000000001', 'img.homewarrantyservices.org', true, 'active', 'jarvis-image-cdn', 'E12VZ45O0AJ082', 'drinizukkgd9n.cloudfront.net',  'arn:aws:acm:us-east-1:146361001621:certificate/c3d7dff8-ca7b-4a74-8e3c-32d51eac4555', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000014', '00000000-0000-0000-0000-000000000001', 'img.refinanceratesusa.com',    true, 'active', 'jarvis-image-cdn', 'E2HVU91OSSZUNV', 'd5h8617hpxs2x.cloudfront.net',  'arn:aws:acm:us-east-1:146361001621:certificate/db03ebd3-2113-4e17-9cf1-e9ca113f55c9', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000015', '00000000-0000-0000-0000-000000000001', 'img.thingoftheday.org',        true, 'active', 'jarvis-image-cdn', 'E1TNTZWMK4SNBK', 'd16geycs7mna9k.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/0fc97356-88da-4eb6-8161-0f3ca1904aec', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000016', '00000000-0000-0000-0000-000000000001', 'img.yourinsurancehub.com',     true, 'active', 'jarvis-image-cdn', 'E2CLOW0KBLMBE1', 'd138yhttpn3r8q.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/236ec74a-a26a-4069-840c-85b007145e2b', NOW(), NOW(), NOW())
 ON CONFLICT (id) DO NOTHING`},
 
 		// Brand metadata table — single source of truth for footer/SES/persona
@@ -3320,6 +3325,163 @@ VALUES
     ('refinanceratesusa.com',    'RR',  'Refinance Rates USA',     'em.refinanceratesusa.com',     't.em.refinanceratesusa.com',     'img.refinanceratesusa.com',     'Frank @ Refinance Rates USA',      'hello@em.refinanceratesusa.com',     'reply@em.refinanceratesusa.com',     '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
     ('thingoftheday.org',        'TT',  'Thing of the Day',        'em.thingoftheday.org',         't.em.thingoftheday.org',         'img.thingoftheday.org',         'Olivia @ Thing of the Day',        'hello@em.thingoftheday.org',         'reply@em.thingoftheday.org',         '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
     ('yourinsurancehub.com',     'YI',  'Your Insurance Hub',      'em.yourinsurancehub.com',      't.em.yourinsurancehub.com',      'img.yourinsurancehub.com',      'Carl @ Your Insurance Hub',        'hello@em.yourinsurancehub.com',      'reply@em.yourinsurancehub.com',      '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion')
+ON CONFLICT (brand_root) DO NOTHING`},
+
+		// =====================================================================
+		// May 9 2026: Four additional sending domains.
+		// Same pattern as may08 batch — harvest 12 IPs from existing legacy
+		// brand ISP-tier pools (db/qf apple+comcast+charter on Server A,
+		// ht/mh apple+comcast+charter on Server B) and assign to new
+		// <prefix>-general-pool per new domain. Donor pools each shed 1 IP
+		// (apple/comcast/charter pools drop from 7-8 IPs each to 6-7);
+		// donor brands keep majority warmup capacity intact.
+		// PMTA config on Server A and Server B already updated.
+		// =====================================================================
+		{"may09_create_new_general_pools", `INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.pool_name, t.descr, 'dedicated', 'active', NOW(), NOW()
+FROM (VALUES
+    ('mr-general-pool', 'MyRepairDIY general ISP pool'),
+    ('ci-general-pool', 'CasaInsure general ISP pool'),
+    ('lp-general-pool', 'LearnPersonalLoans general ISP pool'),
+    ('rb-general-pool', 'RatesBazar general ISP pool')
+) AS t(pool_name, descr)
+WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.name = t.pool_name AND p.organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		{"may09_reassign_harvested_ips", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            -- Server A harvests (donor: db/qf apple+comcast+charter)
+            ('144.225.178.26',  'mta-mr-gn1.mail.em.myrepairdiy.com',        'mr-general-pool'),
+            ('144.225.178.32',  'mta-mr-gn2.mail.em.myrepairdiy.com',        'mr-general-pool'),
+            ('144.225.178.50',  'mta-mr-gn3.mail.em.myrepairdiy.com',        'mr-general-pool'),
+            ('144.225.178.90',  'mta-ci-gn1.mail.em.casainsure.com',         'ci-general-pool'),
+            ('144.225.178.96',  'mta-ci-gn2.mail.em.casainsure.com',         'ci-general-pool'),
+            ('144.225.178.114', 'mta-ci-gn3.mail.em.casainsure.com',         'ci-general-pool'),
+            -- Server B harvests (donor: ht/mh apple+comcast+charter)
+            ('144.225.178.158', 'mta-lp-gn1.mail.em.learnpersonalloans.com', 'lp-general-pool'),
+            ('144.225.178.165', 'mta-lp-gn2.mail.em.learnpersonalloans.com', 'lp-general-pool'),
+            ('144.225.178.185', 'mta-lp-gn3.mail.em.learnpersonalloans.com', 'lp-general-pool'),
+            ('144.225.178.222', 'mta-rb-gn1.mail.em.ratesbazar.com',         'rb-general-pool'),
+            ('144.225.178.229', 'mta-rb-gn2.mail.em.ratesbazar.com',         'rb-general-pool'),
+            ('144.225.178.249', 'mta-rb-gn3.mail.em.ratesbazar.com',         'rb-general-pool')
+        ) AS t(ip_addr, hostname, pool_name)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses
+               SET pool_id = pool_id_val,
+                   hostname = rec.hostname,
+                   status = 'active',
+                   warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'early'),
+                   updated_at = NOW()
+             WHERE ip_address = rec.ip_addr::inet;
+        END IF;
+    END LOOP;
+END $$`},
+
+		{"may09_seed_sending_profiles", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, pool_prefix, status, is_default, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', t.name, 'pmta', t.from_name, t.from_email, t.reply_email, t.sending_domain, t.smtp_host, 587, t.api_endpoint, t.tracking_domain, 1500, 12000, t.ip_pool, t.prefix, 'active', false, NOW(), NOW()
+FROM (VALUES
+    ('MyRepairDIY PMTA',         'My Repair DIY',          'hello@em.myrepairdiy.com',        'reply@em.myrepairdiy.com',        'em.myrepairdiy.com',        '15.204.101.125', 'http://15.204.101.125:19099', 't.em.myrepairdiy.com',        'mr-general-pool', 'mr'),
+    ('CasaInsure PMTA',          'Casa Insure',            'hello@em.casainsure.com',         'reply@em.casainsure.com',         'em.casainsure.com',         '15.204.101.125', 'http://15.204.101.125:19099', 't.em.casainsure.com',         'ci-general-pool', 'ci'),
+    ('LearnPersonalLoans PMTA',  'Learn Personal Loans',   'hello@em.learnpersonalloans.com', 'reply@em.learnpersonalloans.com', 'em.learnpersonalloans.com', '15.204.107.107', 'http://15.204.107.107:19099', 't.em.learnpersonalloans.com', 'lp-general-pool', 'lp'),
+    ('RatesBazar PMTA',          'Rates Bazar',            'hello@em.ratesbazar.com',         'reply@em.ratesbazar.com',         'em.ratesbazar.com',         '15.204.107.107', 'http://15.204.107.107:19099', 't.em.ratesbazar.com',         'rb-general-pool', 'rb')
+) AS t(name, from_name, from_email, reply_email, sending_domain, smtp_host, api_endpoint, tracking_domain, ip_pool, prefix)
+WHERE NOT EXISTS (
+    SELECT 1 FROM mailing_sending_profiles p
+    WHERE p.sending_domain = t.sending_domain
+      AND p.organization_id = '00000000-0000-0000-0000-000000000001'
+)`},
+
+		// Idempotent re-anchor (mirrors may08_reassert_pool_prefix).
+		{"may09_reassert_pool_prefix", `UPDATE mailing_sending_profiles SET pool_prefix = sub.prefix, smtp_host = sub.smtp_host, api_endpoint = sub.api_endpoint, ip_pool = sub.ip_pool, tracking_domain = sub.tracking_domain, updated_at = NOW()
+FROM (VALUES
+    ('em.myrepairdiy.com',        'mr', '15.204.101.125', 'http://15.204.101.125:19099', 'mr-general-pool', 't.em.myrepairdiy.com'),
+    ('em.casainsure.com',         'ci', '15.204.101.125', 'http://15.204.101.125:19099', 'ci-general-pool', 't.em.casainsure.com'),
+    ('em.learnpersonalloans.com', 'lp', '15.204.107.107', 'http://15.204.107.107:19099', 'lp-general-pool', 't.em.learnpersonalloans.com'),
+    ('em.ratesbazar.com',         'rb', '15.204.107.107', 'http://15.204.107.107:19099', 'rb-general-pool', 't.em.ratesbazar.com')
+) AS sub(sending_domain, prefix, smtp_host, api_endpoint, ip_pool, tracking_domain)
+WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
+  AND mailing_sending_profiles.vendor_type = 'pmta'
+  AND mailing_sending_profiles.organization_id = '00000000-0000-0000-0000-000000000001'
+  AND (
+        COALESCE(mailing_sending_profiles.pool_prefix, '') != sub.prefix
+        OR COALESCE(mailing_sending_profiles.smtp_host, '') != sub.smtp_host
+        OR COALESCE(mailing_sending_profiles.api_endpoint, '') != sub.api_endpoint
+        OR COALESCE(mailing_sending_profiles.ip_pool, '') != sub.ip_pool
+        OR COALESCE(mailing_sending_profiles.tracking_domain, '') != sub.tracking_domain
+  )`},
+
+		// Persona aliases for the May 9 2026 four-brand expansion (mirrors may08 pattern).
+		{"may09_seed_brand_persona_from_names", `UPDATE mailing_sending_profiles
+SET from_name = sub.persona, updated_at = NOW()
+FROM (VALUES
+    ('em.myrepairdiy.com',        'Bob @ My Repair DIY',          'My Repair DIY'),
+    ('em.casainsure.com',         'Maria @ Casa Insure',          'Casa Insure'),
+    ('em.learnpersonalloans.com', 'Linda @ Learn Personal Loans', 'Learn Personal Loans'),
+    ('em.ratesbazar.com',         'Sam @ Rates Bazar',            'Rates Bazar')
+) AS sub(sending_domain, persona, bare_name)
+WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
+  AND mailing_sending_profiles.vendor_type = 'pmta'
+  AND mailing_sending_profiles.organization_id = '00000000-0000-0000-0000-000000000001'
+  AND COALESCE(mailing_sending_profiles.from_name, '') = sub.bare_name`},
+
+		// Image-CDN seeds for the four new brands. Each brand now has its OWN
+		// dedicated CloudFront distribution + ACM cert in us-east-1 (provisioned
+		// 2026-05-09 via .scratch/may09_new_domains/provision_img_distros.py).
+		// CNAMEs img.<apex> -> <distro>.cloudfront.net are live in GoDaddy.
+		// Distros are S3-OAC backed (jarvis-image-cdn bucket) — same storage
+		// surface as established brands; per-brand distro avoids cross-brand
+		// image fingerprinting at the CDN edge.
+		{"may09_seed_img_domains_new_brands", `INSERT INTO mailing_image_domains
+(id, org_id, domain, verified, ssl_status, s3_bucket, cloudfront_distribution_id, cloudfront_domain, acm_cert_arn, last_verified_at, created_at, updated_at)
+VALUES
+    ('d0000000-0000-0000-0001-000000000020', '00000000-0000-0000-0000-000000000001', 'img.myrepairdiy.com',        true, 'active', 'jarvis-image-cdn', 'E33V9NXEKUQBCV', 'dv7yu72awfglb.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/cc285053-7ef9-4bde-8932-4688f5bd83ca', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000021', '00000000-0000-0000-0000-000000000001', 'img.casainsure.com',         true, 'active', 'jarvis-image-cdn', 'E24SJM35AP27KP', 'dbq2ggpb746yz.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/5d843dc4-c778-4c01-b24b-a98ea72b83cc', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000022', '00000000-0000-0000-0000-000000000001', 'img.learnpersonalloans.com', true, 'active', 'jarvis-image-cdn', 'E3AMI6B4PQ744B', 'd2c66sxkzm772s.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/a569f75a-7fda-4010-99dc-5495d7576743', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000023', '00000000-0000-0000-0000-000000000001', 'img.ratesbazar.com',         true, 'active', 'jarvis-image-cdn', 'E3V9MOBIFGXHYV', 'd1zq3wbfdoaz7a.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/86d7c095-8df0-4905-9666-f8c52914867a', NOW(), NOW(), NOW())
+ON CONFLICT (id) DO NOTHING`},
+
+		// Idempotent re-anchor for image_domains. If the prior placeholder rows
+		// (which pointed at the shared org-default CloudFront) had already been
+		// seeded by an earlier server boot, this UPDATE migrates them to the
+		// per-brand dedicated distros. Also sets verified=true / ssl_status='active'.
+		{"may09_reassert_img_domains_dedicated", `UPDATE mailing_image_domains
+SET cloudfront_distribution_id = sub.distro,
+    cloudfront_domain          = sub.cf_domain,
+    acm_cert_arn               = sub.acm_arn,
+    verified                   = true,
+    ssl_status                 = 'active',
+    last_verified_at           = NOW(),
+    updated_at                 = NOW()
+FROM (VALUES
+    ('img.myrepairdiy.com',        'E33V9NXEKUQBCV', 'dv7yu72awfglb.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/cc285053-7ef9-4bde-8932-4688f5bd83ca'),
+    ('img.casainsure.com',         'E24SJM35AP27KP', 'dbq2ggpb746yz.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/5d843dc4-c778-4c01-b24b-a98ea72b83cc'),
+    ('img.learnpersonalloans.com', 'E3AMI6B4PQ744B', 'd2c66sxkzm772s.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/a569f75a-7fda-4010-99dc-5495d7576743'),
+    ('img.ratesbazar.com',         'E3V9MOBIFGXHYV', 'd1zq3wbfdoaz7a.cloudfront.net', 'arn:aws:acm:us-east-1:146361001621:certificate/86d7c095-8df0-4905-9666-f8c52914867a')
+) AS sub(domain, distro, cf_domain, acm_arn)
+WHERE mailing_image_domains.domain = sub.domain
+  AND (
+        COALESCE(mailing_image_domains.cloudfront_distribution_id, '') != sub.distro
+     OR COALESCE(mailing_image_domains.cloudfront_domain, '')          != sub.cf_domain
+     OR COALESCE(mailing_image_domains.acm_cert_arn, '')               != sub.acm_arn
+     OR COALESCE(mailing_image_domains.verified, false)                != true
+     OR COALESCE(mailing_image_domains.ssl_status, '')                 != 'active'
+  )`},
+
+		// Seed the 4 new brands into mailing_brand_metadata. Idempotent.
+		{"may09_seed_brand_metadata", `INSERT INTO mailing_brand_metadata
+(brand_root, brand_code, brand_label, sending_domain, tracking_domain, image_domain, from_name, from_email, reply_email, physical_address, notes)
+VALUES
+    ('myrepairdiy.com',        'MR', 'My Repair DIY',          'em.myrepairdiy.com',        't.em.myrepairdiy.com',        'img.myrepairdiy.com',        'Bob @ My Repair DIY',          'hello@em.myrepairdiy.com',        'reply@em.myrepairdiy.com',        '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 expansion; img CDN initially shares org-default CloudFront until dedicated provisioned'),
+    ('casainsure.com',         'CI', 'Casa Insure',            'em.casainsure.com',         't.em.casainsure.com',         'img.casainsure.com',         'Maria @ Casa Insure',          'hello@em.casainsure.com',         'reply@em.casainsure.com',         '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 expansion'),
+    ('learnpersonalloans.com', 'LP', 'Learn Personal Loans',   'em.learnpersonalloans.com', 't.em.learnpersonalloans.com', 'img.learnpersonalloans.com', 'Linda @ Learn Personal Loans', 'hello@em.learnpersonalloans.com', 'reply@em.learnpersonalloans.com', '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 expansion'),
+    ('ratesbazar.com',         'RB', 'Rates Bazar',            'em.ratesbazar.com',         't.em.ratesbazar.com',         'img.ratesbazar.com',         'Sam @ Rates Bazar',            'hello@em.ratesbazar.com',         'reply@em.ratesbazar.com',         '30 N Gould St Ste R, Sheridan, WY 82801', 'May 9 2026 expansion')
 ON CONFLICT (brand_root) DO NOTHING`},
 
 		// Phase 9: ThrottleAgent state persistence
