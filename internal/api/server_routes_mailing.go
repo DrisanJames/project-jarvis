@@ -168,6 +168,14 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/api/mailing/everflow/postback", efPostback.HandlePostback)
 		s.router.Get("/api/mailing/everflow/postback", efPostback.HandlePostback)
 
+		// Inbound mailto: unsubscribe webhook — public (called by AWS SNS, no auth headers).
+		// SNS does not authenticate; handler verifies the SNS envelope shape and the
+		// base64-encoded orgID|campaignID|subscriberID token in the recipient localpart.
+		// Registered on s.router (not inside apiRouter) so SNS POSTs aren't 401'd by the
+		// auth middleware. Mirrors the pattern already used for /engine/webhook (PMTA
+		// accounting forwarder) and /api/mailing/everflow/postback (Everflow servers).
+		s.router.Post("/api/mailing/webhooks/unsub-inbound", svc.HandleInboundMailtoUnsubscribe)
+
 		// Public preferences page — redirects to frontend or serves minimal page
 		s.router.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
 			sid := r.URL.Query().Get("sid")
@@ -649,8 +657,8 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/unsubscribe/one-click", suppSvc.HandleOneClickUnsubscribe)
 			r.Get("/unsubscribe/list-header", suppSvc.HandleListUnsubscribeHeader)
 
-			// Inbound mailto: unsubscribe webhook (receives forwarded unsub emails from SES/Mailgun)
-			r.Post("/webhooks/unsub-inbound", svc.HandleInboundMailtoUnsubscribe)
+			// NOTE: /webhooks/unsub-inbound is registered on s.router (public, line ~170)
+			// so AWS SNS POSTs aren't blocked by the apiRouter auth middleware.
 			
 			// === AI SEND TIME OPTIMIZATION ===
 			aiSendTimeHandlers := NewAISendTimeHandlers(db)
