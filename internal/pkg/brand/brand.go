@@ -16,12 +16,29 @@ import "strings"
 // OwnedDomains enumerates the brand roots we operate. Any sending domain
 // whose base matches an entry here is considered that brand; otherwise
 // the input is treated as its own brand root.
+//
+// Adding a new sending brand:
+//  1. Add the apex domain here (lowercase, no leading dot).
+//  2. Ensure mailing_sending_profiles row(s) for em.<apex> exist.
+//  3. mailing_image_domains row optional — only required for inline image
+//     rehosting via that brand's CDN; otherwise images fall back to the
+//     org-default image domain (img.projectjarvis.io).
 var OwnedDomains = []string{
 	"discountblog.com",
 	"quizfiesta.com",
 	"historythinking.com",
 	"myownhealth.net",
 	"getmecoupons.net",
+	// May 2026 brand expansion — IPXO-hosted PMTA sending domains.
+	// All seven launched 2026-05-08; tracking on t.em.<apex>, sending
+	// from em.<apex>, brand-scoped suppression rooted at the apex.
+	"businessweeklypro.com",
+	"financialcalculate.com",
+	"consumerpro.net",
+	"homewarrantyservices.org",
+	"refinanceratesusa.com",
+	"thingoftheday.org",
+	"yourinsurancehub.com",
 }
 
 // Root maps a sending domain to its brand root.

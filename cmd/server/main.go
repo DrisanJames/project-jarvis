@@ -3244,6 +3244,84 @@ WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
         OR COALESCE(mailing_sending_profiles.tracking_domain, '') != sub.tracking_domain
   )`},
 
+		// Persona aliases for the May 2026 seven-brand expansion.
+		// Mirrors the existing convention ("Jamie @ Discount Blog",
+		// "Arnold @ My Own Health"). Idempotent: only updates rows that
+		// are still on the bare brand name (the original seed value).
+		{"may08_seed_brand_persona_from_names", `UPDATE mailing_sending_profiles
+SET from_name = sub.persona, updated_at = NOW()
+FROM (VALUES
+    ('em.businessweeklypro.com',     'Marcus @ Business Weekly Pro',     'Business Weekly Pro'),
+    ('em.financialcalculate.com',    'Eleanor @ Financial Calculate',    'Financial Calculate'),
+    ('em.consumerpro.net',           'Diane @ Consumer Pro',             'Consumer Pro'),
+    ('em.homewarrantyservices.org',  'Hank @ Home Warranty Services',    'Home Warranty Services'),
+    ('em.refinanceratesusa.com',     'Frank @ Refinance Rates USA',      'Refinance Rates USA'),
+    ('em.thingoftheday.org',         'Olivia @ Thing of the Day',        'Thing of the Day'),
+    ('em.yourinsurancehub.com',      'Carl @ Your Insurance Hub',        'Your Insurance Hub')
+) AS sub(sending_domain, persona, bare_name)
+WHERE mailing_sending_profiles.sending_domain = sub.sending_domain
+  AND mailing_sending_profiles.vendor_type = 'pmta'
+  AND mailing_sending_profiles.organization_id = '00000000-0000-0000-0000-000000000001'
+  AND COALESCE(mailing_sending_profiles.from_name, '') = sub.bare_name`},
+
+		// Image-CDN seeds for the seven new brands. Each row creates an
+		// idempotent mailing_image_domains entry that initially POINTS AT
+		// the shared org-default CloudFront (img.projectjarvis.io). Once a
+		// dedicated img.<brand> CloudFront is provisioned, the seed-row
+		// can be UPDATEd to point at the brand-specific distribution
+		// without touching application code.
+		{"may08_seed_img_domains_new_brands", `INSERT INTO mailing_image_domains
+(id, org_id, domain, verified, ssl_status, s3_bucket, cloudfront_distribution_id, cloudfront_domain, last_verified_at, created_at, updated_at)
+VALUES
+    ('d0000000-0000-0000-0001-000000000010', '00000000-0000-0000-0000-000000000001', 'img.businessweeklypro.com',    true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000011', '00000000-0000-0000-0000-000000000001', 'img.financialcalculate.com',   true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000012', '00000000-0000-0000-0000-000000000001', 'img.consumerpro.net',          true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000013', '00000000-0000-0000-0000-000000000001', 'img.homewarrantyservices.org', true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000014', '00000000-0000-0000-0000-000000000001', 'img.refinanceratesusa.com',    true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000015', '00000000-0000-0000-0000-000000000001', 'img.thingoftheday.org',        true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW()),
+    ('d0000000-0000-0000-0001-000000000016', '00000000-0000-0000-0000-000000000001', 'img.yourinsurancehub.com',     true, 'pending_dedicated', 'jarvis-image-cdn', 'E1Q4ZUVTMC8135', 'd3j30mnhwt8cov.cloudfront.net', NOW(), NOW(), NOW())
+ON CONFLICT (id) DO NOTHING`},
+
+		// Brand metadata table — single source of truth for footer/SES/persona
+		// substitutions across deploy scripts. Replaces the per-deploy-script
+		// BRANDS / publisher_name / physical_address dictionaries. Deploy
+		// scripts can SELECT from this table at runtime to derive footer
+		// values without hardcoding.
+		{"may08_create_brand_metadata", `CREATE TABLE IF NOT EXISTS mailing_brand_metadata (
+			brand_root        TEXT PRIMARY KEY,
+			brand_code        TEXT NOT NULL UNIQUE,
+			brand_label       TEXT NOT NULL,
+			sending_domain    TEXT NOT NULL,
+			tracking_domain   TEXT NOT NULL,
+			image_domain      TEXT NOT NULL,
+			from_name         TEXT NOT NULL,
+			from_email        TEXT NOT NULL,
+			reply_email       TEXT NOT NULL,
+			physical_address  TEXT NOT NULL,
+			organization_id   UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'::uuid,
+			status            TEXT NOT NULL DEFAULT 'active',
+			notes             TEXT,
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+
+		// Seed all 11 brands (4 existing + 7 new). Idempotent — re-run is a no-op.
+		{"may08_seed_brand_metadata", `INSERT INTO mailing_brand_metadata
+(brand_root, brand_code, brand_label, sending_domain, tracking_domain, image_domain, from_name, from_email, reply_email, physical_address, notes)
+VALUES
+    ('discountblog.com',         'DB',  'Discount Blog',           'em.discountblog.com',          't.em.discountblog.com',          'img.discountblog.com',          'Jamie @ Discount Blog',            'hello@em.discountblog.com',          'reply@em.discountblog.com',          '784 S. Clearwater Loop, Ste. R, Post Falls, ID 83854', 'Existing brand; verified persona pattern'),
+    ('historythinking.com',      'HT',  'History Thinking',        'em.historythinking.com',       'trk.em.historythinking.com',     'img.historythinking.com',       'History Thinking',                 'hello@em.historythinking.com',       'reply@em.historythinking.com',       '1309 Coffeen Ave STE 1200, Sheridan, WY 82801',        'Existing brand; brand-name from-name (no persona)'),
+    ('myownhealth.net',          'MH',  'My Own Health',           'em.myownhealth.net',           'trk.em.myownhealth.net',         'img.myownhealth.net',           'Arnold @ My Own Health',           'hello@em.myownhealth.net',           'reply@em.myownhealth.net',           '784 S. Clearwater Loop, Ste. R, Post Falls, ID 83854', 'Existing brand; verified persona pattern'),
+    ('quizfiesta.com',           'QF',  'Quiz Fiesta',             'em.quizfiesta.com',            't.em.quizfiesta.com',            'img.quizfiesta.com',            'Quiz Master',                      'hello@em.quizfiesta.com',            'reply@em.quizfiesta.com',            '1309 Coffeen Avenue STE 1200, Sheridan, WY 82801',     'Existing brand; non-personal from-name'),
+    ('businessweeklypro.com',    'BW',  'Business Weekly Pro',     'em.businessweeklypro.com',     't.em.businessweeklypro.com',     'img.businessweeklypro.com',     'Marcus @ Business Weekly Pro',     'hello@em.businessweeklypro.com',     'reply@em.businessweeklypro.com',     '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion; img CDN shared with org default until dedicated CloudFront provisioned'),
+    ('financialcalculate.com',   'FC',  'Financial Calculate',     'em.financialcalculate.com',    't.em.financialcalculate.com',    'img.financialcalculate.com',    'Eleanor @ Financial Calculate',    'hello@em.financialcalculate.com',    'reply@em.financialcalculate.com',    '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
+    ('consumerpro.net',          'CP',  'Consumer Pro',            'em.consumerpro.net',           't.em.consumerpro.net',           'img.consumerpro.net',           'Diane @ Consumer Pro',             'hello@em.consumerpro.net',           'reply@em.consumerpro.net',           '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
+    ('homewarrantyservices.org', 'HW',  'Home Warranty Services',  'em.homewarrantyservices.org',  't.em.homewarrantyservices.org',  'img.homewarrantyservices.org',  'Hank @ Home Warranty Services',    'hello@em.homewarrantyservices.org',  'reply@em.homewarrantyservices.org',  '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
+    ('refinanceratesusa.com',    'RR',  'Refinance Rates USA',     'em.refinanceratesusa.com',     't.em.refinanceratesusa.com',     'img.refinanceratesusa.com',     'Frank @ Refinance Rates USA',      'hello@em.refinanceratesusa.com',     'reply@em.refinanceratesusa.com',     '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
+    ('thingoftheday.org',        'TT',  'Thing of the Day',        'em.thingoftheday.org',         't.em.thingoftheday.org',         'img.thingoftheday.org',         'Olivia @ Thing of the Day',        'hello@em.thingoftheday.org',         'reply@em.thingoftheday.org',         '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion'),
+    ('yourinsurancehub.com',     'YI',  'Your Insurance Hub',      'em.yourinsurancehub.com',      't.em.yourinsurancehub.com',      'img.yourinsurancehub.com',      'Carl @ Your Insurance Hub',        'hello@em.yourinsurancehub.com',      'reply@em.yourinsurancehub.com',      '30 N Gould St Ste R, Sheridan, WY 82801',              'May 2026 expansion')
+ON CONFLICT (brand_root) DO NOTHING`},
+
 		// Phase 9: ThrottleAgent state persistence
 		{"create_throttle_agent_state", `CREATE TABLE IF NOT EXISTS mailing_engine_throttle_agent_state (
 			isp TEXT PRIMARY KEY,

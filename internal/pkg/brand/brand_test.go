@@ -17,6 +17,16 @@ func TestRoot(t *testing.T) {
 		{"em.myownhealth.net", "myownhealth.net"},
 		{"em.getmecoupons.net", "getmecoupons.net"},
 
+		// May 2026 brand expansion — collapse em.<apex> -> apex.
+		{"em.businessweeklypro.com", "businessweeklypro.com"},
+		{"em.financialcalculate.com", "financialcalculate.com"},
+		{"em.consumerpro.net", "consumerpro.net"},
+		{"em.homewarrantyservices.org", "homewarrantyservices.org"},
+		{"em.refinanceratesusa.com", "refinanceratesusa.com"},
+		{"em.thingoftheday.org", "thingoftheday.org"},
+		{"em.yourinsurancehub.com", "yourinsurancehub.com"},
+		{"BUSINESSWEEKLYPRO.COM", "businessweeklypro.com"},
+
 		// Unknown/unowned: returned unchanged (lowercased/trimmed).
 		{"unknown.io", "unknown.io"},
 		{"EXAMPLE.COM", "example.com"},
