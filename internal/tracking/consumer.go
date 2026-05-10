@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
+
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 type Consumer struct {
@@ -248,6 +250,17 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	} else {
 		log.Printf("PROCESSED OPEN (MPP skipped aggregates): campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
 	}
+
+	// Per-domain engagement state (SA-1). Runs for BOTH MPP and human opens:
+	// an MPP open is strict inbox-placement proof and the per-domain state
+	// machine treats any open as engagement signal (operator directive
+	// 2026-05-09). Without this, the SQS consumer path would never promote
+	// any subscriber from probe → engaged, and the cross-engaged graduation
+	// pass would stay empty forever — observed in production with 0 engaged
+	// rows across 625k probe rows after the SA-1 deploy.
+	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
+	mailing.UpsertSDSOpen(ctx, c.db, subscriberID, sdsDomain)
+	mailing.RecomputeSDSScoreLocal(ctx, c.db, subscriberID, sdsDomain)
 	return nil
 }
 
@@ -337,6 +350,14 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	}
 	c.updateEngagementScore(ctx, subscriberID)
 
+	// Per-domain engagement state (SA-1). Every click is treated as engagement
+	// signal regardless of the is_machine_click verdict — the verdict is
+	// informational in this release. Mirrors the SDS write at the end of
+	// processOpen so SQS consumer events feed the state machine.
+	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
+	mailing.UpsertSDSClick(ctx, c.db, subscriberID, sdsDomain)
+	mailing.RecomputeSDSScoreLocal(ctx, c.db, subscriberID, sdsDomain)
+
 	log.Printf("PROCESSED CLICK: campaign=%s subscriber=%s url=%s", campaignID, subscriberID, evt.LinkURL)
 	return nil
 }
@@ -361,6 +382,12 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 		VALUES ($1, $2, 'User unsubscribed', 'unsubscribe', true, NOW(), NOW())
 		ON CONFLICT (email) DO UPDATE SET active = true, reason = 'User unsubscribed', updated_at = NOW()
 	`, uuid.New(), email)
+
+	// SDS state-machine: an unsubscribe is a hard suppression signal for this
+	// sending domain. UpsertSDSUnsub sets state='suppressed' so the audience
+	// finalizer's SDS exclusion clause prunes them on the next campaign.
+	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
+	mailing.UpsertSDSUnsub(ctx, c.db, subscriberID, sdsDomain)
 
 	log.Printf("PROCESSED UNSUB: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)
 	return nil

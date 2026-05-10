@@ -138,6 +138,14 @@ func TestProcessOpen_InsertsRecipientDomain(t *testing.T) {
 	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+engagement_score`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
+	// SDS engagement-side write — Resolve returns "" so the 3 helpers
+	// (UpsertSDSOpen, RecomputeSDSScoreLocal) short-circuit before
+	// hitting the DB. Asserting the single lookup is enough to lock in
+	// the wiring without coupling the test to the SDS SQL shape.
+	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(from_email.*FROM\s+mailing_campaigns\s+WHERE\s+id\s*=\s*\$1`).
+		WithArgs(uuid.MustParse(testCampaignID)).
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+
 	err := c.processOpen(context.Background(), TrackingEvent{
 		EventType:    EventOpen,
 		OrgID:        testOrgID,
@@ -281,6 +289,12 @@ func TestProcessOpen_EmptyEmail_SkipsInboxProfileUpsert(t *testing.T) {
 	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+engagement_score`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
+	// SDS engagement-side write — Resolve returns "" so the 3 helpers
+	// short-circuit. See TestProcessOpen_InsertsRecipientDomain for rationale.
+	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(from_email.*FROM\s+mailing_campaigns\s+WHERE\s+id\s*=\s*\$1`).
+		WithArgs(uuid.MustParse(testCampaignID)).
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+
 	err := c.processOpen(context.Background(), TrackingEvent{
 		EventType:    EventOpen,
 		OrgID:        testOrgID,
@@ -397,6 +411,13 @@ func TestProcessClick_InsertsRecipientDomain(t *testing.T) {
 			AddRow(0, 5, 50, nil))
 	mock.ExpectExec(`UPDATE\s+mailing_subscribers\s+SET\s+engagement_score`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// SDS engagement-side write — Resolve returns "" so UpsertSDSClick
+	// and RecomputeSDSScoreLocal short-circuit. See processOpen test
+	// for the rationale.
+	mock.ExpectQuery(`(?is)SELECT\s+COALESCE\(from_email.*FROM\s+mailing_campaigns\s+WHERE\s+id\s*=\s*\$1`).
+		WithArgs(uuid.MustParse(testCampaignID)).
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
 
 	err := c.processClick(context.Background(), TrackingEvent{
 		EventType:    EventClick,
