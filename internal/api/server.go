@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -62,6 +63,12 @@ type Server struct {
 	DataPipeline *worker.DataPipeline
 	// PMTA accounting — public POST /engine/webhook; set when ingestor + workers are ready
 	pmtaAccountingWebhook http.HandlerFunc
+	// Wave processor throughput provider (SA-7). Set after sendWorkerPool
+	// is constructed in main.go via SetWaveProcessorThroughputProvider.
+	// Read by the /api/wave-processor/status handler registered in
+	// SetMailingDB. Mutex-protected so the late wiring is race-free.
+	waveProcessorMu       sync.RWMutex
+	waveProcessorProvider ThroughputProvider
 }
 
 // NewServer creates a new API server

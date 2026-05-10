@@ -57,6 +57,20 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Get("/api/outbox/summary", HandleOutboxSummary(db))
 		s.router.Get("/api/outbox/dead-letter", HandleOutboxDeadLetter(db))
 
+		// Wave processor pipeline observability (SA-7, 2026-05-09). Same
+		// reason as outbox/summary — register on root router BEFORE the
+		// /api auth Route block so chi matches it directly. The throughput
+		// provider is wired late by main.go after sendWorkerPool boots;
+		// until then the handler returns DB-only data with empty
+		// per-domain throughput, which is always correct.
+		s.router.Get("/api/wave-processor/status", func(w http.ResponseWriter, req *http.Request) {
+			handler := &WaveProcessorStatusHandler{
+				DB:                 db,
+				ThroughputProvider: s.getWaveProcessorProvider(),
+			}
+			handler.ServeHTTP(w, req)
+		})
+
 		// Pool isolation admin endpoints — on root router to avoid chi late-registration race
 		poolIsolationSvc := &PMTACampaignService{db: db}
 		s.router.Get("/api/admin/pool-isolation-status", func(w http.ResponseWriter, req *http.Request) {
