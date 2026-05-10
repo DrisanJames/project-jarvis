@@ -19,6 +19,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/ovh"
 	"github.com/ignite/sparkpost-monitor/internal/pmta"
 	"github.com/ignite/sparkpost-monitor/internal/vultr"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 // SetMailingDB sets the PostgreSQL database for mailing platform and registers routes
@@ -901,6 +902,19 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// HTTP server startup.
 			go segMaterializer.MaterializeCanonicalSegments(workerCtx)
 			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
+
+			// SDS Graduation Job (per-domain engagement engine, SA-1).
+			// Nightly cleanup at 02:00 UTC: cold pass on
+			// mailing_subscriber_domain_state + cross-engaged graduation
+			// on mailing_subscribers. See
+			// internal/worker/sds_graduation_job.go for the design notes
+			// and the explicit omission of any cold-decay re-probe pass.
+			sdsGraduationJob := worker.NewSDSGraduationJob(db)
+			if err := sdsGraduationJob.Start(); err != nil {
+				log.Printf("SDS Graduation Job failed to start: %v", err)
+			} else {
+				log.Println("SDS Graduation Job started (daily cold + cross-engaged passes at 02:00 UTC)")
+			}
 
 			// === BLOG CAMPAIGN INGEST (minimal JSON → full engaged campaign) ===
 			r.Post("/blog-campaign", pmtaCampaignAPI.HandleBlogCampaign)

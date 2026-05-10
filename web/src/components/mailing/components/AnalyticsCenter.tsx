@@ -19,6 +19,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import { HarvestStreamDashboard } from './HarvestStreamDashboard';
+import { AnalyticsTabs, AnalyticsTabKey, PAGE_VERSION_ANALYTICS_TABS } from './AnalyticsTabs';
 import './AnalyticsCenter.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -150,7 +151,14 @@ type TimeRange = 'today' | 'yesterday';
 //       lets the backend compute MST midnight via `America/Denver`
 //       (parseAnalyticsRange in mailing_analytics.go). Also removed
 //       Top Bounce Reasons and Brand×Series Rollup sections per ops.
-const PAGE_VERSION = '4.4';
+// 5.0 — Phase D Analytics restructure. Wraps the existing surface in a
+//       7-tab navigation. Existing content stays in the "Overview" tab.
+//       New tabs (Deliverability, Engagement, Offers, Audience,
+//       Operations, Reports) are owned by AnalyticsTabs.tsx and backed
+//       by promoted analytics handlers in mailing_analytics_promoted.go
+//       and mailing_analytics_offers.go. Original page version was 4.4;
+//       this is a structural release so the version bumps a major.
+const PAGE_VERSION = '5.0';
 
 // ─── ISP Insights types ──────────────────────────────────────────────────────
 
@@ -847,6 +855,11 @@ export const AnalyticsCenter: React.FC = () => {
   const [range, setRange] = useState<TimeRange>('today');
   const [loading, setLoading] = useState(true);
 
+  // Phase D — top-level tab state. Defaults to 'overview' so the existing
+  // analytics surface continues to render exactly as before. The other tab
+  // panels live in AnalyticsTabs.tsx and are mounted lazily on switch.
+  const [activeTab, setActiveTab] = useState<AnalyticsTabKey>('overview');
+
   // Data — overview is the primary source for KPIs, rates, and deliverability
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignData | null>(null);
@@ -1078,11 +1091,46 @@ export const AnalyticsCenter: React.FC = () => {
         </div>
       </div>
 
-      {loading && !overview ? (
+      {/* ─── Tab Navigation ─────────────────────────────────────────── */}
+      <div
+        className="ac-range-selector"
+        style={{ marginBottom: 16, gap: 4, flexWrap: 'wrap' }}
+        role="tablist"
+        aria-label="Analytics sections"
+      >
+        {([
+          { key: 'overview', label: 'Overview' },
+          { key: 'deliverability', label: 'Deliverability' },
+          { key: 'engagement', label: 'Engagement' },
+          { key: 'offers', label: 'Offers' },
+          { key: 'audience', label: 'Audience' },
+          { key: 'operations', label: 'Operations' },
+          { key: 'reports', label: 'Reports' },
+        ] as Array<{ key: AnalyticsTabKey; label: string }>).map(t => (
+          <button
+            key={t.key}
+            className={activeTab === t.key ? 'active' : ''}
+            onClick={() => setActiveTab(t.key)}
+            role="tab"
+            aria-selected={activeTab === t.key}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {loading && !overview && activeTab === 'overview' ? (
         <div className="ac-loading">
           <FontAwesomeIcon icon={faSpinner} spin size="2x" />
           <p>Loading comprehensive analytics...</p>
         </div>
+      ) : activeTab !== 'overview' ? (
+        <AnalyticsTabs
+          activeTab={activeTab}
+          range={range}
+          excludeMPP={excludeMPP}
+          orgId={orgId || null}
+        />
       ) : (
         <>
           {/* ─── Live Sending Band ────────────────────────────────────── */}
@@ -1622,7 +1670,7 @@ export const AnalyticsCenter: React.FC = () => {
         borderTop: '1px solid rgba(255,255,255,0.05)',
         display: 'flex', gap: 16, flexWrap: 'wrap',
       }}>
-        <span>Page: Analytics Center v{PAGE_VERSION}</span>
+        <span>Page: Analytics Center v{PAGE_VERSION} · Tabs v{PAGE_VERSION_ANALYTICS_TABS}</span>
         {Object.entries(apiVersions).map(([api, ver]) => (
           <span key={api}>{api}: v{ver}</span>
         ))}

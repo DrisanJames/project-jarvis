@@ -194,6 +194,26 @@ func (s *Server) GetOfferSuppressionManager() *OfferSuppressionManager {
 	return s.OfferSuppMgr
 }
 
+// RegisterWaveProcessorStatusRoute mounts GET /api/wave-processor/status
+// on the root router (bypassing the /api auth middleware so operators can
+// curl it during incidents, mirroring /api/outbox/summary). Must be called
+// AFTER both SetMailingDB and SendWorkerPool construction — the handler
+// captures both the *sql.DB and the in-memory throughput provider.
+//
+// Pure observability — see SA-7 in PER_DOMAIN_ENGAGEMENT_ENGINE_SPEC.md.
+// Both arguments may be nil; the handler degrades gracefully (empty maps)
+// in that case so the route is always registered.
+func (s *Server) RegisterWaveProcessorStatusRoute(provider ThroughputProvider) {
+	if s.router == nil {
+		return
+	}
+	handler := &WaveProcessorStatusHandler{
+		DB:                 s.mailingDB,
+		ThroughputProvider: provider,
+	}
+	s.router.Get("/api/wave-processor/status", handler.ServeHTTP)
+}
+
 // RegisterHealthRoutes creates a HealthChecker from the server's dependencies
 // and registers comprehensive health routes on the router. Call this after all
 // Set* methods (SetMailingDB, SetRedisClient, SetImageCDNConfig) have been invoked

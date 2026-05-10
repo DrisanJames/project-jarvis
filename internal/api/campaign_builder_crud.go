@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+// VersionCampaignBuilder is bumped on every schema/behavior change to the
+// /api/mailing/campaigns endpoints so clients can detect drift. Per
+// workspace rule testing.mdc.
+//
+// History:
+//   1.0 (2026-05-08) — Phase B remediation:
+//     * Open/click rates now use `delivered` denominator only (was max(delivered, sent))
+//     * Removed combined `bounce_rate` and `bounces` from /stats; hard/soft only
+//       per .cursor/rules/bounce-metrics.mdc
+//     * Replaced per-row N+1 list/segment name lookup with two batched queries
+//     * /stats accepts ?include=domain,hourly to make the heavy aggregations opt-in
+//     * /stats returns queue_status histogram (mailing_campaign_queue) so the
+//       UI can show "what we're actually mailing" without a separate request
+const VersionCampaignBuilder = "1.0"
 
 // HandleListCampaigns lists all campaigns with filtering and pagination
 func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +94,17 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 
-	campaigns := []map[string]interface{}{}
+	type campaignRow struct {
+		entry         map[string]interface{}
+		listIDsJSON   string
+		segIDsJSON    string
+		baseListName  string
+		baseSegName   string
+	}
+	var collected []campaignRow
+	listIDSet := map[string]struct{}{}
+	segIDSet := map[string]struct{}{}
+
 	for rows.Next() {
 		var id, name, subject, status string
 		var totalRecipients, sentCount, deliveredCount, openCount, clickCount int
@@ -91,7 +117,7 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		var createdAt time.Time
 		var scheduledAt, startedAt, completedAt sql.NullTime
 
-		rows.Scan(&id, &name, &subject, &status,
+		if scanErr := rows.Scan(&id, &name, &subject, &status,
 			&totalRecipients, &sentCount, &deliveredCount,
 			&openCount, &clickCount,
 			&bounceCount, &hardBounceCount, &softBounceCount, &complaintCount,
@@ -101,43 +127,17 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			&createdAt, &scheduledAt, &startedAt, &completedAt,
 			&profileName, &vendorType, &listName,
 			&listIDsJSON, &htmlPreview,
-			&previewText, &segmentName, &inclusionSegmentsJSON)
-
-		// Resolve list names from list_ids JSONB for multi-list campaigns
-		var listNames []string
-		if listName != "" {
-			listNames = append(listNames, listName)
-		}
-		if listIDsJSON != "" && listIDsJSON != "[]" && listIDsJSON != "null" {
-			var listIDs []string
-			if err := json.Unmarshal([]byte(listIDsJSON), &listIDs); err == nil && len(listIDs) > 0 {
-				for _, lid := range listIDs {
-					var ln string
-					if err := cb.db.QueryRowContext(ctx, `SELECT name FROM mailing_lists WHERE id = $1`, lid).Scan(&ln); err == nil && ln != "" {
-						listNames = append(listNames, ln)
-					}
-				}
-			}
+			&previewText, &segmentName, &inclusionSegmentsJSON); scanErr != nil {
+			log.Printf("[CampaignBuilder] List scan error: %v", scanErr)
+			continue
 		}
 
-		// Resolve segment names: legacy segment_id + PMTA inclusion_segments
-		var segmentNames []string
-		if segmentName != "" {
-			segmentNames = append(segmentNames, segmentName)
-		}
-		if inclusionSegmentsJSON != "" && inclusionSegmentsJSON != "[]" && inclusionSegmentsJSON != "null" {
-			var segIDs []string
-			if err := json.Unmarshal([]byte(inclusionSegmentsJSON), &segIDs); err == nil && len(segIDs) > 0 {
-				for _, sid := range segIDs {
-					var sn string
-					if err := cb.db.QueryRowContext(ctx, `SELECT name FROM mailing_segments WHERE id = $1`, sid).Scan(&sn); err == nil && sn != "" {
-						segmentNames = append(segmentNames, sn)
-					}
-				}
-			}
-		}
-
-		campaign := map[string]interface{}{
+		// Phase B: open/click rates use the Deliverability convention —
+		// denominator = delivered. Falling back to sent_count silently when
+		// delivered=0 caused per-screen drift (Dashboard vs Campaign Center
+		// vs Analytics could each show a different number for the same
+		// campaign).
+		entry := map[string]interface{}{
 			"id":                id,
 			"name":              name,
 			"subject":           subject,
@@ -156,33 +156,139 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 			"from_name":         fromName,
 			"from_email":        fromEmail,
 			"throttle_speed":    throttleSpeed,
-			"open_rate":         calcRate(openCount, maxInt(deliveredCount, sentCount)),
-			"click_rate":        calcRate(clickCount, maxInt(deliveredCount, sentCount)),
+			"open_rate":         calcRate(openCount, deliveredCount),
+			"click_rate":        calcRate(clickCount, deliveredCount),
+			"hard_bounce_rate":  calcRate(hardBounceCount, sentCount),
+			"soft_bounce_rate":  calcRate(softBounceCount, sentCount),
 			"created_at":        createdAt,
 			"profile_name":      profileName,
 			"vendor":            vendorType,
 			"list_name":         listName,
-			"list_names":        listNames,
 			"html_preview":      htmlPreview,
 			"preview_text":      previewText,
-			"segment_names":     segmentNames,
 		}
 
 		if scheduledAt.Valid {
-			campaign["scheduled_at"] = scheduledAt.Time
+			entry["scheduled_at"] = scheduledAt.Time
 		}
 		if startedAt.Valid {
-			campaign["started_at"] = startedAt.Time
+			entry["started_at"] = startedAt.Time
 		}
 		if completedAt.Valid {
-			campaign["completed_at"] = completedAt.Time
+			entry["completed_at"] = completedAt.Time
 		}
 
-		campaigns = append(campaigns, campaign)
+		// Collect list & segment IDs for batched name lookup below.
+		// The previous implementation issued N queries per campaign × M IDs
+		// — at 50 campaigns with ~3 ids each that was ~150 round-trips per
+		// page load. The new approach is exactly 2 queries regardless of N.
+		var listIDs []string
+		if listIDsJSON != "" && listIDsJSON != "[]" && listIDsJSON != "null" {
+			_ = json.Unmarshal([]byte(listIDsJSON), &listIDs)
+			for _, lid := range listIDs {
+				if lid != "" {
+					listIDSet[lid] = struct{}{}
+				}
+			}
+		}
+		var segIDs []string
+		if inclusionSegmentsJSON != "" && inclusionSegmentsJSON != "[]" && inclusionSegmentsJSON != "null" {
+			_ = json.Unmarshal([]byte(inclusionSegmentsJSON), &segIDs)
+			for _, sid := range segIDs {
+				if sid != "" {
+					segIDSet[sid] = struct{}{}
+				}
+			}
+		}
+
+		collected = append(collected, campaignRow{
+			entry:        entry,
+			listIDsJSON:  listIDsJSON,
+			segIDsJSON:   inclusionSegmentsJSON,
+			baseListName: listName,
+			baseSegName:  segmentName,
+		})
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		log.Printf("[CampaignBuilder] List iter error: %v", rowsErr)
 	}
 
+	listNameMap := batchFetchNames(ctx, cb.db, "mailing_lists", listIDSet)
+	segNameMap := batchFetchNames(ctx, cb.db, "mailing_segments", segIDSet)
+
+	campaigns := make([]map[string]interface{}, 0, len(collected))
+	for _, cr := range collected {
+		var listNames []string
+		if cr.baseListName != "" {
+			listNames = append(listNames, cr.baseListName)
+		}
+		if cr.listIDsJSON != "" && cr.listIDsJSON != "[]" && cr.listIDsJSON != "null" {
+			var ids []string
+			if err := json.Unmarshal([]byte(cr.listIDsJSON), &ids); err == nil {
+				for _, id := range ids {
+					if n, ok := listNameMap[id]; ok && n != "" {
+						listNames = append(listNames, n)
+					}
+				}
+			}
+		}
+		var segmentNames []string
+		if cr.baseSegName != "" {
+			segmentNames = append(segmentNames, cr.baseSegName)
+		}
+		if cr.segIDsJSON != "" && cr.segIDsJSON != "[]" && cr.segIDsJSON != "null" {
+			var ids []string
+			if err := json.Unmarshal([]byte(cr.segIDsJSON), &ids); err == nil {
+				for _, id := range ids {
+					if n, ok := segNameMap[id]; ok && n != "" {
+						segmentNames = append(segmentNames, n)
+					}
+				}
+			}
+		}
+		cr.entry["list_names"] = listNames
+		cr.entry["segment_names"] = segmentNames
+		campaigns = append(campaigns, cr.entry)
+	}
+
+	resp := NewPaginatedResponse(campaigns, pag, total)
+	envelope := map[string]interface{}{
+		"data":        resp.Data,
+		"pagination":  resp.Pagination,
+		"api_version": VersionCampaignBuilder,
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(NewPaginatedResponse(campaigns, pag, total))
+	json.NewEncoder(w).Encode(envelope)
+}
+
+// batchFetchNames fetches `id -> name` for the given table using a single
+// `WHERE id = ANY($1::uuid[])` query. Empty input returns an empty map.
+// The caller decides what to do when an ID is missing.
+func batchFetchNames(ctx context.Context, db *sql.DB, table string, ids map[string]struct{}) map[string]string {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	idList := make([]string, 0, len(ids))
+	for id := range ids {
+		idList = append(idList, id)
+	}
+	// table is a fixed string from a small known set — not user input. Safe to
+	// interpolate. (Validated by the literal call sites.)
+	q := fmt.Sprintf(`SELECT id::text, name FROM %s WHERE id = ANY($1::uuid[])`, table)
+	rows, err := db.QueryContext(ctx, q, "{"+strings.Join(idList, ",")+"}")
+	if err != nil {
+		log.Printf("[batchFetchNames] %s query error: %v", table, err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err == nil {
+			out[id] = name
+		}
+	}
+	return out
 }
 
 // HandleGetCampaign returns a single campaign with full details

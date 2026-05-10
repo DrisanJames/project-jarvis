@@ -111,6 +111,14 @@ type SendWorkerPool struct {
 	// Default is legacy so pool construction without explicit opt-in is
 	// behavior-preserving. Safe to flip at runtime between drains.
 	outboxMode string
+
+	// throughputTracker records every successful PMTA submission per
+	// sending_domain over a rolling 60-second window. Drives the
+	// /api/wave-processor/status JSON endpoint and the periodic
+	// "[send_worker] throughput last_60s" log line. Pure observability —
+	// reads never touch the send hot path. See SA-7 in
+	// PER_DOMAIN_ENGAGEMENT_ENGINE_SPEC.md.
+	throughputTracker *DomainThroughputTracker
 }
 
 // SetOutboxMode toggles the durable-outbox state machine. Pass "durable" to
@@ -302,12 +310,23 @@ func NewSendWorkerPool(db *sql.DB, numWorkers int) *SendWorkerPool {
 	}
 
 	return &SendWorkerPool{
-		db:           db,
-		workerID:     fmt.Sprintf("worker-%s", uuid.New().String()[:8]),
-		numWorkers:   numWorkers,
-		batchSize:    100,                    // Claim 100 items per batch
-		pollInterval: 100 * time.Millisecond, // Poll frequently for low latency
+		db:                db,
+		workerID:          fmt.Sprintf("worker-%s", uuid.New().String()[:8]),
+		numWorkers:        numWorkers,
+		batchSize:         100,                    // Claim 100 items per batch
+		pollInterval:      100 * time.Millisecond, // Poll frequently for low latency
+		throughputTracker: NewDomainThroughputTracker(60 * time.Second),
 	}
+}
+
+// Throughput returns the current per-sending-domain send rate over the last
+// 60 seconds. Used by the /api/wave-processor/status handler. Safe to call
+// at any time; the underlying tracker handles its own concurrency.
+func (p *SendWorkerPool) Throughput() map[string]int {
+	if p.throughputTracker == nil {
+		return map[string]int{}
+	}
+	return p.throughputTracker.Snapshot()
 }
 
 // SetOfferSuppressionChecker connects the Bloom-based offer suppression checker.
@@ -414,6 +433,7 @@ func (p *SendWorkerPool) Start() {
 	p.registerWorker()
 
 	go p.heartbeatLoop()
+	go p.throughputLogLoop()
 
 	// ISP dispatch coordinator: claims items from DB and feeds workCh
 	p.wg.Add(1)
@@ -1494,6 +1514,13 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	// the per-domain send state so P3 pilot can join against real data.
 	mailing.UpsertSDSSend(ctx, p.db, item.SubscriberID, sendingDomain)
 
+	// Per-domain throughput accounting (SA-7). One in-memory map insert,
+	// no DB I/O. The successful submission is what we count — failures /
+	// transport errors / suppressions are tracked elsewhere.
+	if p.throughputTracker != nil {
+		p.throughputTracker.RecordSend(sendingDomain)
+	}
+
 	// Upsert inbox profile for this recipient
 	if recipientDomain != "" {
 		eHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(item.Email))))
@@ -1897,6 +1924,30 @@ func (p *SendWorkerPool) registerWorker() {
 // deregisterWorker removes this worker from the database
 func (p *SendWorkerPool) deregisterWorker() {
 	p.db.Exec(`UPDATE mailing_workers SET status = 'stopped' WHERE id = $1`, p.workerID)
+}
+
+// throughputLogLoop emits a single "[send_worker] throughput last_60s: ..."
+// line every 60 seconds for operator visibility into per-sending-domain
+// send rates. Skips emission when the snapshot is empty so quiet periods
+// don't spam the log. Lifecycle-bound to p.ctx — Stop() cancels the loop.
+func (p *SendWorkerPool) throughputLogLoop() {
+	if p.throughputTracker == nil {
+		return
+	}
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			snap := p.throughputTracker.Snapshot()
+			if len(snap) == 0 {
+				continue
+			}
+			log.Printf("[send_worker] throughput last_60s: %s", FormatThroughputLog(snap))
+		}
+	}
 }
 
 // heartbeatLoop sends periodic heartbeats

@@ -301,23 +301,43 @@ export const MailingPortal: React.FC = () => {
 };
 
 // Enhanced Dashboard with System Explanations
+//
+// PAGE_VERSION is bumped on every behavior/UX change per workspace rule
+// testing.mdc so we can confirm a deploy reached the browser.
+//
+// History:
+//   1.0 (2026-05-08) — single dashboard fetch (drops the duplicate
+//     /api/mailing/throttle/status call), reads throttle from
+//     dashboard.throttle_status, sends X-Organization-ID, surfaces Hard
+//     Bounce + Soft Bounce as separate tiles per bounce-metrics.mdc, splits
+//     the platform sending gauge into platform-wide vs org's contribution.
+const PAGE_VERSION_DASHBOARD = '1.0';
+
 const EnhancedDashboard: React.FC = () => {
+  const { organization } = useAuth();
   const [dashboard, setDashboard] = useState<any>(null);
-  const [throttle, setThrottle] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/mailing/dashboard').then(r => r.json()),
-      fetch('/api/mailing/throttle/status').then(r => r.json()),
-    ]).then(([dash, thr]) => {
-      setDashboard(dash);
-      setThrottle(thr);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (organization?.id) {
+      headers['X-Organization-ID'] = organization.id;
+    }
+    // Single round-trip: throttle is delivered as dashboard.throttle_status.
+    // The previous code did two GETs (the second being /throttle/status)
+    // which returned the exact same payload as dashboard.throttle_status.
+    fetch('/api/mailing/dashboard', { headers, credentials: 'include' })
+      .then(r => r.json())
+      .then(dash => {
+        setDashboard(dash);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [organization]);
 
   if (loading) return <div className="loading-state">Loading dashboard...</div>;
+
+  const throttle = dashboard?.throttle_status || {};
 
   return (
     <div className="enhanced-dashboard ig-fade-in">
@@ -347,8 +367,12 @@ const EnhancedDashboard: React.FC = () => {
               />
             </div>
             <div className="daily-cap-details">
-              <span className="daily-cap-used">{(dashboard?.daily_used || 0).toLocaleString()} sent today</span>
+              <span className="daily-cap-used">{(dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent today (platform)</span>
               <span className="daily-cap-total">{(dashboard?.platform_daily_capacity || 0).toLocaleString()} platform cap</span>
+            </div>
+            <div className="daily-cap-details" style={{ fontSize: '0.78em', opacity: 0.75 }}>
+              <span>Your org: {(dashboard?.org_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent</span>
+              <span>v{PAGE_VERSION_DASHBOARD}</span>
             </div>
             <div className="daily-cap-remaining">
               <strong>{(dashboard?.daily_remaining || 0).toLocaleString()}</strong> emails remaining today
@@ -467,8 +491,43 @@ const EnhancedDashboard: React.FC = () => {
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faChartPie} /></span>
             <div className="metric-content">
-              <span className="metric-value">${dashboard?.performance?.revenue?.toFixed(2) || '0.00'}</span>
+              <span className="metric-value">${(dashboard?.performance?.total_revenue ?? dashboard?.performance?.revenue ?? 0).toFixed ? (dashboard?.performance?.total_revenue ?? dashboard?.performance?.revenue ?? 0).toFixed(2) : '0.00'}</span>
               <span className="metric-label">Revenue</span>
+            </div>
+          </div>
+          {/*
+            Per .cursor/rules/bounce-metrics.mdc:
+              Never display a single combined "Bounced" metric. Always break
+              bounces into hard (#ef4444 = red) and soft (#f59e0b = amber).
+            The fields hard_bounces / soft_bounces are returned by HandleDashboard
+            from ComputeMetrics; surfacing them here closes the visibility gap
+            the audit identified (the Dashboard previously showed zero bounce
+            information at all).
+          */}
+          <div className="metric-card">
+            <span className="metric-icon" style={{ color: (dashboard?.performance?.hard_bounces || 0) > 0 ? '#ef4444' : '#475569' }}>
+              <FontAwesomeIcon icon={faBan} />
+            </span>
+            <div className="metric-content">
+              <span className="metric-value" style={{ color: (dashboard?.performance?.hard_bounces || 0) > 0 ? '#ef4444' : undefined }}>
+                {(dashboard?.performance?.hard_bounces || 0).toLocaleString()}
+              </span>
+              <span className="metric-label">
+                Hard Bounce {dashboard?.performance?.hard_bounce_rate != null && (dashboard.performance.hard_bounce_rate > 0) ? `(${dashboard.performance.hard_bounce_rate.toFixed(2)}%)` : ''}
+              </span>
+            </div>
+          </div>
+          <div className="metric-card">
+            <span className="metric-icon" style={{ color: (dashboard?.performance?.soft_bounces || 0) > 0 ? '#f59e0b' : '#475569' }}>
+              <FontAwesomeIcon icon={faBan} />
+            </span>
+            <div className="metric-content">
+              <span className="metric-value" style={{ color: (dashboard?.performance?.soft_bounces || 0) > 0 ? '#f59e0b' : undefined }}>
+                {(dashboard?.performance?.soft_bounces || 0).toLocaleString()}
+              </span>
+              <span className="metric-label">
+                Soft Bounce {dashboard?.performance?.soft_bounce_rate != null && (dashboard.performance.soft_bounce_rate > 0) ? `(${dashboard.performance.soft_bounce_rate.toFixed(2)}%)` : ''}
+              </span>
             </div>
           </div>
         </div>
@@ -1820,217 +1879,9 @@ const SiteTrafficDashboard: React.FC = () => {
   );
 };
 
-// Legacy Analytics Dashboard Component (replaced by AnalyticsCenter)
-// @ts-ignore: Kept as reference
-const _AnalyticsDashboard: React.FC = () => {
-  const [optimalSend, setOptimalSend] = React.useState<any>(null);
-  const [overview, setOverview] = React.useState<any>(null);
-  const [loading, setLoading] = React.useState(true);
-
-  React.useEffect(() => {
-    Promise.all([
-      fetch('/api/mailing/analytics/optimal-send').then(r => r.json()),
-      fetch('/api/mailing/analytics/overview?days=30').then(r => r.json()),
-    ]).then(([opt, ovr]) => {
-      setOptimalSend(opt);
-      setOverview(ovr);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  if (loading) return <div className="loading-state">Loading analytics...</div>;
-
-  return (
-    <div className="analytics-dashboard">
-      <div className="page-explanation">
-        <h3>Analytics & Insights</h3>
-        <p>Review your email performance metrics and get <strong>AI-powered recommendations</strong> for improvement.</p>
-      </div>
-
-      <div className="analytics-grid">
-        <div className="analytics-card optimal-time">
-          <h3>🎯 Optimal Send Time</h3>
-          {optimalSend && (
-            <>
-              <div className="optimal-display">
-                <div className="optimal-day">{optimalSend.optimal_day_name}</div>
-                <div className="optimal-hour">{optimalSend.optimal_hour}:00</div>
-              </div>
-              <div className="confidence">
-                <span>Confidence: {(optimalSend.confidence * 100).toFixed(0)}%</span>
-                <div className="confidence-bar">
-                  <div style={{ width: `${optimalSend.confidence * 100}%` }} />
-                </div>
-              </div>
-              <div className="reasoning-list">
-                <h4>Why this time?</h4>
-                <ul>
-                  {optimalSend.reasoning?.map((r: string, i: number) => (
-                    <li key={i}>{r}</li>
-                  ))}
-                </ul>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="analytics-card period-stats">
-          <h3>📊 30-Day Performance</h3>
-          {overview && (
-            <div className="stats-grid">
-              <div className="stat-item">
-                <span className="stat-value">{overview.totals?.sent?.toLocaleString() || 0}</span>
-                <span className="stat-label">Emails Sent</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">{overview.rates?.open_rate?.toFixed(1) || 0}%</span>
-                <span className="stat-label">Open Rate</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">{overview.rates?.click_rate?.toFixed(1) || 0}%</span>
-                <span className="stat-label">Click Rate</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value" style={{ color: '#ef4444' }}>{overview.rates?.hard_bounce_rate?.toFixed(2) || 0}%</span>
-                <span className="stat-label">Hard Bounce Rate</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value" style={{ color: '#f59e0b' }}>{overview.rates?.soft_bounce_rate?.toFixed(2) || 0}%</span>
-                <span className="stat-label">Soft Bounce Rate</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="analytics-card best-practices">
-          <h3>💡 Industry Best Practices</h3>
-          <div className="practice-list">
-            <div className="practice-item">
-              <span className="practice-icon">📅</span>
-              <div>
-                <strong>Timing</strong>
-                <p>Tuesday-Thursday 9-11am shows highest engagement</p>
-              </div>
-            </div>
-            <div className="practice-item">
-              <span className="practice-icon">📱</span>
-              <div>
-                <strong>Mobile First</strong>
-                <p>60%+ opens are on mobile - ensure responsive design</p>
-              </div>
-            </div>
-            <div className="practice-item">
-              <span className="practice-icon">✍️</span>
-              <div>
-                <strong>Subject Lines</strong>
-                <p>Keep under 50 characters, test emojis and personalization</p>
-              </div>
-            </div>
-            <div className="practice-item">
-              <span className="practice-icon">🎨</span>
-              <div>
-                <strong>CTA Buttons</strong>
-                <p>Above-the-fold placement increases clicks by 30%</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="analytics-card benchmarks">
-          <h3>📊 Industry Benchmarks</h3>
-          <div className="benchmark-grid">
-            <div className="benchmark">
-              <div className="benchmark-value">15-25%</div>
-              <div className="benchmark-label">Open Rate</div>
-            </div>
-            <div className="benchmark">
-              <div className="benchmark-value">2.5-4%</div>
-              <div className="benchmark-label">Click Rate</div>
-            </div>
-            <div className="benchmark">
-              <div className="benchmark-value">&lt;0.1%</div>
-              <div className="benchmark-label">Complaint Rate</div>
-            </div>
-            <div className="benchmark">
-              <div className="benchmark-value">&lt;1%</div>
-              <div className="benchmark-label">Hard Bounce Rate</div>
-            </div>
-            <div className="benchmark">
-              <div className="benchmark-value">&lt;1%</div>
-              <div className="benchmark-label">Soft Bounce Rate</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="analytics-card suggestions">
-          <h3>💭 Improvement Suggestions</h3>
-          <SuggestionsWidget />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Suggestions Widget
-const SuggestionsWidget: React.FC = () => {
-  const [suggestions, setSuggestions] = React.useState<any[]>([]);
-  const [newSuggestion, setNewSuggestion] = React.useState('');
-  const [category, setCategory] = React.useState('content');
-
-  React.useEffect(() => {
-    fetch('/api/mailing/suggestions')
-      .then(res => res.json())
-      .then(data => setSuggestions(data.suggestions || []))
-      .catch(() => {});
-  }, []);
-
-  const addSuggestion = async () => {
-    if (!newSuggestion) return;
-    try {
-      const res = await fetch('/api/mailing/suggestions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category, description: newSuggestion, impact: 'TBD' }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSuggestions(prev => [data, ...prev]);
-        setNewSuggestion('');
-      }
-    } catch (err) {}
-  };
-
-  return (
-    <div className="suggestions-widget">
-      <div className="add-suggestion">
-        <select value={category} onChange={(e) => setCategory(e.target.value)}>
-          <option value="content">Content</option>
-          <option value="timing">Timing</option>
-          <option value="targeting">Targeting</option>
-          <option value="creative">Creative</option>
-        </select>
-        <input
-          type="text"
-          placeholder="Add your suggestion..."
-          value={newSuggestion}
-          onChange={(e) => setNewSuggestion(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && addSuggestion()}
-        />
-        <button onClick={addSuggestion}>Add</button>
-      </div>
-      <div className="suggestions-list">
-        {suggestions.slice(0, 5).map((s, i) => (
-          <div key={i} className="suggestion-item">
-            <span className="suggestion-category">{s.category}</span>
-            <span className="suggestion-text">{s.description}</span>
-            <span className={`suggestion-status ${s.status}`}>{s.status}</span>
-          </div>
-        ))}
-        {suggestions.length === 0 && <p className="no-data">No suggestions yet. Add your ideas!</p>}
-      </div>
-    </div>
-  );
-};
+// _AnalyticsDashboard and SuggestionsWidget legacy stubs were removed in
+// PAGE_VERSION_DASHBOARD = 1.0 (2026-05-08). The active analytics surface is
+// AnalyticsCenter (mounted in renderContent above).
 
 export default MailingPortal;
 

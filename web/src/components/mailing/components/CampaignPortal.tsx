@@ -166,6 +166,8 @@ interface ISPBreakdownEntry {
 
 interface CampaignStats {
   sent: number;
+  delivered?: number;
+  deferred?: number;
   opens: number;
   clicks: number;
   hard_bounces: number;
@@ -178,17 +180,24 @@ interface CampaignStats {
   soft_bounce_rate: number;
   complaint_rate: number;
   unsubscribe_rate: number;
+  deferral_rate?: number;
   isp_breakdown?: ISPBreakdownEntry[];
   domain_breakdown?: Array<{ domain: string; sent: number; delivered: number; opens: number; clicks: number }>;
+  // Phase B: queue_status maps mailing_campaign_queue.status -> count.
+  // Surfaces "what's actually in flight right now" without bouncing to Outbox.
+  queue_status?: Record<string, number>;
+  api_version?: string;
 }
 
 interface DashboardStats {
-  total_campaigns: number;
+  total_campaigns: number; // pagination.total from server, NOT page length
+  page_campaigns: number;  // length of the page actually used to compute aggregates
   draft_count: number;
   scheduled_count: number;
   sending_count: number;
   completed_count: number;
   total_sent: number;
+  total_delivered: number;
   total_opens: number;
   total_clicks: number;
   total_hard_bounces: number;
@@ -210,6 +219,20 @@ type ViewType = 'dashboard' | 'campaigns' | 'scheduled' | 'details' | 'create' |
 type StatusFilter = 'all' | 'draft' | 'scheduled' | 'sending' | 'completed' | 'paused' | 'failed';
 
 const API_BASE = '/api/mailing';
+
+// PAGE_VERSION is bumped on every Campaign Center behavior/UX change per
+// workspace rule testing.mdc.
+//
+// History:
+//   1.0 (2026-05-08) — Phase B remediation:
+//     * Total Campaigns now reads pagination.total (was page length, max 200)
+//     * Top Performers now includes 'sent' / 'completed' / 'completed_with_errors'
+//     * Open / click rate denominator switched to `delivered` for parity
+//       with the Deliverability screen and the backend stats endpoint
+//     * Stats refetch on org change (was only on mount)
+//     * Hard/Soft bounce shown as separate tiles (was already true; reaffirmed)
+//     * Per-campaign queue-depth surfaced in detail (added to /stats payload)
+const PAGE_VERSION_CAMPAIGN_PORTAL = '1.0';
 
 // ============================================================================
 // API HELPER WITH ORGANIZATION CONTEXT
@@ -459,7 +482,14 @@ const CampaignDashboard: React.FC<{
       <div className="performance-section">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faPercentage} /> Performance Rates</h3>
-          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>All Campaigns · {stats.total_campaigns} total</span>
+          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
+            All Campaigns · {stats.total_campaigns} total
+            {stats.page_campaigns < stats.total_campaigns && (
+              <span style={{ color: '#94a3b8', marginLeft: '0.5rem' }}>
+                (rates from last {stats.page_campaigns})
+              </span>
+            )}
+          </span>
         </div>
         <div className="rates-grid ig-stagger">
           <RateDisplay rate={stats.avg_open_rate} label="Open Rate" icon={faEnvelopeOpen} color="green" />
@@ -630,6 +660,10 @@ const CampaignDashboard: React.FC<{
           </table>
         </div>
       </div>
+
+      <div style={{ textAlign: 'right', fontSize: 10, color: '#374151', marginTop: 8 }}>
+        v{PAGE_VERSION_CAMPAIGN_PORTAL}
+      </div>
     </div>
   );
 };
@@ -784,6 +818,9 @@ const CampaignCard: React.FC<{
 // CAMPAIGNS LIST VIEW
 // ============================================================================
 
+// Statuses that count as "the campaign actually finished sending" — source
+// of truth matches the DB CHECK constraint in ensureCampaignColumns().
+// Used by both the status filter and the Top Performers tile (Phase B fix).
 const COMPLETED_STATUSES = ['sent', 'completed', 'completed_with_errors'];
 
 const matchesStatusFilter = (status: string, filter: StatusFilter): boolean => {
@@ -1115,6 +1152,41 @@ const CampaignDetailsModal: React.FC<{
                       <div className="metric-value"><AnimatedCounter value={stats.unsubscribes} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Unsubscribes ({stats.unsubscribe_rate.toFixed(2)}%)</div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Queue Depth — what is actually in flight in mailing_campaign_queue.
+                  Phase B addition (VersionCampaignBuilder=1.0). The campaign
+                  detail header tile previously had no insight into the worker
+                  queue; you had to bounce to Outbox to see if 50k recipients
+                  were stuck or progressing. Now it's one glance. */}
+              {stats && stats.queue_status && Object.keys(stats.queue_status).length > 0 && (
+                <div className="details-section">
+                  <h3><FontAwesomeIcon icon={faClock} /> Queue Depth</h3>
+                  <div className="metrics-grid ig-stagger" style={{ gap: 8 }}>
+                    {Object.entries(stats.queue_status).map(([status, count]) => {
+                      const statusColor: Record<string, string> = {
+                        queued:        '#60a5fa',
+                        sending:       '#22d3ee',
+                        submitting:    '#22d3ee',
+                        sent:          '#22c55e',
+                        delivered:     '#22c55e',
+                        failed:        '#ef4444',
+                        dead_lettered: '#b91c1c',
+                        bounced:       '#f59e0b',
+                      };
+                      const color = statusColor[status] || '#94a3b8';
+                      return (
+                        <div className="metric-box" key={status}>
+                          <FontAwesomeIcon icon={faClock} className="metric-icon" style={{ color }} />
+                          <div className="metric-value" style={{ color }}>
+                            <AnimatedCounter value={count} formatFn={(n) => Math.round(n).toLocaleString()} />
+                          </div>
+                          <div className="metric-label" style={{ textTransform: 'capitalize' }}>{status.replace(/_/g, ' ')}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -2649,21 +2721,39 @@ export const CampaignPortal: React.FC<{
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
 
-  // Fetch dashboard stats — background=true skips loading spinner for seamless polling
+  // Fetch dashboard stats — background=true skips loading spinner for seamless polling.
+  //
+  // The list endpoint is paginated (max page=200 per ParsePagination). The
+  // server now returns `pagination.total` so we use that for the headline
+  // "Total Campaigns" tile rather than the page length. Aggregates and
+  // recent/top lists remain page-scoped — they're labeled accordingly in the UI.
   const fetchDashboardStats = useCallback(async (background = false) => {
     if (!background) setLoading(true);
     try {
       const campaignsRes = await orgFetch(`${API_BASE}/campaigns?limit=200`, organization?.id);
       const campaignsData = await campaignsRes.json();
       const allCampaigns: Campaign[] = campaignsData.data || campaignsData.campaigns || [];
+      const paginationTotal: number = (campaignsData.pagination && typeof campaignsData.pagination.total === 'number')
+        ? campaignsData.pagination.total
+        : allCampaigns.length;
+
+      const totalDelivered = allCampaigns.reduce(
+        (sum, c) => sum + (((c as any).delivered_count) || 0),
+        0,
+      );
+      const totalSent = allCampaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0);
 
       const stats: DashboardStats = {
-        total_campaigns: allCampaigns.length,
+        // Use the server-side pagination total so this tile reflects every
+        // campaign for the org, not just the loaded page.
+        total_campaigns: paginationTotal,
+        page_campaigns: allCampaigns.length,
         draft_count: allCampaigns.filter(c => c.status === 'draft').length,
         scheduled_count: allCampaigns.filter(c => c.status === 'scheduled').length,
         sending_count: allCampaigns.filter(c => c.status === 'sending').length,
-        completed_count: allCampaigns.filter(c => c.status === 'sent' || c.status === 'completed' || c.status === 'completed_with_errors').length,
-        total_sent: allCampaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0),
+        completed_count: allCampaigns.filter(c => COMPLETED_STATUSES.includes(c.status)).length,
+        total_sent: totalSent,
+        total_delivered: totalDelivered,
         total_opens: allCampaigns.reduce((sum, c) => sum + (c.open_count || 0), 0),
         total_clicks: allCampaigns.reduce((sum, c) => sum + (c.click_count || 0), 0),
         total_hard_bounces: allCampaigns.reduce((sum, c) => sum + (c.hard_bounce_count || 0), 0),
@@ -2676,7 +2766,7 @@ export const CampaignPortal: React.FC<{
         avg_soft_bounce_rate: 0,
         avg_complaint_rate: 0,
         total_revenue: allCampaigns.reduce((sum, c) => sum + (c.revenue || 0), 0),
-        recent_campaigns: [...allCampaigns].sort((a, b) => 
+        recent_campaigns: [...allCampaigns].sort((a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         ).slice(0, 10),
         scheduled_campaigns: allCampaigns
@@ -2686,23 +2776,35 @@ export const CampaignPortal: React.FC<{
             const bDate = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
             return aDate - bDate;
           }),
+        // Top performers must include every "the campaign actually finished"
+        // status — not just `completed`. Excluding `sent` and
+        // `completed_with_errors` previously hid 90%+ of completed campaigns.
         top_campaigns: allCampaigns
-          .filter(c => c.status === 'completed' && c.sent_count > 0)
+          .filter(c => COMPLETED_STATUSES.includes(c.status) && c.sent_count > 0)
           .sort((a, b) => {
-            const aRate = a.sent_count > 0 ? a.open_count / a.sent_count : 0;
-            const bRate = b.sent_count > 0 ? b.open_count / b.sent_count : 0;
+            // Prefer delivered as the denominator (matches the Deliverability
+            // screen) and fall back to sent_count when delivered is unavailable.
+            const aDel = ((a as any).delivered_count) || a.sent_count || 0;
+            const bDel = ((b as any).delivered_count) || b.sent_count || 0;
+            const aRate = aDel > 0 ? a.open_count / aDel : 0;
+            const bRate = bDel > 0 ? b.open_count / bDel : 0;
             return bRate - aRate;
           })
           .slice(0, 5),
       };
 
-      const completedWithSent = allCampaigns.filter(c => c.sent_count > 0);
-      if (completedWithSent.length > 0) {
-        stats.avg_open_rate = (stats.total_opens / stats.total_sent) * 100;
-        stats.avg_click_rate = (stats.total_clicks / stats.total_sent) * 100;
-        stats.avg_hard_bounce_rate = (stats.total_hard_bounces / stats.total_sent) * 100;
-        stats.avg_soft_bounce_rate = (stats.total_soft_bounces / stats.total_sent) * 100;
-        stats.avg_complaint_rate = (stats.total_complaints / stats.total_sent) * 100;
+      // Open/click rates denominator = delivered (Deliverability convention).
+      // Bounce/complaint denominator = sent. Falling back to sent for opens
+      // when delivered is zero (legacy campaigns) keeps the tiles non-blank.
+      const denomEng = totalDelivered > 0 ? totalDelivered : totalSent;
+      if (denomEng > 0) {
+        stats.avg_open_rate = (stats.total_opens / denomEng) * 100;
+        stats.avg_click_rate = (stats.total_clicks / denomEng) * 100;
+      }
+      if (totalSent > 0) {
+        stats.avg_hard_bounce_rate = (stats.total_hard_bounces / totalSent) * 100;
+        stats.avg_soft_bounce_rate = (stats.total_soft_bounces / totalSent) * 100;
+        stats.avg_complaint_rate = (stats.total_complaints / totalSent) * 100;
       }
 
       setDashboardStats(stats);
@@ -2712,7 +2814,7 @@ export const CampaignPortal: React.FC<{
     } finally {
       if (!background) setLoading(false);
     }
-  }, []);
+  }, [organization?.id]);
 
   // Fetch campaign details
   const fetchCampaignDetails = useCallback(async (id: string) => {

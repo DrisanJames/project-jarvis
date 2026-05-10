@@ -193,6 +193,16 @@ func RegisterFullMailingRoutes(r chi.Router, db *sql.DB, sparkpostKey string) {
 // Exposed as a package-level constant so tests and config can override.
 const DefaultDailyCapacity int64 = 500000
 
+// VersionDashboard is bumped on every schema/behavior change to GET /api/mailing/dashboard
+// so clients can detect drift. Per workspace rule testing.mdc.
+//
+// History:
+//   1.0 (2026-05-08) — initial version constant. Adds: Hard/Soft bounce tiles surfaced
+//     in performance, single-source-of-truth org_daily_sent, separate platform_daily_sent
+//     for the gauge denominator, deduped suppression COUNT, throttle_status no longer
+//     duplicated to a second endpoint.
+const VersionDashboard = "1.0"
+
 // HandleDashboard returns the mailing dashboard with:
 //   - All tenant-owned data scoped to organization_id
 //   - Global-only data (inbox_profiles, audience_metrics) segregated into
@@ -226,15 +236,17 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 
 	sectionErrors := make(map[string]string)
 	metricSources := map[string]string{
-		"performance":   "mailing_campaigns SUM via ComputeMetrics (org+date-range; tracking_events fallback only for legacy filter combos)",
-		"overview":      "mailing_lists.active_count + mailing_campaigns COUNT",
-		"revenue":       "mailing_campaigns.revenue SUM",
-		"daily_sending": "mailing_campaigns.sent_count SUM (today, org-scoped)",
-		"capacity":      "mailing_sending_profiles.daily_limit SUM -> pmta_servers fallback -> DefaultDailyCapacity",
-		"suppressions":  "mailing_global_suppressions (org-scoped)",
-		"audience":      "mailing_subscribers (global, not org-scoped)",
-		"churn":         "mailing_audience_metrics (global, not org-scoped)",
-		"today_window":  "America/Denver calendar day (operator-local)",
+		"performance":           "mailing_campaigns SUM via ComputeMetrics (org+date-range; tracking_events fallback only for legacy filter combos)",
+		"overview":              "mailing_lists.active_count + mailing_campaigns COUNT",
+		"revenue":               "mailing_campaigns.revenue SUM",
+		"org_daily_sent":        "ComputeMetrics(org=...).Sent (single source of truth, no separate query)",
+		"platform_daily_sent":   "mailing_campaigns.sent_count SUM (today, ALL orgs — for platform gauge denominator)",
+		"capacity":              "mailing_sending_profiles.daily_limit SUM -> pmta_servers fallback -> DefaultDailyCapacity",
+		"suppressions":          "mailing_global_suppressions (org-scoped, single COUNT reused for both totals)",
+		"audience":              "mailing_subscribers (global, not org-scoped)",
+		"churn":                 "mailing_audience_metrics (global, not org-scoped)",
+		"today_window":          "America/Denver calendar day (operator-local)",
+		"bounce_rule":           "Hard and soft bounces are ALWAYS separate fields. No combined bounce_rate is exposed to clients.",
 	}
 
 	// --- Section: Overview (org-scoped) ---
@@ -279,6 +291,8 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 	}
 
 	// --- Section: Suppressions (org-scoped) ---
+	// Single COUNT reused for both `total_suppressions` and `global_suppressions_total`
+	// — they were two queries returning the same number for years.
 	var suppressed int
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1
@@ -286,14 +300,9 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		log.Printf("[dashboard] suppressions error org=%s: %v", orgStr, err)
 		sectionErrors["suppressions"] = "failed to load suppression count"
 	}
+	globalSuppTotal := suppressed
 
-	var globalSuppTotal, suppressionsToday, suppressionsYesterday int
-	if err := svc.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1
-	`, orgID).Scan(&globalSuppTotal); err != nil {
-		log.Printf("[dashboard] global_supp_total error org=%s: %v", orgStr, err)
-		sectionErrors["global_suppressions_total"] = "failed to load global suppression total"
-	}
+	var suppressionsToday, suppressionsYesterday int
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mailing_global_suppressions
 		WHERE organization_id = $1 AND created_at >= $2
@@ -319,17 +328,21 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		sectionErrors["automations"] = "failed to load automation count"
 	}
 
-	// --- Section: Daily sending (org-scoped) ---
-	var dailySentToday int64
+	// --- Section: Daily sending ---
+	// Two distinct numerators on purpose:
+	//   orgDailySent    = this org's contribution today (from ComputeMetrics, set below)
+	//   platformDailySent = ALL orgs' contribution today (true platform headroom usage)
+	// The platform_daily_utilization gauge uses platformDailySent / dailyCapacity so
+	// the percentage on screen actually reflects platform-wide load, not org load.
+	var platformDailySent int64
 	if err := svc.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(sent_count), 0)
 		FROM mailing_campaigns
-		WHERE organization_id = $1
-		  AND (started_at >= $2 OR (started_at IS NULL AND created_at >= $2))
+		WHERE (started_at >= $1 OR (started_at IS NULL AND created_at >= $1))
 		  AND status IN ('sending', 'completed', 'sent', 'paused')
-	`, orgID, todayStart).Scan(&dailySentToday); err != nil {
-		log.Printf("[dashboard] daily_sending error org=%s: %v", orgStr, err)
-		sectionErrors["daily_sending"] = "failed to load daily sent count"
+	`, todayStart).Scan(&platformDailySent); err != nil {
+		log.Printf("[dashboard] platform_daily_sent error: %v", err)
+		sectionErrors["platform_daily_sent"] = "failed to load platform daily sent count"
 	}
 
 	// --- Section: Capacity (not org-scoped — infrastructure is shared) ---
@@ -355,9 +368,9 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		metricSources["capacity"] = "DefaultDailyCapacity (fallback — no active profiles or PMTA servers found)"
 	}
 
-	dailyUtilization := 0.0
+	platformDailyUtilization := 0.0
 	if dailyCapacity > 0 {
-		dailyUtilization = float64(dailySentToday) / float64(dailyCapacity) * 100
+		platformDailyUtilization = float64(platformDailySent) / float64(dailyCapacity) * 100
 	}
 
 	// --- Section: Recent campaigns (org-scoped) ---
@@ -465,6 +478,11 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		clickRate = perfMetrics.ClickRate / 100
 	}
 
+	// Single source of truth for the org's daily sent count: ComputeMetrics.
+	// Was previously a duplicate query against mailing_campaigns; the two could
+	// drift if one had a stricter status whitelist than the other.
+	orgDailySent := int64(perfMetrics.Sent)
+
 	resp := DashboardResponse{
 		Overview: DashboardOverview{
 			TotalSubscribers:         totalSubs,
@@ -472,8 +490,9 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 			TotalCampaigns:           totalCampaigns,
 			SuppressedEmails:         suppressed,
 			PlatformDailyCapacity:    dailyCapacity,
-			DailyUsed:                dailySentToday,
-			PlatformDailyUtilization: dailyUtilization,
+			PlatformDailySent:        platformDailySent,
+			OrgDailySent:             orgDailySent,
+			PlatformDailyUtilization: platformDailyUtilization,
 		},
 		Performance: DashboardPerformance{
 			TotalSent:      perfMetrics.Sent,
@@ -502,9 +521,14 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 
 		TotalSubscribers:         totalSubs,
 		PlatformDailyCapacity:    dailyCapacity,
-		DailyUsed:                dailySentToday,
-		PlatformDailyUtilization: dailyUtilization,
-		DailyRemaining:           dailyCapacity - dailySentToday,
+		PlatformDailySent:        platformDailySent,
+		OrgDailySent:             orgDailySent,
+		// Backward compat: clients still reading the old field name see the
+		// org-scoped numerator (matches prior behavior since 'sent today' was
+		// always rendered as org's contribution in the UI).
+		DailyUsed:                orgDailySent,
+		PlatformDailyUtilization: platformDailyUtilization,
+		DailyRemaining:           dailyCapacity - platformDailySent,
 
 		PMTAConnected:   totalPMTA > 0,
 		PMTAServerCount: totalPMTA,
@@ -514,6 +538,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 
 		MetricSources: metricSources,
 		GeneratedAt:   now,
+		APIVersion:    VersionDashboard,
 	}
 
 	if len(sectionErrors) > 0 {

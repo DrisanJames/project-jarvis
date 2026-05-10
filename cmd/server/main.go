@@ -488,6 +488,15 @@ func main() {
 
 				sendWorkerPool.Start()
 
+				// SA-7: pure observability — register the wave-processor
+				// status endpoint AFTER the send worker pool exists so the
+				// handler can read its in-memory throughput. Mounted on
+				// the root router (bypasses /api auth) following the same
+				// pattern as /api/outbox/summary so operators can curl it
+				// during live incidents without auth dance.
+				server.RegisterWaveProcessorStatusRoute(sendWorkerPool)
+				log.Println("[wave_processor_status] GET /api/wave-processor/status registered")
+
 				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
 				queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
 				go queueRecovery.Start(ctx)
@@ -4346,6 +4355,117 @@ END $$`},
 		{"phase21_sds_idx_domain_last_open", `CREATE INDEX IF NOT EXISTS idx_sds_domain_last_open ON mailing_subscriber_domain_state (sending_domain, last_open_at)`},
 		{"phase21_sds_idx_mailable", `CREATE INDEX IF NOT EXISTS idx_sds_mailable ON mailing_subscriber_domain_state (subscriber_id) WHERE unsubscribed_at IS NULL AND hard_bounced_at IS NULL`},
 		{"phase21_sds_idx_subscriber", `CREATE INDEX IF NOT EXISTS idx_sds_subscriber ON mailing_subscriber_domain_state (subscriber_id)`},
+
+		// === SDS state machine extension (per-domain engagement engine, 2026-05-09) ===
+		//
+		// Adds a per-(subscriber, sending_domain) lifecycle state on top of the
+		// existing SDS counters. Every subscriber is in one of:
+		//   probe       — not yet classified (default; total_sent < 4 and no engagement)
+		//   engaged     — has opened or clicked at least once on this sending domain
+		//   cold        — received >= 4 sends with zero opens and zero clicks
+		//   suppressed  — per-domain suppression (unsub / hard bounce / complaint)
+		//
+		// `state` is distinct from `warmup_status`: warmup_status describes
+		// whether a subscriber should be considered for sends from a still-
+		// warming SENDER, while `state` describes whether the subscriber is
+		// engaged with that sender domain. Keep both — they answer different
+		// questions.
+		//
+		// Subscriber-level companion column `cross_engaged` is set by the
+		// nightly graduation job in internal/worker/sds_graduation_job.go for
+		// any subscriber engaged on >= 2 distinct sending_domains. The audience
+		// finalizer (SA-2) prioritizes cross_engaged subscribers across all
+		// brand sends because they have proven inbox-placement signal across
+		// the portfolio.
+		//
+		// All statements are idempotent (IF NOT EXISTS) and safe to re-run.
+		{"sds_state_add_state_col", `ALTER TABLE mailing_subscriber_domain_state
+			ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'probe'
+			CHECK (state IN ('probe','engaged','cold','suppressed'))`},
+		{"sds_state_add_state_updated_at", `ALTER TABLE mailing_subscriber_domain_state
+			ADD COLUMN IF NOT EXISTS state_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`},
+		{"sds_state_idx_domain", `CREATE INDEX IF NOT EXISTS idx_sds_state_domain
+			ON mailing_subscriber_domain_state (sending_domain, state)`},
+		{"sds_state_idx_subscriber_engaged", `CREATE INDEX IF NOT EXISTS idx_sds_state_subscriber
+			ON mailing_subscriber_domain_state (subscriber_id) WHERE state = 'engaged'`},
+		{"sds_state_add_cross_engaged_col", `ALTER TABLE mailing_subscribers
+			ADD COLUMN IF NOT EXISTS cross_engaged BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"sds_state_add_cross_engaged_at_col", `ALTER TABLE mailing_subscribers
+			ADD COLUMN IF NOT EXISTS cross_engaged_at TIMESTAMPTZ`},
+		{"sds_state_idx_subscribers_cross_engaged", `CREATE INDEX IF NOT EXISTS idx_subscribers_cross_engaged
+			ON mailing_subscribers (cross_engaged) WHERE cross_engaged = true`},
+		// Idempotent backfill: only fires when every row is still at the
+		// schema defaults (state='probe' AND state_updated_at = created_at).
+		// On re-run after a successful first pass the WHERE check returns
+		// non-zero rows and the UPDATE is skipped. This pattern avoids the
+		// need for a separate _migration_log row.
+		{"sds_state_backfill_from_history", `DO $backfill$
+		BEGIN
+			IF (SELECT COUNT(*) FROM mailing_subscriber_domain_state
+				WHERE state != 'probe' OR state_updated_at != created_at) = 0 THEN
+				UPDATE mailing_subscriber_domain_state
+				SET state = CASE
+					WHEN total_opens > 0 OR total_clicks > 0 THEN 'engaged'
+					WHEN total_sent >= 4 THEN 'cold'
+					ELSE 'probe'
+				END,
+				state_updated_at = COALESCE(last_open_at, last_click_at, last_mailed_at, NOW());
+			END IF;
+		END $backfill$`},
+
+		// === Machine-click classifier (per-domain engagement engine, 2026-05-09) ===
+		//
+		// Mirrors the existing `is_machine_open` column added in
+		// `add_is_machine_open_col` (see line ~2110). Populated at ingest
+		// time by tracking.ClassifyClickAsMachine using a conservative
+		// rule set (known scanner UAs, bare Mozilla/5.0 + cloud ASN, sub-
+		// 30-second click-after-send heuristic). Defaults to FALSE so
+		// existing rows and any future writer that omits the column do
+		// not get accidentally flagged as machine traffic.
+		//
+		// INFORMATIONAL ONLY in this release: segment definitions,
+		// engagement state, and the audience finalizer continue to treat
+		// every click row as engagement signal regardless of the
+		// classifier's output. We are populating the column now so the
+		// next operator decision can be made off real production data.
+		//
+		// The partial index covers the dominant analytics access pattern
+		// — "last hour of clicks split by classifier verdict" — without
+		// bloating the (much larger) full event_at index.
+		{"add_is_machine_click_col", `ALTER TABLE mailing_tracking_events
+			ADD COLUMN IF NOT EXISTS is_machine_click BOOLEAN DEFAULT FALSE`},
+		{"add_idx_mte_machine_click", `CREATE INDEX IF NOT EXISTS idx_tracking_events_machine_click
+			ON mailing_tracking_events (event_at, is_machine_click)
+			WHERE event_type = 'clicked'`},
+
+		// === Wave processor health view (per-domain engagement engine, 2026-05-09) ===
+		//
+		// Companion to SA-7's /api/wave-processor/status HTTP handler.
+		// Surfaces the same per-sending-domain wave queue depth, overdue
+		// counts, and recent throughput as a SQL-only view so operators
+		// can run ad-hoc psql diagnostics without standing up a request:
+		//
+		//   SELECT * FROM v_wave_processor_health;
+		//
+		// CREATE OR REPLACE so re-runs (every server boot) are no-ops.
+		// View definition mirrors the handler's consolidated query plus
+		// the dispatched_last_5m and completed_last_1h windows that are
+		// useful for psql ad-hoc but not surfaced in the JSON struct.
+		{"create_v_wave_processor_health", `CREATE OR REPLACE VIEW v_wave_processor_health AS
+			SELECT
+				sp.sending_domain,
+				COUNT(*) FILTER (WHERE w.status='planned' AND w.scheduled_at <= NOW())                                       AS waves_due,
+				COUNT(*) FILTER (WHERE w.status='planned' AND w.scheduled_at < NOW() - INTERVAL '5 minutes')                 AS waves_overdue_5m,
+				COUNT(*) FILTER (WHERE w.status='completed' AND w.completed_at > NOW() - INTERVAL '5 minutes')               AS dispatched_last_5m,
+				COUNT(*) FILTER (WHERE w.status='completed' AND w.completed_at > NOW() - INTERVAL '1 hour')                  AS completed_last_1h,
+				MAX(EXTRACT(EPOCH FROM (NOW() - w.scheduled_at))) FILTER (WHERE w.status='planned' AND w.scheduled_at <= NOW()) AS max_due_age_seconds,
+				MAX(w.completed_at) FILTER (WHERE w.status='completed')                                                      AS last_completed_at
+			FROM mailing_campaign_waves w
+			JOIN mailing_campaigns c ON c.id = w.campaign_id
+			JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+			GROUP BY sp.sending_domain
+			ORDER BY max_due_age_seconds DESC NULLS LAST`},
+
 		// Campaign pilot flag. False = legacy list_ids path; true = master-selection path.
 		{"phase21_add_use_master_selection", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS use_master_selection BOOLEAN NOT NULL DEFAULT false`},
 		// P5c: flip the default to true for all future campaigns. Legacy

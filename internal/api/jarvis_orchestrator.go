@@ -346,8 +346,12 @@ func (j *JarvisOrchestrator) HandleStatus(w http.ResponseWriter, r *http.Request
 					"sent": sent, "total_recipients": total, "delivered": delivered,
 					"bounces": bounces, "opens": opens, "clicks": clicks,
 					"complaints": complaints, "unsubscribes": unsubs,
-					"open_rate":  calcRate(opens, maxInt(delivered, sent)),
-					"click_rate": calcRate(clicks, maxInt(delivered, sent)),
+					// Per Phase B (VersionCampaignBuilder=1.0) and the
+					// Deliverability convention: open / click denominators are
+					// `delivered`. Falling back to `sent` silently masked the
+					// per-screen rate drift the audit identified.
+					"open_rate":  calcRate(opens, delivered),
+					"click_rate": calcRate(clicks, delivered),
 					// Fields expected by JarvisDashboard that are only present
 					// on real Jarvis campaigns — provide zero defaults so the
 					// frontend doesn't crash calling .toFixed() on undefined.

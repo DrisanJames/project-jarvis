@@ -370,18 +370,22 @@ func (h *deliverabilityHandler) loadISPStats1h(ctx context.Context, domains []st
 	}
 	domainArr := "{" + strings.Join(lowerAllDomains(domains), ",") + "}"
 	var s ispStats
-	_ = h.db.QueryRowContext(ctx, `
+	hb := HardBounceSQL("")
+	q := fmt.Sprintf(`
 		SELECT
 			COUNT(*) FILTER (WHERE event_type IN ('sent','delivered','bounced','deferred','complained')) AS sent,
 			COUNT(*) FILTER (WHERE event_type = 'delivered') AS delivered,
-			COUNT(*) FILTER (WHERE event_type = 'bounced' AND bounce_class IN ('10','30','90')) AS hard_bounce,
-			COUNT(*) FILTER (WHERE event_type = 'bounced' AND bounce_class NOT IN ('10','30','90')) AS soft_bounce,
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND %s) AS hard_bounce,
+			COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (%s)) AS soft_bounce,
 			COUNT(*) FILTER (WHERE event_type = 'deferred') AS deferred,
 			COUNT(*) FILTER (WHERE event_type = 'complained') AS complained
 		FROM mailing_tracking_events
 		WHERE LOWER(recipient_domain) = ANY($1::text[])
 		AND event_at > NOW() - INTERVAL '1 hour'
-	`, domainArr).Scan(&s.sent, &s.delivered, &s.hardBounce, &s.softBounce, &s.deferred, &s.complained)
+	`, hb, hb)
+	if err := h.db.QueryRowContext(ctx, q, domainArr).Scan(&s.sent, &s.delivered, &s.hardBounce, &s.softBounce, &s.deferred, &s.complained); err != nil {
+		log.Printf("[deliverability] loadISPStats1h: %v", err)
+	}
 	return s
 }
 

@@ -22,13 +22,16 @@ type campaignVariant struct {
 }
 
 // EnqueuePMTAWave materializes one due PMTA wave into the existing recipient queue.
-func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
+//
+// Logging (SA-7, per-domain engagement engine, 2026-05-09): the function
+// emits exactly one structured "[wave_processor] ..." line per invocation,
+// keyed by waveID + sendingDomain + campaignID, with duration_ms for
+// throughput correlation. The named return values + deferred logger keep
+// the contract intact across every error-return point in the body without
+// having to touch each one. Pure observability — never gate behavior on
+// these fields.
+func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued int, retErr error) {
+	start := time.Now()
 	var (
 		campaignID         uuid.UUID
 		ispPlanID          uuid.UUID
@@ -38,7 +41,25 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 		scheduledAt        time.Time
 		plannedRecipients  int
 		enqueuedRecipients int
+		sendingDomain      string
 	)
+	defer func() {
+		durationMs := time.Since(start).Milliseconds()
+		if retErr != nil {
+			log.Printf("[wave_processor] wave=%s domain=%s ERROR: %v duration_ms=%d",
+				waveID, sendingDomain, retErr, durationMs)
+			return
+		}
+		log.Printf("[wave_processor] wave=%s domain=%s campaign=%s recipients_enqueued=%d duration_ms=%d",
+			waveID, sendingDomain, campaignID, enqueued, durationMs)
+	}()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
 	err = tx.QueryRowContext(ctx, `
 		SELECT w.campaign_id, w.isp_plan_id, w.status, COALESCE(c.status, 'draft'),
 		       COALESCE(p.status, 'planned'), w.scheduled_at, w.planned_recipients, w.enqueued_recipients
@@ -55,6 +76,22 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (int, error
 	switch waveStatus {
 	case "completed", "cancelled", "failed", "dead_letter":
 		return 0, tx.Commit()
+	}
+
+	// Resolve sending_domain for log correlation (SA-7). Separate
+	// non-locking query — the FOR UPDATE above locks
+	// waves/campaigns/isp_plans and we do not want to extend the lock
+	// to sending_profiles. Failures here are swallowed because the
+	// field is observability-only; placing the lookup after the
+	// terminal-status fast path avoids a wasted query for already-
+	// completed waves.
+	if scanErr := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(sp.sending_domain, '')
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+		WHERE c.id = $1
+	`, campaignID).Scan(&sendingDomain); scanErr != nil {
+		sendingDomain = ""
 	}
 	if campaignStatus == "cancelled" || campaignStatus == "failed" || planStatus == "cancelled" || planStatus == "failed" || planStatus == "paused" {
 		if _, err := tx.ExecContext(ctx, `

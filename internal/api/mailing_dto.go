@@ -9,10 +9,10 @@ import "time"
 // DashboardResponse is the typed contract for GET /api/mailing/dashboard.
 // Every field the frontend reads must be present here. New fields are additive.
 type DashboardResponse struct {
-	Overview         DashboardOverview          `json:"overview"`
-	Performance      DashboardPerformance       `json:"performance"`
-	RecentCampaigns  []DashboardRecentCampaign  `json:"recent_campaigns"`
-	ThrottleStatus   ThrottleStatus             `json:"throttle_status"`
+	Overview        DashboardOverview         `json:"overview"`
+	Performance     DashboardPerformance      `json:"performance"`
+	RecentCampaigns []DashboardRecentCampaign `json:"recent_campaigns"`
+	ThrottleStatus  ThrottleStatus            `json:"throttle_status"`
 
 	// Org-scoped counts
 	TotalSuppressions       int `json:"total_suppressions"`
@@ -25,10 +25,14 @@ type DashboardResponse struct {
 	TotalSubscribers int `json:"total_subscribers"`
 
 	// Platform-wide infrastructure capacity (shared, not org-owned).
-	// The numerator (daily_used) is org-scoped; the denominator is platform-wide.
-	// Utilization is labeled "platform" to avoid implying the tenant owns the headroom.
+	// platform_daily_sent is the TRUE numerator for the platform gauge: it sums
+	// every org's sends today. org_daily_sent is the calling org's contribution.
+	// daily_used remains for backward-compat clients (= org_daily_sent).
+	// daily_remaining = capacity − platform_daily_sent.
 	PlatformDailyCapacity    int64   `json:"platform_daily_capacity"`
-	DailyUsed                int64   `json:"daily_used"`
+	PlatformDailySent        int64   `json:"platform_daily_sent"`
+	OrgDailySent             int64   `json:"org_daily_sent"`
+	DailyUsed                int64   `json:"daily_used"` // alias for org_daily_sent (back-compat)
 	PlatformDailyUtilization float64 `json:"platform_daily_utilization"`
 	DailyRemaining           int64   `json:"daily_remaining"`
 
@@ -41,6 +45,7 @@ type DashboardResponse struct {
 	PlatformIntelligence *PlatformIntelligence `json:"platform_intelligence,omitempty"`
 
 	// Observability
+	APIVersion    string            `json:"api_version"`
 	SectionErrors map[string]string `json:"section_errors,omitempty"`
 	MetricSources map[string]string `json:"metric_sources"`
 	GeneratedAt   time.Time         `json:"generated_at"`
@@ -52,7 +57,8 @@ type DashboardOverview struct {
 	TotalCampaigns           int     `json:"total_campaigns"`
 	SuppressedEmails         int     `json:"suppressed_emails"`
 	PlatformDailyCapacity    int64   `json:"platform_daily_capacity"`
-	DailyUsed                int64   `json:"daily_used"`
+	PlatformDailySent        int64   `json:"platform_daily_sent"`
+	OrgDailySent             int64   `json:"org_daily_sent"`
 	PlatformDailyUtilization float64 `json:"platform_daily_utilization"`
 }
 

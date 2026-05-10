@@ -281,17 +281,33 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	var email string
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
+	// SA-5: classify the click as machine vs human BEFORE the INSERT so
+	// the column is populated atomically with the row. INFORMATIONAL
+	// only in this release — segments and engagement state still treat
+	// every click as engagement signal regardless of the verdict.
+	//
+	// Trade-off: the SQS payload does not carry the original send
+	// timestamp, and looking it up in mailing_tracking_events would add
+	// a second blocking round-trip per message in the consumer's hot
+	// fan-out path (16 workers × 10-msg batches). We pass 0 for the
+	// delta which collapses the classifier to rules 1 and 2 only
+	// (explicit scanner UA + bare-Mozilla-on-cloud-IP). The HTTP pixel
+	// path in api.HandleTrackClick performs the lookup since it runs
+	// per-request and the cost is amortized across the redirect.
+	isMachineClick := ClassifyClickAsMachine(evt.UserAgent, evt.IPAddress, 0)
+
 	// Self-contained event row — see processOpen for the same rationale.
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, is_machine_click)
 		SELECT $1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
-			LOWER(SPLIT_PART(s.email, '@', 2))
+			LOWER(SPLIT_PART(s.email, '@', 2)),
+			$10
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
-	`, clickID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL)
+	`, clickID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL, isMachineClick)
 	if err != nil {
 		return err
 	}

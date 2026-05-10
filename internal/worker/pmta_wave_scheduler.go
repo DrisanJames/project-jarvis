@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -80,14 +82,43 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	ctx, cancel := context.WithTimeout(s.ctx, 120*time.Second)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id
-		FROM mailing_campaign_waves
-		WHERE status = 'planned'
-		  AND scheduled_at <= NOW()
-		ORDER BY scheduled_at ASC
-		LIMIT 100
-	`)
+	useLegacy := os.Getenv("DISABLE_DISPATCHER_FAIRNESS") == "true"
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if useLegacy {
+		log.Printf("[PMTAWaveScheduler] DISABLE_DISPATCHER_FAIRNESS=true, using legacy FIFO")
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id
+			FROM mailing_campaign_waves
+			WHERE status = 'planned'
+			  AND scheduled_at <= NOW()
+			ORDER BY scheduled_at ASC
+			LIMIT 100
+		`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			WITH ranked AS (
+				SELECT
+					w.id,
+					sp.sending_domain,
+					ROW_NUMBER() OVER (PARTITION BY sp.sending_domain ORDER BY w.scheduled_at ASC) AS domain_rank,
+					w.scheduled_at
+				FROM mailing_campaign_waves w
+				JOIN mailing_campaigns c ON c.id = w.campaign_id
+				JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+				WHERE w.status = 'planned'
+				  AND w.scheduled_at <= NOW()
+			)
+			SELECT id, sending_domain
+			  FROM ranked
+			 WHERE domain_rank <= $1
+			 ORDER BY domain_rank ASC, scheduled_at ASC
+			 LIMIT $2
+		`, maxWavesPerDomainPerTick, dispatchBatchSize)
+	}
 	if err != nil {
 		log.Printf("[PMTAWaveScheduler] fetch due waves: %v", err)
 		return
@@ -95,17 +126,36 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	defer rows.Close()
 
 	var waveIDs []string
+	domainCounts := make(map[string]int)
 	for rows.Next() {
 		var waveID uuid.UUID
-		if rows.Scan(&waveID) == nil {
+		if useLegacy {
+			if scanErr := rows.Scan(&waveID); scanErr == nil {
+				waveIDs = append(waveIDs, waveID.String())
+			}
+			continue
+		}
+		var sendingDomain sql.NullString
+		if scanErr := rows.Scan(&waveID, &sendingDomain); scanErr == nil {
 			waveIDs = append(waveIDs, waveID.String())
+			key := sendingDomain.String
+			if !sendingDomain.Valid || key == "" {
+				key = "unknown"
+			}
+			domainCounts[key]++
 		}
 	}
 
 	if len(waveIDs) == 0 {
 		return
 	}
-	log.Printf("[PMTAWaveScheduler] found %d due waves, processing with %d parallel workers", len(waveIDs), waveDispatchConcurrency)
+
+	if useLegacy {
+		log.Printf("[PMTAWaveScheduler] found %d due waves, processing with %d parallel workers", len(waveIDs), waveDispatchConcurrency)
+	} else {
+		log.Printf("[PMTAWaveScheduler] found %d due waves across %d domains (%s), processing with %d parallel workers",
+			len(waveIDs), len(domainCounts), formatDomainCounts(domainCounts), waveDispatchConcurrency)
+	}
 
 	sem := make(chan struct{}, waveDispatchConcurrency)
 	var wg sync.WaitGroup
@@ -127,7 +177,52 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	wg.Wait()
 }
 
-const waveDispatchConcurrency = 5
+// formatDomainCounts renders a map of sending_domain -> wave count as
+// "<short>=<n>" tokens, sorted alphabetically by full domain for stable log
+// output. The "short" form uses the leading subdomain label when present
+// (e.g. "em.discountblog.com" -> "em") so the dispatch log stays readable
+// when many domains are active. If the leading label is one of the common
+// host prefixes ("em", "m", "mail", "news"), the next label is used to
+// disambiguate sister domains.
+func formatDomainCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	domains := make([]string, 0, len(counts))
+	for d := range counts {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+	parts := make([]string, 0, len(domains))
+	for _, d := range domains {
+		parts = append(parts, fmt.Sprintf("%s=%d", shortDomainTag(d), counts[d]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shortDomainTag(domain string) string {
+	if domain == "" {
+		return "unknown"
+	}
+	labels := strings.Split(domain, ".")
+	if len(labels) == 0 {
+		return domain
+	}
+	first := labels[0]
+	switch first {
+	case "em", "m", "mail", "news":
+		if len(labels) >= 2 {
+			return labels[1]
+		}
+	}
+	return first
+}
+
+const (
+	waveDispatchConcurrency  = 5
+	maxWavesPerDomainPerTick = 25
+	dispatchBatchSize        = 100
+)
 
 func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID string) {
 	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)

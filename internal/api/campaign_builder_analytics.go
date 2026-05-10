@@ -129,17 +129,43 @@ func (cb *CampaignBuilder) HandleEstimateAudience(w http.ResponseWriter, r *http
 }
 
 // HandleCampaignStats returns campaign statistics with ISP breakdown and timeline.
+//
+// The expensive aggregations (per-domain breakdown, per-hour timeline) are
+// gated behind `?include=domain,hourly` so the default request stays fast for
+// the campaign-detail header tile. ISP breakdown is always returned because
+// the UI's per-ISP table is the primary value of this endpoint.
+//
+// Output contract changes for VersionCampaignBuilder = 1.0 (Phase B):
+//   - `bounce_rate` and `bounces` (combined) are NOT returned. Callers must
+//     read `hard_bounces` + `soft_bounces` + their rates per bounce-metrics.mdc.
+//   - `queue_status` is added so the UI can show "what's queued / sending /
+//     dead-lettered" without an extra round-trip.
 func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
-	var sent, delivered, opens, clicks, bounces, complaints, unsubscribes int
+	includeRaw := r.URL.Query().Get("include")
+	wantDomain := false
+	wantHourly := false
+	for _, tok := range strings.Split(includeRaw, ",") {
+		switch strings.TrimSpace(strings.ToLower(tok)) {
+		case "domain":
+			wantDomain = true
+		case "hourly":
+			wantHourly = true
+		case "all":
+			wantDomain = true
+			wantHourly = true
+		}
+	}
+
+	var sent, delivered, opens, clicks, complaints, unsubscribes int
 	cb.db.QueryRowContext(ctx, `
 		SELECT COALESCE(sent_count,0), COALESCE(delivered_count,0),
 		       COALESCE(open_count,0), COALESCE(click_count,0),
-		       COALESCE(bounce_count,0), COALESCE(complaint_count,0), COALESCE(unsubscribe_count,0)
+		       COALESCE(complaint_count,0), COALESCE(unsubscribe_count,0)
 		FROM mailing_campaigns WHERE id = $1
-	`, id).Scan(&sent, &delivered, &opens, &clicks, &bounces, &complaints, &unsubscribes)
+	`, id).Scan(&sent, &delivered, &opens, &clicks, &complaints, &unsubscribes)
 
 	var hardBounces, softBounces, deferred int
 	cb.db.QueryRowContext(ctx, fmt.Sprintf(`
@@ -149,59 +175,106 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		FROM mailing_tracking_events WHERE campaign_id = $1
 	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id).Scan(&hardBounces, &softBounces, &deferred)
 
-	domainRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT COALESCE(SPLIT_PART(s.email, '@', 2), 'unknown') as domain,
-		       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-		       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-		       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces,
-		       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
-		FROM mailing_tracking_events t
-		JOIN mailing_subscribers s ON s.id = t.subscriber_id
-		WHERE t.campaign_id = $1 AND s.email IS NOT NULL AND s.email != ''
-		GROUP BY SPLIT_PART(s.email, '@', 2)
-		ORDER BY sent DESC
-		LIMIT 50
-	`, HardBounceSQL("t"), HardBounceSQL("t")), id)
+	// Per-domain breakdown is opt-in (?include=domain). The aggregation joins
+	// `mailing_tracking_events` to `mailing_subscribers` and groups by
+	// SPLIT_PART(email,'@',2) — on a hot campaign this can scan millions of
+	// rows. Only run it when the UI actually wants the breakdown.
 	var domainBreakdown []map[string]interface{}
-	if domainRows != nil {
-		defer domainRows.Close()
-		for domainRows.Next() {
-			var domain string
-			var ds, dd, do, dc, dhb, dsb, dcomp int
-			if err := domainRows.Scan(&domain, &ds, &dd, &do, &dc, &dhb, &dsb, &dcomp); err != nil {
-				continue
+	if wantDomain {
+		domainRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT COALESCE(SPLIT_PART(s.email, '@', 2), 'unknown') as domain,
+			       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+			       SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
+			       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces,
+			       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
+			FROM mailing_tracking_events t
+			JOIN mailing_subscribers s ON s.id = t.subscriber_id
+			WHERE t.campaign_id = $1 AND s.email IS NOT NULL AND s.email != ''
+			GROUP BY SPLIT_PART(s.email, '@', 2)
+			ORDER BY sent DESC
+			LIMIT 50
+		`, HardBounceSQL("t"), HardBounceSQL("t")), id)
+		if domainRows != nil {
+			defer domainRows.Close()
+			for domainRows.Next() {
+				var domain string
+				var ds, dd, do, dc, dhb, dsb, dcomp int
+				if err := domainRows.Scan(&domain, &ds, &dd, &do, &dc, &dhb, &dsb, &dcomp); err != nil {
+					continue
+				}
+				oRate, cRate := 0.0, 0.0
+				if dd > 0 {
+					oRate = float64(do) / float64(dd) * 100
+					cRate = float64(dc) / float64(dd) * 100
+				}
+				domainBreakdown = append(domainBreakdown, map[string]interface{}{
+					"domain": domain, "sent": ds, "delivered": dd,
+					"opens": do, "clicks": dc,
+					"hard_bounces": dhb, "soft_bounces": dsb, "complaints": dcomp,
+					"open_rate": math.Round(oRate*100) / 100, "click_rate": math.Round(cRate*100) / 100,
+				})
 			}
-			oRate, cRate := 0.0, 0.0
-			if dd > 0 {
-				oRate = float64(do) / float64(dd) * 100
-				cRate = float64(dc) / float64(dd) * 100
-			}
-			domainBreakdown = append(domainBreakdown, map[string]interface{}{
-				"domain": domain, "sent": ds, "delivered": dd,
-				"opens": do, "clicks": dc,
-				"hard_bounces": dhb, "soft_bounces": dsb, "complaints": dcomp,
-				"open_rate": math.Round(oRate*100) / 100, "click_rate": math.Round(cRate*100) / 100,
-			})
 		}
 	}
 	if domainBreakdown == nil {
 		domainBreakdown = []map[string]interface{}{}
 	}
 
-	// Aggregate domain breakdown into ISP groups
+	// ISP aggregation always runs but is sourced from per-domain counts
+	// independently of `?include=domain` so the per-ISP UI table never goes
+	// blank. We re-run a lighter query against tracking_events grouped by
+	// recipient_domain (no subscriber join) when the domain breakdown was
+	// skipped.
 	ispAgg := map[string]map[string]int{}
-	for _, d := range domainBreakdown {
-		domain, _ := d["domain"].(string)
-		group := isp.GroupFromDomain(domain)
-		if _, ok := ispAgg[group]; !ok {
-			ispAgg[group] = map[string]int{}
+	if wantDomain {
+		for _, d := range domainBreakdown {
+			domain, _ := d["domain"].(string)
+			group := isp.GroupFromDomain(domain)
+			if _, ok := ispAgg[group]; !ok {
+				ispAgg[group] = map[string]int{}
+			}
+			for _, k := range []string{"sent", "delivered", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints"} {
+				if v, ok := d[k].(int); ok {
+					ispAgg[group][k] += v
+				}
+			}
 		}
-		for _, k := range []string{"sent", "delivered", "opens", "clicks", "hard_bounces", "soft_bounces", "complaints"} {
-			if v, ok := d[k].(int); ok {
-				ispAgg[group][k] += v
+	} else {
+		ispRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT COALESCE(LOWER(NULLIF(t.recipient_domain,'')), 'unknown') as domain,
+			       SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			       SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			       SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			       SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+			       SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
+			       SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces,
+			       SUM(CASE WHEN t.event_type = 'complained' THEN 1 ELSE 0 END) as complaints
+			FROM mailing_tracking_events t
+			WHERE t.campaign_id = $1 AND t.recipient_domain IS NOT NULL AND t.recipient_domain != ''
+			GROUP BY domain
+		`, HardBounceSQL("t"), HardBounceSQL("t")), id)
+		if ispRows != nil {
+			defer ispRows.Close()
+			for ispRows.Next() {
+				var domain string
+				var ds, dd, do, dc, dhb, dsb, dcomp int
+				if err := ispRows.Scan(&domain, &ds, &dd, &do, &dc, &dhb, &dsb, &dcomp); err != nil {
+					continue
+				}
+				group := isp.GroupFromDomain(domain)
+				if _, ok := ispAgg[group]; !ok {
+					ispAgg[group] = map[string]int{}
+				}
+				ispAgg[group]["sent"] += ds
+				ispAgg[group]["delivered"] += dd
+				ispAgg[group]["opens"] += do
+				ispAgg[group]["clicks"] += dc
+				ispAgg[group]["hard_bounces"] += dhb
+				ispAgg[group]["soft_bounces"] += dsb
+				ispAgg[group]["complaints"] += dcomp
 			}
 		}
 	}
@@ -314,62 +387,91 @@ func (cb *CampaignBuilder) HandleCampaignStats(w http.ResponseWriter, r *http.Re
 		ispBreakdown = []map[string]interface{}{}
 	}
 
-	timeRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT DATE_TRUNC('hour', event_at) as hour,
-		       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
-		       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
-		       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
-		       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
-		       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
-		       SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
-		       SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces
-		FROM mailing_tracking_events
-		WHERE campaign_id = $1
-		GROUP BY DATE_TRUNC('hour', event_at)
-		ORDER BY hour
-	`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id)
 	var timeline []map[string]interface{}
-	if timeRows != nil {
-		defer timeRows.Close()
-		for timeRows.Next() {
-			var hour time.Time
-			var ts, td, tdef, to, tc, thb, tsb int
-			if err := timeRows.Scan(&hour, &ts, &td, &tdef, &to, &tc, &thb, &tsb); err != nil {
-				continue
+	if wantHourly {
+		timeRows, _ := cb.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT DATE_TRUNC('hour', event_at) as hour,
+			       SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) as sent,
+			       SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END) as delivered,
+			       SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+			       SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+			       SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+			       SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END) as hard_bounces,
+			       SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END) as soft_bounces
+			FROM mailing_tracking_events
+			WHERE campaign_id = $1
+			GROUP BY DATE_TRUNC('hour', event_at)
+			ORDER BY hour
+		`, HardBounceSQL("mailing_tracking_events"), HardBounceSQL("mailing_tracking_events")), id)
+		if timeRows != nil {
+			defer timeRows.Close()
+			for timeRows.Next() {
+				var hour time.Time
+				var ts, td, tdef, to, tc, thb, tsb int
+				if err := timeRows.Scan(&hour, &ts, &td, &tdef, &to, &tc, &thb, &tsb); err != nil {
+					continue
+				}
+				timeline = append(timeline, map[string]interface{}{
+					"hour": hour.Format(time.RFC3339), "sent": ts, "delivered": td,
+					"deferred": tdef, "opens": to, "clicks": tc,
+					"hard_bounces": thb, "soft_bounces": tsb,
+				})
 			}
-			timeline = append(timeline, map[string]interface{}{
-				"hour": hour.Format(time.RFC3339), "sent": ts, "delivered": td,
-				"deferred": tdef, "opens": to, "clicks": tc,
-				"hard_bounces": thb, "soft_bounces": tsb,
-			})
 		}
 	}
 	if timeline == nil {
 		timeline = []map[string]interface{}{}
 	}
 
+	// Queue depth — what's actually in flight right now. The UI's "Sending"
+	// header tile previously had no insight into the queue at all; you had to
+	// look at the Outbox tab to know if 50k recipients were pending or stuck.
+	// Single GROUP BY against a campaign-id-indexed table is cheap.
+	queueStatus := map[string]int{}
+	queueRows, _ := cb.db.QueryContext(ctx, `
+		SELECT status, COUNT(*)
+		FROM mailing_campaign_queue
+		WHERE campaign_id = $1
+		GROUP BY status
+	`, id)
+	if queueRows != nil {
+		defer queueRows.Close()
+		for queueRows.Next() {
+			var st string
+			var n int
+			if err := queueRows.Scan(&st, &n); err == nil {
+				queueStatus[st] = n
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"sent":             sent,
-		"delivered":        delivered,
-		"deferred":         deferred,
-		"opens":            opens,
-		"clicks":           clicks,
-		"bounces":          bounces,
-		"hard_bounces":     hardBounces,
-		"soft_bounces":     softBounces,
-		"complaints":       complaints,
-		"unsubscribes":     unsubscribes,
-		"open_rate":         calcRate(opens, delivered),
-		"click_rate":        calcRate(clicks, delivered),
-		"bounce_rate":       calcRate(bounces, sent),
-		"hard_bounce_rate":  calcRate(hardBounces, sent),
-		"soft_bounce_rate":  calcRate(softBounces, sent),
-		"complaint_rate":    calcRate(complaints, sent),
-		"unsubscribe_rate":  calcRate(unsubscribes, sent),
+		"sent":         sent,
+		"delivered":    delivered,
+		"deferred":     deferred,
+		"opens":        opens,
+		"clicks":       clicks,
+		"hard_bounces": hardBounces,
+		"soft_bounces": softBounces,
+		"complaints":   complaints,
+		"unsubscribes": unsubscribes,
+		// Open / click denominator = delivered (Deliverability convention).
+		// Bounce / complaint / unsubscribe denominator = sent.
+		// NOTE: there is intentionally NO `bounce_rate` field. See bounce-metrics.mdc.
+		"open_rate":        calcRate(opens, delivered),
+		"click_rate":       calcRate(clicks, delivered),
+		"hard_bounce_rate": calcRate(hardBounces, sent),
+		"soft_bounce_rate": calcRate(softBounces, sent),
+		"complaint_rate":   calcRate(complaints, sent),
+		"unsubscribe_rate": calcRate(unsubscribes, sent),
+		"deferral_rate":    calcRate(deferred, sent),
 		"domain_breakdown": domainBreakdown,
 		"isp_breakdown":    ispBreakdown,
 		"hourly_timeline":  timeline,
+		"queue_status":     queueStatus,
+		"included":         strings.TrimSpace(includeRaw),
+		"api_version":      VersionCampaignBuilder,
 	})
 }
 

@@ -283,10 +283,56 @@ func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]IS
 				}
 			}
 		} else {
-			// Date-range aggregate: derive sent from delivery data, skip per-ISP opens/clicks
-			// to avoid expensive full-table scans on mailing_tracking_events
-			for _, m := range ispMap {
-				m.Sent = m.Delivered + m.HardBounces + m.SoftBounces
+			// Date-range aggregate: pull engagement metrics in ONE query
+			// scoped to the same date range, GROUP BY recipient_domain,
+			// then bucket each domain into its ISP group. This fixes the
+			// long-standing zero-engagement bug where date-range ISP
+			// breakdowns showed 0 opens / 0 clicks / 0 unsubs because
+			// engagement was never queried in the summary path.
+			//
+			// We rely on the recipient_domain column being populated
+			// (backfilled by `idx_recipient_domain` migration). Rows with
+			// NULL recipient_domain fall through into the "other" bucket
+			// via isp.GroupFromDomain, matching the behaviour of every
+			// other per-ISP aggregator on the platform.
+			mppClause := mppOpenClause(f.ExcludeMPP)
+			engQuery := fmt.Sprintf(`
+				SELECT COALESCE(LOWER(NULLIF(t.recipient_domain,'')), '') AS domain,
+					COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0) as sent,
+					COALESCE(SUM(CASE WHEN t.event_type = 'opened' %s THEN 1 ELSE 0 END), 0) as opens,
+					COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0) as clicks,
+					COALESCE(SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END), 0) as unsubs
+				FROM mailing_tracking_events t
+				WHERE t.event_at >= $1 AND t.event_at <= $2
+				  AND t.event_type IN ('sent','opened','clicked','unsubscribed')`, mppClause)
+			engArgs := []interface{}{f.StartDate, f.EndDate}
+			if f.OrgID != "" {
+				engQuery += " AND t.organization_id = $3::uuid"
+				engArgs = append(engArgs, f.OrgID)
+			}
+			engQuery += " GROUP BY domain"
+
+			eRows, err := db.QueryContext(ctx, engQuery, engArgs...)
+			if err != nil {
+				log.Printf("[ComputeMetricsByISP] engagement(date-range) query skipped: %v", err)
+			} else {
+				defer eRows.Close()
+				for eRows.Next() {
+					var domain string
+					var sent, opens, clicks, unsubs int
+					if err := eRows.Scan(&domain, &sent, &opens, &clicks, &unsubs); err != nil {
+						continue
+					}
+					group := isp.GroupFromDomain(domain)
+					if existing, ok := ispMap[group]; ok {
+						existing.Sent += sent
+						existing.Opens += opens
+						existing.Clicks += clicks
+						existing.Unsubscribes += unsubs
+					} else {
+						ispMap[group] = &MetricsResult{Sent: sent, Opens: opens, Clicks: clicks, Unsubscribes: unsubs}
+					}
+				}
 			}
 		}
 	} else {
@@ -411,6 +457,13 @@ func (r *MetricsResult) computeRates() {
 // HardBounceCategories is the canonical list of bounce_type values that
 // indicate a permanent delivery failure. Used by metrics.go, engine/ingest.go,
 // and all analytics handlers. Any change here propagates everywhere.
+//
+// Mirror taxonomy for pmta_acct_raw lives in handlers_deliverability.go
+// (`hardBounceFilterSQL` against the `bounce_cat` column). The two lists
+// MUST stay conceptually aligned — when a category is added/removed here,
+// audit the deliverability filter and update if appropriate. The deliverability
+// taxonomy additionally separates 'spam-related' / 'policy-related' into a
+// reputation-blocked bucket because pmta_acct_raw differentiates them.
 var HardBounceCategories = []string{
 	"hard", "bad-mailbox", "bad-domain", "inactive-mailbox",
 	"no-answer-from-host", "routing-errors", "policy-related", "bad-connection",
@@ -432,11 +485,88 @@ func IsHardBounceCategory(cat string) bool {
 // classifies bounces regardless of which write path created the record.
 var hardBounceSQL = `COALESCE(t.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
 
+// CanonicalEventSubquerySQL returns the canonical event-driven subquery used
+// by every per-ISP / per-domain / per-time aggregator. Every column produced
+// here is required by EventMetricsSelectSQL — keep the two helpers in sync.
+//
+// `recipient` is COALESCE(email_id, id) so DISTINCT counts dedupe per logical
+// message even when duplicate webhook callbacks (PMTA + retries) write
+// multiple rows for the same delivery. `dom` falls back to the subscriber
+// email domain when recipient_domain is NULL/empty so opens/clicks (which
+// historically wrote NULL recipient_domain) are bucketed correctly instead of
+// collapsing into 'other'.
+//
+// The caller is responsible for appending its own filters
+// (campaign_id / sending_domain / etc.) and supplying $1=start, $2=end as
+// the first two query args. Returns the subquery string and the base args
+// slice (start, end).
+func CanonicalEventSubquerySQL(start, end time.Time) (string, []interface{}) {
+	q := `SELECT t.event_type, t.event_at, t.bounce_type, t.is_machine_open,
+		t.sending_domain, t.campaign_id, t.organization_id,
+		COALESCE(t.email_id::text, t.id::text) AS recipient,
+		t.subscriber_id,
+		LOWER(COALESCE(NULLIF(t.recipient_domain,''), SPLIT_PART(s.email,'@',2), 'unknown')) as dom,
+		mc.name as campaign_name
+		FROM mailing_tracking_events t
+		LEFT JOIN mailing_campaigns mc ON mc.id = t.campaign_id
+		LEFT JOIN mailing_subscribers s ON s.id = t.subscriber_id
+		WHERE t.event_at >= $1 AND t.event_at <= $2`
+	return q, []interface{}{start, end}
+}
+
+// EventMetricsSelectSQL returns the canonical 12-column metric SELECT block
+// for the alias `d` (the conventional alias for the wrapper subquery). Use
+// alongside CanonicalEventSubquerySQL so every aggregator emits the same
+// scan signature:
+//
+//	sent, delivered, hard_bounces, soft_bounces,
+//	opens, unique_opens, clicks, unique_clicks,
+//	complaints, unsubs, deferred, mpp_opens
+//
+// Counts use COUNT(DISTINCT recipient) for sent/delivered/hard/soft/
+// complaints/unsubs to dedup per-recipient and prevent the "delivered >
+// sent" inversion caused by duplicate webhook rows. Opens and clicks are
+// reported in BOTH gross (SUM CASE row count) and unique (DISTINCT
+// subscriber/recipient) forms.
+func EventMetricsSelectSQL() string {
+	hb := HardBounceSQL("d")
+	return fmt.Sprintf(`
+		COUNT(DISTINCT CASE WHEN d.event_type = 'sent' THEN d.recipient END) as sent,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'delivered' THEN d.recipient END) as delivered,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'bounced' AND %s THEN d.recipient END) as hard_bounces,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'bounced' AND NOT (%s) THEN d.recipient END) as soft_bounces,
+		SUM(CASE WHEN d.event_type = 'opened' THEN 1 ELSE 0 END) as opens,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_opens,
+		SUM(CASE WHEN d.event_type = 'clicked' THEN 1 ELSE 0 END) as clicks,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'clicked' THEN COALESCE(d.subscriber_id::text, d.recipient) END) as unique_clicks,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'complained' THEN d.recipient END) as complaints,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'unsubscribed' THEN d.recipient END) as unsubs,
+		SUM(CASE WHEN d.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END) as deferred,
+		COUNT(DISTINCT CASE WHEN d.event_type = 'opened' AND COALESCE(d.is_machine_open,false) = true THEN COALESCE(d.subscriber_id::text, d.recipient) END) as mpp_opens
+		`, hb, hb)
+}
+
 // HardBounceSQL returns the canonical SQL fragment for identifying hard bounces
 // in mailing_tracking_events. Use this instead of hardcoding bounce_type lists.
-// The alias parameter is the table alias (e.g. "t", "d", "te").
+// The alias parameter is the table alias (e.g. "t", "d", "te"); pass "" when the
+// query does not alias the table.
+//
+// PMTA-fed events write bounce_type with one of the canonical category strings
+// (hard, bad-mailbox, bad-domain, inactive-mailbox, no-answer-from-host,
+// routing-errors, policy-related, bad-connection). All eight are treated as
+// permanent (hard) bounces; everything else is soft.
+//
+// Note: legacy SparkPost rows used a separate `bounce_class` column (numeric
+// codes). That column is not part of the canonical mailing_tracking_events
+// schema and is referenced only by `loadISPStats1h` in handlers_deliverability.go,
+// which is the SOLE legacy consumer. New code MUST use this helper and treat
+// `bounce_type` as the single source of truth.
 func HardBounceSQL(alias string) string {
-	return `COALESCE(` + alias + `.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return `COALESCE(` + prefix + `bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
 }
 
 // ── Query building helpers ───────────────────────────────────────────────────

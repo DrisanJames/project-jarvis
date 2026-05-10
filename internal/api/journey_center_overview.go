@@ -11,65 +11,77 @@ import (
 
 // HandleJourneyCenterOverview returns dashboard overview with all journey stats
 // GET /api/journey-center/overview
+//
+// Org scoping (Phase B): every aggregate filters to the calling org via
+// `mailing_journeys.organization_id`. Enrollments don't have a direct
+// `organization_id` column; they inherit org scope through `journey_id`.
+// Without this, an org would see global counts and "top journeys" from
+// other orgs in their dashboard.
 func (jc *JourneyCenter) HandleJourneyCenterOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	orgID, orgErr := GetOrgIDFromRequest(r)
+	if orgErr != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
 
 	overview := JourneyCenterOverview{
 		TopJourneys:    []JourneyOverviewItem{},
 		RecentActivity: []JourneyActivityItem{},
 	}
 
-	// Get journey counts by status
 	err := jc.db.QueryRowContext(ctx, `
-		SELECT 
+		SELECT
 			COUNT(*) as total,
 			COUNT(*) FILTER (WHERE status = 'active') as active,
 			COUNT(*) FILTER (WHERE status = 'draft') as draft,
 			COUNT(*) FILTER (WHERE status = 'paused') as paused
 		FROM mailing_journeys
-	`).Scan(&overview.TotalJourneys, &overview.ActiveJourneys, &overview.DraftJourneys, &overview.PausedJourneys)
+		WHERE organization_id = $1
+	`, orgID).Scan(&overview.TotalJourneys, &overview.ActiveJourneys, &overview.DraftJourneys, &overview.PausedJourneys)
 	if err != nil {
-		// Tables might not exist yet
 		overview.TotalJourneys = 0
 	}
 
-	// Get enrollment stats
 	jc.db.QueryRowContext(ctx, `
-		SELECT 
-			COUNT(*) FILTER (WHERE status = 'active') as active_enrollments,
-			COUNT(*) FILTER (WHERE DATE(enrolled_at) = CURRENT_DATE) as enrollments_today,
-			COUNT(*) FILTER (WHERE DATE(completed_at) = CURRENT_DATE) as completions_today,
-			COUNT(*) FILTER (WHERE status = 'converted' AND DATE(completed_at) = CURRENT_DATE) as conversions_today
-		FROM mailing_journey_enrollments
-	`).Scan(&overview.TotalActiveEnrollments, &overview.EnrollmentsToday, &overview.CompletionsToday, &overview.ConversionsToday)
+		SELECT
+			COUNT(*) FILTER (WHERE e.status = 'active') as active_enrollments,
+			COUNT(*) FILTER (WHERE DATE(e.enrolled_at) = CURRENT_DATE) as enrollments_today,
+			COUNT(*) FILTER (WHERE DATE(e.completed_at) = CURRENT_DATE) as completions_today,
+			COUNT(*) FILTER (WHERE e.status = 'converted' AND DATE(e.completed_at) = CURRENT_DATE) as conversions_today
+		FROM mailing_journey_enrollments e
+		JOIN mailing_journeys j ON j.id = e.journey_id
+		WHERE j.organization_id = $1
+	`, orgID).Scan(&overview.TotalActiveEnrollments, &overview.EnrollmentsToday, &overview.CompletionsToday, &overview.ConversionsToday)
 
-	// Calculate overall conversion rate
 	var totalCompleted, totalConverted int
 	jc.db.QueryRowContext(ctx, `
-		SELECT 
-			COUNT(*) FILTER (WHERE status IN ('completed', 'converted')),
-			COUNT(*) FILTER (WHERE status = 'converted')
-		FROM mailing_journey_enrollments
-	`).Scan(&totalCompleted, &totalConverted)
+		SELECT
+			COUNT(*) FILTER (WHERE e.status IN ('completed', 'converted')),
+			COUNT(*) FILTER (WHERE e.status = 'converted')
+		FROM mailing_journey_enrollments e
+		JOIN mailing_journeys j ON j.id = e.journey_id
+		WHERE j.organization_id = $1
+	`, orgID).Scan(&totalCompleted, &totalConverted)
 
 	if totalCompleted > 0 {
 		overview.OverallConversionRate = float64(totalConverted) / float64(totalCompleted)
 	}
 
-	// Get top performing journeys
 	rows, err := jc.db.QueryContext(ctx, `
-		SELECT 
+		SELECT
 			j.id, j.name, j.status,
 			COUNT(e.id) FILTER (WHERE e.status = 'active') as active_enrolled,
 			COUNT(e.id) FILTER (WHERE e.status IN ('completed', 'converted')) as completed,
 			COUNT(e.id) FILTER (WHERE e.status = 'converted') as converted
 		FROM mailing_journeys j
 		LEFT JOIN mailing_journey_enrollments e ON j.id = e.journey_id
-		WHERE j.status = 'active'
+		WHERE j.status = 'active' AND j.organization_id = $1
 		GROUP BY j.id, j.name, j.status
 		ORDER BY converted DESC, completed DESC
 		LIMIT 5
-	`)
+	`, orgID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -82,10 +94,9 @@ func (jc *JourneyCenter) HandleJourneyCenterOverview(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Get recent activity
 	activityRows, err := jc.db.QueryContext(ctx, `
-		SELECT 
-			CASE 
+		SELECT
+			CASE
 				WHEN e.status = 'converted' THEN 'conversion'
 				WHEN e.completed_at IS NOT NULL THEN 'completion'
 				ELSE 'enrollment'
@@ -97,9 +108,10 @@ func (jc *JourneyCenter) HandleJourneyCenterOverview(w http.ResponseWriter, r *h
 			COALESCE(e.completed_at, e.enrolled_at) as timestamp
 		FROM mailing_journey_enrollments e
 		JOIN mailing_journeys j ON j.id = e.journey_id
+		WHERE j.organization_id = $1
 		ORDER BY COALESCE(e.completed_at, e.enrolled_at) DESC
 		LIMIT 20
-	`)
+	`, orgID)
 	if err == nil {
 		defer activityRows.Close()
 		for activityRows.Next() {
@@ -118,11 +130,19 @@ func (jc *JourneyCenter) HandleJourneyCenterOverview(w http.ResponseWriter, r *h
 // HandleListJourneyCenterJourneys lists journeys with filtering, sorting, pagination
 // GET /api/journey-center/journeys
 // Query params: status, sort_by, order, page, limit, search
+//
+// Org scoping (Phase B): every WHERE clause filters to the calling org via
+// `mailing_journeys.organization_id`.
 func (jc *JourneyCenter) HandleListJourneyCenterJourneys(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	query := r.URL.Query()
 
-	// Parse query params
+	orgID, orgErr := GetOrgIDFromRequest(r)
+	if orgErr != nil {
+		respondError(w, http.StatusUnauthorized, "organization context required")
+		return
+	}
+
 	status := query.Get("status")
 	sortBy := query.Get("sort_by")
 	order := query.Get("order")
@@ -138,9 +158,9 @@ func (jc *JourneyCenter) HandleListJourneyCenterJourneys(w http.ResponseWriter, 
 	}
 	offset := (page - 1) * limit
 
-	// Build query
+	// Org filter is the FIRST WHERE clause to short-circuit early.
 	baseQuery := `
-		SELECT 
+		SELECT
 			j.id, j.name, j.description, j.status, j.nodes, j.created_at, j.updated_at,
 			COUNT(e.id) as total_enrollments,
 			COUNT(e.id) FILTER (WHERE e.status = 'active') as active_enrollments,
@@ -149,11 +169,11 @@ func (jc *JourneyCenter) HandleListJourneyCenterJourneys(w http.ResponseWriter, 
 			MAX(e.enrolled_at) as last_enrollment_at
 		FROM mailing_journeys j
 		LEFT JOIN mailing_journey_enrollments e ON j.id = e.journey_id
-		WHERE 1=1
+		WHERE j.organization_id = $1
 	`
 
-	args := []interface{}{}
-	argIdx := 1
+	args := []interface{}{orgID}
+	argIdx := 2
 
 	if status != "" {
 		baseQuery += fmt.Sprintf(" AND j.status = $%d", argIdx)

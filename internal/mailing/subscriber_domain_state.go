@@ -75,6 +75,15 @@ func ResolveSendingDomainForCampaign(ctx context.Context, db *sql.DB, campaignID
 //     (warmup_status_changed_at updated for audit). Does NOT touch
 //     'warming', 'engaged', or 'dormant' rows — those transitions are
 //     owned by the nightly warmup state-machine job.
+//   - drives the per-domain engagement state machine (probe/engaged/
+//     cold/suppressed): if this send carries the row's total_sent past
+//     the cold threshold (>=4) with still no engagement signal, flip
+//     state to 'cold' and stamp state_updated_at. Idempotent — does
+//     nothing for rows already at engaged or suppressed. The threshold
+//     check must reference the POST-INCREMENT total_sent value
+//     (mailing_subscriber_domain_state.total_sent + 1), not the value
+//     observed before this UPSERT. The nightly graduation job runs the
+//     same condition as a backstop in case a race pinches this write.
 func UpsertSDSSend(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -85,8 +94,8 @@ func UpsertSDSSend(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, send
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO mailing_subscriber_domain_state
-			(subscriber_id, sending_domain, total_sent, last_mailed_at, warmup_status, warmup_status_changed_at, created_at, updated_at)
-		VALUES ($1, $2, 1, NOW(), 'warming', NOW(), NOW(), NOW())
+			(subscriber_id, sending_domain, total_sent, last_mailed_at, warmup_status, warmup_status_changed_at, state, state_updated_at, created_at, updated_at)
+		VALUES ($1, $2, 1, NOW(), 'warming', NOW(), 'probe', NOW(), NOW(), NOW())
 		ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 			total_sent = mailing_subscriber_domain_state.total_sent + 1,
 			last_mailed_at = NOW(),
@@ -98,6 +107,21 @@ func UpsertSDSSend(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, send
 				WHEN mailing_subscriber_domain_state.warmup_status = 'cold' THEN NOW()
 				ELSE mailing_subscriber_domain_state.warmup_status_changed_at
 			END,
+			state = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('engaged','suppressed') THEN mailing_subscriber_domain_state.state
+				WHEN (mailing_subscriber_domain_state.total_sent + 1) >= 4
+					AND mailing_subscriber_domain_state.total_opens = 0
+					AND mailing_subscriber_domain_state.total_clicks = 0 THEN 'cold'
+				ELSE mailing_subscriber_domain_state.state
+			END,
+			state_updated_at = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('engaged','suppressed') THEN mailing_subscriber_domain_state.state_updated_at
+				WHEN (mailing_subscriber_domain_state.total_sent + 1) >= 4
+					AND mailing_subscriber_domain_state.total_opens = 0
+					AND mailing_subscriber_domain_state.total_clicks = 0
+					AND mailing_subscriber_domain_state.state != 'cold' THEN NOW()
+				ELSE mailing_subscriber_domain_state.state_updated_at
+			END,
 			updated_at = NOW()
 	`, subscriberID, d); err != nil {
 		log.Printf("[SDS] UpsertSDSSend failed sub=%s domain=%s: %v", subscriberID, d, err)
@@ -108,6 +132,13 @@ func UpsertSDSSend(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, send
 // (edge case: tracking event arrives before the send row is written),
 // we insert a minimal row so counters are not lost. warmup_status left
 // at the default 'cold'; next send will flip to 'warming'.
+//
+// State machine: an open promotes the row from probe or cold to
+// engaged. Idempotent — does NOT re-stamp state_updated_at on a row
+// that is already engaged (so the field tracks the FIRST engagement
+// event, not the most recent open). Suppressed rows stay suppressed:
+// an open from a previously unsubscribed/bounced/complained address
+// does not resurrect them.
 func UpsertSDSOpen(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -118,18 +149,28 @@ func UpsertSDSOpen(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, send
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO mailing_subscriber_domain_state
-			(subscriber_id, sending_domain, total_opens, last_open_at, created_at, updated_at)
-		VALUES ($1, $2, 1, NOW(), NOW(), NOW())
+			(subscriber_id, sending_domain, total_opens, last_open_at, state, state_updated_at, created_at, updated_at)
+		VALUES ($1, $2, 1, NOW(), 'engaged', NOW(), NOW(), NOW())
 		ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 			total_opens = mailing_subscriber_domain_state.total_opens + 1,
 			last_open_at = NOW(),
+			state = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('probe','cold') THEN 'engaged'
+				ELSE mailing_subscriber_domain_state.state
+			END,
+			state_updated_at = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('probe','cold') THEN NOW()
+				ELSE mailing_subscriber_domain_state.state_updated_at
+			END,
 			updated_at = NOW()
 	`, subscriberID, d); err != nil {
 		log.Printf("[SDS] UpsertSDSOpen failed sub=%s domain=%s: %v", subscriberID, d, err)
 	}
 }
 
-// UpsertSDSClick records a click.
+// UpsertSDSClick records a click. Same state-machine semantics as
+// UpsertSDSOpen — promotes probe/cold to engaged, idempotent on
+// already-engaged rows, leaves suppressed rows alone.
 func UpsertSDSClick(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -140,11 +181,19 @@ func UpsertSDSClick(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sen
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO mailing_subscriber_domain_state
-			(subscriber_id, sending_domain, total_clicks, last_click_at, created_at, updated_at)
-		VALUES ($1, $2, 1, NOW(), NOW(), NOW())
+			(subscriber_id, sending_domain, total_clicks, last_click_at, state, state_updated_at, created_at, updated_at)
+		VALUES ($1, $2, 1, NOW(), 'engaged', NOW(), NOW(), NOW())
 		ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 			total_clicks = mailing_subscriber_domain_state.total_clicks + 1,
 			last_click_at = NOW(),
+			state = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('probe','cold') THEN 'engaged'
+				ELSE mailing_subscriber_domain_state.state
+			END,
+			state_updated_at = CASE
+				WHEN mailing_subscriber_domain_state.state IN ('probe','cold') THEN NOW()
+				ELSE mailing_subscriber_domain_state.state_updated_at
+			END,
 			updated_at = NOW()
 	`, subscriberID, d); err != nil {
 		log.Printf("[SDS] UpsertSDSClick failed sub=%s domain=%s: %v", subscriberID, d, err)
@@ -155,6 +204,10 @@ func UpsertSDSClick(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sen
 // not overwrite an earlier unsubscribed_at. Callers still decide
 // independently whether to write a global suppression row (3-part
 // legacy tokens do, 4-part brand-scoped tokens don't).
+//
+// State machine: unsubscribe flips per-domain state to 'suppressed'.
+// state_updated_at advances on every call regardless of prior state
+// because this is a terminal transition we want timestamped accurately.
 func UpsertSDSUnsub(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -165,10 +218,12 @@ func UpsertSDSUnsub(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sen
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO mailing_subscriber_domain_state
-			(subscriber_id, sending_domain, unsubscribed_at, created_at, updated_at)
-		VALUES ($1, $2, NOW(), NOW(), NOW())
+			(subscriber_id, sending_domain, unsubscribed_at, state, state_updated_at, created_at, updated_at)
+		VALUES ($1, $2, NOW(), 'suppressed', NOW(), NOW(), NOW())
 		ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 			unsubscribed_at = COALESCE(mailing_subscriber_domain_state.unsubscribed_at, NOW()),
+			state = 'suppressed',
+			state_updated_at = NOW(),
 			updated_at = NOW()
 	`, subscriberID, d); err != nil {
 		log.Printf("[SDS] UpsertSDSUnsub failed sub=%s domain=%s: %v", subscriberID, d, err)
@@ -178,6 +233,11 @@ func UpsertSDSUnsub(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sen
 // UpsertSDSHardBounce stamps a per-domain hard-bounce timestamp AND
 // flips the global hard_bounced_at on mailing_subscribers. Hard bounces
 // suppress the address across every domain (the agreed design).
+//
+// State machine: terminal transition to 'suppressed' on the SDS row.
+// Defensive — the global hard_bounced_at column is the canonical
+// suppression source, but flipping the per-domain state matches
+// audience-finalizer semantics that pre-filter by SDS.state.
 func UpsertSDSHardBounce(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -186,10 +246,12 @@ func UpsertSDSHardBounce(ctx context.Context, db *sql.DB, subscriberID uuid.UUID
 	if d != "" {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO mailing_subscriber_domain_state
-				(subscriber_id, sending_domain, hard_bounced_at, created_at, updated_at)
-			VALUES ($1, $2, NOW(), NOW(), NOW())
+				(subscriber_id, sending_domain, hard_bounced_at, state, state_updated_at, created_at, updated_at)
+			VALUES ($1, $2, NOW(), 'suppressed', NOW(), NOW(), NOW())
 			ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 				hard_bounced_at = COALESCE(mailing_subscriber_domain_state.hard_bounced_at, NOW()),
+				state = 'suppressed',
+				state_updated_at = NOW(),
 				updated_at = NOW()
 		`, subscriberID, d); err != nil {
 			log.Printf("[SDS] UpsertSDSHardBounce SDS write failed sub=%s domain=%s: %v", subscriberID, d, err)
@@ -207,6 +269,8 @@ func UpsertSDSHardBounce(ctx context.Context, db *sql.DB, subscriberID uuid.UUID
 // UpsertSDSComplaint stamps a per-domain complaint AND the global
 // complained_at on mailing_subscribers. Complaints are reputation
 // poison; we suppress globally.
+//
+// State machine: same terminal 'suppressed' transition as hard bounce.
 func UpsertSDSComplaint(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, sendingDomain string) {
 	if db == nil || subscriberID == uuid.Nil {
 		return
@@ -215,10 +279,12 @@ func UpsertSDSComplaint(ctx context.Context, db *sql.DB, subscriberID uuid.UUID,
 	if d != "" {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO mailing_subscriber_domain_state
-				(subscriber_id, sending_domain, complained_at, created_at, updated_at)
-			VALUES ($1, $2, NOW(), NOW(), NOW())
+				(subscriber_id, sending_domain, complained_at, state, state_updated_at, created_at, updated_at)
+			VALUES ($1, $2, NOW(), 'suppressed', NOW(), NOW(), NOW())
 			ON CONFLICT (subscriber_id, sending_domain) DO UPDATE SET
 				complained_at = COALESCE(mailing_subscriber_domain_state.complained_at, NOW()),
+				state = 'suppressed',
+				state_updated_at = NOW(),
 				updated_at = NOW()
 		`, subscriberID, d); err != nil {
 			log.Printf("[SDS] UpsertSDSComplaint SDS write failed sub=%s domain=%s: %v", subscriberID, d, err)

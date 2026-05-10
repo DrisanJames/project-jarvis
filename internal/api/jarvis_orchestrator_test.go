@@ -87,9 +87,11 @@ func TestHandleStatus_FallbackMetricsShape(t *testing.T) {
 	assert.Equal(t, float64(50), metrics["total_bounces"])
 	assert.Equal(t, float64(0), metrics["conversion_rate"])
 
-	// open_rate should be opens/max(delivered, sent) * 100 = 200/1000 * 100 = 20.0
+	// open_rate uses delivered as the denominator (canonical Deliverability
+	// convention propagated platform-wide in metrics-consistency Phase B):
+	//   open_rate = opens / delivered * 100 = 200 / 800 * 100 = 25.0
 	openRate, _ := metrics["open_rate"].(float64)
-	assert.InDelta(t, 20.0, openRate, 0.1, "open_rate = opens/max(delivered,sent) * 100")
+	assert.InDelta(t, 25.0, openRate, 0.1, "open_rate = opens / delivered * 100")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

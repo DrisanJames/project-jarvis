@@ -126,6 +126,15 @@ type pmtaSelectedRecipient struct {
 	SourceType    string
 	SourceID      string
 	SelectionRank int
+
+	// Per-domain engagement priority hints (set by qualifyEmail when
+	// SDS state is available; used by the post-streaming sort that
+	// reorders each ISP's pool before quota truncation). Lowercase so
+	// callers outside this package can't depend on them — they are an
+	// in-process implementation detail of the audience finalizer.
+	sdsCrossEngaged bool
+	sdsStateRank    int       // 1=engaged, 2=probe, 3=cold, 4=suppressed
+	sdsLastEngageAt time.Time // max(last_open_at, last_click_at) for tie-break
 }
 
 type pmtaAudiencePlan struct {
@@ -532,6 +541,29 @@ func planPMTAAudience(
 		return pmtaAudiencePlan{}, err
 	}
 
+	// Per-domain engagement engine — SA-2 (per-domain frequency cap +
+	// state filter + cross-engaged prioritization).
+	//
+	// Two bulk reads, both soft-fail: a query error here logs a warning
+	// and returns an empty map so the planner continues on the legacy
+	// path. The SQL-injected list-path filter (see streamList below)
+	// remains independently active even if these maps are empty.
+	//
+	// Maps are local to this finalize call — no goroutine sharing — so
+	// no synchronization is needed for the lookups inside qualifyEmail.
+	sdsFilterOn := sdsFilterEnabled() && strings.TrimSpace(input.SendingDomain) != ""
+	sdsState := loadSDSStateForDomain(ctx, db, input.SendingDomain)
+	crossEngagedIDs := loadCrossEngagedSet(ctx, db)
+	if sdsFilterOn {
+		log.Printf("[finalizer/sds] domain=%q loaded sds_state_rows=%d cross_engaged=%d in %v",
+			input.SendingDomain, len(sdsState), len(crossEngagedIDs), time.Since(planStart))
+	}
+	// Per-finalize observability counters. These count the gross effect
+	// of the SDS filter across all qualifyEmail invocations; the totals
+	// land in the [finalizer] log line at the bottom of the function.
+	var sdsFilteredRecent24h, sdsFilteredCold int
+	var sdsSelectedEngaged, sdsSelectedProbe int
+
 	// Remail gap: load emails that received a send within the last MinRemailHours.
 	// Only enforced for list-sourced (cold) subscribers, not segment openers.
 	// NOTE: this query uses the main db connection (passed as `db`) with a generous
@@ -657,15 +689,60 @@ func planPMTAAudience(
 			return false
 		}
 
+		// Per-domain engagement engine — SA-2 in-memory filter.
+		// Applies to candidates from EVERY source path (list, segment,
+		// SDS, cold-fallback) so it cannot be bypassed by a code path
+		// that didn't get the SQL-level treatment. The SDS-source path
+		// already filters out unsubscribed / hard-bounced / complained
+		// rows at the SQL layer, so the additional state check is a
+		// no-op there in steady state.
+		var sdsRowVal sdsRow
+		var sdsRowFound bool
+		if sdsFilterOn {
+			sdsRowVal, sdsRowFound = sdsState[subID]
+			if sdsRowFound {
+				switch sdsRowVal.state {
+				case "cold", "suppressed":
+					sdsFilteredCold++
+					return false
+				}
+				if sdsRowVal.lastMailedAt.Valid &&
+					time.Since(sdsRowVal.lastMailedAt.Time) < 20*time.Hour {
+					sdsFilteredRecent24h++
+					return false
+				}
+			}
+		}
+
 		selectionRank++
-		qualified = append(qualified, pmtaSelectedRecipient{
+		rec := pmtaSelectedRecipient{
 			SubscriberID:  subID,
 			Email:         emailLower,
 			ISP:           isp,
 			SourceType:    sourceType,
 			SourceID:      sourceID,
 			SelectionRank: selectionRank,
-		})
+		}
+		// Stamp priority hints for the post-streaming sort. Done even
+		// when sdsFilterOn=false so the zero-value sort key is stable
+		// (every recipient has the same key → preserves insertion order).
+		if sdsRowFound {
+			rec.sdsStateRank = sdsStateRank(sdsRowVal.state)
+			rec.sdsLastEngageAt = sdsLastEngagedAt(sdsRowVal)
+			if sdsRowVal.state == "engaged" {
+				sdsSelectedEngaged++
+			} else {
+				sdsSelectedProbe++
+			}
+		} else {
+			rec.sdsStateRank = sdsStateRank("probe")
+			sdsSelectedProbe++
+		}
+		if crossEngagedIDs[subID] {
+			rec.sdsCrossEngaged = true
+		}
+
+		qualified = append(qualified, rec)
 		qualifiedPerISP[isp]++
 		ispBackfill = append(ispBackfill, struct{ ID, ISP string }{subID, isp})
 		return true
@@ -713,9 +790,23 @@ func planPMTAAudience(
 		if !listQualityCheck(listID) {
 			return nil
 		}
-		query := `SELECT s.id::text, s.email FROM mailing_subscribers s WHERE s.list_id = $1 AND s.status IN ('active','confirmed') AND s.is_bot = false`
+		// Per-domain engagement engine — SA-2 SQL injection.
+		// When sending_domain is non-empty AND the kill switch is off,
+		// the helper returns a LEFT JOIN on mailing_subscriber_domain_state
+		// + WHERE clauses that exclude cold/suppressed and the 20h cap +
+		// an ORDER BY that prioritises cross_engaged then engaged > probe
+		// then most-recent engagement. When sending_domain is empty the
+		// helper returns a no-op clause and ORDER BY s.id (the safe
+		// deterministic fallback that historical list-path tests assume
+		// because they call planPMTAAudience with SendingDomain unset).
 		var args []any
 		args = append(args, listID)
+		sdsCl := buildSDSEligibilityClause(input.SendingDomain, "s", len(args))
+		args = append(args, sdsCl.BindArgs...)
+		query := `SELECT s.id::text, s.email FROM mailing_subscribers s ` +
+			sdsCl.Join +
+			` WHERE s.list_id = $1 AND s.status IN ('active','confirmed') AND s.is_bot = false ` +
+			sdsCl.Where + ` ` + sdsCl.OrderBy
 		if totalQuota > 0 {
 			scanLimit := totalQuota * 3
 			if scanLimit < 10000 {
@@ -1254,6 +1345,28 @@ func planPMTAAudience(
 	selectedTotal := 0
 	for isp, plan := range planMap {
 		recipients := append([]pmtaSelectedRecipient(nil), recipientsByISP[isp]...)
+		// Per-domain engagement engine — SA-2 priority sort. Runs
+		// BEFORE quota truncation so the quota-trimmed slice keeps the
+		// best subscribers. Skipped when RandomizeAudience is true so
+		// the operator's randomization request still wins (used for
+		// A/B-style tests where deterministic ordering would bias
+		// results). When the SDS pre-load returned no data every
+		// recipient has the zero-value sort key and the sort is a no-op
+		// preserving insertion order.
+		if !plan.RandomizeAudience && sdsFilterOn && len(recipients) > 1 {
+			sort.SliceStable(recipients, func(i, j int) bool {
+				if recipients[i].sdsCrossEngaged != recipients[j].sdsCrossEngaged {
+					return recipients[i].sdsCrossEngaged
+				}
+				if recipients[i].sdsStateRank != recipients[j].sdsStateRank {
+					return recipients[i].sdsStateRank < recipients[j].sdsStateRank
+				}
+				if !recipients[i].sdsLastEngageAt.Equal(recipients[j].sdsLastEngageAt) {
+					return recipients[i].sdsLastEngageAt.After(recipients[j].sdsLastEngageAt)
+				}
+				return recipients[i].SelectionRank < recipients[j].SelectionRank
+			})
+		}
 		if plan.RandomizeAudience && len(recipients) > 1 {
 			rand.Shuffle(len(recipients), func(i, j int) {
 				recipients[i], recipients[j] = recipients[j], recipients[i]
@@ -1266,6 +1379,16 @@ func planPMTAAudience(
 		countsByISP[isp] = len(recipients)
 		selectedTotal += len(recipients)
 	}
+
+	// Per-finalize observability. One line, every campaign — easy to
+	// grep for when triaging "why did campaign X get N recipients?"
+	// questions. The detailed counts give us a clear signal of whether
+	// the SDS filter is doing meaningful work or is effectively a
+	// no-op for this campaign.
+	log.Printf("[finalizer] campaign=%s domain=%q sds_filter: enabled=%t in=%d filtered_24h=%d filtered_cold=%d selected_engaged=%d selected_probe=%d selected_total=%d",
+		input.CampaignID, input.SendingDomain, sdsFilterOn,
+		len(seenEmails), sdsFilteredRecent24h, sdsFilteredCold,
+		sdsSelectedEngaged, sdsSelectedProbe, selectedTotal)
 
 	// Async backfill: write ISP to subscribers that don't have it set yet.
 	if len(ispBackfill) > 0 {

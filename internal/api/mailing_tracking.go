@@ -28,6 +28,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
+	"github.com/ignite/sparkpost-monitor/internal/tracking"
 )
 
 func emailHash(email string) string {
@@ -279,15 +280,43 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 		svc.onTrackingEvent(campaignID.String(), "click", email, isp)
 	}
 
+	// SA-5: classify the click as machine vs human BEFORE the INSERT
+	// so the column is populated atomically with the row. The classifier
+	// is conservative (false negatives preferred) and INFORMATIONAL only
+	// in this release — segment definitions and engagement state still
+	// treat every click row as engagement signal regardless of the
+	// verdict. The lookup of the prior 'sent' event mirrors the MPP-open
+	// heuristic in HandleTrackOpen above so rule 3 of the classifier
+	// (bare Mozilla + sub-30s delta) can fire when the send timestamp
+	// is recoverable. If the lookup fails the delta defaults to 0,
+	// which collapses the classifier to rules 1 and 2 only.
+	clickUA := r.UserAgent()
+	clickIPPtr := extractIPFromRemoteAddr(r.RemoteAddr)
+	clickIP := ""
+	if clickIPPtr != nil {
+		clickIP = *clickIPPtr
+	}
+	var clickSendDelta time.Duration
+	var clickSentAt time.Time
+	if err := svc.db.QueryRowContext(ctx, `
+		SELECT event_at FROM mailing_tracking_events
+		WHERE subscriber_id = $1 AND campaign_id = $2 AND event_type = 'sent'
+		ORDER BY event_at DESC LIMIT 1
+	`, subscriberID, campaignID).Scan(&clickSentAt); err == nil {
+		clickSendDelta = time.Since(clickSentAt)
+	}
+	isMachineClick := tracking.ClassifyClickAsMachine(clickUA, clickIP, clickSendDelta)
+
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, is_machine_click)
 		SELECT $1, $2, $3, $4, 'clicked', NOW(), $5::inet, $6, $7, $8,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
-			LOWER(SPLIT_PART(s.email, '@', 2))
+			LOWER(SPLIT_PART(s.email, '@', 2)),
+			$9
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3
-	`, uuid.New(), orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), originalURL); err != nil {
+	`, uuid.New(), orgID, campaignID, subscriberID, clickIPPtr, clickUA, detectDeviceType(clickUA), originalURL, isMachineClick); err != nil {
 		log.Printf("TRACK CLICK DB ERROR: %v", err)
 	}
 
