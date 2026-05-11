@@ -4825,6 +4825,154 @@ END $$`},
 			PRIMARY KEY (campaign_id, subscriber_id)
 		)`},
 		{"idx_mailing_open_dedupe_first_seen", `CREATE INDEX IF NOT EXISTS idx_mailing_open_dedupe_first_seen ON mailing_open_dedupe(first_seen_at DESC)`},
+
+		// ---------------------------------------------------------------------
+		// May 11 2026: Re-assert AOL carve from May 8.
+		//
+		// Operator carved 4 highest-numbered general-pool IPs into per-brand
+		// AOL pools on 2026-05-08 to isolate AOL reputation. The carve set:
+		//   - mailing_ip_addresses.pool_id  -> {brand}-aol-pool
+		//   - mailing_ip_pool_preferences.isolation_mode = 'strict' (with preferred_ip_id)
+		//
+		// The pool_preferences row survives across boots (no migration touches
+		// that table). But mailing_ip_addresses.pool_id was being reverted on
+		// every boot by phase12_ipxo_out_of_yahoo and phase19_fix_ipxo_yh_hostnames,
+		// both of which slam these IPs back into *-general-pool. Result:
+		// *-aol-pool ended up empty AND flagged strict, so all AOL queue items
+		// dead-letter with `strict_pool_exhausted: no available IP in
+		// strict-isolation pool *-aol-pool`.
+		//
+		// This migration runs AFTER phase19 (slice order) and explicitly moves
+		// the 4 carved IPs into their respective *-aol-pool. Hostname is left
+		// as gn7/gn8 because the original carve preserved it and PMTA
+		// virtual-mta blocks resolve by hostname (not pool prefix).
+		// ---------------------------------------------------------------------
+		{"may11_aol_carve_reassert", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.11'::inet,  'db-aol-pool'),
+            ('144.225.178.75'::inet,  'qf-aol-pool'),
+            ('144.225.178.142'::inet, 'ht-aol-pool'),
+            ('144.225.178.206'::inet, 'mh-aol-pool')
+        ) AS t(ip_addr, target_pool)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools
+            WHERE name = rec.target_pool AND organization_id = org_id;
+        IF pool_id_val IS NOT NULL THEN
+            UPDATE mailing_ip_addresses
+                SET pool_id = pool_id_val, updated_at = NOW()
+                WHERE ip_address = rec.ip_addr AND organization_id = org_id;
+        END IF;
+    END LOOP;
+END $$`},
+
+		// ---------------------------------------------------------------------
+		// May 11 2026: Cloudmark CSI cold-storage trim for Comcast / Charter.
+		//
+		// All 25 *-comcast-pool IPs and 22 *-charter-pool IPs are listed on
+		// Cloudmark's CSI BL000010, producing 100% bounce on inbound delivery
+		// to comcast.net / charter.net / spectrum.net.
+		//
+		// MAY 11 PM UPDATE — operator-prioritized 4-IP cohort.
+		// The 4 IPs NOT trimmed are the curated cohort the operator submitted
+		// to Cloudmark CSI portal in the first batch:
+		//   .10  → mta-db-cc8.mail.em.discountblog.com    (db-comcast-pool)
+		//   .93  → mta-qf-cc4.mail.em.quizfiesta.com      (qf-comcast-pool)
+		//   .139 → mta-ht-cc8.mail.em.historythinking.com (ht-comcast-pool)
+		//   .223 → mta-mh-cc1.mail.em.myownhealth.net     (mh-comcast-pool)
+		//
+		// All 4 retained IPs sit in *-comcast-pool. *-charter-pool is fully
+		// cold for all 4 brands. Combined with the strict-isolation flag set
+		// by phase19 (no fallback to general-pool), this means:
+		//   - comcast deliveries route through the 4 mitigated IPs (1/brand)
+		//   - charter deliveries dead-letter (strict_pool_exhausted) until
+		//     the operator submits charter IPs and we move them back active.
+		//
+		// This is the explicit operator-chosen "honest minimum-intervention"
+		// path: rather than route charter traffic to compromised IPs (more
+		// CSI hits) or burn general-pool reputation, we pause charter cleanly
+		// while the first batch goes through Cloudmark delisting.
+		//
+		// status='cold' is honoured by SendWorkerPool / vmtaPool.next() — cold
+		// IPs are excluded from rotation. Reversible by setting status='active'
+		// once additional IPs come back from Cloudmark delisting.
+		//
+		// Operator action in parallel: submit additional IPs to
+		// https://csi.cloudmark.com/en/reset/ as time permits, and register
+		// Comcast Postmaster at https://postmaster.comcastnet.email/.
+		// Charter delisting flows through the same Cloudmark portal
+		// (Spectrum has no public Postmaster dashboard).
+		// ---------------------------------------------------------------------
+		// NOTE: must use host(ip_address) here, not ip_address::text. The inet
+		// type renders as '144.225.178.27/32' when cast directly to text, so
+		// an IN ('144.225.178.27', ...) check would match zero rows. host()
+		// strips the /32 mask. Verified the hard way during the May 11 deploy.
+		{"may11_cloudmark_cold_trim", `UPDATE mailing_ip_addresses
+    SET status = 'cold', updated_at = NOW()
+    WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+      AND status != 'cold'
+      AND host(ip_address) IN (
+        -- *-comcast-pool cold (22 IPs; 4 retained active: .10, .93, .139, .223)
+        '144.225.178.27','144.225.178.28','144.225.178.29','144.225.178.30','144.225.178.31',
+        '144.225.178.74','144.225.178.91','144.225.178.92','144.225.178.94','144.225.178.95',
+        '144.225.178.159','144.225.178.160','144.225.178.161','144.225.178.162','144.225.178.163','144.225.178.164',
+        '144.225.178.203','144.225.178.224','144.225.178.225','144.225.178.226','144.225.178.227','144.225.178.228',
+        -- *-charter-pool fully cold (23 IPs; 0 retained active)
+        '144.225.178.12','144.225.178.45','144.225.178.46','144.225.178.47','144.225.178.48','144.225.178.49',
+        '144.225.178.76','144.225.178.110','144.225.178.111','144.225.178.112','144.225.178.113',
+        '144.225.178.141','144.225.178.180','144.225.178.181','144.225.178.182','144.225.178.183','144.225.178.184',
+        '144.225.178.205','144.225.178.244','144.225.178.245','144.225.178.246','144.225.178.247','144.225.178.248'
+      )`},
+
+		// ---------------------------------------------------------------------
+		// May 11 2026 PM: Charter pools → general-pool fallback.
+		//
+		// All 4 *-charter-pool pools are fully cold (no submitted/mitigated
+		// charter IPs in the first Cloudmark batch). Without this change,
+		// charter recipients would dead-letter on `strict_pool_exhausted` per
+		// the May 8 strict-isolation flag (vmtaPool.next() short-circuits on
+		// strict before the Tier-2 general fallback).
+		//
+		// Operator decision (2026-05-11 PM): switch the 4 *-charter-pool
+		// preferences from 'strict' to 'normal' so that charter recipients
+		// fall back to *-general-pool (1 IP per brand) instead of dead-
+		// lettering. Comcast pools remain 'strict' — comcast traffic stays
+		// pinned to the 4 mitigated IPs (.10, .93, .139, .223) only.
+		//
+		// vmtaPool.next() routing under this state:
+		//   recipient_isp=charter → ispGroups['charter'] empty (all cold)
+		//                        → strictPools['charter'] = false
+		//                        → Tier-2 fallback to ispGroups['general']
+		//                        → 1 active general-pool IP per brand
+		//   recipient_isp=comcast → ispGroups['comcast'] = [4 mitigated IPs]
+		//                        → 1 IP per brand (strict, no fallback)
+		//
+		// Risk acknowledged: charter volume (~25k/day) lands on per-brand
+		// general-pool IPs that are mid-warmup and already sit at or above
+		// daily warmup limits. Adding charter accelerates load and any
+		// charter-side spam-rate signal contaminates the general IP. This
+		// is preferred over dead-letter at the operator's discretion.
+		//
+		// Reverts to 'strict' once charter IPs come back from Cloudmark
+		// delisting (cohort-trim migration above re-activates them).
+		//
+		// Idempotent: NOT WHERE clause limits update to current 'strict'
+		// rows on charter pools; re-runs are no-ops.
+		// ---------------------------------------------------------------------
+		{"may11_charter_general_fallback", `UPDATE mailing_ip_pool_preferences pref
+    SET isolation_mode = 'normal',
+        reason = 'cloudmark-trim 2026-05-11 PM: charter pools fully cold (0 active IPs); intentional fallback to *-general-pool while charter IPs await Cloudmark CSI delisting. Operator decision: route charter to general rather than dead-letter. Reverts to ''strict'' once charter IPs come back active.',
+        set_by = 'operator-2026-05-11-pm',
+        set_at = NOW()
+    FROM mailing_ip_pools p
+    WHERE p.id = pref.pool_id
+      AND p.name LIKE '%-charter-pool'
+      AND pref.isolation_mode = 'strict'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
