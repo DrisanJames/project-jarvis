@@ -6035,6 +6035,62 @@ BEGIN
         END IF;
     END LOOP;
 END $$`},
+
+		// =====================================================================
+		// May 12 2026: WF pool reassert — final-position migration that runs
+		// after every downstream mh-* revert (phase10_ipxo_yh_redistribute,
+		// phase12_ipxo_out_of_yahoo, phase19_fix_ipxo_yh_hostnames).
+		//
+		// The original may09b_reassign_wf_harvested_ips at line ~3541 is silently
+		// reverted on every boot because those three later migrations re-anchor
+		// 144.225.178.{202,203,205} back to mh-apple/mh-comcast/mh-charter pools.
+		// Result: wf-general-pool ends up empty in the DB and the deploy
+		// preflight check (ip_pool_empty) fails for every WF campaign — even
+		// though PMTA on Server B has the IPs physically renamed and serving
+		// as mta-wf-gn[1-3] since 2026-05-09.
+		//
+		// This migration runs last in the slice so it wins the revert race and
+		// keeps DB state aligned with PMTA reality. Donor-pool impact is
+		// acceptable: mh-apple-pool retains 6 active IPs after .202 moves out,
+		// and .203/.205 are already status='cold' in mh-comcast/mh-charter from
+		// the May 8 Cloudmark trim, so no active MH traffic is disrupted.
+		//
+		// First detected: May 12 2026 newbrand deploy — 2/24 campaigns failed
+		// with `preflight failed: ip_pool_empty: IP pools matching wf-* have
+		// zero active/warmup IPs`. Direct SQL applied same day to unstick
+		// May 13 send; this entry codifies the fix so future deploys don't
+		// regress.
+		// =====================================================================
+		{"may12_wf_pool_reassert", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    wf_pool_id UUID;
+    rec RECORD;
+BEGIN
+    SELECT id INTO wf_pool_id
+      FROM mailing_ip_pools
+     WHERE name = 'wf-general-pool' AND organization_id = org_id;
+
+    IF wf_pool_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.202', 'mta-wf-gn1.mail.em.warrantyforyou.com'),
+            ('144.225.178.203', 'mta-wf-gn2.mail.em.warrantyforyou.com'),
+            ('144.225.178.205', 'mta-wf-gn3.mail.em.warrantyforyou.com')
+        ) AS t(ip_addr, hostname)
+    LOOP
+        UPDATE mailing_ip_addresses
+           SET pool_id = wf_pool_id,
+               hostname = rec.hostname,
+               status = 'active',
+               warmup_stage = COALESCE(NULLIF(warmup_stage, ''), 'engaged'),
+               updated_at = NOW()
+         WHERE ip_address = rec.ip_addr::inet;
+    END LOOP;
+END $$`},
 	}
 
 	var ok, fail int
