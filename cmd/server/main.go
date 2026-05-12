@@ -4973,6 +4973,49 @@ END $$`},
     WHERE p.id = pref.pool_id
       AND p.name LIKE '%-charter-pool'
       AND pref.isolation_mode = 'strict'`},
+
+		// =====================================================================
+		// Send-Day Planner support tables (2026-05-12)
+		// Single source of truth for banned creatives + Gate-A attestations
+		// surfaced by the new /api/mailing/send-day/* endpoints.
+		// =====================================================================
+		{"create_banned_creatives_tbl", `CREATE TABLE IF NOT EXISTS mailing_banned_creatives (
+			filename TEXT PRIMARY KEY,
+			reason TEXT NOT NULL DEFAULT '',
+			paused_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Seed today's known-banned creative. This MUST stay in sync with
+		// eng_w2_rotation.py BANNED_CREATIVES — the Python set is a backup
+		// guard only; the canvas + future deploy scripts read from this
+		// table. ON CONFLICT DO NOTHING keeps us idempotent across boots.
+		{"seed_banned_creative_trugreen_6w", `INSERT INTO mailing_banned_creatives (filename, reason, paused_at)
+		VALUES (
+			'trugreen-6weeks-free.html',
+			'May 2 ISP content-block; identical body across all 4 brands amplified the fingerprint. Replaced by warby-parker family. See .cursor/rules/sending-throttle.mdc.',
+			'2026-05-02 00:00:00+00'
+		) ON CONFLICT (filename) DO NOTHING`},
+
+		// Gate-A attestation table — operator-attested host health for v1.
+		// Real OVH telemetry will be S3-pushed in a follow-up.
+		{"create_gate_attestations_tbl", `CREATE TABLE IF NOT EXISTS mailing_send_day_gate_attestations (
+			gate TEXT NOT NULL,
+			server_key TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'unknown',
+			message TEXT NOT NULL DEFAULT '',
+			last_checked_at TIMESTAMPTZ,
+			updated_by TEXT,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (gate, server_key)
+		)`},
+		// Seed initial unknown rows so the canvas always has both server slots
+		// to render even when no operator has checked off yet.
+		{"seed_gate_a_server_a", `INSERT INTO mailing_send_day_gate_attestations (gate, server_key, state, message)
+		VALUES ('A', 'server_a', 'unknown', 'Awaiting first operator attestation')
+		ON CONFLICT (gate, server_key) DO NOTHING`},
+		{"seed_gate_a_server_b", `INSERT INTO mailing_send_day_gate_attestations (gate, server_key, state, message)
+		VALUES ('A', 'server_b', 'unknown', 'Awaiting first operator attestation')
+		ON CONFLICT (gate, server_key) DO NOTHING`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

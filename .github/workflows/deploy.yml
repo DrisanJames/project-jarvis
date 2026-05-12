@@ -45,7 +45,25 @@ jobs:
           echo "Building Go backend..."
           go build -o /dev/null ./cmd/server/
           echo "Running Go tests..."
+          # ./internal/api/... covers the Send-Day Planner suites added in
+          # send_day_handlers_test.go (Phase 4b of the canvas plan).
           go test ./internal/api/... ./internal/engine/... -count=1 -timeout 60s
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run frontend tests (Vitest)
+        working-directory: ./web
+        run: |
+          # Send-Day Planner Phase 4a tests live under
+          # src/components/mailing/components/send-day-planner/__tests__/.
+          # The full suite is small enough to run end-to-end on every
+          # deploy; payloadBuilder.test.ts is the canvas-vs-Python contract
+          # gate and MUST stay green.
+          npm ci
+          npx vitest run --reporter=verbose
 
       - name: Set build metadata
         id: build-meta

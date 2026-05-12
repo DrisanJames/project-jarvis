@@ -284,6 +284,60 @@ func TestWaveSanityCheck_UserExplicitDurationBypass(t *testing.T) {
 	})
 }
 
+// TestWaveSanityCheck_GlobalDefaultSourceFails locks in the regression for the
+// wizard bug where Quick Schedule emitted source: "global-default" with
+// start_at == end_at (zero span). At >= small-ISP threshold this silently
+// failed wave creation. The fix re-points Quick Schedule to source: "manual"
+// with a computed 8h span; this test ensures any future re-introduction of
+// "global-default" continues to be rejected.
+func TestWaveSanityCheck_GlobalDefaultSourceFails(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("global-default does NOT bypass min-span", func(t *testing.T) {
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "gmail",
+			Quota: 5000,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now,
+				Source:  "global-default",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"gmail": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 5000},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err == nil {
+			t.Error("'global-default' source must NOT bypass waveSanityCheck (regression: zero-span Quick Schedule wizard bug)")
+		}
+	})
+
+	t.Run("global-default zero-span fails even at small ISP threshold", func(t *testing.T) {
+		// 600 recipients > smallISPThreshold (500); auto-generated span path
+		// must enforce min-span and the zero-span here must be rejected.
+		plans := []pmtaNormalizedPlan{{
+			ISP:   "yahoo",
+			Quota: 600,
+			TimeSpans: []pmtaNormalizedTimeSpan{{
+				StartAt: now,
+				EndAt:   now,
+				Source:  "global-default",
+			}},
+		}}
+		waves := map[string][]pmtaWaveSpec{
+			"yahoo": {
+				{WaveNumber: 1, ScheduledAt: now, PlannedRecipients: 600},
+			},
+		}
+		err := waveSanityCheck(plans, waves)
+		if err == nil {
+			t.Error("'global-default' zero-span at 600 recipients must be rejected, not bypassed")
+		}
+	})
+}
+
 func TestIsUserExplicitSpan(t *testing.T) {
 	tests := []struct {
 		source string
@@ -293,6 +347,8 @@ func TestIsUserExplicitSpan(t *testing.T) {
 		{"manual", true},
 		{"default_throttle_window", false},
 		{"legacy_throttle_window", false},
+		{"global-default", false}, // wizard bug regression: must NOT bypass
+		{"auto", false},
 		{"", false},
 	}
 	for _, tt := range tests {

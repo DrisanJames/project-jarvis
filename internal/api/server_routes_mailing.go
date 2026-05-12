@@ -458,6 +458,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/audience-cadence-by-isp", advSvc.HandleAudienceCadenceByISP)
 			r.Post("/analytics/audience-cadence-by-isp/refresh", advSvc.HandleAudienceCadenceRefresh)
 			r.Get("/analytics/harvest-performance", advSvc.HandleHarvestPerformance)
+
+			// Promoted analytics handlers (Phase D — Metrics Consistency &
+			// Analytics Restructure). Handlers live in
+			// mailing_analytics_promoted.go but were never wired — frontend
+			// (AnalyticsTabs.tsx wave-scheduler-health call, etc.) was 404ing.
+			r.Get("/analytics/wave-scheduler-health", advSvc.HandleWaveSchedulerHealth)
+			r.Get("/analytics/queue-status-histogram", advSvc.HandleQueueStatusHistogram)
+			r.Get("/analytics/dispatch-timeline", advSvc.HandleDispatchTimeline)
 			
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)
@@ -902,6 +910,18 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				pmtaCampaignAPI.SetOfferSuppressionManager(s.OfferSuppMgr)
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
+
+			// === SEND-DAY PLANNER (canvas) — Phase 1 endpoints ===
+			// Each endpoint backs one of the six pre-deploy gates from
+			// .cursor/rules/send-day-process.mdc or the canvas's
+			// per-cell creative drawer. Implementations live in
+			// send_day_handlers.go + send_day_creative_resolve.go.
+			r.Get("/send-day/volume-reconciliation", advSvc.HandleSendDayVolumeReconciliation)
+			r.Get("/send-day/banned-creatives", advSvc.HandleSendDayBannedCreatives)
+			r.Post("/send-day/preflight-batch", pmtaCampaignAPI.HandleSendDayPreflightBatch)
+			r.Post("/send-day/creative-resolve", advSvc.HandleSendDayCreativeResolve)
+			r.Get("/send-day/host-health", advSvc.HandleSendDayHostHealth)
+			r.Post("/send-day/host-health/attest", advSvc.HandleSendDayHostHealthAttest)
 
 			// === AUDIENCE ARCHITECTURE: Background workers ===
 			workerCtx := context.Background()

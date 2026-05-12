@@ -1,0 +1,283 @@
+{
+  "content_locked": false,
+  "exclusion_lists": [],
+  "exclusion_segments": [
+    "00000000-0000-0000-0000-0000005a7ed8"
+  ],
+  "inclusion_lists": [],
+  "inclusion_segments": [
+    "d71c1802-13e8-43b4-ad82-a156f0de9310",
+    "a03b2527-040a-49ae-9bdb-4c8fdab6e96e",
+    "c885bbf5-f82c-4e11-81da-fdf313cc5d17",
+    "31e4f5d7-0afb-4f9f-a962-e8f197e9c383",
+    "021aa07d-9de3-42e4-8506-35a9a9884502"
+  ],
+  "isp_plans": [
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "microsoft",
+      "quota": 10644,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "apple",
+      "quota": 3840,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "yahoo",
+      "quota": 50,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "comcast",
+      "quota": 2200,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "charter",
+      "quota": 825,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "att",
+      "quota": 7660,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "aol",
+      "quota": 2200,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "cox",
+      "quota": 710,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    },
+    {
+      "cadence": {
+        "batch_size": 0,
+        "every_minutes": 15,
+        "mode": "interval"
+      },
+      "isp": "other",
+      "quota": 825,
+      "randomize_audience": false,
+      "throttle_strategy": "gentle",
+      "time_spans": [
+        {
+          "end_at": "2026-05-12T15:46:00Z",
+          "source": "duration-calc",
+          "start_at": "2026-05-12T09:46:00Z",
+          "timezone": "America/Denver",
+          "type": "absolute"
+        }
+      ],
+      "timezone": "America/Denver"
+    }
+  ],
+  "isp_quotas": [
+    {
+      "isp": "microsoft",
+      "volume": 10644
+    },
+    {
+      "isp": "apple",
+      "volume": 3840
+    },
+    {
+      "isp": "yahoo",
+      "volume": 50
+    },
+    {
+      "isp": "comcast",
+      "volume": 2200
+    },
+    {
+      "isp": "charter",
+      "volume": 825
+    },
+    {
+      "isp": "att",
+      "volume": 7660
+    },
+    {
+      "isp": "aol",
+      "volume": 2200
+    },
+    {
+      "isp": "cox",
+      "volume": 710
+    },
+    {
+      "isp": "other",
+      "volume": 825
+    }
+  ],
+  "min_remail_hours": 0,
+  "name": "05122026 - My Own Health - Welcome - Newsletter - the-capital-wallet",
+  "randomize_audience": false,
+  "scheduled_at": "2026-05-12T09:46:00Z",
+  "send_mode": "scheduled",
+  "send_priority": [
+    {
+      "id": "d71c1802-13e8-43b4-ad82-a156f0de9310",
+      "type": "segment"
+    }
+  ],
+  "sending_domain": "em.myownhealth.net",
+  "target_isps": [
+    "microsoft",
+    "apple",
+    "yahoo",
+    "comcast",
+    "charter",
+    "att",
+    "aol",
+    "cox",
+    "other"
+  ],
+  "throttle_strategy": "gentle",
+  "timezone": "America/Denver",
+  "use_master_selection": false,
+  "variants": [
+    {
+      "_html_filename": "welcome_newsletter_MH.html",
+      "_html_sha256": "c07e85e286806615fb87b3d428f34daf3a8d537151b0129587c2fa40ad51eade",
+      "from_name": "Arnold @ My Own Health",
+      "html_content": "",
+      "plain_content": "",
+      "preview_text": "Three line items worth a five-minute audit before next month's statements.",
+      "split_percent": 100,
+      "subject": "Where most monthly waste is hiding",
+      "variant_name": "A"
+    }
+  ]
+}

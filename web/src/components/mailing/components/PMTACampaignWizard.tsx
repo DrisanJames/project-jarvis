@@ -1209,12 +1209,22 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       if (sendMode === 'scheduled') {
         if (useGlobalSchedule) {
           if (globalScheduleISO) {
+            // CRITICAL: source MUST be "duration-calc" or "manual" — these are
+            // the only literals that bypass `waveSanityCheck`'s minimum-span
+            // enforcement (upside-down/internal/api/pmta_campaign_planner.go
+            // isUserExplicitSpan ~line 1862). Earlier versions emitted
+            // "global-default" with start_at == end_at (zero span); at >=500
+            // recipients/ISP that silently failed wave creation. The Quick
+            // Schedule mode now spans the campaign over the canonical 8h
+            // throttle window starting at the operator-chosen timestamp.
+            const start = new Date(globalScheduleISO);
+            const end = new Date(start.getTime() + 8 * 3600000);
             spans = [{
               type: 'absolute',
-              start_at: globalScheduleISO,
-              end_at: globalScheduleISO,
+              start_at: start.toISOString(),
+              end_at: end.toISOString(),
               timezone: plan.timezone,
-              source: 'global-default',
+              source: 'manual',
             }];
           }
         } else {
