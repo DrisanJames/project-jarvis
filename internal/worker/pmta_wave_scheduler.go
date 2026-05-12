@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,6 +30,13 @@ type PMTAWaveScheduler struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	running      bool
+
+	// capChecker is wired in main.go alongside the SendWorkerPool's
+	// CapChecker so the dispatcher can Peek the cap and substitute a
+	// reserve subscriber for any capped row. Nil disables the cap-aware
+	// claim path (legacy single-status SELECT). Slice 4 of cap-aware
+	// reserve pool plan.
+	capChecker *mailing.CapChecker
 }
 
 func NewPMTAWaveScheduler(db *sql.DB, sqsClient *sqs.Client, queueURL string) *PMTAWaveScheduler {
@@ -42,6 +50,13 @@ func NewPMTAWaveScheduler(db *sql.DB, sqsClient *sqs.Client, queueURL string) *P
 
 func (s *PMTAWaveScheduler) SetRedisClient(client *redis.Client) {
 	s.redisClient = client
+}
+
+// SetCapChecker injects the cross-brand cap checker so the dispatcher can
+// Peek subscribers before queueing them. Pass nil (or omit the call) to
+// keep the legacy single-status claim path.
+func (s *PMTAWaveScheduler) SetCapChecker(cc *mailing.CapChecker) {
+	s.capChecker = cc
 }
 
 func (s *PMTAWaveScheduler) Start() error {
@@ -236,7 +251,7 @@ func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID str
 		}
 		return
 	}
-	enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID)
+	enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID, s.capChecker)
 	if err != nil {
 		log.Printf("[PMTAWaveScheduler] enqueue error for wave %s: %v", waveID, err)
 	} else {
@@ -247,7 +262,7 @@ func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID str
 
 func (s *PMTAWaveScheduler) dispatchWave(ctx context.Context, waveID string) error {
 	if s.sqsClient == nil || strings.TrimSpace(s.queueURL) == "" {
-		_, err := EnqueuePMTAWave(ctx, s.db, waveID)
+		_, err := EnqueuePMTAWave(ctx, s.db, waveID, s.capChecker)
 		return err
 	}
 

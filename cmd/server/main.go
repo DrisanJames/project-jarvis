@@ -368,13 +368,16 @@ func main() {
 				// Start PMTA ISP wave scheduler / consumer.
 				pmtaWaveQueueURL := os.Getenv("SQS_PMTA_WAVE_QUEUE_URL")
 				var pmtaWaveSQSClient *sqs.Client
+				// Hoisted outside the if-block so the cross-brand cap
+				// wiring downstream can reach it via SetCapChecker.
+				var pmtaWaveConsumer *worker.PMTAWaveConsumer
 				if pmtaWaveQueueURL != "" {
 					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
 					if err != nil {
 						log.Printf("Warning: AWS config for PMTA wave SQS failed: %v", err)
 					} else {
 						pmtaWaveSQSClient = sqs.NewFromConfig(awsCfg)
-						pmtaWaveConsumer := worker.NewPMTAWaveConsumer(pmtaWaveSQSClient, pmtaWaveQueueURL, mailingDB)
+						pmtaWaveConsumer = worker.NewPMTAWaveConsumer(pmtaWaveSQSClient, pmtaWaveQueueURL, mailingDB)
 						pmtaWaveConsumer.Start(ctx)
 						log.Printf("PMTA wave consumer started (queue=%s)", pmtaWaveQueueURL)
 					}
@@ -461,13 +464,22 @@ func main() {
 				// Cross-brand daily cap enforcer (P5a). Redis fast path +
 				// Postgres fallback. Default cap=2; org settings override.
 				// Disable entirely with DISABLE_CROSS_BRAND_CAP=true.
+				//
+				// The same CapChecker is also wired into the PMTA wave
+				// scheduler (cap-aware reserve pool, Slice 4) so the
+				// dispatcher can Peek the cap and substitute reserves
+				// before the worker layer ever sees over-cap subscribers.
 				if os.Getenv("DISABLE_CROSS_BRAND_CAP") != "true" {
 					capChecker := mailing.NewCapChecker(mailingDB, redisClient, 2)
 					sendWorkerPool.SetCapChecker(capChecker)
+					pmtaWaveScheduler.SetCapChecker(capChecker)
+					if pmtaWaveConsumer != nil {
+						pmtaWaveConsumer.SetCapChecker(capChecker)
+					}
 					if redisClient != nil {
-						log.Println("Cross-brand daily cap wired to send worker pool (Redis fast path + PG fallback)")
+						log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (Redis fast path + PG fallback)")
 					} else {
-						log.Println("Cross-brand daily cap wired to send worker pool (PG-only, not race-safe under high concurrency)")
+						log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (PG-only, not race-safe under high concurrency)")
 					}
 				} else {
 					log.Println("Cross-brand daily cap DISABLED via DISABLE_CROSS_BRAND_CAP env var")
@@ -5016,6 +5028,38 @@ END $$`},
 		{"seed_gate_a_server_b", `INSERT INTO mailing_send_day_gate_attestations (gate, server_key, state, message)
 		VALUES ('A', 'server_b', 'unknown', 'Awaiting first operator attestation')
 		ON CONFLICT (gate, server_key) DO NOTHING`},
+
+		// =====================================================================
+		// Cap-Aware Reserve Pool (Slice 1 — schema only, additive)
+		// =====================================================================
+		// Background: cross_brand_daily_cap=10 today causes a deterministic
+		// cap-skip cascade across the 12-brand 15-minute stagger. Late-stagger
+		// brands (WF idx=11) see 100% cross_brand_cap_exceeded because earlier
+		// brands have consumed every subscriber's cap slot before WF's wave
+		// runs. See plan: .cursor/plans/cap-aware_reserve_pool_*.plan.md.
+		//
+		// This migration is ADDITIVE ONLY — adds three columns + one partial
+		// index. No code path uses them until Slice 2/4 ship. Safe to deploy
+		// independently as Phase 1 of the rollout.
+		//
+		// Status values 'reserve' and 'cap_skipped' are NOT constrained by
+		// any CHECK (the column is plain varchar), so no constraint changes
+		// are required.
+		{"reserve_pool_isp_plans_col", `ALTER TABLE mailing_campaign_isp_plans
+			ADD COLUMN IF NOT EXISTS audience_reserve_count INTEGER NOT NULL DEFAULT 0`},
+		{"reserve_pool_waves_cap_skip_col", `ALTER TABLE mailing_campaign_waves
+			ADD COLUMN IF NOT EXISTS cap_skip_count INTEGER NOT NULL DEFAULT 0`},
+		{"reserve_pool_waves_reserve_used_col", `ALTER TABLE mailing_campaign_waves
+			ADD COLUMN IF NOT EXISTS reserve_used_count INTEGER NOT NULL DEFAULT 0`},
+		// Partial index supports the dispatcher's cap-aware claim query
+		// (SELECT ... WHERE isp_plan_id=$1 AND status IN ('selected','reserve')
+		// ORDER BY (status='selected' DESC), selection_rank ASC). Filtering on
+		// status keeps the index narrow (only rows that COULD be claimed) while
+		// the (isp_plan_id, status, selection_rank) column order matches the
+		// query's most-selective leading predicate.
+		{"reserve_pool_claim_lookup_idx", `CREATE INDEX IF NOT EXISTS idx_plan_recipients_claim_lookup
+			ON mailing_campaign_plan_recipients (isp_plan_id, status, selection_rank)
+			WHERE status IN ('selected', 'reserve')`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

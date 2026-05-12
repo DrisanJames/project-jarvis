@@ -11,7 +11,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,6 +129,15 @@ type pmtaSelectedRecipient struct {
 	SourceID      string
 	SelectionRank int
 
+	// IsReserve marks a recipient as belonging to the cap-aware reserve
+	// pool — over-selected beyond plan.Quota so the wave dispatcher can
+	// substitute capped subscribers with the next available reserve. See
+	// reservePoolMultiplier and the planner truncation site. When false,
+	// the row writes to mailing_campaign_plan_recipients with
+	// status='selected'; when true, status='reserve'. Defaults to false
+	// when the kill switch DISABLE_RESERVE_POOL is on (no over-select).
+	IsReserve bool
+
 	// Per-domain engagement priority hints (set by qualifyEmail when
 	// SDS state is available; used by the post-streaming sort that
 	// reorders each ISP's pool before quota truncation). Lowercase so
@@ -138,11 +149,46 @@ type pmtaSelectedRecipient struct {
 }
 
 type pmtaAudiencePlan struct {
-	RecipientsByISP  map[string][]pmtaSelectedRecipient
-	CountsByISP      map[string]int
-	TotalSeen        int
-	AfterSuppression int
-	SelectedTotal    int
+	RecipientsByISP map[string][]pmtaSelectedRecipient
+	// CountsByISP reports the count of NON-reserve (selected) recipients
+	// per ISP. Wave planning, isp_plans.audience_selected_count, and
+	// every downstream consumer that pre-dates the reserve pool reads
+	// this field — it MUST exclude reserves to keep wave sizing correct.
+	CountsByISP map[string]int
+	// ReserveCountsByISP reports the count of reserve recipients per ISP.
+	// Persistence layer stamps mailing_campaign_isp_plans.audience_reserve_count
+	// from this map. When DISABLE_RESERVE_POOL=true, every entry is 0.
+	ReserveCountsByISP map[string]int
+	TotalSeen          int
+	AfterSuppression   int
+	SelectedTotal      int
+	// ReserveTotal is the sum of ReserveCountsByISP — convenience for
+	// log lines and audit dashboards. Always equals 0 under the kill switch.
+	ReserveTotal int
+}
+
+// reservePoolMultiplier returns the over-select factor applied to each
+// ISP's plan.Quota at audience-finalize time. Default 1.5 (i.e. keep
+// quota + 50% as reserves). Env override: RESERVE_POOL_MULTIPLIER (must
+// be >= 1.0; values below 1.0 are clamped to 1.0 to prevent the over-
+// select path from accidentally REDUCING the audience).
+//
+// Set DISABLE_RESERVE_POOL=true to revert the planner to its pre-reserve
+// behavior (hard truncation at plan.Quota). The kill switch makes the
+// multiplier effectively 1.0 even if RESERVE_POOL_MULTIPLIER is set.
+func reservePoolMultiplier() float64 {
+	if os.Getenv("DISABLE_RESERVE_POOL") == "true" {
+		return 1.0
+	}
+	raw := strings.TrimSpace(os.Getenv("RESERVE_POOL_MULTIPLIER"))
+	if raw == "" {
+		return 1.5
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 1.0 {
+		return 1.5
+	}
+	return v
 }
 
 type pmtaWaveSpec struct {
@@ -609,10 +655,26 @@ func planPMTAAudience(
 	allowedISPs := make(map[string]bool, len(normalized.Plans))
 	planMap := make(map[string]pmtaNormalizedPlan, len(normalized.Plans))
 	ispQuota := make(map[string]int, len(normalized.Plans))
+	// ispReservePool is the inflated streaming target — plan.Quota * reserveMult.
+	// The early-cutoff function and the per-ISP qualification gate both consult
+	// this map so we keep accepting rows past the plain quota up to the reserve
+	// ceiling. Without this the planner would short-circuit at quota and the
+	// over-select in the truncation block would never see any extra rows.
+	streamReserveMult := reservePoolMultiplier()
+	ispReservePool := make(map[string]int, len(normalized.Plans))
 	for _, plan := range normalized.Plans {
 		allowedISPs[plan.ISP] = true
 		planMap[plan.ISP] = plan
 		ispQuota[plan.ISP] = plan.Quota // 0 = unlimited
+		if plan.Quota > 0 && streamReserveMult > 1.0 {
+			pool := int(float64(plan.Quota) * streamReserveMult)
+			if pool < plan.Quota {
+				pool = plan.Quota
+			}
+			ispReservePool[plan.ISP] = pool
+		} else {
+			ispReservePool[plan.ISP] = plan.Quota
+		}
 	}
 
 	inclusionIDs, inclErr := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
@@ -634,7 +696,14 @@ func planPMTAAudience(
 				continue // unlimited ISP — always "met" for cutoff purposes
 			}
 			hasBounded = true
-			if qualifiedPerISP[isp] < q {
+			// Target the inflated reserve pool ceiling so we keep
+			// streaming past the raw quota and pick up reserve
+			// candidates. Falls back to q if reserves are disabled.
+			target := ispReservePool[isp]
+			if target < q {
+				target = q
+			}
+			if qualifiedPerISP[isp] < target {
 				return false
 			}
 		}
@@ -658,8 +727,18 @@ func planPMTAAudience(
 		if len(allowedISPs) > 0 && !allowedISPs[isp] {
 			return false
 		}
-		if q := ispQuota[isp]; q > 0 && qualifiedPerISP[isp] >= q {
-			return false
+		// Per-ISP qualification gate. Use the inflated reserve target so
+		// over-select can fill the reserve pool past plan.Quota. When
+		// the reserve pool is disabled (mult <= 1.0) ispReservePool[isp]
+		// equals ispQuota[isp], so behavior matches the legacy gate.
+		if q := ispQuota[isp]; q > 0 {
+			target := ispReservePool[isp]
+			if target < q {
+				target = q
+			}
+			if qualifiedPerISP[isp] >= target {
+				return false
+			}
 		}
 
 		// Offer suppression: Bloom filter O(1) or DB set fallback
@@ -1342,7 +1421,10 @@ func planPMTAAudience(
 
 	selectedByISP := make(map[string][]pmtaSelectedRecipient, len(normalized.Plans))
 	countsByISP := make(map[string]int, len(normalized.Plans))
+	reserveCountsByISP := make(map[string]int, len(normalized.Plans))
 	selectedTotal := 0
+	reserveTotal := 0
+	reserveMult := reservePoolMultiplier()
 	for isp, plan := range planMap {
 		recipients := append([]pmtaSelectedRecipient(nil), recipientsByISP[isp]...)
 		// Per-domain engagement engine — SA-2 priority sort. Runs
@@ -1372,12 +1454,45 @@ func planPMTAAudience(
 				recipients[i], recipients[j] = recipients[j], recipients[i]
 			})
 		}
-		if plan.Quota > 0 && len(recipients) > plan.Quota {
-			recipients = recipients[:plan.Quota]
+		// Cap-aware reserve pool (Slice 2):
+		//   Keep up to plan.Quota * reserveMult recipients. The first
+		//   plan.Quota are selected (IsReserve=false). Anything beyond
+		//   is tagged IsReserve=true so persistence writes them with
+		//   status='reserve'. The wave dispatcher (Slice 4) draws from
+		//   selected first, falling back to reserves when the worker
+		//   cap-skips a subscriber.
+		//
+		//   reserveMult=1.0 (kill switch or explicit operator override)
+		//   collapses to the prior hard-truncation behavior.
+		selectedCount := len(recipients)
+		reserveCount := 0
+		if plan.Quota > 0 {
+			reserveLimit := plan.Quota
+			if reserveMult > 1.0 {
+				reserveLimit = int(float64(plan.Quota) * reserveMult)
+				if reserveLimit < plan.Quota {
+					reserveLimit = plan.Quota
+				}
+			}
+			if len(recipients) > reserveLimit {
+				recipients = recipients[:reserveLimit]
+			}
+			if len(recipients) > plan.Quota {
+				selectedCount = plan.Quota
+				reserveCount = len(recipients) - plan.Quota
+				for i := plan.Quota; i < len(recipients); i++ {
+					recipients[i].IsReserve = true
+				}
+			} else {
+				selectedCount = len(recipients)
+				reserveCount = 0
+			}
 		}
 		selectedByISP[isp] = recipients
-		countsByISP[isp] = len(recipients)
-		selectedTotal += len(recipients)
+		countsByISP[isp] = selectedCount
+		reserveCountsByISP[isp] = reserveCount
+		selectedTotal += selectedCount
+		reserveTotal += reserveCount
 	}
 
 	// Per-finalize observability. One line, every campaign — easy to
@@ -1385,10 +1500,10 @@ func planPMTAAudience(
 	// questions. The detailed counts give us a clear signal of whether
 	// the SDS filter is doing meaningful work or is effectively a
 	// no-op for this campaign.
-	log.Printf("[finalizer] campaign=%s domain=%q sds_filter: enabled=%t in=%d filtered_24h=%d filtered_cold=%d selected_engaged=%d selected_probe=%d selected_total=%d",
+	log.Printf("[finalizer] campaign=%s domain=%q sds_filter: enabled=%t in=%d filtered_24h=%d filtered_cold=%d selected_engaged=%d selected_probe=%d selected_total=%d reserve_total=%d reserve_mult=%.2f",
 		input.CampaignID, input.SendingDomain, sdsFilterOn,
 		len(seenEmails), sdsFilteredRecent24h, sdsFilteredCold,
-		sdsSelectedEngaged, sdsSelectedProbe, selectedTotal)
+		sdsSelectedEngaged, sdsSelectedProbe, selectedTotal, reserveTotal, reserveMult)
 
 	// Async backfill: write ISP to subscribers that don't have it set yet.
 	if len(ispBackfill) > 0 {
@@ -1409,11 +1524,13 @@ func planPMTAAudience(
 	}
 
 	return pmtaAudiencePlan{
-		RecipientsByISP:  selectedByISP,
-		CountsByISP:      countsByISP,
-		TotalSeen:        len(seenEmails),
-		AfterSuppression: len(qualified),
-		SelectedTotal:    selectedTotal,
+		RecipientsByISP:    selectedByISP,
+		CountsByISP:        countsByISP,
+		ReserveCountsByISP: reserveCountsByISP,
+		TotalSeen:          len(seenEmails),
+		AfterSuppression:   len(qualified),
+		SelectedTotal:      selectedTotal,
+		ReserveTotal:       reserveTotal,
 	}, nil
 }
 

@@ -145,6 +145,45 @@ func (c *CapChecker) Reserve(ctx context.Context, orgID, subscriberID string) (b
 	return true, n, nil
 }
 
+// Peek reads the current cap count for a subscriber WITHOUT incrementing
+// the Redis counter. Returns (overCap, count, err).
+//
+// Designed for the wave dispatcher's pre-claim path so it can substitute
+// a capped subscriber with the next reserve before any slot is committed
+// to the queue. The send worker still calls Reserve(), which remains the
+// authoritative gate — Peek is advisory only.
+//
+// Behavior:
+//   - cap <= 0 (cap disabled for org): returns (false, 0, nil)
+//   - Redis disabled / rdb == nil: returns (false, 0, nil); the dispatcher
+//     treats this as "let it through, worker will catch it". This is the
+//     correct degradation: if Redis is down we have no faster signal than
+//     the worker's Postgres fallback.
+//   - Redis key missing (no sends today for this subscriber): (false, 0, nil)
+//   - Redis error: returns (false, 0, err); dispatcher should treat the
+//     error as advisory miss and let the row through.
+//
+// Crucially: NO INCR, NO EXPIRE, NO DECR. Peek must not mutate any
+// shared counter — that invariant is exercised in cross_brand_cap_test.go.
+func (c *CapChecker) Peek(ctx context.Context, orgID, subscriberID string) (bool, int, error) {
+	cap := c.capForOrg(ctx, orgID)
+	if cap <= 0 {
+		return false, 0, nil
+	}
+	if c.rdb == nil {
+		return false, 0, nil
+	}
+	key := todayKey(subscriberID)
+	v, err := c.rdb.Get(ctx, key).Int()
+	if err == redis.Nil {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	return v >= cap, v, nil
+}
+
 // Release returns a previously reserved cap slot. Call on send failure.
 func (c *CapChecker) Release(ctx context.Context, subscriberID string) {
 	if c.rdb == nil {

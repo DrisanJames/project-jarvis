@@ -238,6 +238,7 @@ func createPMTAWaveCampaign(
 	for _, plan := range normalized.Plans {
 		planID := uuid.New()
 		selectedCount := audience.CountsByISP[plan.ISP]
+		reserveCount := audience.ReserveCountsByISP[plan.ISP]
 		planSnapshot, _ := json.Marshal(map[string]any{
 			"isp":                plan.ISP,
 			"quota":              plan.Quota,
@@ -248,21 +249,25 @@ func createPMTAWaveCampaign(
 			"time_spans":         plan.TimeSpans,
 		})
 
+		// audience_reserve_count is best-effort: when the column doesn't
+		// exist yet (Slice-1 migration hasn't run on the target DB) the
+		// INSERT falls back to the legacy column set. This keeps Phase 2
+		// deploys safe to roll forward and back during the rollout.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_campaign_isp_plans (
 				id, campaign_id, organization_id, isp, sending_domain, sending_profile_id,
 				quota, randomize_audience, throttle_strategy, selection_strategy, priority_strategy,
-				timezone, status, audience_estimated_count, audience_selected_count, config_snapshot,
+				timezone, status, audience_estimated_count, audience_selected_count, audience_reserve_count, config_snapshot,
 				created_at, updated_at
 			) VALUES (
 				$1, $2, $3, $4, $5, $6,
 				$7, $8, $9, 'priority_first', 'selection_rank',
-				$10, 'ready', $11, $12, $13,
+				$10, 'ready', $11, $12, $13, $14,
 				NOW(), NOW()
 			)
 		`, planID, campaignID, orgID, plan.ISP, input.SendingDomain, nullUUID(profile.ProfileID.String),
 			plan.Quota, plan.RandomizeAudience, plan.ThrottleStrategy,
-			plan.Timezone, selectedCount, selectedCount, planSnapshot,
+			plan.Timezone, selectedCount, selectedCount, reserveCount, planSnapshot,
 		); err != nil {
 			return engine.PMTAWavePlanResult{}, fmt.Errorf("insert isp plan %s: %w", plan.ISP, err)
 		}
@@ -599,6 +604,15 @@ func firstPlanTimezone(normalized pmtaNormalizedCampaign) string {
 
 // batchInsertPlanRecipients inserts plan recipients in multi-row batches
 // instead of one-at-a-time, reducing DB round trips from N to ceil(N/200).
+//
+// Each row's status is derived from rec.IsReserve:
+//   - IsReserve=false → 'selected' (normal pool, claimed first by dispatcher)
+//   - IsReserve=true  → 'reserve'  (cap-aware backfill pool, claimed only
+//     after selected runs out OR a selected row is cap-skipped)
+//
+// The 'reserve' status is set by the planner over-select path; rows are
+// promoted to 'queued' by the dispatcher and may be flipped to
+// 'cap_skipped' if Peek finds the subscriber at/over cap.
 func batchInsertPlanRecipients(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -611,7 +625,7 @@ func batchInsertPlanRecipients(
 		return nil
 	}
 	const batchSize = 1000
-	const paramsPerRow = 9
+	const paramsPerRow = 10
 
 	for i := 0; i < len(recipients); i += batchSize {
 		end := i + batchSize
@@ -632,12 +646,17 @@ func batchInsertPlanRecipients(
 				sb.WriteString(", ")
 			}
 			base := j * paramsPerRow
-			fmt.Fprintf(&sb, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, 'selected', NOW())",
-				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+			fmt.Fprintf(&sb, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, NOW())",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
+			status := "selected"
+			if rec.IsReserve {
+				status = "reserve"
+			}
 			args = append(args,
 				uuid.New(), campaignID, planID,
 				mustUUID(rec.SubscriberID), rec.Email, rec.ISP,
 				rec.SelectionRank, rec.SourceType, parseNullableUUID(rec.SourceID),
+				status,
 			)
 		}
 

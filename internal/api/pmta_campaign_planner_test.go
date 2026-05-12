@@ -797,3 +797,178 @@ func TestPlanPMTAAudience_RespectsSendPriority(t *testing.T) {
 		t.Errorf("sql expectations: %v", err)
 	}
 }
+
+// TestReservePoolMultiplier covers the env-var contract for the reserve
+// pool sizing function. Default is 1.5 with sane clamping on bad inputs.
+func TestReservePoolMultiplier(t *testing.T) {
+	cases := []struct {
+		name   string
+		envVal string
+		kill   string
+		want   float64
+	}{
+		{"default", "", "", 1.5},
+		{"explicit-2x", "2.0", "", 2.0},
+		{"sub-one-clamped-to-default", "0.5", "", 1.5},
+		{"garbage-clamped-to-default", "not-a-number", "", 1.5},
+		{"kill-switch-overrides-multiplier", "2.0", "true", 1.0},
+		{"kill-switch-overrides-default", "", "true", 1.0},
+		{"kill-switch-non-true-honored-multiplier", "2.0", "yes", 2.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RESERVE_POOL_MULTIPLIER", tc.envVal)
+			t.Setenv("DISABLE_RESERVE_POOL", tc.kill)
+			got := reservePoolMultiplier()
+			if got != tc.want {
+				t.Errorf("reservePoolMultiplier() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanPMTAAudience_ReservePool_OverSelect verifies the cap-aware
+// reserve pool over-selects at audience-plan time:
+//
+//  1. CountsByISP reports the QUOTA (selected count, not including reserves)
+//  2. ReserveCountsByISP reports the over-selected count (~ quota * 0.5)
+//  3. RecipientsByISP[isp] contains BOTH selected and reserve rows
+//  4. The first plan.Quota rows have IsReserve=false; the rest IsReserve=true
+//
+// This test is the headline correctness gate for Slice 2 of the cap-aware
+// reserve pool plan.
+func TestPlanPMTAAudience_ReservePool_OverSelect(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	listID := "aaaaaaaa-0000-0000-0000-000000000002"
+
+	gmailQuota := 10
+	// With reserveMult=1.5 the planner streams up to quota*1.5 = 15
+	// gmail rows. Seed 20 so we have enough headroom.
+	subscriberRows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 20; i++ {
+		subscriberRows.AddRow(
+			fmt.Sprintf("11111111-0000-0000-0000-%012d", i),
+			fmt.Sprintf("user%d@gmail.com", i),
+		)
+	}
+
+	mock.ExpectQuery("SELECT s.id::text, s.email").
+		WithArgs(listID).
+		WillReturnRows(subscriberRows)
+
+	input := engine.PMTACampaignInput{
+		InclusionLists: []string{listID},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: gmailQuota},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{
+			{ISP: "gmail", Quota: gmailQuota},
+		},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+
+	if got := result.CountsByISP["gmail"]; got != gmailQuota {
+		t.Errorf("CountsByISP[gmail] = %d, want %d (selected only, no reserves)", got, gmailQuota)
+	}
+	wantReserve := int(float64(gmailQuota)*1.5) - gmailQuota // 15 - 10 = 5
+	if got := result.ReserveCountsByISP["gmail"]; got != wantReserve {
+		t.Errorf("ReserveCountsByISP[gmail] = %d, want %d (1.5x over-select)", got, wantReserve)
+	}
+	if got := result.SelectedTotal; got != gmailQuota {
+		t.Errorf("SelectedTotal = %d, want %d", got, gmailQuota)
+	}
+	if got := result.ReserveTotal; got != wantReserve {
+		t.Errorf("ReserveTotal = %d, want %d", got, wantReserve)
+	}
+
+	recipients := result.RecipientsByISP["gmail"]
+	wantTotal := gmailQuota + wantReserve
+	if len(recipients) != wantTotal {
+		t.Fatalf("len(RecipientsByISP[gmail]) = %d, want %d (selected+reserve)", len(recipients), wantTotal)
+	}
+	for i, rec := range recipients {
+		if i < gmailQuota && rec.IsReserve {
+			t.Errorf("recipients[%d] (within quota) IsReserve=true, want false", i)
+		}
+		if i >= gmailQuota && !rec.IsReserve {
+			t.Errorf("recipients[%d] (beyond quota) IsReserve=false, want true", i)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// TestPlanPMTAAudience_ReservePool_Disabled verifies the DISABLE_RESERVE_POOL
+// kill switch reverts to legacy hard-truncation. Same setup as the over-
+// select test but with the env var set — must produce zero reserves.
+func TestPlanPMTAAudience_ReservePool_Disabled(t *testing.T) {
+	t.Setenv("DISABLE_RESERVE_POOL", "true")
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	listID := "aaaaaaaa-0000-0000-0000-000000000003"
+	gmailQuota := 5
+
+	subscriberRows := sqlmock.NewRows([]string{"id", "email"})
+	for i := 0; i < 20; i++ {
+		subscriberRows.AddRow(
+			fmt.Sprintf("11111111-0000-0000-0000-%012d", i),
+			fmt.Sprintf("user%d@gmail.com", i),
+		)
+	}
+	mock.ExpectQuery("SELECT s.id::text, s.email").
+		WithArgs(listID).
+		WillReturnRows(subscriberRows)
+
+	input := engine.PMTACampaignInput{
+		InclusionLists: []string{listID},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: gmailQuota},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: gmailQuota}},
+	}
+
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+	if got := result.CountsByISP["gmail"]; got != gmailQuota {
+		t.Errorf("CountsByISP[gmail] = %d, want %d", got, gmailQuota)
+	}
+	if got := result.ReserveCountsByISP["gmail"]; got != 0 {
+		t.Errorf("ReserveCountsByISP[gmail] = %d, want 0 (kill switch on)", got)
+	}
+	if got := len(result.RecipientsByISP["gmail"]); got != gmailQuota {
+		t.Errorf("len(RecipientsByISP[gmail]) = %d, want %d (kill switch enforces hard truncation)", got, gmailQuota)
+	}
+	for i, rec := range result.RecipientsByISP["gmail"] {
+		if rec.IsReserve {
+			t.Errorf("recipients[%d].IsReserve=true with kill switch on", i)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}

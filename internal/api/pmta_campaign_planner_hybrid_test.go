@@ -267,7 +267,14 @@ func TestPlanPMTAAudience_Hybrid_EmptySegmentFallsThroughToSDS(t *testing.T) {
 // the prelude drains send_priority items first, then inclusion_segments,
 // then falls through. The planner must not reorder — operators rely on
 // send_priority being the highest-priority source.
+//
+// DISABLE_RESERVE_POOL is set because this test asserts an exact early-
+// cutoff (no SDS query after prelude fills quota). With reserves enabled
+// the planner correctly streams additional rows to fill the reserve pool,
+// which would trigger SDS queries the test does not mock. Reserve-pool
+// behavior is covered in TestPlanPMTAAudience_ReservePool_OverSelect.
 func TestPlanPMTAAudience_Hybrid_InclusionSegmentAfterSendPriority(t *testing.T) {
+	t.Setenv("DISABLE_RESERVE_POOL", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)

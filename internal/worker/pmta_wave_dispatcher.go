@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -21,6 +22,14 @@ type campaignVariant struct {
 	HTMLContent string
 }
 
+// capAwareClaimDisabled returns true when the wave dispatcher should
+// revert to the legacy single-status claim path (no Peek, no reserve
+// substitution). Set DISABLE_CAP_AWARE_CLAIM=true to disable. Default is
+// enabled — the reserve pool only fills its purpose when this is on.
+func capAwareClaimDisabled() bool {
+	return os.Getenv("DISABLE_CAP_AWARE_CLAIM") == "true"
+}
+
 // EnqueuePMTAWave materializes one due PMTA wave into the existing recipient queue.
 //
 // Logging (SA-7, per-domain engagement engine, 2026-05-09): the function
@@ -30,11 +39,19 @@ type campaignVariant struct {
 // the contract intact across every error-return point in the body without
 // having to touch each one. Pure observability — never gate behavior on
 // these fields.
-func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued int, retErr error) {
+//
+// Cap-aware reserve pool (Slice 4): when capChecker is non-nil and
+// DISABLE_CAP_AWARE_CLAIM is not set, the candidate claim pulls from both
+// status='selected' and status='reserve' (over-pulling by 2x) and skips
+// rows whose subscribers Peek as over-cap, substituting the next reserve
+// in rank order. Pass nil for capChecker (or set the kill switch) to
+// revert to the legacy single-status claim with no Peek.
+func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker *mailing.CapChecker) (enqueued int, retErr error) {
 	start := time.Now()
 	var (
 		campaignID         uuid.UUID
 		ispPlanID          uuid.UUID
+		orgID              uuid.UUID
 		waveStatus         string
 		campaignStatus     string
 		planStatus         string
@@ -61,14 +78,15 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 	defer tx.Rollback()
 
 	err = tx.QueryRowContext(ctx, `
-		SELECT w.campaign_id, w.isp_plan_id, w.status, COALESCE(c.status, 'draft'),
+		SELECT w.campaign_id, w.isp_plan_id, COALESCE(p.organization_id, c.organization_id),
+		       w.status, COALESCE(c.status, 'draft'),
 		       COALESCE(p.status, 'planned'), w.scheduled_at, w.planned_recipients, w.enqueued_recipients
 		FROM mailing_campaign_waves w
 		JOIN mailing_campaigns c ON c.id = w.campaign_id
 		JOIN mailing_campaign_isp_plans p ON p.id = w.isp_plan_id
 		WHERE w.id = $1
 		FOR UPDATE
-	`, waveID).Scan(&campaignID, &ispPlanID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &plannedRecipients, &enqueuedRecipients)
+	`, waveID).Scan(&campaignID, &ispPlanID, &orgID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &plannedRecipients, &enqueuedRecipients)
 	if err != nil {
 		return 0, err
 	}
@@ -167,16 +185,45 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 	sanitized := sanitizeVariantURLsAtDispatch([]campaignVariant{{HTMLContent: baseHTML}}, brandKey)
 	baseHTML = sanitized[0].HTMLContent
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, subscriber_id, email, recipient_isp, selection_rank,
-		       audience_source_type, audience_source_id
-		FROM mailing_campaign_plan_recipients
-		WHERE isp_plan_id = $1
-		  AND status = 'selected'
-		ORDER BY selection_rank ASC
-		LIMIT $2
-		FOR UPDATE
-	`, ispPlanID, remaining)
+	// Cap-aware reserve pool claim (Slice 4):
+	//   When enabled: pull from status IN ('selected','reserve') with a 2x
+	//   over-pull buffer and order by (selected first, then by selection_rank).
+	//   FOR UPDATE SKIP LOCKED lets concurrent waves on the same isp_plan
+	//   make progress without blocking each other.
+	//
+	//   When disabled (kill switch or capChecker==nil): preserve the legacy
+	//   single-status claim with FOR UPDATE so behavior matches pre-Slice-4
+	//   prod. Reserves written by Slice 2 sit untouched.
+	useCapAware := capChecker != nil && !capAwareClaimDisabled()
+	var rows *sql.Rows
+	if useCapAware {
+		claimLimit := remaining * 2
+		if claimLimit < remaining {
+			claimLimit = remaining
+		}
+		rows, err = tx.QueryContext(ctx, `
+			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, status
+			FROM mailing_campaign_plan_recipients
+			WHERE isp_plan_id = $1
+			  AND status IN ('selected','reserve')
+			ORDER BY (CASE WHEN status = 'selected' THEN 0 ELSE 1 END) ASC,
+			         selection_rank ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		`, ispPlanID, claimLimit)
+	} else {
+		rows, err = tx.QueryContext(ctx, `
+			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, 'selected'::text AS status
+			FROM mailing_campaign_plan_recipients
+			WHERE isp_plan_id = $1
+			  AND status = 'selected'
+			ORDER BY selection_rank ASC
+			LIMIT $2
+			FOR UPDATE
+		`, ispPlanID, remaining)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -190,12 +237,17 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 		selectionRank      int
 		audienceSourceType string
 		audienceSourceID   sql.NullString
+		// planRecStatus is either "selected" or "reserve" — used to
+		// (a) report reserve_used_count on the wave and (b) update the
+		// plan_recipient row's prior status when we mark it as 'queued'
+		// or 'cap_skipped'.
+		planRecStatus string
 	}
 
 	var candidates []queueCandidate
 	for rows.Next() {
 		var rec queueCandidate
-		if err := rows.Scan(&rec.recordID, &rec.subscriberID, &rec.email, &rec.recipientISP, &rec.selectionRank, &rec.audienceSourceType, &rec.audienceSourceID); err != nil {
+		if err := rows.Scan(&rec.recordID, &rec.subscriberID, &rec.email, &rec.recipientISP, &rec.selectionRank, &rec.audienceSourceType, &rec.audienceSourceID, &rec.planRecStatus); err != nil {
 			return 0, err
 		}
 		candidates = append(candidates, rec)
@@ -203,16 +255,27 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 
 	queuedCount := 0
 	skippedCount := 0
+	capSkippedCount := 0
+	reserveUsedCount := 0
 	for _, rec := range candidates {
+		// Stop as soon as we've satisfied the wave's planned size. The
+		// cap-aware path over-pulls candidates so this is the early-exit
+		// gate for the reserve substitution loop.
+		if queuedCount >= remaining {
+			break
+		}
 		// Phase D: last-second compliance guard — skip if subscriber is no longer active
 		// or email is globally suppressed. This protects against unsubs/bounces that
 		// occurred between audience snapshot and wave enqueue.
+		//
+		// We accept either status as the row's prior state because the
+		// claim now spans selected+reserve in the cap-aware path.
 		var subStatus string
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(status, 'active') FROM mailing_subscribers WHERE id = $1`,
 			rec.subscriberID,
 		).Scan(&subStatus); err == nil && subStatus != "active" && subStatus != "confirmed" {
-			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status = 'selected'`, rec.recordID)
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
 			skippedCount++
 			continue
 		}
@@ -221,9 +284,30 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 			`SELECT EXISTS(SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = md5($1))`,
 			strings.ToLower(rec.email),
 		).Scan(&suppExists); err == nil && suppExists {
-			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status = 'selected'`, rec.recordID)
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
 			skippedCount++
 			continue
+		}
+
+		// Cap-aware Peek (Slice 4): if the subscriber has already hit
+		// the cross-brand daily cap from earlier brands, marking the
+		// plan_recipient 'cap_skipped' frees the slot for the next
+		// reserve in line. The worker still does the authoritative
+		// Reserve in applyCrossBrandCap — Peek is advisory and may
+		// return false negatives under Redis hiccups; we let those rows
+		// through and let the worker decide.
+		if useCapAware {
+			overCap, _, peekErr := capChecker.Peek(ctx, orgID.String(), rec.subscriberID.String())
+			if peekErr == nil && overCap {
+				if _, execErr := tx.ExecContext(ctx,
+					`UPDATE mailing_campaign_plan_recipients SET status = 'cap_skipped' WHERE id = $1 AND status IN ('selected','reserve')`,
+					rec.recordID,
+				); execErr != nil {
+					return 0, execErr
+				}
+				capSkippedCount++
+				continue
+			}
 		}
 
 		seed := computeMutationSeed(rec.subscriberID, waveID)
@@ -286,20 +370,29 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string) (enqueued i
 			return 0, err
 		}
 		queuedCount++
+		if rec.planRecStatus == "reserve" {
+			reserveUsedCount++
+		}
 	}
 
 	if skippedCount > 0 {
 		log.Printf("[WaveEnqueue] wave %s: skipped %d recipients (Phase D compliance)", waveID, skippedCount)
 	}
+	if useCapAware && (capSkippedCount > 0 || reserveUsedCount > 0) {
+		log.Printf("[WaveEnqueue] wave %s: cap_skipped=%d reserve_used=%d queued=%d remaining=%d candidates=%d",
+			waveID, capSkippedCount, reserveUsedCount, queuedCount, remaining, len(candidates))
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE mailing_campaign_waves
 		SET enqueued_recipients = enqueued_recipients + $2,
+		    cap_skip_count = cap_skip_count + $3,
+		    reserve_used_count = reserve_used_count + $4,
 		    status = 'completed',
 		    completed_at = NOW(),
 		    updated_at = NOW()
 		WHERE id = $1
-	`, waveID, queuedCount); err != nil {
+	`, waveID, queuedCount, capSkippedCount, reserveUsedCount); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `

@@ -23,8 +23,11 @@ import (
 	"database/sql"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func newCapCheckerMock(t *testing.T) (*CapChecker, sqlmock.Sqlmock, *sql.DB) {
@@ -237,6 +240,148 @@ func TestCapChecker_ReserveBatch_MixedResults(t *testing.T) {
 			t.Errorf("results[%d].Allowed = %v, want %v", i, results[i].Allowed, w.allowed)
 		}
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// newCapCheckerWithMiniredis returns a CapChecker wired to an in-process
+// miniredis. Used by the Peek tests where we need an actual Redis surface
+// to assert no-mutation behavior.
+func newCapCheckerWithMiniredis(t *testing.T, defaultCap int) (*CapChecker, *miniredis.Miniredis, sqlmock.Sqlmock) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	cc := NewCapChecker(db, rdb, defaultCap)
+	return cc, mr, mock
+}
+
+// TestCapChecker_Peek_NoRedis_ReturnsUnderCap covers the degradation
+// path: when Redis is not configured, Peek MUST short-circuit to "under
+// cap" so the dispatcher does not falsely cap-skip subscribers. The
+// authoritative worker-side Reserve is still the gate.
+func TestCapChecker_Peek_NoRedis_ReturnsUnderCap(t *testing.T) {
+	cc, _, _ := newCapCheckerMock(t)
+	overCap, count, err := cc.Peek(context.Background(), "", "sub-x")
+	if err != nil {
+		t.Fatalf("Peek with nil Redis returned err: %v", err)
+	}
+	if overCap {
+		t.Errorf("overCap = true, want false when Redis disabled")
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 when Redis disabled", count)
+	}
+}
+
+// TestCapChecker_Peek_DoesNotMutateRedis is the headline invariant: the
+// dispatcher will call Peek for EVERY candidate row in every wave; if
+// Peek were to INCR (or EXPIRE) the counter, the cap would burn through
+// in the dispatcher before the worker ever reached the subscriber. This
+// test seeds the counter at a known value, calls Peek, and asserts the
+// stored value is byte-identical afterwards.
+func TestCapChecker_Peek_DoesNotMutateRedis(t *testing.T) {
+	cc, mr, mock := newCapCheckerWithMiniredis(t, 5)
+	orgID := "00000000-0000-0000-0000-0000000000aa"
+	subID := "subscriber-peek-test"
+
+	mock.ExpectQuery(`SELECT settings->>'cross_brand_daily_cap' FROM organizations`).
+		WithArgs(orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("5"))
+
+	key := todayKey(subID)
+	mr.Set(key, "3")
+	mr.SetTTL(key, 26*time.Hour)
+
+	overCap, count, err := cc.Peek(context.Background(), orgID, subID)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if overCap {
+		t.Errorf("overCap = true, want false (3 < cap 5)")
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3 (current stored value)", count)
+	}
+
+	got, err := mr.Get(key)
+	if err != nil {
+		t.Fatalf("post-Peek Get: %v", err)
+	}
+	if got != "3" {
+		t.Errorf("post-Peek key value = %q, want %q (Peek mutated the counter)", got, "3")
+	}
+
+	if ttl := mr.TTL(key); ttl > 26*time.Hour || ttl <= 0 {
+		t.Errorf("post-Peek TTL = %v, want untouched (~26h)", ttl)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// TestCapChecker_Peek_AtCapReturnsTrue covers the over-cap detection. When
+// the stored count is >= cap, Peek must return overCap=true so the
+// dispatcher can substitute a reserve subscriber.
+func TestCapChecker_Peek_AtCapReturnsTrue(t *testing.T) {
+	cc, mr, mock := newCapCheckerWithMiniredis(t, 2)
+	orgID := "00000000-0000-0000-0000-0000000000bb"
+	subID := "subscriber-at-cap"
+
+	mock.ExpectQuery(`SELECT settings->>'cross_brand_daily_cap' FROM organizations`).
+		WithArgs(orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("2"))
+
+	mr.Set(todayKey(subID), "2")
+
+	overCap, count, err := cc.Peek(context.Background(), orgID, subID)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if !overCap {
+		t.Errorf("overCap = false, want true (2 >= cap 2)")
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations: %v", err)
+	}
+}
+
+// TestCapChecker_Peek_MissingKeyReturnsZero covers the "no sends yet
+// today" path. The Redis key won't exist; Peek must report not-over-cap
+// with count=0 (not over-cap, not an error).
+func TestCapChecker_Peek_MissingKeyReturnsZero(t *testing.T) {
+	cc, _, mock := newCapCheckerWithMiniredis(t, 3)
+	orgID := "00000000-0000-0000-0000-0000000000cc"
+	subID := "subscriber-never-sent"
+
+	mock.ExpectQuery(`SELECT settings->>'cross_brand_daily_cap' FROM organizations`).
+		WithArgs(orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("3"))
+
+	overCap, count, err := cc.Peek(context.Background(), orgID, subID)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if overCap {
+		t.Errorf("overCap = true, want false (no sends yet)")
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sql expectations: %v", err)
 	}

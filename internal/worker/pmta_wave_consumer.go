@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 type PMTAWaveMessage struct {
@@ -20,10 +21,11 @@ type PMTAWaveMessage struct {
 }
 
 type PMTAWaveConsumer struct {
-	sqsClient *sqs.Client
-	queueURL  string
-	db        *sql.DB
-	done      chan struct{}
+	sqsClient  *sqs.Client
+	queueURL   string
+	db         *sql.DB
+	capChecker *mailing.CapChecker
+	done       chan struct{}
 }
 
 func NewPMTAWaveConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *PMTAWaveConsumer {
@@ -33,6 +35,13 @@ func NewPMTAWaveConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *PM
 		db:        db,
 		done:      make(chan struct{}),
 	}
+}
+
+// SetCapChecker injects the cross-brand cap checker so the SQS-driven
+// wave path stays consistent with the polling scheduler. Pass nil to keep
+// the legacy single-status claim path.
+func (c *PMTAWaveConsumer) SetCapChecker(cc *mailing.CapChecker) {
+	c.capChecker = cc
 }
 
 func (c *PMTAWaveConsumer) Start(ctx context.Context) {
@@ -69,7 +78,7 @@ func (c *PMTAWaveConsumer) poll(ctx context.Context) {
 		}
 
 		for _, msg := range out.Messages {
-			if processWaveMessage(ctx, c.db, aws.ToString(msg.Body)) {
+			if processWaveMessage(ctx, c.db, aws.ToString(msg.Body), c.capChecker) {
 				c.deleteMessage(ctx, msg.ReceiptHandle)
 			}
 		}
@@ -78,13 +87,13 @@ func (c *PMTAWaveConsumer) poll(ctx context.Context) {
 
 // processWaveMessage handles a single SQS message body. Returns true if the
 // message should be deleted (successful processing or unrecoverable payload).
-func processWaveMessage(ctx context.Context, db *sql.DB, body string) bool {
+func processWaveMessage(ctx context.Context, db *sql.DB, body string, capChecker *mailing.CapChecker) bool {
 	var payload PMTAWaveMessage
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		log.Printf("PMTA wave bad message: %v", err)
 		return true
 	}
-	if _, err := EnqueuePMTAWave(ctx, db, payload.WaveID); err != nil {
+	if _, err := EnqueuePMTAWave(ctx, db, payload.WaveID, capChecker); err != nil {
 		log.Printf("PMTA wave enqueue error (%s): %v", payload.WaveID, err)
 		return false
 	}

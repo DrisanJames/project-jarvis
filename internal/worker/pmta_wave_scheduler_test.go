@@ -75,12 +75,12 @@ func TestDispatchDueWaves_DueWavesFound(t *testing.T) {
 
 	for _, w := range []uuid.UUID{wave1, wave2, wave3} {
 		mock.ExpectBegin()
-		mock.ExpectQuery("isp_plan_id, w.status").
+		mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
-				"campaign_id", "isp_plan_id", "status", "campaign_status",
+				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
 				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
-			}).AddRow(uuid.New(), uuid.New(), "completed", "sending", "running",
+			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
 				testScheduledAt, 100, 100))
 		mock.ExpectCommit()
 	}
@@ -158,19 +158,19 @@ func TestDispatchDueWaves_EnqueueError(t *testing.T) {
 
 	// Wave 1: EnqueuePMTAWave fails (DB error on SELECT)
 	mock.ExpectBegin()
-	mock.ExpectQuery("isp_plan_id, w.status").
+	mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 		WithArgs(wave1.String()).
 		WillReturnError(fmt.Errorf("connection reset"))
 	mock.ExpectRollback()
 
 	// Wave 2: succeeds (already completed, so returns early)
 	mock.ExpectBegin()
-	mock.ExpectQuery("isp_plan_id, w.status").
+	mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 		WithArgs(wave2.String()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"campaign_id", "isp_plan_id", "status", "campaign_status",
+			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
 			"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
-		}).AddRow(uuid.New(), uuid.New(), "completed", "sending", "running",
+		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
 			testScheduledAt, 100, 100))
 	mock.ExpectCommit()
 
@@ -240,12 +240,12 @@ func TestDispatchDueWaves_RoundRobinFairness(t *testing.T) {
 	// further DB calls.
 	for _, w := range allWaves {
 		mock.ExpectBegin()
-		mock.ExpectQuery("isp_plan_id, w.status").
+		mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
-				"campaign_id", "isp_plan_id", "status", "campaign_status",
+				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
 				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
-			}).AddRow(uuid.New(), uuid.New(), "completed", "sending", "running",
+			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
 				testScheduledAt, 100, 100))
 		mock.ExpectCommit()
 	}
@@ -294,12 +294,12 @@ func TestDispatchDueWaves_KillSwitch(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(wave1))
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("isp_plan_id, w.status").
+	mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 		WithArgs(wave1.String()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"campaign_id", "isp_plan_id", "status", "campaign_status",
+			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
 			"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
-		}).AddRow(uuid.New(), uuid.New(), "completed", "sending", "running",
+		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
 			testScheduledAt, 100, 100))
 	mock.ExpectCommit()
 
@@ -362,12 +362,12 @@ func TestDispatchDueWaves_LogsPerDomainCounts(t *testing.T) {
 
 	for _, w := range allWaves {
 		mock.ExpectBegin()
-		mock.ExpectQuery("isp_plan_id, w.status").
+		mock.ExpectQuery("w.campaign_id, w.isp_plan_id").
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
-				"campaign_id", "isp_plan_id", "status", "campaign_status",
+				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
 				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
-			}).AddRow(uuid.New(), uuid.New(), "completed", "sending", "running",
+			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
 				testScheduledAt, 100, 100))
 		mock.ExpectCommit()
 	}
