@@ -44,6 +44,7 @@ const WelcomeAudienceHealth = lazy(() => import('../components/WelcomeAudienceHe
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
+const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -52,7 +53,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match' | 'audience-health' | 'audience-cadence';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'data-partners';
 
 interface Tab {
   id: TabId;
@@ -80,6 +81,7 @@ const tabs: Tab[] = [
   { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
   { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
   { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
+  { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Inbound data partner ingestion — API keys, batches, drip orchestrator, creatives' },
   { id: 'outbox', label: 'Outbox', icon: faPaperPlane, description: 'Durable injection outbox — live state, stuck rows & dead-letter queue' },
   { id: 'attribution-match', label: 'Attribution Match', icon: faCrosshairs, description: 'Resolve Everflow click & conversion CSVs back to subscriber profiles' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
@@ -147,6 +149,7 @@ export const MailingPortal: React.FC = () => {
         return <ListPortal />;
       case 'campaign-center':
       case 'pmta-wizard':
+      case 'send-day':
       case 'marketing-agent':
         return <CampaignCenterSection activeSubTab={activeTab} onSubTabChange={setActiveTab} pendingOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} copilotOpen={copilotOpen} setCopilotOpen={setCopilotOpen} />;
       case 'journey-center':
@@ -189,6 +192,8 @@ export const MailingPortal: React.FC = () => {
         return <DataNormalizerPanel />;
       case 'data-pipeline':
         return <Suspense fallback={<ChunkLoader />}><DataPipelineDashboard /></Suspense>;
+      case 'data-partners':
+        return <Suspense fallback={<ChunkLoader />}><PartnerIngestPortal /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
       case 'attribution-match':

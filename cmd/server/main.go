@@ -25,6 +25,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
 	"github.com/ignite/sparkpost-monitor/internal/datanorm"
+	"github.com/ignite/sparkpost-monitor/internal/emailoversight"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
 	"github.com/ignite/sparkpost-monitor/internal/financial"
 	"github.com/ignite/sparkpost-monitor/internal/intelligence"
@@ -245,6 +246,25 @@ func main() {
 				suppS3Client := s3.NewFromConfig(suppCfg)
 				server.SetSuppressionS3Client(api.NewSuppressionS3Client(suppS3Client))
 				log.Printf("Suppression S3 initialized: bucket=jarvis-offer-suppressions, region=%s", suppRegion)
+			}
+		}
+
+		// Partner-Ingest S3 client. Uses PARTNER_INGEST_S3_BUCKET / REGION env
+		// vars (defaults: jarvis-partner-ingest / us-west-2). Drives the data
+		// partner ingestion pipeline (POST /api/partner-ingest/v1/records).
+		{
+			partnerRegion := os.Getenv("PARTNER_INGEST_S3_REGION")
+			if partnerRegion == "" {
+				partnerRegion = "us-west-2"
+			}
+			partnerCfg, partnerErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(partnerRegion))
+			if partnerErr != nil {
+				log.Printf("WARNING: Failed to load AWS config for partner-ingest S3: %v", partnerErr)
+			} else {
+				partnerS3Client := s3.NewFromConfig(partnerCfg)
+				partnerIngestClient := api.NewPartnerIngestS3Client(partnerS3Client)
+				server.SetPartnerIngestS3Client(partnerIngestClient)
+				log.Printf("Partner-Ingest S3 initialized: bucket=%s, region=%s", partnerIngestClient.Bucket(), partnerIngestClient.Region())
 			}
 		}
 
@@ -823,6 +843,99 @@ func main() {
 					}
 				}
 
+			// Data Partner Ingestion workers (slicer, validator, drip orchestrator).
+			// Each is a polled goroutine — see internal/worker/partner_*.go.
+			// They start AFTER server.GlobalHub has been wired by SetMailingDB.
+			var partnerSlicer *worker.PartnerSlicer
+			var partnerValidator *worker.PartnerValidator
+			var partnerDripOrchestrator *worker.PartnerDripOrchestrator
+			{
+				partnerS3 := server.GetPartnerIngestS3Client()
+				partnerEnabled := partnerS3 != nil
+				if !partnerEnabled {
+					log.Println("[PartnerIngest] disabled — no partner-ingest S3 client wired")
+				} else {
+					partnerRegion := partnerS3.Region()
+					awsCfg, awsErr := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(partnerRegion))
+					if awsErr != nil {
+						log.Printf("[PartnerIngest] aws config: %v — workers skipped", awsErr)
+					} else {
+						s3RawClient := s3.NewFromConfig(awsCfg)
+
+						// Slicer: drains S3 NDJSON into partner_clean_queue with global suppression check.
+						hubAdapter := worker.SuppressionHub(nil)
+						if hub, ok := server.GlobalHub.(*engine.GlobalSuppressionHub); ok {
+							hubAdapter = worker.AdaptGlobalHub(hub)
+						}
+						if hubAdapter == nil {
+							log.Println("[PartnerSlicer] WARNING: GlobalHub not yet ready — slicer will operate without suppression check")
+						}
+						partnerSlicer = worker.NewPartnerSlicer(mailingDB, s3RawClient, partnerS3.Bucket(), hubAdapter, worker.PartnerSlicerConfig{})
+						partnerSlicer.Start()
+						server.SetPartnerSlicer(partnerSlicer)
+
+						// Validator: drains pending_eo with EmailOversight.
+						eoToken := cfg.DataPipeline.EOAPIToken
+						if eoToken == "" {
+							eoToken = os.Getenv("EO_API_TOKEN")
+						}
+						if eoToken == "" {
+							log.Println("[PartnerValidator] WARNING: no EO API token — partner records will queue indefinitely until configured")
+						} else {
+							eoListID := cfg.DataPipeline.EOListID
+							if eoListID <= 0 {
+								eoListID = 1
+							}
+							eoConcurrency := cfg.DataPipeline.EOConcurrency
+							if eoConcurrency <= 0 {
+								eoConcurrency = 10
+							}
+							eoClient := emailoversight.New(eoToken, eoListID, eoConcurrency)
+							partnerValidator = worker.NewPartnerValidator(mailingDB, eoClient, worker.PartnerValidatorConfig{
+								BatchSize:      500,
+								Concurrency:    eoConcurrency,
+								OrganizationID: "00000000-0000-0000-0000-000000000001",
+							})
+							partnerValidator.Start()
+							server.SetPartnerValidator(partnerValidator)
+						}
+
+						// Drip orchestrator: 15-min ticker, brand round-robin, mini-campaign creator.
+						pmtaCampaignAPI := server.GetPMTACampaignService()
+						if pmtaCampaignAPI != nil {
+							// PausedBrandPredicate skips brands whose sending domain has
+							// no active sending profile. Cheap query, runs once per wave.
+							pausedBrandFn := func(ctx context.Context, brand string) bool {
+								brandDomain := map[string]string{
+									"db": "em.discountblog.com",
+									"ht": "em.historythinking.com",
+									"mh": "em.myownhealth.net",
+									"qf": "em.quizfiesta.com",
+								}[brand]
+								if brandDomain == "" {
+									return true
+								}
+								var n int
+								_ = mailingDB.QueryRowContext(ctx,
+									`SELECT COUNT(*) FROM mailing_sending_profiles
+									 WHERE sending_domain = $1 AND status = 'active' AND vendor_type = 'pmta'`,
+									brandDomain).Scan(&n)
+								return n == 0
+							}
+							partnerDripOrchestrator = worker.NewPartnerDripOrchestrator(mailingDB, worker.PartnerDripOrchestratorConfig{
+								OrganizationID:       "00000000-0000-0000-0000-000000000001",
+								DeployFn:             worker.WrapPMTACampaignDeploy(pmtaCampaignAPI.HandleDeployCampaign),
+								PausedBrandPredicate: pausedBrandFn,
+							})
+							partnerDripOrchestrator.Start()
+							server.SetPartnerDripOrchestrator(partnerDripOrchestrator)
+						} else {
+							log.Println("[PartnerDripOrchestrator] WARNING: PMTACampaignService not wired — drip will not start")
+						}
+					}
+				}
+			}
+
 				// Ensure workers stop on shutdown (H12)
 				go func() {
 					<-ctx.Done()
@@ -838,6 +951,15 @@ func main() {
 					}
 					if dataPipeline != nil {
 						dataPipeline.Stop()
+					}
+					if partnerSlicer != nil {
+						partnerSlicer.Stop()
+					}
+					if partnerValidator != nil {
+						partnerValidator.Stop()
+					}
+					if partnerDripOrchestrator != nil {
+						partnerDripOrchestrator.Stop()
 					}
 					if redisClient != nil {
 						redisClient.Close()
@@ -5060,6 +5182,269 @@ END $$`},
 		{"reserve_pool_claim_lookup_idx", `CREATE INDEX IF NOT EXISTS idx_plan_recipients_claim_lookup
 			ON mailing_campaign_plan_recipients (isp_plan_id, status, selection_rank)
 			WHERE status IN ('selected', 'reserve')`},
+
+		// =========================================================================
+		// Data Partner Ingestion System (May 2026)
+		// =========================================================================
+		// Forward-facing API for trusted data partners (e.g. Attribits) to inject
+		// fresh subscriber records into our sending pipeline. Each partner has one
+		// or more datasets (e.g. "Attribits HOME", "Attribits PERSONAL LOAN") that
+		// each map to a single vertical. Records flow:
+		//   inbound API -> S3 storage -> slicer (suppression check) ->
+		//   validator (EmailOversight) -> ready_queue -> drip orchestrator
+		//   (15-min mini-campaigns round-robin across DB/HT/MH/QF brands).
+		// All tables idempotent. See docs in plan: data-partner-ingestion-system.
+		// -------------------------------------------------------------------------
+		{"dp_create_data_partners", `CREATE TABLE IF NOT EXISTS data_partners (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'::uuid,
+			name TEXT NOT NULL UNIQUE,
+			slug TEXT NOT NULL UNIQUE,
+			contact_email TEXT,
+			status TEXT NOT NULL DEFAULT 'active',
+			notes TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"dp_create_partner_datasets", `CREATE TABLE IF NOT EXISTS partner_datasets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			partner_id UUID NOT NULL REFERENCES data_partners(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			vertical TEXT NOT NULL CHECK (vertical IN ('refi_heloc','personal_loans','tax_relief','remodel')),
+			flush_window_hours INTEGER NOT NULL DEFAULT 24,
+			min_wave_size INTEGER NOT NULL DEFAULT 25,
+			max_wave_size INTEGER NOT NULL DEFAULT 5000,
+			paused_emergency BOOLEAN NOT NULL DEFAULT false,
+			paused_reason TEXT,
+			paused_at TIMESTAMPTZ,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (partner_id, slug)
+		)`},
+		{"dp_create_partner_api_keys", `CREATE TABLE IF NOT EXISTS partner_api_keys (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			partner_id UUID NOT NULL REFERENCES data_partners(id) ON DELETE CASCADE,
+			dataset_id UUID NOT NULL REFERENCES partner_datasets(id) ON DELETE CASCADE,
+			key_hash VARCHAR(64) NOT NULL UNIQUE,
+			key_prefix VARCHAR(16) NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			last_used_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			revoked_at TIMESTAMPTZ
+		)`},
+		{"dp_idx_partner_api_keys_hash", `CREATE INDEX IF NOT EXISTS idx_partner_api_keys_hash ON partner_api_keys(key_hash) WHERE status = 'active'`},
+		{"dp_create_partner_inbound_batches", `CREATE TABLE IF NOT EXISTS partner_inbound_batches (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			dataset_id UUID NOT NULL REFERENCES partner_datasets(id) ON DELETE CASCADE,
+			partner_id UUID NOT NULL REFERENCES data_partners(id) ON DELETE CASCADE,
+			s3_bucket TEXT NOT NULL,
+			s3_key TEXT NOT NULL,
+			record_count INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'received',
+			emergency_stopped BOOLEAN NOT NULL DEFAULT false,
+			next_record_offset INTEGER NOT NULL DEFAULT 0,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			slicing_started_at TIMESTAMPTZ,
+			slicing_completed_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ,
+			last_error TEXT,
+			ingest_metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+		)`},
+		{"dp_idx_pib_dataset_status", `CREATE INDEX IF NOT EXISTS idx_pib_dataset_status ON partner_inbound_batches(dataset_id, status, received_at)`},
+		{"dp_idx_pib_status_received", `CREATE INDEX IF NOT EXISTS idx_pib_status_received ON partner_inbound_batches(status, received_at) WHERE status IN ('received','slicing','slicing_complete','validating')`},
+		{"dp_create_partner_clean_queue", `CREATE TABLE IF NOT EXISTS partner_clean_queue (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			batch_id UUID NOT NULL REFERENCES partner_inbound_batches(id) ON DELETE CASCADE,
+			dataset_id UUID NOT NULL REFERENCES partner_datasets(id) ON DELETE CASCADE,
+			partner_id UUID NOT NULL REFERENCES data_partners(id) ON DELETE CASCADE,
+			vertical TEXT NOT NULL,
+			email TEXT NOT NULL,
+			email_md5 VARCHAR(32) NOT NULL,
+			isp_family TEXT NOT NULL DEFAULT 'other',
+			status TEXT NOT NULL DEFAULT 'pending_eo',
+			eo_result_code INTEGER,
+			eo_result TEXT,
+			eo_attempts INTEGER NOT NULL DEFAULT 0,
+			mailed_campaign_id UUID,
+			mailed_brand TEXT,
+			ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			validated_at TIMESTAMPTZ,
+			claimed_at TIMESTAMPTZ,
+			mailed_at TIMESTAMPTZ,
+			extra_metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+		)`},
+		{"dp_idx_pcq_batch", `CREATE INDEX IF NOT EXISTS idx_pcq_batch ON partner_clean_queue(batch_id)`},
+		{"dp_idx_pcq_dataset_status_ingested", `CREATE INDEX IF NOT EXISTS idx_pcq_dataset_status_ingested ON partner_clean_queue(dataset_id, status, ingested_at)`},
+		{"dp_idx_pcq_status_ready", `CREATE INDEX IF NOT EXISTS idx_pcq_status_ready ON partner_clean_queue(vertical, status, ingested_at) WHERE status = 'ready'`},
+		{"dp_idx_pcq_status_pending_eo", `CREATE INDEX IF NOT EXISTS idx_pcq_status_pending_eo ON partner_clean_queue(ingested_at) WHERE status = 'pending_eo'`},
+		{"dp_idx_pcq_isp_family", `CREATE INDEX IF NOT EXISTS idx_pcq_isp_family ON partner_clean_queue(dataset_id, isp_family, status)`},
+		{"dp_idx_pcq_email_md5", `CREATE INDEX IF NOT EXISTS idx_pcq_email_md5 ON partner_clean_queue(email_md5)`},
+		{"dp_create_partner_drip_state", `CREATE TABLE IF NOT EXISTS partner_drip_state (
+			vertical TEXT PRIMARY KEY,
+			next_brand_index INTEGER NOT NULL DEFAULT 0,
+			last_wave_at TIMESTAMPTZ,
+			last_wave_campaign_id UUID,
+			last_wave_brand TEXT,
+			last_wave_size INTEGER,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"dp_seed_partner_drip_state", `INSERT INTO partner_drip_state (vertical, next_brand_index)
+			VALUES ('refi_heloc', 0), ('personal_loans', 1), ('tax_relief', 2), ('remodel', 3)
+			ON CONFLICT (vertical) DO NOTHING`},
+		{"dp_create_partner_drip_creatives", `CREATE TABLE IF NOT EXISTS partner_drip_creatives (
+			vertical TEXT NOT NULL,
+			brand TEXT NOT NULL,
+			creative_filename TEXT NOT NULL,
+			subject_line TEXT NOT NULL,
+			preheader TEXT NOT NULL DEFAULT '',
+			from_name TEXT NOT NULL,
+			active BOOLEAN NOT NULL DEFAULT true,
+			effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_by TEXT,
+			PRIMARY KEY (vertical, brand)
+		)`},
+		// Seed all 16 (vertical, brand) creative rows. The 05132026 dated files
+		// exist in docs/emails/ — verified during plan phase. Brand short codes:
+		// db = Discount Blog, ht = History Thinking, mh = My Own Health, qf = Quiz Fiesta.
+		// From-names match the brand voices used in deploy_may12_mature.py.
+		{"dp_seed_creative_refi_db", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('refi_heloc', 'db', 'amerisave-db-newsletter-05132026.html',
+				'Lock in todays HELOC rate before the next Fed move',
+				'Tap your home equity at rates that are still historically low — see your personalized offer.',
+				'Jamie @ Discount Blog')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_refi_ht", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('refi_heloc', 'ht', 'amerisave-ht-newsletter-05132026.html',
+				'A history of low rates — and what it means for you',
+				'Homeowners who refinance now could save thousands. See what AmeriSave can do.',
+				'History Thinking')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_refi_mh", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('refi_heloc', 'mh', 'amerisave-mh-newsletter-05132026.html',
+				'Your home equity could be working harder for you',
+				'Homeowners are unlocking cash for repairs, healthcare bills, and family. See your offer.',
+				'Arnold @ My Own Health')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_refi_qf", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('refi_heloc', 'qf', 'amerisave-qf-newsletter-05132026.html',
+				'Did you know your home equity could fund this?',
+				'Most homeowners do not realize how much they can borrow. AmeriSave will show you in 60 seconds.',
+				'Quiz Master')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_pl_db", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('personal_loans', 'db', 'personal-loans-db-newsletter-05132026.html',
+				'A personal loan from $1,000 to $100,000 — see your rate',
+				'No collateral. No prepayment penalties. Pre-qualified offers in under 2 minutes.',
+				'Jamie @ Discount Blog')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_pl_ht", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('personal_loans', 'ht', 'personal-loans-ht-newsletter-05132026.html',
+				'Pay down high-interest debt the smart way',
+				'A personal loan can consolidate credit cards into one fixed monthly payment.',
+				'History Thinking')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_pl_mh", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('personal_loans', 'mh', 'personal-loans-mh-newsletter-05132026.html',
+				'Cover the bills that life keeps stacking up',
+				'A personal loan can consolidate medical bills, dental work, and emergency expenses.',
+				'Arnold @ My Own Health')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_pl_qf", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('personal_loans', 'qf', 'personal-loans-qf-newsletter-05132026.html',
+				'How much could you borrow? Take the 60-second quiz',
+				'Most folks do not know the rate they qualify for. Find out without a hard pull.',
+				'Quiz Master')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_tax_db", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('tax_relief', 'db', 'optima-tax-relief-db-newsletter-05132026.html',
+				'Owe the IRS more than $10K? You may qualify for relief',
+				'Optima Tax Relief has resolved over $1 billion in tax debt. See if you qualify.',
+				'Jamie @ Discount Blog')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_tax_ht", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('tax_relief', 'ht', 'optima-tax-relief-ht-newsletter-05132026.html',
+				'A short history of IRS amnesty programs',
+				'You may qualify for an Offer in Compromise — see how Optima Tax Relief can help.',
+				'History Thinking')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_tax_mh", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('tax_relief', 'mh', 'optima-tax-relief-mh-newsletter-05132026.html',
+				'Tax debt stress affects your health — here is the way out',
+				'Optima Tax Relief negotiates with the IRS so you can sleep at night.',
+				'Arnold @ My Own Health')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_tax_qf", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('tax_relief', 'qf', 'optima-tax-relief-qf-newsletter-05132026.html',
+				'IRS Quiz: how much could Optima reduce your tax debt?',
+				'Take the 60-second qualification quiz from Optima Tax Relief. No commitment.',
+				'Quiz Master')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_remodel_db", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('remodel', 'db', 'renewal-by-andersen-db-newsletter-05132026.html',
+				'New windows that pay you back month after month',
+				'Renewal by Andersen windows can cut energy bills and refresh your home.',
+				'Jamie @ Discount Blog')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_remodel_ht", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('remodel', 'ht', 'renewal-by-andersen-ht-newsletter-05132026.html',
+				'Window technology has come a long way — see what is new',
+				'Renewal by Andersen offers a free in-home consultation. No obligation.',
+				'History Thinking')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_remodel_mh", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('remodel', 'mh', 'renewal-by-andersen-mh-newsletter-05132026.html',
+				'Drafty old windows are making your home work harder',
+				'Renewal by Andersen energy-efficient windows can lower your bills and improve comfort.',
+				'Arnold @ My Own Health')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_seed_creative_remodel_qf", `INSERT INTO partner_drip_creatives (vertical, brand, creative_filename, subject_line, preheader, from_name)
+			VALUES ('remodel', 'qf', 'renewal-by-andersen-qf-newsletter-05132026.html',
+				'Quiz: how much could new windows save you each year?',
+				'Take the 60-second quiz from Renewal by Andersen and find out.',
+				'Quiz Master')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"dp_create_partner_isp_distribution_overrides", `CREATE TABLE IF NOT EXISTS partner_isp_distribution_overrides (
+			dataset_id UUID NOT NULL REFERENCES partner_datasets(id) ON DELETE CASCADE,
+			isp TEXT NOT NULL,
+			pct_override DECIMAL(5,4) NOT NULL,
+			max_per_wave INTEGER,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_by TEXT,
+			PRIMARY KEY (dataset_id, isp)
+		)`},
+		{"dp_create_partner_admin_audit_log", `CREATE TABLE IF NOT EXISTS partner_admin_audit_log (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			actor TEXT NOT NULL,
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			before_state JSONB,
+			after_state JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"dp_idx_audit_target", `CREATE INDEX IF NOT EXISTS idx_dp_audit_target ON partner_admin_audit_log(target_type, target_id, created_at DESC)`},
+		// Partner-drip campaign tag column on mailing_campaigns so we can find / archive
+		// the mini-campaigns later. NULL for non-partner campaigns; "data_partner_<slug>"
+		// for partner-drip waves. Cheap, indexed, no FK so we can keep the column even
+		// after a partner is deleted.
+		{"dp_add_campaign_partner_tag", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS partner_drip_tag TEXT`},
+		{"dp_idx_campaign_partner_tag", `CREATE INDEX IF NOT EXISTS idx_mc_partner_drip_tag ON mailing_campaigns(partner_drip_tag, scheduled_at) WHERE partner_drip_tag IS NOT NULL`},
+
+		// Data Partners Master List — every record promoted from partner_clean_queue
+		// becomes a mailing_subscribers row attached to this list. Per-vertical
+		// segmentation happens via per-wave static segments built by the drip
+		// orchestrator. Fixed UUID so the orchestrator can reference it without
+		// a separate lookup. Idempotent: already exists rows are left alone.
+		{"dp_seed_master_list", `INSERT INTO mailing_lists (id, organization_id, name, description, status)
+			SELECT '00000000-0000-0000-0000-0000d4ada4a7'::uuid,
+			       '00000000-0000-0000-0000-000000000001'::uuid,
+			       'Data Partners Master',
+			       'Auto-managed list for inbound data partner records. Subscribers populated by partner_drip_orchestrator. Do not edit manually.',
+			       'active'
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_lists WHERE id = '00000000-0000-0000-0000-0000d4ada4a7'::uuid)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

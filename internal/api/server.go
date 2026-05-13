@@ -59,6 +59,17 @@ type Server struct {
 	suppressionS3 *SuppressionS3Client
 	// Offer suppression Bloom filter manager — O(1) send-time checks
 	OfferSuppMgr *OfferSuppressionManager
+	// S3 client for partner data partner ingestion (separate bucket)
+	partnerIngestS3 *PartnerIngestS3Client
+	// PMTA campaign service — exposed so the drip orchestrator can call
+	// HandleDeployCampaign in-process.
+	pmtaCampaignSvc *PMTACampaignService
+	// Partner ingestion workers (slicer/validator/drip orchestrator). Stored
+	// for graceful shutdown plus admin endpoints that need to surface their
+	// status. Type is interface{} to avoid a hard dep on internal/worker.
+	partnerSlicer            interface{ Stop() }
+	partnerValidator         interface{ Stop() }
+	partnerDripOrchestrator  interface{ Stop() }
 	// Data pipeline reference — exported so main.go can wire it
 	DataPipeline *worker.DataPipeline
 	// PMTA accounting — public POST /engine/webhook; set when ingestor + workers are ready

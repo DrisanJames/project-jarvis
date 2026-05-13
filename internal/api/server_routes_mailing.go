@@ -191,6 +191,19 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// accounting forwarder) and /api/mailing/everflow/postback (Everflow servers).
 		s.router.Post("/api/mailing/webhooks/unsub-inbound", svc.HandleInboundMailtoUnsubscribe)
 
+		// Data Partner Ingestion public API — authenticated by X-Partner-Key
+		// header inside the chi.Group, NOT by the session/admin-key auth that
+		// /api/* routes inherit. Registered on s.router for the same reason
+		// the SNS webhook is — partners hit this directly from their backend.
+		// See PartnerKeyAuth middleware in partner_api_key_middleware.go.
+		partnerIngest := NewPartnerIngestHandler(db, s.partnerIngestS3)
+		s.router.Get("/api/partner-ingest/v1/schema", partnerIngest.HandleGetSchema)
+		s.router.Group(func(pg chi.Router) {
+			pg.Use(PartnerKeyAuth(db))
+			pg.Post("/api/partner-ingest/v1/records", partnerIngest.HandlePostRecords)
+			pg.Get("/api/partner-ingest/v1/batches/{id}", partnerIngest.HandleGetBatch)
+		})
+
 		// Public preferences page — redirects to frontend or serves minimal page
 		s.router.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
 			sid := r.URL.Query().Get("sid")
@@ -234,6 +247,26 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 		})
 
 		s.apiRouter.Route("/mailing", func(r chi.Router) {
+			// Data Partner Ingestion admin endpoints — authenticated via the
+			// session / X-Admin-Key auth that wraps the /api router. Mounted
+			// FIRST in this group because they're cheap and we want them up
+			// before the engine init below blocks for several seconds.
+			partnerAdmin := NewPartnerAdminHandler(db)
+			r.Route("/data-partners", func(dp chi.Router) {
+				dp.Get("/dashboard", partnerAdmin.HandleGetDashboard)
+				dp.Get("/", partnerAdmin.HandleListPartners)
+				dp.Post("/", partnerAdmin.HandleCreatePartner)
+				dp.Get("/datasets", partnerAdmin.HandleListDatasets)
+				dp.Post("/{id}/datasets", partnerAdmin.HandleCreateDataset)
+				dp.Get("/datasets/{id}/throughput", partnerAdmin.HandleGetDatasetThroughput)
+				dp.Put("/datasets/{id}/isp-distribution", partnerAdmin.HandleUpdateISPDistribution)
+				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
+				dp.Post("/datasets/{id}/resume", partnerAdmin.HandleResumeDataset)
+				dp.Get("/creatives", partnerAdmin.HandleListCreatives)
+				dp.Put("/creatives/{vertical}/{brand}", partnerAdmin.HandleUpdateCreative)
+				dp.Get("/audit-log", partnerAdmin.HandleListAuditLog)
+			})
+
 			// Engine ingestor + PMTA accounting webhook first — the rest of this group registers
 			// hundreds of routes; main is blocked for that whole time while ListenAndServe is live.
 			// === PMTA MULTI-AGENT GOVERNANCE ENGINE ===
@@ -910,6 +943,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				pmtaCampaignAPI.SetOfferSuppressionManager(s.OfferSuppMgr)
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
+			// Expose the campaign service so the data partner drip orchestrator
+			// can invoke HandleDeployCampaign in-process at wave time.
+			s.SetPMTACampaignService(pmtaCampaignAPI)
 
 			// === SEND-DAY PLANNER (canvas) — Phase 1 endpoints ===
 			// Each endpoint backs one of the six pre-deploy gates from

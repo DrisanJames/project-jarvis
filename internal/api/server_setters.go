@@ -194,6 +194,37 @@ func (s *Server) GetOfferSuppressionManager() *OfferSuppressionManager {
 	return s.OfferSuppMgr
 }
 
+// SetPartnerIngestS3Client configures the S3 client for the data partner
+// ingestion pipeline. Reads from PARTNER_INGEST_S3_BUCKET / REGION env vars
+// (defaults: jarvis-partner-ingest / us-west-2).
+func (s *Server) SetPartnerIngestS3Client(client *PartnerIngestS3Client) {
+	s.partnerIngestS3 = client
+}
+
+// GetPartnerIngestS3Client returns the partner ingestion S3 client (may be
+// nil during early boot or in environments where the bucket is not provisioned).
+func (s *Server) GetPartnerIngestS3Client() *PartnerIngestS3Client {
+	return s.partnerIngestS3
+}
+
+// SetPMTACampaignService stores the PMTA campaign service so the drip
+// orchestrator can invoke HandleDeployCampaign in-process at wave time.
+func (s *Server) SetPMTACampaignService(svc *PMTACampaignService) {
+	s.pmtaCampaignSvc = svc
+}
+
+// GetPMTACampaignService returns the registered PMTA campaign service. May
+// be nil if SetMailingDB has not yet completed.
+func (s *Server) GetPMTACampaignService() *PMTACampaignService {
+	return s.pmtaCampaignSvc
+}
+
+// SetPartnerSlicer / SetPartnerValidator / SetPartnerDripOrchestrator are
+// thin setters used by main.go to wire the workers for graceful shutdown.
+func (s *Server) SetPartnerSlicer(stopper interface{ Stop() })            { s.partnerSlicer = stopper }
+func (s *Server) SetPartnerValidator(stopper interface{ Stop() })         { s.partnerValidator = stopper }
+func (s *Server) SetPartnerDripOrchestrator(stopper interface{ Stop() })  { s.partnerDripOrchestrator = stopper }
+
 // RegisterWaveProcessorStatusRoute swaps in the wave processor throughput
 // provider so the GET /api/wave-processor/status handler (registered early
 // in SetMailingDB) can serve real data. Safe to call at any time after
