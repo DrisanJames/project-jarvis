@@ -81,17 +81,33 @@ func (s *PMTAWaveScheduler) Stop() {
 
 func (s *PMTAWaveScheduler) loop() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
+	dispatchTicker := time.NewTicker(s.pollInterval)
+	defer dispatchTicker.Stop()
+	janitorTicker := time.NewTicker(waveJanitorInterval)
+	defer janitorTicker.Stop()
+
+	// Clear any backlog accumulated while the filter was missing (apr28/may26).
+	s.sweepStalePlannedWaves(s.ctx)
+
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-janitorTicker.C:
+			s.sweepStalePlannedWaves(s.ctx)
+		case <-dispatchTicker.C:
 			s.dispatchDueWaves()
 		}
 	}
 }
+
+// dispatchableWaveSQL excludes planned waves that can never make progress:
+// parent campaign is terminal, or the send window has closed. Without this
+// filter, expired engager waves sit at the FIFO head and starve partner-drip
+// on mature sending domains (see .scratch/apr28_dispatcher_clog_incident.md).
+const dispatchableWaveSQL = `
+	AND c.status NOT IN ('cancelled', 'failed', 'sent', 'draft', 'deleted')
+	AND (w.window_end_at IS NULL OR w.window_end_at > NOW())`
 
 func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	ctx, cancel := context.WithTimeout(s.ctx, 120*time.Second)
@@ -106,11 +122,12 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 	if useLegacy {
 		log.Printf("[PMTAWaveScheduler] DISABLE_DISPATCHER_FAIRNESS=true, using legacy FIFO")
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT id
-			FROM mailing_campaign_waves
-			WHERE status = 'planned'
-			  AND scheduled_at <= NOW()
-			ORDER BY scheduled_at ASC
+			SELECT w.id
+			FROM mailing_campaign_waves w
+			JOIN mailing_campaigns c ON c.id = w.campaign_id
+			WHERE w.status = 'planned'
+			  AND w.scheduled_at <= NOW()`+dispatchableWaveSQL+`
+			ORDER BY w.scheduled_at ASC
 			LIMIT 100
 		`)
 	} else {
@@ -125,7 +142,7 @@ func (s *PMTAWaveScheduler) dispatchDueWaves() {
 				JOIN mailing_campaigns c ON c.id = w.campaign_id
 				JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
 				WHERE w.status = 'planned'
-				  AND w.scheduled_at <= NOW()
+				  AND w.scheduled_at <= NOW()`+dispatchableWaveSQL+`
 			)
 			SELECT id, sending_domain
 			  FROM ranked
@@ -237,7 +254,54 @@ const (
 	waveDispatchConcurrency  = 5
 	maxWavesPerDomainPerTick = 25
 	dispatchBatchSize        = 100
+	waveJanitorInterval      = 5 * time.Minute
 )
+
+// sweepStalePlannedWaves cancels planned waves that will never dispatch:
+// zombies on dead campaigns, and window-expired waves on live campaigns.
+// Idempotent with the dispatcher's dispatchableWaveSQL filter.
+func (s *PMTAWaveScheduler) sweepStalePlannedWaves(parentCtx context.Context) {
+	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
+	defer cancel()
+
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_campaign_waves
+		SET status = 'cancelled', updated_at = NOW(),
+		    last_error = COALESCE(last_error, '') || ' [wave-janitor: parent campaign terminal]'
+		WHERE status = 'planned'
+		  AND campaign_id IN (
+		    SELECT id FROM mailing_campaigns
+		    WHERE status IN ('cancelled', 'failed', 'sent')
+		  )
+	`)
+	if err != nil {
+		log.Printf("[PMTAWaveScheduler] janitor zombies: %v", err)
+		return
+	}
+	zombies, _ := res.RowsAffected()
+
+	res, err = s.db.ExecContext(ctx, `
+		UPDATE mailing_campaign_waves
+		SET status = 'cancelled', updated_at = NOW(),
+		    last_error = COALESCE(last_error, '') || ' [wave-janitor: window expired]'
+		WHERE status = 'planned'
+		  AND window_end_at IS NOT NULL
+		  AND window_end_at < NOW()
+		  AND campaign_id IN (
+		    SELECT id FROM mailing_campaigns
+		    WHERE status NOT IN ('cancelled', 'failed', 'sent')
+		  )
+	`)
+	if err != nil {
+		log.Printf("[PMTAWaveScheduler] janitor expired: %v", err)
+		return
+	}
+	expired, _ := res.RowsAffected()
+
+	if zombies > 0 || expired > 0 {
+		log.Printf("[PMTAWaveScheduler] janitor swept zombies=%d expired=%d", zombies, expired)
+	}
+}
 
 func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID string) {
 	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)

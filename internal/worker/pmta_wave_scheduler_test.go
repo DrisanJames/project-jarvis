@@ -290,7 +290,7 @@ func TestDispatchDueWaves_KillSwitch(t *testing.T) {
 	// query — the fairness CTE's outer SELECT is "SELECT id,
 	// sending_domain FROM ranked" and the inner SELECT inside the CTE is
 	// "SELECT\s+w.id". Regex matches legacy only.
-	mock.ExpectQuery(`SELECT id\s+FROM mailing_campaign_waves`).
+	mock.ExpectQuery(`SELECT w.id\s+FROM mailing_campaign_waves`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(wave1))
 
 	mock.ExpectBegin()
@@ -402,6 +402,25 @@ func TestFormatDomainCounts_AlphabeticalStable(t *testing.T) {
 		got := formatDomainCounts(counts)
 		require.Equal(t, want, got, "iteration %d: formatter must be stable across map iteration order", i)
 	}
+}
+
+func TestSweepStalePlannedWaves(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectExec("parent campaign terminal").
+		WillReturnResult(sqlmock.NewResult(0, 12))
+	mock.ExpectExec("window expired").
+		WillReturnResult(sqlmock.NewResult(0, 340))
+
+	buf := captureLogs(t)
+	s := testScheduler(db, nil)
+	defer s.cancel()
+	s.sweepStalePlannedWaves(s.ctx)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+	assert.Contains(t, buf.String(), "janitor swept zombies=12 expired=340")
 }
 
 // TestShortDomainTag covers the host-prefix stripping logic.
