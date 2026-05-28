@@ -40,16 +40,73 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
-// Brands in deterministic round-robin order. Matches deploy_may12_mature.py
-// brand codes (lowercase versions used in partner_drip_creatives).
-var dripBrands = []string{"db", "ht", "mh", "qf"}
+// Brands in deterministic round-robin order. The first 4 are the mature
+// brands launched in 2026-04 (db/ht/mh/qf) — they have full per-ISP IP
+// pool isolation and the operator's highest cap budgets. The remaining 12
+// were brought online in 2026-05-08 / 05-09 / 05-09b and use general-pool
+// IPs. Both tiers ship the same partner-drip creatives — the per-ISP cap
+// table below is what controls cumulative volume to each ISP per wave.
+//
+// All 16 brands have:
+//   - mailing_sending_profiles row (PMTA, status=active)
+//   - per-brand newsletter creatives in docs/emails/ for both the welcome
+//     family (amerisave/personal-loans/optima-tax-relief/renewal-by-andersen)
+//     and the follow-up families (trugreen + the-capital-wallet)
+//   - image-CDN domain entry in mailing_image_domains (verified)
+//
+// 2026-05-14 expansion ("expand our ingestion system across ALL properties"):
+// adds the 12 new-brand codes after the 4 mature codes so the round-robin
+// kicks off mature-first and only spills into newer-brand IPs once those
+// come up in the rotation. Per-ISP caps still cap cumulative volume.
+var dripBrands = []string{
+	// Mature 4 — full per-ISP pool isolation since 2026-04.
+	"db", "ht", "mh", "qf",
+	// New-brand expansion 2026-05-14 — general-pool IPs, gentler caps.
+	"bwp", "ci", "cp", "fc", "hws", "lpl", "mrd", "rb", "rru", "tot", "wfy", "yih",
+}
 
 var brandSendingDomain = map[string]string{
-	"db": "em.discountblog.com",
-	"ht": "em.historythinking.com",
-	"mh": "em.myownhealth.net",
-	"qf": "em.quizfiesta.com",
+	// Mature 4
+	"db":  "em.discountblog.com",
+	"ht":  "em.historythinking.com",
+	"mh":  "em.myownhealth.net",
+	"qf":  "em.quizfiesta.com",
+	// New-brand expansion 2026-05-14
+	"bwp": "em.businessweeklypro.com",
+	"ci":  "em.casainsure.com",
+	"cp":  "em.consumerpro.net",
+	"fc":  "em.financialcalculate.com",
+	"hws": "em.homewarrantyservices.org",
+	"lpl": "em.learnpersonalloans.com",
+	"mrd": "em.myrepairdiy.com",
+	"rb":  "em.ratesbazar.com",
+	"rru": "em.refinanceratesusa.com",
+	"tot": "em.thingoftheday.org",
+	"wfy": "em.warrantyforyou.com",
+	"yih": "em.yourinsurancehub.com",
 }
+
+// BrandSendingDomain exposes the orchestrator's brand → sending-domain
+// mapping to other packages (notably cmd/server/main.go's
+// PausedBrandPredicate wiring) so callers stay in sync with the canonical
+// dripBrands list. Returns ("", false) for unknown brands. Adding a brand
+// to the orchestrator means updating brandSendingDomain in this file
+// only — no cross-package map duplication.
+func BrandSendingDomain(brand string) (string, bool) {
+	d, ok := brandSendingDomain[brand]
+	return d, ok
+}
+
+// followupTouchGapHours is the minimum gap between consecutive touches.
+// Operator directive 2026-05-14: "campaigns should run daily" — 24h is
+// the most defensible cadence (matches inbox-fatigue research and the
+// industry's three-touch nurture cycle).
+const followupTouchGapHours = 24
+
+// MaxTouchCount is the terminal touch number. After this many touches a
+// recipient is permanently retired from the drip rotation regardless of
+// engagement state.
+const MaxTouchCount = 4
 
 // dataPartnerMasterListID is seeded by startup migration dp_seed_master_list.
 const dataPartnerMasterListID = "00000000-0000-0000-0000-0000d4ada4a7"
@@ -76,6 +133,29 @@ type PartnerDripOrchestratorConfig struct {
 	// ThrottledISPRateThreshold (msgs_per_hour) below which an ISP is considered
 	// in active backoff and that ISP's portion of the wave is deferred. Default 50.
 	ThrottledISPRateThreshold float64
+	// BrandsPerTick fires up to N brands' welcome waves per vertical per
+	// tick (in parallel). Default 4. With 16 brands round-robin and 4
+	// brands per tick, the rotation completes one full cycle in 4 ticks
+	// (1 hour at 15min cadence). This is what unlocks the "expand
+	// ingestion across ALL properties = throughput up" property — without
+	// it, adding 12 new brands stretches the rotation 4x and per-brand
+	// throughput stays the same.
+	BrandsPerTick int
+	// FollowupBrandsPerTick mirrors BrandsPerTick but for the follow-up
+	// touches. Default 4. The follow-up loop runs against a synthetic
+	// 'followup' vertical so its brand-rotation index is independent of
+	// the welcome-touch round-robin.
+	FollowupBrandsPerTick int
+	// MaxFollowupClaimPerVertical caps how many records the follow-up
+	// loop will claim per vertical per tick (across all brands), as a
+	// safety ceiling. Default 5000 (matches MaxWaveSize). Set to 0 to
+	// disable the follow-up loop entirely (kill switch).
+	MaxFollowupClaimPerVertical int
+	// ClaimedJanitorMaxAge releases partner_clean_queue rows stuck in
+	// 'claimed' after a crash between claim and promote/deploy. Only
+	// rows with no subscriber_id and no mailed_campaign_id are touched.
+	// Default 45m. Set to 0 to disable.
+	ClaimedJanitorMaxAge time.Duration
 }
 
 type PartnerDripOrchestrator struct {
@@ -110,23 +190,61 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		cfg.CreativesDir = "docs/emails"
 	}
 	if cfg.PerISPCapPerWave == nil {
+		// Per-ISP per-wave caps. With 4 waves/hour (15-min ticks) and 4
+		// brands round-robin, each brand sees one wave per hour, so:
+		//
+		//   per_brand_per_day = cap * 24
+		//
+		// Caps below stay under each ISP's published per-brand-per-day
+		// guidance with ~5–10% headroom:
+		//
+		//   gmail     200 -> 4,800/brand/day (Google: 5,000/sender/day)
+		//   microsoft 200 -> 4,800/brand/day (no published cap; warm reputation)
+		//   apple     200 -> 4,800/brand/day (no published cap; warm reputation)
+		//   yahoo     20  -> 480/brand/day  (Yahoo: 500/sender/day)
+		//   aol       20  -> 480/brand/day  (matches Yahoo carve)
+		//   other     150 -> 3,600/brand/day (mixed deliverability bucket)
+		//
+		// 2026-05-14 bump: gmail 150->200, microsoft/apple 100->200,
+		// other 100->150, comcast/charter 60->100. Operator directive
+		// "INCREASE THROUGHPUT. Especially for GMAIL." after observing
+		// David Cal's Personal Loans feed shipping 235 gmail/day vs a
+		// 2,334-record queue.
+		//
+		// Pairs with the per-ISP claim strategy in claimRecordsByISPCaps —
+		// without that change, raising caps alone has near-zero effect
+		// because the old oldest-first claim wastes wave slots on ISPs
+		// (yahoo) whose share of the queue dominates and whose cap is
+		// then defer-released.
 		cfg.PerISPCapPerWave = map[string]int{
-			"gmail":     150,
+			"gmail":     200,
 			"yahoo":     20,
 			"aol":       20,
-			"microsoft": 100,
-			"apple":     100,
-			"comcast":   60,
-			"charter":   60,
-			"att":       40,
-			"sbcglobal": 40,
-			"cox":       40,
-			"verizon":   40,
-			"other":     100,
+			"microsoft": 200,
+			"apple":     200,
+			"comcast":   100,
+			"charter":   100,
+			"att":       60,
+			"sbcglobal": 60,
+			"cox":       60,
+			"verizon":   60,
+			"other":     150,
 		}
 	}
 	if cfg.ThrottledISPRateThreshold <= 0 {
 		cfg.ThrottledISPRateThreshold = 50.0
+	}
+	if cfg.BrandsPerTick <= 0 {
+		cfg.BrandsPerTick = 4
+	}
+	if cfg.FollowupBrandsPerTick <= 0 {
+		cfg.FollowupBrandsPerTick = 4
+	}
+	if cfg.MaxFollowupClaimPerVertical <= 0 {
+		cfg.MaxFollowupClaimPerVertical = cfg.MaxWaveSize
+	}
+	if cfg.ClaimedJanitorMaxAge == 0 {
+		cfg.ClaimedJanitorMaxAge = 45 * time.Minute
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PartnerDripOrchestrator{db: db, cfg: cfg, ctx: ctx, cancel: cancel}
@@ -136,8 +254,10 @@ func (po *PartnerDripOrchestrator) Start() {
 	po.startOnce.Do(func() {
 		po.wg.Add(1)
 		go po.run()
-		log.Printf("[PartnerDripOrchestrator] started — tick=%s min_wave=%d max_wave=%d window_hours=%d creatives_dir=%s",
-			po.cfg.TickInterval, po.cfg.MinWaveSize, po.cfg.MaxWaveSize, po.cfg.WindowHours, po.cfg.CreativesDir)
+		log.Printf("[PartnerDripOrchestrator] started — tick=%s min_wave=%d max_wave=%d window_hours=%d brands_per_tick=%d followup_brands_per_tick=%d max_followup_claim=%d creatives_dir=%s brands=%d",
+			po.cfg.TickInterval, po.cfg.MinWaveSize, po.cfg.MaxWaveSize, po.cfg.WindowHours,
+			po.cfg.BrandsPerTick, po.cfg.FollowupBrandsPerTick, po.cfg.MaxFollowupClaimPerVertical,
+			po.cfg.CreativesDir, len(dripBrands))
 	})
 }
 
@@ -165,13 +285,30 @@ func (po *PartnerDripOrchestrator) run() {
 	}
 }
 
-// tickOnce iterates over every active vertical with ready records and runs
-// at most one wave per vertical per tick. Errors per-vertical are logged
-// but do not stop the rest of the loop.
+// tickOnce iterates over every active vertical with ready records and
+// runs up to BrandsPerTick welcome waves per vertical per tick (in
+// parallel brand selection — one wave per (vertical, brand) pair).
+// Errors per-vertical are logged but do not stop the rest of the loop.
+//
+// After the welcome pass, runs the follow-up pass which scans for
+// records whose next_touch_at has elapsed and ships them through one or
+// more touches at FollowupBrandsPerTick per vertical.
 func (po *PartnerDripOrchestrator) tickOnce() {
 	if po.cfg.DeployFn == nil {
 		log.Println("[PartnerDripOrchestrator] no DeployFn wired — skipping tick")
 		return
+	}
+	if po.cfg.ClaimedJanitorMaxAge > 0 {
+		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
+			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
+		} else if n > 0 {
+			log.Printf("[PartnerDripOrchestrator] claimed janitor released %d stale rows", n)
+		}
+	}
+	if n, err := po.reconcileShippedClaims(po.ctx); err != nil {
+		log.Printf("[PartnerDripOrchestrator] reconcile shipped claims: %v", err)
+	} else if n > 0 {
+		log.Printf("[PartnerDripOrchestrator] reconciled %d claimed rows to mailed (post-deploy markMailed miss)", n)
 	}
 	verticals, err := po.activeVerticalsWithBacklog(po.ctx)
 	if err != nil {
@@ -182,10 +319,113 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		if po.ctx.Err() != nil {
 			return
 		}
-		if err := po.processVertical(po.ctx, v); err != nil {
-			log.Printf("[PartnerDripOrchestrator] vertical=%s: %v", v.vertical, err)
+		// Fire up to BrandsPerTick welcome waves per vertical per tick.
+		// Each call advances the brand round-robin pointer and processes
+		// a fresh per-ISP-capped wave for that brand.
+		brandsThisTick := po.cfg.BrandsPerTick
+		if brandsThisTick > len(dripBrands) {
+			brandsThisTick = len(dripBrands)
+		}
+		for i := 0; i < brandsThisTick; i++ {
+			if po.ctx.Err() != nil {
+				return
+			}
+			if err := po.processVertical(po.ctx, v); err != nil {
+				log.Printf("[PartnerDripOrchestrator] welcome vertical=%s: %v", v.vertical, err)
+				// Keep advancing brand index even on error — the next
+				// brand's wave is independent.
+			}
+			// Re-read the vertical state for ready_count and brand_index
+			// so the next call doesn't re-process the same brand. We
+			// also bail out if no more ready records remain for this
+			// vertical (the orchestrator's main goal is responsiveness).
+			fresh, err := po.refreshVerticalState(po.ctx, v.vertical)
+			if err != nil || fresh == nil || fresh.readyCount <= 0 {
+				break
+			}
+			v = *fresh
 		}
 	}
+	// Follow-up pass: independent of welcome pass, runs across the same
+	// verticals (record-vertical, not brand-vertical). The 'followup'
+	// drip-state row drives brand rotation for follow-ups.
+	if po.cfg.MaxFollowupClaimPerVertical > 0 {
+		po.tickFollowups(po.ctx)
+	}
+}
+
+// refreshVerticalState pulls the up-to-date state of a single vertical
+// from the DB. Used between intra-tick calls to processVertical so the
+// brand pointer + ready-count reflect the wave we just shipped.
+func (po *PartnerDripOrchestrator) refreshVerticalState(ctx context.Context, vertical string) (*verticalState, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		WITH oldest AS (
+			SELECT q.vertical, q.dataset_id, MIN(q.ingested_at) AS oldest_at,
+			       COUNT(*) FILTER (WHERE q.status = 'ready') AS ready_total
+			FROM partner_clean_queue q
+			WHERE q.status = 'ready' AND q.vertical = $1
+			GROUP BY q.vertical, q.dataset_id
+		)
+		SELECT s.vertical, s.next_brand_index,
+		       (SELECT SUM(o.ready_total) FROM oldest o WHERE o.vertical = s.vertical) AS ready_total,
+		       (SELECT MIN(o.oldest_at) FROM oldest o WHERE o.vertical = s.vertical) AS oldest_at,
+		       d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+		       COALESCE(d.offer_id::text, '')
+		FROM partner_drip_state s
+		LEFT JOIN LATERAL (
+			SELECT q.dataset_id
+			FROM partner_clean_queue q
+			WHERE q.vertical = s.vertical AND q.status = 'ready'
+			ORDER BY q.ingested_at ASC
+			LIMIT 1
+		) AS dom ON true
+		LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+		LEFT JOIN data_partners p ON p.id = d.partner_id
+		WHERE s.vertical = $1
+	`, vertical)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var v verticalState
+	var (
+		datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+		flushHours                                       sql.NullInt64
+		readyTotal                                       sql.NullInt64
+		oldestAt                                         sql.NullTime
+		offerID                                          string
+	)
+	if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt,
+		&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
+		return nil, err
+	}
+	v.offerID = offerID
+	if readyTotal.Valid {
+		v.readyCount = int(readyTotal.Int64)
+	}
+	v.oldestIngest = oldestAt
+	if datasetID.Valid {
+		v.datasetID = datasetID.String
+	}
+	if datasetSlug.Valid {
+		v.datasetSlug = datasetSlug.String
+	}
+	if partnerSlug.Valid {
+		v.partnerSlug = partnerSlug.String
+	}
+	if partnerName.Valid {
+		v.partnerName = partnerName.String
+	}
+	if flushHours.Valid {
+		v.flushHours = int(flushHours.Int64)
+	}
+	if v.flushHours <= 0 {
+		v.flushHours = 24
+	}
+	return &v, nil
 }
 
 type verticalState struct {
@@ -198,6 +438,13 @@ type verticalState struct {
 	datasetSlug    string
 	partnerSlug    string
 	partnerName    string
+	// OfferID is set when the dominant dataset for this vertical is bound to
+	// a specific mailing_offers.id (vertical='direct_offer'). When set, the
+	// orchestrator pulls creative + subject + from-name from the offer-center
+	// tables and stamps OfferID on the deploy payload so the offer-suppression
+	// Bloom filter applies and content_locked inherits from the offer. Empty
+	// for the legacy 4-vertical drip pool.
+	offerID string
 }
 
 func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Context) ([]verticalState, error) {
@@ -213,7 +460,8 @@ func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Contex
 		SELECT s.vertical, s.next_brand_index,
 		       (SELECT SUM(o.ready_total) FROM oldest o WHERE o.vertical = s.vertical) AS ready_total,
 		       (SELECT MIN(o.oldest_at) FROM oldest o WHERE o.vertical = s.vertical) AS oldest_at,
-		       d.id, d.slug, p.slug, p.name, d.flush_window_hours
+		       d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+		       COALESCE(d.offer_id::text, '')
 		FROM partner_drip_state s
 		LEFT JOIN LATERAL (
 			SELECT q.dataset_id
@@ -239,11 +487,13 @@ func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Contex
 			flushHours                                       sql.NullInt64
 			readyTotal                                       sql.NullInt64
 			oldestAt                                         sql.NullTime
+			offerID                                          string
 		)
 		if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt,
-			&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours); err != nil {
+			&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
 			continue
 		}
+		v.offerID = offerID
 		if !readyTotal.Valid || readyTotal.Int64 == 0 {
 			continue
 		}
@@ -281,12 +531,18 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("pick_brand: %w", err)
 	}
-	creative, err := po.resolveCreative(ctx, v.vertical, brand)
+	creative, err := po.resolveCreativeForVertical(ctx, v, brand)
 	if err != nil {
 		return fmt.Errorf("resolve_creative: %w", err)
 	}
 
-	claimed, err := po.claimRecords(ctx, v.vertical, waveSize)
+	// ISP-aware claim: pull up to `cap` records per ISP-family from the
+	// queue (oldest-first within each ISP), bounded by waveSize as a
+	// safety ceiling. Replaces the old oldest-first-across-all-ISPs claim
+	// that wasted wave slots on yahoo records that would later be
+	// deferred and released. See claimRecordsByISPCaps for the full
+	// rationale and the May 14 cap bump.
+	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, po.cfg.PerISPCapPerWave, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
 	}
@@ -340,6 +596,13 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 		return fmt.Errorf("deploy: %w", err)
 	}
 
+	// Stamp the partner attribution columns onto the campaign row so the
+	// analytics dashboard can join campaigns back to this dataset. Best-effort
+	// — a failure here doesn't unship the wave.
+	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
+		log.Printf("[PartnerDripOrchestrator] stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
+	}
+
 	if err := po.markMailed(ctx, claimed, campaignID, brand); err != nil {
 		log.Printf("[PartnerDripOrchestrator] mark_mailed (campaign %s already deployed!): %v", campaignID, err)
 	}
@@ -355,31 +618,28 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 
 // computeWaveSize divides remaining queue by waves remaining in the flush
 // window, clamped to MIN/MAX.
+//
+// 2026-05-14 change: the historical "spread evenly across the remaining
+// flush window" formula (readyCount / wavesRemaining) was the dominant
+// throughput choke. Early in a dataset's life-cycle wavesRemaining was
+// near 96 and the wave shrank to ~280 records, far below the per-ISP
+// cap budget — so gmail/microsoft/apple records trickled while the
+// queue grew. With per-ISP caps now enforced natively at claim time
+// (claimRecordsByISPCaps), the wave is naturally smoothed to
+// sum(per-ISP caps) regardless of waveSize. Returning MaxWaveSize lets
+// the per-ISP caps act as the true throughput regulator and lets
+// backlogs drain at the published per-ISP cadence. See operator note
+// 2026-05-14 ("INCREASE THROUGHPUT. Especially for GMAIL.") for context.
 func (po *PartnerDripOrchestrator) computeWaveSize(v verticalState) int {
 	if v.readyCount <= 0 {
 		return 0
 	}
-	wavesRemaining := 0
-	if v.oldestIngest.Valid {
-		deadline := v.oldestIngest.Time.Add(time.Duration(v.flushHours) * time.Hour)
-		mins := int(time.Until(deadline).Minutes())
-		if mins < int(po.cfg.TickInterval.Minutes()) {
-			mins = int(po.cfg.TickInterval.Minutes())
-		}
-		wavesRemaining = mins / int(po.cfg.TickInterval.Minutes())
-	}
-	if wavesRemaining <= 0 {
-		wavesRemaining = 1
-	}
-	size := v.readyCount / wavesRemaining
-	if size < po.cfg.MinWaveSize {
-		size = po.cfg.MinWaveSize
-	}
-	if size > po.cfg.MaxWaveSize {
-		size = po.cfg.MaxWaveSize
-	}
+	size := po.cfg.MaxWaveSize
 	if size > v.readyCount {
 		size = v.readyCount
+	}
+	if size < po.cfg.MinWaveSize {
+		size = po.cfg.MinWaveSize
 	}
 	return size
 }
@@ -408,6 +668,29 @@ type creativeRec struct {
 	htmlBody  string
 }
 
+// resolveCreativeForVertical returns the creative the orchestrator will use
+// for the next wave. It dispatches between two backing stores:
+//
+//   1. Direct-offer datasets (verticalState.offerID set) — pull a creative
+//      from mailing_offer_creatives + a subject from mailing_offer_subject_lines
+//      + a from-name from mailing_offer_from_names. Subject + from-name rotate
+//      deterministically by wave time so the partner sees the full pool. The
+//      HTML lives in mailing_offer_creatives.html_content (already CAN-SPAM
+//      footer-injected at upload time by injectUnsubDisclaimer).
+//
+//   2. Drip-pool datasets (offerID empty) — legacy path, looks up
+//      partner_drip_creatives keyed by (vertical, brand) and reads HTML from
+//      docs/emails/<filename>.
+//
+// Either path returns a populated creativeRec with htmlBody pre-loaded so
+// the caller doesn't need to know which path produced it.
+func (po *PartnerDripOrchestrator) resolveCreativeForVertical(ctx context.Context, v verticalState, brand string) (creativeRec, error) {
+	if v.offerID != "" {
+		return po.resolveOfferCreative(ctx, v.offerID, brand)
+	}
+	return po.resolveCreative(ctx, v.vertical, brand)
+}
+
 func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical, brand string) (creativeRec, error) {
 	var c creativeRec
 	err := po.db.QueryRowContext(ctx, `
@@ -424,6 +707,156 @@ func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical
 	}
 	c.htmlBody = string(body)
 	return c, nil
+}
+
+// resolveOfferCreative pulls a fresh creative+subject+from-name from the
+// offer-center tables for a direct-offer-bound dataset. Selection rules:
+//
+//   - Creative: pick the latest non-archived row. Most direct-offer feeds
+//     ship one approved creative; if there are multiple, prefer status=
+//     'approved' over 'generated'. We do NOT rotate creatives per wave —
+//     the operator decides which creative is canonical.
+//
+//   - Subject + from-name: rotate by wave count. We hash (offerID, brand,
+//     5-min wave bucket) into a stable index so successive waves get
+//     different items but a retry of the same wave hits the same row.
+//
+// All three pools must be non-empty. If any are empty we fail loud — the
+// orchestrator's caller releases the claim and the next tick retries.
+func (po *PartnerDripOrchestrator) resolveOfferCreative(ctx context.Context, offerID, brand string) (creativeRec, error) {
+	var c creativeRec
+	c.filename = "offer:" + offerID
+
+	// Creative HTML — prefer 'approved' over 'generated' over anything else.
+	if err := po.db.QueryRowContext(ctx, `
+		SELECT html_content
+		FROM mailing_offer_creatives
+		WHERE offer_id = $1
+		  AND COALESCE(status, '') NOT IN ('archived','rejected')
+		  AND COALESCE(html_content, '') <> ''
+		ORDER BY (CASE COALESCE(status, '')
+		            WHEN 'approved' THEN 0
+		            WHEN 'generated' THEN 1
+		            ELSE 2
+		          END), updated_at DESC
+		LIMIT 1
+	`, offerID).Scan(&c.htmlBody); err != nil {
+		return c, fmt.Errorf("offer_creative lookup (offer=%s): %w", offerID, err)
+	}
+
+	// Hash bucket for rotation. Granularity 5 minutes — successive waves get
+	// different rows; an immediate retry of the same wave is stable.
+	bucket := time.Now().UTC().Truncate(5 * time.Minute).Unix()
+	rotKey := fmt.Sprintf("%s|%s|%d", offerID, brand, bucket)
+	rotSHA := sha256.Sum256([]byte(rotKey))
+	rotIdx := int(rotSHA[0])<<8 | int(rotSHA[1])
+
+	// Subject pool.
+	subjects, err := po.fetchOfferSubjects(ctx, offerID)
+	if err != nil {
+		return c, fmt.Errorf("offer_subjects lookup: %w", err)
+	}
+	if len(subjects) == 0 {
+		return c, fmt.Errorf("offer %s has no active subjects — operator must seed at least one before deploying", offerID)
+	}
+	c.subject = subjects[rotIdx%len(subjects)]
+
+	// From-name pool — prefer the row matching this brand's blog persona when the
+	// pool uses a "Partner - {friendly}" prefix (e.g. CarShield direct offers).
+	fromNames, err := po.fetchOfferFromNames(ctx, offerID)
+	if err != nil {
+		return c, fmt.Errorf("offer_from_names lookup: %w", err)
+	}
+	if len(fromNames) == 0 {
+		return c, fmt.Errorf("offer %s has no active from-names — operator must seed at least one before deploying", offerID)
+	}
+	if matched, ok := po.matchBrandOfferFromName(ctx, brand, fromNames); ok {
+		c.fromName = matched
+	} else {
+		c.fromName = fromNames[rotIdx%len(fromNames)]
+	}
+
+	// Preheader is optional on offer-center creatives; pull from creative
+	// row if available, fall back to empty (planner accepts empty).
+	_ = po.db.QueryRowContext(ctx, `
+		SELECT COALESCE(NULLIF(preview_text, ''), '')
+		FROM mailing_offer_creatives
+		WHERE offer_id = $1
+		  AND COALESCE(status, '') NOT IN ('archived','rejected')
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, offerID).Scan(&c.preheader)
+
+	return c, nil
+}
+
+func (po *PartnerDripOrchestrator) fetchOfferSubjects(ctx context.Context, offerID string) ([]string, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		SELECT subject_line FROM mailing_offer_subject_lines
+		WHERE offer_id = $1
+		  AND COALESCE(status, '') NOT IN ('archived','rejected')
+		  AND COALESCE(subject_line, '') <> ''
+		ORDER BY id
+	`, offerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 16)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// matchBrandOfferFromName picks the from-name row that ends with this brand's
+// mailing_brand_metadata.from_name when the pool uses a partner prefix pattern.
+func (po *PartnerDripOrchestrator) matchBrandOfferFromName(ctx context.Context, brand string, fromNames []string) (string, bool) {
+	domain, ok := brandSendingDomain[brand]
+	if !ok || domain == "" {
+		return "", false
+	}
+	var metaFrom string
+	err := po.db.QueryRowContext(ctx, `
+		SELECT from_name FROM mailing_brand_metadata
+		WHERE sending_domain = $1
+		LIMIT 1
+	`, domain).Scan(&metaFrom)
+	if err != nil || metaFrom == "" {
+		return "", false
+	}
+	suffix := " - " + metaFrom
+	for _, fn := range fromNames {
+		if strings.HasSuffix(fn, suffix) {
+			return fn, true
+		}
+	}
+	return "", false
+}
+
+func (po *PartnerDripOrchestrator) fetchOfferFromNames(ctx context.Context, offerID string) ([]string, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		SELECT from_name FROM mailing_offer_from_names
+		WHERE offer_id = $1
+		  AND COALESCE(status, '') NOT IN ('archived','rejected')
+		  AND COALESCE(from_name, '') <> ''
+		ORDER BY id
+	`, offerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 16)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 type claimedRecord struct {
@@ -466,6 +899,145 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// claimRecordsByISPCaps claims oldest-first records from partner_clean_queue
+// while honoring per-ISP-per-wave caps natively at the SQL level. This is
+// the ISP-aware replacement for claimRecords + applyThroughputSafety's
+// per-ISP cap branch.
+//
+// Why a separate function: the old claimRecords pulls oldest-first across
+// ALL ISPs, regardless of cap. When yahoo dominates the queue (e.g. 49%
+// of records but cap=20), the wave's claim slots get eaten by yahoo
+// records that then get deferred and released back to 'ready'. Net effect:
+// gmail/microsoft/apple records stuck behind yahoo trickle through far
+// below their per-wave caps. Observed on David Cal's Personal Loans feed
+// — gmail shipped 235/day against a 200/wave cap that should have shipped
+// up to 4,800/day per brand.
+//
+// New strategy: rank queue rows BY ISP, take the oldest N per ISP up to
+// each ISP's cap, then drain by global ingested_at. This guarantees every
+// ISP gets its full per-wave budget before any other ISP overshoots.
+//
+// hardCap is a safety upper bound on total claim size (post-cap). Set to
+// MaxWaveSize so a single wave can never exceed that operational ceiling.
+func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, vertical string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+	if len(perISPCaps) == 0 {
+		return nil, fmt.Errorf("perISPCaps is empty")
+	}
+	if hardCap <= 0 {
+		hardCap = po.cfg.MaxWaveSize
+	}
+
+	// Build a VALUES list (isp, cap) for the caps CTE. Args:
+	//   $1 = vertical, $2 = hardCap, then $3.. = isp, cap, isp, cap, ...
+	args := []interface{}{vertical, hardCap}
+	valueClauses := make([]string, 0, len(perISPCaps))
+	idx := 3
+	for ispName, capValue := range perISPCaps {
+		if capValue <= 0 {
+			continue
+		}
+		valueClauses = append(valueClauses, fmt.Sprintf("($%d::text, $%d::int)", idx, idx+1))
+		args = append(args, ispName, capValue)
+		idx += 2
+	}
+	if len(valueClauses) == 0 {
+		return nil, fmt.Errorf("perISPCaps has no positive entries")
+	}
+
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT id, isp_family, ingested_at,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY COALESCE(NULLIF(isp_family, ''), 'other')
+			           ORDER BY ingested_at ASC
+			       ) AS rn
+			FROM partner_clean_queue
+			WHERE status = 'ready' AND vertical = $1
+		),
+		caps(isp, cap) AS (
+			VALUES %s
+		),
+		eligible AS (
+			SELECT r.id
+			FROM ranked r
+			JOIN caps c ON c.isp = COALESCE(NULLIF(r.isp_family, ''), 'other')
+			WHERE r.rn <= c.cap
+			ORDER BY r.ingested_at ASC
+			LIMIT $2
+		),
+		picked AS (
+			SELECT id FROM partner_clean_queue
+			WHERE id IN (SELECT id FROM eligible)
+			  AND status = 'ready'
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE partner_clean_queue q
+		SET status = 'claimed', claimed_at = NOW()
+		FROM picked
+		WHERE q.id = picked.id
+		RETURNING q.id, q.email, q.email_md5, q.isp_family, q.dataset_id, q.partner_id, q.batch_id, q.extra_metadata
+	`, strings.Join(valueClauses, ", "))
+
+	rows, err := po.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]claimedRecord, 0, hardCap)
+	for rows.Next() {
+		var r claimedRecord
+		if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// releaseStaleClaims returns zombie 'claimed' rows to 'ready'. These appear
+// when the process dies after claimRecordsByISPCaps but before promote/deploy
+// completes (no subscriber_id, no mailed_campaign_id). Safe to re-queue.
+func (po *PartnerDripOrchestrator) releaseStaleClaims(ctx context.Context) (int64, error) {
+	cutoff := time.Now().UTC().Add(-po.cfg.ClaimedJanitorMaxAge)
+	res, err := po.db.ExecContext(ctx, `
+		UPDATE partner_clean_queue
+		SET status = 'ready',
+		    claimed_at = NULL
+		WHERE status = 'claimed'
+		  AND claimed_at IS NOT NULL
+		  AND claimed_at < $1
+		  AND subscriber_id IS NULL
+		  AND mailed_campaign_id IS NULL
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// reconcileShippedClaims repairs rows left in status='claimed' after a wave
+// deployed successfully but markMailed failed (logged, non-fatal). Without
+// this, follow-up touches stay claimed and block claimFollowupRecordsByISPCaps
+// (which only picks status='mailed'). Idempotent: only touches rows whose
+// last_touch_campaign is already sending or terminal.
+func (po *PartnerDripOrchestrator) reconcileShippedClaims(ctx context.Context) (int64, error) {
+	res, err := po.db.ExecContext(ctx, `
+		UPDATE partner_clean_queue q
+		SET status = 'mailed'
+		WHERE q.status = 'claimed'
+		  AND q.last_touch_campaign_id IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1 FROM mailing_campaigns c
+		    WHERE c.id = q.last_touch_campaign_id
+		      AND c.status IN ('sending', 'sent', 'completed', 'completed_with_errors')
+		  )
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // releaseClaim flips claimed records back to 'ready' so the next tick can
@@ -552,7 +1124,48 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
+	// Write subscriber_id back to partner_clean_queue so the engagement
+	// marker can flip engaged_at when a tracking event arrives. Best-
+	// effort — failure here doesn't unship the wave, but the recipient
+	// will silently keep getting follow-ups even if they engage. We log
+	// loud on any failure so an operator can audit.
+	po.linkSubscriberIDsToQueue(ctx, recs, out)
 	return out, nil
+}
+
+// linkSubscriberIDsToQueue stamps subscriber_id onto each partner_clean_queue
+// row. The engagement marker uses this column to flip engaged_at when a
+// new tracking event arrives — without it, every follow-up touch fires
+// regardless of whether the recipient already engaged.
+func (po *PartnerDripOrchestrator) linkSubscriberIDsToQueue(ctx context.Context, recs []claimedRecord, subIDs []string) {
+	if len(recs) == 0 || len(subIDs) == 0 {
+		return
+	}
+	pairs := make([]string, 0, len(recs))
+	args := make([]interface{}, 0, len(recs)*2)
+	posIdx := 1
+	for i, r := range recs {
+		if i >= len(subIDs) || subIDs[i] == "" {
+			continue
+		}
+		pairs = append(pairs, fmt.Sprintf("($%d::uuid, $%d::uuid)", posIdx, posIdx+1))
+		args = append(args, r.id, subIDs[i])
+		posIdx += 2
+	}
+	if len(pairs) == 0 {
+		return
+	}
+	q := fmt.Sprintf(`
+		UPDATE partner_clean_queue q
+		SET subscriber_id = pairs.subscriber_id
+		FROM (VALUES %s) AS pairs(queue_id, subscriber_id)
+		WHERE q.id = pairs.queue_id
+		  AND q.subscriber_id IS DISTINCT FROM pairs.subscriber_id
+	`, strings.Join(pairs, ","))
+	if _, err := po.db.ExecContext(ctx, q, args...); err != nil {
+		log.Printf("[PartnerDripOrchestrator] link_subscriber_ids: %v", err)
+	}
 }
 
 // createWaveSegment builds a one-shot static segment named after the wave so
@@ -723,13 +1336,16 @@ func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand str
 	useMaster := false
 	contentLocked := true
 	scheduledAt := startAt
-	partnerTag := fmt.Sprintf("data_partner:%s/%s", safeIdent(v.partnerSlug), v.vertical)
 	htmlSHA := sha256.Sum256([]byte(creative.htmlBody))
 	name := fmt.Sprintf("[partner-drip] %s %s %s %s", v.vertical, brand, time.Now().UTC().Format("20060102T1504"), hex.EncodeToString(htmlSHA[:4]))
-	_ = partnerTag // future: stored in payload metadata; column-write not yet wired through HandleDeployCampaign
 
 	return engine.PMTACampaignInput{
 		Name:          name,
+		// OfferID is set ONLY for direct-offer datasets. The deploy
+		// pipeline uses it to apply the offer's suppression Bloom and to
+		// inherit content_locked from the offer when explicit nil; we
+		// pass content_locked=true explicitly for safety regardless.
+		OfferID:       v.offerID,
 		TargetISPs:    targetISPs,
 		SendingDomain: domain,
 		Variants: []engine.ContentVariant{{
@@ -759,6 +1375,48 @@ func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand str
 	}, nil
 }
 
+// stampPartnerAttributionOnCampaign writes partner_drip_tag and
+// partner_dataset_id onto the freshly-deployed campaign row. These columns
+// are the join key the analytics dashboard uses to slice campaigns by feed.
+// HandleDeployCampaign doesn't accept these fields directly, so we patch
+// post-deploy. Errors are logged but not fatal — the wave still mails;
+// analytics will just be missing this attribution row.
+func (po *PartnerDripOrchestrator) stampPartnerAttributionOnCampaign(ctx context.Context, campaignID, datasetID, partnerSlug, vertical string) error {
+	if campaignID == "" {
+		return nil
+	}
+	tag := fmt.Sprintf("data_partner:%s/%s", safeIdent(partnerSlug), vertical)
+	var datasetArg interface{}
+	if datasetID != "" {
+		datasetArg = datasetID
+	}
+	_, err := po.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns
+		SET partner_drip_tag = $2,
+		    partner_dataset_id = $3,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, campaignID, tag, datasetArg)
+	return err
+}
+
+// markMailed stamps the queue rows with the wave's outcome and advances
+// the touch state machine:
+//
+//   - touch_count -> touch_count + 1
+//   - last_touch_brand -> brand
+//   - last_touch_campaign_id -> campaignID
+//   - next_touch_at -> NOW() + 24h while touch_count < MaxTouchCount, else NULL
+//   - terminal_reason -> 'completed' once touch_count reaches MaxTouchCount
+//
+// status remains 'mailed' on every successful wave so existing analytics
+// and dashboard SUM(status='mailed') queries continue to give a useful
+// "at least one wave shipped" count. The follow-up orchestrator queries
+// touch_count + next_touch_at + engaged_at to find the next-due record.
+//
+// On the FIRST touch (touch_count was 0) we also stamp mailed_at +
+// mailed_campaign_id + mailed_brand so the legacy fields stay populated
+// for backwards-compatible dashboards.
 func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claimedRecord, campaignID, brand string) error {
 	if len(recs) == 0 {
 		return nil
@@ -767,15 +1425,478 @@ func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claime
 	for i, r := range recs {
 		ids[i] = r.id
 	}
+	gap := time.Duration(followupTouchGapHours) * time.Hour
+	nextTouchAt := time.Now().UTC().Add(gap)
 	_, err := po.db.ExecContext(ctx, `
 		UPDATE partner_clean_queue
 		SET status = 'mailed',
-		    mailed_campaign_id = $2::uuid,
-		    mailed_brand = $3,
-		    mailed_at = NOW()
+		    mailed_campaign_id = COALESCE(mailed_campaign_id, $2::uuid),
+		    mailed_brand = COALESCE(mailed_brand, $3),
+		    mailed_at = COALESCE(mailed_at, NOW()),
+		    touch_count = LEAST(COALESCE(touch_count, 0) + 1, $4),
+		    last_touch_brand = $3,
+		    last_touch_campaign_id = $2::uuid,
+		    next_touch_at = CASE
+		        WHEN COALESCE(touch_count, 0) + 1 < $4 THEN $5::timestamptz
+		        ELSE NULL
+		    END,
+		    terminal_reason = CASE
+		        WHEN COALESCE(touch_count, 0) + 1 >= $4 THEN 'completed'
+		        ELSE terminal_reason
+		    END
 		WHERE id = ANY($1::uuid[])
-	`, "{"+strings.Join(ids, ",")+"}", campaignID, brand)
+	`, "{"+strings.Join(ids, ",")+"}", campaignID, brand, MaxTouchCount, nextTouchAt)
 	return err
+}
+
+// tickFollowups runs the follow-up touch loop across all verticals
+// represented in the queue. For each vertical it picks the next 'followup'
+// brand off the round-robin and claims up to per-ISP-capped records that
+// satisfy: status='mailed', touch_count IN (1,2,3), next_touch_at <= NOW(),
+// engaged_at IS NULL, terminal_reason IS NULL.
+//
+// The follow-up loop uses a SHARED 'followup' brand round-robin
+// (partner_drip_state row vertical='followup') so brand rotation is
+// independent of the welcome pipeline. This keeps welcome and follow-up
+// traffic spread evenly across all 16 brands.
+func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
+	verticals, err := po.followupVerticalsWithDueRecords(ctx)
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] followup_verticals: %v", err)
+		return
+	}
+	if len(verticals) == 0 {
+		return
+	}
+	state, err := po.followupBrandIndex(ctx)
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] followup_brand_index: %v", err)
+		return
+	}
+
+	brandsThisTick := po.cfg.FollowupBrandsPerTick
+	if brandsThisTick > len(dripBrands) {
+		brandsThisTick = len(dripBrands)
+	}
+
+	for _, v := range verticals {
+		// Each vertical is processed independently. The follow-up brand
+		// rotation is shared across verticals — every (vertical, brand)
+		// combination gets a wave at most once per tick.
+		for i := 0; i < brandsThisTick; i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			brand, err := po.pickNextFollowupBrand(ctx, state)
+			if err != nil {
+				log.Printf("[PartnerDripOrchestrator] followup pick_brand: %v", err)
+				return
+			}
+			if err := po.processFollowup(ctx, v, brand); err != nil {
+				log.Printf("[PartnerDripOrchestrator] followup vertical=%s brand=%s: %v", v.vertical, brand, err)
+			}
+			// Advance the round-robin index AFTER every brand attempt,
+			// regardless of success. This guarantees we don't get stuck
+			// on a single brand if its claim fails.
+			state.brandIndex = (state.brandIndex + 1) % len(dripBrands)
+			if err := po.persistFollowupBrandIndex(ctx, state.brandIndex); err != nil {
+				log.Printf("[PartnerDripOrchestrator] followup persist_brand_index: %v", err)
+			}
+		}
+	}
+}
+
+// followupState is a tiny in-memory mirror of the 'followup' partner_drip_state
+// row used to track the brand round-robin pointer between intra-tick calls.
+type followupState struct {
+	brandIndex int
+}
+
+func (po *PartnerDripOrchestrator) followupBrandIndex(ctx context.Context) (*followupState, error) {
+	var idx int
+	err := po.db.QueryRowContext(ctx,
+		`SELECT next_brand_index FROM partner_drip_state WHERE vertical = 'followup'`,
+	).Scan(&idx)
+	if err == sql.ErrNoRows {
+		// Seeded by startup migration but defensive fallback.
+		_, _ = po.db.ExecContext(ctx,
+			`INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('followup', 0) ON CONFLICT (vertical) DO NOTHING`)
+		return &followupState{brandIndex: 0}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &followupState{brandIndex: idx % len(dripBrands)}, nil
+}
+
+func (po *PartnerDripOrchestrator) persistFollowupBrandIndex(ctx context.Context, idx int) error {
+	_, err := po.db.ExecContext(ctx, `
+		INSERT INTO partner_drip_state (vertical, next_brand_index, updated_at)
+		VALUES ('followup', $1, NOW())
+		ON CONFLICT (vertical) DO UPDATE SET
+		    next_brand_index = EXCLUDED.next_brand_index,
+		    updated_at = NOW()
+	`, idx)
+	return err
+}
+
+func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, state *followupState) (string, error) {
+	for offset := 0; offset < len(dripBrands); offset++ {
+		idx := (state.brandIndex + offset) % len(dripBrands)
+		brand := dripBrands[idx]
+		if po.cfg.PausedBrandPredicate != nil && po.cfg.PausedBrandPredicate(ctx, brand) {
+			continue
+		}
+		state.brandIndex = idx
+		return brand, nil
+	}
+	return "", fmt.Errorf("all brands paused — no follow-up brand available")
+}
+
+// followupVerticalsWithDueRecords returns the verticals that have at
+// least one queue row whose next_touch_at has elapsed and isn't engaged
+// or terminal yet. We pull dataset attribution from whichever queue row
+// is oldest-due so the wave inherits dataset metadata for the analytics
+// stamp.
+func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.Context) ([]verticalState, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		WITH due AS (
+			SELECT q.vertical, q.dataset_id,
+			       MIN(q.next_touch_at) AS oldest_due,
+			       COUNT(*) FILTER (
+			           WHERE q.status = 'mailed'
+			             AND q.next_touch_at IS NOT NULL
+			             AND q.next_touch_at <= NOW()
+			             AND q.engaged_at IS NULL
+			             AND q.terminal_reason IS NULL
+			             AND q.touch_count BETWEEN 1 AND $1
+			       ) AS due_total
+			FROM partner_clean_queue q
+			WHERE q.status = 'mailed'
+			  AND q.engaged_at IS NULL
+			  AND q.terminal_reason IS NULL
+			  AND q.touch_count BETWEEN 1 AND $1
+			GROUP BY q.vertical, q.dataset_id
+		)
+		SELECT v.vertical,
+		       (SELECT SUM(due_total) FROM due WHERE due.vertical = v.vertical) AS due_count,
+		       d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+		       COALESCE(d.offer_id::text, '')
+		FROM (SELECT DISTINCT vertical FROM due WHERE due_total > 0) v
+		LEFT JOIN LATERAL (
+			SELECT du.dataset_id
+			FROM due du
+			WHERE du.vertical = v.vertical AND due_total > 0
+			ORDER BY oldest_due ASC NULLS LAST
+			LIMIT 1
+		) AS dom ON true
+		LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+		LEFT JOIN data_partners p ON p.id = d.partner_id
+		ORDER BY v.vertical
+	`, MaxTouchCount-1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []verticalState
+	for rows.Next() {
+		var v verticalState
+		var (
+			datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+			flushHours                                       sql.NullInt64
+			dueCount                                         sql.NullInt64
+			offerID                                          string
+		)
+		if err := rows.Scan(&v.vertical, &dueCount,
+			&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
+			continue
+		}
+		v.offerID = offerID
+		if !dueCount.Valid || dueCount.Int64 == 0 {
+			continue
+		}
+		v.readyCount = int(dueCount.Int64)
+		if datasetID.Valid {
+			v.datasetID = datasetID.String
+		}
+		if datasetSlug.Valid {
+			v.datasetSlug = datasetSlug.String
+		}
+		if partnerSlug.Valid {
+			v.partnerSlug = partnerSlug.String
+		}
+		if partnerName.Valid {
+			v.partnerName = partnerName.String
+		}
+		if flushHours.Valid {
+			v.flushHours = int(flushHours.Int64)
+		}
+		if v.flushHours <= 0 {
+			v.flushHours = 24
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// processFollowup ships one follow-up wave for one (vertical, brand)
+// pair. Records are claimed by ISP up to per-ISP caps, promoted to
+// mailing_subscribers (idempotent — most are already there from the
+// welcome wave), wrapped in a per-wave segment, and shipped via
+// DeployFn. On success markMailed advances touch_count and stamps the
+// next_touch_at clock.
+func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v verticalState, brand string) error {
+	if MaxTouchCount-1 < 1 {
+		return nil
+	}
+	hardCap := po.cfg.MaxFollowupClaimPerVertical
+	if hardCap <= 0 || hardCap > po.cfg.MaxWaveSize {
+		hardCap = po.cfg.MaxWaveSize
+	}
+
+	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, po.cfg.PerISPCapPerWave, hardCap)
+	if err != nil {
+		return fmt.Errorf("claim_followup: %w", err)
+	}
+	if len(claimed) == 0 {
+		return nil
+	}
+
+	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed)
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] followup throughput_safety failed for vertical=%s: %v — proceeding without deferral", v.vertical, err)
+		keep = claimed
+	}
+	if len(deferred) > 0 {
+		if relErr := po.releaseClaim(ctx, deferred); relErr != nil {
+			log.Printf("[PartnerDripOrchestrator] followup release deferred: %v", relErr)
+		}
+		log.Printf("[PartnerDripOrchestrator] followup deferred %d records for vertical=%s reasons=%v",
+			len(deferred), v.vertical, deferralReasons)
+	}
+	if len(keep) == 0 {
+		log.Printf("[PartnerDripOrchestrator] followup vertical=%s: all claimed records deferred — skipping wave", v.vertical)
+		return nil
+	}
+	claimed = keep
+
+	// Determine touch_number for the resolveFollowupCreative call. All
+	// claimed records share the same target touch (touch_count + 1)
+	// because the claim query partitions by touch_count and only takes
+	// records whose current touch is the same.
+	var touchNum int
+	if err := po.db.QueryRowContext(ctx, `
+		SELECT MAX(touch_count) + 1 FROM partner_clean_queue WHERE id = ANY($1::uuid[])
+	`, "{"+strings.Join(claimedRecordIDs(claimed), ",")+"}").Scan(&touchNum); err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("compute_touch_number: %w", err)
+	}
+	if touchNum < 2 || touchNum > MaxTouchCount {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("invalid touch_number %d for vertical=%s", touchNum, v.vertical)
+	}
+
+	creative, err := po.resolveFollowupCreative(ctx, brand, touchNum)
+	if err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("resolve_followup_creative: %w", err)
+	}
+
+	// Promote subscribers — idempotent because the ON CONFLICT branch in
+	// promoteToSubscribers updates source_metadata + returns the
+	// existing subscriber id.
+	subscriberIDs, err := po.promoteToSubscribers(ctx, v, claimed)
+	if err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("promote_followup_subscribers: %w", err)
+	}
+
+	segmentID, err := po.createWaveSegment(ctx, v, brand, claimed, subscriberIDs)
+	if err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("create_followup_segment: %w", err)
+	}
+
+	ispCounts := tallyISPs(claimed)
+	input, err := po.buildCampaignInput(v, brand, creative, segmentID, ispCounts)
+	if err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("build_followup_input: %w", err)
+	}
+	// Tag the campaign name so analytics distinguishes welcome vs.
+	// follow-up waves at a glance.
+	input.Name = fmt.Sprintf("%s [t%d]", input.Name, touchNum)
+
+	campaignID, err := po.cfg.DeployFn(ctx, input)
+	if err != nil {
+		_ = po.releaseClaim(ctx, claimed)
+		return fmt.Errorf("deploy_followup: %w", err)
+	}
+
+	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
+		log.Printf("[PartnerDripOrchestrator] followup stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
+	}
+
+	if err := po.markMailed(ctx, claimed, campaignID, brand); err != nil {
+		log.Printf("[PartnerDripOrchestrator] followup mark_mailed (campaign %s already deployed!): %v", campaignID, err)
+	}
+
+	log.Printf("[PartnerDripOrchestrator] followup wave fired: vertical=%s brand=%s touch=%d campaign=%s size=%d creative=%s",
+		v.vertical, brand, touchNum, campaignID, len(claimed), creative.filename)
+	return nil
+}
+
+func claimedRecordIDs(recs []claimedRecord) []string {
+	ids := make([]string, len(recs))
+	for i, r := range recs {
+		ids[i] = r.id
+	}
+	return ids
+}
+
+// claimFollowupRecordsByISPCaps claims oldest-due-first records from
+// partner_clean_queue for a given vertical, partitioned by ISP and
+// capped by perISPCaps. Records must be:
+//
+//   - status = 'mailed'
+//   - touch_count BETWEEN 1 AND MaxTouchCount-1 (welcome shipped, < max)
+//   - next_touch_at <= NOW() (gap window elapsed)
+//   - engaged_at IS NULL (recipient hasn't engaged with prior touches)
+//   - terminal_reason IS NULL (operator hasn't manually retired the row)
+//
+// Within a single wave we constrain claims to a single touch_count value
+// so the resolveFollowupCreative step can pick the right family without
+// running per-record. We pick whichever touch_count has the most
+// outstanding due rows for this vertical at claim time — this keeps the
+// rotation balanced between touch 2/3/4 in a steady-state queue.
+//
+// Returns the claimed records with status flipped to 'claimed' (so they
+// won't be re-picked by a concurrent tick) and the wave_segment + deploy
+// pipeline can carry on. On failure the caller releases via releaseClaim.
+func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Context, vertical string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+	if len(perISPCaps) == 0 {
+		return nil, fmt.Errorf("perISPCaps is empty")
+	}
+	if hardCap <= 0 {
+		hardCap = po.cfg.MaxWaveSize
+	}
+
+	// First pick the dominant touch_count for this vertical.
+	var targetTouchCount int
+	if err := po.db.QueryRowContext(ctx, `
+		SELECT touch_count
+		FROM partner_clean_queue
+		WHERE status = 'mailed'
+		  AND vertical = $1
+		  AND touch_count BETWEEN 1 AND $2
+		  AND next_touch_at <= NOW()
+		  AND engaged_at IS NULL
+		  AND terminal_reason IS NULL
+		GROUP BY touch_count
+		ORDER BY COUNT(*) DESC, touch_count ASC
+		LIMIT 1
+	`, vertical, MaxTouchCount-1).Scan(&targetTouchCount); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pick_dominant_touch: %w", err)
+	}
+
+	// Build VALUES list for caps CTE.
+	args := []interface{}{vertical, hardCap, targetTouchCount}
+	valueClauses := make([]string, 0, len(perISPCaps))
+	idx := 4
+	for ispName, capValue := range perISPCaps {
+		if capValue <= 0 {
+			continue
+		}
+		valueClauses = append(valueClauses, fmt.Sprintf("($%d::text, $%d::int)", idx, idx+1))
+		args = append(args, ispName, capValue)
+		idx += 2
+	}
+	if len(valueClauses) == 0 {
+		return nil, fmt.Errorf("perISPCaps has no positive entries")
+	}
+
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT id, isp_family, next_touch_at,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY COALESCE(NULLIF(isp_family, ''), 'other')
+			           ORDER BY next_touch_at ASC NULLS LAST
+			       ) AS rn
+			FROM partner_clean_queue
+			WHERE status = 'mailed'
+			  AND vertical = $1
+			  AND touch_count = $3
+			  AND next_touch_at <= NOW()
+			  AND engaged_at IS NULL
+			  AND terminal_reason IS NULL
+		),
+		caps(isp, cap) AS (
+			VALUES %s
+		),
+		eligible AS (
+			SELECT r.id
+			FROM ranked r
+			JOIN caps c ON c.isp = COALESCE(NULLIF(r.isp_family, ''), 'other')
+			WHERE r.rn <= c.cap
+			ORDER BY r.next_touch_at ASC NULLS LAST
+			LIMIT $2
+		),
+		picked AS (
+			SELECT id FROM partner_clean_queue
+			WHERE id IN (SELECT id FROM eligible)
+			  AND status = 'mailed'
+			  AND touch_count = $3
+			  AND next_touch_at <= NOW()
+			  AND engaged_at IS NULL
+			  AND terminal_reason IS NULL
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE partner_clean_queue q
+		SET status = 'claimed', claimed_at = NOW()
+		FROM picked
+		WHERE q.id = picked.id
+		RETURNING q.id, q.email, q.email_md5, q.isp_family, q.dataset_id, q.partner_id, q.batch_id, q.extra_metadata
+	`, strings.Join(valueClauses, ", "))
+
+	rows, err := po.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]claimedRecord, 0, hardCap)
+	for rows.Next() {
+		var r claimedRecord
+		if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// resolveFollowupCreative looks up the (brand, touch_number) row in
+// partner_drip_followup_creatives and reads the HTML body from disk.
+// Errors out loud — the caller releases the claim if this fails so the
+// records get retried on the next tick.
+func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, brand string, touchNumber int) (creativeRec, error) {
+	var c creativeRec
+	err := po.db.QueryRowContext(ctx, `
+		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name
+		FROM partner_drip_followup_creatives
+		WHERE brand = $1 AND touch_number = $2 AND active = true
+	`, brand, touchNumber).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName)
+	if err != nil {
+		return c, fmt.Errorf("followup_creative lookup (%s/t%d): %w", brand, touchNumber, err)
+	}
+	body, err := os.ReadFile(filepath.Join(po.cfg.CreativesDir, c.filename))
+	if err != nil {
+		return c, fmt.Errorf("read followup_creative %s: %w", c.filename, err)
+	}
+	c.htmlBody = string(body)
+	return c, nil
 }
 
 func (po *PartnerDripOrchestrator) updateDripState(ctx context.Context, vertical string, nextIdx int, brand, campaignID string, waveSize int) error {
