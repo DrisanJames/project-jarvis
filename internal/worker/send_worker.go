@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -833,72 +834,134 @@ func (p *SendWorkerPool) refreshRemainingFromDB(state *ispCampaignState) bool {
 
 // dispatchISPBatches runs one batch cycle for every tracked ISP-quota campaign.
 // Claimed items are processed concurrently using a bounded goroutine pool.
+// dispatchISPBatches walks every active ISP-targeted campaign and tries to
+// claim a fresh batch for each. Each campaign is processed by an independent
+// goroutine bounded by DISPATCH_CAMPAIGN_PARALLELISM (default 8). With ~190
+// concurrent 'sending' campaigns observed in production, the previous
+// single-goroutine serial loop was the dominant throughput ceiling: one slow
+// claimISPBatch query or a brief workCh blocking write would starve every
+// other campaign for the rest of the tick. Parallelizing the per-campaign
+// dispatch unblocks the work pool and lifts aggregate send rate without
+// touching any rate-limit / cap / per-IP-allocation accounting (each campaign
+// owns its own state and never reads another campaign's).
 func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState, removedCooldown map[string]time.Time) {
-	for campID, state := range states {
+	parallelism := dispatchCampaignParallelism()
+
+	// Snapshot keys so the parent map can be safely mutated post-wait.
+	campIDs := make([]string, 0, len(states))
+	for id := range states {
+		campIDs = append(campIDs, id)
+	}
+
+	type removal struct {
+		campID string
+		at     time.Time
+	}
+	var (
+		removalsMu sync.Mutex
+		removals   []removal
+	)
+
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+
+	for _, id := range campIDs {
 		select {
 		case <-p.ctx.Done():
-			return
+			break
 		default:
 		}
 
-		batchCounts := AssembleBatch(state.plan, state.remaining)
-		if _, inPlan := state.plan["other"]; !inPlan {
-			if otherRem := state.remaining["other"]; otherRem > 0 {
-				cap := p.batchSize
-				if otherRem < cap {
-					cap = otherRem
-				}
-				batchCounts["other"] = cap
-			}
-		}
-		if BatchTotal(batchCounts) == 0 {
-			if !state.lastRefreshOK {
-				log.Printf("[ISPDispatch] Campaign %s batch=0 but last refresh failed — keeping (will retry)", campID)
-				continue
-			}
-			log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing (cooldown 60s)", campID)
-			delete(states, campID)
-			removedCooldown[campID] = time.Now()
+		state, ok := states[id]
+		if !ok {
 			continue
 		}
 
-		// Per-IP allocation map: isp -> hostname -> allowed count
-		// Populated when per-IP rate limiting is enabled; nil otherwise.
-		var ipAllocations map[string]map[string]int
+		select {
+		case sem <- struct{}{}:
+		case <-p.ctx.Done():
+			break
+		}
 
-		if p.rateRegistry != nil && !p.rateLimitingDisabled {
-			if p.perIPEnabled {
-				ipAllocations = make(map[string]map[string]int)
-				for isp, count := range batchCounts {
-					if count <= 0 {
-						continue
-					}
-					if p.rateRegistry.HasIPListStr(isp) {
-						perIPAlloc := p.rateRegistry.DistributeByIPStr(isp, count)
-						totalAllowed := 0
-						for _, n := range perIPAlloc {
-							totalAllowed += n
-						}
-						if totalAllowed == 0 {
-							delete(batchCounts, isp)
-						} else {
-							batchCounts[isp] = totalAllowed
-							ipAllocations[isp] = perIPAlloc
-						}
-					} else {
-						allowed := p.rateRegistry.AllowN(isp, count)
-						if allowed == 0 {
-							delete(batchCounts, isp)
-						} else {
-							batchCounts[isp] = allowed
-						}
-					}
+		wg.Add(1)
+		go func(campID string, st *ispCampaignState) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if remove, when := p.dispatchOneCampaign(campID, st); remove {
+				removalsMu.Lock()
+				removals = append(removals, removal{campID: campID, at: when})
+				removalsMu.Unlock()
+			}
+		}(id, state)
+	}
+
+	wg.Wait()
+
+	// Apply removals serially after all goroutines finish to keep the
+	// states map and removedCooldown map free of concurrent mutation.
+	for _, r := range removals {
+		delete(states, r.campID)
+		removedCooldown[r.campID] = r.at
+	}
+}
+
+// dispatchOneCampaign claims and enqueues at most one batch for a single
+// campaign. Returns (remove=true, when=now) when the campaign has no remaining
+// work and the parent should evict it from the active states map. Safe to run
+// concurrently across campaigns: every call operates on a distinct *ispCampaignState
+// (no cross-campaign reads), and downstream sinks (claimISPBatch DB pool,
+// rateRegistry, workCh) are concurrency-safe by contract.
+func (p *SendWorkerPool) dispatchOneCampaign(campID string, state *ispCampaignState) (bool, time.Time) {
+	select {
+	case <-p.ctx.Done():
+		return false, time.Time{}
+	default:
+	}
+
+	batchCounts := AssembleBatch(state.plan, state.remaining)
+	if _, inPlan := state.plan["other"]; !inPlan {
+		if otherRem := state.remaining["other"]; otherRem > 0 {
+			cap := p.batchSize
+			if otherRem < cap {
+				cap = otherRem
+			}
+			batchCounts["other"] = cap
+		}
+	}
+	if BatchTotal(batchCounts) == 0 {
+		if !state.lastRefreshOK {
+			log.Printf("[ISPDispatch] Campaign %s batch=0 but last refresh failed — keeping (will retry)", campID)
+			return false, time.Time{}
+		}
+		log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing (cooldown 60s)", campID)
+		return true, time.Now()
+	}
+
+	// Per-IP allocation map: isp -> hostname -> allowed count
+	// Populated when per-IP rate limiting is enabled; nil otherwise.
+	var ipAllocations map[string]map[string]int
+
+	if p.rateRegistry != nil && !p.rateLimitingDisabled {
+		if p.perIPEnabled {
+			ipAllocations = make(map[string]map[string]int)
+			for isp, count := range batchCounts {
+				if count <= 0 {
+					continue
 				}
-			} else {
-				for isp, count := range batchCounts {
-					if count <= 0 {
-						continue
+				if p.rateRegistry.HasIPListStr(isp) {
+					perIPAlloc := p.rateRegistry.DistributeByIPStr(isp, count)
+					totalAllowed := 0
+					for _, n := range perIPAlloc {
+						totalAllowed += n
 					}
+					if totalAllowed == 0 {
+						delete(batchCounts, isp)
+					} else {
+						batchCounts[isp] = totalAllowed
+						ipAllocations[isp] = perIPAlloc
+					}
+				} else {
 					allowed := p.rateRegistry.AllowN(isp, count)
 					if allowed == 0 {
 						delete(batchCounts, isp)
@@ -907,52 +970,86 @@ func (p *SendWorkerPool) dispatchISPBatches(states map[string]*ispCampaignState,
 					}
 				}
 			}
-			if BatchTotal(batchCounts) == 0 {
-				continue
+		} else {
+			for isp, count := range batchCounts {
+				if count <= 0 {
+					continue
+				}
+				allowed := p.rateRegistry.AllowN(isp, count)
+				if allowed == 0 {
+					delete(batchCounts, isp)
+				} else {
+					batchCounts[isp] = allowed
+				}
 			}
 		}
-
-		items, err := p.claimISPBatch(campID, batchCounts)
-		if err != nil {
-			log.Printf("[ISPDispatch] Claim error for campaign %s: %v", campID, err)
-			continue
+		if BatchTotal(batchCounts) == 0 {
+			return false, time.Time{}
 		}
-
-		if len(items) == 0 {
-			continue
-		}
-
-		// Cross-brand daily cap filter. Subscribers already at/above the
-		// configured cap today are marked 'skipped' with reason
-		// 'cross_brand_cap_exceeded' and excluded from the wave. Reserve
-		// is atomic against Redis; on Redis outage falls back to Postgres.
-		if p.capChecker != nil {
-			items = p.applyCrossBrandCap(items)
-			if len(items) == 0 {
-				continue
-			}
-		}
-
-		// Assign pre-determined VMTAs to claimed items when per-IP is active
-		if ipAllocations != nil && len(ipAllocations) > 0 {
-			assignVMTAsToItems(items, ipAllocations)
-		}
-
-		actualCounts := make(map[string]int)
-		for _, item := range items {
-			actualCounts[ClassifySubscriberISP(item.Email)]++
-		}
-		for isp, n := range actualCounts {
-			state.remaining[isp] -= n
-			if state.remaining[isp] < 0 {
-				state.remaining[isp] = 0
-			}
-		}
-		log.Printf("[ISPDispatch] Campaign %s: claimed %d items (plan=%v actual=%v)",
-			campID, len(items), batchCounts, actualCounts)
-
-		p.enqueueForProcessing(items)
 	}
+
+	items, err := p.claimISPBatch(campID, batchCounts)
+	if err != nil {
+		log.Printf("[ISPDispatch] Claim error for campaign %s: %v", campID, err)
+		return false, time.Time{}
+	}
+
+	if len(items) == 0 {
+		return false, time.Time{}
+	}
+
+	// Cross-brand daily cap filter. Subscribers already at/above the
+	// configured cap today are marked 'skipped' with reason
+	// 'cross_brand_cap_exceeded' and excluded from the wave. Reserve
+	// is atomic against Redis; on Redis outage falls back to Postgres.
+	if p.capChecker != nil {
+		items = p.applyCrossBrandCap(items)
+		if len(items) == 0 {
+			return false, time.Time{}
+		}
+	}
+
+	// Assign pre-determined VMTAs to claimed items when per-IP is active
+	if ipAllocations != nil && len(ipAllocations) > 0 {
+		assignVMTAsToItems(items, ipAllocations)
+	}
+
+	actualCounts := make(map[string]int)
+	for _, item := range items {
+		actualCounts[ClassifySubscriberISP(item.Email)]++
+	}
+	for isp, n := range actualCounts {
+		state.remaining[isp] -= n
+		if state.remaining[isp] < 0 {
+			state.remaining[isp] = 0
+		}
+	}
+	log.Printf("[ISPDispatch] Campaign %s: claimed %d items (plan=%v actual=%v)",
+		campID, len(items), batchCounts, actualCounts)
+
+	p.enqueueForProcessing(items)
+	return false, time.Time{}
+}
+
+// dispatchCampaignParallelism returns how many campaigns the per-tick
+// dispatcher fans out to in parallel. Default 8 — chosen to keep per-tick DB
+// contention well below the 40-conn server pool while still unblocking the
+// 190-campaign serial bottleneck observed in production. Operators can pin
+// "1" via DISPATCH_CAMPAIGN_PARALLELISM to fall back to legacy serial behavior
+// for an A/B during a sending incident; values >32 are clamped.
+func dispatchCampaignParallelism() int {
+	raw := strings.TrimSpace(os.Getenv("DISPATCH_CAMPAIGN_PARALLELISM"))
+	if raw == "" {
+		return 8
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 8
+	}
+	if n > 32 {
+		return 32
+	}
+	return n
 }
 
 // enqueueForProcessing pushes claimed items into the work channel for
