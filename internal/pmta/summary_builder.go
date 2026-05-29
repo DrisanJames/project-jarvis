@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	summaryBatchSize    = 2000
-	summaryTickInterval = 60 * time.Second
-	summaryQueryTimeout = 30 * time.Second
+	defaultSummaryBatchSize    = 10000
+	defaultSummaryTickInterval = 15 * time.Second
+	summaryQueryTimeout        = 30 * time.Second
 )
 
 // AcctSummaryBuilder periodically processes unprocessed rows from pmta_acct_raw,
@@ -23,15 +23,28 @@ const (
 // pmta_acct_daily_summary. This makes PMTA accounting data the authoritative
 // source for delivery/bounce/complaint metrics.
 type AcctSummaryBuilder struct {
-	db     *sql.DB
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	db        *sql.DB
+	batchSize int
+	tick      time.Duration
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
-// NewAcctSummaryBuilder creates a new summary builder.
+// NewAcctSummaryBuilder creates a new summary builder with default throughput.
 func NewAcctSummaryBuilder(db *sql.DB) *AcctSummaryBuilder {
-	return &AcctSummaryBuilder{db: db}
+	return NewAcctSummaryBuilderWithConfig(db, defaultSummaryBatchSize, defaultSummaryTickInterval)
+}
+
+// NewAcctSummaryBuilderWithConfig creates a builder with explicit batch/tick.
+func NewAcctSummaryBuilderWithConfig(db *sql.DB, batchSize int, tick time.Duration) *AcctSummaryBuilder {
+	if batchSize <= 0 {
+		batchSize = defaultSummaryBatchSize
+	}
+	if tick <= 0 {
+		tick = defaultSummaryTickInterval
+	}
+	return &AcctSummaryBuilder{db: db, batchSize: batchSize, tick: tick}
 }
 
 // Start begins the periodic processing loop.
@@ -45,7 +58,7 @@ func (b *AcctSummaryBuilder) Start() {
 		time.Sleep(10 * time.Second)
 		b.processBatch()
 
-		ticker := time.NewTicker(summaryTickInterval)
+		ticker := time.NewTicker(b.tick)
 		defer ticker.Stop()
 
 		for {
@@ -89,7 +102,7 @@ func (b *AcctSummaryBuilder) processBatch() {
 		WHERE processed = FALSE
 		ORDER BY id ASC
 		LIMIT $1
-	`, summaryBatchSize)
+	`, b.batchSize)
 	if err != nil {
 		log.Printf("[AcctSummary] query error: %v", err)
 		return

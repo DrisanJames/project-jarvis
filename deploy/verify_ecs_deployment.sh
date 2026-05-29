@@ -114,4 +114,29 @@ if actual_digest != expected_digest:
 PY
 fi
 
+# READ_REPLICA_URL guardrail: if set in the task definition, the replica must
+# exist and be available. Prevents silently re-pointing at a deleted replica.
+REPLICA_URL=$(aws ecs describe-task-definition \
+  --task-definition "$TASK_DEF_ARN" \
+  "${AWS_ARGS[@]}" \
+  --query "taskDefinition.containerDefinitions[?name=='$CONTAINER_NAME'].environment[?name=='READ_REPLICA_URL'].value | [0][0]" \
+  --output text 2>/dev/null || echo "")
+
+if [ -n "$REPLICA_URL" ] && [ "$REPLICA_URL" != "None" ] && [ "$REPLICA_URL" != "" ]; then
+  echo "READ_REPLICA_URL is set — verifying apex-postgres-read RDS instance..."
+  REPLICA_STATUS=$(aws rds describe-db-instances \
+    --db-instance-identifier apex-postgres-read \
+    "${AWS_ARGS[@]}" \
+    --query 'DBInstances[0].DBInstanceStatus' \
+    --output text 2>/dev/null || echo "not-found")
+  if [ "$REPLICA_STATUS" != "available" ]; then
+    echo "READ_REPLICA_URL is set but apex-postgres-read status is '$REPLICA_STATUS' (expected available)" >&2
+    echo "Clear READ_REPLICA_URL or rebuild the replica before deploying." >&2
+    exit 1
+  fi
+  echo "Read replica RDS status: available"
+else
+  echo "READ_REPLICA_URL not set — SegmentRefreshWorker will use primary"
+fi
+
 echo "Deployment verification passed for ${EXPECTED_GIT_SHA} (${EXPECTED_IMAGE_DIGEST})"

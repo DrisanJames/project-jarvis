@@ -50,7 +50,7 @@ func NewHealthChecker(db *sql.DB, redisClient *redis.Client, s3Client *s3.Client
 	}
 }
 
-const healthVersion = "1.0.0"
+const healthVersion = "1.1.0"
 
 // HandleHealth returns the comprehensive health status of all components.
 // Overall status is "healthy" if all checks pass, "degraded" if any are degraded

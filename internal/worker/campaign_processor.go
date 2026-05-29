@@ -453,7 +453,11 @@ func (p *CampaignProcessor) getESPType(ctx context.Context, profileID string) st
 func (p *CampaignProcessor) markSent(ctx context.Context, itemID, campaignID uuid.UUID, messageID string) error {
 	_, err := p.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_queue
-		SET status = 'sent', sent_at = NOW(), message_id = $2
+		SET status = 'sent',
+		    sent_at = NOW(),
+		    message_id = $2,
+		    html_content = NULL,
+		    plain_content = NULL
 		WHERE id = $1
 	`, itemID, messageID)
 	

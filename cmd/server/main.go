@@ -302,14 +302,20 @@ func main() {
 		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
 		server.SetShutdownContext(ctx)
-		server.SetMailingDB(mailingDB)
-		log.Println("Mailing Platform routes registered")
+		// Route registration is heavy (many handlers + synchronous service
+		// init). Do not block send-worker startup on it — workers only need
+		// the *sql.DB handle, which is already open above.
+		go func() {
+			server.SetMailingDB(mailingDB)
+			log.Println("Mailing Platform routes registered")
+		}()
 	}
 
 	// Read replica pool for analytical workloads (SegmentRefreshWorker).
 	// Falls back to primary when READ_REPLICA_URL is not configured.
 	var readDB *sql.DB
-	if cfg.Mailing.ReadReplicaURL != "" {
+	replicaConfigured := strings.TrimSpace(cfg.Mailing.ReadReplicaURL) != ""
+	if replicaConfigured {
 		rURL := cfg.Mailing.ReadReplicaURL
 		sep := "?"
 		if strings.Contains(rURL, "?") {
@@ -323,20 +329,34 @@ func main() {
 		var err error
 		readDB, err = sql.Open("postgres", rURL)
 		if err != nil {
-			log.Printf("Warning: read replica connect failed: %v — falling back to primary", err)
+			log.Printf("READ_REPLICA_URL set but unreachable — falling back to primary (open failed: %v)", err)
+			readDB = nil
+		} else {
+			readDB.SetMaxOpenConns(15)
+			readDB.SetMaxIdleConns(8)
+			readDB.SetConnMaxLifetime(5 * time.Minute)
+			readDB.SetConnMaxIdleTime(2 * time.Minute)
+			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			pingErr := readDB.PingContext(pingCtx)
+			pingCancel()
+			if pingErr != nil {
+				log.Printf("READ_REPLICA_URL set but unreachable — falling back to primary (ping failed: %v)", pingErr)
+				readDB.Close()
+				readDB = nil
+			} else {
+				log.Println("Read replica pool initialized — replica healthy")
+			}
 		}
 	}
 	if readDB == nil {
 		readDB = mailingDB
 		if mailingDB != nil {
-			log.Println("Read replica not configured — segment refresh uses primary")
+			if replicaConfigured {
+				log.Println("READ_REPLICA_URL set but unreachable — falling back to primary")
+			} else {
+				log.Println("READ_REPLICA_URL not set — SegmentRefreshWorker using primary")
+			}
 		}
-	} else {
-		readDB.SetMaxOpenConns(15)
-		readDB.SetMaxIdleConns(8)
-		readDB.SetConnMaxLifetime(5 * time.Minute)
-		readDB.SetConnMaxIdleTime(2 * time.Minute)
-		log.Println("Read replica pool initialized (segment refresh will use replica)")
 	}
 
 	// ── Run migrations and start workers (server is already serving) ──
@@ -349,9 +369,14 @@ func main() {
 			pingCancel()
 			dbReachable = true
 			log.Println("Mailing Platform database connected successfully")
-			runAdminMigrations()
-			runStartupMigrations(mailingDB)
-			seedProcessDefaultOrgID(mailingDB)
+			// Migrations can include multi-minute CREATE INDEX CONCURRENTLY on
+			// million-row tables. Run them in the background so worker startup
+			// (send path, wave dispatcher) is not blocked during deploys.
+			go func() {
+				runAdminMigrations()
+				runStartupMigrations(mailingDB)
+				seedProcessDefaultOrgID(mailingDB)
+			}()
 		}
 
 		// Load offer suppression Bloom filters from S3 at startup.
@@ -573,6 +598,22 @@ func main() {
 				}
 				go outboxSelfCheck.Start(ctx)
 				log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
+
+				// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
+				storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)
+				if cfg.Alerting.Twilio.Enabled && len(cfg.Alerting.Twilio.ToNumbers) > 0 {
+					twilioClientSG := twilio.NewClient(
+						cfg.Alerting.Twilio.AccountSID,
+						cfg.Alerting.Twilio.AuthToken,
+						cfg.Alerting.Twilio.FromNumber,
+					)
+					if twilioClientSG != nil {
+						storageGuard.SetAlerter(twilioClientSG, cfg.Alerting.Twilio.ToNumbers)
+					}
+				}
+				go storageGuard.Start(ctx)
+				server.SetStorageGuard(storageGuard)
+				log.Println("Storage Guard started (5m interval, state-aware slot/WAL/queue/acct checks)")
 
 				// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
 				dataCleanup := worker.NewDataCleanupWorker(mailingDB)
@@ -5619,6 +5660,48 @@ END $$`},
 		log.Printf("[StartupMigration] idx_mcq_dead_letter_recent: db.Conn failed: %v", idxConnErr)
 	}
 	idxCancel()
+
+	// Cleanup indexes for terminal queue purge and pmta_acct_raw retention/backfill.
+	cleanupIdxCtx, cleanupIdxCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	if cleanupConn, cleanupConnErr := db.Conn(cleanupIdxCtx); cleanupConnErr == nil {
+		defer cleanupConn.Close()
+		cleanupIndexes := []struct {
+			name string
+			sql  string
+		}{
+			{
+				"idx_mcq_terminal_cleanup",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_terminal_cleanup
+				 ON mailing_campaign_queue (status, (COALESCE(updated_at, created_at)), id)
+				 WHERE status IN ('accepted', 'cancelled', 'failed', 'dead_letter', 'dead_letter_strict')`,
+			},
+			{
+				"idx_pmta_acct_raw_processed_retention",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pmta_acct_raw_processed_retention
+				 ON pmta_acct_raw (processed, received_at, id)
+				 WHERE processed = TRUE`,
+			},
+			{
+				"idx_pmta_acct_raw_unprocessed",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pmta_acct_raw_unprocessed
+				 ON pmta_acct_raw (processed, received_at, id)
+				 WHERE processed = FALSE`,
+			},
+		}
+		if _, err := cleanupConn.ExecContext(cleanupIdxCtx, "SET statement_timeout = '600000'"); err != nil {
+			log.Printf("[StartupMigration] cleanup indexes: SET timeout failed: %v", err)
+		}
+		for _, idx := range cleanupIndexes {
+			if _, err := cleanupConn.ExecContext(cleanupIdxCtx, idx.sql); err != nil {
+				log.Printf("[StartupMigration] %s: ERROR %v", idx.name, err)
+			} else {
+				log.Printf("[StartupMigration] %s: OK", idx.name)
+			}
+		}
+	} else {
+		log.Printf("[StartupMigration] cleanup indexes: db.Conn failed: %v", cleanupConnErr)
+	}
+	cleanupIdxCancel()
 
 	// ---------------------------------------------------------------------
 	// P2a — backfill recipient_domain on the last 7 days of 'opened' and

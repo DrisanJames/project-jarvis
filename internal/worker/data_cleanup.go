@@ -17,12 +17,14 @@ import (
 //
 // Retention policies:
 //   - Queue items (sent/skipped):      7 days
-//   - Dead-letter queue items:         30 days
+//   - Operationally-terminal queue:    14 days (accepted/cancelled/failed/dead_letter*)
+//   - Dead-letter queue items:         30 days (legacy path; terminal cleanup also covers dead_letter at 14d)
+//   - Processed pmta_acct_raw:         14 days
 //   - Tracking events:                 90 days
 //   - Agent send decisions (executed):  30 days
 //
-// Deletes run in batches of 10 000 rows to avoid long-running transactions
-// that could lock tables and block production traffic.
+// Deletes run in batches of 10 000 rows (terminal purge uses same size;
+// start conservative — ops script uses 5k-10k for one-time catch-up).
 
 const (
 	// DefaultCleanupInterval is how often the cleanup cycle runs.
@@ -72,6 +74,8 @@ func (dc *DataCleanupWorker) cleanup(ctx context.Context) {
 	log.Println("[DataCleanup] Cleanup cycle starting...")
 
 	dc.cleanupQueueItems(ctx)
+	dc.cleanupTerminalQueueItems(ctx)
+	dc.cleanupProcessedAcctRaw(ctx)
 	dc.cleanupTrackingEvents(ctx)
 	dc.cleanupAgentDecisions(ctx)
 	dc.cleanupDeadLetterItems(ctx)
@@ -109,6 +113,72 @@ func (dc *DataCleanupWorker) cleanupQueueItems(ctx context.Context) {
 	`)
 	if total > 0 {
 		log.Printf("[DataCleanup] Removed %d sent/skipped items from mailing_campaign_queue_v2", total)
+	}
+}
+
+// cleanupTerminalQueueItems deletes operationally-terminal queue rows older
+// than 14 days. "Accepted" here means safe to delete for queue lifecycle —
+// not final delivery state. Handoff metadata (campaign/subscriber/message_id)
+// is retained until this TTL; HTML is nulled on send via markSent.
+func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
+	total := dc.batchDelete(ctx, "mailing_campaign_queue", `
+		WITH doomed AS (
+			SELECT id
+			FROM mailing_campaign_queue
+			WHERE status IN ('accepted', 'cancelled', 'failed', 'dead_letter', 'dead_letter_strict')
+			  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+			ORDER BY id
+			LIMIT $1
+		)
+		DELETE FROM mailing_campaign_queue q
+		USING doomed
+		WHERE q.id = doomed.id
+	`)
+	if total > 0 {
+		log.Printf("[DataCleanup] Removed %d operationally-terminal items from mailing_campaign_queue (14d TTL)", total)
+	}
+	dc.logTerminalQueueStats(ctx)
+}
+
+func (dc *DataCleanupWorker) logTerminalQueueStats(ctx context.Context) {
+	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	var terminalRemaining, acceptedHTML int64
+	_ = dc.db.QueryRowContext(queryCtx, `
+		SELECT COUNT(*)::bigint
+		FROM mailing_campaign_queue
+		WHERE status IN ('accepted', 'cancelled', 'failed', 'dead_letter', 'dead_letter_strict')
+		  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+	`).Scan(&terminalRemaining)
+	_ = dc.db.QueryRowContext(queryCtx, `
+		SELECT COUNT(*)::bigint
+		FROM mailing_campaign_queue
+		WHERE status = 'accepted' AND html_content IS NOT NULL
+	`).Scan(&acceptedHTML)
+	if terminalRemaining > 0 || acceptedHTML > 0 {
+		log.Printf("[DataCleanup] Queue stats: terminal_aged_14d=%d accepted_with_html=%d",
+			terminalRemaining, acceptedHTML)
+	}
+}
+
+// cleanupProcessedAcctRaw removes processed accounting rows older than 14 days.
+func (dc *DataCleanupWorker) cleanupProcessedAcctRaw(ctx context.Context) {
+	total := dc.batchDelete(ctx, "pmta_acct_raw", `
+		WITH doomed AS (
+			SELECT id
+			FROM pmta_acct_raw
+			WHERE processed = TRUE
+			  AND received_at < NOW() - INTERVAL '14 days'
+			ORDER BY id
+			LIMIT $1
+		)
+		DELETE FROM pmta_acct_raw r
+		USING doomed
+		WHERE r.id = doomed.id
+	`)
+	if total > 0 {
+		log.Printf("[DataCleanup] Removed %d processed pmta_acct_raw rows older than 14 days", total)
 	}
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
@@ -16,6 +17,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/mailgun"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -249,6 +251,23 @@ func (s *Server) getWaveProcessorProvider() ThroughputProvider {
 	return s.waveProcessorProvider
 }
 
+// SetStorageGuard wires the storage guard worker for /health/storage.
+func (s *Server) SetStorageGuard(g *worker.StorageGuard) {
+	s.storageGuard = g
+}
+
+// HandleStorage returns the latest storage guard snapshot.
+func (s *Server) HandleStorage(w http.ResponseWriter, r *http.Request) {
+	if s.storageGuard == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status":  "unavailable",
+			"message": "storage guard not initialized",
+		})
+		return
+	}
+	respondJSON(w, http.StatusOK, s.storageGuard.Snapshot())
+}
+
 // RegisterHealthRoutes creates a HealthChecker from the server's dependencies
 // and registers comprehensive health routes on the router. Call this after all
 // Set* methods (SetMailingDB, SetRedisClient, SetImageCDNConfig) have been invoked
@@ -259,6 +278,7 @@ func (s *Server) RegisterHealthRoutes() {
 	s.router.Get("/health/live", hc.HandleLiveness)
 	s.router.Get("/health/ready", hc.HandleReadiness)
 	s.router.Get("/health/detailed", hc.HandleDetailed)
+	s.router.Get("/health/storage", s.HandleStorage)
 	s.router.Get("/health/db-stats", hc.HandleDBStats)
 	s.router.Get("/version", hc.HandleVersion)
 }

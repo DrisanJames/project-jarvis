@@ -156,19 +156,19 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 	defer cancel()
 
 	// Find campaigns in 'sending' status where all queue items are done.
-	// Queue statuses: queued → sending → sent/failed/skipped/dead_letter
+	// Durable outbox: accepted = handoff complete. Legacy: sent = complete.
 	rows, err := cs.db.QueryContext(ctx, `
 		SELECT c.id, 
-			   COALESCE(SUM(CASE WHEN q.status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
-			   COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter') THEN 1 ELSE 0 END), 0) as failed,
+			   COALESCE(SUM(CASE WHEN q.status IN ('sent','accepted') THEN 1 ELSE 0 END), 0) as sent,
+			   COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter','dead_letter_strict','failed_permanent') THEN 1 ELSE 0 END), 0) as failed,
 			   COALESCE(SUM(CASE WHEN q.status = 'skipped' THEN 1 ELSE 0 END), 0) as skipped,
-			   COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) as pending,
+			   COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending','submitting','failed_retryable') THEN 1 ELSE 0 END), 0) as pending,
 			   COUNT(q.id) as total
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_campaign_queue q ON q.campaign_id = c.id
 		WHERE c.status = 'sending'
 		GROUP BY c.id
-		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
+		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending','submitting','failed_retryable') THEN 1 ELSE 0 END), 0) = 0
 		   AND NOT EXISTS (
 		       SELECT 1 FROM mailing_campaign_waves w
 		       WHERE w.campaign_id = c.id
@@ -218,14 +218,14 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 	// or 'scheduled' that have queue items all done (no pending items remain).
 	preRows, _ := cs.db.QueryContext(ctx, `
 		SELECT c.id,
-		       COALESCE(SUM(CASE WHEN q.status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
-		       COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter') THEN 1 ELSE 0 END), 0) as failed,
+		       COALESCE(SUM(CASE WHEN q.status IN ('sent','accepted') THEN 1 ELSE 0 END), 0) as sent,
+		       COALESCE(SUM(CASE WHEN q.status IN ('failed','dead_letter','dead_letter_strict','failed_permanent') THEN 1 ELSE 0 END), 0) as failed,
 		       COUNT(q.id) as total
 		FROM mailing_campaigns c
 		JOIN mailing_campaign_queue q ON q.campaign_id = c.id
 		WHERE c.status IN ('draft', 'scheduled')
 		GROUP BY c.id
-		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending') THEN 1 ELSE 0 END), 0) = 0
+		HAVING COALESCE(SUM(CASE WHEN q.status IN ('queued','sending','claimed','pending','submitting','failed_retryable') THEN 1 ELSE 0 END), 0) = 0
 		   AND NOT EXISTS (
 		       SELECT 1 FROM mailing_campaign_waves w
 		       WHERE w.campaign_id = c.id

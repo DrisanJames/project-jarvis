@@ -1560,14 +1560,20 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 			    message_id = $2,
 			    sent_at = NOW(),
 			    submitted_at = NOW(),
-			    pmta_response = $3
+			    pmta_response = $3,
+			    html_content = NULL,
+			    plain_content = NULL
 			WHERE id = $1
 			  AND status = 'submitting'
 		`, item.ID, messageID, vmta)
 	} else {
 		_, err = p.db.ExecContext(ctx, `
 			UPDATE mailing_campaign_queue
-			SET status = 'sent', message_id = $2, sent_at = NOW()
+			SET status = 'sent',
+			    message_id = $2,
+			    sent_at = NOW(),
+			    html_content = NULL,
+			    plain_content = NULL
 			WHERE id = $1
 		`, item.ID, messageID)
 	}

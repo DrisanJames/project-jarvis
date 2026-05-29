@@ -80,6 +80,8 @@ type Server struct {
 	// SetMailingDB. Mutex-protected so the late wiring is race-free.
 	waveProcessorMu       sync.RWMutex
 	waveProcessorProvider ThroughputProvider
+	// Storage guard snapshot provider for GET /health/storage
+	storageGuard *worker.StorageGuard
 }
 
 // NewServer creates a new API server

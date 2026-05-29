@@ -132,7 +132,9 @@ func (r *OutboxReconciler) reconcileOnce(ctx context.Context) {
 	res, err := r.db.ExecContext(queryCtx, `
 		UPDATE mailing_campaign_queue
 		SET status = 'accepted',
-		    submitted_at = COALESCE(submitted_at, NOW())
+		    submitted_at = COALESCE(submitted_at, NOW()),
+		    html_content = NULL,
+		    plain_content = NULL
 		WHERE status = 'submitting'
 		  AND locked_at < NOW() - $1::interval
 		  AND message_id IS NOT NULL

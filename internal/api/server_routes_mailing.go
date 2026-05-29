@@ -765,9 +765,22 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			pmtaSvc.RegisterRoutes(r)
 
 			// PMTA accounting summary builder — processes pmta_acct_raw into
-			// pmta_acct_daily_summary every 60s for authoritative delivery metrics.
-			acctSummary := pmta.NewAcctSummaryBuilder(db)
+			// pmta_acct_daily_summary. Throughput tunable via env.
+			acctBatch := 10000
+			if v := os.Getenv("ACCT_SUMMARY_BATCH_SIZE"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					acctBatch = n
+				}
+			}
+			acctTick := 15 * time.Second
+			if v := os.Getenv("ACCT_SUMMARY_TICK_SECONDS"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					acctTick = time.Duration(n) * time.Second
+				}
+			}
+			acctSummary := pmta.NewAcctSummaryBuilderWithConfig(db, acctBatch, acctTick)
 			acctSummary.Start()
+			log.Printf("[AcctSummary] configured batch=%d tick=%s", acctBatch, acctTick)
 			
 			// IP warmup scheduler (checks every 15 minutes)
 			warmupScheduler := pmta.NewWarmupScheduler(db, 15*time.Minute)
