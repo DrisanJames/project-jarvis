@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -303,8 +304,40 @@ func (s *PMTAWaveScheduler) sweepStalePlannedWaves(parentCtx context.Context) {
 	}
 }
 
+// waveProcessorTimeout returns the per-wave processing budget. Defaults to
+// 30s (the legacy hardcoded value), but operators can extend it via the
+// WAVE_PROCESSOR_TIMEOUT_SECONDS env var when the audience claim path is
+// running long under heavy contention (e.g. large NDR campaigns where the
+// FOR UPDATE SKIP LOCKED scan + per-row Peek + per-row INSERT exceeds 30s
+// against a busy DB). Clamped to [10, 300] seconds so a stray value cannot
+// hang the scheduler indefinitely or starve it below a usable budget.
+//
+// Tuning history (2026-05-29 incident):
+//   - 4 W1 NDR campaigns × 185 waves each → 189 due waves backed up
+//   - All timing out at exactly 30s → 0 recipients enqueued → audience
+//     pipeline starved → workers idle even with full PMTA capacity
+//   - Setting WAVE_PROCESSOR_TIMEOUT_SECONDS=120 (or higher) lets the
+//     wave_processor finish under heavy DB lock contention.
+func waveProcessorTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("WAVE_PROCESSOR_TIMEOUT_SECONDS"))
+	if v == "" {
+		return 30 * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 30 * time.Second
+	}
+	if n < 10 {
+		n = 10
+	}
+	if n > 300 {
+		n = 300
+	}
+	return time.Duration(n) * time.Second
+}
+
 func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID string) {
-	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, waveProcessorTimeout())
 	defer cancel()
 
 	lock := distlock.NewLock(s.redisClient, s.db, fmt.Sprintf("pmta-wave:%s", waveID), 2*time.Minute)
