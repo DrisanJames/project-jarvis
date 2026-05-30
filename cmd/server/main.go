@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -302,6 +303,53 @@ func main() {
 		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
 
 		server.SetShutdownContext(ctx)
+		// Wire partner drip factory before SetMailingDB — route registration can
+		// take >10 minutes; the orchestrator starts from SetMailingDB as soon as
+		// PMTACampaignService exists (see startPartnerDripOrchestrator).
+		if server.GetPartnerIngestS3Client() != nil {
+			server.SetPartnerDripStarter(func(db *sql.DB, pmta *api.PMTACampaignService) interface{ Stop() } {
+				pausedBrandFn := func(ctx context.Context, brand string) bool {
+					brandDomain, ok := worker.BrandSendingDomain(brand)
+					if !ok || brandDomain == "" {
+						return true
+					}
+					var n int
+					_ = db.QueryRowContext(ctx,
+						`SELECT COUNT(*) FROM mailing_sending_profiles
+						 WHERE sending_domain = $1 AND status = 'active' AND vendor_type = 'pmta'`,
+						brandDomain).Scan(&n)
+					return n == 0
+				}
+				followupDisabled := os.Getenv("PARTNER_DRIP_FOLLOWUP_DISABLED") == "1"
+				followupMax := 5000
+				if followupDisabled {
+					followupMax = 0
+				}
+				throttleThreshold := 50.0
+				if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_THROTTLE_THRESHOLD")); v != "" {
+					if f, err := strconv.ParseFloat(v, 64); err == nil {
+						throttleThreshold = f
+					}
+				}
+				creativesDir := strings.TrimSpace(os.Getenv("PARTNER_DRIP_CREATIVES_DIR"))
+				if creativesDir == "" {
+					creativesDir = "docs/emails"
+				}
+				orch := worker.NewPartnerDripOrchestrator(db, worker.PartnerDripOrchestratorConfig{
+					OrganizationID:              "00000000-0000-0000-0000-000000000001",
+					DeployFn:                    worker.WrapPMTACampaignDeploy(pmta.HandleDeployCampaign),
+					PausedBrandPredicate:        pausedBrandFn,
+					MaxFollowupClaimPerVertical: followupMax,
+					FollowupDisabled:            followupDisabled,
+					ThrottledISPRateThreshold:   throttleThreshold,
+					CreativesDir:                creativesDir,
+				})
+				orch.Start()
+				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_threshold=%.0f creatives_dir=%s)",
+					followupDisabled, followupMax, throttleThreshold, creativesDir)
+				return orch
+			})
+		}
 		// Route registration is heavy (many handlers + synchronous service
 		// init). Do not block send-worker startup on it — workers only need
 		// the *sql.DB handle, which is already open above.
@@ -889,7 +937,6 @@ func main() {
 			// They start AFTER server.GlobalHub has been wired by SetMailingDB.
 			var partnerSlicer *worker.PartnerSlicer
 			var partnerValidator *worker.PartnerValidator
-			var partnerDripOrchestrator *worker.PartnerDripOrchestrator
 			{
 				partnerS3 := server.GetPartnerIngestS3Client()
 				partnerEnabled := partnerS3 != nil
@@ -940,39 +987,6 @@ func main() {
 							partnerValidator.Start()
 							server.SetPartnerValidator(partnerValidator)
 						}
-
-						// Drip orchestrator: 15-min ticker, brand round-robin, mini-campaign creator.
-						pmtaCampaignAPI := server.GetPMTACampaignService()
-						if pmtaCampaignAPI != nil {
-							// PausedBrandPredicate skips brands whose sending domain has
-							// no active sending profile. Cheap query, runs once per wave.
-							pausedBrandFn := func(ctx context.Context, brand string) bool {
-								brandDomain := map[string]string{
-									"db": "em.discountblog.com",
-									"ht": "em.historythinking.com",
-									"mh": "em.myownhealth.net",
-									"qf": "em.quizfiesta.com",
-								}[brand]
-								if brandDomain == "" {
-									return true
-								}
-								var n int
-								_ = mailingDB.QueryRowContext(ctx,
-									`SELECT COUNT(*) FROM mailing_sending_profiles
-									 WHERE sending_domain = $1 AND status = 'active' AND vendor_type = 'pmta'`,
-									brandDomain).Scan(&n)
-								return n == 0
-							}
-							partnerDripOrchestrator = worker.NewPartnerDripOrchestrator(mailingDB, worker.PartnerDripOrchestratorConfig{
-								OrganizationID:       "00000000-0000-0000-0000-000000000001",
-								DeployFn:             worker.WrapPMTACampaignDeploy(pmtaCampaignAPI.HandleDeployCampaign),
-								PausedBrandPredicate: pausedBrandFn,
-							})
-							partnerDripOrchestrator.Start()
-							server.SetPartnerDripOrchestrator(partnerDripOrchestrator)
-						} else {
-							log.Println("[PartnerDripOrchestrator] WARNING: PMTACampaignService not wired — drip will not start")
-						}
 					}
 				}
 			}
@@ -999,8 +1013,8 @@ func main() {
 					if partnerValidator != nil {
 						partnerValidator.Stop()
 					}
-					if partnerDripOrchestrator != nil {
-						partnerDripOrchestrator.Stop()
+					if orch := server.GetPartnerDripOrchestrator(); orch != nil {
+						orch.Stop()
 					}
 					if redisClient != nil {
 						redisClient.Close()
@@ -5347,6 +5361,17 @@ END $$`},
 			updated_by TEXT,
 			PRIMARY KEY (vertical, brand)
 		)`},
+		{"dp_create_partner_drip_copy_lines", `CREATE TABLE IF NOT EXISTS partner_drip_copy_lines (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			vertical TEXT NOT NULL,
+			line_kind TEXT NOT NULL CHECK (line_kind IN ('subject', 'preheader')),
+			copy_text TEXT NOT NULL,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			active BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"dp_idx_partner_drip_copy_lines", `CREATE INDEX IF NOT EXISTS idx_partner_drip_copy_lines_vertical_kind
+			ON partner_drip_copy_lines(vertical, line_kind) WHERE active = true`},
 		// Seed all 16 (vertical, brand) creative rows. The 05132026 dated files
 		// exist in docs/emails/ — verified during plan phase. Brand short codes:
 		// db = Discount Blog, ht = History Thinking, mh = My Own Health, qf = Quiz Fiesta.
@@ -5539,6 +5564,119 @@ BEGIN
          WHERE ip_address = rec.ip_addr::inet;
     END LOOP;
 END $$`},
+
+		// =====================================================================
+		// May 29 2026: segment catalog cleanup — Phase A (schema)
+		//
+		// Adds a `category` column to mailing_segments so the wizard and
+		// dashboard can filter the catalog by semantic type instead of
+		// scrolling 11k+ unstructured rows. Companion frontend work in
+		// PMTACampaignWizard.tsx and ListPortal.tsx surfaces filters and
+		// badges off this field. Backfill is name-pattern driven and
+		// idempotent — only touches rows still flagged 'uncategorized'.
+		//
+		// Source-of-truth enum (keep in sync with seg_category_metadata.ts
+		// in upside-down/web): engagement_brand, engagement_global,
+		// engagement_isp, framework, funnel, cohort_static,
+		// suppression_exclusion, partner_wave_static, legacy_snapshot,
+		// uncategorized. Pre-deploy direct API build of 102 engagement
+		// segments lives in .scratch/may29_seed_engagement_segments.py.
+		// =====================================================================
+		{"may29_seg_add_category_col", `ALTER TABLE mailing_segments
+			ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'uncategorized'`},
+		{"may29_seg_backfill_engagement_brand", `UPDATE mailing_segments
+			SET category = 'engagement_brand'
+			WHERE category = 'uncategorized'
+			  AND name ~ '^[A-Z]{2,3} (7|14|30|60)D (Openers|Clickers)$'`},
+		{"may29_seg_backfill_engagement_global", `UPDATE mailing_segments
+			SET category = 'engagement_global'
+			WHERE category = 'uncategorized'
+			  AND name ~ '^Global (7|14|30|60)D (Openers|Clickers)$'`},
+		{"may29_seg_backfill_engagement_isp", `UPDATE mailing_segments
+			SET category = 'engagement_isp'
+			WHERE category = 'uncategorized'
+			  AND name ~ '^(Discount Blog|Quiz Fiesta|History Thinking|My Own Health|Business Weekly Pro|Financial Calculate|Consumer Pro|Home Warranty Services|Refinance Rates USA|Thing of the Day|Your Insurance Hub|My Repair DIY|Casa Insure|Learn Personal Loans|Rates Bazar|Warranty For You) - .* - (Openers|Clickers)$'`},
+		{"may29_seg_backfill_framework", `UPDATE mailing_segments
+			SET category = 'framework'
+			WHERE category = 'uncategorized'
+			  AND name LIKE 'Framework-%'`},
+		{"may29_seg_backfill_funnel", `UPDATE mailing_segments
+			SET category = 'funnel'
+			WHERE category = 'uncategorized'
+			  AND name ~ ' W\d - .*funnel'`},
+		{"may29_seg_backfill_cohort_static", `UPDATE mailing_segments
+			SET category = 'cohort_static'
+			WHERE category = 'uncategorized'
+			  AND (name LIKE 'Converters-%'
+			    OR name LIKE 'WCM-%'
+			    OR name LIKE 'List-WCM-%'
+			    OR name LIKE 'Vertical-%'
+			    OR name LIKE 'Master%'
+			    OR name LIKE 'Mailgun-Engaged-%')`},
+		{"may29_seg_backfill_suppression_exclusion", `UPDATE mailing_segments
+			SET category = 'suppression_exclusion'
+			WHERE category = 'uncategorized'
+			  AND (name LIKE 'Welcome-Saturated%'
+			    OR name LIKE '% Cold Remail Guard%'
+			    OR name ~ '^[A-Z]{2,3} Sent \d+D ')`},
+		{"may29_seg_backfill_partner_wave", `UPDATE mailing_segments
+			SET category = 'partner_wave_static'
+			WHERE category = 'uncategorized'
+			  AND name LIKE 'data-partner-wave-%'`},
+		{"may29_seg_backfill_legacy_snapshot", `UPDATE mailing_segments
+			SET category = 'legacy_snapshot'
+			WHERE category = 'uncategorized'
+			  AND (name ~ '^Global ISP-Targeted Engaged .* \(\d{4}-\d{2}-\d{2}\)$'
+			    OR name ~ '^[A-Z]{2,3} ISP-Targeted Engaged '
+			    OR name ~ '^(Apr|May)\d')`},
+		{"may29_seg_category_index", `CREATE INDEX IF NOT EXISTS idx_segments_org_category_status
+			ON mailing_segments(organization_id, category, status)`},
+
+		// =====================================================================
+		// May 29 2026: segment catalog cleanup — Phase D (archive stale)
+		//
+		// Archives partner_wave_static and legacy_snapshot segments older than
+		// 7 days that have no non-terminal referencing campaigns. The
+		// partner_drip_orchestrator (worker/partner_drip_orchestrator.go:1174)
+		// creates one-shot static segments per wave but never cleans them up,
+		// which is why production has 11k+ segments. We archive (status='archived'),
+		// never delete, so the catalog stays manageable and rows remain available
+		// for historical audit.
+		//
+		// Safety: we only archive if no non-terminal campaign references the
+		// segment as its primary target (mailing_campaigns.segment_id) or in
+		// its pmta_config->'campaign_input' JSONB inclusion_segments /
+		// exclusion_segments arrays. Terminal statuses ('sent','cancelled',
+		// 'failed') don't matter for future scheduling.
+		// =====================================================================
+		{"may29_seg_archive_stale_partner_waves", `UPDATE mailing_segments s
+			SET status = 'archived', updated_at = NOW()
+			WHERE s.status NOT IN ('archived','inactive')
+			  AND s.category = 'partner_wave_static'
+			  AND s.created_at < NOW() - INTERVAL '7 days'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM mailing_campaigns c
+			    WHERE c.status IN ('scheduled','sending','preparing','finalizing_audience','paused')
+			      AND (
+			        c.segment_id = s.id
+			        OR c.pmta_config->'campaign_input'->'inclusion_segments' @> to_jsonb(s.id::text)
+			        OR c.pmta_config->'campaign_input'->'exclusion_segments' @> to_jsonb(s.id::text)
+			      )
+			  )`},
+		{"may29_seg_archive_stale_legacy_snapshots", `UPDATE mailing_segments s
+			SET status = 'archived', updated_at = NOW()
+			WHERE s.status NOT IN ('archived','inactive')
+			  AND s.category = 'legacy_snapshot'
+			  AND s.created_at < NOW() - INTERVAL '7 days'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM mailing_campaigns c
+			    WHERE c.status IN ('scheduled','sending','preparing','finalizing_audience','paused')
+			      AND (
+			        c.segment_id = s.id
+			        OR c.pmta_config->'campaign_input'->'inclusion_segments' @> to_jsonb(s.id::text)
+			        OR c.pmta_config->'campaign_input'->'exclusion_segments' @> to_jsonb(s.id::text)
+			      )
+			  )`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

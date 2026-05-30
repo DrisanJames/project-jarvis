@@ -959,6 +959,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Expose the campaign service so the data partner drip orchestrator
 			// can invoke HandleDeployCampaign in-process at wave time.
 			s.SetPMTACampaignService(pmtaCampaignAPI)
+			// Start partner drip as soon as deploy hook exists — do not wait for
+			// the rest of route registration (consciousness, pipeline, etc.).
+			s.startPartnerDripOrchestrator(db, pmtaCampaignAPI)
 
 			// === SEND-DAY PLANNER (canvas) — Phase 1 endpoints ===
 			// Each endpoint backs one of the six pre-deploy gates from
@@ -984,6 +987,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// tables can take minutes to scan and we don't want to block
 			// HTTP server startup.
 			go segMaterializer.MaterializeCanonicalSegments(workerCtx)
+			// Hydrate any engagement_brand/engagement_global segment that
+			// currently has zero rows in mailing_segment_members. Targets
+			// the 10 stragglers from the May 29 direct-API build (5 Tier 1
+			// reactivated Clickers + 4 globals + HWS 30D Openers) plus any
+			// new engagement segment a future operator creates where the
+			// inline POST goroutine times out before MaterializeSegment
+			// completes. Idempotent — segments with members are skipped.
+			go segMaterializer.MaterializeEngagementCatalog(workerCtx)
 			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
 
 			// SDS Graduation Job (per-domain engagement engine, SA-1).

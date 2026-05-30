@@ -223,9 +223,36 @@ func (s *Server) GetPMTACampaignService() *PMTACampaignService {
 
 // SetPartnerSlicer / SetPartnerValidator / SetPartnerDripOrchestrator are
 // thin setters used by main.go to wire the workers for graceful shutdown.
-func (s *Server) SetPartnerSlicer(stopper interface{ Stop() })            { s.partnerSlicer = stopper }
-func (s *Server) SetPartnerValidator(stopper interface{ Stop() })         { s.partnerValidator = stopper }
-func (s *Server) SetPartnerDripOrchestrator(stopper interface{ Stop() })  { s.partnerDripOrchestrator = stopper }
+func (s *Server) SetPartnerSlicer(stopper interface{ Stop() })           { s.partnerSlicer = stopper }
+func (s *Server) SetPartnerValidator(stopper interface{ Stop() })        { s.partnerValidator = stopper }
+func (s *Server) SetPartnerDripOrchestrator(stopper interface{ Stop() }) { s.partnerDripOrchestrator = stopper }
+
+// GetPartnerDripOrchestrator returns the running drip orchestrator (may be nil).
+func (s *Server) GetPartnerDripOrchestrator() interface{ Stop() } { return s.partnerDripOrchestrator }
+
+// SetPartnerDripStarter registers the factory main.go uses to boot the drip
+// orchestrator. If SetMailingDB already wired PMTACampaignService, start
+// immediately so a late registration still recovers.
+func (s *Server) SetPartnerDripStarter(fn func(db *sql.DB, pmta *PMTACampaignService) interface{ Stop() }) {
+	s.partnerDripStarter = fn
+	if s.mailingDB != nil && s.pmtaCampaignSvc != nil {
+		s.startPartnerDripOrchestrator(s.mailingDB, s.pmtaCampaignSvc)
+	}
+}
+
+func (s *Server) startPartnerDripOrchestrator(db *sql.DB, pmta *PMTACampaignService) {
+	if s.partnerDripStarter == nil || pmta == nil || db == nil {
+		return
+	}
+	s.partnerDripStartOnce.Do(func() {
+		if s.partnerDripOrchestrator != nil {
+			return
+		}
+		if orch := s.partnerDripStarter(db, pmta); orch != nil {
+			s.SetPartnerDripOrchestrator(orch)
+		}
+	})
+}
 
 // RegisterWaveProcessorStatusRoute swaps in the wave processor throughput
 // provider so the GET /api/wave-processor/status handler (registered early

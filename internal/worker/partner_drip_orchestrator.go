@@ -130,6 +130,11 @@ type PartnerDripOrchestratorConfig struct {
 	// overshooting the published caps (Gmail 5000/brand/day, Yahoo 500/brand/day).
 	// Default mirrors the conservative drip allotment: gmail=150, yahoo=20, other=100.
 	PerISPCapPerWave map[string]int
+	// PerISPDrainDays stretches selected ISPs over N calendar days of waves
+	// instead of the default 24h drain. Caps are recomputed each tick from
+	// live queue depth: cap = min(PerISPCapPerWave, ceil(ready / (wavesPerVerticalPerDay * N))).
+	// ISPs omitted from this map keep the static PerISPCapPerWave ceiling only.
+	PerISPDrainDays map[string]int
 	// ThrottledISPRateThreshold (msgs_per_hour) below which an ISP is considered
 	// in active backoff and that ISP's portion of the wave is deferred. Default 50.
 	ThrottledISPRateThreshold float64
@@ -148,9 +153,12 @@ type PartnerDripOrchestratorConfig struct {
 	FollowupBrandsPerTick int
 	// MaxFollowupClaimPerVertical caps how many records the follow-up
 	// loop will claim per vertical per tick (across all brands), as a
-	// safety ceiling. Default 5000 (matches MaxWaveSize). Set to 0 to
-	// disable the follow-up loop entirely (kill switch).
+	// safety ceiling. Default 5000 (matches MaxWaveSize).
 	MaxFollowupClaimPerVertical int
+	// FollowupDisabled skips tickFollowups entirely (PARTNER_DRIP_FOLLOWUP_DISABLED=1).
+	// Do not rely on MaxFollowupClaimPerVertical=0 alone — NewPartnerDripOrchestrator
+	// treats unset zero as "default to MaxWaveSize".
+	FollowupDisabled bool
 	// ClaimedJanitorMaxAge releases partner_clean_queue rows stuck in
 	// 'claimed' after a crash between claim and promote/deploy. Only
 	// rows with no subscriber_id and no mailed_campaign_id are touched.
@@ -231,6 +239,18 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			"other":     150,
 		}
 	}
+	if cfg.PerISPDrainDays == nil {
+		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
+		// refilling ingest queue drains over multiple days. Caps float with
+		// live ready depth — see ispCapForDrainHorizon.
+		cfg.PerISPDrainDays = map[string]int{
+			"gmail":     3,
+			"yahoo":     3,
+			"sbcglobal": 3,
+			"aol":       3,
+			"att":       2,
+		}
+	}
 	if cfg.ThrottledISPRateThreshold <= 0 {
 		cfg.ThrottledISPRateThreshold = 50.0
 	}
@@ -240,7 +260,9 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 	if cfg.FollowupBrandsPerTick <= 0 {
 		cfg.FollowupBrandsPerTick = 4
 	}
-	if cfg.MaxFollowupClaimPerVertical <= 0 {
+	if cfg.FollowupDisabled {
+		cfg.MaxFollowupClaimPerVertical = 0
+	} else if cfg.MaxFollowupClaimPerVertical <= 0 {
 		cfg.MaxFollowupClaimPerVertical = cfg.MaxWaveSize
 	}
 	if cfg.ClaimedJanitorMaxAge == 0 {
@@ -349,7 +371,7 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// Follow-up pass: independent of welcome pass, runs across the same
 	// verticals (record-vertical, not brand-vertical). The 'followup'
 	// drip-state row drives brand rotation for follow-ups.
-	if po.cfg.MaxFollowupClaimPerVertical > 0 {
+	if !po.cfg.FollowupDisabled && po.cfg.MaxFollowupClaimPerVertical > 0 {
 		po.tickFollowups(po.ctx)
 	}
 }
@@ -542,7 +564,11 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// that wasted wave slots on yahoo records that would later be
 	// deferred and released. See claimRecordsByISPCaps for the full
 	// rationale and the May 14 cap bump.
-	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, po.cfg.PerISPCapPerWave, waveSize)
+	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, ispCapBacklogReady)
+	if err != nil {
+		return fmt.Errorf("resolve_isp_caps: %w", err)
+	}
+	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
 	}
@@ -553,7 +579,7 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// Apply throttle-based ISP deferral + per-ISP cap. Records cut from this
 	// wave are released back to 'ready' so the next tick can revisit them
 	// (potentially against a different brand whose throttle state differs).
-	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed)
+	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed, perISPCaps)
 	if err != nil {
 		log.Printf("[PartnerDripOrchestrator] throughput_safety check failed for vertical=%s: %v — proceeding without deferral", v.vertical, err)
 		keep = claimed
@@ -701,12 +727,64 @@ func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical
 	if err != nil {
 		return c, fmt.Errorf("creative lookup (%s/%s): %w", vertical, brand, err)
 	}
+	if subj, pre, ok := po.rotateCopyLines(ctx, vertical, brand); ok {
+		if subj != "" {
+			c.subject = subj
+		}
+		if pre != "" {
+			c.preheader = pre
+		}
+	}
 	body, err := os.ReadFile(filepath.Join(po.cfg.CreativesDir, c.filename))
 	if err != nil {
 		return c, fmt.Errorf("read creative %s: %w", c.filename, err)
 	}
 	c.htmlBody = string(body)
 	return c, nil
+}
+
+// rotateCopyLines picks subject + preheader from partner_drip_copy_lines when
+// seeded for a vertical. Subject and preheader rotate independently from their
+// respective pools (same pool may back both for mix-and-match copy tests).
+func (po *PartnerDripOrchestrator) rotateCopyLines(ctx context.Context, vertical, brand string) (subject, preheader string, ok bool) {
+	subjects, err := po.fetchCopyLines(ctx, vertical, "subject")
+	if err != nil || len(subjects) == 0 {
+		return "", "", false
+	}
+	preheaders, err := po.fetchCopyLines(ctx, vertical, "preheader")
+	if err != nil {
+		preheaders = nil
+	}
+	if len(preheaders) == 0 {
+		preheaders = subjects
+	}
+	bucket := time.Now().UTC().Truncate(5 * time.Minute).Unix()
+	rotKey := fmt.Sprintf("%s|%s|%d", vertical, brand, bucket)
+	rotSHA := sha256.Sum256([]byte(rotKey))
+	subIdx := int(rotSHA[0])<<8 | int(rotSHA[1])
+	preIdx := int(rotSHA[2])<<8 | int(rotSHA[3])
+	return subjects[subIdx%len(subjects)], preheaders[preIdx%len(preheaders)], true
+}
+
+func (po *PartnerDripOrchestrator) fetchCopyLines(ctx context.Context, vertical, kind string) ([]string, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		SELECT copy_text FROM partner_drip_copy_lines
+		WHERE vertical = $1 AND line_kind = $2 AND active = true
+		  AND COALESCE(copy_text, '') <> ''
+		ORDER BY sort_order, id
+	`, vertical, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 32)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // resolveOfferCreative pulls a fresh creative+subject+from-name from the
@@ -760,6 +838,8 @@ func (po *PartnerDripOrchestrator) resolveOfferCreative(ctx context.Context, off
 		return c, fmt.Errorf("offer %s has no active subjects — operator must seed at least one before deploying", offerID)
 	}
 	c.subject = subjects[rotIdx%len(subjects)]
+	preIdx := int(rotSHA[2])<<8 | int(rotSHA[3])
+	c.preheader = subjects[preIdx%len(subjects)]
 
 	// From-name pool — prefer the row matching this brand's blog persona when the
 	// pool uses a "Partner - {friendly}" prefix (e.g. CarShield direct offers).
@@ -775,17 +855,6 @@ func (po *PartnerDripOrchestrator) resolveOfferCreative(ctx context.Context, off
 	} else {
 		c.fromName = fromNames[rotIdx%len(fromNames)]
 	}
-
-	// Preheader is optional on offer-center creatives; pull from creative
-	// row if available, fall back to empty (planner accepts empty).
-	_ = po.db.QueryRowContext(ctx, `
-		SELECT COALESCE(NULLIF(preview_text, ''), '')
-		FROM mailing_offer_creatives
-		WHERE offer_id = $1
-		  AND COALESCE(status, '') NOT IN ('archived','rejected')
-		ORDER BY updated_at DESC
-		LIMIT 1
-	`, offerID).Scan(&c.preheader)
 
 	return c, nil
 }
@@ -827,6 +896,11 @@ func (po *PartnerDripOrchestrator) matchBrandOfferFromName(ctx context.Context, 
 	`, domain).Scan(&metaFrom)
 	if err != nil || metaFrom == "" {
 		return "", false
+	}
+	for _, fn := range fromNames {
+		if fn == metaFrom {
+			return fn, true
+		}
 	}
 	suffix := " - " + metaFrom
 	for _, fn := range fromNames {
@@ -1211,11 +1285,128 @@ func (po *PartnerDripOrchestrator) createWaveSegment(ctx context.Context, v vert
 	return segID, nil
 }
 
+const (
+	ispCapBacklogReady    = "ready"
+	ispCapBacklogFollowup = "followup"
+)
+
+// ispCapForDrainHorizon returns the per-wave claim cap for one ISP given live
+// backlog depth and a multi-day drain target. Result is clamped to baseCap.
+func ispCapForDrainHorizon(readyCount, baseCap, drainDays, wavesPerVerticalPerDay int) int {
+	if baseCap <= 0 {
+		return 0
+	}
+	if drainDays <= 0 {
+		drainDays = 1
+	}
+	if wavesPerVerticalPerDay <= 0 || readyCount <= 0 {
+		return 0
+	}
+	horizonWaves := wavesPerVerticalPerDay * drainDays
+	drainCap := (readyCount + horizonWaves - 1) / horizonWaves
+	if drainCap < 1 {
+		drainCap = 1
+	}
+	if drainCap > baseCap {
+		drainCap = baseCap
+	}
+	return drainCap
+}
+
+func (po *PartnerDripOrchestrator) wavesPerVerticalPerDay(followup bool) int {
+	interval := po.cfg.TickInterval
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	ticksPerDay := int((24 * time.Hour) / interval)
+	if ticksPerDay < 1 {
+		ticksPerDay = 96
+	}
+	brands := po.cfg.BrandsPerTick
+	if followup {
+		brands = po.cfg.FollowupBrandsPerTick
+	}
+	if brands <= 0 {
+		brands = 4
+	}
+	return ticksPerDay * brands
+}
+
+func cloneISPCapMap(in map[string]int) map[string]int {
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func baseISPCap(perISPCaps map[string]int, isp string) int {
+	if cap, ok := perISPCaps[isp]; ok {
+		return cap
+	}
+	return perISPCaps["other"]
+}
+
+// resolvePerISPCaps merges static PerISPCapPerWave ceilings with drain-horizon
+// caps for ISPs listed in PerISPDrainDays. Recomputed every wave from live DB
+// counts so caps rise if the ingest queue refills during the drain window.
+func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertical, backlogKind string) (map[string]int, error) {
+	caps := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	if len(po.cfg.PerISPDrainDays) == 0 {
+		return caps, nil
+	}
+
+	followup := backlogKind == ispCapBacklogFollowup
+	query := `
+		SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
+		FROM partner_clean_queue
+		WHERE vertical = $1 AND status = 'ready'
+		GROUP BY 1
+	`
+	if followup {
+		query = `
+			SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
+			FROM partner_clean_queue
+			WHERE vertical = $1
+			  AND status = 'mailed'
+			  AND next_touch_at IS NOT NULL
+			  AND next_touch_at <= NOW()
+			GROUP BY 1
+		`
+	}
+
+	rows, err := po.db.QueryContext(ctx, query, vertical)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	readyByISP := make(map[string]int)
+	for rows.Next() {
+		var isp string
+		var n int
+		if err := rows.Scan(&isp, &n); err != nil {
+			continue
+		}
+		readyByISP[strings.ToLower(strings.TrimSpace(isp))] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	wavesPerDay := po.wavesPerVerticalPerDay(followup)
+	for isp, drainDays := range po.cfg.PerISPDrainDays {
+		isp = strings.ToLower(strings.TrimSpace(isp))
+		caps[isp] = ispCapForDrainHorizon(readyByISP[isp], baseISPCap(po.cfg.PerISPCapPerWave, isp), drainDays, wavesPerDay)
+	}
+	return caps, nil
+}
+
 // applyThroughputSafety filters claimed records based on:
 //   1. Active ISP backoff in mailing_isp_throttle_state (rate < threshold).
-//   2. Per-ISP cap per wave (cfg.PerISPCapPerWave).
+//   2. Per-ISP cap per wave (resolved caps passed by caller).
 // Returns (keep, deferred, reasons-by-isp).
-func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, recs []claimedRecord) ([]claimedRecord, []claimedRecord, map[string]string, error) {
+func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, recs []claimedRecord, perISPCaps map[string]int) ([]claimedRecord, []claimedRecord, map[string]string, error) {
 	throttled, err := po.fetchThrottledISPs(ctx)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1236,9 +1427,9 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, re
 			deferred = append(deferred, r)
 			continue
 		}
-		cap, hasCap := po.cfg.PerISPCapPerWave[isp]
+		cap, hasCap := perISPCaps[isp]
 		if !hasCap {
-			cap = po.cfg.PerISPCapPerWave["other"]
+			cap = perISPCaps["other"]
 		}
 		if cap > 0 && counts[isp] >= cap {
 			if existing, exists := reasons[isp]; !exists || existing == "" {
@@ -1654,7 +1845,11 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		hardCap = po.cfg.MaxWaveSize
 	}
 
-	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, po.cfg.PerISPCapPerWave, hardCap)
+	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, ispCapBacklogFollowup)
+	if err != nil {
+		return fmt.Errorf("resolve_isp_caps: %w", err)
+	}
+	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
 	}
@@ -1662,7 +1857,7 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		return nil
 	}
 
-	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed)
+	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed, perISPCaps)
 	if err != nil {
 		log.Printf("[PartnerDripOrchestrator] followup throughput_safety failed for vertical=%s: %v — proceeding without deferral", v.vertical, err)
 		keep = claimed

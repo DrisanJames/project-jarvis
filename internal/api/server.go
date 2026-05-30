@@ -70,6 +70,11 @@ type Server struct {
 	partnerSlicer            interface{ Stop() }
 	partnerValidator         interface{ Stop() }
 	partnerDripOrchestrator  interface{ Stop() }
+	// partnerDripStarter is invoked from SetMailingDB immediately after
+	// SetPMTACampaignService. Route registration can take >10 minutes; polling
+	// from main.go timed out before PMTA was wired (May 30 incident).
+	partnerDripStarter   func(db *sql.DB, pmta *PMTACampaignService) interface{ Stop() }
+	partnerDripStartOnce sync.Once
 	// Data pipeline reference — exported so main.go can wire it
 	DataPipeline *worker.DataPipeline
 	// PMTA accounting — public POST /engine/webhook; set when ingestor + workers are ready

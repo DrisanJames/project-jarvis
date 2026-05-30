@@ -42,6 +42,7 @@ WORKDIR /app
 COPY --from=go-builder /out/server ./server
 COPY config/config.example.yaml ./config/config.yaml
 COPY migrations ./migrations
+COPY docs/emails ./docs/emails
 COPY --from=web-builder /src/web/dist ./web/dist
 
 RUN mkdir -p /app/data && chown -R ignite:ignite /app

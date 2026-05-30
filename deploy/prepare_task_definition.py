@@ -95,6 +95,10 @@ def main() -> int:
     upsert_env(env_list, "SUPPRESSION_S3_REGION", "us-west-2")
     upsert_env(env_list, "REDIS_URL", "apex-redis.x9k9ng.0001.usw2.cache.amazonaws.com:6379")
     upsert_env(env_list, "DISABLE_ISP_RATE_LIMITING", "true")
+    # Partner drip recovery phase 1: ready-only drain, bypass stale throttle deferrals.
+    upsert_env(env_list, "PARTNER_DRIP_FOLLOWUP_DISABLED", "1")
+    upsert_env(env_list, "PARTNER_DRIP_THROTTLE_THRESHOLD", "0")
+    upsert_env(env_list, "PARTNER_DRIP_CREATIVES_DIR", "docs/emails")
 
     for var_name in PASSTHROUGH_ENV_VARS:
         val = os.environ.get(var_name)

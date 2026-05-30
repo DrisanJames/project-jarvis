@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="light" />
+  <meta name="supported-color-schemes" content="light" />
+  <title>The Skip List: providers that didn’t earn the premium</title>
+  <!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+    body { margin: 0; padding: 0; width: 100% !important; height: 100% !important; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f1ead7; color: #13202c; }
+    a { text-decoration: none; }
+    .wrapper { width: 100%; background-color: #f1ead7; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; background: #faf5e7; border-left: 1px solid #c8b88f; border-right: 1px solid #c8b88f; }
+    /* Manila-folder ledger background — faint gold horizontal rules every
+       28px on cream that fall back to a flat cream fill in clients that
+       strip background-image. */
+    .ledger-paper {
+      background-color: #f1ead7;
+      background-image:
+        linear-gradient(rgba(184,146,99,0.16) 1px, transparent 1px),
+        linear-gradient(90deg, transparent 49.6%, rgba(31,45,74,0.10) 49.6%, rgba(31,45,74,0.10) 50.2%, transparent 50.2%);
+      background-size: 100% 28px, 100% 100%;
+      background-position: 0 0, 0 0;
+    }
+    /* Gold ledger ticks — 1px every 10px */
+    .ledger-rule {
+      background-image: repeating-linear-gradient(to right, #7c5b34 0, #7c5b34 1px, transparent 1px, transparent 10px);
+      background-repeat: repeat-x;
+    }
+    /* Certificate seal — circular gold/oxblood embossed mark */
+    .seal-edge {
+      background-image:
+        radial-gradient(circle at center, transparent 60%, rgba(184,146,99,0.30) 60%, rgba(184,146,99,0.30) 62%, transparent 62%, transparent 70%, rgba(122,26,37,0.20) 70%, rgba(122,26,37,0.20) 71.5%, transparent 71.5%);
+    }
+    @media only screen and (max-width: 620px) {
+      .container { width: 100% !important; }
+      .cp { padding-left: 22px !important; padding-right: 22px !important; }
+      .stack-col { display: block !important; width: 100% !important; padding: 0 0 12px !important; }
+      .footer-col { display: block !important; width: 100% !important; padding: 0 0 14px !important; text-align: center !important; }
+      .hero-headline { font-size: 26px !important; }
+      .lead-num { font-size: 32px !important; }
+      .masthead-seal { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+
+    <!-- Preheader -->
+    <div style="display: none; max-height: 0; overflow: hidden; font-size: 1px; line-height: 1px; color: #faf5e7;">
+      Receipts inside. Plus: the appliance plan the manufacturer’s own card already covers and the auto-warranty robocall to ignore.
+    </div>
+
+    <div class="container">
+
+      <!-- ============================================= -->
+      <!-- MASTHEAD: ledger paper + certificate seal     -->
+      <!-- Wordmark + IBM Plex Mono FILE counter         -->
+      <!-- ============================================= -->
+      <div class="ledger-paper" style="padding: 0; background-color: #f1ead7;">
+        <div style="padding: 38px 32px 28px;">
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            <tr>
+              <td style="text-align: left; vertical-align: top; width: 70%;">
+                <p style="margin: 0 0 6px; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 3px;">
+                  EST. 2024 &middot; THE FINE-PRINT FILES
+                </p>
+                <a href="https://www.warrantyforyou.com" style="text-decoration: none;">
+                  <span style="display: inline-block; font-family: 'Playfair Display', Georgia, serif; font-size: 32px; font-weight: 800; letter-spacing: -0.5px; line-height: 1;">
+                    <span style="color: #1f2d4a;">Warranty</span><span style="color: #7a1a25;">ForYou</span>
+                  </span>
+                </a>
+                <p style="margin: 8px 0 0; font-family: 'Playfair Display', Georgia, serif; font-style: italic; font-size: 13px; color: #5e6f80; line-height: 1.4;">
+                  We read the warranty so you don&rsquo;t have to.
+                </p>
+              </td>
+              <td class="masthead-seal" style="text-align: right; vertical-align: top; width: 30%;">
+                <!-- Certificate seal — Plex Mono concentric -->
+                <table cellpadding="0" cellspacing="0" role="presentation" style="margin-left: auto;">
+                  <tr>
+                    <td class="seal-edge" style="width: 76px; height: 76px; border: 2px solid #b89263; border-radius: 50%; text-align: center; vertical-align: middle; background: #faf5e7;">
+                      <p style="margin: 0; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 8px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 1.4px; line-height: 1.2;">
+                        CERT.<br />
+                        <span style="font-family: 'Playfair Display', Georgia, serif; font-size: 18px; font-weight: 800; color: #1f2d4a; letter-spacing: -0.5px;">WFY</span><br />
+                        2026
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin: 6px 6px 0 0; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2px; text-align: right;">
+                  THE&nbsp;SCHEDULE
+                </p>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- Tear-off gold ledger rule under the masthead -->
+        <div style="border-top: 1.5px solid #1f2d4a; padding: 0; margin: 0;"></div>
+        <div class="ledger-rule" style="height: 8px; line-height: 8px; font-size: 0; opacity: 0.55;">&nbsp;</div>
+      </div>
+
+      <!-- BEGIN:INTRO -->
+      <!-- File-counter line -->
+      <div style="padding: 6px 32px 0;" class="cp">
+        <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2.4px;">
+          FILE No. WFY-19 &middot; FILED SUNDAY MAY 10, 2026
+        </p>
+      </div>
+
+      <!-- ON FILE check tagline -->
+      <div style="padding: 16px 32px 4px;" class="cp">
+        <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 11px; font-weight: 500; color: #7c5b34; letter-spacing: 1px;">
+          <svg width="14" height="14" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -2px; display: inline-block;"><path d="M 2 8.5 L 6 12.5 L 14 3.5" stroke="#7c5b34" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg> &nbsp; ON FILE &middot; 22 disclosure schedules read. 10 fine-print clauses flagged. 3 contracts shredded.
+        </p>
+      </div>
+
+      <!-- Intro: certificate-style headline + body -->
+      <div style="padding: 16px 32px 30px;" class="cp">
+        <h1 style="margin: 0 0 14px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 800; color: #0e1626; line-height: 1.2; letter-spacing: -0.4px;">
+          Three plans on file, two worth signing, one we are sending back.
+        </h1>
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 14px; border-collapse: collapse;">
+          <tr>
+            <td style="background: #b89263; width: 56px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+            <td style="background: #1f2d4a; width: 18px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+            <td style="background: #7a1a25; width: 8px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+          </tr>
+        </table>
+        <p style="margin: 0; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 15px; color: #13202c; line-height: 1.7;">
+          The denial letter is the single most useful document in warranty work. We have a stack of them on the desk, and most of them were preventable. This issue: how to read a coverage schedule before you sign, the providers paying claims fastest right now, and the one we are quietly removing from our recommendations.
+        </p>
+        <p style="margin: 18px 0 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 500; color: #5e6f80; letter-spacing: 1.5px; text-transform: uppercase;">
+          &mdash; The WFY Editorial Desk &middot; May 2026
+        </p>
+      </div>
+      <!-- END:INTRO -->
+
+      <div style="font-size: 0; line-height: 0;">
+        <hr style="border: none; border-top: 1px solid #c8b88f; margin: 0; height: 1px;" />
+      </div>
+
+      <!-- BEGIN:PRIMARY_REVIEW -->
+      <div style="background: #faf5e7; border-bottom: 1px solid #c8b88f;">
+        <a href="https://www.cratoolpro.com/BJB4Q5BF/KG53427/?source_id=email" target="_blank" rel="noopener noreferrer" data-everflow="true" style="text-decoration: none;">
+          <img src="https://static5.depositphotos.com/1037987/476/i/450/depositphotos_4767995-stock-photo-couple-giving-two-young-children.jpg" alt="Top 5 Best Personal Loans Options in 2026" width="600" style="width: 100%; max-width: 600px; height: auto; display: block; border: 0;" />
+        </a>
+      </div>
+
+      <div style="padding: 30px 32px 8px;" class="cp">
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 14px;">
+          <tr>
+            <td style="padding-right: 14px; vertical-align: middle;"><span style="display: inline-block; padding: 5px 12px 4px; border: 1.5px dashed #7a1a25; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2.4px; background: rgba(255,255,255,0.4); transform: rotate(-3deg); -ms-transform: rotate(-3deg); text-shadow: 0 0 1px rgba(122,26,37,0.55), 0.6px 0.5px 0 rgba(122,26,37,0.30), -0.4px 0.3px 0 rgba(122,26,37,0.20);">CERTIFIED</span></td>
+            <td style="vertical-align: middle;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2.4px;">
+                ON FILE &middot; PRIMARY &middot; Reviews
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <h2 style="margin: 0 0 18px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 26px; font-weight: 800; color: #0e1626; line-height: 1.22; letter-spacing: -0.4px;">
+          Top 5 Best Personal Loans Options in 2026
+        </h2>
+
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 14px; border-collapse: collapse;">
+          <tr>
+            <td style="background: #b89263; width: 56px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+            <td style="background: #1f2d4a; width: 18px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+            <td style="background: #7a1a25; width: 8px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+          </tr>
+        </table>
+
+        <!-- Pull-quote: gold rule + Playfair italic -->
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 22px;">
+          <tr>
+            <td style="border-left: 3px solid #7a1a25; padding: 4px 0 4px 18px;">
+              <p style="margin: 0 0 8px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 17px; font-style: italic; font-weight: 600; color: #0e1626; line-height: 1.55;">
+                &ldquo;North Star Loans is our #1 pick for personal loans in 2026. Competitive APR rates for qualified borrowers&rdquo;
+              </p>
+              <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 500; color: #5e6f80; text-transform: uppercase; letter-spacing: 2px;">
+                &mdash; Filed by the WFY Adjuster Panel
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin: 0 0 22px; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #13202c; line-height: 1.7;">
+          Expert-reviewed and ranked for 2026.
+        </p>
+
+        <!-- POLICY SCHEDULE strip -->
+        <p style="margin: 0 0 10px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2px;">
+          POLICY SCHEDULE &middot; North Star Loans
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #faf5e7; border: 1px dashed #c8b88f; border-top: 2px solid #b89263; margin: 0 0 14px;">
+          <tr>
+            <td style="padding: 14px 8px; text-align: center; width: 25%; border-right: 1px dashed #c8b88f;">
+              <p style="margin: 0 0 4px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 9px; font-weight: 500; color: #28384a; text-transform: uppercase; letter-spacing: 1.6px;">Coverage</p>
+              <p style="margin: 0; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #1f2d4a; line-height: 1.2; letter-spacing: -0.2px;">Tier varies</p>
+            </td>
+            <td style="padding: 14px 8px; text-align: center; width: 25%; border-right: 1px dashed #c8b88f;">
+              <p style="margin: 0 0 4px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 9px; font-weight: 500; color: #28384a; text-transform: uppercase; letter-spacing: 1.6px;">Term</p>
+              <p style="margin: 0; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #1f2d4a; line-height: 1.2; letter-spacing: -0.2px;">12 - 60 mo</p>
+            </td>
+            <td style="padding: 14px 8px; text-align: center; width: 25%; border-right: 1px dashed #c8b88f;">
+              <p style="margin: 0 0 4px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 9px; font-weight: 500; color: #28384a; text-transform: uppercase; letter-spacing: 1.6px;">Deductible</p>
+              <p style="margin: 0; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #1f2d4a; line-height: 1.2; letter-spacing: -0.2px;">$0 - $100</p>
+            </td>
+            <td style="padding: 14px 8px; text-align: center; width: 25%; ">
+              <p style="margin: 0 0 4px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 9px; font-weight: 500; color: #28384a; text-transform: uppercase; letter-spacing: 1.6px;">AM Best</p>
+              <p style="margin: 0; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #1f2d4a; line-height: 1.2; letter-spacing: -0.2px;">Verified</p>
+            </td>
+          </tr>
+        </table>
+        <p style="margin: 0 0 22px; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #5e6f80; line-height: 1.55; font-style: italic;">Read the schedule, not the brochure. The dollar amounts in the table are where every plan lives or dies.</p>
+
+        <a href="https://www.cratoolpro.com/BJB4Q5BF/KG53427/?source_id=email" target="_blank" rel="noopener noreferrer" data-everflow="true" style="display: block; text-decoration: none; color: inherit; margin: 0 0 24px;">
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #faf5e7; border: 1px solid #c8b88f; border-left: 4px solid #b89263;">
+            <tr>
+              <td style="width: 88px; padding: 18px 0 18px 18px; vertical-align: middle;">
+                <img src="https://d31uc87zw3sluy.cloudfront.net/www.northstar-loans.com/img/logo.svg?v=e718394d5483" alt="North Star Loans" width="64" style="width: 64px; height: auto; display: block; border: 0;" />
+              </td>
+              <td style="padding: 18px 18px 18px 14px; vertical-align: middle;">
+                <p style="margin: 0 0 5px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2px;">TOP PICK &middot; 4.8 / 5</p>
+                <p style="margin: 0 0 4px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 18px; font-weight: 700; color: #1f2d4a; line-height: 1.3; letter-spacing: -0.2px;">North Star Loans</p>
+                <p style="margin: 0; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #5e6f80; line-height: 1.55;">Competitive APR rates for qualified borrowers · Fast approval and same-day funding available · No hidden fees or prepayment penalties</p>
+              </td>
+            </tr>
+          </table>
+        </a>
+
+        <table cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td style="background: #1f2d4a; border-radius: 2px;">
+              <a href="https://www.cratoolpro.com/BJB4Q5BF/KG53427/?source_id=email" target="_blank" rel="noopener noreferrer" data-everflow="true" style="display: inline-block; padding: 14px 30px; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 700; color: #faf5e7; text-decoration: none; text-transform: uppercase; letter-spacing: 2px; border-radius: 2px;">Check Your Rate <span style="color: #b89263;">&rarr;</span></a>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin: 14px 0 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 500; color: #5e6f80; text-transform: uppercase; letter-spacing: 1.6px;">
+          Sample disclosure &middot; Coverage and rates vary by state
+        </p>
+      </div>
+
+      <div style="padding: 28px 0 0;">
+        <hr style="border: none; border-top: 1px solid #c8b88f; margin: 0; height: 1px;" />
+        <div style="height: 6px; background-image: repeating-linear-gradient(to right, #7c5b34 0, #7c5b34 1px, transparent 1px, transparent 10px); background-repeat: repeat-x; background-position: 0 0; opacity: 0.4; line-height: 6px; font-size: 0;">&nbsp;</div>
+      </div>
+      <!-- END:PRIMARY_REVIEW -->
+
+      <!-- ============================================= -->
+      <!-- THE SCHEDULE — gold-rule numbered article rows -->
+      <!-- ============================================= -->
+      <div style="padding: 30px 32px 6px;" class="cp">
+        <p style="margin: 0 0 6px; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2.4px;">
+          THE SCHEDULE
+        </p>
+        <h2 style="margin: 0; font-family: 'Playfair Display', Georgia, serif; font-size: 24px; font-weight: 800; color: #0e1626; line-height: 1.22; letter-spacing: -0.3px;">
+          On the editorial desk this week.
+        </h2>
+      </div>
+
+      <div style="padding: 0 32px 14px;" class="cp">
+        <!-- BEGIN:BLOG_ARTICLES -->
+        <div style="background: #faf5e7; border: 1.5px dashed #c8b88f; border-left: 4px solid #b89263; padding: 24px;">
+          <p style="margin: 0 0 10px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 11px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2.4px;">
+            <svg width="14" height="14" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -2px; display: inline-block;"><path d="M 2 8.5 L 6 12.5 L 14 3.5" stroke="#7a1a25" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg> &nbsp; FILING IN PROGRESS
+          </p>
+          <p style="margin: 0 0 6px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700; font-size: 18px; color: #0e1626; line-height: 1.3;">
+            More from the desk in the next issue.
+          </p>
+          <p style="margin: 0; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #5e6f80; line-height: 1.65;">
+            Pending: three test claims, two adjuster calls, one denial letter to publish.
+          </p>
+        </div>
+      <!-- END:BLOG_ARTICLES -->
+      </div>
+
+      <div style="padding: 0 0 0;">
+        <hr style="border: none; border-top: 1px solid #c8b88f; margin: 0; height: 1px;" />
+      </div>
+
+      <!-- BEGIN:SECONDARY_REVIEW -->
+      <div style="padding: 30px 32px 4px;" class="cp">
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 14px;">
+          <tr>
+            <td style="padding-right: 14px; vertical-align: middle;"><span style="display: inline-block; padding: 5px 12px 4px; border: 1.5px dashed #1f2d4a; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2.4px; background: rgba(255,255,255,0.4); transform: rotate(2deg); -ms-transform: rotate(2deg); text-shadow: 0 0 1px rgba(31,45,74,0.55), 0.6px 0.5px 0 rgba(31,45,74,0.30), -0.4px 0.3px 0 rgba(31,45,74,0.20);">ALSO ON FILE</span></td>
+            <td style="vertical-align: middle;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2.4px;">
+                THE RUNNER-UP &middot; Finance
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <h2 style="margin: 0 0 16px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 22px; font-weight: 800; color: #0e1626; line-height: 1.25; letter-spacing: -0.3px;">
+          Top 5 Best Finance Options in 2026
+        </h2>
+
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 14px;">
+          <tr>
+            <td style="background: #1f2d4a; width: 48px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+            <td style="background: #b89263; width: 16px; height: 3px; line-height: 3px; font-size: 3px;">&nbsp;</td>
+          </tr>
+        </table>
+
+        <table cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 22px;">
+          <tr>
+            <td style="border-left: 3px solid #1f2d4a; padding: 4px 0 4px 18px;">
+              <p style="margin: 0 0 8px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 16px; font-style: italic; font-weight: 600; color: #0e1626; line-height: 1.5;">
+                &ldquo;Optima Tax Relief is our #1 pick for finance in 2026. Trusted Finance.&rdquo;
+              </p>
+              <p style="margin: 0; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 500; color: #5e6f80; text-transform: uppercase; letter-spacing: 2px;">
+                &mdash; Filed by the WFY Adjuster Panel
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin: 0 0 22px; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #13202c; line-height: 1.7;">
+          Expert-reviewed and ranked for 2026. Optima Tax Relief leads the pack.
+        </p>
+
+        <a href="" target="_blank" rel="noopener noreferrer" data-everflow="true" style="display: block; text-decoration: none; color: inherit; margin: 0 0 24px;">
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #faf5e7; border: 1px solid #c8b88f; border-left: 4px solid #b89263;">
+            <tr>
+              <td style="width: 88px; padding: 18px 0 18px 18px; vertical-align: middle;">
+                <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTd3Q8D3Nrv5mH7IauOrFm1O-SOsY3UmeOQbQ&amp;s" alt="Optima Tax Relief" width="64" style="width: 64px; height: auto; display: block; border: 0;" />
+              </td>
+              <td style="padding: 18px 18px 18px 14px; vertical-align: middle;">
+                <p style="margin: 0 0 5px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 10px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2px;">ALSO ON FILE &middot; 4.8 / 5</p>
+                <p style="margin: 0 0 4px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-size: 18px; font-weight: 700; color: #1f2d4a; line-height: 1.3; letter-spacing: -0.2px;">Optima Tax Relief</p>
+                <p style="margin: 0; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #5e6f80; line-height: 1.55;">Trusted Finance</p>
+              </td>
+            </tr>
+          </table>
+        </a>
+
+        <table cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td style="background: #1f2d4a; border-radius: 2px;">
+              <a href="" target="_blank" rel="noopener noreferrer" data-everflow="true" style="display: inline-block; padding: 14px 30px; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 700; color: #faf5e7; text-decoration: none; text-transform: uppercase; letter-spacing: 2px; border-radius: 2px;">Learn More <span style="color: #b89263;">&rarr;</span></a>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding: 28px 0 0;">
+        <hr style="border: none; border-top: 1px solid #c8b88f; margin: 0; height: 1px;" />
+        <div style="height: 6px; background-image: repeating-linear-gradient(to right, #7c5b34 0, #7c5b34 1px, transparent 1px, transparent 10px); background-repeat: repeat-x; background-position: 0 0; opacity: 0.4; line-height: 6px; font-size: 0;">&nbsp;</div>
+      </div>
+      <!-- END:SECONDARY_REVIEW -->
+
+      <!-- ============================================= -->
+      <!-- THE SHORT FILE — three more from the desk     -->
+      <!-- ============================================= -->
+      <div style="padding: 30px 32px 6px;" class="cp">
+        <p style="margin: 0 0 6px; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2.4px;">
+          THE SHORT FILE
+        </p>
+        <h2 style="margin: 0; font-family: 'Playfair Display', Georgia, serif; font-size: 22px; font-weight: 800; color: #0e1626; line-height: 1.25; letter-spacing: -0.3px;">
+          Briefer files, same standard.
+        </h2>
+      </div>
+
+      <div style="padding: 0 32px 14px;" class="cp">
+        <!-- BEGIN:MORE_ARTICLES -->
+        <div style="background: #faf5e7; border: 1.5px dashed #c8b88f; border-left: 4px solid #b89263; padding: 24px;">
+          <p style="margin: 0 0 10px; font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 11px; font-weight: 600; color: #7a1a25; text-transform: uppercase; letter-spacing: 2.4px;">
+            <svg width="14" height="14" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -2px; display: inline-block;"><path d="M 2 8.5 L 6 12.5 L 14 3.5" stroke="#7a1a25" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg> &nbsp; FILING IN PROGRESS
+          </p>
+          <p style="margin: 0 0 6px; font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700; font-size: 18px; color: #0e1626; line-height: 1.3;">
+            More from the desk in the next issue.
+          </p>
+          <p style="margin: 0; font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #5e6f80; line-height: 1.65;">
+            More files going up this week. The desk is busy reading schedules.
+          </p>
+        </div>
+      <!-- END:MORE_ARTICLES -->
+      </div>
+
+      <!-- ============================================= -->
+      <!-- A NOTE FROM THE DESK                          -->
+      <!-- ============================================= -->
+      <div style="padding: 12px 32px 36px;" class="cp">
+        <div style="background: #faf5e7; border: 1.5px dashed #c8b88f; border-left: 4px solid #b89263; padding: 24px;">
+          <p style="margin: 0 0 10px; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 2.4px;">A NOTE FROM THE EDITORIAL DESK</p>
+          <p style="margin: 0 0 18px; font-family: 'Source Sans 3', sans-serif; font-size: 14px; color: #28384a; line-height: 1.7;">
+            We only send The Schedule when the desk has something on file worth your inbox. If we are not earning the space, the door is right here &mdash; one click, no follow-ups. We read the warranty so you don&rsquo;t have to.
+          </p>
+          <table cellpadding="0" cellspacing="0" role="presentation">
+            <tr>
+              <td style="padding-right: 8px; background: #1f2d4a; border-radius: 2px;">
+                <a href="{{ system.unsubscribe_url }}" style="display: inline-block; padding: 11px 22px; font-family: 'Source Sans 3', sans-serif; font-size: 12px; font-weight: 700; color: #faf5e7; text-decoration: none; text-transform: uppercase; letter-spacing: 2px; border-radius: 2px;">UNSUBSCRIBE</a>
+              </td>
+              <td style="padding-left: 6px;">
+                <a href="{{ system.preferences_url }}" style="display: inline-block; padding: 11px 22px; font-family: 'Source Sans 3', sans-serif; font-size: 12px; font-weight: 700; color: #1f2d4a; text-decoration: none; text-transform: uppercase; letter-spacing: 2px; border: 1.5px solid #1f2d4a; border-radius: 2px;">CHANGE FREQUENCY</a>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============================================= -->
+      <!-- FOOTER — Certified-by-humans seal             -->
+      <!-- ============================================= -->
+      <div style="font-size: 0; line-height: 0;">
+        <hr style="border: none; border-top: 1.5px solid #1f2d4a; margin: 0; height: 1px;" />
+      </div>
+      <div class="ledger-rule" style="height: 8px; line-height: 8px; font-size: 0; opacity: 0.55;">&nbsp;</div>
+
+      <div style="padding: 30px 32px 12px; background: #faf5e7;" class="cp">
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td style="text-align: center; vertical-align: middle;">
+              <span style="display: inline-block; padding: 6px 14px 5px; border: 1.5px dashed #1f2d4a; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 11px; font-weight: 600; color: #1f2d4a; text-transform: uppercase; letter-spacing: 3px; background: #f1ead7; transform: rotate(-1.5deg); -ms-transform: rotate(-1.5deg); text-shadow: 0 0 1px rgba(31,45,74,0.4), 0.5px 0.4px 0 rgba(31,45,74,0.2);">
+                CERTIFIED BY HUMANS &middot; READ LINE BY LINE
+              </span>
+              <div style="margin: 14px auto 0; max-width: 220px;">
+                <svg width="220" height="14" viewBox="0 0 220 14" xmlns="http://www.w3.org/2000/svg" style="display: block;">
+                  <path d="M 4 8 Q 18 2 32 8 T 60 8 T 88 8 T 116 8 T 144 8 T 172 8 T 200 8 T 216 8" stroke="#1f2d4a" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.7" />
+                </svg>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding: 12px 32px 16px; background: #faf5e7;" class="cp">
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td class="footer-col" style="text-align: left; vertical-align: middle; width: 33%;">
+              <a href="{{ system.preferences_url }}" style="font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 1.5px; text-decoration: none;">Manage&nbsp;preferences</a>
+            </td>
+            <td class="footer-col" style="text-align: center; vertical-align: middle; width: 33%;">
+              <a href="https://www.warrantyforyou.com" style="font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 1.5px; text-decoration: none;">Read&nbsp;on&nbsp;web</a>
+            </td>
+            <td class="footer-col" style="text-align: right; vertical-align: middle; width: 33%;">
+              <a href="{{ system.unsubscribe_url }}" style="font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #1f2d4a; text-transform: uppercase; letter-spacing: 1.5px; text-decoration: none;">Unsubscribe</a>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding: 0 32px 30px; background: #faf5e7;" class="cp">
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td style="text-align: left; vertical-align: middle;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #5e6f80; text-transform: uppercase; letter-spacing: 1px; line-height: 1.7;">
+                &copy;&nbsp;{{ system.current_year }}&nbsp;WarrantyForYou&nbsp;Editorial &middot; The&nbsp;Editorial&nbsp;Desk, 412&nbsp;Disclosure&nbsp;Way, Tallahassee,&nbsp;FL &middot; Privacy &middot; Contact
+              </p>
+            </td>
+            <td style="text-align: right; vertical-align: middle; white-space: nowrap;">
+              <span style="font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #5e6f80; text-transform: uppercase; letter-spacing: 1px;">warrantyforyou.com&nbsp;/&nbsp;{{ system.current_year }}</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

@@ -2251,6 +2251,13 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 		rc["custom"] = make(map[string]interface{})
 	}
 
+	// Brand root for Everflow sub2={{ brand.domain }} on offer-center creatives.
+	if item.BrandRoot != "" {
+		rc["brand"] = map[string]interface{}{
+			"domain": item.BrandRoot,
+		}
+	}
+
 	// Engagement
 	rc["engagement"] = map[string]interface{}{
 		"score":             item.EngagementScore,
