@@ -128,7 +128,7 @@ func (m *SegmentMaterializer) MaterializeCanonicalSegments(ctx context.Context) 
 		if ctx.Err() != nil {
 			break
 		}
-		count, err := MaterializeSegment(ctx, m.db, seg.id, seg.listID, seg.conditions)
+		count, err := m.materializeOne(ctx, seg.id, seg.listID, seg.conditions)
 		if err != nil {
 			log.Printf("[SegmentMaterializer] canonical %q (%s) failed: %v",
 				seg.name, safePrefix(seg.id, 12), err)
@@ -209,7 +209,7 @@ func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) 
 			log.Printf("[SegmentMaterializer] engagement catalog: context cancelled after %d/%d", materialized, len(segments))
 			break
 		}
-		count, err := MaterializeSegment(ctx, m.db, seg.id, seg.listID, seg.conditions)
+		count, err := m.materializeOne(ctx, seg.id, seg.listID, seg.conditions)
 		if err != nil {
 			log.Printf("[SegmentMaterializer] engagement catalog %q (%s) failed: %v",
 				seg.name, safePrefix(seg.id, 12), err)
@@ -226,12 +226,25 @@ func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) 
 func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 	start := time.Now()
 
+	// Selection strategy: oldest `updated_at` first, capped at 500 per
+	// nightly cycle. With ~14k active dynamic segments the LIMIT is the
+	// effective cycle-length governor — at 500/night a segment is
+	// re-materialized every ~28 days. Bumped from the original 200 (which
+	// gave a ~70-day cycle and silently starved campaign-critical segments
+	// like QF 30D Clickers — observed 12-day stale on 2026-05-31).
+	//
+	// Fairness contract: materializeOne MUST advance `updated_at` on every
+	// success so the same 500 don't get re-picked the next night. The
+	// SegmentRefreshWorker also bumps `updated_at` on its 30-min count
+	// refresh cycle, so the two workers cooperate to keep all active
+	// segments rotating naturally without us needing a separate priority
+	// queue or cursor table.
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT s.id::text, s.list_id::text, s.name, COALESCE(s.conditions::text, '[]')
 		FROM mailing_segments s
 		WHERE s.status = 'active' AND s.segment_type = 'dynamic'
 		ORDER BY s.updated_at ASC
-		LIMIT 200
+		LIMIT 500
 	`)
 	if err != nil {
 		log.Printf("[SegmentMaterializer] query segments error: %v", err)
@@ -279,7 +292,31 @@ func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 }
 
 func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, listID, conditionsRaw string) (int, error) {
-	return MaterializeSegment(ctx, m.db, segmentID, listID, conditionsRaw)
+	count, err := MaterializeSegment(ctx, m.db, segmentID, listID, conditionsRaw)
+	if err != nil {
+		return count, err
+	}
+
+	// Fairness contract (see materializeAll docstring): advance
+	// `updated_at` + `last_calculated_at` and refresh `subscriber_count` so
+	// this segment cycles to the back of the worker's selection queue. If
+	// we don't bump these, the same 500 oldest-by-updated_at segments get
+	// re-picked every night and the long tail starves indefinitely.
+	//
+	// Failure here is non-fatal: the materialization itself succeeded, the
+	// member rows are correct, and the next night's run will retry the
+	// metadata bump. We log + swallow so the broader cycle doesn't abort.
+	if _, err := m.db.ExecContext(ctx, `
+		UPDATE mailing_segments
+		SET subscriber_count   = $1,
+		    last_calculated_at = NOW(),
+		    updated_at         = NOW()
+		WHERE id = $2::uuid
+	`, count, segmentID); err != nil {
+		log.Printf("[SegmentMaterializer] post-materialize cache update failed for %s: %v",
+			safePrefix(segmentID, 12), err)
+	}
+	return count, nil
 }
 
 // MaterializeSegment populates mailing_segment_members for a single segment.

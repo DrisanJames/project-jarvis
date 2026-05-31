@@ -191,6 +191,15 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	log.Printf("[AudienceWorker] campaign %s Phase 1 complete: audience=%d/%d in %v",
 		campaignID, audience.SelectedTotal, audience.TotalSeen, time.Since(planStart))
 
+	// Bookkeeping: bump usage on every segment this campaign actually drew
+	// from (inclusion + exclusion + send-priority segments). Best-effort,
+	// fire-and-forget — must never block Phase 2. Replaces the dead trigger
+	// from migration 006 which was wired to a non-existent column. See
+	// segment_usage_tracker.go for full rationale.
+	bumpCtx, bumpCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	bumpSegmentUsage(bumpCtx, s.db, collectSegmentIDsForUsage(input), campaignID)
+	bumpCancel()
+
 	// ── Phase 2: Wave Creation (own 20-min context) ──
 	waveStart := time.Now()
 	waveCtx, waveCancel := context.WithTimeout(context.Background(), 20*time.Minute)
