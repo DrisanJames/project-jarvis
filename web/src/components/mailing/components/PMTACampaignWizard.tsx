@@ -12,6 +12,12 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import { useToast } from '../shared/ToastSystem';
 import { JarvisCompleteModal } from '../shared/JarvisCompleteModal';
+import {
+  SEGMENT_CATEGORIES,
+  getCategoryMeta,
+  defaultVisibleCategoriesForPicker,
+  type SegmentCategory,
+} from './segCategoryMetadata';
 
 const API_BASE = '/api/mailing';
 
@@ -377,7 +383,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
-  const [segments, setSegments] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
+  const [segments, setSegments] = useState<{ id: string; name: string; subscriber_count: number; category?: string; status?: string }[]>([]);
   const [suppressionLists, setSuppressionLists] = useState<{ id: string; name: string; entry_count: number }[]>([]);
   const [selectedLists, setSelectedLists] = useState<string[]>([]);
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
@@ -387,6 +393,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [inclusionSearch, setInclusionSearch] = useState('');
   const [suppressionSearch, setSuppressionSearch] = useState('');
   const [exclusionSearch, setExclusionSearch] = useState('');
+  // Category filter sets default to the operator-facing categories that
+  // make sense for inclusion (engagement/framework/funnel/cohort) vs
+  // exclusion (suppression/exclusion). Partner-wave-static and
+  // legacy_snapshot are intentionally hidden by default; the operator
+  // can re-enable them via the filter dropdown or the "Show all" toggle.
+  const [activeIncCategories, setActiveIncCategories] = useState<Set<SegmentCategory>>(
+    () => defaultVisibleCategoriesForPicker('inclusion'),
+  );
+  const [activeExcCategories, setActiveExcCategories] = useState<Set<SegmentCategory>>(
+    () => defaultVisibleCategoriesForPicker('exclusion'),
+  );
+  const [showArchived, setShowArchived] = useState(false);
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
   const [audienceError, setAudienceError] = useState('');
 
@@ -557,7 +575,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     try {
       const [listRes, segRes, suppRes] = await Promise.all([
         fetchWithRetry(`${API_BASE}/lists`),
-        fetchWithRetry(`${API_BASE}/segments`),
+        // include_archived=true so the wizard can locally toggle showing
+        // archived items; default UI hides them via showArchived state.
+        fetchWithRetry(`${API_BASE}/segments?include_archived=true`),
         fetchWithRetry(`${API_BASE}/suppression-lists`),
       ]);
       if (!listRes.ok || !segRes.ok || !suppRes.ok) {
@@ -2759,10 +2779,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     const AudienceCard: React.FC<{
       name: string; count: number; selected: boolean; type: 'list' | 'segment' | 'suppression' | 'exclusion-segment';
       onToggle: () => void;
-    }> = ({ name, count, selected, type, onToggle }) => {
+      category?: string;
+      status?: string;
+    }> = ({ name, count, selected, type, onToggle, category, status }) => {
       const colors: Record<string, string> = { list: '#00b0ff', segment: '#8b5cf6', suppression: '#ef4444', 'exclusion-segment': '#f59e0b' };
       const icons: Record<string, any> = { list: faUsers, segment: faChartBar, suppression: faShieldAlt, 'exclusion-segment': faCrosshairs };
       const c = colors[type];
+      const meta = (type === 'segment' || type === 'exclusion-segment') ? getCategoryMeta(category) : null;
+      const isArchived = status === 'archived';
       return (
         <div
           role="button" tabIndex={0} onClick={onToggle}
@@ -2774,6 +2798,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             borderRadius: 8, cursor: 'pointer',
             transition: 'all 0.2s ease',
             transform: selected ? 'scale(1.01)' : 'scale(1)',
+            opacity: isArchived ? 0.55 : 1,
           }}
         >
           <div style={{
@@ -2785,7 +2810,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             <FontAwesomeIcon icon={icons[type]} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: '#e0e6f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{name}</div>
+              {meta && (
+                <span title={meta.description} className={meta.badgeClass} style={{
+                  fontSize: 9, padding: '1px 6px', borderRadius: 999, fontWeight: 600,
+                  border: '1px solid', textTransform: 'uppercase', letterSpacing: 0.3, flexShrink: 0,
+                }}>{meta.shortLabel}</span>
+              )}
+              {isArchived && (
+                <span style={{ fontSize: 9, color: '#9ca3af', background: 'rgba(75,85,99,0.3)', padding: '1px 6px', borderRadius: 999, flexShrink: 0, border: '1px solid rgba(156,163,175,0.4)' }}>archived</span>
+              )}
+            </div>
             <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 1 }}>{count.toLocaleString()} {type === 'suppression' ? 'entries' : 'subscribers'}</div>
           </div>
           <div style={{
@@ -2797,6 +2833,70 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           }}>
             {selected && <FontAwesomeIcon icon={faCheck} style={{ color: '#fff', fontSize: 9 }} />}
           </div>
+        </div>
+      );
+    };
+
+    // Compact pill row used at the top of the inclusion + exclusion segment
+    // panels so the operator can toggle which segment categories are
+    // visible. Mirrors the operator-facing labels from segCategoryMetadata.
+    const CategoryFilterRow: React.FC<{
+      mode: 'inclusion' | 'exclusion';
+      active: Set<SegmentCategory>;
+      setActive: React.Dispatch<React.SetStateAction<Set<SegmentCategory>>>;
+      showArchivedToggle: boolean;
+    }> = ({ active, setActive, showArchivedToggle }) => {
+      const counts = SEGMENT_CATEGORIES.reduce<Record<string, number>>((acc, c) => {
+        acc[c.id] = segments.filter(s => (s.category || 'uncategorized') === c.id && (showArchived || s.status !== 'archived')).length;
+        return acc;
+      }, {});
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      return (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8, alignItems: 'center' }}>
+          {SEGMENT_CATEGORIES.filter(cat => counts[cat.id] > 0).map(cat => {
+            const isActive = active.has(cat.id);
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setActive(prev => {
+                  const next = new Set(prev);
+                  if (next.has(cat.id)) next.delete(cat.id);
+                  else next.add(cat.id);
+                  return next;
+                })}
+                title={cat.description}
+                style={{
+                  fontSize: 10, padding: '3px 8px', borderRadius: 999, cursor: 'pointer',
+                  background: isActive ? 'rgba(139,92,246,0.18)' : 'rgba(15,23,42,0.6)',
+                  color: isActive ? '#d4baff' : 'rgba(180,210,240,0.5)',
+                  border: `1px solid ${isActive ? 'rgba(139,92,246,0.5)' : 'rgba(180,210,240,0.12)'}`,
+                  fontWeight: 600, letterSpacing: 0.3, transition: 'all 0.15s ease',
+                }}
+              >{cat.shortLabel} <span style={{ opacity: 0.7 }}>{counts[cat.id]}</span></button>
+            );
+          })}
+          <span style={{ flex: 1 }} />
+          {showArchivedToggle && (
+            <button
+              onClick={() => setShowArchived(v => !v)}
+              style={{
+                fontSize: 10, padding: '3px 8px', borderRadius: 999, cursor: 'pointer',
+                background: showArchived ? 'rgba(245,158,11,0.18)' : 'rgba(15,23,42,0.6)',
+                color: showArchived ? '#fbbf24' : 'rgba(180,210,240,0.4)',
+                border: `1px solid ${showArchived ? 'rgba(245,158,11,0.5)' : 'rgba(180,210,240,0.12)'}`,
+                fontWeight: 600, letterSpacing: 0.3,
+              }}
+            >{showArchived ? 'hide' : 'show'} archived</button>
+          )}
+          <button
+            onClick={() => setActive(new Set(SEGMENT_CATEGORIES.map(c => c.id)))}
+            style={{
+              fontSize: 10, padding: '3px 8px', borderRadius: 999, cursor: 'pointer',
+              background: 'rgba(15,23,42,0.6)', color: 'rgba(180,210,240,0.5)',
+              border: '1px solid rgba(180,210,240,0.12)', fontWeight: 600, letterSpacing: 0.3,
+            }}
+            title={`Show all ${total} segments across every category`}
+          >all</button>
         </div>
       );
     };
@@ -2888,6 +2988,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   </div>
                 )}
 
+                {segments.length > 0 && (
+                  <CategoryFilterRow mode="inclusion" active={activeIncCategories} setActive={setActiveIncCategories} showArchivedToggle={true} />
+                )}
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
                   {lists
                     .filter(l => !inclusionSearch || l.name.toLowerCase().includes(inclusionSearch.toLowerCase()))
@@ -2901,6 +3005,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                       selected={selectedLists.includes(l.id)} type="list" onToggle={() => toggleList(l.id)} />
                   ))}
                   {segments
+                    .filter(s => activeIncCategories.has((s.category || 'uncategorized') as SegmentCategory))
+                    .filter(s => showArchived || s.status !== 'archived')
                     .filter(s => !inclusionSearch || s.name.toLowerCase().includes(inclusionSearch.toLowerCase()))
                     .sort((a, b) => {
                       const asel = selectedSegments.includes(a.id) ? 0 : 1;
@@ -2909,7 +3015,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                     })
                     .map(s => (
                     <AudienceCard key={`seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
-                      selected={selectedSegments.includes(s.id)} type="segment" onToggle={() => toggleSegment(s.id)} />
+                      selected={selectedSegments.includes(s.id)} type="segment" onToggle={() => toggleSegment(s.id)}
+                      category={s.category} status={s.status} />
                   ))}
                 </div>
               </div>
@@ -2969,8 +3076,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                         style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', fontSize: 12, background: '#0a0f1e', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 6, color: '#e0e8f0', outline: 'none' }}
                       />
                     </div>
+                    <CategoryFilterRow mode="exclusion" active={activeExcCategories} setActive={setActiveExcCategories} showArchivedToggle={false} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', paddingRight: 4 }}>
                       {segments
+                        .filter(s => activeExcCategories.has((s.category || 'uncategorized') as SegmentCategory))
+                        .filter(s => showArchived || s.status !== 'archived')
                         .filter(s => !exclusionSearch || s.name.toLowerCase().includes(exclusionSearch.toLowerCase()))
                         .sort((a, b) => {
                           const asel = selectedExclusionSegments.includes(a.id) ? 0 : 1;
@@ -2980,7 +3090,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                         .map(s => (
                         <AudienceCard key={`excl-seg-${s.id}`} name={s.name} count={s.subscriber_count || 0}
                           selected={selectedExclusionSegments.includes(s.id)} type="exclusion-segment"
-                          onToggle={() => toggleExclusionSegment(s.id)} />
+                          onToggle={() => toggleExclusionSegment(s.id)}
+                          category={s.category} status={s.status} />
                       ))}
                     </div>
                   </>

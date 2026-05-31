@@ -142,6 +142,87 @@ func (m *SegmentMaterializer) MaterializeCanonicalSegments(ctx context.Context) 
 		materialized, len(segments), time.Since(start).Round(time.Millisecond))
 }
 
+// MaterializeEngagementCatalog runs MaterializeSegment for every active
+// dynamic segment in the engagement_brand or engagement_global category
+// that has zero rows in mailing_segment_members. Intended as a one-shot
+// boot-time hydrator for segments that were created via API (POST
+// /api/mailing/segments) but whose inline background goroutine either
+// timed out or returned 0 due to BuildSegmentWhereClause's defensive
+// 5s statement_timeout on the calculateSegmentCount path.
+//
+// Idempotent: only processes segments with mailing_segment_members
+// COUNT(*) = 0. Already-populated segments are skipped so subsequent
+// boots don't redundantly re-DELETE-then-INSERT thousands of rows.
+//
+// Runs in its own goroutine so the HTTP server starts on time — heavy
+// global segments (no sending_domain filter) can take 6-10 minutes each
+// to scan the full mailing_subscribers x mailing_tracking_events join.
+// MaterializeSegment's own 10-min statement_timeout caps each call.
+//
+// Added 2026-05-29 alongside the direct-API build of the 102-segment
+// engagement catalog (.scratch/may29_seed_engagement_segments.py) to
+// resolve the 10 stragglers that the inline goroutine couldn't finish.
+func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) {
+	start := time.Now()
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT s.id::text, COALESCE(s.list_id::text, ''), s.name, COALESCE(s.conditions::text, '[]')
+		FROM mailing_segments s
+		WHERE s.status = 'active'
+		  AND s.segment_type = 'dynamic'
+		  AND s.category IN ('engagement_brand', 'engagement_global')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM mailing_segment_members msm
+		    WHERE msm.segment_id = s.id
+		  )
+		ORDER BY s.name ASC
+	`)
+	if err != nil {
+		log.Printf("[SegmentMaterializer] engagement catalog query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type segInfo struct {
+		id, listID, name, conditions string
+	}
+	var segments []segInfo
+	for rows.Next() {
+		var s segInfo
+		if err := rows.Scan(&s.id, &s.listID, &s.name, &s.conditions); err != nil {
+			log.Printf("[SegmentMaterializer] engagement catalog scan error: %v", err)
+			continue
+		}
+		segments = append(segments, s)
+	}
+
+	if len(segments) == 0 {
+		log.Printf("[SegmentMaterializer] engagement catalog: all segments already materialized (nothing to do)")
+		return
+	}
+
+	log.Printf("[SegmentMaterializer] engagement catalog: hydrating %d unmaterialized segments", len(segments))
+
+	materialized := 0
+	for _, seg := range segments {
+		if ctx.Err() != nil {
+			log.Printf("[SegmentMaterializer] engagement catalog: context cancelled after %d/%d", materialized, len(segments))
+			break
+		}
+		count, err := MaterializeSegment(ctx, m.db, seg.id, seg.listID, seg.conditions)
+		if err != nil {
+			log.Printf("[SegmentMaterializer] engagement catalog %q (%s) failed: %v",
+				seg.name, safePrefix(seg.id, 12), err)
+			continue
+		}
+		log.Printf("[SegmentMaterializer] engagement catalog %q — %d members", seg.name, count)
+		materialized++
+	}
+
+	log.Printf("[SegmentMaterializer] engagement catalog: %d/%d hydrated in %s",
+		materialized, len(segments), time.Since(start).Round(time.Millisecond))
+}
+
 func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 	start := time.Now()
 

@@ -781,7 +781,7 @@ func (s *PMTACampaignService) HandleDeployCachedWaves(w http.ResponseWriter, r *
 				WHERE organization_id = $1 AND vendor_type = 'pmta'
 				  AND (sending_domain = $2 OR from_email LIKE '%%@' || $2)
 				  AND status = 'active'
-				ORDER BY created_at DESC LIMIT 1
+				ORDER BY is_default DESC, created_at DESC LIMIT 1
 			`, orgID, b.SendingDomain).Scan(&profileID)
 
 			campaignID := uuid.New().String()
@@ -1136,7 +1136,7 @@ func (s *PMTACampaignService) scheduleWaves(ctx context.Context, b brandConfig, 
 		WHERE organization_id = $1 AND vendor_type = 'pmta'
 		  AND (sending_domain = $2 OR from_email LIKE '%%@' || $2)
 		  AND status = 'active'
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY is_default DESC, created_at DESC LIMIT 1
 	`, orgID, b.SendingDomain).Scan(&profileID, &fromEmail)
 
 	baseTime := time.Now().Add(5 * time.Minute)

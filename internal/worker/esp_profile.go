@@ -44,7 +44,7 @@ func (s *ProfileBasedSender) SetIPChangeCallback(cb OnIPsChangedFunc) {
 // Send looks up the sending profile for the message, creates the
 // appropriate ESP sender, and delegates delivery.
 func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	var vendorType, apiKey, apiSecret, sendingDomain, region, poolPrefix string
+	var vendorType, apiKey, apiSecret, sendingDomain, region, poolPrefix, ipPool string
 	var smtpHost, smtpUsername, smtpPassword sql.NullString
 	var smtpPort sql.NullInt64
 
@@ -56,10 +56,11 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 			   COALESCE(api_endpoint, 'us-east-1'),
 			   smtp_host, smtp_port,
 			   smtp_username, smtp_password,
-			   COALESCE(pool_prefix, '')
+			   COALESCE(pool_prefix, ''),
+			   COALESCE(ip_pool, '')
 		FROM mailing_sending_profiles
 		WHERE id = $1
-	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix)
+	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool)
 
 	if err != nil {
 		log.Printf("[ProfileBasedSender] No profile %s, looking for default", msg.ProfileID)
@@ -71,13 +72,38 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 				   COALESCE(api_endpoint, 'us-east-1'),
 				   smtp_host, smtp_port,
 				   smtp_username, smtp_password,
-				   COALESCE(pool_prefix, '')
+				   COALESCE(pool_prefix, ''),
+				   COALESCE(ip_pool, '')
 			FROM mailing_sending_profiles
 			WHERE is_default = true AND status = 'active'
 			LIMIT 1
-		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix)
+		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool)
 		if err != nil {
 			return nil, fmt.Errorf("no sending profile found and no default configured")
+		}
+	}
+
+	// Bare-pool fallback: when a profile has no pool_prefix (so no per-ISP
+	// VMTA pools like db-gmail-pool / db-general-pool) but does have ip_pool
+	// set to a literal PMTA virtual-mta-pool name (e.g. "ses-relay-a"), use
+	// that name directly as the X-Virtual-MTA hint. This is how SES-relay
+	// and other "single-pool" profiles route — PMTA owns the underlying
+	// fanout, the SaaS just tells PMTA which pool to use.
+	//
+	// Skipped when:
+	//   - msg.AssignedVMTA already set by send_worker (ipAllocations path)
+	//   - msg.Headers["X-Virtual-MTA"] already set upstream
+	//   - poolPrefix non-empty (standard per-ISP routing wins)
+	//   - ipPool empty (nothing to route to)
+	if poolPrefix == "" && ipPool != "" && msg.AssignedVMTA == "" {
+		alreadyHinted := false
+		if msg.Headers != nil {
+			if v, ok := msg.Headers["X-Virtual-MTA"]; ok && v != "" {
+				alreadyHinted = true
+			}
+		}
+		if !alreadyHinted {
+			msg.AssignedVMTA = ipPool
 		}
 	}
 

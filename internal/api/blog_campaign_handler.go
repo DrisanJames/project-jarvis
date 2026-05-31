@@ -171,7 +171,7 @@ func (s *PMTACampaignService) HandleBlogCampaign(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
-	preflight := s.runPreflight(ctx, orgID, campaignInput.SendingDomain)
+	preflight := s.runPreflight(ctx, orgID, campaignInput.SendingDomain, campaignInput.SendingProfileID)
 	if !preflight.OK {
 		msgs := make([]string, len(preflight.Errors))
 		for i, e := range preflight.Errors {

@@ -264,7 +264,7 @@ func (s *PMTACampaignService) HandleSendDayPreflightBatch(w http.ResponseWriter,
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			res := preflightDeployCheck(ctx, s.db, orgID, d)
+			res := preflightDeployCheck(ctx, s.db, orgID, d, "")
 			out := domainResult{
 				OK:       res.OK,
 				Errors:   res.Errors,

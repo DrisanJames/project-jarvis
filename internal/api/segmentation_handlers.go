@@ -3,15 +3,19 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
+	"github.com/lib/pq"
 )
 
 // SegmentationAPI handles segmentation endpoints
@@ -30,7 +34,7 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 
 // VersionSegmentationAPI is the response version surfaced on every list/count
 // payload so the UI and operators can confirm what they are talking to.
-const VersionSegmentationAPI = "2.1.1"
+const VersionSegmentationAPI = "2.2.0"
 
 // RegisterRoutes registers segmentation routes under /api/mailing/v2
 func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
@@ -48,7 +52,17 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 			r.Post("/execute", api.ExecuteSegment)
 			r.Post("/snapshot", api.CreateSnapshot)
 			r.Get("/subscribers", api.GetSegmentSubscribers)
+			// Bulk-export emails from the materialized rollup
+			// (mailing_segment_members). Cheap, indexed, single-query
+			// — does NOT touch mailing_subscribers so it's safe during
+			// active sending hours.
+			r.Get("/members.csv", api.ExportSegmentMembersCSV)
 		})
+
+		// UNION export across many segments, deduped by lower(email).
+		// Use case: "give me one CSV of every email currently in any
+		// of these N segments" for hygiene runs against a verifier.
+		r.Post("/export.csv", api.ExportSegmentsUnionCSV)
 	})
 
 	r.Route("/v2/snapshots/{snapshotID}", func(r chi.Router) {
@@ -80,6 +94,7 @@ type CreateSegmentRequest struct {
 	ListID            *uuid.UUID                         `json:"list_id,omitempty"`
 	CalculationMode   string                             `json:"calculation_mode,omitempty"`
 	IncludeSuppressed bool                               `json:"include_suppressed"`
+	Category          string                             `json:"category,omitempty"` // enum: see validSegmentCategories; falls back to 'uncategorized'
 	RootGroup         segmentation.ConditionGroupBuilder `json:"root_group"`
 	GlobalExclusions  []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
 }
@@ -253,11 +268,24 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 	// Build exclusions JSON
 	exclusionsJSON, _ := json.Marshal(req.GlobalExclusions)
 
+	// Category validation mirrors mailing_segments.go's validSegmentCategories
+	// map. Reject unknown values rather than silently defaulting so the wizard
+	// surfaces typos before they reach storage and clutter the catalog.
+	category := req.Category
+	if category != "" && !validSegmentCategories[category] {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   "invalid_category",
+			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
+		})
+		return
+	}
+
 	segment := &segmentation.Segment{
 		OrganizationID:       orgID,
 		ListID:               req.ListID,
 		Name:                 req.Name,
 		Description:          req.Description,
+		Category:             category,
 		CalculationMode:      req.CalculationMode,
 		IncludeSuppressed:    req.IncludeSuppressed,
 		GlobalExclusionRules: exclusionsJSON,
@@ -388,12 +416,29 @@ func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Same category validation as CreateSegment. If the operator omits it
+	// on an edit (older frontend), inherit the existing row's category so
+	// we don't blank it out on save. If they send an explicit value it must
+	// be in the canonical enum.
+	category := req.Category
+	if category == "" && existing != nil {
+		category = existing.Category
+	}
+	if category != "" && !validSegmentCategories[category] {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   "invalid_category",
+			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
+		})
+		return
+	}
+
 	exclusionsJSON, _ := json.Marshal(req.GlobalExclusions)
 	segment := &segmentation.Segment{
 		OrganizationID:       orgID,
 		ListID:               req.ListID,
 		Name:                 req.Name,
 		Description:          req.Description,
+		Category:             category,
 		CalculationMode:      req.CalculationMode,
 		IncludeSuppressed:    req.IncludeSuppressed,
 		GlobalExclusionRules: exclusionsJSON,
@@ -550,6 +595,295 @@ func (api *SegmentationAPI) GetSegmentSubscribers(w http.ResponseWriter, r *http
 		"offset":         offset,
 		"has_more":       end < len(result.SubscriberIDs),
 	})
+}
+
+// ExportSegmentMembersCSV streams all members of a single segment as CSV
+// directly from mailing_segment_members. Single indexed read by segment_id
+// — does NOT execute the segment query against mailing_subscribers, so it
+// is safe to call during active sending hours and works even when the live
+// query would ALB-timeout on heavy globals.
+//
+// Query params:
+//   - format: "csv" (default) or "txt" (one email per line, no header)
+//   - include_subscriber_id: "true" adds a subscriber_id column
+//   - dedupe: "true" (default) lowercases + dedupes by email; "false" returns raw
+//
+// Response: text/csv stream with header row email[,subscriber_id]
+// or text/plain stream when format=txt.
+//
+// NOTE: segments not yet materialized into mailing_segment_members will
+// return zero rows with HTTP 200. Use GET /v2/segments/{id}/count to
+// distinguish "empty" from "never materialized" (audience_source field).
+func (api *SegmentationAPI) ExportSegmentMembersCSV(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	segmentID, err := uuid.Parse(chi.URLParam(r, "segmentID"))
+	if err != nil {
+		http.Error(w, "invalid segment id", http.StatusBadRequest)
+		return
+	}
+
+	includeSubID := r.URL.Query().Get("include_subscriber_id") == "true"
+	dedupe := r.URL.Query().Get("dedupe") != "false"
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "csv"
+	}
+
+	// Resolve segment name for the response filename.
+	var segName string
+	if err := api.db.QueryRowContext(ctx,
+		`SELECT name FROM mailing_segments WHERE id = $1`, segmentID,
+	).Scan(&segName); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "segment not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 10-minute read budget for the stream. Single indexed query on
+	// (segment_id, email); the index makes COUNT and SELECT both cheap.
+	streamCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	var selectCols string
+	if includeSubID {
+		selectCols = "subscriber_id::text, LOWER(email) AS email"
+	} else {
+		selectCols = "LOWER(email) AS email"
+	}
+
+	var orderClause string
+	if dedupe {
+		// DISTINCT on the lowercased email; ORDER BY required for DISTINCT ON.
+		if includeSubID {
+			selectCols = "DISTINCT ON (LOWER(email)) subscriber_id::text, LOWER(email) AS email"
+		} else {
+			selectCols = "DISTINCT LOWER(email) AS email"
+		}
+		orderClause = "ORDER BY LOWER(email)"
+	}
+
+	q := fmt.Sprintf(`SELECT %s FROM mailing_segment_members WHERE segment_id = $1 %s`,
+		selectCols, orderClause)
+	rows, err := api.db.QueryContext(streamCtx, q, segmentID)
+	if err != nil {
+		log.Printf("[Segment] export members query error for %s: %v", segmentID, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	safeName := strings.NewReplacer(" ", "_", "/", "_", "\\", "_").Replace(segName)
+	if safeName == "" {
+		safeName = segmentID.String()
+	}
+
+	if format == "txt" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, safeName))
+		w.Header().Set("X-Segment-Id", segmentID.String())
+		w.Header().Set("X-Segment-Name", segName)
+		for rows.Next() {
+			var email, subID string
+			if includeSubID {
+				if err := rows.Scan(&subID, &email); err != nil {
+					continue
+				}
+			} else {
+				if err := rows.Scan(&email); err != nil {
+					continue
+				}
+			}
+			fmt.Fprintln(w, email)
+		}
+		return
+	}
+
+	// CSV path
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, safeName))
+	w.Header().Set("X-Segment-Id", segmentID.String())
+	w.Header().Set("X-Segment-Name", segName)
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	if includeSubID {
+		_ = cw.Write([]string{"subscriber_id", "email"})
+	} else {
+		_ = cw.Write([]string{"email"})
+	}
+
+	written := 0
+	for rows.Next() {
+		var email, subID string
+		if includeSubID {
+			if err := rows.Scan(&subID, &email); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{subID, email})
+		} else {
+			if err := rows.Scan(&email); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{email})
+		}
+		written++
+		// Flush every 5k rows so the client sees progress and the
+		// response body doesn't balloon in memory on large segments.
+		if written%5000 == 0 {
+			cw.Flush()
+		}
+	}
+}
+
+// ExportSegmentsUnionCSV streams the deduped UNION of multiple segments'
+// member emails as a single CSV. Used for hygiene runs ("clean all 30D
+// engaged emails across every brand") where the operator wants one file
+// to feed into a verifier instead of N per-segment files to merge by hand.
+//
+// Request body: {"segment_ids": ["uuid", "uuid", ...]} (max 50 ids).
+// Optional flags inside the JSON body:
+//   - include_segment_attribution: bool (default false) — when true, adds a
+//     comma-joined "segments" column listing every input segment that
+//     contained the email
+//   - format: "csv" (default) or "txt"
+//
+// Response: text/csv stream with header row email[,segments]
+//
+// Implementation: single query that UNIONs mailing_segment_members rows
+// across the provided segment_ids, groups by lower(email), and optionally
+// aggregates the source segment names. Reads from the materialized rollup
+// only — never touches mailing_subscribers.
+func (api *SegmentationAPI) ExportSegmentsUnionCSV(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var body struct {
+		SegmentIDs                 []string `json:"segment_ids"`
+		IncludeSegmentAttribution  bool     `json:"include_segment_attribution"`
+		Format                     string   `json:"format"`
+		Filename                   string   `json:"filename"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(body.SegmentIDs) == 0 {
+		http.Error(w, "segment_ids is required", http.StatusBadRequest)
+		return
+	}
+	if len(body.SegmentIDs) > 50 {
+		http.Error(w, "max 50 segment_ids per request", http.StatusBadRequest)
+		return
+	}
+
+	// Validate every id parses as UUID before sending to the DB so we
+	// fail fast with a clear error rather than a SQL syntax error.
+	idArr := make([]string, 0, len(body.SegmentIDs))
+	for _, raw := range body.SegmentIDs {
+		u, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			http.Error(w, "invalid segment id: "+raw, http.StatusBadRequest)
+			return
+		}
+		idArr = append(idArr, u.String())
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	var q string
+	if body.IncludeSegmentAttribution {
+		q = `
+			SELECT LOWER(m.email) AS email,
+			       string_agg(DISTINCT s.name, ',' ORDER BY s.name) AS segments
+			FROM mailing_segment_members m
+			JOIN mailing_segments s ON s.id = m.segment_id
+			WHERE m.segment_id = ANY($1::uuid[])
+			GROUP BY LOWER(m.email)
+			ORDER BY email
+		`
+	} else {
+		q = `
+			SELECT DISTINCT LOWER(email) AS email
+			FROM mailing_segment_members
+			WHERE segment_id = ANY($1::uuid[])
+			ORDER BY email
+		`
+	}
+
+	rows, err := api.db.QueryContext(streamCtx, q, pq.Array(idArr))
+	if err != nil {
+		log.Printf("[Segment] export union query error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	fname := strings.TrimSpace(body.Filename)
+	if fname == "" {
+		fname = "segments_union_export"
+	}
+	fname = strings.NewReplacer(" ", "_", "/", "_", "\\", "_").Replace(fname)
+
+	format := strings.ToLower(body.Format)
+	if format == "" {
+		format = "csv"
+	}
+
+	if format == "txt" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, fname))
+		w.Header().Set("X-Segment-Count", strconv.Itoa(len(idArr)))
+		for rows.Next() {
+			var email string
+			if body.IncludeSegmentAttribution {
+				var segs sql.NullString
+				if err := rows.Scan(&email, &segs); err != nil {
+					continue
+				}
+			} else {
+				if err := rows.Scan(&email); err != nil {
+					continue
+				}
+			}
+			fmt.Fprintln(w, email)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, fname))
+	w.Header().Set("X-Segment-Count", strconv.Itoa(len(idArr)))
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	if body.IncludeSegmentAttribution {
+		_ = cw.Write([]string{"email", "segments"})
+	} else {
+		_ = cw.Write([]string{"email"})
+	}
+
+	written := 0
+	for rows.Next() {
+		if body.IncludeSegmentAttribution {
+			var email string
+			var segs sql.NullString
+			if err := rows.Scan(&email, &segs); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{email, segs.String})
+		} else {
+			var email string
+			if err := rows.Scan(&email); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{email})
+		}
+		written++
+		if written%5000 == 0 {
+			cw.Flush()
+		}
+	}
 }
 
 // GetSegmentCount returns the count for a segment from the materialized

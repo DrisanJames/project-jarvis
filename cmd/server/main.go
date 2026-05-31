@@ -2854,7 +2854,15 @@ END $$`},
 
 		// Step 6.5: Update sending profiles for multi-PMTA
 		{"phase6_ht_mh_to_server_b", `UPDATE mailing_sending_profiles SET smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain IN ('em.historythinking.com', 'em.myownhealth.net') AND vendor_type = 'pmta' AND smtp_host = '15.204.101.125'`},
-		{"phase6_pool_prefix_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
+		// 2026-05-30: added NOT LIKE 'ses-relay%' guard. The original
+		// `NOT LIKE 'shared-%'` clause was intended to skip already-routed
+		// warm profiles (ip_pool=shared-a) but had the side effect of
+		// catching the SES-relay profile (ip_pool=ses-relay-a) and
+		// clobbering its pool_prefix='' back to 'db' on every boot. With
+		// pool_prefix='db' the SES profile builds db-<isp>-pool VMTAs
+		// and routes via OVH warm IPs instead of the <virtual-mta-pool
+		// ses-relay-a> block — silently bypassing the SES relay.
+		{"phase6_pool_prefix_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%' AND COALESCE(ip_pool,'') NOT LIKE 'ses-relay%'`},
 		{"phase6_pool_prefix_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
 		{"phase6_pool_prefix_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
 		{"phase6_pool_prefix_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix = '') AND COALESCE(ip_pool,'') NOT LIKE 'shared-%'`},
@@ -3329,7 +3337,10 @@ AND (pool_id IS NULL OR pool_id != (SELECT id FROM mailing_ip_pools WHERE name =
 		// Phase 8: Switch to ISP-dedicated pools (IPXO IPs)
 		// Runs in startup migrations (guaranteed to execute on every boot).
 		// =====================================================================
-		{"phase8_startup_route_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		// 2026-05-30: added NOT LIKE 'ses-relay%' guard so this catch-all
+		// reseed (no pool_prefix-state filter) does not clobber the SES
+		// relay profile. Same root cause as phase6 — see comment there.
+		{"phase8_startup_route_db", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active' AND COALESCE(ip_pool,'') NOT LIKE 'ses-relay%'`},
 		{"phase8_startup_route_qf", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_startup_route_ht", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_startup_route_mh", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
@@ -6244,17 +6255,26 @@ func runAdminMigrations() {
 		// These overrides run last to ensure Phase 6 state is authoritative.
 		// =====================================================================
 
+		// 2026-05-30: added NOT LIKE 'ses-relay%' guard on the em.discountblog.com
+		// branch. Without this, the SES-relay profile's ip_pool='ses-relay-a' was
+		// being clobbered to 'db-gmail-pool' on every boot, which broke the bare-pool
+		// routing path (see internal/api/mailing_sending.go "bare VMTA pool" branch).
+		// The other em.* domains do not yet have SES-relay profiles, so left as-is.
 		{"phase6_final_ip_pool_profiles", `DO $$
 BEGIN
-    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool';
+    UPDATE mailing_sending_profiles SET ip_pool = 'db-gmail-pool' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND ip_pool != 'db-gmail-pool' AND COALESCE(ip_pool,'') NOT LIKE 'ses-relay%';
     UPDATE mailing_sending_profiles SET ip_pool = 'qf-gmail-pool' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND ip_pool != 'qf-gmail-pool';
     UPDATE mailing_sending_profiles SET ip_pool = 'ht-gmail-pool' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND ip_pool != 'ht-gmail-pool';
     UPDATE mailing_sending_profiles SET ip_pool = 'mh-gmail-pool' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND ip_pool != 'mh-gmail-pool';
 END $$`},
 
+		// 2026-05-30: added NOT LIKE 'ses-relay%' guard on the em.discountblog.com
+		// branch. This was THE smoking-gun reseed that clobbered the SES-relay
+		// profile's pool_prefix='' back to 'db' on every boot — silently flipping
+		// 50k-recipient SES-relay campaigns onto the warm OVH pool.
 		{"phase6_final_pool_prefix", `DO $$
 BEGIN
-    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'db');
+    UPDATE mailing_sending_profiles SET pool_prefix = 'db' WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'db') AND COALESCE(ip_pool,'') NOT LIKE 'ses-relay%';
     UPDATE mailing_sending_profiles SET pool_prefix = 'qf' WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'qf');
     UPDATE mailing_sending_profiles SET pool_prefix = 'ht' WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'ht');
     UPDATE mailing_sending_profiles SET pool_prefix = 'mh' WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND (pool_prefix IS NULL OR pool_prefix != 'mh');
@@ -6449,10 +6469,26 @@ END $$`},
 		// IPXO PTR/FCrDNS now fully working. Route each domain through its
 		// own ISP-specific pools on the correct PMTA server.
 		// =====================================================================
-		{"phase8_route_db_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active'`},
+		// 2026-05-30: added NOT LIKE 'ses-relay%' guard (duplicate of
+		// phase8_startup_route_db — both reseed the same fields). Same
+		// root cause as phase6 — see comment there.
+		{"phase8_route_db_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'db', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.discountblog.com' AND vendor_type = 'pmta' AND status = 'active' AND COALESCE(ip_pool,'') NOT LIKE 'ses-relay%'`},
 		{"phase8_route_qf_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'qf', smtp_host = '15.204.101.125', api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE sending_domain = 'em.quizfiesta.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_route_ht_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'ht', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.historythinking.com' AND vendor_type = 'pmta' AND status = 'active'`},
 		{"phase8_route_mh_dedicated", `UPDATE mailing_sending_profiles SET pool_prefix = 'mh', smtp_host = '15.204.107.107', api_endpoint = 'http://15.204.107.107:19099', updated_at = NOW() WHERE sending_domain = 'em.myownhealth.net' AND vendor_type = 'pmta' AND status = 'active'`},
+		// 2026-05-30 — Defense in depth: force pool_prefix = '' on every
+		// SES-relay profile, regardless of migration order or future
+		// regressions. The SaaS routing layer treats pool_prefix='' +
+		// ip_pool='ses-relay-a' as the trigger to stamp
+		// X-Virtual-MTA: ses-relay-a on PMTA injects (see
+		// internal/api/mailing_sending.go and internal/worker/esp_profile.go,
+		// "bare-pool fallback"). If pool_prefix is non-empty the SaaS builds
+		// per-ISP VMTA pool names like db-gmail-pool and routes via the warm
+		// OVH IPs, silently bypassing the SES relay <virtual-mta-pool>.
+		// This idempotent reseed runs every boot and is a no-op once the
+		// state is correct (the `pool_prefix IS DISTINCT FROM ''` guard
+		// prevents row-touch churn).
+		{"phase8_ses_relay_clear_pool_prefix", `UPDATE mailing_sending_profiles SET pool_prefix = '', updated_at = NOW() WHERE vendor_type = 'pmta' AND status = 'active' AND COALESCE(ip_pool,'') LIKE 'ses-relay%' AND COALESCE(pool_prefix,'') IS DISTINCT FROM ''`},
 		{"phase8_ipxo_warmup_1000", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 1000, updated_at = NOW() WHERE cidr_block IN ('144.225.178.0/25', '144.225.178.128/25') AND warmup_daily_limit < 1000`},
 
 		// =====================================================================

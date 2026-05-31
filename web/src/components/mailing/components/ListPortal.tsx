@@ -42,6 +42,7 @@ import {
   DEFAULT_FIELDS,
   DEFAULT_EVENTS,
 } from '../../segments/SegmentBuilder';
+import { SEGMENT_CATEGORIES, getCategoryMeta } from './segCategoryMetadata';
 import './ListPortal.css';
 
 // ============================================================================
@@ -73,6 +74,12 @@ interface Segment {
   list_id?: string;
   list_name?: string;
   segment_type: 'dynamic' | 'static';
+  // category: see SEGMENT_CATEGORIES in segCategoryMetadata.ts for the canonical
+  // enum (engagement_brand, engagement_global, engagement_isp, framework, funnel,
+  // cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot,
+  // uncategorized). Backed by mailing_segments.category column added in the
+  // may29_seg_add_category_col startup migration.
+  category?: string;
   subscriber_count: number;
   status: 'active' | 'draft' | 'archived';
   calculation_mode?: string;
@@ -1378,7 +1385,8 @@ interface SegmentsManagerProps {
 
 // PAGE_VERSION lets operators confirm what build of the segments dashboard they
 // are looking at (per the workspace testing rule). Bump on every visible change.
-const SEGMENTS_PAGE_VERSION = '2.1.1';
+// 2.2.0 — added category + status filters and category badges (May 29 segment catalog cleanup).
+const SEGMENTS_PAGE_VERSION = '2.2.0';
 
 // formatFreshness renders a materialized_at timestamp as a short relative
 // indicator: "fresh", "1d ago", "5d ago", "never". Five days or older is
@@ -1400,15 +1408,31 @@ const formatFreshness = (iso?: string): { label: string; stale: boolean } => {
 const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate, onRefresh, orgFetch, animateIn }) => {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  // Category and status filters were added 2026-05-29 after seeding the
+  // 102-segment engagement catalog so operators don't have to sift through
+  // 11k+ unstructured rows. Defaults: all categories, status=active (hide
+  // archived partner-wave + legacy snapshots out of the box).
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('active');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [recalculating, setRecalculating] = useState<string | null>(null);
   const [recalcResult, setRecalcResult] = useState<Record<string, { count: number; at: string }>>({});
+
+  // Counts per category (across visible status filter) drive the dropdown
+  // labels so the operator immediately sees how many engagement_brand vs
+  // partner_wave_static segments exist without having to count manually.
+  const categoryCounts = SEGMENT_CATEGORIES.reduce<Record<string, number>>((acc, c) => {
+    acc[c.id] = segments.filter(s => (s.category || 'uncategorized') === c.id && (statusFilter === 'all' || s.status === statusFilter)).length;
+    return acc;
+  }, {});
 
   const filteredSegments = segments.filter(segment => {
     const matchesSearch = segment.name.toLowerCase().includes(search.toLowerCase()) ||
                          (segment.description || '').toLowerCase().includes(search.toLowerCase());
     const matchesType = typeFilter === 'all' || segment.segment_type === typeFilter;
-    return matchesSearch && matchesType;
+    const matchesCategory = categoryFilter === 'all' || (segment.category || 'uncategorized') === categoryFilter;
+    const matchesStatus = statusFilter === 'all' || segment.status === statusFilter;
+    return matchesSearch && matchesType && matchesCategory && matchesStatus;
   });
 
   const handleDelete = async (segment: Segment) => {
@@ -1488,11 +1512,23 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="filter-group">
-          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
+        <div className="filter-group" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} title="Filter by storage type">
             <option value="all">All Types</option>
             <option value="dynamic">Dynamic</option>
             <option value="static">Static</option>
+          </select>
+          <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} title="Filter by semantic category">
+            <option value="all">All Categories ({segments.filter(s => statusFilter === 'all' || s.status === statusFilter).length})</option>
+            {SEGMENT_CATEGORIES.filter(c => (categoryCounts[c.id] || 0) > 0).map(c => (
+              <option key={c.id} value={c.id}>{c.label} ({categoryCounts[c.id]})</option>
+            ))}
+          </select>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} title="Filter by status (archived hidden by default)">
+            <option value="all">All Statuses</option>
+            <option value="active">Active</option>
+            <option value="draft">Draft</option>
+            <option value="archived">Archived</option>
           </select>
         </div>
       </div>
@@ -1532,7 +1568,7 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                 </div>
                 <div className="segment-title">
                   <h3>{segment.name}</h3>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                     {segment.is_system && (
                       <span className="segment-type-badge system" style={{
                         background: 'linear-gradient(135deg, #f59e0b, #d97706)',
@@ -1551,6 +1587,38 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                     <span className={`segment-type-badge ${segment.segment_type}`}>
                       {segment.segment_type}
                     </span>
+                    {(() => {
+                      const meta = getCategoryMeta(segment.category);
+                      return (
+                        <span
+                          className={meta.badgeClass}
+                          title={meta.description}
+                          style={{
+                            fontSize: '0.6rem',
+                            padding: '2px 7px',
+                            borderRadius: '10px',
+                            fontWeight: 700,
+                            border: '1px solid',
+                            letterSpacing: 0.4,
+                            textTransform: 'uppercase',
+                          }}
+                        >
+                          {meta.shortLabel}
+                        </span>
+                      );
+                    })()}
+                    {segment.status === 'archived' && (
+                      <span style={{
+                        fontSize: '0.6rem',
+                        padding: '2px 7px',
+                        borderRadius: '10px',
+                        fontWeight: 600,
+                        background: 'rgba(75,85,99,0.3)',
+                        color: '#9ca3af',
+                        border: '1px solid rgba(156,163,175,0.4)',
+                        textTransform: 'uppercase',
+                      }}>archived</span>
+                    )}
                   </div>
                 </div>
               </div>

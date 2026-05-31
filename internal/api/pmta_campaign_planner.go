@@ -1788,24 +1788,55 @@ type preflightResult struct {
 // preflightDeployCheck validates infrastructure readiness before campaign
 // deployment. It is intentionally fail-fast: any error means the campaign
 // should NOT be deployed.
-func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sendingDomain string) preflightResult {
+//
+// When overrideProfileID is non-empty, the profile lookup is pinned to that
+// UUID (must be vendor_type='pmta', status='active', and owned by orgID). This
+// matches the pin semantics in resolvePMTASendingProfile so the preflight
+// validates the same profile the deploy will actually use. When empty, the
+// legacy by-domain auto-lookup runs unchanged.
+func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sendingDomain string, overrideProfileID string) preflightResult {
 	res := preflightResult{OK: true}
 
 	// 1. Sending profile exists with an IP pool
 	var profileID, ipPool, poolPrefix sql.NullString
-	err := db.QueryRowContext(ctx, `
-		SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
-		FROM mailing_sending_profiles
-		WHERE organization_id = $1 AND vendor_type = 'pmta'
-		  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
-		  AND status = 'active'
-		ORDER BY created_at DESC LIMIT 1
-	`, orgID, sendingDomain).Scan(&profileID, &ipPool, &poolPrefix)
+	var err error
+	if overrideProfileID != "" {
+		err = db.QueryRowContext(ctx, `
+			SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
+			FROM mailing_sending_profiles
+			WHERE organization_id = $1 AND id = $2
+			  AND vendor_type = 'pmta'
+			  AND status = 'active'
+		`, orgID, overrideProfileID).Scan(&profileID, &ipPool, &poolPrefix)
+	} else {
+		// Resolver order: is_default profiles ALWAYS win the by-domain
+		// lookup. See the matching comment in
+		// HandleSendTestEmail / mailing_sending.go for full rationale.
+		// Without is_default DESC, a newer SES-relay or IP-warming profile
+		// can silently hijack the daily-ops profile when both share
+		// sending_domain — diagnosed against em.discountblog.com on
+		// 2026-05-30 when an SES Relay profile created at 23:50 UTC
+		// won the resolver against the established OVH PMTA profile.
+		err = db.QueryRowContext(ctx, `
+			SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
+			FROM mailing_sending_profiles
+			WHERE organization_id = $1 AND vendor_type = 'pmta'
+			  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
+			  AND status = 'active'
+			ORDER BY is_default DESC, created_at DESC LIMIT 1
+		`, orgID, sendingDomain).Scan(&profileID, &ipPool, &poolPrefix)
+	}
 	if err != nil || !profileID.Valid {
+		var msg string
+		if overrideProfileID != "" {
+			msg = fmt.Sprintf("pinned PMTA sending profile %s not found, not vendor=pmta, or not active for org", overrideProfileID)
+		} else {
+			msg = fmt.Sprintf("no active PMTA sending profile found for domain %s", sendingDomain)
+		}
 		res.OK = false
 		res.Errors = append(res.Errors, preflightError{
 			Check:   "sending_profile",
-			Message: fmt.Sprintf("no active PMTA sending profile found for domain %s", sendingDomain),
+			Message: msg,
 		})
 		return res
 	}
@@ -1971,7 +2002,8 @@ func (s *Server) HandlePreflightCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgID := getOrganizationID(r)
-	result := preflightDeployCheck(r.Context(), s.mailingDB, orgID, domain)
+	overrideProfileID := r.URL.Query().Get("sending_profile_id")
+	result := preflightDeployCheck(r.Context(), s.mailingDB, orgID, domain, overrideProfileID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }

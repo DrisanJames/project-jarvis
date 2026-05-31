@@ -1631,7 +1631,7 @@ func (a *EmailMarketingAgent) toolGetPreflightStatus(ctx context.Context, orgID 
 	if domain == "" {
 		return map[string]string{"error": "sending_domain required"}
 	}
-	pf := preflightDeployCheck(ctx, a.db, orgID, domain)
+	pf := preflightDeployCheck(ctx, a.db, orgID, domain, "")
 	var errors []map[string]interface{}
 	for _, e := range pf.Errors {
 		errors = append(errors, map[string]interface{}{

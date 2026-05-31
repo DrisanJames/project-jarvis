@@ -39,7 +39,9 @@ type PMTACampaignService struct {
 
 	// preflightFn overrides preflightDeployCheck for testing (DNS lookups
 	// cannot be mocked via sqlmock). Nil means use the real implementation.
-	preflightFn func(ctx context.Context, db *sql.DB, orgID, domain string) preflightResult
+	// The overrideProfileID parameter is "" when the deploy uses the legacy
+	// by-domain auto-lookup, or a UUID when the payload pins a profile.
+	preflightFn func(ctx context.Context, db *sql.DB, orgID, domain, overrideProfileID string) preflightResult
 
 	// skipBackgroundDeploy skips the async goroutine in HandleDeployCampaign.
 	// Used in tests so sqlmock connections aren't accessed after test cleanup.
@@ -50,11 +52,11 @@ func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
 	s.executor = e
 }
 
-func (s *PMTACampaignService) runPreflight(ctx context.Context, orgID, domain string) preflightResult {
+func (s *PMTACampaignService) runPreflight(ctx context.Context, orgID, domain, overrideProfileID string) preflightResult {
 	if s.preflightFn != nil {
-		return s.preflightFn(ctx, s.db, orgID, domain)
+		return s.preflightFn(ctx, s.db, orgID, domain, overrideProfileID)
 	}
-	return preflightDeployCheck(ctx, s.db, orgID, domain)
+	return preflightDeployCheck(ctx, s.db, orgID, domain, overrideProfileID)
 }
 
 // NewPMTACampaignService creates the service.
@@ -837,7 +839,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 
 	// ── Phase 1: synchronous pre-checks (fast, <2s) ─────────────────────
 
-	preflight := s.runPreflight(ctx, orgID, input.SendingDomain)
+	preflight := s.runPreflight(ctx, orgID, input.SendingDomain, input.SendingProfileID)
 	if !preflight.OK {
 		msgs := make([]string, len(preflight.Errors))
 		for i, e := range preflight.Errors {
@@ -1089,7 +1091,7 @@ func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 	orgID := getOrgID(r)
 
-	preflight := s.runPreflight(ctx, orgID, input.SendingDomain)
+	preflight := s.runPreflight(ctx, orgID, input.SendingDomain, input.SendingProfileID)
 
 	normalized, err := normalizePMTACampaignInput(input)
 	if err != nil {
@@ -1321,7 +1323,7 @@ func (s *PMTACampaignService) HandleDeployDynamicTagsTest(w http.ResponseWriter,
 			WHERE organization_id = $1 AND vendor_type = 'pmta'
 			  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
 			  AND status = 'active'
-			ORDER BY created_at DESC LIMIT 1
+			ORDER BY is_default DESC, created_at DESC LIMIT 1
 		`, orgID, c.domain).Scan(&profileID, &fromEmail, &fromName, &replyTo)
 
 		resolvedFromName := c.fromName

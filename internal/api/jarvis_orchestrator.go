@@ -164,12 +164,12 @@ func (j *JarvisOrchestrator) HandleLaunch(w http.ResponseWriter, r *http.Request
 	profileID := req.SendingProfileID
 	if profileID == "" {
 		err := j.db.QueryRow(
-			"SELECT id FROM mailing_sending_profiles WHERE organization_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+			"SELECT id FROM mailing_sending_profiles WHERE organization_id = $1 AND status = 'active' ORDER BY is_default DESC, created_at DESC LIMIT 1",
 			orgID,
 		).Scan(&profileID)
 		if err != nil {
 			j.db.QueryRow(
-				"SELECT id FROM mailing_sending_profiles WHERE status = 'active' ORDER BY created_at DESC LIMIT 1",
+				"SELECT id FROM mailing_sending_profiles WHERE status = 'active' ORDER BY is_default DESC, created_at DESC LIMIT 1",
 			).Scan(&profileID)
 		}
 	}

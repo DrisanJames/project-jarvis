@@ -88,12 +88,13 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		SMTPUser    *string
 		SMTPPass    *string
 		PoolPrefix  *string
+		IPPool      *string
 	}
 
 	profileQuery := `
 		SELECT id, vendor_type, from_name, from_email, reply_email, 
 			   api_key, api_endpoint, smtp_host, smtp_port, smtp_username, smtp_password,
-			   pool_prefix
+			   pool_prefix, ip_pool
 		FROM mailing_sending_profiles 
 		WHERE status = 'active'
 	`
@@ -102,7 +103,7 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		return row.Scan(
 			&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
 			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			&profile.PoolPrefix,
+			&profile.PoolPrefix, &profile.IPPool,
 		)
 	}
 
@@ -113,7 +114,18 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			return
 		}
 	} else if input.SendingDomain != "" {
-		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND sending_domain = $1 ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1", input.SendingDomain))
+		// Resolver order: is_default profiles ALWAYS win the by-domain lookup
+		// regardless of when other profiles for the same sending_domain are
+		// created. This prevents a newly-added explicit-route profile (e.g.
+		// SES relay, IP-warming pool) from silently hijacking daily traffic
+		// when an operator forgets to pin sending_profile_id. Diagnosed
+		// 2026-05-30: a SES Relay profile created for em.discountblog.com
+		// won the by-domain race against the established OVH PMTA profile
+		// because both share vendor_type='pmta' and the prior CASE-only
+		// ordering was a coin-flip on Postgres heap order. The is_default
+		// column is the single source of truth for "this is the canonical
+		// profile for this domain".
+		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND sending_domain = $1 ORDER BY is_default DESC, CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1", input.SendingDomain))
 		if err != nil {
 			http.Error(w, `{"error":"no active sending profile found for domain `+input.SendingDomain+`"}`, http.StatusBadRequest)
 			return
@@ -121,7 +133,7 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 	} else {
 		err := scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" AND is_default = true LIMIT 1"))
 		if err != nil {
-			err = scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" ORDER BY CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1"))
+			err = scanProfile(svc.db.QueryRowContext(ctx, profileQuery+" ORDER BY is_default DESC, CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END LIMIT 1"))
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -311,6 +323,13 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			}
 			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": vmtaPool}
 			log.Printf("[SendTest] Routing via VMTA pool %s (recipient ISP: %s)", vmtaPool, recipientISP)
+		} else if profile.IPPool != nil && *profile.IPPool != "" {
+			// Bare-pool profile: no pool_prefix, just a single named pool
+			// (e.g. SES-relay where ip_pool="ses-relay-a"). Use the pool
+			// name directly as the X-Virtual-MTA hint so PMTA routes the
+			// message into that pool. PMTA owns the downstream fanout.
+			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": *profile.IPPool}
+			log.Printf("[SendTest] Routing via bare VMTA pool %s (profile has no pool_prefix)", *profile.IPPool)
 		}
 		if unsubURL != "" {
 			if pmtaExtraHeaders == nil {

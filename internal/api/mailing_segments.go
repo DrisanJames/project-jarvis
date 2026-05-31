@@ -15,25 +15,87 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
+// VersionMailingSegmentsAPIv1 bumps whenever the v1 segment response shape
+// changes. Frontend consumers (PMTACampaignWizard, ListPortal SegmentsManager)
+// echo this in their console logs so production drift is observable.
+const VersionMailingSegmentsAPIv1 = "1.1.0"
+
+// validSegmentCategories mirrors the enum seeded by runStartupMigrations
+// (may29_seg_backfill_*). Keep in sync with web/src/components/mailing/
+// components/segCategoryMetadata.ts and the backfill regexes in main.go.
+var validSegmentCategories = map[string]bool{
+	"engagement_brand":      true,
+	"engagement_global":     true,
+	"engagement_isp":        true,
+	"framework":             true,
+	"funnel":                true,
+	"cohort_static":         true,
+	"suppression_exclusion": true,
+	"partner_wave_static":   true,
+	"legacy_snapshot":       true,
+	"uncategorized":         true,
+}
+
 func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := getOrgIDFromRequest(r)
 
-	empty := map[string]interface{}{"segments": []map[string]interface{}{}}
+	empty := map[string]interface{}{
+		"segments":    []map[string]interface{}{},
+		"api_version": VersionMailingSegmentsAPIv1,
+	}
 	if orgID == "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(empty)
 		return
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	// Optional filters: ?category=engagement_brand&status=active&include_archived=true
+	// (default behaviour excludes archived to keep the wizard picker clean —
+	// the dashboard view passes include_archived=true so operators can see them.)
+	q := r.URL.Query()
+	categories := q["category"] // ?category=foo&category=bar -> repeated
+	statuses := q["status"]
+	includeArchived := q.Get("include_archived") == "true" || q.Get("include_archived") == "1"
+
+	clauses := []string{"s.organization_id = $1"}
+	args := []interface{}{orgID}
+	argN := 2
+
+	if len(categories) > 0 {
+		filtered := make([]string, 0, len(categories))
+		for _, c := range categories {
+			c = strings.TrimSpace(c)
+			if c != "" && validSegmentCategories[c] {
+				filtered = append(filtered, c)
+			}
+		}
+		if len(filtered) > 0 {
+			clauses = append(clauses, fmt.Sprintf("s.category = ANY($%d)", argN))
+			args = append(args, pqStringArray(filtered))
+			argN++
+		}
+	}
+
+	if len(statuses) > 0 {
+		clauses = append(clauses, fmt.Sprintf("s.status = ANY($%d)", argN))
+		args = append(args, pqStringArray(statuses))
+		argN++
+	} else if !includeArchived {
+		clauses = append(clauses, "s.status <> 'archived'")
+	}
+
+	query := `
 		SELECT s.id, s.name, s.description, s.segment_type, s.subscriber_count, s.status, s.created_at,
 		       s.list_id, COALESCE(l.name, ''), COALESCE(s.conditions::text, '[]'),
-		       s.updated_at, s.last_calculated_at
+		       s.updated_at, s.last_calculated_at,
+		       COALESCE(s.category, 'uncategorized')
 		FROM mailing_segments s
 		LEFT JOIN mailing_lists l ON l.id = s.list_id
-		WHERE s.organization_id = $1 ORDER BY s.created_at DESC
-	`, orgID)
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY s.created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("[HandleGetSegments] query error: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -46,16 +108,16 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 	for rows.Next() {
 		var id uuid.UUID
 		var listID *uuid.UUID
-		var name, desc, segType, status, listName, conditionsRaw string
+		var name, desc, segType, status, listName, conditionsRaw, category string
 		var subCount int
 		var createdAt time.Time
 		var updatedAt, lastCalculatedAt sql.NullTime
-		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt, &listID, &listName, &conditionsRaw, &updatedAt, &lastCalculatedAt)
+		rows.Scan(&id, &name, &desc, &segType, &subCount, &status, &createdAt, &listID, &listName, &conditionsRaw, &updatedAt, &lastCalculatedAt, &category)
 
 		seg := map[string]interface{}{
 			"id": id.String(), "name": name, "description": desc, "segment_type": segType,
 			"subscriber_count": subCount, "status": status, "created_at": createdAt,
-			"list_name": listName,
+			"list_name": listName, "category": category,
 		}
 		if updatedAt.Valid {
 			seg["updated_at"] = updatedAt.Time
@@ -77,7 +139,34 @@ func (s *AdvancedMailingService) HandleGetSegments(w http.ResponseWriter, r *htt
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"segments": segments})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"segments":    segments,
+		"api_version": VersionMailingSegmentsAPIv1,
+		"filters_applied": map[string]interface{}{
+			"category":         categories,
+			"status":           statuses,
+			"include_archived": includeArchived,
+		},
+	})
+}
+
+// pqStringArray converts a Go []string into the format lib/pq expects for
+// PostgreSQL TEXT[] parameters in ANY($1) clauses. Kept inline (instead of
+// importing pq.Array) to match the style of the surrounding handlers in
+// this file which avoid the pq.Array wrapper.
+func pqStringArray(items []string) interface{} {
+	// lib/pq is already imported transitively via database/sql driver
+	// registration. Use the literal {a,b,c} representation since we
+	// control the input set (categories validated, statuses are short
+	// trusted strings).
+	escaped := make([]string, 0, len(items))
+	for _, it := range items {
+		// guard against quote-injection by stripping quotes & backslashes;
+		// the legitimate values here are always safe identifiers.
+		clean := strings.NewReplacer(`"`, ``, `\`, ``, `,`, ``).Replace(it)
+		escaped = append(escaped, `"`+clean+`"`)
+	}
+	return "{" + strings.Join(escaped, ",") + "}"
 }
 
 func (s *AdvancedMailingService) HandleCreateSegment(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +176,7 @@ func (s *AdvancedMailingService) HandleCreateSegment(w http.ResponseWriter, r *h
 		Description string `json:"description"`
 		ListID      string `json:"list_id"`
 		SegmentType string `json:"segment_type"`
+		Category    string `json:"category"`
 		Conditions  []struct {
 			Group    int    `json:"group"`
 			Field    string `json:"field"`
@@ -133,14 +223,23 @@ func (s *AdvancedMailingService) HandleCreateSegment(w http.ResponseWriter, r *h
 	
 	// Build conditions JSONB for storage in the main table
 	conditionsJSON := buildConditionsJSON(input.Conditions)
-	
-	log.Printf("Creating segment: id=%s, org=%s, list=%v, name=%s, type=%s, conditions=%s",
-		segmentID, orgID, listID, input.Name, segmentType, conditionsJSON)
-	
+
+	// Validate category against the canonical enum; default to 'uncategorized'
+	// when the caller omits the field or sends an unknown value. The wizard's
+	// "Create Segment" form should always send an explicit category — older
+	// API clients (and create_isp_segments.py) won't, which is fine.
+	category := input.Category
+	if !validSegmentCategories[category] {
+		category = "uncategorized"
+	}
+
+	log.Printf("Creating segment: id=%s, org=%s, list=%v, name=%s, type=%s, category=%s, conditions=%s",
+		segmentID, orgID, listID, input.Name, segmentType, category, conditionsJSON)
+
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO mailing_segments (id, organization_id, list_id, name, description, segment_type, conditions, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NOW(), NOW())
-	`, segmentID, orgID, listID, input.Name, input.Description, segmentType, conditionsJSON)
+		INSERT INTO mailing_segments (id, organization_id, list_id, name, description, segment_type, category, conditions, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', NOW(), NOW())
+	`, segmentID, orgID, listID, input.Name, input.Description, segmentType, category, conditionsJSON)
 	
 	if err != nil {
 		log.Printf("ERROR creating segment - SQL error: %v", err)
@@ -209,8 +308,10 @@ func (s *AdvancedMailingService) HandleCreateSegment(w http.ResponseWriter, r *h
 		"id":               segmentID.String(),
 		"name":             input.Name,
 		"segment_type":     segmentType,
+		"category":         category,
 		"status":           "active",
 		"subscriber_count": subscriberCount,
+		"api_version":      VersionMailingSegmentsAPIv1,
 	})
 }
 
@@ -787,6 +888,7 @@ func (s *AdvancedMailingService) HandleUpdateSegment(w http.ResponseWriter, r *h
 		Description string `json:"description"`
 		ListID      string `json:"list_id"`
 		Status      string `json:"status"`
+		Category    string `json:"category"`
 		Conditions  []struct {
 			Group    int    `json:"group"`
 			Field    string `json:"field"`
@@ -816,11 +918,22 @@ func (s *AdvancedMailingService) HandleUpdateSegment(w http.ResponseWriter, r *h
 
 	conditionsJSON := buildConditionsJSON(input.Conditions)
 
+	// Category is an optional field. When omitted (empty string) the existing
+	// row's category is preserved via COALESCE($7, category) so older API
+	// callers (notably `.scratch/may29_seed_engagement_segments.py`'s
+	// reactivate path and the SegmentsManager edit dialog before frontend
+	// catches up to v1.1.0) don't blank out a backfilled category.
+	var categoryArg interface{}
+	if input.Category != "" && validSegmentCategories[input.Category] {
+		categoryArg = input.Category
+	}
+
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE mailing_segments
-		SET name = $2, description = $3, list_id = $4, status = $5, conditions = $6, updated_at = NOW()
+		SET name = $2, description = $3, list_id = $4, status = $5,
+		    conditions = $6, category = COALESCE($7, category), updated_at = NOW()
 		WHERE id = $1
-	`, segmentID, input.Name, input.Description, listID, status, conditionsJSON)
+	`, segmentID, input.Name, input.Description, listID, status, conditionsJSON, categoryArg)
 	if err != nil {
 		log.Printf("[HandleUpdateSegment] update error: %v", err)
 		http.Error(w, `{"error":"failed to update segment"}`, http.StatusInternalServerError)
@@ -843,9 +956,18 @@ func (s *AdvancedMailingService) HandleUpdateSegment(w http.ResponseWriter, r *h
 	subscriberCount := s.calculateSegmentCount(ctx, segUUID, listID, input.Conditions)
 	s.db.ExecContext(ctx, `UPDATE mailing_segments SET subscriber_count = $2 WHERE id = $1`, segmentID, subscriberCount)
 
+	// Surface the resolved category in the response so the wizard can
+	// invalidate any client-side cache and re-fetch with the correct badge.
+	var resolvedCategory string
+	s.db.QueryRowContext(ctx, `SELECT COALESCE(category, 'uncategorized') FROM mailing_segments WHERE id = $1`, segmentID).Scan(&resolvedCategory)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": segmentID, "updated": true, "subscriber_count": subscriberCount,
+		"id":               segmentID,
+		"updated":          true,
+		"subscriber_count": subscriberCount,
+		"category":         resolvedCategory,
+		"api_version":      VersionMailingSegmentsAPIv1,
 	})
 }
 

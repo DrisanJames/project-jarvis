@@ -845,7 +845,26 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			convictionStore := engine.NewConvictionStore(engineMemory)
 			convictionStore.SetDB(db)
-			convictionStore.LoadAll(context.Background())
+			// Restore convictions from S3 + DB in the background. This work
+			// can take 10–20 minutes under DB load (60 ISP × agent-type
+			// combinations × ~10–60s per query). Blocking SetMailingDB on
+			// it means /api/mailing/* routes stay 404 for the entire window
+			// — which makes every deploy a Sev-2 incident for daily ops.
+			//
+			// Convictions are an OPTIMIZATION: they short-circuit redundant
+			// reputation/throttle decisions. Engine agents tolerate an
+			// empty conviction ring on startup — they refill as decisions
+			// happen. So async-loading is correct.
+			//
+			// 2026-05-30: bundled with the SES-relay routing fix as the
+			// "make boot survivable" change after the SetMailingDB hang
+			// during the sending_profile_id deploy.
+			go func() {
+				start := time.Now()
+				log.Printf("[conviction] async LoadAll starting (S3 + DB restore for 10 ISPs × 6 agent types)")
+				convictionStore.LoadAll(context.Background())
+				log.Printf("[conviction] async LoadAll completed in %s", time.Since(start).Round(time.Second))
+			}()
 
 			agentFactory := engine.NewAgentFactory(db, engineOrgID, engineMemory, suppressionStore, convictionStore)
 			_ = agentFactory.Initialize(context.Background())

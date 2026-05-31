@@ -654,10 +654,17 @@ type WaveGating struct {
 
 // PMTACampaignInput is the deploy payload for creating a PMTA-routed campaign.
 type PMTACampaignInput struct {
-	CampaignID        string                 `json:"campaign_id,omitempty"`
-	OfferID           string                 `json:"offer_id,omitempty"`
-	Name              string                 `json:"name"`
-	TargetISPs        []ISP                  `json:"target_isps"`
+	CampaignID string `json:"campaign_id,omitempty"`
+	OfferID    string `json:"offer_id,omitempty"`
+	Name       string `json:"name"`
+	TargetISPs []ISP  `json:"target_isps"`
+	// SendingProfileID, when non-empty, pins the deploy to a specific sending profile
+	// UUID instead of resolving by SendingDomain. Use when the same SendingDomain has
+	// multiple active PMTA profiles and the caller needs the non-default route (e.g.
+	// routing a one-off campaign through the AWS SES relay profile while daily ops
+	// continue on the OVH warm pool). When empty, the by-domain auto-lookup runs
+	// unchanged (most-recently-created active PMTA profile wins).
+	SendingProfileID  string                 `json:"sending_profile_id,omitempty"`
 	SendingDomain     string                 `json:"sending_domain"`
 	Variants          []ContentVariant       `json:"variants"`
 	ISPPlans          []PMTAISPScheduleInput `json:"isp_plans,omitempty"`
@@ -722,8 +729,15 @@ type ISPQuota struct {
 
 // ContentVariant represents one A/B variant of campaign content.
 type ContentVariant struct {
-	VariantName  string  `json:"variant_name"` // A, B, C, D
-	FromName     string  `json:"from_name"`
+	VariantName string `json:"variant_name"` // A, B, C, D
+	FromName    string `json:"from_name"`
+	// FromEmail, when non-empty, overrides the from_email derived from the
+	// sending profile. Required when the deploy pins a sending_profile_id whose
+	// profile from_email does not match the desired envelope sender (e.g. SES
+	// relay profile registered with from_email=hello@m.discountblog.com but the
+	// campaign needs to ship From: hello@em.discountblog.com). Empty preserves
+	// the profile default.
+	FromEmail    string  `json:"from_email,omitempty"`
 	Subject      string  `json:"subject"`
 	PreviewText  string  `json:"preview_text"`
 	HTMLContent  string  `json:"html_content"`

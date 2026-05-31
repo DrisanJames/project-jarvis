@@ -375,7 +375,7 @@ func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webPropert
 		`SELECT id::text, COALESCE(from_email,''), tracking_domain, sending_domain
 		 FROM mailing_sending_profiles
 		 WHERE sending_domain = $1 AND vendor_type = 'pmta' AND status = 'active'
-		 ORDER BY created_at DESC LIMIT 1`,
+		 ORDER BY is_default DESC, created_at DESC LIMIT 1`,
 		sendingDomain,
 	).Scan(&pID, &fEmail, &trackingDomain, &sDomain)
 	if err != nil {

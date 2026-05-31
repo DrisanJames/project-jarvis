@@ -158,7 +158,7 @@ func TestHandleSendDayPreflightBatch_AllPass(t *testing.T) {
 	_ = mock // not used; preflight is mocked via preflightFn
 
 	svc := &PMTACampaignService{db: db, orgID: defaultOrgID}
-	svc.preflightFn = func(_ context.Context, _ *sql.DB, _, _ string) preflightResult {
+	svc.preflightFn = func(_ context.Context, _ *sql.DB, _, _, _ string) preflightResult {
 		return preflightResult{OK: true}
 	}
 	// HandleSendDayPreflightBatch calls preflightDeployCheck directly,

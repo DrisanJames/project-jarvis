@@ -453,7 +453,7 @@ func (a *EmailMarketingAgent) doApproveRecommendation(readCtx context.Context, o
 		SendMode: "scheduled", ScheduledAt: &schedAt,
 	}
 
-	preflight := preflightDeployCheck(deployCtx, a.db, orgID, sendingDomain)
+	preflight := preflightDeployCheck(deployCtx, a.db, orgID, sendingDomain, "")
 	if !preflight.OK {
 		msgs := make([]string, len(preflight.Errors))
 		for i, e := range preflight.Errors {

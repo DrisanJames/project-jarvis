@@ -94,17 +94,26 @@ func (s *Store) CreateSegment(ctx context.Context, segment *Segment, rootGroup *
 		return fmt.Errorf("marshal conditions: %w", err)
 	}
 
+	// Default category to 'uncategorized' so the NOT NULL DEFAULT in the
+	// schema migration is honored even when callers don't set it. The v2
+	// API layer (segmentation_handlers.go CreateSegment) is responsible
+	// for validating against validSegmentCategories before we get here.
+	category := segment.Category
+	if category == "" {
+		category = "uncategorized"
+	}
+
 	query := `
 		INSERT INTO mailing_segments (
-			id, organization_id, list_id, name, description, segment_type,
+			id, organization_id, list_id, name, description, segment_type, category,
 			conditions, calculation_mode, refresh_interval_minutes, include_suppressed,
 			global_exclusion_rules, status, created_by, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 
 	_, err = tx.ExecContext(ctx, query,
 		segment.ID, segment.OrganizationID, segment.ListID, segment.Name, segment.Description,
-		segment.SegmentType, conditionsJSON, segment.CalculationMode, segment.RefreshIntervalMin,
+		segment.SegmentType, category, conditionsJSON, segment.CalculationMode, segment.RefreshIntervalMin,
 		segment.IncludeSuppressed, segment.GlobalExclusionRules, segment.Status,
 		segment.CreatedBy, segment.CreatedAt, segment.UpdatedAt)
 	if err != nil {
@@ -173,6 +182,7 @@ func (s *Store) createConditionGroup(ctx context.Context, tx *sql.Tx, segmentID 
 func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Segment, error) {
 	query := `
 		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type, ms.conditions,
+			COALESCE(ms.category, 'uncategorized'),
 			ms.calculation_mode, ms.refresh_interval_minutes, ms.include_suppressed,
 			ms.global_exclusion_rules, ms.subscriber_count, ms.last_calculated_at, ms.status,
 			(ss.segment_id IS NOT NULL), COALESCE(ss.system_query, ''),
@@ -186,7 +196,8 @@ func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Se
 	var conditions json.RawMessage
 	err := s.db.QueryRowContext(ctx, query, segmentID, orgID).Scan(
 		&segment.ID, &segment.OrganizationID, &segment.ListID, &segment.Name, &segment.Description,
-		&segment.SegmentType, &conditions, &segment.CalculationMode, &segment.RefreshIntervalMin,
+		&segment.SegmentType, &conditions, &segment.Category,
+		&segment.CalculationMode, &segment.RefreshIntervalMin,
 		&segment.IncludeSuppressed, &segment.GlobalExclusionRules, &segment.SubscriberCount,
 		&segment.LastCalculatedAt, &segment.Status, &segment.IsSystem, &segment.SystemQuery,
 		&segment.CreatedBy, &segment.LastEditedBy,
@@ -388,6 +399,7 @@ func (s *Store) UpdateSegmentCount(ctx context.Context, segmentID uuid.UUID, cou
 func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID) ([]*Segment, error) {
 	query := `
 		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type,
+			COALESCE(ms.category, 'uncategorized'),
 			ms.subscriber_count, ms.last_calculated_at, ms.status,
 			(ss.segment_id IS NOT NULL), COALESCE(ss.system_query, ''),
 			ms.created_at, ms.updated_at
@@ -414,7 +426,8 @@ func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.
 	for rows.Next() {
 		seg := &Segment{}
 		err := rows.Scan(&seg.ID, &seg.OrganizationID, &seg.ListID, &seg.Name,
-			&seg.Description, &seg.SegmentType, &seg.SubscriberCount,
+			&seg.Description, &seg.SegmentType, &seg.Category,
+			&seg.SubscriberCount,
 			&seg.LastCalculatedAt, &seg.Status, &seg.IsSystem, &seg.SystemQuery,
 			&seg.CreatedAt, &seg.UpdatedAt)
 		if err != nil {

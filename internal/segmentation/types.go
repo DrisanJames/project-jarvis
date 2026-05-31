@@ -199,7 +199,8 @@ type Segment struct {
 	ListID               *uuid.UUID      `json:"list_id,omitempty" db:"list_id"`
 	Name                 string          `json:"name" db:"name"`
 	Description          string          `json:"description,omitempty" db:"description"`
-	SegmentType          string          `json:"segment_type" db:"segment_type"` // dynamic, static
+	SegmentType          string          `json:"segment_type" db:"segment_type"`         // dynamic, static
+	Category             string          `json:"category" db:"category"`                 // engagement_brand|engagement_global|engagement_isp|framework|funnel|cohort_static|suppression_exclusion|partner_wave_static|legacy_snapshot|uncategorized — keep in sync with validSegmentCategories in mailing_segments.go and segCategoryMetadata.ts in web
 	CalculationMode      string          `json:"calculation_mode" db:"calculation_mode"` // realtime, batch, hybrid
 	RefreshIntervalMin   int             `json:"refresh_interval_minutes" db:"refresh_interval_minutes"`
 	IncludeSuppressed    bool            `json:"include_suppressed" db:"include_suppressed"`

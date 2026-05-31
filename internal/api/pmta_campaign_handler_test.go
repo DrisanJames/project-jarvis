@@ -15,7 +15,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
-func passingPreflight(_ context.Context, _ *sql.DB, _, _ string) preflightResult {
+func passingPreflight(_ context.Context, _ *sql.DB, _, _, _ string) preflightResult {
 	return preflightResult{OK: true}
 }
 
@@ -96,6 +96,126 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_ThreadsSendingProfileIDToPreflight verifies that
+// when a deploy payload pins SendingProfileID, the value is forwarded to
+// preflightDeployCheck so the preflight validates the pinned profile (not the
+// by-domain default). This is the contract that lets an operator route a
+// single campaign through a non-default profile (e.g. AWS SES relay) while
+// daily ops continue on the OVH warm-pool default for the same sending_domain.
+func TestHandleDeployCampaign_ThreadsSendingProfileIDToPreflight(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	pinnedID := uuid.New().String()
+	var capturedOverride string
+	captured := false
+	svc := &PMTACampaignService{
+		db:          db,
+		orgID:       defaultOrgID,
+		suppMatcher: NewSuppressionMatcher(),
+		colCache:    &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
+		preflightFn: func(_ context.Context, _ *sql.DB, _, _, override string) preflightResult {
+			capturedOverride = override
+			captured = true
+			return preflightResult{OK: false, Errors: []preflightError{{Check: "test", Message: "halt after capture"}}}
+		},
+		skipBackgroundDeploy: true,
+	}
+
+	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
+	input := engine.PMTACampaignInput{
+		Name:             "Pinned Profile Deploy",
+		SendingProfileID: pinnedID,
+		TargetISPs:       []engine.ISP{engine.ISPGmail},
+		SendingDomain:    "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	svc.HandleDeployCampaign(rr, req)
+
+	if !captured {
+		t.Fatalf("preflightFn was never called; rr.Code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedOverride != pinnedID {
+		t.Fatalf("preflight received override %q, want %q", capturedOverride, pinnedID)
+	}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 because preflight returned NOT OK, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleDeployCampaign_NoOverrideThreadsEmpty verifies the back-compat
+// path: when a deploy payload omits SendingProfileID, preflight receives ""
+// and continues using the legacy by-domain auto-lookup.
+func TestHandleDeployCampaign_NoOverrideThreadsEmpty(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	var capturedOverride string
+	captured := false
+	svc := &PMTACampaignService{
+		db:          db,
+		orgID:       defaultOrgID,
+		suppMatcher: NewSuppressionMatcher(),
+		colCache:    &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
+		preflightFn: func(_ context.Context, _ *sql.DB, _, _, override string) preflightResult {
+			capturedOverride = override
+			captured = true
+			return preflightResult{OK: false, Errors: []preflightError{{Check: "test", Message: "halt after capture"}}}
+		},
+		skipBackgroundDeploy: true,
+	}
+
+	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
+	input := engine.PMTACampaignInput{
+		Name:          "No Pin Deploy",
+		TargetISPs:    []engine.ISP{engine.ISPGmail},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	svc.HandleDeployCampaign(rr, req)
+
+	if !captured {
+		t.Fatalf("preflightFn was never called; rr.Code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedOverride != "" {
+		t.Fatalf("preflight received override %q, want empty string", capturedOverride)
 	}
 }
 

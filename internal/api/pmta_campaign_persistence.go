@@ -75,7 +75,7 @@ func createPMTAWaveCampaign(
 	}
 	scheduledAt := normalized.EarliestStart
 
-	profile, err := resolvePMTASendingProfile(ctx, tx, orgID, input.SendingDomain)
+	profile, err := resolvePMTASendingProfile(ctx, tx, orgID, input.SendingDomain, input.SendingProfileID)
 	if err != nil {
 		return engine.PMTAWavePlanResult{}, err
 	}
@@ -90,6 +90,9 @@ func createPMTAWaveCampaign(
 	resolvedFromEmail := ""
 	if profile.FromEmail.Valid {
 		resolvedFromEmail = profile.FromEmail.String
+	}
+	if len(input.Variants) > 0 && input.Variants[0].FromEmail != "" {
+		resolvedFromEmail = input.Variants[0].FromEmail
 	}
 
 	maxRecipients := audience.SelectedTotal
@@ -442,7 +445,7 @@ func savePMTADraftCampaign(
 		return engine.PMTACampaignDraftResult{}, err
 	}
 
-	profile, err := resolvePMTASendingProfile(ctx, tx, orgID, draft.CampaignInput.SendingDomain)
+	profile, err := resolvePMTASendingProfile(ctx, tx, orgID, draft.CampaignInput.SendingDomain, draft.CampaignInput.SendingProfileID)
 	if err != nil {
 		return engine.PMTACampaignDraftResult{}, err
 	}
@@ -740,15 +743,40 @@ func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, request
 	return uuid.New(), false, nil
 }
 
-func resolvePMTASendingProfile(ctx context.Context, tx *sql.Tx, orgID, sendingDomain string) (pmtaCampaignProfile, error) {
+// resolvePMTASendingProfile returns the sending profile to use for a PMTA
+// campaign. When overrideProfileID is non-empty, the lookup is pinned to that
+// UUID (must be vendor_type='pmta', status='active', and owned by orgID).
+// When empty, the legacy by-domain auto-lookup runs (most-recently-created
+// active PMTA profile whose sending_domain or from_email host matches
+// sendingDomain wins).
+//
+// The pinned path supports campaigns that need to route through a non-default
+// profile for the same SendingDomain — e.g. shipping a one-off through the
+// AWS SES relay profile while daily ops continue on the OVH warm pool.
+func resolvePMTASendingProfile(ctx context.Context, tx *sql.Tx, orgID, sendingDomain, overrideProfileID string) (pmtaCampaignProfile, error) {
 	var profile pmtaCampaignProfile
+	if overrideProfileID != "" {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id, from_email, from_name, reply_email
+			FROM mailing_sending_profiles
+			WHERE organization_id = $1 AND id = $2
+			  AND vendor_type = 'pmta'
+			  AND status = 'active'
+		`, orgID, overrideProfileID).Scan(&profile.ProfileID, &profile.FromEmail, &profile.FromName, &profile.ReplyTo); err != nil {
+			if err == sql.ErrNoRows {
+				return pmtaCampaignProfile{}, fmt.Errorf("resolve sending profile: pinned profile %s not found, not vendor=pmta, or not active for org", overrideProfileID)
+			}
+			return pmtaCampaignProfile{}, fmt.Errorf("resolve sending profile (pinned %s): %w", overrideProfileID, err)
+		}
+		return profile, nil
+	}
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, from_email, from_name, reply_email
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND vendor_type = 'pmta'
 		  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
 		  AND status = 'active'
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY is_default DESC, created_at DESC LIMIT 1
 	`, orgID, sendingDomain).Scan(&profile.ProfileID, &profile.FromEmail, &profile.FromName, &profile.ReplyTo); err != nil && err != sql.ErrNoRows {
 		return pmtaCampaignProfile{}, fmt.Errorf("resolve sending profile: %w", err)
 	}
