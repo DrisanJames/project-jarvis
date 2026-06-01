@@ -10,10 +10,12 @@ import {
   faUserPlus, faFileAlt, faChartBar, faChartPie,
   faEnvelopeOpen, faUserMinus, faInbox, faLayerGroup,
   faCodeBranch,
-  faBolt, faRandom, faRocket
+  faBolt, faRandom, faRocket,
+  faHandPointer,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { JourneyBuilder } from './JourneyBuilder';
+import { ClickDripAdmin } from './ClickDripAdmin';
 import './JourneyCenter.css';
 
 // ============================================================================
@@ -105,7 +107,7 @@ interface ActivityItem {
   timestamp: string;
 }
 
-type ViewType = 'overview' | 'list' | 'detail' | 'enrollments' | 'performance' | 'builder';
+type ViewType = 'overview' | 'list' | 'detail' | 'enrollments' | 'performance' | 'builder' | 'click-drip';
 type StatusFilter = 'all' | 'draft' | 'active' | 'paused' | 'completed' | 'archived';
 type TimeRange = '7d' | '30d' | '90d' | 'all';
 
@@ -1500,6 +1502,12 @@ export const JourneyCenter: React.FC = () => {
         >
           <FontAwesomeIcon icon={faCodeBranch} /> Journey Builder
         </button>
+        <button
+          className={`jc-nav-tab ${view === 'click-drip' ? 'active' : ''}`}
+          onClick={() => setView('click-drip')}
+        >
+          <FontAwesomeIcon icon={faHandPointer} /> Click-Drip
+        </button>
       </div>
 
       {/* Main Content */}
@@ -1542,6 +1550,10 @@ export const JourneyCenter: React.FC = () => {
 
         {view === 'builder' && (
           <JourneyBuilder />
+        )}
+
+        {view === 'click-drip' && (
+          <ClickDripAdmin />
         )}
       </div>
 

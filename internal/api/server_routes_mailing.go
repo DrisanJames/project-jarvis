@@ -183,6 +183,15 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/api/mailing/everflow/postback", efPostback.HandlePostback)
 		s.router.Get("/api/mailing/everflow/postback", efPostback.HandlePostback)
 
+		// Everflow click postback — public (called by Everflow on every click).
+		// Phase 1 (2026-06-01): records to mailing_journey_event_triggers; the
+		// JourneyEventEnroller worker (Phase 2) consumes the queue and creates
+		// journey enrollments. Mounted on s.router so Everflow can call it
+		// without auth headers, same as the conversion postback.
+		efClickPostback := NewEverflowClickPostbackHandler(db)
+		s.router.Post("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
+		s.router.Get("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
+
 		// Inbound mailto: unsubscribe webhook — public (called by AWS SNS, no auth headers).
 		// SNS does not authenticate; handler verifies the SNS envelope shape and the
 		// base64-encoded orgID|campaignID|subscriberID token in the recipient localpart.
@@ -1031,6 +1040,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === BLOG CAMPAIGN INGEST (minimal JSON → full engaged campaign) ===
 			r.Post("/blog-campaign", pmtaCampaignAPI.HandleBlogCampaign)
+
+			// === CLICK-DRIP ADMIN CRUD (operator UI for Phase 4) ===
+			// Reminder subjects + offer→journey map. Lives under the
+			// authenticated /api/mailing prefix so the operator dashboard
+			// can edit them; the click-postback handler reads the journey
+			// map on every postback (no cache) so enabled=false here halts
+			// new enrollments immediately. See click_drip_admin_handlers.go.
+			RegisterClickDripAdminRoutes(r, db)
 
 			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
