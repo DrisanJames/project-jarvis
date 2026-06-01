@@ -96,6 +96,44 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		log.Printf("[EverflowPostback] ERROR inserting suppression: %v", err)
 	}
 
+	// ────────────────────────────────────────────────────────────────────
+	// Click-Drip exit-on-convert (Phase 4, 2026-06-01).
+	//
+	// If the subscriber is in an active click-drip journey for this same
+	// offer, cancel the remaining reminders. They bought it; do not pelt
+	// them with reminder emails.
+	//
+	// We resolve subscriber → email then UPDATE all matching active
+	// enrollments. enrollment_offer_id is the everflow numeric id (string),
+	// which is what the click-postback enroller stamps.
+	// ────────────────────────────────────────────────────────────────────
+	if efOfferID != "" {
+		var subEmail string
+		_ = h.db.QueryRowContext(ctx,
+			`SELECT email FROM mailing_subscribers WHERE id=$1`,
+			subscriberID).Scan(&subEmail)
+		if subEmail != "" {
+			res, exErr := h.db.ExecContext(ctx, `
+				UPDATE mailing_journey_enrollments
+				SET status='exited',
+				    exited_at=NOW(),
+				    exit_reason='converted',
+				    converted_at=NOW()
+				WHERE status='active'
+				  AND enrollment_offer_id=$1
+				  AND LOWER(subscriber_email)=LOWER($2)
+			`, efOfferID, subEmail)
+			if exErr != nil {
+				log.Printf("[EverflowPostback] ERROR exiting click-drip enrollments: %v", exErr)
+			} else if res != nil {
+				if n, _ := res.RowsAffected(); n > 0 {
+					log.Printf("[EverflowPostback] click-drip exit-on-convert: exited %d enrollment(s) for offer=%s subscriber=%s",
+						n, efOfferID, subEmail)
+				}
+			}
+		}
+	}
+
 	if creativeID != uuid.Nil {
 		_, err := h.db.ExecContext(ctx, `
 			UPDATE mailing_offer_creatives

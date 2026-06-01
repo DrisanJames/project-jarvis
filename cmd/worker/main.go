@@ -90,6 +90,15 @@ func main() {
 	journeyEngagementWatcher.Start(ctx)
 	log.Println("JourneyEngagementWatcher started (exits enrollments on any open/click)")
 
+	// Click-Drip Journey (Phase 2, 2026-06-01): consumes pending rows
+	// from mailing_journey_event_triggers (written by the Everflow
+	// click-postback handler) and enrolls subscribers into the click
+	// journey configured in mailing_offer_journey_map. Polls every 5s
+	// for low click → reminder latency. Inert if the queue is empty.
+	journeyEventEnroller := worker.NewJourneyEventEnroller(db)
+	journeyEventEnroller.Start(ctx)
+	log.Println("JourneyEventEnroller started (drains click-postback queue every 5s)")
+
 	// Initialize journey executor
 	journeyExecutor := worker.NewJourneyExecutor(db)
 	journeyExecutor.SetActivator(journeyActivator)

@@ -325,10 +325,14 @@ func main() {
 				if followupDisabled {
 					followupMax = 0
 				}
+				throttleDeferralDisabled := false
 				throttleThreshold := 50.0
 				if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_THROTTLE_THRESHOLD")); v != "" {
 					if f, err := strconv.ParseFloat(v, 64); err == nil {
 						throttleThreshold = f
+						if f <= 0 {
+							throttleDeferralDisabled = true
+						}
 					}
 				}
 				creativesDir := strings.TrimSpace(os.Getenv("PARTNER_DRIP_CREATIVES_DIR"))
@@ -342,11 +346,12 @@ func main() {
 					MaxFollowupClaimPerVertical: followupMax,
 					FollowupDisabled:            followupDisabled,
 					ThrottledISPRateThreshold:   throttleThreshold,
+					ThrottleDeferralDisabled:    throttleDeferralDisabled,
 					CreativesDir:                creativesDir,
 				})
 				orch.Start()
-				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_threshold=%.0f creatives_dir=%s)",
-					followupDisabled, followupMax, throttleThreshold, creativesDir)
+				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_deferral_disabled=%v throttle_threshold=%.0f creatives_dir=%s)",
+					followupDisabled, followupMax, throttleDeferralDisabled, throttleThreshold, creativesDir)
 				return orch
 			})
 		}
@@ -5688,6 +5693,153 @@ END $$`},
 			        OR c.pmta_config->'campaign_input'->'exclusion_segments' @> to_jsonb(s.id::text)
 			      )
 			  )`},
+
+		// ────────────────────────────────────────────────────────────────────
+		// Click-Drip Journey infrastructure (Phase 1, 2026-06-01)
+		// Backs the Everflow click-postback → journey enrollment pipeline.
+		// All inert until Phase 3 wires the email-node metadata override and
+		// seeds journey records. Safe to deploy at any time.
+		// ────────────────────────────────────────────────────────────────────
+		{"jun01_click_drip_offer_journey_map", `CREATE TABLE IF NOT EXISTS mailing_offer_journey_map (
+			everflow_offer_id VARCHAR(64) PRIMARY KEY,
+			click_journey_id  VARCHAR(64),
+			payout_type       VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+			enabled           BOOLEAN NOT NULL DEFAULT FALSE,
+			notes             TEXT DEFAULT '',
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"jun01_click_drip_offer_journey_map_payout_chk", `DO $$ BEGIN
+			ALTER TABLE mailing_offer_journey_map
+				ADD CONSTRAINT mailing_offer_journey_map_payout_type_check
+				CHECK (payout_type IN ('CPM','eCPM','CPA','CPL','CPC','IO','PRV','UNKNOWN'));
+		EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL; END $$`},
+
+		{"jun01_click_drip_event_triggers", `CREATE TABLE IF NOT EXISTS mailing_journey_event_triggers (
+			id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			source               VARCHAR(64) NOT NULL,
+			everflow_offer_id    VARCHAR(64) NOT NULL,
+			subscriber_id        UUID NOT NULL,
+			subscriber_email     VARCHAR(255),
+			sub2_brand           VARCHAR(128) DEFAULT '',
+			sub3_campaign_id     VARCHAR(64) DEFAULT '',
+			click_id             VARCHAR(128) DEFAULT '',
+			sending_profile_id   UUID,
+			sending_domain       VARCHAR(128) DEFAULT '',
+			click_url            TEXT DEFAULT '',
+			status               VARCHAR(32) NOT NULL DEFAULT 'pending',
+			skip_reason          TEXT DEFAULT '',
+			received_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			processed_at         TIMESTAMPTZ
+		)`},
+		{"jun01_click_drip_event_triggers_pending_idx", `CREATE INDEX IF NOT EXISTS idx_mjet_pending_received
+			ON mailing_journey_event_triggers(status, received_at)
+			WHERE status = 'pending'`},
+		{"jun01_click_drip_event_triggers_idem_idx", `CREATE INDEX IF NOT EXISTS idx_mjet_idempotency
+			ON mailing_journey_event_triggers(subscriber_id, everflow_offer_id, received_at DESC)`},
+
+		{"jun01_click_drip_reminder_subjects", `CREATE TABLE IF NOT EXISTS mailing_offer_reminder_subjects (
+			everflow_offer_id  VARCHAR(64) NOT NULL,
+			sequence_index     SMALLINT NOT NULL,
+			subject            TEXT NOT NULL DEFAULT '',
+			preheader          TEXT DEFAULT '',
+			from_name_override VARCHAR(128) DEFAULT '',
+			enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+			notes              TEXT DEFAULT '',
+			updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (everflow_offer_id, sequence_index)
+		)`},
+
+		{"jun01_click_drip_enrollment_exit_cols", `ALTER TABLE mailing_journey_enrollments
+			ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS exit_reason TEXT,
+			ADD COLUMN IF NOT EXISTS converted_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS enrolled_via VARCHAR(64) DEFAULT '',
+			ADD COLUMN IF NOT EXISTS enrollment_offer_id VARCHAR(64) DEFAULT ''`},
+		{"jun01_click_drip_enrollment_offer_idx", `CREATE INDEX IF NOT EXISTS idx_journey_enrollments_active_by_offer
+			ON mailing_journey_enrollments(enrollment_offer_id, status)
+			WHERE status = 'active' AND enrollment_offer_id <> ''`},
+
+		// ────────────────────────────────────────────────────────────────────
+		// Click-Drip Journey seed data (Phase 3, 2026-06-01)
+		//
+		// One shared journey graph (4 emails at +1h, +6h, +24h, +72h after
+		// click) + two offer→journey map rows + 8 starter subject lines.
+		//
+		// Metal Roofing (9539) ships enabled=TRUE (operator-approved go-live
+		// per send-day brief). NDR (7667) ships enabled=FALSE so operator
+		// can flip it after Metal Roofing soaks 24h:
+		//   UPDATE mailing_offer_journey_map SET enabled=true WHERE everflow_offer_id='7667';
+		// ────────────────────────────────────────────────────────────────────
+		{"jun01_click_drip_journey_4touch_72h", `INSERT INTO mailing_journeys (id, name, description, status, nodes, connections, created_at, updated_at)
+			VALUES (
+				'click-drip-4touch-72h',
+				'Click-Drip 4-Touch (+1h, +6h, +24h, +72h)',
+				'Standard click-drip journey: subscriber clicks an offer, 4 reminder emails fire over 72 hours, all from the original brand domain reusing the original creative. Subjects per-offer in mailing_offer_reminder_subjects.',
+				'active',
+				'[
+					{"id":"trig","type":"trigger","config":{"triggerType":"event","eventType":"click_postback"},"connections":["delay-1h"]},
+					{"id":"delay-1h","type":"delay","config":{"delayValue":1,"delayUnit":"hours"},"connections":["email-0"]},
+					{"id":"email-0","type":"email","config":{"reminder_sequence_index":0,"subject":"","html_content":""},"connections":["delay-5h"]},
+					{"id":"delay-5h","type":"delay","config":{"delayValue":5,"delayUnit":"hours"},"connections":["email-1"]},
+					{"id":"email-1","type":"email","config":{"reminder_sequence_index":1,"subject":"","html_content":""},"connections":["delay-18h"]},
+					{"id":"delay-18h","type":"delay","config":{"delayValue":18,"delayUnit":"hours"},"connections":["email-2"]},
+					{"id":"email-2","type":"email","config":{"reminder_sequence_index":2,"subject":"","html_content":""},"connections":["delay-48h"]},
+					{"id":"delay-48h","type":"delay","config":{"delayValue":48,"delayUnit":"hours"},"connections":["email-3"]},
+					{"id":"email-3","type":"email","config":{"reminder_sequence_index":3,"subject":"","html_content":""},"connections":["goal"]},
+					{"id":"goal","type":"goal","config":{},"connections":[]}
+				]'::jsonb,
+				'[
+					{"from":"trig","to":"delay-1h"},
+					{"from":"delay-1h","to":"email-0"},
+					{"from":"email-0","to":"delay-5h"},
+					{"from":"delay-5h","to":"email-1"},
+					{"from":"email-1","to":"delay-18h"},
+					{"from":"delay-18h","to":"email-2"},
+					{"from":"email-2","to":"delay-48h"},
+					{"from":"delay-48h","to":"email-3"},
+					{"from":"email-3","to":"goal"}
+				]'::jsonb,
+				NOW(), NOW()
+			) ON CONFLICT (id) DO NOTHING`},
+
+		{"jun01_click_drip_map_metalroofing", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('9539', 'click-drip-4touch-72h', 'CPM', TRUE, 'Metal Roofing - first click-drip live offer (2026-06-01)')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+
+		{"jun01_click_drip_map_ndr", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('7667', 'click-drip-4touch-72h', 'eCPM', FALSE, 'National Debt Relief - paused at launch; operator flips enabled=true after Metal Roofing 24h soak')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+
+		// Metal Roofing reminder subjects (4 steps, sequence_index 0..3)
+		{"jun01_click_drip_subjects_9539_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9539', 0, 'You looked at metal roofing — quick reminder', 'Your luxury roofing quote is just one click away.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_9539_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9539', 1, 'Did you forget about your roofing quote?', 'A few neighbors locked theirs in this week.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_9539_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9539', 2, 'Last chance for free roofing inspection', 'Same offer, one-day window left.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_9539_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9539', 3, 'Final reminder: your roofing quote is waiting', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
+		// NDR reminder subjects (4 steps; rows seeded but offer_journey_map is enabled=FALSE)
+		{"jun01_click_drip_subjects_7667_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('7667', 0, 'Quick follow-up on your debt relief inquiry', 'A specialist can call you back today.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_7667_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('7667', 1, 'Did you finish reviewing your debt options?', 'No-pressure 5-minute review of what you saw earlier.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_7667_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('7667', 2, 'Your debt relief consultation is still available', 'Pre-qualification takes about 90 seconds.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun01_click_drip_subjects_7667_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('7667', 3, 'Final note about your debt relief application', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

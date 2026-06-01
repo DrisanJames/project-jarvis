@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -348,7 +349,39 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	if sendingProfileID == "" {
 		sendingProfileID, _ = node.Config["sendingProfileId"].(string) // camelCase fallback
 	}
-	
+
+	// ────────────────────────────────────────────────────────────────────
+	// Click-Drip Journey override (Phase 3, 2026-06-01).
+	//
+	// When the enrollment was created by the click-postback pipeline
+	// (JourneyEventEnroller), enrollment.Metadata carries everything we
+	// need to make this reminder feel like a continuation of the
+	// subscriber's original click:
+	//   - sending_profile_id: brand domain they clicked from
+	//   - body_html:          the exact creative they clicked
+	//   - original_from_name: friendly-from on the original send
+	//   - original_from_email: from-email on the original send
+	//
+	// Body HTML reuse is operator policy: the reminder is a "did you
+	// forget?" continuation of the same creative, not a re-pitch. Subject
+	// + preheader come from mailing_offer_reminder_subjects below.
+	//
+	// Existing (non-click-drip) journeys have Metadata without these
+	// keys → all overrides are no-ops → behaviour is preserved.
+	// ────────────────────────────────────────────────────────────────────
+	if mdProfile, ok := enrollment.Metadata["sending_profile_id"].(string); ok && mdProfile != "" {
+		sendingProfileID = mdProfile
+	}
+	if mdBody, ok := enrollment.Metadata["body_html"].(string); ok && mdBody != "" {
+		htmlContent = mdBody
+	}
+	if mdFromName, ok := enrollment.Metadata["original_from_name"].(string); ok && mdFromName != "" && fromName == "" {
+		fromName = mdFromName
+	}
+	if mdFromEmail, ok := enrollment.Metadata["original_from_email"].(string); ok && mdFromEmail != "" && fromEmail == "" {
+		fromEmail = mdFromEmail
+	}
+
 	// If sending profile ID provided, load profile settings
 	if sendingProfileID != "" {
 		var profileFromName, profileFromEmail sql.NullString
@@ -362,6 +395,47 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			}
 			if profileFromEmail.Valid && fromEmail == "" {
 				fromEmail = profileFromEmail.String
+			}
+		}
+	}
+
+	// ────────────────────────────────────────────────────────────────────
+	// Click-Drip reminder subject override (Phase 3, 2026-06-01).
+	//
+	// For click-drip journeys we want a different subject + preheader
+	// per reminder step (e.g. step 0 = "+1h: Did you forget?", step 3 =
+	// "+72h: Last chance"). The journey's email node carries
+	// reminder_sequence_index (0..N-1) and the click-postback
+	// enrollment carries everflow_offer_id in metadata. Together they
+	// key into mailing_offer_reminder_subjects.
+	//
+	// Body HTML is intentionally NOT overridden — operator policy
+	// 2026-06-01 is to reuse the *same creative* the subscriber
+	// originally clicked, so the reminder feels like a continuation,
+	// not a brand-new offer pitch.
+	// ────────────────────────────────────────────────────────────────────
+	if reminderSeq, ok := readReminderSeqIndex(node.Config); ok {
+		if everflowOfferID, ok := enrollment.Metadata["everflow_offer_id"].(string); ok && everflowOfferID != "" {
+			var rSubject, rPreheader, rFromOverride sql.NullString
+			var rEnabled sql.NullBool
+			err := je.db.QueryRowContext(ctx, `
+				SELECT subject, preheader, from_name_override, enabled
+				FROM mailing_offer_reminder_subjects
+				WHERE everflow_offer_id=$1 AND sequence_index=$2
+			`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled)
+			if err == nil && rEnabled.Valid && rEnabled.Bool {
+				if rSubject.Valid && rSubject.String != "" {
+					subject = rSubject.String
+				}
+				if rPreheader.Valid && rPreheader.String != "" {
+					if node.Config == nil {
+						node.Config = map[string]interface{}{}
+					}
+					node.Config["preheader"] = rPreheader.String
+				}
+				if rFromOverride.Valid && rFromOverride.String != "" {
+					fromName = rFromOverride.String
+				}
 			}
 		}
 	}
@@ -537,6 +611,45 @@ func (je *JourneyExecutor) executeDelayNode(ctx context.Context, enrollment Enro
 // computeDelayWaitUntil is a pure function so it can be unit tested
 // without standing up the executor + DB. It mirrors every supported
 // delayType branch above.
+// readReminderSeqIndex extracts the reminder sequence index (0..N) from
+// a journey email node's config. Used by the click-drip pipeline to key
+// into mailing_offer_reminder_subjects per step. Accepts both
+// reminder_sequence_index (snake_case) and reminderSequenceIndex
+// (camelCase). Numeric (json.Number / float64) and string forms are
+// both honored. Returns ok=false when no usable value is present.
+func readReminderSeqIndex(config map[string]interface{}) (int, bool) {
+	if config == nil {
+		return 0, false
+	}
+	tryKeys := []string{"reminder_sequence_index", "reminderSequenceIndex"}
+	for _, k := range tryKeys {
+		raw, present := config[k]
+		if !present {
+			continue
+		}
+		switch v := raw.(type) {
+		case float64:
+			return int(v), true
+		case int:
+			return v, true
+		case int64:
+			return int(v), true
+		case json.Number:
+			if i, err := v.Int64(); err == nil {
+				return int(i), true
+			}
+		case string:
+			if v == "" {
+				continue
+			}
+			if i, err := strconv.Atoi(v); err == nil {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func computeDelayWaitUntil(config map[string]interface{}, delayType string, now time.Time) time.Time {
 	switch delayType {
 	case "until_time":
@@ -724,12 +837,33 @@ func (je *JourneyExecutor) scheduleNextExecution(ctx context.Context, enrollment
 	return err
 }
 
-// moveToNode moves an enrollment to a new node
+// moveToNode moves an enrollment to a new node.
+//
+// Metadata handling (revised 2026-06-01 for the Click-Drip Journey):
+//
+// Originally this function wiped metadata to '{}' on every transition.
+// That worked for the Welcome Series because the only metadata anyone
+// wrote was the delay-tracking scratch (`delay_started`, `delay_until`)
+// which MUST clear between delay nodes. But the click-drip pipeline
+// stamps stable per-enrollment context at enrollment time
+// (sending_profile_id, body_html, original_from_*, everflow_offer_id)
+// that the email-node executor reads on EVERY downstream node — so a
+// blanket wipe would lose it.
+//
+// New behavior: remove only the per-node scratch keys. Postgres'
+// `jsonb - text` operator strips a single key cleanly, and chaining
+// covers both. Anything else stamped at enrollment time (or by the
+// activator's later jsonb_set on shadow_campaign_id) survives the
+// transition unchanged. delay_started/delay_until still clear between
+// delay nodes as before.
 func (je *JourneyExecutor) moveToNode(ctx context.Context, enrollmentID, nodeID string) error {
 	_, err := je.db.ExecContext(ctx, `
-		UPDATE mailing_journey_enrollments 
-		SET current_node_id = $2, next_execute_at = NOW(), last_executed_at = NOW(), 
-		    execution_count = execution_count + 1, metadata = '{}'
+		UPDATE mailing_journey_enrollments
+		SET current_node_id = $2,
+		    next_execute_at = NOW(),
+		    last_executed_at = NOW(),
+		    execution_count = execution_count + 1,
+		    metadata = COALESCE(metadata, '{}'::jsonb) - 'delay_started' - 'delay_until'
 		WHERE id = $1
 	`, enrollmentID, nodeID)
 	return err
