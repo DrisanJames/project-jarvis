@@ -138,6 +138,10 @@ type PartnerDripOrchestratorConfig struct {
 	// ThrottledISPRateThreshold (msgs_per_hour) below which an ISP is considered
 	// in active backoff and that ISP's portion of the wave is deferred. Default 50.
 	ThrottledISPRateThreshold float64
+	// ThrottleDeferralDisabled skips mailing_isp_throttle_state deferrals entirely
+	// (PARTNER_DRIP_THROTTLE_THRESHOLD=0). Do not rely on threshold=0 alone —
+	// NewPartnerDripOrchestrator treats unset zero as "default to 50".
+	ThrottleDeferralDisabled bool
 	// BrandsPerTick fires up to N brands' welcome waves per vertical per
 	// tick (in parallel). Default 4. With 16 brands round-robin and 4
 	// brands per tick, the rotation completes one full cycle in 4 ticks
@@ -251,7 +255,7 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			"att":       2,
 		}
 	}
-	if cfg.ThrottledISPRateThreshold <= 0 {
+	if !cfg.ThrottleDeferralDisabled && cfg.ThrottledISPRateThreshold <= 0 {
 		cfg.ThrottledISPRateThreshold = 50.0
 	}
 	if cfg.BrandsPerTick <= 0 {
@@ -1447,6 +1451,9 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, re
 // fetchThrottledISPs returns isp -> msgs_per_hour for any ISPs whose rate is
 // below ThrottledISPRateThreshold. These are skipped from the upcoming wave.
 func (po *PartnerDripOrchestrator) fetchThrottledISPs(ctx context.Context) (map[string]float64, error) {
+	if po.cfg.ThrottleDeferralDisabled {
+		return map[string]float64{}, nil
+	}
 	rows, err := po.db.QueryContext(ctx, `
 		SELECT isp, msgs_per_hour
 		FROM mailing_isp_throttle_state
