@@ -737,6 +737,33 @@ func main() {
 				journeySegmentEnroller.Start(ctx)
 				log.Println("Journey Segment Enroller started (auto-enrolls segment-triggered journeys every 5m)")
 
+				// Click-Drip Journey workers (2026-06-01). These run IN-PROCESS in
+				// the server because there is no separate worker deployment in
+				// production (cmd/worker is not deployed; only cmd/server runs as
+				// ignite-service). Safe to run here: the only active journey in the
+				// system is the click-drip journey, so the executor never touches
+				// Welcome-series sending (which goes through PMTA waves, not the
+				// journey tables).
+				//
+				//  1. JourneyEventEnroller drains mailing_journey_event_triggers
+				//     (queued by EverflowClickPostbackHandler) into
+				//     mailing_journey_enrollments every 5s.
+				//  2. JourneyExecutor advances enrollments through the delay/email
+				//     nodes; click-drip email nodes dispatch via JourneyClickDripSender
+				//     which reuses the in-process profileSender (PMTA HTTP bridge +
+				//     per-ISP VMTA pool routing) so reminders go out on the exact
+				//     brand profile the subscriber originally clicked from, with
+				//     open/click tracking and a mailing_message_log row.
+				journeyEventEnroller := worker.NewJourneyEventEnroller(mailingDB)
+				journeyEventEnroller.Start(ctx)
+				log.Println("Journey Event Enroller started (drains click-drip trigger queue every 5s)")
+
+				journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
+				journeyExecutor := worker.NewJourneyExecutor(mailingDB)
+				journeyExecutor.SetClickDripSender(journeyClickDripSender)
+				journeyExecutor.Start()
+				log.Println("Journey Executor started (advances click-drip enrollments; reminders sent via PMTA on original profile)")
+
 				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
 				ghostVisitorWorker.Start(ctx)
 				log.Println("Ghost Visitor Worker started (tags ghost visitors every 4h)")

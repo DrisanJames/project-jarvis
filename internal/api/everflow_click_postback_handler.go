@@ -19,7 +19,9 @@ package api
 //   /api/mailing/everflow/click-postback
 //     ?offer_id=9539           (Everflow numeric offer id)
 //     &sub1=<subscriber_uuid>  (our internal subscriber id)
-//     &sub2=<brand_domain>     (sending domain, e.g. em.discountblog.com)
+//     &sub2=<brand_domain>     (brand ROOT, e.g. discountblog.com — creatives
+//                               send sub2={{ brand.domain }} which is the root,
+//                               NOT the sending domain em.discountblog.com)
 //     &sub3=<campaign_uuid>    (the mailing_campaigns.id that drove the click)
 //     &transaction_id=<click_id>
 //     &click_url=<url>         (optional, original target URL)
@@ -50,6 +52,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 // EverflowClickPostbackHandler is the HTTP entry for /api/mailing/everflow/click-postback.
@@ -64,12 +67,12 @@ func NewEverflowClickPostbackHandler(db *sql.DB) *EverflowClickPostbackHandler {
 
 // clickPostbackInput is the parsed request, normalized.
 type clickPostbackInput struct {
-	SubscriberIDStr  string
-	Sub2Brand        string
-	CampaignIDStr    string
-	EverflowOfferID  string
-	TransactionID    string
-	ClickURL         string
+	SubscriberIDStr string
+	Sub2Brand       string
+	CampaignIDStr   string
+	EverflowOfferID string
+	TransactionID   string
+	ClickURL        string
 
 	subscriberID uuid.UUID
 	campaignID   uuid.UUID
@@ -161,13 +164,30 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 		`SELECT email FROM mailing_subscribers WHERE id=$1`,
 		in.subscriberID).Scan(&subscriberEmail)
 
+	// sub2 carries the brand ROOT (creatives use sub2={{ brand.domain }},
+	// which resolves to e.g. "quizfiesta.com"), NOT the sending domain
+	// ("em.quizfiesta.com"). Match on the brand root and prefer the
+	// canonical "em.<root>" sending domain. This is only a best-effort hint
+	// stored on the trigger; the JourneyEventEnroller does the authoritative
+	// resolution (preferring the original campaign's sending_profile_id).
 	var sendingProfileID uuid.UUID
 	var sendingDomain string
 	if in.Sub2Brand != "" {
 		sendingDomain = strings.ToLower(in.Sub2Brand)
-		h.db.QueryRowContext(ctx,
-			`SELECT id FROM mailing_sending_profiles WHERE LOWER(sending_domain)=$1 AND status='active' LIMIT 1`,
-			sendingDomain).Scan(&sendingProfileID)
+		root := brand.Root(sendingDomain)
+		h.db.QueryRowContext(ctx, `
+			SELECT id FROM mailing_sending_profiles
+			WHERE status='active' AND vendor_type='pmta'
+			  AND (
+			        LOWER(sending_domain) = $1
+			     OR LOWER(sending_domain) = 'em.' || $2
+			     OR LOWER(sending_domain) = $2
+			     OR LOWER(sending_domain) LIKE '%.' || $2
+			      )
+			ORDER BY (LOWER(sending_domain) = 'em.' || $2) DESC,
+			         (LOWER(sending_domain) = $1) DESC
+			LIMIT 1
+		`, sendingDomain, root).Scan(&sendingProfileID)
 	}
 
 	// Insert the trigger row.

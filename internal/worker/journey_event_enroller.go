@@ -39,11 +39,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 // DefaultEventEnrollerInterval — operator-tuned cadence. 5s keeps the
@@ -345,15 +347,38 @@ func (w *JourneyEventEnroller) processOne(
 	// like a continuation rather than a brand-new pitch (operator policy
 	// 2026-06-01). Subject comes from mailing_offer_reminder_subjects;
 	// only body + identity are reused.
+	//
+	// We ALSO read the original campaign's sending_profile_id here because
+	// it is the single most accurate brand-continuity signal: the reminder
+	// must go out on the EXACT profile (IP pool, DKIM domain, api_endpoint)
+	// the click originated from. The handler's sub2-derived guess is only a
+	// fallback — sub2 carries the brand ROOT (e.g. "quizfiesta.com") which
+	// does not exact-match the sending_domain ("em.quizfiesta.com").
 	var originalBodyHTML, originalFromName, originalFromEmail string
+	var originalProfileID sql.NullString
 	if camID, err := uuid.Parse(sub3CampaignID); err == nil && camID != uuid.Nil {
 		_ = tx.QueryRowContext(ctx, `
 			SELECT
 				COALESCE(html_content, ''),
 				COALESCE(from_name, ''),
-				COALESCE(from_email, '')
+				COALESCE(from_email, ''),
+				sending_profile_id
 			FROM mailing_campaigns WHERE id=$1
-		`, camID).Scan(&originalBodyHTML, &originalFromName, &originalFromEmail)
+		`, camID).Scan(&originalBodyHTML, &originalFromName, &originalFromEmail, &originalProfileID)
+	}
+
+	// Resolve the effective sending profile with a clear precedence:
+	//   1. original campaign's sending_profile_id (sub3) — exact original profile
+	//   2. handler-supplied sending_profile_id (sub2 brand-root match) — fallback
+	//   3. brand-root match against active PMTA profiles — last-resort fallback
+	effectiveProfileID := sendingProfileID
+	if originalProfileID.Valid && originalProfileID.String != "" {
+		effectiveProfileID = originalProfileID
+	}
+	if !effectiveProfileID.Valid || effectiveProfileID.String == "" {
+		if resolved := resolveProfileByBrandRoot(ctx, tx, sub2Brand, sendingDomain); resolved != "" {
+			effectiveProfileID = sql.NullString{String: resolved, Valid: true}
+		}
 	}
 
 	// Build metadata JSON with everything the email-node executor (Phase 3)
@@ -371,8 +396,8 @@ func (w *JourneyEventEnroller) processOne(
 		"click_url":           clickURL,
 		"original_subscriber": subscriberID.String(),
 	}
-	if sendingProfileID.Valid && sendingProfileID.String != "" {
-		metadata["sending_profile_id"] = sendingProfileID.String
+	if effectiveProfileID.Valid && effectiveProfileID.String != "" {
+		metadata["sending_profile_id"] = effectiveProfileID.String
 	}
 	if originalBodyHTML != "" {
 		metadata["body_html"] = originalBodyHTML
@@ -408,6 +433,71 @@ func (w *JourneyEventEnroller) processOne(
 		return enrollmentOutcome{kind: enrollmentErrored, reason: "mark_processed_failed"}
 	}
 	return enrollmentOutcome{kind: enrollmentEnrolled}
+}
+
+// resolveProfileByBrandRoot finds an active PMTA sending profile whose
+// sending_domain belongs to the same brand root as the click's sub2 value.
+//
+// This is the last-resort fallback when neither the original campaign
+// (sub3) nor the handler supplied a profile id. sub2 carries the brand
+// ROOT (e.g. "quizfiesta.com") because creatives use
+// sub2={{ brand.domain }}, while sending_domain is "em.quizfiesta.com".
+// We resolve the root on BOTH sides (brand.Root) and prefer the "em.<root>"
+// primary sending domain over secondary domains (e.g. "m.<root>").
+//
+// Returns "" when nothing matches; the caller leaves sending_profile_id
+// unset and the executor falls back to the platform default (logged).
+func resolveProfileByBrandRoot(ctx context.Context, tx *sql.Tx, sub2Brand, sendingDomain string) string {
+	candidates := []string{}
+	if r := brand.Root(sub2Brand); r != "" {
+		candidates = append(candidates, r)
+	}
+	if r := brand.Root(sendingDomain); r != "" && (len(candidates) == 0 || r != candidates[0]) {
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, COALESCE(sending_domain,'')
+		FROM mailing_sending_profiles
+		WHERE status='active' AND vendor_type='pmta'
+	`)
+	if err != nil {
+		log.Printf("resolveProfileByBrandRoot: query profiles: %v", err)
+		return ""
+	}
+	defer rows.Close()
+
+	var primaryID, secondaryID string
+	for rows.Next() {
+		var id, dom string
+		if err := rows.Scan(&id, &dom); err != nil {
+			continue
+		}
+		domRoot := brand.Root(dom)
+		matched := false
+		for _, c := range candidates {
+			if domRoot == c {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		// Prefer the canonical "em.<root>" sending domain.
+		if strings.HasPrefix(strings.ToLower(dom), "em.") {
+			primaryID = id
+		} else if secondaryID == "" {
+			secondaryID = id
+		}
+	}
+	if primaryID != "" {
+		return primaryID
+	}
+	return secondaryID
 }
 
 func (w *JourneyEventEnroller) markProcessed(ctx context.Context, tx *sql.Tx, triggerID string) error {

@@ -21,18 +21,18 @@ type JourneyExecutor struct {
 	db           *sql.DB
 	workerID     string
 	pollInterval time.Duration
-	
+
 	// Stats
 	totalExecuted int64
 	totalErrors   int64
-	
+
 	// Control
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	running bool
 	mu      sync.RWMutex
-	
+
 	// Email sender (injected)
 	emailSender func(ctx context.Context, email, subject, htmlContent, fromName, fromEmail string) error
 
@@ -42,6 +42,14 @@ type JourneyExecutor struct {
 	// Optional; nil keeps the legacy inline-send-only behavior so this
 	// rollout is non-breaking.
 	activator *JourneyEmailNodeActivator
+
+	// Click-Drip (2026-06-01): when set, email nodes for click-postback
+	// enrollments dispatch the reminder directly through PMTA on the
+	// subscriber's original sending profile (tracking + message_log
+	// included) instead of the generic emailSender callback. Optional;
+	// nil falls back to emailSender so non-click-drip journeys are
+	// unaffected.
+	clickDripSender *JourneyClickDripSender
 }
 
 // JourneyNode represents a node in a journey
@@ -61,13 +69,13 @@ type JourneyConnectionExec struct {
 
 // Enrollment represents a subscriber enrolled in a journey
 type Enrollment struct {
-	ID             string
-	JourneyID      string
+	ID              string
+	JourneyID       string
 	SubscriberEmail string
-	CurrentNodeID  string
-	Status         string
-	NextExecuteAt  sql.NullTime
-	Metadata       map[string]interface{}
+	CurrentNodeID   string
+	Status          string
+	NextExecuteAt   sql.NullTime
+	Metadata        map[string]interface{}
 }
 
 // NewJourneyExecutor creates a new journey executor
@@ -92,6 +100,14 @@ func (je *JourneyExecutor) SetActivator(a *JourneyEmailNodeActivator) {
 	je.activator = a
 }
 
+// SetClickDripSender wires the dedicated PMTA reminder sender for
+// click-postback enrollments. When set, email nodes whose enrollment
+// originated from a click postback route through it (correct brand profile,
+// tracking, message_log). Non-click-drip enrollments are unaffected.
+func (je *JourneyExecutor) SetClickDripSender(s *JourneyClickDripSender) {
+	je.clickDripSender = s
+}
+
 // Start begins the journey executor
 func (je *JourneyExecutor) Start() {
 	je.mu.Lock()
@@ -102,16 +118,16 @@ func (je *JourneyExecutor) Start() {
 	je.running = true
 	je.ctx, je.cancel = context.WithCancel(context.Background())
 	je.mu.Unlock()
-	
+
 	log.Printf("JourneyExecutor: Starting worker %s", je.workerID)
-	
+
 	// Register worker
 	je.registerWorker()
-	
+
 	// Start main loop
 	je.wg.Add(1)
 	go je.executionLoop()
-	
+
 	// Start heartbeat (also tracked in WaitGroup)
 	je.wg.Add(1)
 	go je.heartbeatLoop()
@@ -127,25 +143,25 @@ func (je *JourneyExecutor) Stop() {
 	je.running = false
 	je.cancel()
 	je.mu.Unlock()
-	
+
 	log.Println("JourneyExecutor: Stopping...")
-	
+
 	// Wait for goroutines with timeout
 	done := make(chan struct{})
 	go func() {
 		je.wg.Wait()
 		close(done)
 	}()
-	
+
 	select {
 	case <-done:
 		log.Println("JourneyExecutor: All goroutines stopped cleanly")
 	case <-time.After(30 * time.Second):
 		log.Println("JourneyExecutor: Shutdown timeout - forcing stop")
 	}
-	
+
 	je.deregisterWorker()
-	
+
 	log.Printf("JourneyExecutor: Stopped. Executed: %d, Errors: %d",
 		atomic.LoadInt64(&je.totalExecuted), atomic.LoadInt64(&je.totalErrors))
 }
@@ -153,10 +169,10 @@ func (je *JourneyExecutor) Stop() {
 // executionLoop is the main execution loop
 func (je *JourneyExecutor) executionLoop() {
 	defer je.wg.Done()
-	
+
 	ticker := time.NewTicker(je.pollInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-je.ctx.Done():
@@ -171,7 +187,7 @@ func (je *JourneyExecutor) executionLoop() {
 func (je *JourneyExecutor) processReadyEnrollments() {
 	ctx, cancel := context.WithTimeout(je.ctx, 30*time.Second)
 	defer cancel()
-	
+
 	// Find enrollments ready to execute
 	rows, err := je.db.QueryContext(ctx, `
 		SELECT e.id, e.journey_id, e.subscriber_email, e.current_node_id, e.status, e.metadata
@@ -191,7 +207,7 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		return
 	}
 	defer rows.Close()
-	
+
 	var enrollments []Enrollment
 	for rows.Next() {
 		var e Enrollment
@@ -208,7 +224,7 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		}
 		enrollments = append(enrollments, e)
 	}
-	
+
 	// Process each enrollment
 	for _, enrollment := range enrollments {
 		if err := je.processEnrollment(ctx, enrollment); err != nil {
@@ -230,12 +246,12 @@ func (je *JourneyExecutor) processEnrollment(ctx context.Context, enrollment Enr
 	if err != nil {
 		return fmt.Errorf("failed to get journey: %w", err)
 	}
-	
+
 	var nodes []JourneyNodeExec
 	var connections []JourneyConnectionExec
 	json.Unmarshal([]byte(nodesJSON), &nodes)
 	json.Unmarshal([]byte(connectionsJSON), &connections)
-	
+
 	// Find current node
 	var currentNode *JourneyNodeExec
 	for i := range nodes {
@@ -244,7 +260,7 @@ func (je *JourneyExecutor) processEnrollment(ctx context.Context, enrollment Enr
 			break
 		}
 	}
-	
+
 	if currentNode == nil {
 		// No current node, find first non-trigger node
 		for i := range nodes {
@@ -257,22 +273,22 @@ func (je *JourneyExecutor) processEnrollment(ctx context.Context, enrollment Enr
 			return je.completeEnrollment(ctx, enrollment.ID)
 		}
 	}
-	
+
 	// Execute the current node
 	result, err := je.executeNode(ctx, enrollment, currentNode)
 	if err != nil {
 		je.logExecution(ctx, enrollment, currentNode, "error", err.Error())
 		return err
 	}
-	
+
 	je.logExecution(ctx, enrollment, currentNode, result.Action, "")
-	
+
 	// Handle result
 	switch result.Action {
 	case "wait":
 		// Schedule next execution
 		return je.scheduleNextExecution(ctx, enrollment.ID, result.WaitUntil)
-	
+
 	case "continue":
 		// Move to next node
 		nextNodeID := je.findNextNode(currentNode.ID, connections, result.Branch)
@@ -280,14 +296,14 @@ func (je *JourneyExecutor) processEnrollment(ctx context.Context, enrollment Enr
 			return je.completeEnrollment(ctx, enrollment.ID)
 		}
 		return je.moveToNode(ctx, enrollment.ID, nextNodeID)
-	
+
 	case "complete":
 		return je.completeEnrollment(ctx, enrollment.ID)
-	
+
 	case "convert":
 		return je.convertEnrollment(ctx, enrollment.ID)
 	}
-	
+
 	return nil
 }
 
@@ -304,22 +320,22 @@ func (je *JourneyExecutor) executeNode(ctx context.Context, enrollment Enrollmen
 	case "trigger":
 		// Triggers don't execute, just continue
 		return &NodeExecutionResult{Action: "continue"}, nil
-	
+
 	case "email":
 		return je.executeEmailNode(ctx, enrollment, node)
-	
+
 	case "delay":
 		return je.executeDelayNode(ctx, enrollment, node)
-	
+
 	case "condition":
 		return je.executeConditionNode(ctx, enrollment, node)
-	
+
 	case "split":
 		return je.executeSplitNode(ctx, enrollment, node)
-	
+
 	case "goal":
 		return &NodeExecutionResult{Action: "convert"}, nil
-	
+
 	default:
 		return &NodeExecutionResult{Action: "continue"}, nil
 	}
@@ -439,7 +455,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			}
 		}
 	}
-	
+
 	// If template ID provided, load template
 	if templateID != "" {
 		err := je.db.QueryRowContext(ctx, `
@@ -450,7 +466,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			return nil, fmt.Errorf("failed to load template: %w", err)
 		}
 	}
-	
+
 	// Defaults (use sending profile values or fallback)
 	if fromName == "" {
 		fromName = "IGNITE"
@@ -464,7 +480,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	if htmlContent == "" {
 		htmlContent = "<p>Hello!</p>"
 	}
-	
+
 	// ============================================
 	// PERSONALIZATION ENGINE
 	// ============================================
@@ -478,7 +494,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 		sigKey = "jarvis-default-signing-key-change-in-production"
 	}
 	contextBuilder := mailing.NewContextBuilder(je.db, trackURL, sigKey)
-	
+
 	// Load subscriber data for personalization
 	sub := je.loadSubscriberByEmail(ctx, enrollment.SubscriberEmail)
 	if sub != nil {
@@ -489,22 +505,22 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 		} else {
 			// Add journey-specific context
 			renderCtx["journey"] = map[string]interface{}{
-				"id":       enrollment.JourneyID,
-				"node_id":  node.ID,
+				"id":        enrollment.JourneyID,
+				"node_id":   node.ID,
 				"node_type": node.Type,
 			}
-			
+
 			// Personalize content
 			cacheKey := fmt.Sprintf("journey:%s:node:%s", enrollment.JourneyID, node.ID)
-			
+
 			personalizedSubject, _ := templateSvc.Render(cacheKey+":subject", subject, renderCtx)
 			personalizedHTML, _ := templateSvc.Render(cacheKey+":html", htmlContent, renderCtx)
-			
+
 			subject = personalizedSubject
 			htmlContent = personalizedHTML
 		}
 	}
-	
+
 	// Phase 3 (Welcome Series wave-native): buffer this activation into
 	// a shadow campaign for /node-stats observability + Phase 4
 	// engagement-watcher correlation. Failures here are non-fatal: we
@@ -518,6 +534,43 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			log.Printf("JourneyExecutor: activator.ActivateNode failed (journey=%s node=%s): %v",
 				enrollment.JourneyID, node.ID, err)
 		}
+	}
+
+	// ────────────────────────────────────────────────────────────────────
+	// Click-Drip dispatch (2026-06-01): when this enrollment originated
+	// from a click postback AND a clickDripSender is wired, send the
+	// reminder directly through PMTA on the subscriber's original sending
+	// profile. This path does tracking rewrite + writes mailing_message_log
+	// and is the production send path for click-drip reminders.
+	// ────────────────────────────────────────────────────────────────────
+	if je.clickDripSender != nil && isClickDripEnrollment(enrollment) {
+		everflowOfferID, _ := enrollment.Metadata["everflow_offer_id"].(string)
+		reminderSeq, _ := readReminderSeqIndex(node.Config)
+
+		subscriberID := ""
+		if sub != nil && sub.ID != uuid.Nil {
+			subscriberID = sub.ID.String()
+		} else if orig, ok := enrollment.Metadata["original_subscriber"].(string); ok {
+			subscriberID = orig
+		}
+
+		err := je.clickDripSender.Send(ctx, ClickDripSendParams{
+			JourneyID:       enrollment.JourneyID,
+			NodeID:          node.ID,
+			EverflowOfferID: everflowOfferID,
+			ReminderSeq:     reminderSeq,
+			SubscriberID:    subscriberID,
+			SubscriberEmail: enrollment.SubscriberEmail,
+			Subject:         subject,
+			HTMLContent:     htmlContent,
+			FromName:        fromName,
+			FromEmail:       fromEmail,
+			ProfileID:       sendingProfileID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("click-drip send failed: %w", err)
+		}
+		return &NodeExecutionResult{Action: "continue"}, nil
 	}
 
 	// Send the email (legacy inline path; will be replaced by the
@@ -535,10 +588,26 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	return &NodeExecutionResult{Action: "continue"}, nil
 }
 
+// isClickDripEnrollment reports whether an enrollment came from the
+// click-postback pipeline. We key off enrolled_via (set by the enroller) and
+// fall back to the presence of a sending_profile_id in metadata.
+func isClickDripEnrollment(e Enrollment) bool {
+	if v, ok := e.Metadata["enrolled_via"].(string); ok && v == "click_postback" {
+		return true
+	}
+	if v, ok := e.Metadata["source"].(string); ok && v == "click_postback" {
+		return true
+	}
+	if v, ok := e.Metadata["sending_profile_id"].(string); ok && v != "" {
+		return true
+	}
+	return false
+}
+
 // loadSubscriberByEmail loads subscriber data for personalization
 func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email string) *mailing.Subscriber {
 	sub := &mailing.Subscriber{}
-	
+
 	err := je.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, list_id, email, email_hash, first_name, last_name,
 			   status, source, ip_address, custom_fields, engagement_score,
@@ -558,14 +627,14 @@ func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email stri
 		&sub.OptimalSendHourUTC, &sub.Timezone,
 		&sub.SubscribedAt, &sub.UnsubscribedAt, &sub.CreatedAt, &sub.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("JourneyExecutor: Error loading subscriber %s: %v", email, err)
 		}
 		return nil
 	}
-	
+
 	return sub
 }
 
@@ -578,8 +647,8 @@ func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email stri
 //   - ""  / "fixed"     (default): wait delayValue * delayUnit
 //   - "until_time":     wait until the next HH:MM in untilTimezone
 //   - "until_day":      reserved for a future iteration; today behaves
-//                       like "fixed days" with delayValue=1 to preserve
-//                       the previous semantics.
+//     like "fixed days" with delayValue=1 to preserve
+//     the previous semantics.
 //
 // untilTime is "HH:MM" 24h. untilTimezone is a Go time.LoadLocation name
 // (e.g. America/Denver). Invalid timezone falls back to UTC and is logged
@@ -677,8 +746,32 @@ func computeDelayWaitUntil(config map[string]interface{}, delayType string, now 
 		default:
 			duration = time.Duration(delayValue) * time.Hour
 		}
-		return now.Add(duration)
+		return now.Add(scaleJourneyDelay(duration))
 	}
+}
+
+// scaleJourneyDelay applies the optional JOURNEY_DELAY_SCALE test knob.
+//
+// JOURNEY_DELAY_SCALE is a float multiplier applied to every FIXED journey
+// delay. Unset, empty, non-numeric, or <= 0 → no scaling (production
+// default, exactly the legacy behavior). Example: "0.001" turns a 1h delay
+// into 3.6s so an end-to-end click-drip run can be observed in minutes
+// rather than 72h. There is also a floor of 5s so accelerated delays never
+// collapse to zero and starve the executor's wait scheduling.
+func scaleJourneyDelay(d time.Duration) time.Duration {
+	raw := os.Getenv("JOURNEY_DELAY_SCALE")
+	if raw == "" {
+		return d
+	}
+	scale, err := strconv.ParseFloat(raw, 64)
+	if err != nil || scale <= 0 {
+		return d
+	}
+	scaled := time.Duration(float64(d) * scale)
+	if scaled < 5*time.Second {
+		scaled = 5 * time.Second
+	}
+	return scaled
 }
 
 // computeUntilTime resolves the next HH:MM in the configured timezone.
@@ -722,9 +815,9 @@ func computeUntilTime(config map[string]interface{}, now time.Time) time.Time {
 // executeConditionNode evaluates a condition
 func (je *JourneyExecutor) executeConditionNode(ctx context.Context, enrollment Enrollment, node *JourneyNodeExec) (*NodeExecutionResult, error) {
 	conditionType, _ := node.Config["conditionType"].(string)
-	
+
 	branch := "false" // Default to false branch
-	
+
 	switch conditionType {
 	case "opened_email":
 		// Check if subscriber opened any email in the journey
@@ -739,7 +832,7 @@ func (je *JourneyExecutor) executeConditionNode(ctx context.Context, enrollment 
 		if opened {
 			branch = "true"
 		}
-	
+
 	case "clicked_link":
 		// Check if subscriber clicked any link
 		var clicked bool
@@ -753,7 +846,7 @@ func (je *JourneyExecutor) executeConditionNode(ctx context.Context, enrollment 
 		if clicked {
 			branch = "true"
 		}
-	
+
 	case "engagement_score":
 		threshold, _ := node.Config["threshold"].(float64)
 		var score float64
@@ -763,25 +856,25 @@ func (je *JourneyExecutor) executeConditionNode(ctx context.Context, enrollment 
 		if score >= threshold {
 			branch = "true"
 		}
-	
+
 	case "custom_field":
 		fieldName, _ := node.Config["fieldName"].(string)
 		expectedValue, _ := node.Config["fieldValue"].(string)
-		
+
 		var customFields map[string]interface{}
 		var cfJSON string
 		je.db.QueryRowContext(ctx, `
 			SELECT custom_fields FROM mailing_subscribers WHERE email = $1
 		`, enrollment.SubscriberEmail).Scan(&cfJSON)
 		json.Unmarshal([]byte(cfJSON), &customFields)
-		
+
 		if actualValue, ok := customFields[fieldName]; ok {
 			if fmt.Sprintf("%v", actualValue) == expectedValue {
 				branch = "true"
 			}
 		}
 	}
-	
+
 	return &NodeExecutionResult{
 		Action: "continue",
 		Branch: branch,
@@ -795,18 +888,18 @@ func (je *JourneyExecutor) executeSplitNode(ctx context.Context, enrollment Enro
 	if splitPercentage <= 0 || splitPercentage >= 100 {
 		splitPercentage = 50
 	}
-	
+
 	// Use enrollment ID hash to determine branch (consistent assignment)
 	hash := 0
 	for _, c := range enrollment.ID {
 		hash += int(c)
 	}
-	
+
 	branch := "A"
 	if hash%100 >= int(splitPercentage) {
 		branch = "B"
 	}
-	
+
 	return &NodeExecutionResult{
 		Action: "continue",
 		Branch: branch,
@@ -876,14 +969,14 @@ func (je *JourneyExecutor) completeEnrollment(ctx context.Context, enrollmentID 
 		SET status = 'completed', completed_at = NOW()
 		WHERE id = $1
 	`, enrollmentID)
-	
+
 	// Update journey stats
 	je.db.ExecContext(ctx, `
 		UPDATE mailing_journeys 
 		SET total_completed = total_completed + 1 
 		WHERE id = (SELECT journey_id FROM mailing_journey_enrollments WHERE id = $1)
 	`, enrollmentID)
-	
+
 	return err
 }
 
@@ -894,14 +987,14 @@ func (je *JourneyExecutor) convertEnrollment(ctx context.Context, enrollmentID s
 		SET status = 'converted', completed_at = NOW()
 		WHERE id = $1
 	`, enrollmentID)
-	
+
 	// Update journey stats
 	je.db.ExecContext(ctx, `
 		UPDATE mailing_journeys 
 		SET total_completed = total_completed + 1, total_converted = total_converted + 1
 		WHERE id = (SELECT journey_id FROM mailing_journey_enrollments WHERE id = $1)
 	`, enrollmentID)
-	
+
 	return err
 }
 
@@ -911,7 +1004,7 @@ func (je *JourneyExecutor) logExecution(ctx context.Context, enrollment Enrollme
 	if errorMsg != "" {
 		result = "error"
 	}
-	
+
 	je.db.ExecContext(ctx, `
 		INSERT INTO mailing_journey_execution_log 
 		(id, enrollment_id, journey_id, node_id, node_type, action, result, error_message, executed_at)
@@ -939,10 +1032,10 @@ func (je *JourneyExecutor) deregisterWorker() {
 // heartbeatLoop sends periodic heartbeats
 func (je *JourneyExecutor) heartbeatLoop() {
 	defer je.wg.Done()
-	
+
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-je.ctx.Done():

@@ -306,9 +306,12 @@ func TestClickPostback_HappyPath_QueuesTriggerAndReturns200(t *testing.T) {
 		WithArgs(testSubID).
 		WillReturnRows(sqlmock.NewRows([]string{"email"}).AddRow(testSubscriberEmail))
 
-	// 6. Sending profile lookup keyed on the lowercased sub2 brand domain.
+	// 6. Sending profile lookup. sub2 carries the brand ROOT, so the handler
+	// matches on both the lowercased sub2 ($1) and its computed brand root
+	// ($2 = "discountblog.com" for "em.discountblog.com"), preferring the
+	// canonical "em.<root>" sending domain.
 	mock.ExpectQuery(`SELECT id FROM mailing_sending_profiles`).
-		WithArgs(testBrandSub2).
+		WithArgs(testBrandSub2, "discountblog.com").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(testProfileUUID))
 
 	// 7. Trigger insert. id and sending_profile_id are uuid.UUID values
