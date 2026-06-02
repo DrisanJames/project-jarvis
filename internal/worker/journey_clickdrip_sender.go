@@ -202,14 +202,26 @@ func normalizeTrackBase(d string) string {
 	return strings.TrimRight(d, "/")
 }
 
-// ensureShadowCampaign returns the id of a persistent, inert (status='draft')
-// campaign row used purely for attribution + message_log FK. One row per
-// (everflow_offer_id) for the click-drip journey, reused across all touches.
+// ensureShadowCampaign returns the id of a persistent, INERT campaign row used
+// purely as an attribution + message_log FK anchor. One row per
+// (everflow_offer_id), reused across all click-drip touches.
 //
-// status='draft' keeps it invisible to the batch send dispatcher (which only
-// claims status='sending'). campaign_type='journey_node' matches the
-// JourneyEmailNodeActivator convention so dashboards already filter it out of
-// regular campaign lists.
+// Isolation contract (fixed 2026-06-01 after a double-send incident):
+// click-drip reminders are delivered DIRECTLY by JourneyClickDripSender via the
+// ProfileBasedSender (PMTA HTTP bridge). The anchor row must therefore never be
+// claimable by ANY campaign lifecycle worker. The previous version used
+// campaign_type='journey_node' + execution_mode='pmta_isp_wave' + status='draft',
+// which exactly matched the JourneyEmailNodeActivator / audience-finalizer /
+// wave-planner pipeline — so the anchor was promoted draft→preparing→scheduled
+// and a SECOND, wave-based send was planned for an email already sent directly.
+//
+// The anchor now uses three independently-inert properties so no claim
+// predicate in the codebase can match it:
+//   - status='sent'              (terminal; send/schedule/finalize workers skip)
+//   - campaign_type='click_drip' (NOT 'journey_node'/'regular'; no worker claims
+//                                 it, and it stays out of regular campaign lists)
+//   - execution_mode='standard'  (NOT 'pmta_isp_wave'; the wave planner and
+//                                 campaign_health_monitor only act on pmta_isp_wave)
 //
 // The id is DETERMINISTIC per offer (shadowCampaignID), so the existence check
 // is a primary-key lookup rather than a (campaign_type, name) sequential scan.
@@ -249,9 +261,9 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			total_recipients, max_recipients,
 			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, 'draft',
+			$1, $2, $3, 'sent',
 			$4, $5, $6,
-			'journey_node', 'pmta_isp_wave',
+			'click_drip', 'standard',
 			$7, $8,
 			0, 0,
 			NOW(), NOW()
