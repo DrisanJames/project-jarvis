@@ -192,6 +192,18 @@ func (je *JourneyExecutor) executionLoop() {
 // the happy path; on an errored send the lease becomes the retry backoff.
 const claimLeaseSeconds = 120
 
+// perEnrollmentTimeout is the processing budget for a SINGLE enrollment
+// (claim → node execution → send). It is deliberately separate from the
+// candidate-listing budget: the previous shared 30s batch context was
+// consumed by the upstream query chain (subscriber load + context build +
+// lookups) under DB load — especially during segment-rebuild storms that
+// contend for the app's connection pool — leaving ~0ms for the actual PMTA
+// send, which then failed with "context deadline exceeded" at the first send
+// query (ensureShadowCampaign). A per-enrollment budget guarantees each send
+// a full window regardless of batch size or upstream slowness. It MUST stay
+// below claimLeaseSeconds so a peer replica never re-claims an in-flight row.
+const perEnrollmentTimeout = 90 * time.Second
+
 // processReadyEnrollments processes all enrollments ready for execution.
 //
 // Concurrency model (fixed 2026-06-01): the executor runs in BOTH server
@@ -208,12 +220,10 @@ const claimLeaseSeconds = 120
 // `next_execute_at <= NOW()` predicate, guaranteeing exactly-once processing
 // per due-cycle without threading a *sql.Tx through every node helper.
 func (je *JourneyExecutor) processReadyEnrollments() {
-	ctx, cancel := context.WithTimeout(je.ctx, 30*time.Second)
-	defer cancel()
-
-	// 1. Find candidate ids (cheap, no lock). The authoritative due-check and
-	//    claim happen atomically in step 2.
-	rows, err := je.db.QueryContext(ctx, `
+	// 1. Find candidate ids (cheap, no lock) under a short listing budget.
+	//    The authoritative due-check and claim happen atomically in step 2.
+	listCtx, listCancel := context.WithTimeout(je.ctx, 30*time.Second)
+	rows, err := je.db.QueryContext(listCtx, `
 		SELECT e.id
 		FROM mailing_journey_enrollments e
 		JOIN mailing_journeys j ON j.id = e.journey_id
@@ -224,6 +234,7 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		LIMIT 100
 	`)
 	if err != nil {
+		listCancel()
 		if err != sql.ErrNoRows {
 			log.Printf("JourneyExecutor: Error fetching enrollments: %v", err)
 		}
@@ -238,20 +249,26 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		candidateIDs = append(candidateIDs, id)
 	}
 	rows.Close()
+	listCancel()
 
-	// 2. Atomically claim + process each candidate. A claim that returns no
-	//    row means a peer replica grabbed it first — skip silently.
+	// 2. Atomically claim + process each candidate under its OWN budget so a
+	//    slow/contended enrollment can't starve the rest (and no enrollment
+	//    inherits a near-expired shared batch context). A claim that returns
+	//    no row means a peer replica grabbed it first — skip silently.
 	for _, id := range candidateIDs {
-		enrollment, claimed := je.claimEnrollment(ctx, id)
+		procCtx, procCancel := context.WithTimeout(je.ctx, perEnrollmentTimeout)
+		enrollment, claimed := je.claimEnrollment(procCtx, id)
 		if !claimed {
+			procCancel()
 			continue
 		}
-		if err := je.processEnrollment(ctx, enrollment); err != nil {
+		if err := je.processEnrollment(procCtx, enrollment); err != nil {
 			atomic.AddInt64(&je.totalErrors, 1)
 			log.Printf("JourneyExecutor: Error processing enrollment %s: %v", enrollment.ID, err)
 		} else {
 			atomic.AddInt64(&je.totalExecuted, 1)
 		}
+		procCancel()
 	}
 }
 
