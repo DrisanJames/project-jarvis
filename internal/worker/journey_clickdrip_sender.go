@@ -39,6 +39,20 @@ import (
 // startup migrations and seed data.
 const clickDripDefaultOrgID = "00000000-0000-0000-0000-000000000001"
 
+// clickDripShadowNamespace is a fixed UUID namespace used to derive a
+// deterministic shadow-campaign id per Everflow offer (UUID v5). This lets
+// ensureShadowCampaign resolve the row with a primary-key lookup instead of a
+// 90k-row sequential scan on (campaign_type, name) — the latter measured at
+// ~27s in production and blew the executor's 30s context (every reminder send
+// failed with "context deadline exceeded"). The namespace value is arbitrary
+// but MUST stay stable so ids remain reproducible across deploys.
+var clickDripShadowNamespace = uuid.MustParse("a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5e6f")
+
+// shadowCampaignID returns the deterministic shadow-campaign id for an offer.
+func shadowCampaignID(everflowOfferID string) string {
+	return uuid.NewSHA1(clickDripShadowNamespace, []byte("click-drip-shadow-offer-"+everflowOfferID)).String()
+}
+
 // JourneyClickDripSender dispatches a single click-drip reminder through PMTA.
 type JourneyClickDripSender struct {
 	db             *sql.DB
@@ -196,16 +210,19 @@ func normalizeTrackBase(d string) string {
 // claims status='sending'). campaign_type='journey_node' matches the
 // JourneyEmailNodeActivator convention so dashboards already filter it out of
 // regular campaign lists.
+//
+// The id is DETERMINISTIC per offer (shadowCampaignID), so the existence check
+// is a primary-key lookup rather than a (campaign_type, name) sequential scan.
+// The prior name-scan version took ~27s on a 90k-row mailing_campaigns table
+// and tripped the executor's 30s context, failing every reminder send.
 func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID string, p ClickDripSendParams) (string, error) {
+	campaignID := shadowCampaignID(p.EverflowOfferID)
 	name := fmt.Sprintf("Click-Drip Reminder · offer %s", p.EverflowOfferID)
 
-	// Reuse an existing shadow campaign for this offer if present.
+	// Fast path: primary-key existence check.
 	var existing sql.NullString
-	_ = s.db.QueryRowContext(ctx, `
-		SELECT id::text FROM mailing_campaigns
-		WHERE campaign_type='journey_node' AND name=$1
-		LIMIT 1
-	`, name).Scan(&existing)
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT id::text FROM mailing_campaigns WHERE id=$1`, campaignID).Scan(&existing)
 	if existing.Valid && existing.String != "" {
 		return existing.String, nil
 	}
@@ -221,7 +238,8 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 		profileUUID = uuid.NullUUID{UUID: pid, Valid: true}
 	}
 
-	campaignID := uuid.NewString()
+	// Insert with the deterministic id; ON CONFLICT (id) collapses the race
+	// where a concurrent touch for the same offer inserted first.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status,
@@ -238,7 +256,7 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			0, 0,
 			NOW(), NOW()
 		)
-		ON CONFLICT DO NOTHING
+		ON CONFLICT (id) DO NOTHING
 	`,
 		campaignID, orgID, name,
 		p.Subject, p.FromName, p.FromEmail,
@@ -246,18 +264,6 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 	)
 	if err != nil {
 		return "", err
-	}
-
-	// Re-select to survive the race where a concurrent tick inserted first
-	// (ON CONFLICT DO NOTHING would have skipped our insert).
-	var resolved sql.NullString
-	_ = s.db.QueryRowContext(ctx, `
-		SELECT id::text FROM mailing_campaigns
-		WHERE campaign_type='journey_node' AND name=$1
-		LIMIT 1
-	`, name).Scan(&resolved)
-	if resolved.Valid && resolved.String != "" {
-		return resolved.String, nil
 	}
 	return campaignID, nil
 }

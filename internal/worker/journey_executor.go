@@ -183,14 +183,38 @@ func (je *JourneyExecutor) executionLoop() {
 	}
 }
 
-// processReadyEnrollments processes all enrollments ready for execution
+// claimLeaseSeconds is how far forward a claimed enrollment's next_execute_at
+// is pushed while it is being processed. It must exceed the worst-case
+// single-node processing time (a PMTA send round-trip) so a peer replica
+// never re-claims an in-flight enrollment, yet be short enough that a crashed
+// executor's enrollment retries promptly. The terminal node outcome
+// (wait/continue/complete/error) overwrites this lease before it elapses in
+// the happy path; on an errored send the lease becomes the retry backoff.
+const claimLeaseSeconds = 120
+
+// processReadyEnrollments processes all enrollments ready for execution.
+//
+// Concurrency model (fixed 2026-06-01): the executor runs in BOTH server
+// replicas. The previous implementation selected due rows with
+// `FOR UPDATE SKIP LOCKED` but did NOT hold a surrounding transaction, so the
+// row lock was released the instant the rows were scanned. Two replicas could
+// therefore process the SAME enrollment in the same millisecond — and because
+// delay nodes use a `delay_started` metadata flag set on the first pass and
+// honored on the second, the double-pass made the second processor skip the
+// delay entirely (reminders fired immediately instead of +1h/+6h/+24h/+72h).
+//
+// Fix: claim each due enrollment with a single atomic UPDATE that leases
+// next_execute_at forward. Only one replica's UPDATE can match the
+// `next_execute_at <= NOW()` predicate, guaranteeing exactly-once processing
+// per due-cycle without threading a *sql.Tx through every node helper.
 func (je *JourneyExecutor) processReadyEnrollments() {
 	ctx, cancel := context.WithTimeout(je.ctx, 30*time.Second)
 	defer cancel()
 
-	// Find enrollments ready to execute
+	// 1. Find candidate ids (cheap, no lock). The authoritative due-check and
+	//    claim happen atomically in step 2.
 	rows, err := je.db.QueryContext(ctx, `
-		SELECT e.id, e.journey_id, e.subscriber_email, e.current_node_id, e.status, e.metadata
+		SELECT e.id
 		FROM mailing_journey_enrollments e
 		JOIN mailing_journeys j ON j.id = e.journey_id
 		WHERE e.status = 'active'
@@ -198,7 +222,6 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		  AND (e.next_execute_at IS NULL OR e.next_execute_at <= NOW())
 		ORDER BY e.next_execute_at ASC NULLS FIRST
 		LIMIT 100
-		FOR UPDATE SKIP LOCKED
 	`)
 	if err != nil {
 		if err != sql.ErrNoRows {
@@ -206,27 +229,23 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 		}
 		return
 	}
-	defer rows.Close()
-
-	var enrollments []Enrollment
+	var candidateIDs []string
 	for rows.Next() {
-		var e Enrollment
-		var metadataJSON sql.NullString
-		err := rows.Scan(&e.ID, &e.JourneyID, &e.SubscriberEmail, &e.CurrentNodeID, &e.Status, &metadataJSON)
-		if err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			continue
 		}
-		if metadataJSON.Valid {
-			json.Unmarshal([]byte(metadataJSON.String), &e.Metadata)
-		}
-		if e.Metadata == nil {
-			e.Metadata = make(map[string]interface{})
-		}
-		enrollments = append(enrollments, e)
+		candidateIDs = append(candidateIDs, id)
 	}
+	rows.Close()
 
-	// Process each enrollment
-	for _, enrollment := range enrollments {
+	// 2. Atomically claim + process each candidate. A claim that returns no
+	//    row means a peer replica grabbed it first — skip silently.
+	for _, id := range candidateIDs {
+		enrollment, claimed := je.claimEnrollment(ctx, id)
+		if !claimed {
+			continue
+		}
 		if err := je.processEnrollment(ctx, enrollment); err != nil {
 			atomic.AddInt64(&je.totalErrors, 1)
 			log.Printf("JourneyExecutor: Error processing enrollment %s: %v", enrollment.ID, err)
@@ -234,6 +253,37 @@ func (je *JourneyExecutor) processReadyEnrollments() {
 			atomic.AddInt64(&je.totalExecuted, 1)
 		}
 	}
+}
+
+// claimEnrollment atomically leases a due enrollment so exactly one executor
+// (across replicas) processes it this cycle. Returns claimed=false when the
+// row was already claimed/advanced by a peer or is no longer due.
+func (je *JourneyExecutor) claimEnrollment(ctx context.Context, id string) (Enrollment, bool) {
+	var e Enrollment
+	var metadataJSON sql.NullString
+	err := je.db.QueryRowContext(ctx, `
+		UPDATE mailing_journey_enrollments
+		SET next_execute_at = NOW() + make_interval(secs => $2)
+		WHERE id = $1
+		  AND status = 'active'
+		  AND (next_execute_at IS NULL OR next_execute_at <= NOW())
+		RETURNING id, journey_id, subscriber_email, current_node_id, status, metadata
+	`, id, claimLeaseSeconds).Scan(
+		&e.ID, &e.JourneyID, &e.SubscriberEmail, &e.CurrentNodeID, &e.Status, &metadataJSON,
+	)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("JourneyExecutor: claim enrollment %s: %v", id, err)
+		}
+		return Enrollment{}, false
+	}
+	if metadataJSON.Valid {
+		json.Unmarshal([]byte(metadataJSON.String), &e.Metadata)
+	}
+	if e.Metadata == nil {
+		e.Metadata = make(map[string]interface{})
+	}
+	return e, true
 }
 
 // processEnrollment processes a single enrollment

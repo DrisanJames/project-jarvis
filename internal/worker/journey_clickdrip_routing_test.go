@@ -105,3 +105,21 @@ func TestScaleJourneyDelay(t *testing.T) {
 		require.Equal(t, 2*oneHour, scaleJourneyDelay(oneHour))
 	})
 }
+
+// TestShadowCampaignID locks the deterministic shadow-campaign id contract:
+// the same offer always maps to the same id (so ensureShadowCampaign can do a
+// primary-key lookup instead of a name seq scan), different offers map to
+// different ids, and the value is a valid UUID. Changing the namespace or the
+// derivation string would orphan every existing shadow campaign, so this test
+// guards against an accidental change.
+func TestShadowCampaignID(t *testing.T) {
+	a1 := shadowCampaignID("9539")
+	a2 := shadowCampaignID("9539")
+	b := shadowCampaignID("7667")
+
+	require.Equal(t, a1, a2, "same offer must yield a stable id")
+	require.NotEqual(t, a1, b, "different offers must yield different ids")
+	require.Len(t, a1, 36, "must be a canonical UUID string")
+	// Pin the exact value so a namespace/derivation change is caught.
+	require.Equal(t, "55f62e3e-dccc-5181-812c-c5459661d5ef", a1)
+}
