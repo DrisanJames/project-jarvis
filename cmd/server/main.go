@@ -2017,6 +2017,79 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_quizfiesta_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'QuizFiesta PMTA', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com', 'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.quizfiesta.com', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.quizfiesta.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// Seed em.discountblog.com PMTA profile (mirrors em.quizfiesta.com setup)
 		{"seed_pmta_discountblog_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'DiscountBlog PMTA (em)', 'pmta', 'Jamie @ Discount Blog', 'hello@em.discountblog.com', 'reply@em.discountblog.com', 'em.discountblog.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.discountblog.com', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.discountblog.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		// === SES Tenant-Aware Routing (additive — Dedicated stays default) ===
+		// Per the SES Config Sets + Tenants plan (jun 2026). These columns
+		// are NULL on every existing row (default false / null) so all
+		// current send paths are unchanged. Only profiles with
+		// via_ses=true cause send_worker.go to inject X-SES-* headers
+		// and strip internal /track/click + /track/open rewrites.
+		{"add_via_ses_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS via_ses BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"add_ses_configuration_set_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS ses_configuration_set TEXT`},
+		{"add_ses_tenant_name_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS ses_tenant_name TEXT`},
+
+		// Discount Blog (SES Tenant) — SECOND profile for em.discountblog.com
+		// brand. Keyed off NAME (not sending_domain) so it coexists with
+		// the legacy SES Relay profile at the same m.discountblog.com
+		// sending_domain. is_default=false + sending_domain=m.* keeps it
+		// out of the by-domain auto-resolve race per the 2026-05-30 hijack
+		// fix; campaign deploys must pin sending_profile_id explicitly.
+		{"seed_pmta_db_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Discount Blog (SES Tenant)', 'pmta', 'Jamie @ Discount Blog',
+				'hello@em.discountblog.com', 'reply@em.discountblog.com',
+				'm.discountblog.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.discountblog.com',
+				1000, 25000, 'db-ses-pool', 'active', false,
+				true, 'discountblog', 'discountblog',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Discount Blog (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// Refinance Rates USA (SES Tenant) — first SES-route profile for RR.
+		// No legacy m.refinanceratesusa.com profile exists yet; this seed
+		// also creates the m.* sending domain row.
+		{"seed_pmta_rr_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Refinance Rates USA (SES Tenant)', 'pmta', 'Frank @ Refinance Rates USA',
+				'hello@em.refinanceratesusa.com', 'reply@em.refinanceratesusa.com',
+				'm.refinanceratesusa.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.refinanceratesusa.com',
+				1000, 25000, 'rr-ses-pool', 'active', false,
+				true, 'refinanceratesusa', 'refinanceratesusa',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Refinance Rates USA (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// Sending-domain rows for the SES tenant routes. These are needed
+		// because the campaign builder validates sending_domain against
+		// mailing_sending_domains. m.discountblog.com is already seeded
+		// above (seed_ses_discountblog_domain) — only the RR row is new.
+		{"seed_ses_rr_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.refinanceratesusa.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.refinanceratesusa.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
 		// --- AWS SES via PMTA relay: m.discountblog.com ---

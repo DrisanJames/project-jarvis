@@ -1104,6 +1104,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			fblHandler := NewFBLHandler(db, globalHub)
 			s.router.Post("/fbl/report", fblHandler.HandleARFReport)
 
+			// SES events webhook — public (receives SNS-wrapped SES event-publishing
+			// notifications: Bounce/Complaint -> globalHub.Suppress; Open/Click/Send/
+			// Delivery/Reject/DeliveryDelay -> log only). Registered on s.router (not
+			// inside the apiRouter auth-protected Route block) so SNS HTTPS POSTs
+			// aren't 401'd. Mirrors the pattern used for unsub-inbound and FBL.
+			sesEventsHandler := NewSESEventsHandler(db, globalHub, engineOrgID)
+			s.router.Post("/api/mailing/webhooks/ses-events", sesEventsHandler.ServeHTTP)
+
 			// Bridge: every agent-level suppression also feeds the global hub
 			suppressionStore.SetGlobalSuppressionCallback(func(ctx context.Context, email, reason, source, isp, dsnCode, dsnDiag, sourceIP, campaign string) {
 				globalHub.Suppress(ctx, email, reason, source, isp, dsnCode, dsnDiag, sourceIP, campaign)

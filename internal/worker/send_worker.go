@@ -91,6 +91,15 @@ type SendWorkerPool struct {
 	profileTrackingDomainCache map[string]string // profileID -> resolved tracking base URL
 	ptdMu                      sync.RWMutex
 
+	// SES tenant-aware routing cache. Keyed by profileID; populated lazily
+	// on first send for a profile. profileSESInfo.viaSES gates internal
+	// /track/click + /track/open injection (SES is the sole tracker on
+	// these sends) and triggers X-SES-CONFIGURATION-SET / X-SES-TENANT
+	// header injection so PMTA's relay to email-smtp.us-west-1.amazonaws.com
+	// gets routed to the right tenant + config set.
+	profileSESCache map[string]profileSESInfo
+	psesMu          sync.RWMutex
+
 	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
 	rateRegistry         ISPRateLimiter
 	perIPEnabled         bool
@@ -365,6 +374,66 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 	p.trackingSecret = trackingSecret
 	p.orgID = orgID
 	p.profileTrackingDomainCache = make(map[string]string)
+	p.profileSESCache = make(map[string]profileSESInfo)
+}
+
+// profileSESInfo holds the per-profile SES tenant-aware routing facts.
+type profileSESInfo struct {
+	ViaSES       bool
+	ConfigSet    string
+	TenantName   string
+}
+
+// resolveProfileSES returns the via_ses / ses_configuration_set / ses_tenant_name
+// values for a sending profile. The result is cached for the lifetime of the
+// process. A nil/empty profile id, a missing row, or any DB error returns
+// the zero value (viaSES=false) so the default Dedicated path is preserved.
+func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string) profileSESInfo {
+	if profileID == "" {
+		return profileSESInfo{}
+	}
+	p.psesMu.RLock()
+	if cached, ok := p.profileSESCache[profileID]; ok {
+		p.psesMu.RUnlock()
+		return cached
+	}
+	p.psesMu.RUnlock()
+
+	var via sql.NullBool
+	var configSet, tenant sql.NullString
+	err := p.db.QueryRowContext(ctx,
+		`SELECT COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set, ''), COALESCE(ses_tenant_name, '')
+		   FROM mailing_sending_profiles WHERE id = $1`,
+		profileID).Scan(&via, &configSet, &tenant)
+	if err != nil {
+		// Pre-migration deployments will hit `column "via_ses" does not
+		// exist` until runStartupMigrations has run. Treat that as the
+		// default (Dedicated) path instead of failing the send.
+		if !strings.Contains(err.Error(), "via_ses") &&
+			!strings.Contains(err.Error(), "ses_configuration_set") &&
+			!strings.Contains(err.Error(), "ses_tenant_name") &&
+			err != sql.ErrNoRows {
+			log.Printf("resolveProfileSES: profile=%s db error: %v", profileID, err)
+		}
+		empty := profileSESInfo{}
+		p.psesMu.Lock()
+		p.profileSESCache[profileID] = empty
+		p.psesMu.Unlock()
+		return empty
+	}
+	info := profileSESInfo{
+		ViaSES:     via.Bool,
+		ConfigSet:  configSet.String,
+		TenantName: tenant.String,
+	}
+	p.psesMu.Lock()
+	p.profileSESCache[profileID] = info
+	p.psesMu.Unlock()
+	if info.ViaSES {
+		log.Printf("resolveProfileSES: profile=%s via_ses=true config_set=%s tenant=%s",
+			profileID, info.ConfigSet, info.TenantName)
+	}
+	return info
 }
 
 // resolveTrackingURL returns the per-profile tracking base URL if one is
@@ -1283,6 +1352,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// {{ system.unsubscribe_url }} uses the brand domain, not projectjarvis.io ──
 	trackBase := p.resolveTrackingURL(ctx, item.ProfileID)
 
+	// ── SES tenant-aware routing lookup ──
+	// When the profile has via_ses=true, SES is the sole tracker (open +
+	// click events flow through SES's r.<region>.awstrack.me redirect
+	// chain into the configuration set's event destination). We must NOT
+	// also inject our /track/click rewrites or /track/open pixel because:
+	//   1. Double-rewriting the body breaks DKIM signatures
+	//   2. The internal click endpoint can't issue HTTPS for s.em.<brand>
+	//   3. Engagement counting would double-count
+	// The Dedicated path (via_ses=false) is unchanged.
+	sesInfo := p.resolveProfileSES(ctx, item.ProfileID)
+
 	// ── Personalization: full Liquid template engine with all subscriber data ──
 	renderCtx := p.buildRenderContext(item, trackBase)
 	templateSvc := mailing.NewTemplateService()
@@ -1323,7 +1403,21 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// ── Tracking + Unsubscribe ──
 	headers := make(map[string]string)
 	var unsubURL string
-	if trackBase != "" {
+
+	// SES tenant-aware send: inject the SES routing headers BEFORE the
+	// tracking-pixel branch so they're attached even when trackBase is
+	// empty. PMTA's HTTP bridge passes these through to the SES SMTP
+	// relay; SES routes the message to the named tenant + config set.
+	if sesInfo.ViaSES {
+		if sesInfo.ConfigSet != "" {
+			headers["X-SES-CONFIGURATION-SET"] = sesInfo.ConfigSet
+		}
+		if sesInfo.TenantName != "" {
+			headers["X-SES-TENANT"] = sesInfo.TenantName
+		}
+	}
+
+	if trackBase != "" && !sesInfo.ViaSES {
 		htmlContent = p.injectTrackingPixelAndLinks(
 			htmlContent,
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
