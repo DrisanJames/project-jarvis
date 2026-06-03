@@ -1,13 +1,21 @@
 package api
 
-// Tests for the click-drip exit-on-convert hook added to
-// EverflowPostbackHandler.HandlePostback in Phase 4 (2026-06-01).
+// Tests for the click-drip exit-on-convert hook in
+// EverflowPostbackHandler.HandlePostback.
 //
-// Scope is intentionally narrow: we are NOT regression-testing the
-// pre-existing conversion postback flow — that has been in production
-// for months. We only verify that the new UPDATE on
-// mailing_journey_enrollments fires under the expected conditions and
-// is skipped under the expected conditions.
+// Rewritten 2026-06-02 when the hook was hardened to satisfy the operator
+// rule: "associate a converter by their UUID; converters for offers not in
+// the dictionary must be skipped."
+//
+// The hardened flow:
+//   - converted-suppression still fires for ANY offer with a resolvable
+//     internal UUID (dictionary or not) — preserved behaviour;
+//   - the click-drip enrollment exit is gated on the journey DICTIONARY
+//     (mailing_offer_journey_map) and matched by subscriber UUID (with email
+//     as a fallback), so it runs even when the offer has NO mailing_offers
+//     row (true for most click-drip offers) — this is the bug fix;
+//   - conversions for offers not in the dictionary make zero enrollment
+//     changes.
 
 import (
 	"net/http"
@@ -27,65 +35,42 @@ func newConvertExitMockDB(t *testing.T) (*EverflowPostbackHandler, sqlmock.Sqlmo
 	return NewEverflowPostbackHandler(db), mock
 }
 
-// TestConvertExit_Fires_When_Offer_And_Subscriber_Resolved verifies that
-// when the conversion postback successfully resolves an offer and we have
-// a subscriber email, the UPDATE on mailing_journey_enrollments runs.
-func TestConvertExit_Fires_When_Offer_And_Subscriber_Resolved(t *testing.T) {
+const (
+	ceSubID     = "11111111-2222-3333-4444-555555555555"
+	ceOfferEF   = "9539"
+	ceOfferUUID = "ffffffff-0000-1111-2222-333333333333"
+	ceEmail     = "buyer@example.com"
+)
+
+// TestConvertExit_ResolvedOffer_InDictionary_ExitsDrip is the full happy path:
+// offer resolves to an internal UUID AND is in the dictionary, so we both
+// suppress and exit the drip, matching enrollments by subscriber UUID + email.
+func TestConvertExit_ResolvedOffer_InDictionary_ExitsDrip(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
 
-	const subID = "11111111-2222-3333-4444-555555555555"
-	const efOfferID = "9539"
-
-	// Offer resolved via everflow_offer_id (no campaign id in this test).
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
-		WithArgs(efOfferID).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).
-			AddRow("ffffffff-0000-1111-2222-333333333333"))
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(ceOfferUUID))
 
-	// Suppression insert (existing behavior — keep it green).
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_offer_suppressions`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	// NEW: subscriber email lookup for the click-drip exit hook.
+	// Dictionary gate → offer IS mapped.
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT email FROM mailing_subscribers WHERE id=$1`)).
-		WithArgs(subID).
-		WillReturnRows(sqlmock.NewRows([]string{"email"}).AddRow("test@example.com"))
+		WithArgs(ceSubID).
+		WillReturnRows(sqlmock.NewRows([]string{"email"}).AddRow(ceEmail))
 
-	// NEW: UPDATE on mailing_journey_enrollments.
+	// UPDATE matched by UUID ($2) OR email ($3).
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_enrollments`)).
-		WithArgs(efOfferID, "test@example.com").
-		WillReturnResult(sqlmock.NewResult(0, 2)) // 2 enrollments exited
+		WithArgs(ceOfferEF, ceSubID, ceEmail).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/api/mailing/everflow/postback?sub1="+subID+"&offer_id="+efOfferID+"&payout=2.50&transaction_id=txn123", nil)
-	rec := httptest.NewRecorder()
-	h.HandlePostback(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.NoError(t, mock.ExpectationsWereMet(),
-		"expected the convert-exit UPDATE to fire after suppression insert")
-}
-
-// TestConvertExit_NoEverflowOfferID_SkipsHook verifies that we do not
-// even attempt the subscriber email lookup when efOfferID is empty.
-// This protects against runaway updates if Everflow ever sends a
-// postback without an offer_id.
-func TestConvertExit_NoEverflowOfferID_SkipsHook(t *testing.T) {
-	h, mock := newConvertExitMockDB(t)
-
-	const subID = "11111111-2222-3333-4444-555555555555"
-	const camID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-	// No efOfferID, but campaignID is set → handler tries campaign-based offer resolve.
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT offer_id FROM mailing_campaigns WHERE id=$1`)).
-		WithArgs(camID).
-		WillReturnRows(sqlmock.NewRows([]string{"offer_id"})) // empty result
-
-	// Handler returns 200 + skipped: no_offer_id; nothing else expected.
-	// In particular: NO subscriber email lookup, NO enrollment UPDATE.
-
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/mailing/everflow/postback?sub1="+subID+"&sub3="+camID+"&payout=0.00", nil)
+		"/api/mailing/everflow/postback?sub1="+ceSubID+"&offer_id="+ceOfferEF+"&payout=2.50&transaction_id=txn123", nil)
 	rec := httptest.NewRecorder()
 	h.HandlePostback(rec, req)
 
@@ -93,36 +78,128 @@ func TestConvertExit_NoEverflowOfferID_SkipsHook(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestConvertExit_SubscriberEmailMissing_SkipsUpdate verifies that if
-// we resolve the offer but cannot resolve a subscriber email, we
-// gracefully skip the UPDATE rather than running it with an empty email.
-func TestConvertExit_SubscriberEmailMissing_SkipsUpdate(t *testing.T) {
+// TestConvertExit_ClickDripOffer_NoMailingOffersRow_StillExits is the bug fix:
+// most click-drip offers have NO mailing_offers row, so offerID stays NULL.
+// The OLD code returned early ("no_offer_id") and never exited the drip. The
+// new code keys the exit on the dictionary, so the drip still stops.
+func TestConvertExit_ClickDripOffer_NoMailingOffersRow_StillExits(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
 
-	const subID = "11111111-2222-3333-4444-555555555555"
-	const efOfferID = "9539"
-
+	// mailing_offers lookup → NO row (offerID stays nil).
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
-		WithArgs(efOfferID).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).
-			AddRow("ffffffff-0000-1111-2222-333333333333"))
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // empty
 
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_offer_suppressions`)).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	// No suppression INSERT (offer_id is NOT NULL → cannot write without a uuid).
 
-	// Subscriber email lookup returns no rows.
+	// Dictionary gate → offer IS mapped.
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT email FROM mailing_subscribers WHERE id=$1`)).
-		WithArgs(subID).
-		WillReturnRows(sqlmock.NewRows([]string{"email"}))
+		WithArgs(ceSubID).
+		WillReturnRows(sqlmock.NewRows([]string{"email"}).AddRow(ceEmail))
 
-	// CRITICAL: NO UPDATE on mailing_journey_enrollments.
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_enrollments`)).
+		WithArgs(ceOfferEF, ceSubID, ceEmail).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/api/mailing/everflow/postback?sub1="+subID+"&offer_id="+efOfferID+"&payout=1.00", nil)
+		"/api/mailing/everflow/postback?sub1="+ceSubID+"&offer_id="+ceOfferEF+"&payout=2.50&transaction_id=txn123", nil)
 	rec := httptest.NewRecorder()
 	h.HandlePostback(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NoError(t, mock.ExpectationsWereMet(),
-		"expected NO enrollment update when subscriber email cannot be resolved")
+		"the drip must exit for a dictionary offer even with no mailing_offers row")
+}
+
+// TestConvertExit_MatchesByUUID_WhenEmailMissing proves the UUID association:
+// even when the subscriber email cannot be resolved, the UPDATE still runs
+// (matched by metadata.original_subscriber = subscriber UUID).
+func TestConvertExit_MatchesByUUID_WhenEmailMissing(t *testing.T) {
+	h, mock := newConvertExitMockDB(t)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // empty
+
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(ceOfferEF).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+
+	// Email lookup returns nothing.
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT email FROM mailing_subscribers WHERE id=$1`)).
+		WithArgs(ceSubID).
+		WillReturnRows(sqlmock.NewRows([]string{"email"}))
+
+	// UPDATE STILL fires, with an empty email arg — the UUID predicate matches.
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_enrollments`)).
+		WithArgs(ceOfferEF, ceSubID, "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/mailing/everflow/postback?sub1="+ceSubID+"&offer_id="+ceOfferEF+"&payout=1.00", nil)
+	rec := httptest.NewRecorder()
+	h.HandlePostback(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"the drip must exit by UUID even when the email is unresolvable")
+}
+
+// TestConvertExit_OfferNotInDictionary_Suppresses_NoExit verifies the operator
+// rule: a converter for an offer NOT in our dictionary is skipped for the
+// click-drip exit (no enrollment UPDATE), while the pre-existing converted
+// suppression still fires for the resolvable offer.
+func TestConvertExit_OfferNotInDictionary_Suppresses_NoExit(t *testing.T) {
+	h, mock := newConvertExitMockDB(t)
+
+	const otherOffer = "1234"
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(otherOffer).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(ceOfferUUID))
+
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_offer_suppressions`)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Dictionary gate → NOT mapped (no rows → sql.ErrNoRows). No email
+	// lookup, no enrollment UPDATE.
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(otherOffer).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}))
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/mailing/everflow/postback?sub1="+ceSubID+"&offer_id="+otherOffer+"&payout=5.00", nil)
+	rec := httptest.NewRecorder()
+	h.HandlePostback(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"non-dictionary converter must suppress but NOT touch enrollments")
+}
+
+// TestConvertExit_NoOffer_NotInDictionary_Skips verifies a conversion with no
+// resolvable offer and no dictionary entry returns a clean skip and touches
+// no enrollment rows.
+func TestConvertExit_NoOffer_NotInDictionary_Skips(t *testing.T) {
+	h, mock := newConvertExitMockDB(t)
+
+	const camID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	// campaign-based offer resolve returns nothing; efOfferID empty → no
+	// dictionary query (exit helper short-circuits on empty offer id).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT offer_id FROM mailing_campaigns WHERE id=$1`)).
+		WithArgs(camID).
+		WillReturnRows(sqlmock.NewRows([]string{"offer_id"}))
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/mailing/everflow/postback?sub1="+ceSubID+"&sub3="+camID+"&payout=0.00", nil)
+	rec := httptest.NewRecorder()
+	h.HandlePostback(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

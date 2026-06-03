@@ -211,7 +211,7 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// guidance with ~5–10% headroom:
 		//
 		//   gmail     200 -> 4,800/brand/day (Google: 5,000/sender/day)
-		//   microsoft 200 -> 4,800/brand/day (no published cap; warm reputation)
+		//   microsoft 100 -> 2,400/brand/day (operator 2026-06-02: 50% pullback from 200)
 		//   apple     200 -> 4,800/brand/day (no published cap; warm reputation)
 		//   yahoo     20  -> 480/brand/day  (Yahoo: 500/sender/day)
 		//   aol       20  -> 480/brand/day  (matches Yahoo carve)
@@ -232,7 +232,7 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			"gmail":     200,
 			"yahoo":     20,
 			"aol":       20,
-			"microsoft": 200,
+			"microsoft": 100,
 			"apple":     200,
 			"comcast":   100,
 			"charter":   100,

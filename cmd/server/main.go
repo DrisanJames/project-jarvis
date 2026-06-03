@@ -758,6 +758,17 @@ func main() {
 				journeyEventEnroller.Start(ctx)
 				log.Println("Journey Event Enroller started (drains click-drip trigger queue every 5s)")
 
+				// JourneyClickTrackingEnroller is the INTERNAL-click inlet: it
+				// reads real click events from mailing_tracking_events, resolves
+				// the offer from the cratoolpro money-URL slug
+				// (mailing_offer_slug_map), and writes them into the SAME
+				// mailing_journey_event_triggers queue the Everflow path uses.
+				// This is what actually feeds the drip, since Everflow's per-offer
+				// click postbacks don't reliably reach us.
+				journeyClickTrackingEnroller := worker.NewJourneyClickTrackingEnroller(mailingDB)
+				journeyClickTrackingEnroller.Start(ctx)
+				log.Println("Journey Click-Tracking Enroller started (enrolls internal money-URL clicks every 30s)")
+
 				journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 				journeyExecutor := worker.NewJourneyExecutor(mailingDB)
 				journeyExecutor.SetClickDripSender(journeyClickDripSender)
@@ -2088,6 +2099,74 @@ func runStartupMigrations(db *sql.DB) {
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_sending_domains
 				WHERE domain = 'm.refinanceratesusa.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// History Thinking (SES Tenant) — SECOND profile for em.historythinking.com brand.
+		// PMTA Server B (15.204.107.107). Keeps existing trk.em.* tracking host
+		// for unsubscribe links; SES handles open/click via redirect domain
+		// s.em.historythinking.com (set on the SES configuration set, not here).
+		{"seed_pmta_ht_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'History Thinking (SES Tenant)', 'pmta', 'History Thinking',
+				'hello@em.historythinking.com', 'reply@em.historythinking.com',
+				'm.historythinking.com', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 'trk.em.historythinking.com',
+				1000, 25000, 'ht-ses-pool', 'active', false,
+				true, 'historythinking', 'historythinking',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'History Thinking (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// My Own Health (SES Tenant) — SECOND profile for em.myownhealth.net brand.
+		// PMTA Server B (15.204.107.107). Keeps existing trk.em.* tracking host.
+		{"seed_pmta_mh_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'My Own Health (SES Tenant)', 'pmta', 'Arnold @ My Own Health',
+				'hello@em.myownhealth.net', 'reply@em.myownhealth.net',
+				'm.myownhealth.net', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 'trk.em.myownhealth.net',
+				1000, 25000, 'mh-ses-pool', 'active', false,
+				true, 'myownhealth', 'myownhealth',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'My Own Health (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// Quiz Fiesta (SES Tenant) — SECOND profile for em.quizfiesta.com brand.
+		// PMTA Server A (15.204.101.125), same as DB.
+		{"seed_pmta_qf_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Quiz Fiesta (SES Tenant)', 'pmta', 'Quiz Master',
+				'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com',
+				'm.quizfiesta.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.quizfiesta.com',
+				1000, 25000, 'qf-ses-pool', 'active', false,
+				true, 'quizfiesta', 'quizfiesta',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Quiz Fiesta (SES Tenant)'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
 		// Ensure seed/test subscribers have first_name populated
@@ -5912,6 +5991,53 @@ END $$`},
 			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
 			VALUES ('7667', 'click-drip-4touch-72h', 'eCPM', FALSE, 'National Debt Relief - paused at launch; operator flips enabled=true after Metal Roofing 24h soak')
 			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+
+		// ────────────────────────────────────────────────────────────────────
+		// Click-Drip internal-click trigger: cratoolpro slug → everflow offer id
+		// (2026-06-02).
+		//
+		// Everflow's per-offer click postbacks don't reliably reach us (they
+		// fire on conversion + macro substitution is flaky), so real clicks never
+		// entered the drip. The JourneyClickTrackingEnroller worker instead reads
+		// internal click events (mailing_tracking_events) and resolves the offer
+		// from the cratoolpro money-URL's trailing slug
+		// (https://www.cratoolpro.com/BJB4Q5BF/<SLUG>/). This table is that
+		// slug → everflow_offer_id dictionary.
+		//
+		// Slugs verified 2026-06-02 from deploy scripts, live review-forge
+		// creatives, and the operator's authoritative map. NDR uses GK847MZ
+		// (shared with the 7412 partner-drip link); we point it at the journey's
+		// 7667 entry per operator direction ("keep true to the dictionary").
+		// Operator can correct any row with a single UPDATE — no redeploy.
+		// ────────────────────────────────────────────────────────────────────
+		{"jun02_click_drip_offer_slug_map", `CREATE TABLE IF NOT EXISTS mailing_offer_slug_map (
+			cratoolpro_slug   VARCHAR(64) PRIMARY KEY,
+			everflow_offer_id VARCHAR(64) NOT NULL,
+			offer_name        TEXT DEFAULT '',
+			enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+			notes             TEXT DEFAULT '',
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"jun02_click_drip_offer_slug_map_offer_idx", `CREATE INDEX IF NOT EXISTS idx_offer_slug_map_everflow
+			ON mailing_offer_slug_map(everflow_offer_id)`},
+		{"jun02_click_drip_offer_slug_seed", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('KW3Q1DJ', '9539', 'Get Metal Roofing',     TRUE,  'creative_id 643104; operator-confirmed 2026-06-02'),
+			('K62P438', '9135', 'Affordable Windows USA', TRUE,  'creative_id 153833; operator-confirmed 2026-06-02'),
+			('CL38PFR', '5990', 'CarShield Auto Warranty',TRUE,  'deploy script map 2026-06-02'),
+			('J876SLX', '8614', 'AmeriSave HELOC',        TRUE,  'deploy script + Go offers catalog'),
+			('J345SSD', '8511', 'Optima Tax Relief',      TRUE,  'deploy script map 2026-06-02'),
+			('93W8N2N', '4575', 'Quicken Loans',          TRUE,  'deploy script + Go offers catalog'),
+			('GK847MZ', '7667', 'National Debt Relief',   TRUE,  'NDR creatives use GK847MZ (also 7412 partner-drip); mapped to journey 7667 per operator 2026-06-02'),
+			('7N8NS1K', '3776', 'Renewal by Andersen',    TRUE,  'Apr-29 operator map; appears as Quicken cross-sell; low volume')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun02_click_drip_enroller_cursor", `CREATE TABLE IF NOT EXISTS mailing_clickdrip_enroller_cursor (
+			id             SMALLINT PRIMARY KEY DEFAULT 1,
+			last_event_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (id = 1)
+		)`},
 
 		// Metal Roofing reminder subjects (4 steps, sequence_index 0..3)
 		{"jun01_click_drip_subjects_9539_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)

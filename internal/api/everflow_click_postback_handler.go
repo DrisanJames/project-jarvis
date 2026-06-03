@@ -106,6 +106,42 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 
 	ctx := r.Context()
 
+	// Conversion event on the click endpoint.
+	//
+	// Operators may point an Everflow CONVERSION postback at this same URL and
+	// "interchange the event" (add &event=conversion). Without this branch a
+	// conversion would ENROLL the converter into the drip — the exact opposite
+	// of what we want. When the postback signals a conversion we route to the
+	// shared conversion-STOP path (dictionary-gated exit + converted suppression,
+	// associated by subscriber UUID) and never enroll.
+	if isConversionEvent(r) {
+		inDict, exited, exErr := exitClickDripEnrollmentsOnConversion(ctx, h.db, in.subscriberID, in.EverflowOfferID)
+		if exErr != nil {
+			log.Printf("[EverflowClickPostback] ERROR conversion exit: %v", exErr)
+		}
+		// Suppress on a resolvable internal offer so future clicks short-circuit.
+		var offerUUID uuid.UUID
+		h.db.QueryRowContext(ctx,
+			`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1 LIMIT 1`,
+			in.EverflowOfferID).Scan(&offerUUID)
+		if offerUUID != uuid.Nil {
+			if err := writeConvertedSuppression(ctx, h.db,
+				"00000000-0000-0000-0000-000000000001", offerUUID, in.subscriberID, in.TransactionID); err != nil {
+				log.Printf("[EverflowClickPostback] ERROR conversion suppression: %v", err)
+			}
+		}
+		if !inDict {
+			log.Printf("[EverflowClickPostback] conversion offer=%s not in dictionary; skipping (subscriber=%s)",
+				in.EverflowOfferID, in.subscriberID)
+			respondClick(w, "skipped", "offer_not_in_dictionary", "")
+			return
+		}
+		log.Printf("[EverflowClickPostback] conversion-stop: exited %d drip enrollment(s) offer=%s subscriber=%s",
+			exited, in.EverflowOfferID, in.subscriberID)
+		respondClick(w, "converted", "", "")
+		return
+	}
+
 	// Look up the offer in the journey map.
 	jm, err := h.lookupOfferJourneyMap(ctx, in.EverflowOfferID)
 	if err != nil {
@@ -240,6 +276,32 @@ func parseClickPostback(r *http.Request) clickPostbackInput {
 	in.campaignID, _ = uuid.Parse(in.CampaignIDStr)
 	in.EverflowOfferID = strings.TrimSpace(in.EverflowOfferID)
 	return in
+}
+
+// isConversionEvent reports whether a postback to the click endpoint should be
+// treated as a CONVERSION (stop the drip) rather than a CLICK (start it).
+//
+// Everflow's per-offer postbacks fire on conversion, so an operator who reuses
+// this URL for a conversion postback must tag it explicitly with a discriminator
+// — &event=conversion (also accepts type / postback_type / event_type, values
+// conversion|cv|sale|conv|conversion_postback). A non-zero payout/amount param,
+// which only conversions carry, is treated as a secondary signal. Absent any of
+// these, the postback is a click and enrolls as before.
+func isConversionEvent(r *http.Request) bool {
+	q := r.URL.Query()
+	for _, k := range []string{"event", "type", "postback_type", "event_type"} {
+		switch strings.ToLower(strings.TrimSpace(q.Get(k))) {
+		case "conversion", "cv", "sale", "conv", "conversion_postback":
+			return true
+		}
+	}
+	for _, k := range []string{"payout", "amount"} {
+		v := strings.TrimSpace(q.Get(k))
+		if v != "" && v != "0" && v != "0.0" && v != "0.00" {
+			return true
+		}
+	}
+	return false
 }
 
 // offerJourneyMap is one row from mailing_offer_journey_map.

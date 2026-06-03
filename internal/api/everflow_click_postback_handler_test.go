@@ -508,6 +508,101 @@ func TestParseClickPostback_QueryAndBody(t *testing.T) {
 	})
 }
 
+// ----- Phase 7: conversion-event branch on the click endpoint --------------
+
+// TestClickPostback_ConversionEvent_ExitsDrip verifies that a conversion
+// postback aimed at the click URL (event=conversion) STOPS the drip — exits
+// active enrollments (matched by UUID) and writes a converted suppression —
+// rather than enrolling the converter.
+func TestClickPostback_ConversionEvent_ExitsDrip(t *testing.T) {
+	h, mock := newClickPostbackHandler(t)
+
+	// 1. Dictionary gate (inside exitClickDripEnrollmentsOnConversion).
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(testOfferEverflow).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+
+	// 2. Email lookup (fallback match).
+	mock.ExpectQuery(`SELECT email FROM mailing_subscribers WHERE id`).
+		WithArgs(testSubID).
+		WillReturnRows(sqlmock.NewRows([]string{"email"}).AddRow(testSubscriberEmail))
+
+	// 3. Enrollment exit UPDATE (matched by UUID OR email).
+	mock.ExpectExec(`UPDATE mailing_journey_enrollments`).
+		WithArgs(testOfferEverflow, testSubID, testSubscriberEmail).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 4. Internal offer UUID resolve for suppression.
+	mock.ExpectQuery(`SELECT id FROM mailing_offers WHERE everflow_offer_id`).
+		WithArgs(testOfferEverflow).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(testOfferUUID))
+
+	// 5. Converted suppression.
+	mock.ExpectExec(`INSERT INTO mailing_offer_suppressions`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	rec := clickGET(t, h, "sub1="+testSubID+"&offer_id="+testOfferEverflow+"&event=conversion&transaction_id=txn-cv")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decodeClickResp(t, rec)
+	assert.Equal(t, "converted", resp["status"])
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestClickPostback_ConversionEvent_OfferNotInDict_Skips verifies a conversion
+// for an offer not in our dictionary is skipped (no enrollment changes), per
+// the operator rule.
+func TestClickPostback_ConversionEvent_OfferNotInDict_Skips(t *testing.T) {
+	h, mock := newClickPostbackHandler(t)
+
+	const otherOffer = "4321"
+
+	// Dictionary gate → not mapped (helper returns before email/UPDATE).
+	mock.ExpectQuery(`FROM mailing_offer_journey_map`).
+		WithArgs(otherOffer).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}))
+
+	// Offer UUID resolve still runs but finds nothing → no suppression.
+	mock.ExpectQuery(`SELECT id FROM mailing_offers WHERE everflow_offer_id`).
+		WithArgs(otherOffer).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	rec := clickGET(t, h, "sub1="+testSubID+"&offer_id="+otherOffer+"&event=conversion")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decodeClickResp(t, rec)
+	assert.Equal(t, "skipped", resp["status"])
+	assert.Equal(t, "offer_not_in_dictionary", resp["reason"])
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIsConversionEvent(t *testing.T) {
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{"event=conversion", true},
+		{"event=CV", true},
+		{"type=sale", true},
+		{"postback_type=conv", true},
+		{"event_type=conversion_postback", true},
+		{"payout=2.50", true},
+		{"amount=1.00", true},
+		{"payout=0", false},
+		{"payout=0.00", false},
+		{"event=click", false},
+		{"", false},
+		{"offer_id=9539&sub1=x", false},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/?"+c.query, nil)
+		got := isConversionEvent(req)
+		assert.Equal(t, c.want, got, "isConversionEvent(%q)", c.query)
+	}
+}
+
 func TestIsCPCPayout(t *testing.T) {
 	cases := []struct {
 		in   string

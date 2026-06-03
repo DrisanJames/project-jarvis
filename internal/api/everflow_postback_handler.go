@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -58,6 +60,9 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	log.Printf("[EverflowPostback] sub1=%s sub2=%s sub3=%s offer_id=%s payout=%.2f txn=%s",
 		sub1, sub2, sub3, efOfferID, payout, txnID)
 
+	// Associate the converter by their subscriber UUID (sub1). Without it we
+	// cannot match a converter to a suppression row or to an active click-drip
+	// enrollment, so there is nothing actionable — skip.
 	if subscriberID == uuid.Nil {
 		log.Printf("[EverflowPostback] WARN: no subscriber_id in sub1, skipping")
 		w.WriteHeader(http.StatusOK)
@@ -68,6 +73,9 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 	orgID := "00000000-0000-0000-0000-000000000001"
 
+	// Resolve the internal offer UUID (campaign → mailing_offers). This stays
+	// NULL for most click-drip offers, which have no mailing_offers row — that
+	// is expected and MUST NOT short-circuit the click-drip exit below.
 	var offerID uuid.UUID
 	if campaignID != uuid.Nil {
 		h.db.QueryRowContext(ctx,
@@ -80,58 +88,43 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 			efOfferID).Scan(&offerID)
 	}
 
-	if offerID == uuid.Nil {
-		log.Printf("[EverflowPostback] WARN: could not resolve offer_id (ef_offer_id=%s, campaign=%s), skipping suppression", efOfferID, sub3)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "no_offer_id"})
-		return
-	}
-
-	_, err := h.db.ExecContext(ctx, `
-		INSERT INTO mailing_offer_suppressions (id, organization_id, offer_id, subscriber_id, reason, source, everflow_conversion_id, suppressed_at)
-		VALUES ($1, $2, $3, $4, 'converted', 'everflow_postback', $5, NOW())
-		ON CONFLICT (offer_id, subscriber_id) DO NOTHING
-	`, uuid.New(), orgID, offerID, subscriberID, txnID)
-	if err != nil {
-		log.Printf("[EverflowPostback] ERROR inserting suppression: %v", err)
-	}
-
-	// ────────────────────────────────────────────────────────────────────
-	// Click-Drip exit-on-convert (Phase 4, 2026-06-01).
-	//
-	// If the subscriber is in an active click-drip journey for this same
-	// offer, cancel the remaining reminders. They bought it; do not pelt
-	// them with reminder emails.
-	//
-	// We resolve subscriber → email then UPDATE all matching active
-	// enrollments. enrollment_offer_id is the everflow numeric id (string),
-	// which is what the click-postback enroller stamps.
-	// ────────────────────────────────────────────────────────────────────
-	if efOfferID != "" {
-		var subEmail string
-		_ = h.db.QueryRowContext(ctx,
-			`SELECT email FROM mailing_subscribers WHERE id=$1`,
-			subscriberID).Scan(&subEmail)
-		if subEmail != "" {
-			res, exErr := h.db.ExecContext(ctx, `
-				UPDATE mailing_journey_enrollments
-				SET status='exited',
-				    exited_at=NOW(),
-				    exit_reason='converted',
-				    converted_at=NOW()
-				WHERE status='active'
-				  AND enrollment_offer_id=$1
-				  AND LOWER(subscriber_email)=LOWER($2)
-			`, efOfferID, subEmail)
-			if exErr != nil {
-				log.Printf("[EverflowPostback] ERROR exiting click-drip enrollments: %v", exErr)
-			} else if res != nil {
-				if n, _ := res.RowsAffected(); n > 0 {
-					log.Printf("[EverflowPostback] click-drip exit-on-convert: exited %d enrollment(s) for offer=%s subscriber=%s",
-						n, efOfferID, subEmail)
-				}
-			}
+	// (1) Converted-suppression. Preserve the existing behaviour for ANY offer
+	//     with a resolvable internal UUID (dictionary or not) — the suppression
+	//     table's offer_id is NOT NULL, so this only runs when we have one.
+	if offerID != uuid.Nil {
+		if err := writeConvertedSuppression(ctx, h.db, orgID, offerID, subscriberID, txnID); err != nil {
+			log.Printf("[EverflowPostback] ERROR inserting suppression: %v", err)
 		}
+	}
+
+	// (2) Click-drip exit-on-convert, gated on the journey DICTIONARY
+	//     (mailing_offer_journey_map) and matched by subscriber UUID. This runs
+	//     independent of whether offerID resolved, so the click-drip offers that
+	//     lack a mailing_offers row still stop their drip. Converters for offers
+	//     NOT in the dictionary make no changes here (no drip to stop) — exactly
+	//     the "skip offers not in the dictionary" rule (2026-06-02).
+	inDict, exited, exErr := exitClickDripEnrollmentsOnConversion(ctx, h.db, subscriberID, efOfferID)
+	if exErr != nil {
+		log.Printf("[EverflowPostback] ERROR exiting click-drip enrollments: %v", exErr)
+	}
+	switch {
+	case !inDict:
+		log.Printf("[EverflowPostback] conversion offer=%s not in click-drip dictionary; no drip to stop (subscriber=%s)",
+			efOfferID, subscriberID)
+	case exited > 0:
+		log.Printf("[EverflowPostback] click-drip exit-on-convert: exited %d enrollment(s) offer=%s subscriber=%s",
+			exited, efOfferID, subscriberID)
+	}
+
+	// If we could neither suppress (no resolvable offer UUID) nor stop a drip
+	// (offer not in the dictionary), there is nothing to do — report a skip so
+	// operators can see why. Stats updates below all require these ids anyway.
+	if offerID == uuid.Nil && !inDict {
+		log.Printf("[EverflowPostback] skip: offer=%s not resolvable and not in click-drip dictionary (subscriber=%s)",
+			efOfferID, subscriberID)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "offer_not_in_dictionary"})
+		return
 	}
 
 	if creativeID != uuid.Nil {
@@ -145,7 +138,7 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		}
 	}
 
-	if campaignID != uuid.Nil {
+	if campaignID != uuid.Nil && offerID != uuid.Nil {
 		_, err := h.db.ExecContext(ctx, `
 			UPDATE mailing_offer_deployments
 			SET total_conversions = COALESCE(total_conversions, 0) + 1,
@@ -157,13 +150,90 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		}
 	}
 
-	log.Printf("[EverflowPostback] OK: offer=%s subscriber=%s creative=%s campaign=%s payout=%.2f",
-		offerID, subscriberID, creativeID, campaignID, payout)
+	log.Printf("[EverflowPostback] OK: offer=%s subscriber=%s creative=%s campaign=%s payout=%.2f click_drip_exited=%d",
+		offerID, subscriberID, creativeID, campaignID, payout, exited)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":        "ok",
-		"offer_id":      offerID.String(),
-		"subscriber_id": subscriberID.String(),
+		"status":            "ok",
+		"offer_id":          offerID.String(),
+		"subscriber_id":     subscriberID.String(),
+		"click_drip_exited": strconv.Itoa(int(exited)),
 	})
+}
+
+// writeConvertedSuppression inserts a 'converted' suppression row keyed by
+// (offer_id, subscriber_id). Idempotent via the idx_offer_suppressions_offer_sub
+// unique index. The suppression table's offer_id is NOT NULL, so callers must
+// pass a non-nil offerUUID.
+func writeConvertedSuppression(ctx context.Context, db *sql.DB, orgID string, offerUUID, subscriberID uuid.UUID, txnID string) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO mailing_offer_suppressions (id, organization_id, offer_id, subscriber_id, reason, source, everflow_conversion_id, suppressed_at)
+		VALUES ($1, $2, $3, $4, 'converted', 'everflow_postback', $5, NOW())
+		ON CONFLICT (offer_id, subscriber_id) DO NOTHING
+	`, uuid.New(), orgID, offerUUID, subscriberID, txnID)
+	return err
+}
+
+// exitClickDripEnrollmentsOnConversion stops a subscriber's active click-drip
+// for a converted offer. It is the conversion-STOP half of the click-drip
+// feature, shared by the conversion postback handler and the click postback
+// handler's conversion branch.
+//
+// It is gated on the journey DICTIONARY (mailing_offer_journey_map keyed by the
+// everflow numeric offer id): conversions for offers that are NOT mapped return
+// inDictionary=false and make zero changes, so the caller treats them as a skip.
+// This is the "there will be converters for offers not in your dictionary —
+// skip those" rule (operator, 2026-06-02).
+//
+// Association is by subscriber UUID first — JourneyEventEnroller stamps
+// metadata.original_subscriber with the subscriber UUID — and by resolved email
+// as a fallback. Matching by UUID is what makes a converter reliably linkable
+// even when the campaign's offer_id is NULL and the offer has no mailing_offers
+// row (true for most click-drip offers).
+func exitClickDripEnrollmentsOnConversion(ctx context.Context, db *sql.DB, subscriberID uuid.UUID, efOfferID string) (inDictionary bool, exited int64, err error) {
+	efOfferID = strings.TrimSpace(efOfferID)
+	if efOfferID == "" {
+		return false, 0, nil
+	}
+
+	// Dictionary gate: is this offer one of ours with a configured journey?
+	var one int
+	dErr := db.QueryRowContext(ctx,
+		`SELECT 1 FROM mailing_offer_journey_map WHERE everflow_offer_id=$1`, efOfferID).Scan(&one)
+	if dErr == sql.ErrNoRows {
+		return false, 0, nil
+	}
+	if dErr != nil {
+		return false, 0, dErr
+	}
+
+	// Resolve email (best effort) for the fallback match; UUID match works even
+	// if this is empty.
+	var subEmail string
+	_ = db.QueryRowContext(ctx,
+		`SELECT email FROM mailing_subscribers WHERE id=$1`, subscriberID).Scan(&subEmail)
+
+	res, uErr := db.ExecContext(ctx, `
+		UPDATE mailing_journey_enrollments
+		SET status='exited',
+		    exited_at=NOW(),
+		    exit_reason='converted',
+		    converted_at=NOW(),
+		    next_execute_at=NULL,
+		    updated_at=NOW()
+		WHERE status='active'
+		  AND enrollment_offer_id=$1
+		  AND (
+		        metadata->>'original_subscriber' = $2
+		     OR ($3 <> '' AND LOWER(subscriber_email)=LOWER($3))
+		      )
+	`, efOfferID, subscriberID.String(), subEmail)
+	if uErr != nil {
+		return true, 0, uErr
+	}
+	if res != nil {
+		exited, _ = res.RowsAffected()
+	}
+	return true, exited, nil
 }
