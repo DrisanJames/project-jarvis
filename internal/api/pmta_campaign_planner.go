@@ -1797,17 +1797,29 @@ type preflightResult struct {
 func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sendingDomain string, overrideProfileID string) preflightResult {
 	res := preflightResult{OK: true}
 
-	// 1. Sending profile exists with an IP pool
-	var profileID, ipPool, poolPrefix sql.NullString
+	// 1. Sending profile exists with an IP pool (or, for SES tenant routes,
+	// an SES configuration_set + tenant_name; the IP-pool / DKIM-DNS / SPF
+	// checks below are conditionally skipped for via_ses=true profiles
+	// because SES is the relay — the pool name on those profiles refers
+	// to a PMTA virtual-mta-pool defined in /etc/pmta/config, not to a
+	// row in mailing_ip_addresses, so the legacy "active IPs > 0" check
+	// always trips. SES handles DKIM signing on the apex em.<brand>
+	// identity (Easy DKIM) and uses its own envelope sender for SPF, so
+	// the m.<brand> sending_domain DNS checks are also irrelevant on
+	// SES routes — the only checks that still apply are PMTA bridge
+	// reachability and that the SES routing fields are populated.
+	var profileID, ipPool, poolPrefix, sesConfigSet, sesTenantName sql.NullString
+	var viaSES sql.NullBool
 	var err error
 	if overrideProfileID != "" {
 		err = db.QueryRowContext(ctx, `
-			SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
+			SELECT id::text, ip_pool, COALESCE(pool_prefix, ''),
+			       COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name
 			FROM mailing_sending_profiles
 			WHERE organization_id = $1 AND id = $2
 			  AND vendor_type = 'pmta'
 			  AND status = 'active'
-		`, orgID, overrideProfileID).Scan(&profileID, &ipPool, &poolPrefix)
+		`, orgID, overrideProfileID).Scan(&profileID, &ipPool, &poolPrefix, &viaSES, &sesConfigSet, &sesTenantName)
 	} else {
 		// Resolver order: is_default profiles ALWAYS win the by-domain
 		// lookup. See the matching comment in
@@ -1818,13 +1830,14 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		// 2026-05-30 when an SES Relay profile created at 23:50 UTC
 		// won the resolver against the established OVH PMTA profile.
 		err = db.QueryRowContext(ctx, `
-			SELECT id::text, ip_pool, COALESCE(pool_prefix, '')
+			SELECT id::text, ip_pool, COALESCE(pool_prefix, ''),
+			       COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name
 			FROM mailing_sending_profiles
 			WHERE organization_id = $1 AND vendor_type = 'pmta'
 			  AND (sending_domain = $2 OR from_email LIKE '%@' || $2)
 			  AND status = 'active'
 			ORDER BY is_default DESC, created_at DESC LIMIT 1
-		`, orgID, sendingDomain).Scan(&profileID, &ipPool, &poolPrefix)
+		`, orgID, sendingDomain).Scan(&profileID, &ipPool, &poolPrefix, &viaSES, &sesConfigSet, &sesTenantName)
 	}
 	if err != nil || !profileID.Valid {
 		var msg string
@@ -1840,134 +1853,159 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 		})
 		return res
 	}
-	if (!ipPool.Valid || strings.TrimSpace(ipPool.String) == "") && (!poolPrefix.Valid || strings.TrimSpace(poolPrefix.String) == "") {
-		res.OK = false
-		res.Errors = append(res.Errors, preflightError{
-			Check:   "ip_pool",
-			Message: fmt.Sprintf("sending profile %s has no IP pool or pool_prefix assigned", profileID.String),
-		})
-		return res
-	}
 
-	// 2. IP pool has active IPs with valid VMTA names
-	var poolQuery string
-	var poolArg interface{}
-	pfx := ""
-	if poolPrefix.Valid {
-		pfx = strings.TrimSpace(poolPrefix.String)
-	}
-	if pfx != "" {
-		poolQuery = `
-			SELECT ip.hostname, ip.status, pool.name
-			FROM mailing_ip_addresses ip
-			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-			WHERE pool.name LIKE $1 || '-%'
-			  AND ip.status IN ('active', 'warmup')
-			  AND pool.status = 'active'`
-		poolArg = pfx
-	} else {
-		poolQuery = `
-			SELECT ip.hostname, ip.status, pool.name
-			FROM mailing_ip_addresses ip
-			JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
-			WHERE pool.name = $1
-			  AND ip.status IN ('active', 'warmup')
-			  AND pool.status = 'active'`
-		poolArg = ipPool.String
-	}
+	isSESRoute := viaSES.Valid && viaSES.Bool
 
-	rows, qErr := db.QueryContext(ctx, poolQuery, poolArg)
-	if qErr != nil {
-		res.OK = false
-		res.Errors = append(res.Errors, preflightError{
-			Check:   "ip_pool_query",
-			Message: fmt.Sprintf("failed to query IP pools for prefix=%s pool=%s: %v", pfx, ipPool.String, qErr),
-		})
-		return res
-	}
-	defer rows.Close()
-
-	activeIPs := 0
-	ispPoolsWithIPs := make(map[string]bool)
-	for rows.Next() {
-		var hostname, status, poolName string
-		rows.Scan(&hostname, &status, &poolName)
-		activeIPs++
-		ispPoolsWithIPs[poolName] = true
-		vmta := hostname
-		if dotIdx := strings.Index(vmta, "."); dotIdx > 0 {
-			vmta = vmta[:dotIdx]
+	if isSESRoute {
+		// SES tenant route: validate SES routing fields are populated.
+		// Pool name is a PMTA virtual-mta-pool (e.g. db-ses-pool) that
+		// PMTA matches on the X-Virtual-MTA header to relay outbound to
+		// email-smtp.us-west-1.amazonaws.com:587 — not an IP-table pool.
+		cs := strings.TrimSpace(sesConfigSet.String)
+		tn := strings.TrimSpace(sesTenantName.String)
+		if cs == "" || tn == "" {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "ses_routing_fields",
+				Message: fmt.Sprintf("SES tenant profile %s has via_ses=true but is missing ses_configuration_set (%q) or ses_tenant_name (%q)", profileID.String, cs, tn),
+			})
+			return res
 		}
-		if len(vmta) < 2 || strings.Contains(vmta, ".") {
+	} else {
+		// Dedicated PMTA route: legacy IP-pool / DKIM-DNS / SPF checks apply.
+		if (!ipPool.Valid || strings.TrimSpace(ipPool.String) == "") && (!poolPrefix.Valid || strings.TrimSpace(poolPrefix.String) == "") {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "ip_pool",
+				Message: fmt.Sprintf("sending profile %s has no IP pool or pool_prefix assigned", profileID.String),
+			})
+			return res
+		}
+
+		// 2. IP pool has active IPs with valid VMTA names
+		var poolQuery string
+		var poolArg interface{}
+		pfx := ""
+		if poolPrefix.Valid {
+			pfx = strings.TrimSpace(poolPrefix.String)
+		}
+		if pfx != "" {
+			poolQuery = `
+				SELECT ip.hostname, ip.status, pool.name
+				FROM mailing_ip_addresses ip
+				JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+				WHERE pool.name LIKE $1 || '-%'
+				  AND ip.status IN ('active', 'warmup')
+				  AND pool.status = 'active'`
+			poolArg = pfx
+		} else {
+			poolQuery = `
+				SELECT ip.hostname, ip.status, pool.name
+				FROM mailing_ip_addresses ip
+				JOIN mailing_ip_pools pool ON pool.id = ip.pool_id
+				WHERE pool.name = $1
+				  AND ip.status IN ('active', 'warmup')
+				  AND pool.status = 'active'`
+			poolArg = ipPool.String
+		}
+
+		rows, qErr := db.QueryContext(ctx, poolQuery, poolArg)
+		if qErr != nil {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "ip_pool_query",
+				Message: fmt.Sprintf("failed to query IP pools for prefix=%s pool=%s: %v", pfx, ipPool.String, qErr),
+			})
+			return res
+		}
+		defer rows.Close()
+
+		activeIPs := 0
+		ispPoolsWithIPs := make(map[string]bool)
+		for rows.Next() {
+			var hostname, status, poolName string
+			rows.Scan(&hostname, &status, &poolName)
+			activeIPs++
+			ispPoolsWithIPs[poolName] = true
+			vmta := hostname
+			if dotIdx := strings.Index(vmta, "."); dotIdx > 0 {
+				vmta = vmta[:dotIdx]
+			}
+			if len(vmta) < 2 || strings.Contains(vmta, ".") {
+				res.Warnings = append(res.Warnings, preflightError{
+					Check:   "vmta_name",
+					Message: fmt.Sprintf("IP hostname %q produces suspicious VMTA name %q", hostname, vmta),
+				})
+			}
+		}
+		if activeIPs == 0 {
+			poolDesc := ipPool.String
+			if pfx != "" {
+				poolDesc = pfx + "-*"
+			}
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "ip_pool_empty",
+				Message: fmt.Sprintf("IP pools matching %s have zero active/warmup IPs", poolDesc),
+			})
+			return res
+		}
+		if pfx != "" && len(ispPoolsWithIPs) < 9 {
 			res.Warnings = append(res.Warnings, preflightError{
-				Check:   "vmta_name",
-				Message: fmt.Sprintf("IP hostname %q produces suspicious VMTA name %q", hostname, vmta),
+				Check:   "isp_pool_coverage",
+				Message: fmt.Sprintf("only %d of 9 ISP pools have active IPs for prefix %s", len(ispPoolsWithIPs), pfx),
 			})
 		}
-	}
-	if activeIPs == 0 {
-		poolDesc := ipPool.String
-		if pfx != "" {
-			poolDesc = pfx + "-*"
-		}
-		res.OK = false
-		res.Errors = append(res.Errors, preflightError{
-			Check:   "ip_pool_empty",
-			Message: fmt.Sprintf("IP pools matching %s have zero active/warmup IPs", poolDesc),
-		})
-		return res
-	}
-	if pfx != "" && len(ispPoolsWithIPs) < 9 {
-		res.Warnings = append(res.Warnings, preflightError{
-			Check:   "isp_pool_coverage",
-			Message: fmt.Sprintf("only %d of 9 ISP pools have active IPs for prefix %s", len(ispPoolsWithIPs), pfx),
-		})
-	}
 
-	// 3. DKIM DNS record exists
-	dkimHost := "dkim._domainkey." + sendingDomain
-	txts, dkimErr := net.LookupTXT(dkimHost)
-	hasDKIM := false
-	if dkimErr == nil {
-		for _, txt := range txts {
-			if strings.Contains(txt, "v=DKIM1") || strings.Contains(txt, "p=") {
-				hasDKIM = true
-				break
+		// 3. DKIM DNS record exists (apex DKIM at the sending domain).
+		// SES tenant routes skip this because SES Easy DKIM keys live at
+		// <token>._domainkey.em.<brand>, not at dkim._domainkey.<sending_domain>.
+		dkimHost := "dkim._domainkey." + sendingDomain
+		txts, dkimErr := net.LookupTXT(dkimHost)
+		hasDKIM := false
+		if dkimErr == nil {
+			for _, txt := range txts {
+				if strings.Contains(txt, "v=DKIM1") || strings.Contains(txt, "p=") {
+					hasDKIM = true
+					break
+				}
 			}
 		}
-	}
-	if !hasDKIM {
-		res.OK = false
-		res.Errors = append(res.Errors, preflightError{
-			Check:   "dkim_dns",
-			Message: fmt.Sprintf("no DKIM record found at %s — emails will fail DMARC", dkimHost),
-		})
-	}
+		if !hasDKIM {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "dkim_dns",
+				Message: fmt.Sprintf("no DKIM record found at %s — emails will fail DMARC", dkimHost),
+			})
+		}
 
-	// 4. SPF record exists
-	txts, spfErr := net.LookupTXT(sendingDomain)
-	hasSPF := false
-	spfCount := 0
-	if spfErr == nil {
-		for _, txt := range txts {
-			if strings.HasPrefix(strings.TrimSpace(txt), "v=spf1") {
-				hasSPF = true
-				spfCount++
+		// 4. SPF record exists. SES tenant routes skip this because the
+		// envelope sender (Return-Path) is rewritten to feedback-smtp.<region>.amazonses.com,
+		// so SPF on the m.<brand> sending domain isn't what the recipient checks.
+		txts, spfErr := net.LookupTXT(sendingDomain)
+		hasSPF := false
+		spfCount := 0
+		if spfErr == nil {
+			for _, txt := range txts {
+				if strings.HasPrefix(strings.TrimSpace(txt), "v=spf1") {
+					hasSPF = true
+					spfCount++
+				}
 			}
 		}
-	}
-	if !hasSPF {
-		res.Warnings = append(res.Warnings, preflightError{
-			Check:   "spf_dns",
-			Message: fmt.Sprintf("no SPF record found for %s", sendingDomain),
-		})
-	}
-	if spfCount > 1 {
-		res.OK = false
-		res.Errors = append(res.Errors, preflightError{
-			Check:   "spf_duplicate",
-			Message: fmt.Sprintf("%s has %d SPF records — this causes a permerror; remove duplicates", sendingDomain, spfCount),
-		})
+		if !hasSPF {
+			res.Warnings = append(res.Warnings, preflightError{
+				Check:   "spf_dns",
+				Message: fmt.Sprintf("no SPF record found for %s", sendingDomain),
+			})
+		}
+		if spfCount > 1 {
+			res.OK = false
+			res.Errors = append(res.Errors, preflightError{
+				Check:   "spf_duplicate",
+				Message: fmt.Sprintf("%s has %d SPF records — this causes a permerror; remove duplicates", sendingDomain, spfCount),
+			})
+		}
 	}
 
 	// 5. PMTA server is reachable (SMTP port check — use profile's smtp_port, not hardcoded 25)
