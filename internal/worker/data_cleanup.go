@@ -75,12 +75,14 @@ func (dc *DataCleanupWorker) cleanup(ctx context.Context) {
 
 	dc.cleanupQueueItems(ctx)
 	dc.cleanupTerminalQueueItems(ctx)
+	dc.cleanupPlanRecipients(ctx)
 	dc.cleanupProcessedAcctRaw(ctx)
 	dc.cleanupTrackingEvents(ctx)
 	dc.cleanupAgentDecisions(ctx)
 	dc.cleanupDeadLetterItems(ctx)
 
 	log.Printf("[DataCleanup] Cleanup cycle completed in %s", time.Since(start).Round(time.Millisecond))
+	EmitHeartbeat(ctx, dc.db, "data_cleanup", int(dc.interval.Seconds()), "ok", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +161,74 @@ func (dc *DataCleanupWorker) logTerminalQueueStats(ctx context.Context) {
 	if terminalRemaining > 0 || acceptedHTML > 0 {
 		log.Printf("[DataCleanup] Queue stats: terminal_aged_14d=%d accepted_with_html=%d",
 			terminalRemaining, acceptedHTML)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cleanupPlanRecipients — Delete planned-recipient rows for TERMINAL campaigns
+// older than 14 days. mailing_campaign_plan_recipients is the deploy-time
+// audience snapshot consumed by the wave scheduler (EnqueuePMTAWave copies
+// these into mailing_campaign_queue). Once a campaign reaches a terminal state
+// (sent/cancelled/failed) the plan rows are dead weight — but they were never
+// being cleaned, so the table grew to ~12 GB / ~28M rows. Active campaigns
+// (scheduled / finalizing_audience / sending / preparing) are explicitly NOT
+// touched: their plan rows are still being enqueued. Deletes are index-driven
+// via idx_plan_recips_campaign and batched.
+//
+// NOTE: this bounds growth and frees space for reuse; it does NOT shrink the
+// on-disk file. Physical reclamation of existing bloat requires an online
+// pg_repack — tracked separately.
+// ---------------------------------------------------------------------------
+func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
+	// Post-cutover the table is RANGE-partitioned by created_at, so retention is
+	// an instant DROP PARTITION (zero IO) via the maintenance functions, and we
+	// keep ~3 weeks of future partitions provisioned. Pre-cutover (a regular
+	// table) we fall back to the batched DELETE. Probing relkind keeps this safe
+	// to deploy on either side of the partition swap.
+	var partitioned bool
+	if err := dc.db.QueryRowContext(ctx,
+		`SELECT relkind = 'p' FROM pg_class WHERE relname = 'mailing_campaign_plan_recipients'`,
+	).Scan(&partitioned); err != nil {
+		log.Printf("[DataCleanup] plan_recipients relkind probe failed (%v); using DELETE fallback", err)
+		partitioned = false
+	}
+
+	if partitioned {
+		if _, err := dc.db.ExecContext(ctx,
+			`SELECT ensure_plan_recipient_partitions(CURRENT_DATE, (CURRENT_DATE + INTERVAL '21 days')::date)`,
+		); err != nil {
+			log.Printf("[DataCleanup] ensure_plan_recipient_partitions failed: %v", err)
+		}
+		var dropped int
+		if err := dc.db.QueryRowContext(ctx,
+			`SELECT drop_old_plan_recipient_partitions(14)`,
+		).Scan(&dropped); err != nil {
+			log.Printf("[DataCleanup] drop_old_plan_recipient_partitions failed: %v", err)
+			return
+		}
+		if dropped > 0 {
+			log.Printf("[DataCleanup] dropped %d expired plan_recipient partition(s) (retention=14d, DROP PARTITION)", dropped)
+		}
+		return
+	}
+
+	total := dc.batchDelete(ctx, "mailing_campaign_plan_recipients", `
+		WITH doomed AS (
+			SELECT pr.id
+			FROM mailing_campaign_plan_recipients pr
+			WHERE pr.campaign_id IN (
+				SELECT id FROM mailing_campaigns
+				WHERE status IN ('sent', 'cancelled', 'failed')
+				  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+			)
+			LIMIT $1
+		)
+		DELETE FROM mailing_campaign_plan_recipients pr
+		USING doomed
+		WHERE pr.id = doomed.id
+	`)
+	if total > 0 {
+		log.Printf("[DataCleanup] Removed %d plan-recipient rows for terminal campaigns older than 14 days (DELETE fallback)", total)
 	}
 }
 
