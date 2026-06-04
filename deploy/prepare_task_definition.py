@@ -34,6 +34,12 @@ PASSTHROUGH_ENV_VARS = [
     "ALERT_CAMPAIGN_LATENESS_ENABLED",
     "ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES",
     "ALERT_CAMPAIGN_LATENESS_REALERT_HOURS",
+    # Worker-stall alerts (WorkerHealthMonitor -> notify.FromEnv). Set
+    # SLACK_WEBHOOK_URL in the deploy shell on first rollout; once in the task
+    # definition, subsequent deploys inherit it. SLACK_ALERT_CHANNEL is only
+    # used by the bot-token transport, not the webhook.
+    "SLACK_WEBHOOK_URL",
+    "SLACK_ALERT_CHANNEL",
 ]
 
 REMOVE_ENV_VARS = [
