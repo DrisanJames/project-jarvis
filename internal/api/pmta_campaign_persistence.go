@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/lib/pq"
 )
 
 type pmtaCampaignProfile struct {
@@ -605,8 +606,16 @@ func firstPlanTimezone(normalized pmtaNormalizedCampaign) string {
 	return normalized.Plans[0].Timezone
 }
 
-// batchInsertPlanRecipients inserts plan recipients in multi-row batches
-// instead of one-at-a-time, reducing DB round trips from N to ceil(N/200).
+// batchInsertPlanRecipients streams plan recipients into
+// mailing_campaign_plan_recipients via the PostgreSQL COPY protocol
+// (pq.CopyIn) rather than multi-row INSERT. COPY has no per-statement
+// parameter ceiling and far lower parse/WAL overhead, so a plan carrying tens
+// of thousands of recipients no longer drives the deploy transaction past its
+// context deadline under DB IO pressure — the failure mode that repeatedly
+// killed large (e.g. Discount Blog ~28k) audience deploys at exactly 20 min.
+//
+// All rows in a plan share one created_at (computed once in Go) so they sort
+// together, matching the prior NOW() semantics closely enough for ordering.
 //
 // Each row's status is derived from rec.IsReserve:
 //   - IsReserve=false → 'selected' (normal pool, claimed first by dispatcher)
@@ -616,6 +625,10 @@ func firstPlanTimezone(normalized pmtaNormalizedCampaign) string {
 // The 'reserve' status is set by the planner over-select path; rows are
 // promoted to 'queued' by the dispatcher and may be flipped to
 // 'cap_skipped' if Peek finds the subscriber at/over cap.
+//
+// The CopyIn statement holds the connection in COPY mode, so it is fully
+// flushed (empty Exec) and closed before this function returns — the enclosing
+// transaction issues further statements after each per-ISP call.
 func batchInsertPlanRecipients(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -627,45 +640,40 @@ func batchInsertPlanRecipients(
 	if len(recipients) == 0 {
 		return nil
 	}
-	const batchSize = 1000
-	const paramsPerRow = 10
 
-	for i := 0; i < len(recipients); i += batchSize {
-		end := i + batchSize
-		if end > len(recipients) {
-			end = len(recipients)
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn(
+		"mailing_campaign_plan_recipients",
+		"id", "campaign_id", "isp_plan_id", "subscriber_id", "email", "recipient_isp",
+		"selection_rank", "audience_source_type", "audience_source_id", "status", "created_at",
+	))
+	if err != nil {
+		return fmt.Errorf("prepare COPY plan recipients for %s: %w", ispName, err)
+	}
+
+	createdAt := time.Now().UTC()
+	for _, rec := range recipients {
+		status := "selected"
+		if rec.IsReserve {
+			status = "reserve"
 		}
-		batch := recipients[i:end]
-
-		var sb strings.Builder
-		sb.WriteString(`INSERT INTO mailing_campaign_plan_recipients (
-			id, campaign_id, isp_plan_id, subscriber_id, email, recipient_isp,
-			selection_rank, audience_source_type, audience_source_id, status, created_at
-		) VALUES `)
-
-		args := make([]any, 0, len(batch)*paramsPerRow)
-		for j, rec := range batch {
-			if j > 0 {
-				sb.WriteString(", ")
-			}
-			base := j * paramsPerRow
-			fmt.Fprintf(&sb, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, NOW())",
-				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
-			status := "selected"
-			if rec.IsReserve {
-				status = "reserve"
-			}
-			args = append(args,
-				uuid.New(), campaignID, planID,
-				mustUUID(rec.SubscriberID), rec.Email, rec.ISP,
-				rec.SelectionRank, rec.SourceType, parseNullableUUID(rec.SourceID),
-				status,
-			)
+		if _, err := stmt.ExecContext(ctx,
+			uuid.New(), campaignID, planID,
+			mustUUID(rec.SubscriberID), rec.Email, rec.ISP,
+			rec.SelectionRank, rec.SourceType, parseNullableUUID(rec.SourceID),
+			status, createdAt,
+		); err != nil {
+			stmt.Close()
+			return fmt.Errorf("buffer COPY plan recipient for %s: %w", ispName, err)
 		}
+	}
 
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
-			return fmt.Errorf("insert plan recipients batch for %s: %w", ispName, err)
-		}
+	// Empty Exec flushes buffered rows; must precede any other tx statement.
+	if _, err := stmt.ExecContext(ctx); err != nil {
+		stmt.Close()
+		return fmt.Errorf("flush COPY plan recipients for %s: %w", ispName, err)
+	}
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("close COPY plan recipients for %s: %w", ispName, err)
 	}
 	return nil
 }
