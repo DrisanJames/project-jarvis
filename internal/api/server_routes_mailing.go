@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -852,8 +853,22 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				engineMemory = engine.NewMemoryStore(s.s3Client, engineBucket)
 			}
 
+			// ENGINE_DECISION_PERSIST_DISABLED decommissions the DB-side of the
+			// convictions/decisions engine: it stops INSERTs into the two large
+			// append-only logs (mailing_engine_convictions ~37 GB,
+			// mailing_engine_decisions ~19 GB) that were the dominant RDS write-IO
+			// source and were never read by the send path (only by display/analytics
+			// surfaces). In-memory agents, S3 archival of convictions, the throttle
+			// rate registry, and mailing_engine_throttle_agent_state are all
+			// unaffected. Fully reversible: unset the env var and redeploy.
+			enginePersistDisabled := strings.EqualFold(os.Getenv("ENGINE_DECISION_PERSIST_DISABLED"), "true")
+
 			convictionStore := engine.NewConvictionStore(engineMemory)
 			convictionStore.SetDB(db)
+			if enginePersistDisabled {
+				convictionStore.DisableDBPersist()
+				log.Printf("[engine] DB persistence DISABLED for convictions/decisions (ENGINE_DECISION_PERSIST_DISABLED=true) — S3 archival continues, RDS write-IO relieved")
+			}
 			// Restore convictions from S3 + DB in the background. This work
 			// can take 10–20 minutes under DB load (60 ISP × agent-type
 			// combinations × ~10–60s per query). Blocking SetMailingDB on
@@ -917,7 +932,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			executor := engine.NewExecutor(pmtaHost, pmtaSSHPort, pmtaSSHUser, pmtaSSHKey)
 			executor.SetDB(db)
 
-			decisionStore := &engine.DBDecisionStore{DB: db}
+			decisionStore := &engine.DBDecisionStore{DB: db, PersistDisabled: enginePersistDisabled}
 			orchestrator := engine.NewOrchestrator(
 				decisionStore, engineOrgID, agentFactory, signalProcessor,
 				ingestor, executor, alerter, engineMemory, suppressionStore,

@@ -92,6 +92,12 @@ def main() -> int:
     upsert_env(env_list, "JARVIS_S3_REGION", "us-west-2")
     upsert_env(env_list, "IMAGE_CDN_DOMAIN", "img.projectjarvis.io")
     upsert_env(env_list, "ENABLE_ENGAGEMENT_ESCALATION", "true")
+    # 2026-06-04: decommission the convictions/decisions engine DB persistence.
+    # Stops INSERTs into mailing_engine_convictions (~37 GB) + mailing_engine_decisions
+    # (~19 GB) — the dominant RDS write-IO source, never read by the send path.
+    # In-memory agents, S3 conviction archival, and throttle state are unaffected.
+    # Reversible: set to "false" (or remove this line) and redeploy.
+    upsert_env(env_list, "ENGINE_DECISION_PERSIST_DISABLED", "true")
     upsert_env(env_list, "SUPPRESSION_S3_BUCKET", "jarvis-offer-suppressions")
     upsert_env(env_list, "SUPPRESSION_S3_REGION", "us-west-2")
     upsert_env(env_list, "REDIS_URL", "apex-redis.x9k9ng.0001.usw2.cache.amazonaws.com:6379")

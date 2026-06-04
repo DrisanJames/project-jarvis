@@ -12,9 +12,18 @@ import (
 // DBDecisionStore implements DecisionStore using *sql.DB.
 type DBDecisionStore struct {
 	DB *sql.DB
+
+	// PersistDisabled, when true, suppresses INSERTs into
+	// mailing_engine_decisions (the 19 GB append-only log) while leaving
+	// agent-state upserts and all reads intact. Set when the decision
+	// engine is operationally decommissioned to relieve RDS write IO.
+	PersistDisabled bool
 }
 
 func (ds *DBDecisionStore) PersistDecision(ctx context.Context, d Decision) error {
+	if ds.PersistDisabled {
+		return nil
+	}
 	if d.SignalValues == nil {
 		d.SignalValues = json.RawMessage("{}")
 	}

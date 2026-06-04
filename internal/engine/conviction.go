@@ -36,6 +36,13 @@ type ConvictionStore struct {
 	// Velocity tracking: timestamps of recent Record() calls
 	velMu      sync.Mutex
 	velHistory []time.Time
+
+	// dbPersistDisabled, when true, suppresses INSERTs into
+	// mailing_engine_convictions. The hot in-memory ring, S3 archival
+	// (via MemoryStore), and SSE fan-out are unaffected — only the
+	// redundant DB copy is skipped. Used to relieve RDS write IO when the
+	// convictions engine is operationally decommissioned.
+	dbPersistDisabled bool
 }
 
 type convictionRing struct {
@@ -86,6 +93,13 @@ func NewConvictionStore(memory *MemoryStore) *ConvictionStore {
 // SetDB enables database-backed conviction persistence as a fallback to S3.
 func (cs *ConvictionStore) SetDB(db *sql.DB) {
 	cs.db = db
+}
+
+// DisableDBPersist suppresses DB writes to mailing_engine_convictions while
+// leaving the in-memory ring, S3 archival, and SSE fan-out intact. Reversible
+// at construction time via the ENGINE_DECISION_PERSIST_DISABLED env var.
+func (cs *ConvictionStore) DisableDBPersist() {
+	cs.dbPersistDisabled = true
 }
 
 // Subscribe registers an SSE client. Returns a read channel and a unique ID.
@@ -220,7 +234,7 @@ func (cs *ConvictionStore) Record(ctx context.Context, c Conviction) {
 		cs.memory.AppendConviction(ctx, c.ISP, c.AgentType, c)
 	}
 
-	if cs.db != nil {
+	if cs.db != nil && !cs.dbPersistDisabled {
 		cs.persistConvictionToDB(ctx, c)
 	}
 
