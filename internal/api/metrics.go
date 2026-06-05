@@ -30,6 +30,11 @@ type MetricsFilter struct {
 type MetricsResult struct {
 	Sent         int `json:"sent"`
 	Delivered    int `json:"delivered"`
+	// RelayedToSES is the count of PMTA "d" records routed to an SES relay
+	// pool (PMTA→SES handoff), surfaced as its own labeled column. It is NOT
+	// a recipient delivery — for via_ses brands the authoritative delivery is
+	// the SES DELIVERY event, already folded into Delivered via ses_delivered.
+	RelayedToSES int `json:"relayed_to_ses"`
 	Opens        int `json:"opens"`
 	Clicks       int `json:"clicks"`
 	HardBounces  int `json:"hard_bounces"`
@@ -69,14 +74,18 @@ func ComputeMetrics(ctx context.Context, db *sql.DB, f MetricsFilter) (MetricsRe
 	var r MetricsResult
 
 	if f.CampaignID != "" {
-		// Per-campaign: delivery from summary, scoped by campaign_id
+		// Per-campaign: delivery from summary, scoped by campaign_id.
+		// delivered = PMTA-direct (delivered) + SES-confirmed (ses_delivered)
+		// so via_ses campaigns report SES DELIVERY truth instead of ~0.
+		// relayed_to_ses is surfaced separately as the PMTA→SES handoff.
 		err := db.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(delivered), 0), COALESCE(SUM(hard_bounced), 0),
+			SELECT COALESCE(SUM(delivered), 0) + COALESCE(SUM(ses_delivered), 0),
+			       COALESCE(SUM(relayed_to_ses), 0), COALESCE(SUM(hard_bounced), 0),
 			       COALESCE(SUM(soft_bounced), 0), COALESCE(SUM(complained), 0),
 			       COALESCE(SUM(deferred), 0)
 			FROM pmta_acct_daily_summary
 			WHERE campaign_id = $1::uuid
-		`, f.CampaignID).Scan(&r.Delivered, &r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Deferred)
+		`, f.CampaignID).Scan(&r.Delivered, &r.RelayedToSES, &r.HardBounces, &r.SoftBounces, &r.Complaints, &r.Deferred)
 		if err != nil {
 			return r, fmt.Errorf("ComputeMetrics(summary): %w", err)
 		}
@@ -209,14 +218,18 @@ func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]IS
 		// pmta_acct_daily_summary itself has no organization_id column.
 		var dQuery string
 		var dArgs []interface{}
+		// delivered folds in ses_delivered (SES DELIVERY truth) so via_ses
+		// ISPs don't read ~0; relayed_to_ses surfaced as its own column.
 		switch {
 		case f.CampaignID != "":
-			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounced),0),
+			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0)+COALESCE(SUM(ses_delivered),0),
+				COALESCE(SUM(relayed_to_ses),0), COALESCE(SUM(hard_bounced),0),
 				COALESCE(SUM(soft_bounced),0), COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 				FROM pmta_acct_daily_summary WHERE campaign_id = $1::uuid GROUP BY recipient_isp`
 			dArgs = []interface{}{f.CampaignID}
 		case f.OrgID != "":
-			dQuery = `SELECT s.recipient_isp, COALESCE(SUM(s.delivered),0), COALESCE(SUM(s.hard_bounced),0),
+			dQuery = `SELECT s.recipient_isp, COALESCE(SUM(s.delivered),0)+COALESCE(SUM(s.ses_delivered),0),
+				COALESCE(SUM(s.relayed_to_ses),0), COALESCE(SUM(s.hard_bounced),0),
 				COALESCE(SUM(s.soft_bounced),0), COALESCE(SUM(s.complained),0), COALESCE(SUM(s.deferred),0)
 				FROM pmta_acct_daily_summary s
 				JOIN mailing_campaigns c ON c.id = s.campaign_id
@@ -225,7 +238,8 @@ func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]IS
 				GROUP BY s.recipient_isp`
 			dArgs = []interface{}{f.StartDate, f.EndDate, f.OrgID}
 		default:
-			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounced),0),
+			dQuery = `SELECT recipient_isp, COALESCE(SUM(delivered),0)+COALESCE(SUM(ses_delivered),0),
+				COALESCE(SUM(relayed_to_ses),0), COALESCE(SUM(hard_bounced),0),
 				COALESCE(SUM(soft_bounced),0), COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 				FROM pmta_acct_daily_summary WHERE summary_date >= $1::date AND summary_date <= $2::date GROUP BY recipient_isp`
 			dArgs = []interface{}{f.StartDate, f.EndDate}
@@ -240,7 +254,7 @@ func ComputeMetricsByISP(ctx context.Context, db *sql.DB, f MetricsFilter) ([]IS
 		for dRows.Next() {
 			var ispGroup string
 			var m MetricsResult
-			if err := dRows.Scan(&ispGroup, &m.Delivered, &m.HardBounces, &m.SoftBounces, &m.Complaints, &m.Deferred); err != nil {
+			if err := dRows.Scan(&ispGroup, &m.Delivered, &m.RelayedToSES, &m.HardBounces, &m.SoftBounces, &m.Complaints, &m.Deferred); err != nil {
 				continue
 			}
 			ispMap[ispGroup] = &m
@@ -425,6 +439,7 @@ func ComputeMetricsTotals(byISP []ISPMetricsResult) MetricsResult {
 	for _, r := range byISP {
 		t.Sent += r.Metrics.Sent
 		t.Delivered += r.Metrics.Delivered
+		t.RelayedToSES += r.Metrics.RelayedToSES
 		t.Opens += r.Metrics.Opens
 		t.Clicks += r.Metrics.Clicks
 		t.HardBounces += r.Metrics.HardBounces
@@ -466,7 +481,14 @@ func (r *MetricsResult) computeRates() {
 // reputation-blocked bucket because pmta_acct_raw differentiates them.
 var HardBounceCategories = []string{
 	"hard", "bad-mailbox", "bad-domain", "inactive-mailbox",
-	"no-answer-from-host", "routing-errors", "policy-related", "bad-connection",
+}
+
+// ReputationBlockCategories are bounce categories that indicate a sender-side
+// reputation/system/connection block of a VALID recipient — NOT list hygiene.
+// These must never count as hard bounces nor trigger suppression.
+var ReputationBlockCategories = []string{
+	"spam-related", "policy-related", "routing-errors",
+	"no-answer-from-host", "bad-connection",
 }
 
 // IsHardBounceCategory returns true if the given PMTA bounce category
@@ -483,7 +505,7 @@ func IsHardBounceCategory(cat string) bool {
 // hardBounceSQL matches both the send_worker format ("hard") and the PMTA
 // ingest format (raw PMTA categories). This ensures ComputeMetrics correctly
 // classifies bounces regardless of which write path created the record.
-var hardBounceSQL = `COALESCE(t.bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
+var hardBounceSQL = HardBounceSQL("t")
 
 // CanonicalEventSubquerySQL returns the canonical event-driven subquery used
 // by every per-ISP / per-domain / per-time aggregator. Every column produced
@@ -546,27 +568,48 @@ func EventMetricsSelectSQL() string {
 		`, hb, hb)
 }
 
-// HardBounceSQL returns the canonical SQL fragment for identifying hard bounces
-// in mailing_tracking_events. Use this instead of hardcoding bounce_type lists.
+// HardBounceSQL returns the canonical SQL fragment for identifying TRUE hard
+// (list-hygiene) bounces in mailing_tracking_events: invalid address, dead
+// domain, or disabled mailbox. Use this instead of hardcoding bounce_type lists.
 // The alias parameter is the table alias (e.g. "t", "d", "te"); pass "" when the
 // query does not alias the table.
 //
-// PMTA-fed events write bounce_type with one of the canonical category strings
-// (hard, bad-mailbox, bad-domain, inactive-mailbox, no-answer-from-host,
-// routing-errors, policy-related, bad-connection). All eight are treated as
-// permanent (hard) bounces; everything else is soft.
+// IMPORTANT: reputation/system/connection blocks are deliberately EXCLUDED.
+// PMTA labels ISP reputation rejections (e.g. Charter/Spectrum "5.3.2 system
+// not accepting network messages") with categories like policy-related /
+// routing-errors / no-answer-from-host / bad-connection — and sometimes even
+// mislabels them bad-mailbox. Those are recoverable sender-side blocks, NOT bad
+// addresses, and counting them as hard bounces produces phantom reputation
+// emergencies and wrongful suppression. For surfaces that also have the
+// bounce_reason column available, pair this with ReputationBlockSQL and the
+// DSN-aware filter (see mailing_campaign_summary.go) to additionally split out
+// 5.3/5.4/5.5/5.7 rejections that PMTA mislabeled as bad-mailbox.
 //
-// Note: legacy SparkPost rows used a separate `bounce_class` column (numeric
-// codes). That column is not part of the canonical mailing_tracking_events
-// schema and is referenced only by `loadISPStats1h` in handlers_deliverability.go,
-// which is the SOLE legacy consumer. New code MUST use this helper and treat
-// `bounce_type` as the single source of truth.
+// This fragment references only bounce_type so it is safe in every subquery
+// (including projections that do not expose bounce_reason).
 func HardBounceSQL(alias string) string {
 	prefix := ""
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return `COALESCE(` + prefix + `bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox','no-answer-from-host','routing-errors','policy-related','bad-connection')`
+	return `COALESCE(` + prefix + `bounce_type,'') IN ('hard','bad-mailbox','bad-domain','inactive-mailbox')`
+}
+
+// ReputationBlockSQL returns the canonical SQL fragment for identifying
+// reputation/system/connection blocks — sender-side rejections of a VALID
+// recipient. It uses the authoritative DSN enhanced status code embedded in
+// bounce_reason (5.3/5.4/5.5/5.7 families) plus PMTA's reputation categories,
+// and is therefore ONLY safe where the bounce_reason column is in scope (the
+// real mailing_tracking_events table, not a column-projecting subquery).
+func ReputationBlockSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	bt := prefix + "bounce_type"
+	br := prefix + "bounce_reason"
+	return `(COALESCE(` + bt + `,'') IN ('spam-related','policy-related','routing-errors','no-answer-from-host','bad-connection') ` +
+		`OR COALESCE(` + br + `,'') ~ '^5\.[3457]\.')`
 }
 
 // ── Query building helpers ───────────────────────────────────────────────────

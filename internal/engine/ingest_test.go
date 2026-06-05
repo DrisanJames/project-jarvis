@@ -251,8 +251,8 @@ func TestPersistToDB_HardBounceUpdatesHardCount(t *testing.T) {
 }
 
 func TestIsHardBounceCategory(t *testing.T) {
-	hard := []string{"hard", "bad-mailbox", "bad-domain", "inactive-mailbox", "no-answer-from-host", "routing-errors", "policy-related", "bad-connection"}
-	soft := []string{"quota-issues", "spam-related", "protocol-errors", "content-related", "other", ""}
+	hard := []string{"hard", "bad-mailbox", "bad-domain", "inactive-mailbox"}
+	soft := []string{"no-answer-from-host", "routing-errors", "policy-related", "bad-connection", "quota-issues", "spam-related", "protocol-errors", "content-related", "other", ""}
 
 	for _, cat := range hard {
 		assert.True(t, isHardBounceCategory(cat), "category %q should be hard", cat)
@@ -282,6 +282,32 @@ func TestRouteToGlobalSuppression_HardBounce(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
+	ing.routeToGlobalSuppression(rec, ISP("other"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRouteToGlobalSuppression_SystemBlockMislabeledBadMailboxNotSuppressed(t *testing.T) {
+	// Charter/Spectrum returns "5.3.2 system not accepting network messages" to
+	// a warming domain; PMTA mislabels it bad-mailbox. The DSN is authoritative
+	// and the valid recipient must NOT be suppressed.
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	hub := NewGlobalSuppressionHub(db, "org1", "")
+	ing := &Ingestor{globalHub: hub}
+
+	rec := AccountingRecord{
+		Type:      "b",
+		Recipient: "valid@charter.net",
+		BounceCat: "bad-mailbox",
+		DSNStatus: "5.3.2",
+		DSNDiag:   "system not accepting network messages",
+		SourceIP:  "15.204.22.176",
+		JobID:     "campaign-1",
+	}
+
+	// No INSERT expectation — suppression must be skipped.
 	ing.routeToGlobalSuppression(rec, ISP("other"))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

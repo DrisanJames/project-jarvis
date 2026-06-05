@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -345,7 +346,13 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	var eventType string
 	switch rec.Type {
 	case "d":
-		eventType = "delivered"
+		// SES relay handoff is not a recipient delivery — keep it out of the
+		// live "delivered" tracker so dashboards match SES truth.
+		if IsPMTARelayedToSES(rec) {
+			eventType = "relayed_to_ses"
+		} else {
+			eventType = "delivered"
+		}
 	case "b":
 		eventType = ClassifyBounce(rec.BounceCat)
 	case "t", "tq":
@@ -381,14 +388,26 @@ func (ing *Ingestor) routeToGlobalSuppression(rec AccountingRecord, isp ISP) {
 	var reason, source string
 	switch rec.Type {
 	case "b": // bounce
+		// DSN status is authoritative. NEVER suppress system/network/protocol/
+		// security blocks (5.3/5.4/5.5/5.7): these are reputation/system
+		// rejections of a VALID recipient (e.g. Charter/Spectrum "5.3.2 system
+		// not accepting network messages"), which PMTA mislabels as
+		// "bad-mailbox". Suppressing them permanently destroys valid subscribers
+		// over a temporary sender-side block.
+		if smtputil.IsReputationOrSystemBlock(rec.DSNStatus) {
+			return
+		}
 		switch rec.BounceCat {
-		case "bad-mailbox", "bad-domain", "inactive-mailbox",
-			"no-answer-from-host", "quota-issues":
+		case "bad-mailbox", "bad-domain", "inactive-mailbox", "quota-issues":
+			// Genuine list-hygiene failures (invalid address / dead domain /
+			// disabled or full mailbox). quota-issues is retained as a Yahoo
+			// list-hygiene signal per product rule.
 			reason = "hard_bounce"
 			source = "pmta_bounce"
 		default:
-			// spam-related, policy-related, routing-errors are reputation
-			// blocks — they do NOT suppress the recipient.
+			// spam-related, policy-related, routing-errors, no-answer-from-host
+			// and bad-connection are reputation/connection blocks — they do NOT
+			// suppress the recipient.
 			return
 		}
 	case "f": // FBL complaint
@@ -415,7 +434,15 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 	var eventType string
 	switch rec.Type {
 	case "d":
-		eventType = "delivered"
+		// PMTA "d" on an SES relay pool means "handed off to SES", not
+		// "delivered to the recipient". Record it as relayed_to_ses so it is
+		// NOT counted toward campaign delivered_count — the authoritative
+		// delivery for SES-routed mail comes from the SES DELIVERY webhook.
+		if IsPMTARelayedToSES(rec) {
+			eventType = "relayed_to_ses"
+		} else {
+			eventType = "delivered"
+		}
 	case "b":
 		eventType = "bounced"
 	case "f":
@@ -582,7 +609,11 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	case "bounced":
 		ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
-		hardBounce = isHardBounceCategory(rec.BounceCat)
+		// DSN-aware: reputation/system blocks (5.3/5.4/5.5/5.7) and connection
+		// failures are counted as soft, not hard, so the campaign's
+		// hard_bounce_count reflects true list hygiene — not ISP reputation
+		// rejections that PMTA mislabels as bad-mailbox.
+		hardBounce = smtputil.ClassifyBounce(rec.DSNStatus, rec.BounceCat, rec.DSNDiag) == smtputil.ClassHard
 		if hardBounce {
 			ing.db.ExecContext(ctx, `UPDATE mailing_campaigns SET hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1 WHERE id = $1`, campUUID)
 		} else {
@@ -729,12 +760,16 @@ func (ing *Ingestor) incrEngagementCounters(isp ISP, eventType string) {
 	}
 }
 
-// isHardBounceCategory returns true for PMTA bounce categories that indicate
-// a permanent delivery failure. Must stay in sync with api.HardBounceCategories.
+// isHardBounceCategory returns true for PMTA bounce categories that indicate a
+// permanent list-hygiene failure (invalid address / dead domain / disabled
+// mailbox). This is a category-only fallback; prefer smtputil.ClassifyBounce
+// which also consults the authoritative DSN status. Reputation/system blocks
+// (spam-related, policy-related, routing-errors) and connection failures
+// (no-answer-from-host, bad-connection) are deliberately NOT hard.
+// Must stay in sync with api.HardBounceCategories.
 func isHardBounceCategory(cat string) bool {
 	switch cat {
-	case "hard", "bad-mailbox", "bad-domain", "inactive-mailbox",
-		"no-answer-from-host", "routing-errors", "policy-related", "bad-connection":
+	case "hard", "bad-mailbox", "bad-domain", "inactive-mailbox":
 		return true
 	default:
 		return false

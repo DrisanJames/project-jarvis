@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { PersonalizedInput } from './PersonalizedInput';
 import {
@@ -42,6 +42,8 @@ import {
   faCode,
   faChevronDown,
   faChevronUp,
+  faLayerGroup,
+  faArrowLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -100,11 +102,168 @@ interface CampaignVariant {
   click_rate: number;
 }
 
+// Row shape returned by GET /api/mailing/analytics/campaign-summary.
+// This is the fast, accurate list data source — it carries pre-aggregated
+// delivery/engagement counts and explicit denominators, and crucially does
+// NOT include html_content / creative bodies (the old /campaigns list pulled
+// those per-row, which timed out and rendered zeros).
+interface CampaignSummaryRow {
+  id: string;
+  name: string;
+  status: Campaign['status'];
+  scheduled_at?: string;
+  updated_at?: string;
+  route_type: string; // "ses" | "pmta" (delivery basis)
+  targeted: number;   // planned audience
+  sent: number;       // attempted/injected
+  delivered: number;  // SES DELIVERY (ses) / PMTA direct (pmta); relay-to-SES excluded
+  hard_bounce: number;
+  soft_bounce: number;
+  complaints: number;
+  opens: number;
+  clicks: number;
+  unsubscribes: number;
+  delivery_rate: number;
+  hard_bounce_rate: number;
+  soft_bounce_rate: number;
+  complaint_rate: number;
+  open_rate: number;
+  click_rate: number;
+  ctor: number;
+  // Rollup markers. When is_rollup is true this row aggregates wave_count
+  // partner-drip mini-campaigns sharing partner_tag; id is the synthetic
+  // "drip-rollup:<tag>" so the card drills (partner_tag) instead of opening
+  // a per-campaign detail.
+  is_rollup?: boolean;
+  wave_count?: number;
+  partner_tag?: string;
+}
+
+interface CampaignSummaryResponse {
+  api_version?: string;
+  generated_at?: string;
+  data_as_of?: string;
+  count?: number;
+  campaigns?: CampaignSummaryRow[];
+  denominators?: Record<string, string>;
+  notes?: string;
+  rolled_up?: boolean;
+  partner_tag?: string;
+  error?: string;
+}
+
+// ----------------------------------------------------------------------------
+// DETAIL analytics: GET /api/mailing/analytics/campaign-summary/{id}
+//
+// This is the per-campaign companion to the list summary. It carries the same
+// accurate, tracking-derived delivery/engagement counts PLUS an audience funnel
+// (how the planned audience was whittled down by suppression/dedup/quota) and a
+// terminal delivery breakdown. It's additive: the legacy /stats panels stay.
+// ----------------------------------------------------------------------------
+
+// Per-reason suppression counts emitted by the audience finalizer. Keys mirror
+// the finalizer's filter chain (see send-day-process.mdc §4).
+interface CampaignFunnelReasonBreakdown {
+  global_or_brand_suppression: number;
+  dedup_or_empty: number;
+  isp_quota_cap: number;
+  offer_suppression: number;
+  exclusion_list: number;
+  excluded_segment: number;
+  recently_mailed: number;
+  sds_cold_suppressed: number;
+  sds_recent_24h: number;
+  isp_not_allowed: number;
+}
+
+interface CampaignAudienceFunnel {
+  total_seen: number;
+  targeted: number;
+  reserve: number;
+  suppressed_total: number;
+  reason_breakdown: CampaignFunnelReasonBreakdown;
+  computed_at: string;
+}
+
+// The accurate, tracking-derived campaign metrics block. `route_type` decides
+// whether `relayed_to_ses` is meaningful (SES route only — it's a PMTA→SES
+// handoff, NOT a delivery).
+interface CampaignSummaryDetailCampaign {
+  id: string;
+  name: string;
+  status: Campaign['status'];
+  route_type: 'ses' | 'pmta';
+  scheduled_at?: string;
+  created_at?: string;
+  // Content + sender metadata (v1.4).
+  subject?: string;
+  preheader?: string;
+  from_name?: string;
+  from_email?: string;
+  campaign_type?: string;
+  sending_profile?: string;
+  sending_domain?: string;
+  ip_pool?: string;
+  vendor?: string;
+  targeted: number;
+  sent: number;
+  relayed_to_ses: number;
+  recipients: number;
+  delivered: number;
+  hard_bounce: number;
+  // Reputation/system block of a VALID recipient (DSN 5.3/5.4/5.5/5.7 +
+  // policy/routing/connection). NOT list hygiene. Added v1.4.
+  reputation_block: number;
+  soft_bounce: number;
+  deferred_open: number;
+  sent_only: number;
+  unique_opens: number;
+  total_opens: number;
+  unique_clicks: number;
+  total_clicks: number;
+  delivery_rate: number;
+  hard_bounce_rate: number;
+  reputation_block_rate: number;
+  soft_bounce_rate: number;
+  open_rate: number;
+  click_rate: number;
+  ctor: number;
+  metrics_source: string;
+  data_as_of: string;
+  generated_at: string;
+}
+
+interface CampaignSummaryDetail {
+  api_version?: string;
+  campaign: CampaignSummaryDetailCampaign;
+  // null when the campaign was finalized before funnel tracking existed.
+  audience_funnel: CampaignAudienceFunnel | null;
+  denominators?: Record<string, string>;
+  error?: string;
+}
+
+// Human-readable labels for the funnel reason keys, used when rendering the
+// suppression breakdown rows.
+const FUNNEL_REASON_LABELS: Record<keyof CampaignFunnelReasonBreakdown, string> = {
+  global_or_brand_suppression: 'Global/Brand Suppression',
+  recently_mailed: 'Recently Mailed',
+  isp_quota_cap: 'ISP Quota Cap',
+  dedup_or_empty: 'Dedup/Empty',
+  offer_suppression: 'Offer Suppression',
+  exclusion_list: 'Exclusion List',
+  excluded_segment: 'Excluded Segment',
+  sds_cold_suppressed: 'SDS Cold/Suppressed',
+  sds_recent_24h: 'SDS Recently Mailed (24h)',
+  isp_not_allowed: 'ISP Not Allowed',
+};
+
 // Minimum preparation time in minutes (must match backend)
 const MIN_PREPARATION_MINUTES = 5;
 
-// Helper function to check if a campaign can be edited
-const canEditCampaign = (campaign: Campaign): boolean => {
+// Helper function to check if a campaign can be edited.
+// Accepts the minimal shape shared by Campaign and CampaignSummaryRow so the
+// repointed list cards can reuse the exact same edit-lock logic.
+const canEditCampaign = (campaign: Pick<Campaign, 'status' | 'scheduled_at'>): boolean => {
   // Can always edit drafts
   if (campaign.status === 'draft') return true;
   
@@ -232,7 +391,36 @@ const API_BASE = '/api/mailing';
 //     * Stats refetch on org change (was only on mount)
 //     * Hard/Soft bounce shown as separate tiles (was already true; reaffirmed)
 //     * Per-campaign queue-depth surfaced in detail (added to /stats payload)
-const PAGE_VERSION_CAMPAIGN_PORTAL = '1.0';
+//   1.1 (2026-06-04) — Phase 0 analytics rebuild:
+//     * LIST view repointed from /campaigns?limit=200 (pulled full html_content
+//       per row → slow/timeout/zeros) to /analytics/campaign-summary?limit=200
+//     * List cards now render pre-aggregated counts with explicit denominators
+//       (delivery of sent, opens/clicks of delivered, hard/soft bounce of sent)
+//     * Added freshness indicator (data_as_of / X-Cache-Age-Seconds),
+//       SES/PMTA route badge, and an inline error state with retry
+//     * List no longer depends on per-campaign creative bodies; dashboard
+//       aggregates + detail modal are unchanged
+//   1.2 (2026-06-04) — Phase 1 detail analytics:
+//     * Detail modal now ALSO fetches /analytics/campaign-summary/{id} in
+//       parallel with the legacy /campaigns/{id} + /stats + /variants loads
+//     * Added an "Audience Funnel" panel (Total Seen → Targeted → Suppressed
+//       with a descending reason breakdown; Global/Brand Suppression emphasized)
+//     * Added a "Delivery Terminal State" panel from the accurate tracking-
+//       derived counts (delivered / hard / soft / deferred / sent-only /
+//       recipients, SES relay-to-SES with tooltip, rates w/ explicit denoms,
+//       route badge + data_as_of freshness)
+//     * Purely additive — existing /stats-based panels are untouched; new
+//       endpoint failures degrade to an inline notice, never a crash
+//   1.3 (2026-06-04) — Partner-drip rollup:
+//     * The list now renders the backend's partner-drip rollup rows
+//       (is_rollup=true): one card per partner feed (ROLLUP badge + wave
+//       count) instead of thousands of 15-min mini-campaign waves that
+//       otherwise bury every real campaign past the limit
+//     * Rollup cards hide per-campaign mutations (edit/duplicate/pause/cancel)
+//       and instead drill: opening one re-fetches the list scoped to that
+//       partner_tag (individual waves, real uuids) with a "Back to rollups"
+//       banner; the background poller preserves the drill via a ref
+const PAGE_VERSION_CAMPAIGN_PORTAL = '1.3';
 
 // ============================================================================
 // API HELPER WITH ORGANIZATION CONTEXT
@@ -669,144 +857,201 @@ const CampaignDashboard: React.FC<{
 };
 
 // ============================================================================
-// CAMPAIGN CARD (with inline creative preview toggle)
+// ANALYTICS LIST HELPERS (Phase 0 — campaign-summary repoint)
+// ============================================================================
+
+// Compute a display percentage from explicit numerator/denominator. We derive
+// rates client-side from the raw counts (rather than trusting the payload's
+// pre-scaled *_rate floats) so the denominator is always unambiguous and the
+// number on screen is verifiable against the counts shown next to it.
+const pctOf = (num: number, den: number): string =>
+  den > 0 ? ((num / den) * 100).toFixed(1) + '%' : '—';
+
+// Short relative-time string for the freshness indicator (e.g. "5m", "2h").
+const relativeAge = (iso?: string, fallbackSeconds?: number | null): string | null => {
+  let seconds: number | null = null;
+  if (iso) {
+    const t = new Date(iso).getTime();
+    if (!Number.isNaN(t)) seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  }
+  if (seconds === null && typeof fallbackSeconds === 'number' && fallbackSeconds >= 0) {
+    seconds = Math.floor(fallbackSeconds);
+  }
+  if (seconds === null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+};
+
+const RouteBadge: React.FC<{ route: string }> = ({ route }) => {
+  const r = (route || '').toLowerCase();
+  const label = r === 'ses' ? 'SES' : r === 'pmta' ? 'PMTA' : (route || 'UNKNOWN').toUpperCase();
+  const color = r === 'ses' ? '#38bdf8' : r === 'pmta' ? '#a78bfa' : '#94a3b8';
+  return (
+    <span
+      title={`Delivery basis: ${label}`}
+      style={{
+        fontSize: '0.65rem',
+        fontWeight: 700,
+        letterSpacing: '0.4px',
+        padding: '2px 7px',
+        borderRadius: 6,
+        border: `1px solid ${color}55`,
+        background: `${color}1a`,
+        color,
+      }}
+    >
+      {label}
+    </span>
+  );
+};
+
+// Badge shown in place of the status pill on a partner-drip rollup row. Signals
+// the row aggregates many mini-campaigns rather than being a single campaign.
+const RollupBadge: React.FC<{ waveCount: number }> = ({ waveCount }) => (
+  <span
+    title={`Partner-drip feed — ${waveCount.toLocaleString()} mini-campaign waves rolled up. Click to drill into the individual waves.`}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 4,
+      fontSize: '0.65rem',
+      fontWeight: 700,
+      letterSpacing: '0.4px',
+      padding: '2px 7px',
+      borderRadius: 6,
+      border: '1px solid #f59e0b55',
+      background: '#f59e0b1a',
+      color: '#f59e0b',
+    }}
+  >
+    <FontAwesomeIcon icon={faLayerGroup} /> ROLLUP
+  </span>
+);
+
+// ============================================================================
+// CAMPAIGN CARD (summary row — fast list, no creative body)
 // ============================================================================
 
 const CampaignCard: React.FC<{
-  campaign: Campaign;
+  campaign: CampaignSummaryRow;
   onViewCampaign: (id: string) => void;
   onAction: (id: string, action: string) => void;
 }> = ({ campaign, onViewCampaign, onAction }) => {
-  const [showCreative, setShowCreative] = useState(false);
-  const hasCreative = !!(campaign.html_preview && campaign.html_preview.trim());
-
+  const isRollup = !!campaign.is_rollup;
   return (
-    <div className={`campaign-card ig-card-hover${campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
+    <div className={`campaign-card ig-card-hover${!isRollup && campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
       <div className="card-header">
-        <StatusBadge status={campaign.status} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isRollup ? <RollupBadge waveCount={campaign.wave_count || 0} /> : <StatusBadge status={campaign.status} />}
+          <RouteBadge route={campaign.route_type} />
+        </div>
         <div className="card-actions">
-          {hasCreative && (
-            <button
-              onClick={() => setShowCreative(!showCreative)}
-              title={showCreative ? 'Hide Creative' : 'Preview Creative'}
-              className={showCreative ? 'active' : ''}
-            >
-              <FontAwesomeIcon icon={faCode} />
-            </button>
-          )}
-          <button onClick={() => onViewCampaign(campaign.id)} title="View Details">
-            <FontAwesomeIcon icon={faEye} />
+          <button
+            onClick={() => onViewCampaign(campaign.id)}
+            title={isRollup ? 'View individual waves' : 'View Details'}
+          >
+            <FontAwesomeIcon icon={isRollup ? faLayerGroup : faEye} />
           </button>
-          {canEditCampaign(campaign) && (
-            <button onClick={() => onAction(campaign.id, 'edit')} title="Edit Campaign">
-              <FontAwesomeIcon icon={faEdit} />
-            </button>
-          )}
-          <button onClick={() => onAction(campaign.id, 'duplicate')} title="Duplicate">
-            <FontAwesomeIcon icon={faCopy} />
-          </button>
-          {['scheduled', 'preparing', 'sending'].includes(campaign.status) && (
-            <button onClick={() => onAction(campaign.id, 'pause')} title="Pause">
-              <FontAwesomeIcon icon={faPause} />
-            </button>
-          )}
-          {campaign.status === 'paused' && (
-            <button onClick={() => onAction(campaign.id, 'resume')} title="Resume">
-              <FontAwesomeIcon icon={faPlay} />
-            </button>
-          )}
-          {['scheduled', 'preparing', 'sending', 'paused'].includes(campaign.status) && (
-            <button onClick={() => onAction(campaign.id, 'cancel')} title="Cancel" className="danger">
-              <FontAwesomeIcon icon={faStop} />
-            </button>
+          {/* Rollups aggregate thousands of mini-campaigns — per-campaign
+              mutations (edit/duplicate/pause/cancel) don't apply. Drill in
+              first to act on a specific wave. */}
+          {!isRollup && (
+            <>
+              {canEditCampaign(campaign) && (
+                <button onClick={() => onAction(campaign.id, 'edit')} title="Edit Campaign">
+                  <FontAwesomeIcon icon={faEdit} />
+                </button>
+              )}
+              <button onClick={() => onAction(campaign.id, 'duplicate')} title="Duplicate">
+                <FontAwesomeIcon icon={faCopy} />
+              </button>
+              {['scheduled', 'preparing', 'sending'].includes(campaign.status) && (
+                <button onClick={() => onAction(campaign.id, 'pause')} title="Pause">
+                  <FontAwesomeIcon icon={faPause} />
+                </button>
+              )}
+              {campaign.status === 'paused' && (
+                <button onClick={() => onAction(campaign.id, 'resume')} title="Resume">
+                  <FontAwesomeIcon icon={faPlay} />
+                </button>
+              )}
+              {['scheduled', 'preparing', 'sending', 'paused'].includes(campaign.status) && (
+                <button onClick={() => onAction(campaign.id, 'cancel')} title="Cancel" className="danger">
+                  <FontAwesomeIcon icon={faStop} />
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
 
       <div className="card-body" onClick={() => onViewCampaign(campaign.id)}>
         <h4 className="campaign-name">{campaign.name}</h4>
-        <p className="campaign-subject">{campaign.subject}</p>
-        {campaign.preview_text && (
-          <p className="campaign-preheader">{campaign.preview_text}</p>
-        )}
-
-        {((campaign.list_names && campaign.list_names.length > 0) || (campaign.segment_names && campaign.segment_names.length > 0)) && (
-          <div className="campaign-audience-badges">
-            {campaign.list_names?.map((ln, i) => (
-              <span key={`list-${i}`} className="audience-badge list-badge">
-                <FontAwesomeIcon icon={faUsers} /> {ln}
-              </span>
-            ))}
-            {campaign.segment_names?.map((sn, i) => (
-              <span key={`seg-${i}`} className="audience-badge segment-badge">
-                <FontAwesomeIcon icon={faBullseye} /> {sn}
-              </span>
-            ))}
-          </div>
-        )}
 
         <div className="campaign-meta">
-          {campaign.profile_name && (
-            <span className="meta-item">
-              <FontAwesomeIcon icon={faPaperPlane} /> {campaign.profile_name}
+          {isRollup && (
+            <span className="meta-item" title="Partner-drip mini-campaigns aggregated into this row">
+              <FontAwesomeIcon icon={faLayerGroup} /> {(campaign.wave_count || 0).toLocaleString()} waves
             </span>
           )}
+          <span className="meta-item" title="Planned audience (targeted)">
+            <FontAwesomeIcon icon={faBullseye} /> {(campaign.targeted || 0).toLocaleString()} targeted
+          </span>
           {campaign.scheduled_at && (
-            <span className="meta-item">
+            <span className="meta-item" title={isRollup ? 'Most recent wave' : undefined}>
               <FontAwesomeIcon icon={faCalendarAlt} /> {new Date(campaign.scheduled_at).toLocaleString()}
             </span>
           )}
         </div>
       </div>
 
-      {/* Inline Creative Preview (toggled by code icon) */}
-      {showCreative && hasCreative && (
-        <div className="creative-preview-section" onClick={e => e.stopPropagation()}>
-          <div className="creative-preview-header">
-            <span>Creative Preview</span>
-            <button onClick={() => setShowCreative(false)}>
-              <FontAwesomeIcon icon={faChevronUp} /> Hide
-            </button>
-          </div>
-          <div className="creative-preview-frame">
-            <iframe
-              srcDoc={campaign.html_preview}
-              sandbox=""
-              title="Email creative preview"
-            />
-          </div>
-          {campaign.html_preview && campaign.html_preview.length >= 490 && (
-            <p className="creative-preview-note">Showing first 500 characters. Click View Details for full content.</p>
-          )}
-        </div>
-      )}
-
+      {/* Counts — each rate carries an explicit denominator label/tooltip. */}
       <div className="card-stats ig-stagger">
-        <div className="stat">
-          <span className="stat-value"><AnimatedCounter value={campaign.sent_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+        <div className="stat" title="Attempted / injected">
+          <span className="stat-value"><AnimatedCounter value={campaign.sent || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
           <span className="stat-label">Sent</span>
         </div>
-        <div className="stat">
-          <span className="stat-value"><AnimatedCounter value={campaign.open_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Opens</span>
+        <div className="stat" title="Delivery Rate (delivered / sent)">
+          <span className="stat-value"><AnimatedCounter value={campaign.delivered || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Delivered ({pctOf(campaign.delivered, campaign.sent)})</span>
         </div>
-        <div className="stat">
-          <span className="stat-value"><AnimatedCounter value={campaign.click_count || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Clicks</span>
+        <div className="stat" title="Open Rate (of delivered)">
+          <span className="stat-value"><AnimatedCounter value={campaign.opens || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Opens ({pctOf(campaign.opens, campaign.delivered)})</span>
         </div>
-        <div className="stat">
-          <span className="stat-value">
-            {campaign.sent_count > 0 ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1) : 0}%
-          </span>
-          <span className="stat-label">Open Rate</span>
+        <div className="stat" title="Click Rate (of delivered)">
+          <span className="stat-value"><AnimatedCounter value={campaign.clicks || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Clicks ({pctOf(campaign.clicks, campaign.delivered)})</span>
         </div>
       </div>
 
-      {campaign.status === 'sending' && campaign.total_recipients > 0 && (
+      {/* Bounces — ALWAYS split hard (red) vs soft (amber); never combined. */}
+      <div className="card-stats ig-stagger" style={{ marginTop: 6 }}>
+        <div className="stat" title="Hard Bounce Rate (of sent) — permanent failure, reputation risk">
+          <span className="stat-value" style={{ color: campaign.hard_bounce > 0 ? '#ef4444' : undefined }}>
+            <AnimatedCounter value={campaign.hard_bounce || 0} formatFn={(n) => Math.round(n).toLocaleString()} />
+          </span>
+          <span className="stat-label" style={{ color: '#ef4444' }}>Hard Bounce ({pctOf(campaign.hard_bounce, campaign.sent)})</span>
+        </div>
+        <div className="stat" title="Soft Bounce Rate (of sent) — transient, usually clears on retry">
+          <span className="stat-value" style={{ color: campaign.soft_bounce > 0 ? '#f59e0b' : undefined }}>
+            <AnimatedCounter value={campaign.soft_bounce || 0} formatFn={(n) => Math.round(n).toLocaleString()} />
+          </span>
+          <span className="stat-label" style={{ color: '#f59e0b' }}>Soft Bounce ({pctOf(campaign.soft_bounce, campaign.sent)})</span>
+        </div>
+        <div className="stat" title="Complaint Rate (of sent)">
+          <span className="stat-value"><AnimatedCounter value={campaign.complaints || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
+          <span className="stat-label">Complaints ({pctOf(campaign.complaints, campaign.sent)})</span>
+        </div>
+      </div>
+
+      {campaign.status === 'sending' && campaign.targeted > 0 && (
         <div className="sending-progress">
-          <ProgressBar value={campaign.sent_count} max={campaign.total_recipients} color="primary" />
+          <ProgressBar value={campaign.sent} max={campaign.targeted} color="primary" />
           <span className="progress-text">
-            {campaign.sent_count?.toLocaleString()} / {campaign.total_recipients?.toLocaleString()}
+            {(campaign.sent || 0).toLocaleString()} / {(campaign.targeted || 0).toLocaleString()}
           </span>
         </div>
       )}
@@ -830,26 +1075,118 @@ const matchesStatusFilter = (status: string, filter: StatusFilter): boolean => {
 };
 
 const CampaignsList: React.FC<{
-  campaigns: Campaign[];
+  campaigns: CampaignSummaryRow[];
   loading: boolean;
   filter: StatusFilter;
   search: string;
+  error?: string | null;
+  dataAsOf?: string | null;
+  cacheAgeSeconds?: number | null;
+  denominators?: Record<string, string>;
+  partnerDrillLabel?: string | null;
+  onClearDrill?: () => void;
   onFilterChange: (filter: StatusFilter) => void;
   onSearchChange: (search: string) => void;
   onViewCampaign: (id: string) => void;
   onAction: (id: string, action: string) => void;
   onRefresh: () => void;
-}> = ({ campaigns, loading, filter, search, onFilterChange, onSearchChange, onViewCampaign, onAction, onRefresh }) => {
+}> = ({ campaigns, loading, filter, search, error, dataAsOf, cacheAgeSeconds, denominators, partnerDrillLabel, onClearDrill, onFilterChange, onSearchChange, onViewCampaign, onAction, onRefresh }) => {
   const filteredCampaigns = campaigns.filter(c => {
     const matchesFilter = matchesStatusFilter(c.status, filter);
-    const matchesSearch = search === '' || 
-      c.name.toLowerCase().includes(search.toLowerCase()) ||
-      c.subject?.toLowerCase().includes(search.toLowerCase());
+    const matchesSearch = search === '' ||
+      c.name.toLowerCase().includes(search.toLowerCase());
     return matchesFilter && matchesSearch;
   });
 
+  const age = relativeAge(dataAsOf || undefined, cacheAgeSeconds);
+  const denomKeys = denominators ? Object.keys(denominators) : [];
+
   return (
     <div className="campaigns-list-view">
+      {/* Partner-drip drill banner — only present when viewing one feed's waves */}
+      {partnerDrillLabel && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '8px 12px',
+            marginBottom: 8,
+            borderRadius: 8,
+            border: '1px solid #f59e0b55',
+            background: '#f59e0b14',
+            color: '#fbbf24',
+            fontSize: '0.8rem',
+          }}
+        >
+          <button
+            className="refresh-btn"
+            onClick={onClearDrill}
+            title="Back to rolled-up campaign list"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <FontAwesomeIcon icon={faArrowLeft} /> Back to rollups
+          </button>
+          <span>
+            <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 6 }} />
+            Showing individual waves for <strong>{partnerDrillLabel}</strong> (newest 200)
+          </span>
+        </div>
+      )}
+
+      {/* Freshness + denominator legend */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '6px 10px',
+          marginBottom: 8,
+          fontSize: '0.72rem',
+          color: '#94a3b8',
+        }}
+      >
+        <span title={dataAsOf ? `Metrics as of ${new Date(dataAsOf).toLocaleString()}` : 'Freshness from cache age'}>
+          <FontAwesomeIcon icon={faClock} style={{ marginRight: 6 }} />
+          {age ? <>Updated {age} ago</> : 'Updated just now'}
+          {dataAsOf && <span style={{ color: '#64748b', marginLeft: 6 }}>(as of {new Date(dataAsOf).toLocaleTimeString()})</span>}
+        </span>
+        {denomKeys.length > 0 && denominators && (
+          <span style={{ color: '#64748b' }} title={denomKeys.map(k => `${k}: ${denominators[k]}`).join('  ·  ')}>
+            <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 6 }} />
+            Rates: Delivery = delivered/sent · Opens &amp; Clicks of delivered · Bounces of sent
+          </span>
+        )}
+      </div>
+
+      {/* Error banner — never render silent zeros */}
+      {error && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '12px 14px',
+            marginBottom: 10,
+            borderRadius: 8,
+            border: '1px solid #ef444455',
+            background: '#ef44441a',
+            color: '#fca5a5',
+          }}
+        >
+          <span>
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8, color: '#ef4444' }} />
+            Failed to load campaign metrics: {error}
+          </span>
+          <button className="refresh-btn" onClick={onRefresh}>
+            <FontAwesomeIcon icon={faSync} spin={loading} /> Retry
+          </button>
+        </div>
+      )}
+
       {/* Filters and Search */}
       <div className="list-controls">
         <div className="filter-tabs">
@@ -921,9 +1258,14 @@ const CampaignDetailsModal: React.FC<{
   stats: CampaignStats | null;
   variants: CampaignVariant[];
   loading: boolean;
+  // Phase 1 detail analytics (additive) — accurate tracking-derived metrics +
+  // audience funnel from /analytics/campaign-summary/{id}. May be null if the
+  // fetch failed or hasn't resolved; `summaryError` carries the failure reason.
+  summaryDetail: CampaignSummaryDetail | null;
+  summaryError: string | null;
   onClose: () => void;
   onAction: (id: string, action: string) => void;
-}> = ({ campaign, stats, variants, loading, onClose, onAction }) => {
+}> = ({ campaign, stats, variants, loading, summaryDetail, summaryError, onClose, onAction }) => {
   const [activeVariantIdx, setActiveVariantIdx] = useState(0);
   const [variantPreviewOpen, setVariantPreviewOpen] = useState(false);
 
@@ -1115,7 +1457,12 @@ const CampaignDetailsModal: React.FC<{
               {/* Performance Metrics */}
               {stats && (
                 <div className="details-section">
-                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics</h3>
+                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>legacy /stats</span></h3>
+                  <p style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.55)', margin: '-4px 0 10px' }}>
+                    Engagement (opens/clicks) from the legacy counters. For the authoritative delivery &amp; bounce breakdown —
+                    including hard bounce vs reputation/system block — use <strong>Delivery Terminal State</strong> below
+                    (derived from tracking_events). The two can differ while a campaign is still settling.
+                  </p>
                   <div className="metrics-grid ig-stagger">
                     <div className="metric-box">
                       <FontAwesomeIcon icon={faPaperPlane} className="metric-icon" />
@@ -1155,6 +1502,309 @@ const CampaignDetailsModal: React.FC<{
                   </div>
                 </div>
               )}
+
+              {/* ============================================================
+                  Phase 1 detail analytics (additive). These two panels are fed
+                  by /analytics/campaign-summary/{id} — the accurate, tracking-
+                  derived source. They sit alongside the legacy /stats panels
+                  above, which are intentionally left untouched.
+                  ============================================================ */}
+
+              {/* Inline notice if the summary fetch failed — never crash. */}
+              {summaryError && !summaryDetail && (
+                <div
+                  className="details-section"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    color: '#f59e0b', fontSize: 13,
+                  }}
+                >
+                  <FontAwesomeIcon icon={faExclamationTriangle} />
+                  <span>Audience funnel &amp; terminal-state analytics unavailable ({summaryError}). Legacy metrics above are unaffected.</span>
+                </div>
+              )}
+
+              {/* Delivery Terminal State — accurate counts from tracking events. */}
+              {summaryDetail && (() => {
+                const c = summaryDetail.campaign;
+                const isSes = c.route_type === 'ses';
+                const tile = (
+                  label: string,
+                  value: number,
+                  color: string,
+                  sub?: string,
+                  tip?: string,
+                ) => (
+                  <div className="metric-box" title={tip} key={label}>
+                    <FontAwesomeIcon icon={faPaperPlane} className="metric-icon" style={{ color }} />
+                    <div className="metric-value" style={{ color }}>
+                      <AnimatedCounter value={value} formatFn={(n) => Math.round(n).toLocaleString()} />
+                    </div>
+                    <div className="metric-label">{label}{sub ? ` ${sub}` : ''}</div>
+                  </div>
+                );
+                return (
+                  <div className="details-section">
+                    <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <FontAwesomeIcon icon={faChartPie} /> Delivery Terminal State
+                      <span
+                        style={{
+                          fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
+                          textTransform: 'uppercase', padding: '2px 9px', borderRadius: 12,
+                          background: isSes ? 'rgba(168,85,247,0.15)' : 'rgba(99,102,241,0.15)',
+                          color: isSes ? '#c084fc' : '#818cf8',
+                          border: `1px solid ${isSes ? 'rgba(168,85,247,0.35)' : 'rgba(99,102,241,0.35)'}`,
+                        }}
+                      >
+                        {c.route_type}
+                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>
+                        accurate
+                      </span>
+                    </h3>
+
+                    {/* Campaign metadata strip — everything needed to interpret
+                        the numbers and decide next steps, in one place. */}
+                    {(() => {
+                      const meta: Array<[string, React.ReactNode]> = [
+                        ['Campaign ID', <code style={{ fontSize: 11 }}>{c.id}</code>],
+                        ['Status', c.status],
+                        ['Type', c.campaign_type || '—'],
+                        ['Route', c.route_type?.toUpperCase()],
+                        ['Subject', c.subject || '—'],
+                        ['Preheader', c.preheader || '—'],
+                        ['From', c.from_name ? `${c.from_name}${c.from_email ? ` <${c.from_email}>` : ''}` : '—'],
+                        ['Sending Profile', c.sending_profile || '—'],
+                        ['Sending Domain', c.sending_domain || '—'],
+                        ['IP Pool', c.ip_pool || '—'],
+                        ['Vendor', c.vendor || '—'],
+                        ['Targeted (planned)', (c.targeted ?? 0).toLocaleString()],
+                        ['Sent (injected)', (c.sent ?? 0).toLocaleString()],
+                        ['Scheduled', c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : '—'],
+                        ['Created', c.created_at ? new Date(c.created_at).toLocaleString() : '—'],
+                      ];
+                      return (
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))',
+                            gap: '6px 18px', marginBottom: 14,
+                            fontSize: 12.5,
+                          }}
+                        >
+                          {meta.map(([label, value]) => (
+                            <div key={label} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                              <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>
+                              <span style={{ color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof value === 'string' ? value : undefined}>{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Diagnostic: when reputation blocks dominate the failures,
+                        tell the operator this is a sender-reputation problem
+                        (valid recipients), not list hygiene — and what to do. */}
+                    {(() => {
+                      const processed = c.delivered + c.hard_bounce + c.reputation_block + c.soft_bounce;
+                      const blockPct = processed > 0 ? (c.reputation_block / processed) * 100 : 0;
+                      if (!(c.reputation_block > 0 && c.reputation_block >= c.hard_bounce && blockPct >= 2)) return null;
+                      return (
+                        <div
+                          style={{
+                            display: 'flex', gap: 10, alignItems: 'flex-start',
+                            background: 'rgba(251,146,60,0.10)', border: '1px solid rgba(251,146,60,0.35)',
+                            borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 12.5, color: '#fed7aa',
+                          }}
+                        >
+                          <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fb923c', marginTop: 2 }} />
+                          <span>
+                            <strong>{blockPct.toFixed(1)}% reputation/system blocks</strong> — the dominant failure here is the receiving ISP
+                            refusing mail from this sending IP/domain (e.g. Charter/Spectrum “5.3.2 system not accepting network messages”),
+                            <strong> not invalid addresses</strong>. These recipients are valid and were <strong>not suppressed</strong>.
+                            Action: slow the send / warm this IP pool, and verify SPF·DKIM·DMARC and blocklist status for <code>{c.sending_domain || 'the sending domain'}</code>.
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="metrics-grid ig-stagger" style={{ gap: 8 }}>
+                      {tile('Recipients', c.recipients, '#94a3b8', undefined, 'Distinct recipients after audience finalization')}
+                      {isSes && tile('Relayed to SES', c.relayed_to_ses, '#c084fc', undefined, 'PMTA handoff to SES — not a delivery')}
+                      {tile('Delivered', c.delivered, '#22c55e')}
+                      {tile('Hard Bounce', c.hard_bounce, '#ef4444', undefined, 'TRUE list hygiene only: invalid address, dead domain, or disabled mailbox (DSN 5.1.x / 5.2.1). These ARE suppressed.')}
+                      {tile('Reputation Block', c.reputation_block, '#fb923c', undefined, 'Sender-side ISP block of a VALID recipient — DSN 5.3/5.4/5.5/5.7 (e.g. "5.3.2 system not accepting network messages") or policy/routing/connection rejections. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
+                      {tile('Soft Bounce', c.soft_bounce, '#f59e0b', undefined, 'Transient failure (mailbox full, rate-limit, timeout). Clears on retry.')}
+                      {tile('Deferred / Open', c.deferred_open, '#60a5fa', undefined, 'Deferred but later observed open')}
+                      {tile('Sent Only', c.sent_only, '#64748b', undefined, 'Injected/sent with no terminal event yet')}
+                    </div>
+
+                    {/* Rates with explicit denominator labels */}
+                    <div className="metrics-grid ig-stagger" style={{ gap: 8, marginTop: 8 }}>
+                      <div className="metric-box">
+                        <FontAwesomeIcon icon={faCheckCircle} className="metric-icon" style={{ color: '#22c55e' }} />
+                        <div className="metric-value" style={{ color: '#22c55e' }}>{c.delivery_rate.toFixed(2)}%</div>
+                        <div className="metric-label">Delivery (of sent)</div>
+                      </div>
+                      <div className="metric-box" title="TRUE list-hygiene hard bounces (invalid address / dead domain / disabled mailbox) over processed (delivered + hard + reputation block + soft).">
+                        <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: '#ef4444' }} />
+                        <div className="metric-value" style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</div>
+                        <div className="metric-label">Hard Bounce (of processed)</div>
+                      </div>
+                      <div className="metric-box" title="Reputation/system blocks (DSN 5.3/5.4/5.5/5.7, policy/routing/connection) over processed. High here = a sender-reputation / warmup problem, not a dirty list.">
+                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#fb923c' }} />
+                        <div className="metric-value" style={{ color: '#fb923c' }}>{(c.reputation_block_rate ?? 0).toFixed(2)}%</div>
+                        <div className="metric-label">Reputation Block (of processed)</div>
+                      </div>
+                      <div className="metric-box" title="Transient failures over processed. Clears on retry.">
+                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
+                        <div className="metric-value" style={{ color: '#f59e0b' }}>{c.soft_bounce_rate.toFixed(2)}%</div>
+                        <div className="metric-label">Soft Bounce (of processed)</div>
+                      </div>
+                      <div className="metric-box">
+                        <FontAwesomeIcon icon={faEnvelopeOpen} className="metric-icon" />
+                        <div className="metric-value">{c.open_rate.toFixed(2)}%</div>
+                        <div className="metric-label">Open (of delivered)</div>
+                      </div>
+                      <div className="metric-box">
+                        <FontAwesomeIcon icon={faMousePointer} className="metric-icon" />
+                        <div className="metric-value">{c.click_rate.toFixed(2)}%</div>
+                        <div className="metric-label">Click (of delivered)</div>
+                      </div>
+                      <div className="metric-box">
+                        <FontAwesomeIcon icon={faPercentage} className="metric-icon" />
+                        <div className="metric-value">{c.ctor.toFixed(2)}%</div>
+                        <div className="metric-label">CTOR (clicks of opens)</div>
+                      </div>
+                    </div>
+
+                    {c.data_as_of && (
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.45)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <FontAwesomeIcon icon={faClock} />
+                        <span>Source: {c.metrics_source || 'tracking_events'} · as of {new Date(c.data_as_of).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Audience Funnel — how the planned audience was whittled down. */}
+              {summaryDetail && (() => {
+                const funnel = summaryDetail.audience_funnel;
+                if (!funnel) {
+                  return (
+                    <div className="details-section">
+                      <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
+                      <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.45)', fontStyle: 'italic' }}>
+                        Funnel not recorded for this campaign (finalized before funnel tracking).
+                      </div>
+                    </div>
+                  );
+                }
+                const reasons = (Object.keys(funnel.reason_breakdown) as Array<keyof CampaignFunnelReasonBreakdown>)
+                  .map((key) => ({ key, count: funnel.reason_breakdown[key] }))
+                  .filter((r) => r.count > 0)
+                  .sort((a, b) => b.count - a.count);
+                const maxReason = reasons.length > 0 ? reasons[0].count : 0;
+                const stage = (label: string, value: number, color: string, tip?: string) => (
+                  <div
+                    title={tip}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '12px 16px', borderRadius: 10,
+                      background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(99,102,241,0.12)',
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(180,210,240,0.7)' }}>{label}</span>
+                    <span style={{ fontSize: 18, fontWeight: 700, color }}>{value.toLocaleString()}</span>
+                  </div>
+                );
+                return (
+                  <div className="details-section">
+                    <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {stage('Total Seen', funnel.total_seen, '#e0e6f0', 'Subscribers streamed through the finalizer')}
+                      <div style={{ textAlign: 'center', color: 'rgba(180,210,240,0.3)', lineHeight: 1 }}>
+                        <FontAwesomeIcon icon={faArrowDown} />
+                      </div>
+                      {stage('Targeted (selected)', funnel.targeted, '#22c55e', 'Recipients that passed every filter')}
+                      <div style={{ textAlign: 'center', color: 'rgba(180,210,240,0.3)', lineHeight: 1 }}>
+                        <FontAwesomeIcon icon={faArrowDown} />
+                      </div>
+                      {stage('Suppressed (total)', funnel.suppressed_total, '#f59e0b', 'Sum of all suppression reasons below')}
+                      {funnel.reserve > 0 && (
+                        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.4)', textAlign: 'right' }}>
+                          + {funnel.reserve.toLocaleString()} held in reserve
+                        </div>
+                      )}
+                    </div>
+
+                    {reasons.length > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, color: 'rgba(180,210,240,0.4)', marginBottom: 8 }}>
+                          Suppression Reasons
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {reasons.map((r) => {
+                            const isPrimary = r.key === 'global_or_brand_suppression';
+                            const pct = maxReason > 0 ? (r.count / maxReason) * 100 : 0;
+                            return (
+                              <div key={r.key} style={{ position: 'relative' }}>
+                                <div
+                                  style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                    padding: isPrimary ? '10px 14px' : '8px 14px',
+                                    borderRadius: 8, position: 'relative', overflow: 'hidden',
+                                    background: isPrimary ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.05)',
+                                    border: `1px solid ${isPrimary ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.12)'}`,
+                                  }}
+                                >
+                                  <div
+                                    className="ig-progress-fill"
+                                    style={{
+                                      position: 'absolute', left: 0, top: 0, bottom: 0,
+                                      width: `${pct}%`,
+                                      background: isPrimary ? 'rgba(239,68,68,0.12)' : 'rgba(99,102,241,0.08)',
+                                      zIndex: 0,
+                                    }}
+                                  />
+                                  <span
+                                    style={{
+                                      position: 'relative', zIndex: 1,
+                                      fontSize: isPrimary ? 13 : 12.5,
+                                      fontWeight: isPrimary ? 700 : 600,
+                                      color: isPrimary ? '#fca5a5' : 'rgba(199,210,254,0.85)',
+                                    }}
+                                  >
+                                    {FUNNEL_REASON_LABELS[r.key] || r.key}
+                                  </span>
+                                  <span
+                                    style={{
+                                      position: 'relative', zIndex: 1,
+                                      fontSize: isPrimary ? 15 : 14,
+                                      fontWeight: 700,
+                                      color: isPrimary ? '#ef4444' : '#c7d2fe',
+                                    }}
+                                  >
+                                    {r.count.toLocaleString()}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {funnel.computed_at && (
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.45)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <FontAwesomeIcon icon={faClock} />
+                        <span>Funnel computed {new Date(funnel.computed_at).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Queue Depth — what is actually in flight in mailing_campaign_queue.
                   Phase B addition (VersionCampaignBuilder=1.0). The campaign
@@ -2716,10 +3366,30 @@ export const CampaignPortal: React.FC<{
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [selectedCampaignStats, setSelectedCampaignStats] = useState<CampaignStats | null>(null);
   const [campaignVariants, setCampaignVariants] = useState<CampaignVariant[]>([]);
+  // Phase 1 detail analytics (additive): accurate per-campaign summary + audience
+  // funnel from /analytics/campaign-summary/{id}. Null + an error string when the
+  // fetch fails, so the modal degrades to an inline notice instead of crashing.
+  const [summaryDetail, setSummaryDetail] = useState<CampaignSummaryDetail | null>(null);
+  const [summaryDetailError, setSummaryDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
+
+  // Phase 0 analytics repoint: the LIST view reads from the fast, accurate
+  // /analytics/campaign-summary endpoint (pre-aggregated counts, no creative
+  // bodies) instead of /campaigns. Dashboard aggregates still use /campaigns.
+  const [summaryRows, setSummaryRows] = useState<CampaignSummaryRow[]>([]);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryDataAsOf, setSummaryDataAsOf] = useState<string | null>(null);
+  const [summaryCacheAge, setSummaryCacheAge] = useState<number | null>(null);
+  const [summaryDenominators, setSummaryDenominators] = useState<Record<string, string>>({});
+  // Partner-drip drill: when a rollup card is opened we re-fetch the list
+  // scoped to that partner_tag (flat waves). A ref mirrors the state so the
+  // background poller preserves the drill instead of snapping back to rollups.
+  const [partnerDrill, setPartnerDrill] = useState<{ tag: string; label: string } | null>(null);
+  const partnerDrillRef = useRef<string | null>(null);
 
   // Fetch dashboard stats — background=true skips loading spinner for seamless polling.
   //
@@ -2816,9 +3486,47 @@ export const CampaignPortal: React.FC<{
     }
   }, [organization?.id]);
 
+  // Fetch the campaign LIST from the fast analytics summary endpoint.
+  // background=true keeps the existing rows on screen during polling refresh.
+  const fetchCampaignSummary = useCallback(async (background = false) => {
+    if (!background) setSummaryLoading(true);
+    try {
+      const drillTag = partnerDrillRef.current;
+      const url = drillTag
+        ? `${API_BASE}/analytics/campaign-summary?limit=200&partner_tag=${encodeURIComponent(drillTag)}`
+        : `${API_BASE}/analytics/campaign-summary?limit=200`;
+      const res = await orgFetch(url, organization?.id);
+      const cacheAgeHeader = res.headers.get('X-Cache-Age-Seconds');
+      const cacheAge = cacheAgeHeader !== null ? parseInt(cacheAgeHeader, 10) : null;
+      let data: CampaignSummaryResponse;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setSummaryRows(Array.isArray(data.campaigns) ? data.campaigns : []);
+      setSummaryDataAsOf(data.data_as_of || data.generated_at || null);
+      setSummaryCacheAge(cacheAge !== null && !Number.isNaN(cacheAge) ? cacheAge : null);
+      setSummaryDenominators(data.denominators || {});
+      setSummaryError(null);
+    } catch (err) {
+      console.error('Failed to fetch campaign summary:', err);
+      setSummaryError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      if (!background) setSummaryLoading(false);
+    }
+  }, [organization?.id]);
+
   // Fetch campaign details
   const fetchCampaignDetails = useCallback(async (id: string) => {
     setDetailsLoading(true);
+    // Reset the additive summary panel state so a stale campaign's funnel never
+    // bleeds into the next one while the new fetch is in flight.
+    setSummaryDetail(null);
+    setSummaryDetailError(null);
     try {
       const [campaignRes, statsRes, variantsRes] = await Promise.all([
         orgFetch(`${API_BASE}/campaigns/${id}`, organization?.id),
@@ -2836,6 +3544,29 @@ export const CampaignPortal: React.FC<{
       console.error('Failed to fetch campaign details:', err);
     } finally {
       setDetailsLoading(false);
+    }
+
+    // Phase 1 detail analytics: fetch the accurate per-campaign summary + funnel
+    // independently. This is intentionally NOT bundled into the Promise.all
+    // above — a failure or slowness here must never block or break the legacy
+    // /stats-based detail rendering. Errors degrade to an inline notice.
+    try {
+      const res = await orgFetch(`${API_BASE}/analytics/campaign-summary/${id}`, organization?.id);
+      let data: CampaignSummaryDetail;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (!res.ok || data.error || !data.campaign) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setSummaryDetail(data);
+      setSummaryDetailError(null);
+    } catch (err) {
+      console.error('Failed to fetch campaign summary detail:', err);
+      setSummaryDetail(null);
+      setSummaryDetailError(err instanceof Error ? err.message : 'Unknown error');
     }
   }, [organization]);
 
@@ -2865,18 +3596,20 @@ export const CampaignPortal: React.FC<{
       }
       // Refresh data
       fetchDashboardStats();
+      fetchCampaignSummary();
       if (selectedCampaign?.id === id) {
         fetchCampaignDetails(id);
       }
     } catch (err) {
       console.error(`Failed to ${action} campaign:`, err);
     }
-  }, [fetchDashboardStats, fetchCampaignDetails, selectedCampaign, organization]);
+  }, [fetchDashboardStats, fetchCampaignSummary, fetchCampaignDetails, selectedCampaign, organization]);
 
   // Initial load
   useEffect(() => {
     fetchDashboardStats();
-  }, [fetchDashboardStats]);
+    fetchCampaignSummary();
+  }, [fetchDashboardStats, fetchCampaignSummary]);
   
   // Auto-refresh for sending/scheduled campaigns — background mode preserves UI state
   useEffect(() => {
@@ -2885,15 +3618,35 @@ export const CampaignPortal: React.FC<{
     
     const interval = setInterval(() => {
       fetchDashboardStats(true);
+      fetchCampaignSummary(true);
     }, 15000);
     
     return () => clearInterval(interval);
-  }, [campaigns.length, fetchDashboardStats]);
+  }, [campaigns.length, fetchDashboardStats, fetchCampaignSummary]);
 
   // Handle view campaign
   const handleViewCampaign = (id: string) => {
+    // Rollup rows carry a synthetic "drip-rollup:<tag>" id (not a campaign
+    // uuid). Opening one drills the LIST into that partner feed's individual
+    // waves instead of trying to fetch a non-existent campaign detail.
+    if (id.startsWith('drip-rollup:')) {
+      const tag = id.slice('drip-rollup:'.length);
+      const row = summaryRows.find(r => r.id === id);
+      partnerDrillRef.current = tag;
+      setPartnerDrill({ tag, label: row?.name || tag });
+      setSearch('');
+      setFilter('all');
+      fetchCampaignSummary(false);
+      return;
+    }
     fetchCampaignDetails(id);
     setView('details');
+  };
+
+  const clearPartnerDrill = () => {
+    partnerDrillRef.current = null;
+    setPartnerDrill(null);
+    fetchCampaignSummary(false);
   };
 
   return (
@@ -2955,15 +3708,21 @@ export const CampaignPortal: React.FC<{
 
         {(view === 'campaigns' || view === 'scheduled') && (
           <CampaignsList
-            campaigns={campaigns}
-            loading={loading}
+            campaigns={summaryRows}
+            loading={summaryLoading}
             filter={filter}
             search={search}
+            error={summaryError}
+            dataAsOf={summaryDataAsOf}
+            cacheAgeSeconds={summaryCacheAge}
+            denominators={summaryDenominators}
+            partnerDrillLabel={partnerDrill?.label || null}
+            onClearDrill={clearPartnerDrill}
             onFilterChange={setFilter}
             onSearchChange={setSearch}
             onViewCampaign={handleViewCampaign}
             onAction={handleAction}
-            onRefresh={() => fetchDashboardStats(false)}
+            onRefresh={() => fetchCampaignSummary(false)}
           />
         )}
 
@@ -2988,6 +3747,8 @@ export const CampaignPortal: React.FC<{
           stats={selectedCampaignStats}
           variants={campaignVariants}
           loading={detailsLoading}
+          summaryDetail={summaryDetail}
+          summaryError={summaryDetailError}
           onClose={() => setView('dashboard')}
           onAction={handleAction}
         />
