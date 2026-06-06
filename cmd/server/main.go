@@ -2296,6 +2296,213 @@ func runStartupMigrations(db *sql.DB) {
 				'm.consumerpro.net', true, true, true, 'verified', NOW(), NOW()
 			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
 				WHERE domain = 'm.consumerpro.net' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		// ===== Warming brands SES Tenant cutover (jun05) — all 8 remaining brands =====
+		// "Everything via SES" directive (2026-06-05 PM). SES side (config-set + SNS event
+		// dest + tenant + identity/cs assoc) provisioned via .scratch/jun05_ses_wire_warming.py;
+		// easyDKIM identities verified/reset jun05; PMTA VMTA relay pools <prefix>-ses-pool
+		// appended to Server A (mr,ci) + Server B (hw,tt,yi,lp,rb,wf). m.<brand> need not be
+		// SES-verified — SES authorizes against the From identity em.<brand>.
+		{"seed_pmta_hw_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Home Warranty Services (SES Tenant)', 'pmta', 'Hank @ Home Warranty Services',
+				'hello@em.homewarrantyservices.org', 'reply@em.homewarrantyservices.org',
+				'm.homewarrantyservices.org', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.homewarrantyservices.org',
+				1000, 25000, 'hw-ses-pool', 'active', false,
+				true, 'homewarrantyservices', 'homewarrantyservices',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Home Warranty Services (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_tt_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Thing of the Day (SES Tenant)', 'pmta', 'Olivia @ Thing of the Day',
+				'hello@em.thingoftheday.org', 'reply@em.thingoftheday.org',
+				'm.thingoftheday.org', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.thingoftheday.org',
+				1000, 25000, 'tt-ses-pool', 'active', false,
+				true, 'thingoftheday', 'thingoftheday',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Thing of the Day (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_yi_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Your Insurance Hub (SES Tenant)', 'pmta', 'Carl @ Your Insurance Hub',
+				'hello@em.yourinsurancehub.com', 'reply@em.yourinsurancehub.com',
+				'm.yourinsurancehub.com', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.yourinsurancehub.com',
+				1000, 25000, 'yi-ses-pool', 'active', false,
+				true, 'yourinsurancehub', 'yourinsurancehub',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Your Insurance Hub (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_lp_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Learn Personal Loans (SES Tenant)', 'pmta', 'Linda @ Learn Personal Loans',
+				'hello@em.learnpersonalloans.com', 'reply@em.learnpersonalloans.com',
+				'm.learnpersonalloans.com', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.learnpersonalloans.com',
+				1000, 25000, 'lp-ses-pool', 'active', false,
+				true, 'learnpersonalloans', 'learnpersonalloans',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Learn Personal Loans (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_rb_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Rates Bazar (SES Tenant)', 'pmta', 'Sam @ Rates Bazar',
+				'hello@em.ratesbazar.com', 'reply@em.ratesbazar.com',
+				'm.ratesbazar.com', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.ratesbazar.com',
+				1000, 25000, 'rb-ses-pool', 'active', false,
+				true, 'ratesbazar', 'ratesbazar',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Rates Bazar (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_wf_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Warranty For You (SES Tenant)', 'pmta', 'Greg @ Warranty For You',
+				'hello@em.warrantyforyou.com', 'reply@em.warrantyforyou.com',
+				'm.warrantyforyou.com', '15.204.107.107', 587,
+				'http://15.204.107.107:19099', 't.em.warrantyforyou.com',
+				1000, 25000, 'wf-ses-pool', 'active', false,
+				true, 'warrantyforyou', 'warrantyforyou',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Warranty For You (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_mr_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'My Repair DIY (SES Tenant)', 'pmta', 'Bob @ My Repair DIY',
+				'hello@em.myrepairdiy.com', 'reply@em.myrepairdiy.com',
+				'm.myrepairdiy.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.myrepairdiy.com',
+				1000, 25000, 'mr-ses-pool', 'active', false,
+				true, 'myrepairdiy', 'myrepairdiy',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'My Repair DIY (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_ci_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Casa Insure (SES Tenant)', 'pmta', 'Maria @ Casa Insure',
+				'hello@em.casainsure.com', 'reply@em.casainsure.com',
+				'm.casainsure.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.casainsure.com',
+				1000, 25000, 'ci-ses-pool', 'active', false,
+				true, 'casainsure', 'casainsure',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Casa Insure (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_hw_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.homewarrantyservices.org', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.homewarrantyservices.org' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_tt_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.thingoftheday.org', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.thingoftheday.org' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_yi_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.yourinsurancehub.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.yourinsurancehub.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_lp_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.learnpersonalloans.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.learnpersonalloans.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_rb_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.ratesbazar.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.ratesbazar.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_wf_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.warrantyforyou.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.warrantyforyou.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_mr_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.myrepairdiy.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.myrepairdiy.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_ci_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.casainsure.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.casainsure.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
 		// --- AWS SES via PMTA relay: m.discountblog.com ---
