@@ -42,6 +42,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
 	"github.com/google/uuid"
@@ -727,6 +728,31 @@ func main() {
 				segRefresh.Start(ctx)
 				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
 
+				// Start Segment Cleanup Worker. This was previously built but
+				// never wired into main, which is why ~19.8k segments
+				// accumulated. It hard-deletes single-use static snapshots
+				// (segment + member rows, no FK cascade) 7d after last_used,
+				// and runs the warn→grace→archive→delete lifecycle for unused
+				// dynamic segments per mailing_segment_cleanup_settings.
+				// emailSender is nil: warnings are recorded in-DB (and surfaced
+				// in the UI) without sending email. Stops on ctx cancellation.
+				segCleanup := worker.NewSegmentCleanupWorker(mailingDB, nil)
+				segCleanup.Start()
+				go func() {
+					<-ctx.Done()
+					segCleanup.Stop()
+				}()
+				log.Println("Segment Cleanup Worker started (static snapshots hard-deleted 7d after last_used; dynamic on warn/grace/archive)")
+
+				// Start Worker Health Monitor. Scans mailing_worker_heartbeats
+				// and alerts (Slack if SLACK_BOT_TOKEN set, else logs) when any
+				// instrumented worker misses 3× its declared cycle interval.
+				// Surfaced in the UI via /api/worker-health.
+				workerHealthNotifier := notify.FromEnv()
+				workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerHealthNotifier)
+				go workerHealthMonitor.Start(ctx)
+				log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerHealthNotifier.Name())
+
 				// Journey Segment Enroller — auto-enrolls subscribers from
 				// segment-triggered journeys (Welcome Series Phase 2). Uses the
 				// segmentation engine for saved segments, and the
@@ -760,8 +786,8 @@ func main() {
 
 				// JourneyClickTrackingEnroller is the INTERNAL-click inlet: it
 				// reads real click events from mailing_tracking_events, resolves
-				// the offer from the cratoolpro money-URL slug
-				// (mailing_offer_slug_map), and writes them into the SAME
+				// the offer from the money-URL slug (cratoolpro or affiliate PS####;
+				// mailing_offer_slug_map), and writes them into the SAME
 				// mailing_journey_event_triggers queue the Everflow path uses.
 				// This is what actually feeds the drip, since Everflow's per-offer
 				// click postbacks don't reliably reach us.
@@ -1705,6 +1731,21 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// Worker heartbeat table — backs WorkerHealthMonitor stall detection
+		// and the /api/worker-health UI. Placed first (new table, no deps,
+		// fast) so heartbeats can land on the first cycle after boot.
+		{"create_worker_heartbeats", `CREATE TABLE IF NOT EXISTS mailing_worker_heartbeats (
+			worker_name               TEXT PRIMARY KEY,
+			last_beat_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_status               TEXT NOT NULL DEFAULT 'ok',
+			last_error                TEXT,
+			cycle_count               BIGINT NOT NULL DEFAULT 0,
+			expected_interval_seconds INTEGER NOT NULL DEFAULT 3600,
+			stalled                   BOOLEAN NOT NULL DEFAULT FALSE,
+			stalled_since             TIMESTAMPTZ,
+			last_alerted_at           TIMESTAMPTZ,
+			updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},
@@ -2169,6 +2210,92 @@ func runStartupMigrations(db *sql.DB) {
 				WHERE name = 'Quiz Fiesta (SES Tenant)'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
+
+		// Business Weekly Pro / Financial Calculate / Consumer Pro (SES Tenant) — jun05 cutover.
+		// SECOND profiles for the em.<brand> brands. PMTA Server A (15.204.101.125).
+		// SES side (config-set <brand_root> + SNS event dest + tenant + identity/cs assoc)
+		// provisioned jun05 via .scratch/jun05_ses_wire_brands.py. PMTA VMTA relay pools
+		// <prefix>-ses-pool appended to Server A /etc/pmta/config in the same cutover.
+		// is_default=false + sending_domain=m.* keeps these out of the by-domain auto-resolve
+		// race; campaign deploys pin sending_profile_id explicitly.
+		{"seed_pmta_bw_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Business Weekly Pro (SES Tenant)', 'pmta', 'Marcus @ Business Weekly Pro',
+				'hello@em.businessweeklypro.com', 'reply@em.businessweeklypro.com',
+				'm.businessweeklypro.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.businessweeklypro.com',
+				1000, 25000, 'bw-ses-pool', 'active', false,
+				true, 'businessweeklypro', 'businessweeklypro',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Business Weekly Pro (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_fc_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Financial Calculate (SES Tenant)', 'pmta', 'Eleanor @ Financial Calculate',
+				'hello@em.financialcalculate.com', 'reply@em.financialcalculate.com',
+				'm.financialcalculate.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.financialcalculate.com',
+				1000, 25000, 'fc-ses-pool', 'active', false,
+				true, 'financialcalculate', 'financialcalculate',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Financial Calculate (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_pmta_cp_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'Consumer Pro (SES Tenant)', 'pmta', 'Diane @ Consumer Pro',
+				'hello@em.consumerpro.net', 'reply@em.consumerpro.net',
+				'm.consumerpro.net', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.consumerpro.net',
+				1000, 25000, 'cp-ses-pool', 'active', false,
+				true, 'consumerpro', 'consumerpro',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'Consumer Pro (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		// Sending-domain rows for the new SES tenant routes (campaign builder validates
+		// sending_domain against mailing_sending_domains). m.<brand> need not be SES-verified
+		// — SES authorizes against the From identity em.<brand> (verified jun03/earlier).
+		{"seed_ses_bw_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.businessweeklypro.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.businessweeklypro.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_fc_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.financialcalculate.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.financialcalculate.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+		{"seed_ses_cp_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'm.consumerpro.net', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'm.consumerpro.net' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
 		// --- AWS SES via PMTA relay: m.discountblog.com ---
@@ -4619,12 +4746,41 @@ END $$`},
 			campaign_id UUID,
 			recipient_isp TEXT NOT NULL DEFAULT 'other',
 			delivered INT NOT NULL DEFAULT 0,
+			relayed_to_ses INT NOT NULL DEFAULT 0,
 			hard_bounced INT NOT NULL DEFAULT 0,
 			soft_bounced INT NOT NULL DEFAULT 0,
 			complained INT NOT NULL DEFAULT 0,
 			deferred INT NOT NULL DEFAULT 0,
 			total_records INT NOT NULL DEFAULT 0,
 			last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// relayed_to_ses: PMTA "d" records on SES relay VMTAs/pools are SES
+		// handoffs, not recipient deliveries. Tracked separately so campaign
+		// delivery rates reflect SES DELIVERY truth, not PMTA relay success.
+		{"add_acct_summary_relayed_to_ses", `ALTER TABLE pmta_acct_daily_summary ADD COLUMN IF NOT EXISTS relayed_to_ses INT NOT NULL DEFAULT 0`},
+
+		// ses_delivered: SES-confirmed DELIVERY events written back into the
+		// rollup by the SES events webhook at the SAME (date, campaign, isp)
+		// grain the summary builder uses. For via_ses brands PMTA "d" lands in
+		// relayed_to_ses (handoff, not delivery), so the authoritative delivered
+		// count is the SES DELIVERY event. Accounting-driven consumers read
+		// (delivered + ses_delivered) as true delivered while delivered stays
+		// pure PMTA-direct facts and relayed_to_ses stays the labeled handoff.
+		{"add_acct_summary_ses_delivered", `ALTER TABLE pmta_acct_daily_summary ADD COLUMN IF NOT EXISTS ses_delivered INT NOT NULL DEFAULT 0`},
+
+		// Audience funnel: one aggregate row per campaign capturing targeted vs
+		// suppressed-by-reason at finalize time (Phase 0 analytics rebuild).
+		// Hot-DB-safe aggregate form of the recipient_targeted/recipient_suppressed
+		// signal; per-recipient events ride the Phase 1 S3 event lake.
+		{"create_campaign_audience_funnel", `CREATE TABLE IF NOT EXISTS mailing_campaign_audience_funnel (
+			campaign_id UUID PRIMARY KEY,
+			organization_id UUID,
+			total_seen INTEGER NOT NULL DEFAULT 0,
+			targeted INTEGER NOT NULL DEFAULT 0,
+			reserve INTEGER NOT NULL DEFAULT 0,
+			suppressed_total INTEGER NOT NULL DEFAULT 0,
+			reason_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+			computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_acct_summary_campaign", `CREATE INDEX IF NOT EXISTS idx_acct_summary_campaign ON pmta_acct_daily_summary (campaign_id)`},
 		{"idx_acct_summary_date", `CREATE INDEX IF NOT EXISTS idx_acct_summary_date ON pmta_acct_daily_summary (summary_date)`},
@@ -5567,6 +5723,15 @@ END $$`},
 		)`},
 		{"dp_idx_partner_drip_copy_lines", `CREATE INDEX IF NOT EXISTS idx_partner_drip_copy_lines_vertical_kind
 			ON partner_drip_copy_lines(vertical, line_kind) WHERE active = true`},
+		{"dp_copy_lines_from_name_kind", `
+			DO $$ BEGIN
+				ALTER TABLE partner_drip_copy_lines
+					DROP CONSTRAINT IF EXISTS partner_drip_copy_lines_line_kind_check;
+			EXCEPTION WHEN undefined_object THEN NULL;
+			END $$;
+			ALTER TABLE partner_drip_copy_lines
+				ADD CONSTRAINT partner_drip_copy_lines_line_kind_check
+				CHECK (line_kind IN ('subject', 'preheader', 'from_name'))`},
 		// Seed all 16 (vertical, brand) creative rows. The 05132026 dated files
 		// exist in docs/emails/ — verified during plan phase. Brand short codes:
 		// db = Discount Blog, ht = History Thinking, mh = My Own Health, qf = Quiz Fiesta.
@@ -5693,6 +5858,13 @@ END $$`},
 		// after a partner is deleted.
 		{"dp_add_campaign_partner_tag", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS partner_drip_tag TEXT`},
 		{"dp_idx_campaign_partner_tag", `CREATE INDEX IF NOT EXISTS idx_mc_partner_drip_tag ON mailing_campaigns(partner_drip_tag, scheduled_at) WHERE partner_drip_tag IS NOT NULL`},
+		// partner_dataset_id: the dataset FK stamped alongside partner_drip_tag by
+		// stampPartnerAttributionOnCampaign (orchestrator). It already exists in
+		// production (added out-of-band) but was never codified — without it the
+		// orchestrator's combined UPDATE (sets BOTH columns) errors and writes
+		// NEITHER tag, breaking the Campaign Center partner-drip rollup. Codified
+		// idempotently so fresh / local environments match prod.
+		{"dp_add_campaign_partner_dataset_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS partner_dataset_id UUID`},
 
 		// Data Partners Master List — every record promoted from partner_clean_queue
 		// becomes a mailing_subscribers row attached to this list. Per-vertical
@@ -5791,6 +5963,17 @@ END $$`},
 			SET category = 'engagement_isp'
 			WHERE category = 'uncategorized'
 			  AND name ~ '^(Discount Blog|Quiz Fiesta|History Thinking|My Own Health|Business Weekly Pro|Financial Calculate|Consumer Pro|Home Warranty Services|Refinance Rates USA|Thing of the Day|Your Insurance Hub|My Repair DIY|Casa Insure|Learn Personal Loans|Rates Bazar|Warranty For You) - .* - (Openers|Clickers)$'`},
+		// Jun 4 2026: vertical (data-provenance) engagement segments. These are
+		// named "{Vertical Label} {N}D {Openers|Clickers}" and are created by
+		// seed_vertical_engagement_segments.py with category set explicitly;
+		// this backfill is an idempotent safety net for any that arrive
+		// uncategorized. Vertical labels come from vertical_metadata.py. The
+		// 2-3 uppercase-letter brand rule above cannot match these (vertical
+		// labels are mixed-case words), so there is no collision.
+		{"jun04_seg_backfill_engagement_vertical", `UPDATE mailing_segments
+			SET category = 'engagement_vertical'
+			WHERE category = 'uncategorized'
+			  AND name ~ '^(Mortgage|Finance|Lawn Care|Remodel|Tax Relief) (7|14|30|60)D (Openers|Clickers)$'`},
 		{"may29_seg_backfill_framework", `UPDATE mailing_segments
 			SET category = 'framework'
 			WHERE category = 'uncategorized'
@@ -6066,6 +6249,52 @@ END $$`},
 		{"jun01_click_drip_subjects_7667_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
 			VALUES ('7667', 3, 'Final note about your debt relief application', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
 			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
+		// Sam's Club click-drip (2026-06-05): partner drip uses eos57ytf affiliate
+		// links (https://www.eos57ytf.com/K4C5ZLC/PS8241/) instead of cratoolpro.
+		// PS8241 is the affiliate URL slug; Everflow network offer id is 420 (operator-confirmed).
+		// Internal offer cc108c5b-14ba-56c8-ad03-64d97a440f14.
+		{"jun05_click_drip_slug_samsclub", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('PS8241', '420', 'Sam''s Club Membership', TRUE, 'eos57ytf.com/K4C5ZLC/PS8241; Everflow offer 420 (not 8241 — that is the URL slug)')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun05_click_drip_map_samsclub", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('420', 'click-drip-4touch-72h', 'CPA', TRUE, 'Sam''s Club Membership - partner drip; Everflow offer 420')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+		{"jun05_click_drip_subjects_420_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('420', 0, 'You looked at Sam''s Club membership — quick reminder', 'Member savings on fuel, groceries, and more are one click away.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun05_click_drip_subjects_420_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('420', 1, 'Did you finish signing up for Sam''s Club?', 'Your membership offer is still waiting — no pressure.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun05_click_drip_subjects_420_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('420', 2, 'Your Sam''s Club membership offer is still available', 'Join today and start saving at select locations.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun05_click_drip_subjects_420_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('420', 3, 'Final reminder: your Sam''s Club membership', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
+		// Correct the 8241 mis-map (inferred from PS8241 URL slug, not Everflow offer id).
+		{"jun05_fix_samsclub_ef_offer_id_slug", `UPDATE mailing_offer_slug_map
+			SET everflow_offer_id='420', notes='eos57ytf.com/K4C5ZLC/PS8241; Everflow offer 420 (PS8241 is URL slug only)', updated_at=NOW()
+			WHERE cratoolpro_slug='PS8241' AND everflow_offer_id='8241'`},
+		{"jun05_fix_samsclub_ef_offer_id_offers", `UPDATE mailing_offers
+			SET everflow_offer_id='420', updated_at=NOW()
+			WHERE id='cc108c5b-14ba-56c8-ad03-64d97a440f14' AND everflow_offer_id='8241'`},
+		{"jun05_fix_samsclub_ef_offer_id_journey_del", `DELETE FROM mailing_offer_journey_map WHERE everflow_offer_id='8241'`},
+		{"jun05_fix_samsclub_ef_offer_id_journey_ins", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('420', 'click-drip-4touch-72h', 'CPA', TRUE, 'Sam''s Club Membership - partner drip; Everflow offer 420')
+			ON CONFLICT (everflow_offer_id) DO UPDATE SET
+				click_journey_id=EXCLUDED.click_journey_id,
+				payout_type=EXCLUDED.payout_type,
+				enabled=EXCLUDED.enabled,
+				notes=EXCLUDED.notes,
+				updated_at=NOW()`},
+		{"jun05_fix_samsclub_ef_offer_id_subjects_upd", `UPDATE mailing_offer_reminder_subjects
+			SET everflow_offer_id='420', updated_at=NOW()
+			WHERE everflow_offer_id='8241'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

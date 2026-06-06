@@ -240,5 +240,11 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		campaignID, time.Since(waveStart))
 	log.Printf("[AudienceWorker] campaign %s finalized: audience=%d status=%s",
 		campaignID, result.TotalAudience, result.Status)
+
+	// Record the audience funnel (targeted vs suppressed-by-reason) as a single
+	// aggregate row. Best-effort, fire-and-forget — never blocks finalize.
+	funnelCtx, funnelCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	persistAudienceFunnel(funnelCtx, s.db, campaignID, orgID, audience)
+	funnelCancel()
 }
 

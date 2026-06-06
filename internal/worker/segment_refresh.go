@@ -108,6 +108,17 @@ type segmentRow struct {
 func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	start := time.Now()
 
+	hbStatus, hbErr := "ok", ""
+	defer func() {
+		EmitHeartbeat(ctx, w.writeDB, "segment_refresh", int(w.interval.Seconds()), hbStatus, hbErr)
+	}()
+
+	// Staleness guard: skip segments that have gone unused long enough to be
+	// cleanup candidates (SegmentCleanupWorker will archive/delete them). Without
+	// this, dead-but-active dynamic segments sit at the front of the
+	// oldest-updated_at queue and burn expensive recalculation cycles on
+	// audiences no campaign references anymore. Pinned segments are always kept
+	// fresh. 30d mirrors the default inactive_days_threshold.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT s.id, s.list_id, s.name,
 		       COALESCE(s.conditions::text, '[]'),
@@ -116,10 +127,13 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		FROM mailing_segments s
 		WHERE s.status = 'active'
 		  AND s.segment_type = 'dynamic'
+		  AND (s.keep_active = TRUE
+		       OR COALESCE(s.last_used_at, s.created_at) > NOW() - INTERVAL '30 days')
 		ORDER BY s.updated_at ASC
 		LIMIT 200
 	`)
 	if err != nil {
+		hbStatus, hbErr = "error", err.Error()
 		log.Printf("SegmentRefreshWorker: query error: %v", err)
 		return
 	}

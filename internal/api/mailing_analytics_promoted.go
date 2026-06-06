@@ -36,15 +36,15 @@ import (
 // Version constants below are bumped on every behaviour change.
 const (
 	VersionTerminalStateMatrix    = "1.0"
-	VersionDomainISPMatrix        = "1.0"
+	VersionDomainISPMatrix        = "1.1" // SES-aware: delivered=delivered+ses_delivered, relayed_to_ses surfaced
 	VersionEngagementQuality      = "1.0"
 	VersionDailyAcquisition       = "1.0"
 	VersionSegmentIntegrity       = "1.0"
 	VersionQueueStatusHistogram   = "1.0"
 	VersionWaveSchedulerHealth    = "1.0"
 	VersionDispatchTimeline       = "1.0"
-	VersionGrowthNarrative        = "1.0"
-	VersionAnalyticsCSVExports    = "1.0"
+	VersionGrowthNarrative        = "1.1" // SES-aware: delivered folds ses_delivered, total_relayed_to_ses added
+	VersionAnalyticsCSVExports    = "1.1" // SES-aware: relayed_to_ses column added to domain_isp + growth_narrative
 )
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -241,6 +241,7 @@ func (s *AdvancedMailingService) HandleDomainISPMatrix(w http.ResponseWriter, r 
 		ISP           string  `json:"isp"`
 		Sent          int     `json:"sent"`
 		Delivered     int     `json:"delivered"`
+		RelayedToSES  int     `json:"relayed_to_ses"`
 		HardBounces   int     `json:"hard_bounces"`
 		SoftBounces   int     `json:"soft_bounces"`
 		Complaints    int     `json:"complaints"`
@@ -250,12 +251,16 @@ func (s *AdvancedMailingService) HandleDomainISPMatrix(w http.ResponseWriter, r 
 		DeliveryRate  float64 `json:"delivery_rate"`
 	}
 
+	// delivered folds in ses_delivered (SES DELIVERY truth written back by the
+	// SES webhook) so via_ses brands don't read ~0; relayed_to_ses is the
+	// labeled PMTA→SES handoff column.
 	q := `
 		SELECT
 			LOWER(COALESCE(NULLIF(s.sending_domain,''),'unknown')) as sending_domain,
 			COALESCE(NULLIF(s.recipient_isp,''),'other') as isp,
 			COALESCE(SUM(s.sent),0)         as sent,
-			COALESCE(SUM(s.delivered),0)    as delivered,
+			COALESCE(SUM(s.delivered),0) + COALESCE(SUM(s.ses_delivered),0) as delivered,
+			COALESCE(SUM(s.relayed_to_ses),0) as relayed_to_ses,
 			COALESCE(SUM(s.hard_bounced),0) as hard_bounces,
 			COALESCE(SUM(s.soft_bounced),0) as soft_bounces,
 			COALESCE(SUM(s.complained),0)   as complaints,
@@ -276,7 +281,7 @@ func (s *AdvancedMailingService) HandleDomainISPMatrix(w http.ResponseWriter, r 
 	cells := []cell{}
 	for rows.Next() {
 		var c cell
-		if err := rows.Scan(&c.SendingDomain, &c.ISP, &c.Sent, &c.Delivered,
+		if err := rows.Scan(&c.SendingDomain, &c.ISP, &c.Sent, &c.Delivered, &c.RelayedToSES,
 			&c.HardBounces, &c.SoftBounces, &c.Complaints, &c.Deferred); err != nil {
 			continue
 		}
@@ -830,10 +835,13 @@ func (s *AdvancedMailingService) HandleGrowthNarrative(w http.ResponseWriter, r 
 		}
 	}
 
+	// delivered folds in ses_delivered (SES DELIVERY truth); relayed_to_ses
+	// surfaced separately as the PMTA→SES handoff.
 	q := `
 		SELECT summary_date,
 		       COALESCE(SUM(sent),0)         AS sent,
-		       COALESCE(SUM(delivered),0)    AS delivered,
+		       COALESCE(SUM(delivered),0) + COALESCE(SUM(ses_delivered),0) AS delivered,
+		       COALESCE(SUM(relayed_to_ses),0) AS relayed_to_ses,
 		       COALESCE(SUM(hard_bounced),0) AS hard_bounces,
 		       COALESCE(SUM(soft_bounced),0) AS soft_bounces,
 		       COALESCE(SUM(complained),0)   AS complaints,
@@ -854,6 +862,7 @@ func (s *AdvancedMailingService) HandleGrowthNarrative(w http.ResponseWriter, r 
 		Date         time.Time `json:"date"`
 		Sent         int       `json:"sent"`
 		Delivered    int       `json:"delivered"`
+		RelayedToSES int       `json:"relayed_to_ses"`
 		HardBounces  int       `json:"hard_bounces"`
 		SoftBounces  int       `json:"soft_bounces"`
 		Complaints   int       `json:"complaints"`
@@ -863,10 +872,10 @@ func (s *AdvancedMailingService) HandleGrowthNarrative(w http.ResponseWriter, r 
 		DeliveryRate float64   `json:"delivery_rate"`
 	}
 	out := []row{}
-	var grandSent, grandDel, grandHB, grandSB int
+	var grandSent, grandDel, grandHB, grandSB, grandRelayed int
 	for rows.Next() {
 		var rrow row
-		if err := rows.Scan(&rrow.Date, &rrow.Sent, &rrow.Delivered,
+		if err := rows.Scan(&rrow.Date, &rrow.Sent, &rrow.Delivered, &rrow.RelayedToSES,
 			&rrow.HardBounces, &rrow.SoftBounces, &rrow.Complaints, &rrow.Deferred); err != nil {
 			continue
 		}
@@ -879,17 +888,19 @@ func (s *AdvancedMailingService) HandleGrowthNarrative(w http.ResponseWriter, r 
 		grandDel += rrow.Delivered
 		grandHB += rrow.HardBounces
 		grandSB += rrow.SoftBounces
+		grandRelayed += rrow.RelayedToSES
 		out = append(out, rrow)
 	}
 
 	summary := map[string]interface{}{
-		"total_sent":       grandSent,
-		"total_delivered":  grandDel,
-		"total_hard":       grandHB,
-		"total_soft":       grandSB,
-		"hard_bounce_rate": 0.0,
-		"soft_bounce_rate": 0.0,
-		"delivery_rate":    0.0,
+		"total_sent":           grandSent,
+		"total_delivered":      grandDel,
+		"total_relayed_to_ses": grandRelayed,
+		"total_hard":           grandHB,
+		"total_soft":           grandSB,
+		"hard_bounce_rate":     0.0,
+		"soft_bounce_rate":     0.0,
+		"delivery_rate":        0.0,
 	}
 	if grandSent > 0 {
 		summary["hard_bounce_rate"] = metricsRound2(float64(grandHB) / float64(grandSent) * 100)
@@ -930,12 +941,14 @@ func (s *AdvancedMailingService) HandleAnalyticsCSVExport(w http.ResponseWriter,
 
 	switch report {
 	case "domain_isp":
-		_ = cw.Write([]string{"sending_domain", "isp", "sent", "delivered", "hard_bounces", "soft_bounces", "complaints", "deferred", "hard_pct", "soft_pct", "delivery_pct"})
+		_ = cw.Write([]string{"sending_domain", "isp", "sent", "delivered", "relayed_to_ses", "hard_bounces", "soft_bounces", "complaints", "deferred", "hard_pct", "soft_pct", "delivery_pct"})
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT
 				LOWER(COALESCE(NULLIF(sending_domain,''),'unknown')) AS sd,
 				COALESCE(NULLIF(recipient_isp,''),'other')           AS isp,
-				COALESCE(SUM(sent),0), COALESCE(SUM(delivered),0),
+				COALESCE(SUM(sent),0),
+				COALESCE(SUM(delivered),0) + COALESCE(SUM(ses_delivered),0),
+				COALESCE(SUM(relayed_to_ses),0),
 				COALESCE(SUM(hard_bounced),0), COALESCE(SUM(soft_bounced),0),
 				COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 			FROM pmta_acct_daily_summary
@@ -950,8 +963,8 @@ func (s *AdvancedMailingService) HandleAnalyticsCSVExport(w http.ResponseWriter,
 		defer rows.Close()
 		for rows.Next() {
 			var sd, isp string
-			var sent, del, hb, sb, comp, def int
-			if err := rows.Scan(&sd, &isp, &sent, &del, &hb, &sb, &comp, &def); err != nil {
+			var sent, del, relayed, hb, sb, comp, def int
+			if err := rows.Scan(&sd, &isp, &sent, &del, &relayed, &hb, &sb, &comp, &def); err != nil {
 				continue
 			}
 			hp, sp, dp := 0.0, 0.0, 0.0
@@ -961,7 +974,7 @@ func (s *AdvancedMailingService) HandleAnalyticsCSVExport(w http.ResponseWriter,
 				dp = metricsRound2(float64(del) / float64(sent) * 100)
 			}
 			_ = cw.Write([]string{sd, isp,
-				strconv.Itoa(sent), strconv.Itoa(del),
+				strconv.Itoa(sent), strconv.Itoa(del), strconv.Itoa(relayed),
 				strconv.Itoa(hb), strconv.Itoa(sb),
 				strconv.Itoa(comp), strconv.Itoa(def),
 				strconv.FormatFloat(hp, 'f', 2, 64),
@@ -969,10 +982,12 @@ func (s *AdvancedMailingService) HandleAnalyticsCSVExport(w http.ResponseWriter,
 				strconv.FormatFloat(dp, 'f', 2, 64)})
 		}
 	case "growth_narrative":
-		_ = cw.Write([]string{"date", "sent", "delivered", "hard_bounces", "soft_bounces", "complaints", "deferred"})
+		_ = cw.Write([]string{"date", "sent", "delivered", "relayed_to_ses", "hard_bounces", "soft_bounces", "complaints", "deferred"})
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT summary_date,
-			       COALESCE(SUM(sent),0), COALESCE(SUM(delivered),0),
+			       COALESCE(SUM(sent),0),
+			       COALESCE(SUM(delivered),0) + COALESCE(SUM(ses_delivered),0),
+			       COALESCE(SUM(relayed_to_ses),0),
 			       COALESCE(SUM(hard_bounced),0), COALESCE(SUM(soft_bounced),0),
 			       COALESCE(SUM(complained),0), COALESCE(SUM(deferred),0)
 			FROM pmta_acct_daily_summary
@@ -987,12 +1002,12 @@ func (s *AdvancedMailingService) HandleAnalyticsCSVExport(w http.ResponseWriter,
 		defer rows.Close()
 		for rows.Next() {
 			var d time.Time
-			var sent, del, hb, sb, comp, def int
-			if err := rows.Scan(&d, &sent, &del, &hb, &sb, &comp, &def); err != nil {
+			var sent, del, relayed, hb, sb, comp, def int
+			if err := rows.Scan(&d, &sent, &del, &relayed, &hb, &sb, &comp, &def); err != nil {
 				continue
 			}
 			_ = cw.Write([]string{d.Format("2006-01-02"),
-				strconv.Itoa(sent), strconv.Itoa(del),
+				strconv.Itoa(sent), strconv.Itoa(del), strconv.Itoa(relayed),
 				strconv.Itoa(hb), strconv.Itoa(sb),
 				strconv.Itoa(comp), strconv.Itoa(def)})
 		}

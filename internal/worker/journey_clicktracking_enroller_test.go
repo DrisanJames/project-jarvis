@@ -13,6 +13,7 @@ func testSlugDict() map[string]string {
 		"93W8N2N": "4575", // Quicken Loans
 		"GK847MZ": "7667", // NDR (mapped to journey 7667)
 		"7N8NS1K": "3776", // Renewal by Andersen
+		"PS8241":  "420", // Sam's Club Membership — PS8241 is affiliate URL slug; Everflow offer 420
 	}
 }
 
@@ -67,6 +68,26 @@ func TestResolveOfferFromLink(t *testing.T) {
 		{
 			name:   "wrong publisher path prefix is skipped",
 			link:   "https://www.cratoolpro.com/OTHERPUB/KW3Q1DJ/", // not BJB4Q5BF
+			wantOK: false,
+		},
+		{
+			name:   "sams club eos57ytf affiliate with full tracking suffix",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/PS8241/?creative_id=4989&source_id=email&sub1=abc&sub2=quizfiesta.com",
+			wantID: "420", wantOK: true,
+		},
+		{
+			name:   "sams club eos57ytf affiliate trailing slash only",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/PS8241/",
+			wantID: "420", wantOK: true,
+		},
+		{
+			name:   "lowercase ps8241 slug still resolves",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/ps8241/?source_id=email",
+			wantID: "420", wantOK: true,
+		},
+		{
+			name:   "unmapped affiliate ps slug is skipped",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/PS9999/?source_id=email",
 			wantOK: false,
 		},
 	}

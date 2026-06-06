@@ -19,6 +19,7 @@ export type SegmentCategory =
   | "engagement_brand"
   | "engagement_global"
   | "engagement_isp"
+  | "engagement_vertical"
   | "framework"
   | "funnel"
   | "cohort_static"
@@ -65,6 +66,15 @@ export const SEGMENT_CATEGORIES: SegmentCategoryMeta[] = [
     shortLabel: "ISP Eng.",
     description: "Brand × ISP engagement slices (Gmail, Yahoo, AOL, etc).",
     badgeClass: "bg-blue-500/15 text-blue-300 border-blue-400/40",
+    defaultInclusionVisible: true,
+    defaultExclusionVisible: false,
+  },
+  {
+    id: "engagement_vertical",
+    label: "Engagement — Per Vertical",
+    shortLabel: "Vertical Eng.",
+    description: "7D/14D/30D Openers + Clickers scoped to a data-provenance vertical (Mortgage, Finance, etc), cross-domain.",
+    badgeClass: "bg-cyan-500/15 text-cyan-300 border-cyan-400/40",
     defaultInclusionVisible: true,
     defaultExclusionVisible: false,
   },

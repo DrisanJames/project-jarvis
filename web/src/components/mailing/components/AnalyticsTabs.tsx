@@ -15,7 +15,7 @@ import {
   faSpinner, faSync, faExclamationTriangle, faDownload,
 } from '@fortawesome/free-solid-svg-icons';
 
-export const PAGE_VERSION_ANALYTICS_TABS = '1.0';
+export const PAGE_VERSION_ANALYTICS_TABS = '1.1'; // SES-aware: PMTA→SES handoff column in Domain×ISP matrix + Growth narrative
 // Change history:
 // 1.0 — initial Phase D release. Six tabs backed by the
 //       /analytics/* promoted endpoints in mailing_analytics_promoted.go.
@@ -153,6 +153,7 @@ interface DomainISPCell {
   isp: string;
   sent: number;
   delivered: number;
+  relayed_to_ses: number;
   hard_bounces: number;
   soft_bounces: number;
   complaints: number;
@@ -246,7 +247,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
 
       <Panel
         title="Domain × ISP Performance Matrix"
-        description="Source: pmta_acct_daily_summary (deduped delivery facts). Ground truth for sending-domain reputation."
+        description="Source: pmta_acct_daily_summary (deduped delivery facts). Delivered = PMTA-direct + SES-confirmed (DELIVERY events). 'PMTA→SES' is the relay handoff, NOT a recipient delivery. Ground truth for sending-domain reputation."
         loading={loadingM}
         error={errM}
         empty={!matrix || (matrix.cells || []).length === 0}
@@ -263,6 +264,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                   <th>Sent</th>
                   <th>Delivered</th>
                   <th>Del%</th>
+                  <th style={{ color: '#8b5cf6' }} title="PMTA handed the message to SES for delivery. This is NOT a recipient delivery — SES DELIVERY events are folded into the Delivered column.">PMTA→SES</th>
                   <th style={{ color: '#ef4444' }}>Hard%</th>
                   <th style={{ color: '#f59e0b' }}>Soft%</th>
                   <th>Complaints</th>
@@ -277,6 +279,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                     <td>{fmt(c.sent)}</td>
                     <td>{fmt(c.delivered)}</td>
                     <td>{c.delivery_rate.toFixed(1)}%</td>
+                    <td style={{ color: '#8b5cf6' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
                     <td style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: '#f59e0b' }}>{c.soft_bounce_rate.toFixed(2)}%</td>
                     <td>{fmt(c.complaints)}</td>
@@ -828,6 +831,7 @@ interface GrowthDay {
   date: string;
   sent: number;
   delivered: number;
+  relayed_to_ses: number;
   hard_bounces: number;
   soft_bounces: number;
   complaints: number;
@@ -842,6 +846,7 @@ interface GrowthResp {
   summary: {
     total_sent: number;
     total_delivered: number;
+    total_relayed_to_ses: number;
     total_hard: number;
     total_soft: number;
     hard_bounce_rate: number;
@@ -900,6 +905,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
             <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(data.summary.total_sent)}</span><span className="ac-kpi-label">Total Sent</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#22c55e' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#8b5cf6' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">PMTA→SES Handoff (not delivery)</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#ef4444' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
             </div>
@@ -909,6 +915,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                 <th>Sent</th>
                 <th>Delivered</th>
                 <th>Del%</th>
+                <th style={{ color: '#8b5cf6' }} title="PMTA→SES relay handoff — not a recipient delivery. SES DELIVERY events are folded into Delivered.">PMTA→SES</th>
                 <th style={{ color: '#ef4444' }}>Hard%</th>
                 <th style={{ color: '#f59e0b' }}>Soft%</th>
               </tr></thead>
@@ -919,6 +926,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td>{fmt(d.sent)}</td>
                     <td>{fmt(d.delivered)}</td>
                     <td>{d.delivery_rate.toFixed(1)}%</td>
+                    <td style={{ color: '#8b5cf6' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
                     <td style={{ color: '#ef4444' }}>{d.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: '#f59e0b' }}>{d.soft_bounce_rate.toFixed(2)}%</td>
                   </tr>

@@ -64,9 +64,9 @@ func TestHandleDomainISPMatrix_HappyPath(t *testing.T) {
 
 	mock.ExpectQuery(`pmta_acct_daily_summary`).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"sending_domain", "isp", "sent", "delivered",
+			"sending_domain", "isp", "sent", "delivered", "relayed_to_ses",
 			"hard_bounces", "soft_bounces", "complaints", "deferred",
-		}).AddRow("em.discountblog.com", "gmail", 1000, 950, 5, 15, 1, 4))
+		}).AddRow("em.discountblog.com", "gmail", 1000, 950, 200, 5, 15, 1, 4))
 
 	req := httptest.NewRequest("GET", "/x?range_type=today", nil)
 	rec := httptest.NewRecorder()
@@ -220,10 +220,10 @@ func TestHandleGrowthNarrative_ComputesRates(t *testing.T) {
 
 	mock.ExpectQuery(`pmta_acct_daily_summary`).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"summary_date", "sent", "delivered", "hard_bounces", "soft_bounces", "complaints", "deferred",
+			"summary_date", "sent", "delivered", "relayed_to_ses", "hard_bounces", "soft_bounces", "complaints", "deferred",
 		}).
-			AddRow(mustParseTime(t, "2026-03-30T00:00:00Z"), 1000, 950, 5, 15, 1, 4).
-			AddRow(mustParseTime(t, "2026-03-31T00:00:00Z"), 2000, 1900, 10, 30, 2, 8))
+			AddRow(mustParseTime(t, "2026-03-30T00:00:00Z"), 1000, 950, 100, 5, 15, 1, 4).
+			AddRow(mustParseTime(t, "2026-03-31T00:00:00Z"), 2000, 1900, 200, 10, 30, 2, 8))
 
 	req := httptest.NewRequest("GET", "/x?days=30", nil)
 	rec := httptest.NewRecorder()
@@ -237,6 +237,7 @@ func TestHandleGrowthNarrative_ComputesRates(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.EqualValues(t, 3000, resp.Summary["total_sent"])
 	assert.EqualValues(t, 2850, resp.Summary["total_delivered"])
+	assert.EqualValues(t, 300, resp.Summary["total_relayed_to_ses"])
 	require.Len(t, resp.Daily, 2)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

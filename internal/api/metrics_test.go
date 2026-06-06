@@ -122,11 +122,13 @@ func TestComputeMetrics_CampaignScoped(t *testing.T) {
 
 	campID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-	// First query: summary table for delivery metrics
+	// First query: summary table for delivery metrics. Column order matches the
+	// SES-aware SELECT: delivered(+ses_delivered), relayed_to_ses, hard, soft,
+	// complained, deferred.
 	mock.ExpectQuery(`pmta_acct_daily_summary`).
 		WithArgs(campID).
-		WillReturnRows(sqlmock.NewRows([]string{"delivered", "hard_bounced", "soft_bounced", "complained", "deferred"}).
-			AddRow(95, 2, 3, 0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"delivered", "relayed_to_ses", "hard_bounced", "soft_bounced", "complained", "deferred"}).
+			AddRow(95, 7, 2, 3, 0, 1))
 
 	// Second query: tracking events for engagement metrics
 	mock.ExpectQuery(`mailing_tracking_events`).
@@ -140,6 +142,7 @@ func TestComputeMetrics_CampaignScoped(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 100, m.Sent)
 	assert.Equal(t, 95, m.Delivered)
+	assert.Equal(t, 7, m.RelayedToSES)
 	assert.Equal(t, 30, m.Opens)
 	assert.Equal(t, 2, m.HardBounces)
 

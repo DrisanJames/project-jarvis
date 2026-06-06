@@ -249,12 +249,13 @@ func (m *CampaignHealthMonitor) checkISPThresholds() {
 				continue
 			}
 
+			// POLICY: automated queue pausing is disabled platform-wide. Threshold
+			// breaches are logged for operator review only; no campaign/ISP is paused.
 			if thresh.DeferralPausePct > 0 {
 				rate := float64(c.Deferred) / float64(total) * 100
 				if rate > thresh.DeferralPausePct {
-					log.Printf("[HealthMonitor] AUTO-PAUSE ISP %s on campaign %s: deferral_rate=%.1f%% (threshold=%.1f%%, delivered=%d deferred=%d)",
+					log.Printf("[HealthMonitor] ISP %s on campaign %s: deferral_rate=%.1f%% exceeded threshold=%.1f%% (delivered=%d deferred=%d) — auto-pause DISABLED, manual intervention required",
 						c.ISP, campID, rate, thresh.DeferralPausePct, c.Delivered, c.Deferred)
-					m.pauseCampaignISP(ctx, campID, c.ISP)
 					continue
 				}
 			}
@@ -262,9 +263,8 @@ func (m *CampaignHealthMonitor) checkISPThresholds() {
 			if thresh.BlockPausePct > 0 {
 				rate := float64(c.Bounced) / float64(total) * 100
 				if rate > thresh.BlockPausePct {
-					log.Printf("[HealthMonitor] AUTO-PAUSE ISP %s on campaign %s: block_rate=%.1f%% (threshold=%.1f%%, total=%d bounced=%d)",
+					log.Printf("[HealthMonitor] ISP %s on campaign %s: block_rate=%.1f%% exceeded threshold=%.1f%% (total=%d bounced=%d) — auto-pause DISABLED, manual intervention required",
 						c.ISP, campID, rate, thresh.BlockPausePct, total, c.Bounced)
-					m.pauseCampaignISP(ctx, campID, c.ISP)
 					continue
 				}
 			}
@@ -272,9 +272,8 @@ func (m *CampaignHealthMonitor) checkISPThresholds() {
 			if thresh.ComplaintPausePct > 0 && c.Delivered > 0 {
 				rate := float64(c.Complained) / float64(c.Delivered) * 100
 				if rate > thresh.ComplaintPausePct {
-					log.Printf("[HealthMonitor] AUTO-PAUSE ISP %s on campaign %s: complaint_rate=%.2f%% (threshold=%.2f%%, delivered=%d complaints=%d)",
+					log.Printf("[HealthMonitor] ISP %s on campaign %s: complaint_rate=%.2f%% exceeded threshold=%.2f%% (delivered=%d complaints=%d) — auto-pause DISABLED, manual intervention required",
 						c.ISP, campID, rate, thresh.ComplaintPausePct, c.Delivered, c.Complained)
-					m.pauseCampaignISP(ctx, campID, c.ISP)
 					continue
 				}
 			}

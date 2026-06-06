@@ -72,6 +72,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			handler.ServeHTTP(w, req)
 		})
 
+		// Background-worker health (heartbeats + stall status). Root router,
+		// no auth — operators curl it during incidents; UI polls it.
+		s.router.Get("/api/worker-health", HandleWorkerHealth(db))
+
 		// Pool isolation admin endpoints — on root router to avoid chi late-registration race
 		poolIsolationSvc := &PMTACampaignService{db: db}
 		s.router.Get("/api/admin/pool-isolation-status", func(w http.ResponseWriter, req *http.Request) {
@@ -509,6 +513,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/wave-scheduler-health", advSvc.HandleWaveSchedulerHealth)
 			r.Get("/analytics/queue-status-histogram", advSvc.HandleQueueStatusHistogram)
 			r.Get("/analytics/dispatch-timeline", advSvc.HandleDispatchTimeline)
+			r.Get("/analytics/terminal-state-matrix", advSvc.HandleTerminalStateMatrix)
+
+			// Campaign Summary (Phase 0 analytics rebuild) — fast, accurate
+			// Campaign Center read-path. List reads pre-aggregated counters
+			// (no html_content); detail uses the terminal-state grain;
+			// reconcile explains PMTA-relay vs SES-delivery divergence.
+			r.Get("/analytics/campaign-summary", advSvc.HandleCampaignSummaryList)
+			r.Get("/analytics/campaign-summary/{id}", advSvc.HandleCampaignSummaryByID)
+			r.Get("/analytics/campaign-summary/{id}/reconcile", advSvc.HandleCampaignSummaryReconcile)
 			
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)

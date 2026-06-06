@@ -5,7 +5,7 @@ import {
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
-  faSpinner, faEye, faSeedling,
+  faSpinner, faEye, faSeedling, faHeartPulse,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -43,6 +43,7 @@ const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashb
 const WelcomeAudienceHealth = lazy(() => import('../components/WelcomeAudienceHealth').then(m => ({ default: m.WelcomeAudienceHealth })));
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
+const WorkerHealthDashboard = lazy(() => import('../components/WorkerHealthDashboard').then(m => ({ default: m.WorkerHealthDashboard })));
 const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 
@@ -53,7 +54,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'data-partners';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'data-partners';
 
 interface Tab {
   id: TabId;
@@ -83,6 +84,7 @@ const tabs: Tab[] = [
   { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
   { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Inbound data partner ingestion — API keys, batches, drip orchestrator, creatives' },
   { id: 'outbox', label: 'Outbox', icon: faPaperPlane, description: 'Durable injection outbox — live state, stuck rows & dead-letter queue' },
+  { id: 'worker-health', label: 'Worker Health', icon: faHeartPulse, description: 'Background-worker heartbeats & stall detection (cleanup, archiver, segments)' },
   { id: 'attribution-match', label: 'Attribution Match', icon: faCrosshairs, description: 'Resolve Everflow click & conversion CSVs back to subscriber profiles' },
   { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
@@ -196,6 +198,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><PartnerIngestPortal /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
+      case 'worker-health':
+        return <Suspense fallback={<ChunkLoader />}><WorkerHealthDashboard /></Suspense>;
       case 'attribution-match':
         return <Suspense fallback={<ChunkLoader />}><AttributionMatchDashboard /></Suspense>;
       case 'site-traffic':

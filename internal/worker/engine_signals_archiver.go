@@ -124,12 +124,20 @@ func (w *EngineSignalsArchiver) runOnce(ctx context.Context) {
 	start := time.Now()
 	cutoff := time.Now().UTC().Add(-archiveHotDays * 24 * time.Hour)
 
+	// Heartbeat at end of every cycle (including healthy no-op cycles) so a
+	// real stall is distinguishable from "nothing to archive right now".
+	hbStatus, hbErr := "ok", ""
+	defer func() {
+		EmitHeartbeat(ctx, w.db, "engine_signals_archiver", int(w.interval.Seconds()), hbStatus, hbErr)
+	}()
+
 	buckets, err := w.findUnarchivedBuckets(ctx, cutoff)
 	if err != nil {
 		if isTableNotExistsError(err) {
 			// Startup migrations haven't created the index yet — silent retry.
 			return
 		}
+		hbStatus, hbErr = "error", err.Error()
 		log.Printf("[SignalsArchiver] enumerate buckets: %v", err)
 		return
 	}
@@ -172,41 +180,95 @@ type signalBucket struct {
 // exists in mailing_engine_signals with recorded_at < cutoff AND no entry
 // exists in the archive index for that (date, isp). Bounded result set so
 // runaway backlogs don't block the cycle.
+//
+// IMPLEMENTATION NOTE (rewritten 2026-06-04 after a ~2-month stall):
+// The previous implementation ran a single `SELECT DISTINCT date_trunc(...),
+// isp ... WHERE recorded_at < cutoff ... ORDER BY ... LIMIT 40` over the whole
+// table. Because `recorded_at < cutoff` matches the overwhelming majority of
+// rows once a backlog forms (45+ unarchived days × ~22K rows/hour), Postgres
+// had to hash-aggregate tens of millions of rows BEFORE the LIMIT could apply,
+// blowing past the 90s timeout every cycle. The worker logged "enumerate
+// buckets" and made zero progress for ~2 months (archive index frozen at
+// 2026-04-08; mailing_engine_signals grew to 54.7M rows / 13 GB).
+//
+// The fix walks forward one UTC day at a time starting from the oldest row
+// still in the hot table. Each per-day `DISTINCT isp` is bounded by the
+// recorded_at range index (idx_engine_signals_recorded) and scans ~one day of
+// rows instead of the entire table, so it returns in well under the per-day
+// timeout even under send-day IO pressure. We advance `day` unconditionally so
+// a crash-gap day (index row present but rows not yet deleted) can never wedge
+// the walk — later days still get processed.
 func (w *EngineSignalsArchiver) findUnarchivedBuckets(
 	ctx context.Context, cutoff time.Time,
 ) ([]signalBucket, error) {
-	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
-	rows, err := w.db.QueryContext(qctx, `
-		SELECT DISTINCT
-			date_trunc('day', s.recorded_at)::date AS date_bucket,
-			s.isp
-		FROM mailing_engine_signals s
-		WHERE s.recorded_at < $1
-		  AND NOT EXISTS (
-		      SELECT 1
-		      FROM mailing_engine_signals_archive_index a
-		      WHERE a.date_bucket = date_trunc('day', s.recorded_at)::date
-		        AND a.isp         = s.isp
-		  )
-		ORDER BY date_bucket ASC, isp ASC
-		LIMIT $2
-	`, cutoff, archiveMaxBucketsPerCycle)
+	// Oldest row still in the hot table. min() on a btree(recorded_at) index
+	// is a cheap backward index scan, fast even on a 50M+ row table.
+	minCtx, minCancel := context.WithTimeout(ctx, 30*time.Second)
+	var oldest sql.NullTime
+	err := w.db.QueryRowContext(minCtx,
+		`SELECT min(recorded_at) FROM mailing_engine_signals`).Scan(&oldest)
+	minCancel()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("min recorded_at: %w", err)
 	}
-	defer rows.Close()
+	if !oldest.Valid {
+		return nil, nil // empty table
+	}
+
+	day := oldest.Time.UTC().Truncate(24 * time.Hour)
+	cutoffDay := cutoff.UTC().Truncate(24 * time.Hour)
 
 	var out []signalBucket
-	for rows.Next() {
-		var b signalBucket
-		if err := rows.Scan(&b.Date, &b.ISP); err != nil {
-			return nil, err
+	for day.Before(cutoffDay) && len(out) < archiveMaxBucketsPerCycle {
+		if ctx.Err() != nil {
+			return out, nil
 		}
-		out = append(out, b)
+		next := day.Add(24 * time.Hour)
+
+		// 90s (was 30s): the per-day DISTINCT competes with send-day IO and the
+		// one-time engine-log archive; 30s tripped under load and aborted the
+		// whole cycle. 90s lets a day complete; a still-slow day aborts the
+		// cycle and is retried next pass (the walk re-derives from min()).
+		dctx, dcancel := context.WithTimeout(ctx, 90*time.Second)
+		rows, qerr := w.db.QueryContext(dctx, `
+			SELECT DISTINCT s.isp
+			FROM mailing_engine_signals s
+			WHERE s.recorded_at >= $1 AND s.recorded_at < $2
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM mailing_engine_signals_archive_index a
+			      WHERE a.date_bucket = $1::date
+			        AND a.isp         = s.isp
+			  )
+			ORDER BY s.isp ASC
+		`, day, next)
+		if qerr != nil {
+			dcancel()
+			// Surface the day so the operator can see exactly where it choked,
+			// then return what we have so far rather than failing the cycle.
+			return out, fmt.Errorf("enumerate day %s: %w", day.Format("2006-01-02"), qerr)
+		}
+		for rows.Next() {
+			var isp string
+			if err := rows.Scan(&isp); err != nil {
+				rows.Close()
+				dcancel()
+				return out, err
+			}
+			out = append(out, signalBucket{Date: day, ISP: isp})
+			if len(out) >= archiveMaxBucketsPerCycle {
+				break
+			}
+		}
+		rerr := rows.Err()
+		rows.Close()
+		dcancel()
+		if rerr != nil {
+			return out, rerr
+		}
+		day = next
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // archiveBucket drains one (date, isp) group end-to-end. Returns the number

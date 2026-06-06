@@ -384,6 +384,41 @@ type profileSESInfo struct {
 	TenantName   string
 }
 
+// sanitizeSESTagValue coerces a value into the SES MessageTag charset
+// [A-Za-z0-9_-] (max 256 chars). Anything else (dots, @, etc.) becomes "_".
+func sanitizeSESTagValue(v string) string {
+	if v == "" {
+		return "none"
+	}
+	var b strings.Builder
+	for i, r := range v {
+		if i >= 256 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// buildSESMessageTags formats the X-SES-MESSAGE-TAGS header value
+// ("k1=v1, k2=v2"). recipientSendID is the outbox queue row id — the universal
+// join key that SES events, PMTA accounting, and tracking all reconcile to.
+func buildSESMessageTags(recipientSendID, campaignID, subscriberID, ispGroup string) string {
+	pairs := []string{
+		"recipient_send_id=" + sanitizeSESTagValue(recipientSendID),
+		"campaign_id=" + sanitizeSESTagValue(campaignID),
+		"subscriber_id=" + sanitizeSESTagValue(subscriberID),
+		"isp_group=" + sanitizeSESTagValue(ispGroup),
+		"route_type=ses_tenant",
+	}
+	return strings.Join(pairs, ", ")
+}
+
 // resolveProfileSES returns the via_ses / ses_configuration_set / ses_tenant_name
 // values for a sending profile. The result is cached for the lifetime of the
 // process. A nil/empty profile id, a missing row, or any DB error returns
@@ -1415,6 +1450,20 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		if sesInfo.TenantName != "" {
 			headers["X-SES-TENANT"] = sesInfo.TenantName
 		}
+		// Stamp SES MessageTags so the configuration-set's event destination
+		// (Send/Delivery/Bounce/Complaint/Open/Click) can be joined back to
+		// the exact campaign + subscriber + send attempt. recipient_send_id is
+		// the outbox queue row id (item.ID) — the same value carried in
+		// X-Message-ID and Feedback-ID — so SES events, PMTA accounting, and
+		// our tracking all reconcile to one identity. SES tag values are
+		// restricted to [A-Za-z0-9_-] (UUIDs and ISP names are safe; sanitize
+		// defensively).
+		headers["X-SES-MESSAGE-TAGS"] = buildSESMessageTags(
+			item.ID.String(),
+			item.CampaignID.String(),
+			item.SubscriberID.String(),
+			ClassifySubscriberISP(item.Email),
+		)
 	}
 
 	if trackBase != "" && !sesInfo.ViaSES {

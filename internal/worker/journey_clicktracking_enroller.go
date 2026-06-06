@@ -8,7 +8,7 @@ package worker
 //
 // Pipeline position:
 //
-//	mailing_tracking_events (event_type='clicked', cratoolpro money URL)
+//	mailing_tracking_events (event_type='clicked', money URL)
 //	      │  this worker: resolve offer from the trailing slug
 //	      ▼
 //	mailing_journey_event_triggers (source='internal_click_tracking')
@@ -24,10 +24,12 @@ package worker
 // adds the missing inlet.
 //
 // Offer identity: mailing_tracking_events.offer_id is 100% NULL in production,
-// but the offer is encoded in link_url as the cratoolpro slug
-// (https://www.cratoolpro.com/BJB4Q5BF/<SLUG>/). mailing_offer_slug_map is the
-// verified slug → everflow_offer_id dictionary; a click whose slug is not in
-// the map (or maps to an offer with no journey) is skipped.
+// but the offer is encoded in link_url:
+//   - cratoolpro: https://www.cratoolpro.com/BJB4Q5BF/<SLUG>/
+//   - affiliate network (e.g. Sam's Club): https://www.eos57ytf.com/K4C5ZLC/PS8241/
+// mailing_offer_slug_map is the verified slug → everflow_offer_id dictionary; a
+// click whose slug is not in the map (or maps to an offer with no journey) is
+// skipped.
 //
 // Multi-instance safety: the server runs on multiple ECS tasks, so this worker
 // runs N times concurrently. A single shared cursor row
@@ -63,6 +65,11 @@ const (
 // cratoolproSlugRe extracts the trailing offer slug from a cratoolpro money URL.
 // Example: https://www.cratoolpro.com/BJB4Q5BF/KW3Q1DJ/?source_id=email...
 var cratoolproSlugRe = regexp.MustCompile(`cratoolpro\.com/BJB4Q5BF/([A-Za-z0-9_-]+)`)
+
+// affiliateSlugRe extracts Everflow PS#### slugs from affiliate-network money URLs
+// that do not use cratoolpro. Example:
+// https://www.eos57ytf.com/K4C5ZLC/PS8241/?creative_id=4989&source_id=email...
+var affiliateSlugRe = regexp.MustCompile(`(?i)/PS([0-9]+)(?:/|\?|&|$)`)
 
 // JourneyClickTrackingEnroller is the worker handle.
 type JourneyClickTrackingEnroller struct {
@@ -216,7 +223,10 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		FROM mailing_tracking_events t
 		WHERE t.event_type='clicked'
 		  AND t.event_at > $1 AND t.event_at <= $2
-		  AND t.link_url ILIKE '%cratoolpro.com/BJB4Q5BF/%'
+		  AND (
+		        t.link_url ILIKE '%cratoolpro.com/BJB4Q5BF/%'
+		     OR t.link_url ILIKE '%eos57ytf.com/K4C5ZLC/%'
+		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM mailing_campaigns c
 		        WHERE c.id = t.campaign_id AND c.campaign_type = 'click_drip'
@@ -356,16 +366,21 @@ func (w *JourneyClickTrackingEnroller) loadSlugMap(ctx context.Context) (map[str
 	return out, rows.Err()
 }
 
-// resolveOfferFromLink extracts the cratoolpro slug from a link and maps it to
-// an everflow offer id. ok=false when the link carries no recognizable slug or
-// the slug is not in the dictionary.
+// resolveOfferFromLink extracts a money-URL slug and maps it to an everflow
+// offer id. ok=false when the link carries no recognizable slug or the slug is
+// not in the dictionary.
 func resolveOfferFromLink(linkURL string, slugToOffer map[string]string) (string, bool) {
-	m := cratoolproSlugRe.FindStringSubmatch(linkURL)
-	if len(m) < 2 {
-		return "", false
+	if m := cratoolproSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
+		if offer, ok := slugToOffer[normalizeSlug(m[1])]; ok {
+			return offer, true
+		}
 	}
-	offer, ok := slugToOffer[normalizeSlug(m[1])]
-	return offer, ok
+	if m := affiliateSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
+		if offer, ok := slugToOffer[normalizeSlug("PS"+m[1])]; ok {
+			return offer, true
+		}
+	}
+	return "", false
 }
 
 // normalizeSlug upper-cases and trims a slug so map lookups are case-stable.

@@ -245,7 +245,7 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 				ISP:       a.ID.ISP,
 				Verdict:   VerdictWont,
 				Statement: fmt.Sprintf(
-					"I WONT allow any traffic to %s. Global bounce rate %.2f%% exceeded %.2f%%. %d sent, %d bounced, %d accepted over 1h. All queues paused.",
+					"%s global bounce rate %.2f%% exceeded %.2f%% (%d sent, %d bounced, %d accepted over 1h). Flagged for operator review — automated queue pausing is disabled by policy; NO queues paused.",
 					a.ID.ISP, snap.BounceRate1h, a.Config.BounceActionPct, snap.Sent1h, snap.Bounced1h, snap.Accepted1h,
 				),
 				Context: MicroContext{

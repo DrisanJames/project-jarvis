@@ -27,6 +27,7 @@ var validSegmentCategories = map[string]bool{
 	"engagement_brand":      true,
 	"engagement_global":     true,
 	"engagement_isp":        true,
+	"engagement_vertical":   true,
 	"framework":             true,
 	"funnel":                true,
 	"cohort_static":         true,
@@ -509,6 +510,22 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 			continue
 		}
 
+		// tags is a TEXT[] column, so it cannot use the scalar ILIKE/equals
+		// path below (mapFieldToColumn would emit `tags ILIKE $N`, invalid
+		// SQL against an array). Handle array membership explicitly so
+		// provenance/vertical cohorts (tags contains_any [vertical:<slug>])
+		// materialize through the same dynamic-segment pipeline as engagement
+		// conditions, including the nightly SegmentMaterializer.
+		if c.Field == "tags" {
+			clause, newArgs, newArgNum := buildTagsWhereClause(c, argNum)
+			if clause != "" {
+				whereClauses = append(whereClauses, clause)
+				args = append(args, newArgs...)
+				argNum = newArgNum
+			}
+			continue
+		}
+
 		dbField := mapFieldToColumn(c.Field)
 		var clause string
 		switch c.Operator {
@@ -722,6 +739,51 @@ func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilte
 		)`, argNum, domainClause)
 		return clause, args, argNum + len(args)
 
+	default:
+		return "", nil, argNum
+	}
+}
+
+// parseTagValues splits a tags condition value into a clean slice of tags.
+// The frontend/seed scripts pass tags as a comma-separated string
+// (e.g. "vertical:mortgage,vertical:finance"). Empty entries are dropped.
+func parseTagValues(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// buildTagsWhereClause generates an array-membership predicate against the
+// mailing_subscribers.tags TEXT[] column.
+//   - contains_any / contains / equals / is  -> tags && $N::text[]   (overlap)
+//   - contains_all                           -> tags @> $N::text[]   (superset)
+//   - not_contains / is_not / not_equals     -> NOT (tags && $N::text[])
+//
+// The value arg is a Postgres array literal ({a,b,c}) cast to text[] at the
+// call site, matching the pqStringArray style used elsewhere in this file.
+func buildTagsWhereClause(c SegmentConditionInput, argNum int) (string, []interface{}, int) {
+	tags := parseTagValues(c.Value)
+	if len(tags) == 0 {
+		return "", nil, argNum
+	}
+	arg := pqStringArray(tags)
+
+	switch c.Operator {
+	case "contains_any", "contains", "equals", "is", "":
+		clause := fmt.Sprintf("tags && $%d::text[]", argNum)
+		return clause, []interface{}{arg}, argNum + 1
+	case "contains_all":
+		clause := fmt.Sprintf("tags @> $%d::text[]", argNum)
+		return clause, []interface{}{arg}, argNum + 1
+	case "not_contains", "is_not", "not_equals":
+		clause := fmt.Sprintf("NOT (tags && $%d::text[])", argNum)
+		return clause, []interface{}{arg}, argNum + 1
 	default:
 		return "", nil, argNum
 	}

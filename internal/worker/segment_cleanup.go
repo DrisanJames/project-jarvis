@@ -9,6 +9,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
+)
+
+const (
+	// staticSnapshotRetentionDays is the hard-delete horizon for single-use
+	// static (per-campaign) segment snapshots, measured from last_used_at
+	// (which equals creation time for these — they're used exactly once at
+	// deploy). Operator directive 2026-06-04: static snapshots have no value
+	// once their campaign has sent, so they are hard-deleted (segment + member
+	// rows) after this window rather than going through the warn/grace/archive
+	// flow used for reusable dynamic segments. Pinned (keep_active) segments
+	// are always exempt.
+	staticSnapshotRetentionDays = 7
+
+	// staticPurgeSegmentBatch caps how many static segments we delete per
+	// inner batch so member-row deletes stay bounded and lock-friendly.
+	staticPurgeSegmentBatch = 200
+
+	// staticPurgeMaxPerCycle caps total segments purged per org per cycle so a
+	// large backlog cannot monopolize a single run under send-day IO.
+	staticPurgeMaxPerCycle = 5000
 )
 
 // SegmentCleanupWorker handles automatic cleanup of unused segments
@@ -112,6 +133,11 @@ func (w *SegmentCleanupWorker) run() {
 func (w *SegmentCleanupWorker) processAllOrganizations() {
 	ctx := context.Background()
 
+	hbStatus, hbErr := "ok", ""
+	defer func() {
+		EmitHeartbeat(ctx, w.db, "segment_cleanup", int(w.checkInterval.Seconds()), hbStatus, hbErr)
+	}()
+
 	// Get all organizations with cleanup enabled
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT organization_id, enabled, inactive_days_threshold, grace_period_days,
@@ -121,6 +147,7 @@ func (w *SegmentCleanupWorker) processAllOrganizations() {
 		WHERE enabled = TRUE
 	`)
 	if err != nil {
+		hbStatus, hbErr = "error", err.Error()
 		log.Printf("SegmentCleanupWorker: Error fetching settings: %v", err)
 		return
 	}
@@ -164,6 +191,12 @@ func (w *SegmentCleanupWorker) processAllOrganizations() {
 func (w *SegmentCleanupWorker) processOrganization(ctx context.Context, settings CleanupSettings) {
 	log.Printf("SegmentCleanupWorker: Processing organization %s", settings.OrganizationID)
 
+	// 0. Hard-delete aged single-use static snapshots (segment + members).
+	//    Runs before the warn/grace flow because static snapshots are dead
+	//    weight the moment their campaign has sent — there is no value in a
+	//    7-day warning email for an audience snapshot nobody will reuse.
+	w.purgeStaticSnapshots(ctx, settings)
+
 	// 1. Find segments that need warning
 	staleSegments := w.findStaleSegments(ctx, settings)
 	if len(staleSegments) > 0 {
@@ -197,6 +230,7 @@ func (w *SegmentCleanupWorker) findStaleSegments(ctx context.Context, settings C
 			s.created_at
 		FROM mailing_segments s
 		WHERE s.organization_id = $1
+			AND s.segment_type != 'static'
 			AND s.archived_at IS NULL
 			AND s.keep_active = FALSE
 			AND s.cleanup_warning_sent = FALSE
@@ -374,22 +408,125 @@ func (w *SegmentCleanupWorker) processExpiredSegments(ctx context.Context, setti
 }
 
 func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, settings CleanupSettings) {
-	// Delete segments that have been archived longer than retention period
-	result, err := w.db.ExecContext(ctx, `
-		DELETE FROM mailing_segments 
-		WHERE organization_id = $1 
-			AND archived_at IS NOT NULL 
+	// Find archived segments past retention. There is NO FK cascade from
+	// mailing_segment_members -> mailing_segments, so we MUST delete member
+	// rows explicitly first or they orphan and the space is never reclaimed.
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT id FROM mailing_segments
+		WHERE organization_id = $1
+			AND archived_at IS NOT NULL
 			AND archived_at < NOW() - ($2 || ' days')::INTERVAL
-	`, settings.OrganizationID, settings.ArchiveRetentionDays)
-	
+		LIMIT $3
+	`, settings.OrganizationID, settings.ArchiveRetentionDays, staticPurgeMaxPerCycle)
 	if err != nil {
-		log.Printf("SegmentCleanupWorker: Error deleting old archived segments: %v", err)
+		log.Printf("SegmentCleanupWorker: Error listing old archived segments: %v", err)
+		return
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if len(ids) == 0 {
 		return
 	}
 
-	if count, _ := result.RowsAffected(); count > 0 {
-		log.Printf("SegmentCleanupWorker: Permanently deleted %d archived segments older than %d days", count, settings.ArchiveRetentionDays)
+	segs, members := w.deleteSegmentsWithMembers(ctx, ids)
+	if segs > 0 {
+		log.Printf("SegmentCleanupWorker: Permanently deleted %d archived segments (+%d member rows) older than %d days",
+			segs, members, settings.ArchiveRetentionDays)
 	}
+}
+
+// purgeStaticSnapshots hard-deletes single-use static segment snapshots (and
+// their member rows) once they age past staticSnapshotRetentionDays from
+// last_used_at. Pinned (keep_active) and already-archived segments are exempt.
+// Work is chunked so member-row deletes stay lock- and IO-friendly under
+// send-day load.
+func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, settings CleanupSettings) {
+	var totalSegs, totalMembers int64
+	for totalSegs < staticPurgeMaxPerCycle {
+		if ctx.Err() != nil {
+			return
+		}
+
+		lctx, lcancel := context.WithTimeout(ctx, 30*time.Second)
+		rows, err := w.db.QueryContext(lctx, `
+			SELECT id FROM mailing_segments
+			WHERE organization_id = $1
+				AND segment_type = 'static'
+				AND keep_active = FALSE
+				AND archived_at IS NULL
+				AND COALESCE(last_used_at, created_at) < NOW() - ($2 || ' days')::INTERVAL
+			LIMIT $3
+		`, settings.OrganizationID, staticSnapshotRetentionDays, staticPurgeSegmentBatch)
+		if err != nil {
+			lcancel()
+			log.Printf("SegmentCleanupWorker: static purge list error: %v", err)
+			return
+		}
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if rows.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		rows.Close()
+		lcancel()
+		if len(ids) == 0 {
+			break
+		}
+
+		segs, members := w.deleteSegmentsWithMembers(ctx, ids)
+		totalSegs += segs
+		totalMembers += members
+		if segs == 0 {
+			break // nothing deleted (e.g. transient error) — avoid hot loop
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if totalSegs > 0 {
+		log.Printf("SegmentCleanupWorker: hard-deleted %d static snapshot(s) (+%d member rows) older than %dd for org %s",
+			totalSegs, totalMembers, staticSnapshotRetentionDays, settings.OrganizationID)
+	}
+}
+
+// deleteSegmentsWithMembers removes member rows (indexed by segment_id) and
+// then the segment rows for the given ids. Returns (segmentsDeleted,
+// membersDeleted). Members are deleted first so a mid-operation failure leaves
+// at worst an empty segment that the next cycle re-collects — never orphaned
+// member rows.
+func (w *SegmentCleanupWorker) deleteSegmentsWithMembers(ctx context.Context, ids []uuid.UUID) (int64, int64) {
+	if len(ids) == 0 {
+		return 0, 0
+	}
+
+	mctx, mcancel := context.WithTimeout(ctx, 60*time.Second)
+	mres, err := w.db.ExecContext(mctx,
+		`DELETE FROM mailing_segment_members WHERE segment_id = ANY($1::uuid[])`,
+		pq.Array(ids))
+	mcancel()
+	if err != nil {
+		log.Printf("SegmentCleanupWorker: member purge error (%d segs): %v", len(ids), err)
+		return 0, 0
+	}
+	members, _ := mres.RowsAffected()
+
+	sctx, scancel := context.WithTimeout(ctx, 30*time.Second)
+	sres, err := w.db.ExecContext(sctx,
+		`DELETE FROM mailing_segments WHERE id = ANY($1::uuid[])`,
+		pq.Array(ids))
+	scancel()
+	if err != nil {
+		log.Printf("SegmentCleanupWorker: segment delete error (%d segs, members already purged): %v", len(ids), err)
+		return 0, members
+	}
+	segs, _ := sres.RowsAffected()
+	return segs, members
 }
 
 func (w *SegmentCleanupWorker) getAdminEmails(ctx context.Context, settings CleanupSettings) []string {

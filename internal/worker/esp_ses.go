@@ -71,8 +71,13 @@ func (s *SESSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, e
 			},
 		},
 		EmailTags: []types.MessageTag{
-			{Name: aws.String("campaign_id"), Value: aws.String(msg.CampaignID)},
-			{Name: aws.String("subscriber_id"), Value: aws.String(msg.SubscriberID)},
+			{Name: aws.String("campaign_id"), Value: aws.String(sanitizeSESTagValue(msg.CampaignID))},
+			{Name: aws.String("subscriber_id"), Value: aws.String(sanitizeSESTagValue(msg.SubscriberID))},
+			// recipient_send_id (outbox queue row id) is the universal join key
+			// shared with the PMTA relay path and our tracking pipeline.
+			{Name: aws.String("recipient_send_id"), Value: aws.String(sanitizeSESTagValue(msg.ID))},
+			{Name: aws.String("isp_group"), Value: aws.String(sanitizeSESTagValue(msg.RecipientISP))},
+			{Name: aws.String("route_type"), Value: aws.String("ses_direct")},
 		},
 	}
 

@@ -275,7 +275,7 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 	if category != "" && !validSegmentCategories[category] {
 		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
 			"error":   "invalid_category",
-			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
+			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, engagement_vertical, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
 		})
 		return
 	}
@@ -427,7 +427,7 @@ func (api *SegmentationAPI) UpdateSegment(w http.ResponseWriter, r *http.Request
 	if category != "" && !validSegmentCategories[category] {
 		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
 			"error":   "invalid_category",
-			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
+			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, engagement_vertical, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
 		})
 		return
 	}

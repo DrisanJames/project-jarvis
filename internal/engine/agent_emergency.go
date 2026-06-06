@@ -8,8 +8,9 @@ import (
 )
 
 // EmergencyAgent detects spike conditions within this ISP's traffic.
-// Any threshold breach triggers immediate pause of all queues and
-// requires manual resume.
+// POLICY: a threshold breach raises an incident report and operator alert only.
+// It does NOT pause queues or disable sources automatically — automated queue
+// pausing is disabled platform-wide; remediation is a manual operator decision.
 type EmergencyAgent struct {
 	BaseAgent
 	memory      *MemoryStore
@@ -101,7 +102,7 @@ func (a *EmergencyAgent) Evaluate(snap SignalSnapshot) []Decision {
 		AffectedDomains: []string{string(a.ID.ISP)},
 		StartedAt:       now,
 		DetectedAt:      now,
-		ActionsTaken:    []string{"pause_all_queues", "disable_all_sources", "send_incident_report"},
+		ActionsTaken:    []string{"send_incident_report"},
 		Status:          "active",
 	}
 
@@ -143,7 +144,7 @@ func (a *EmergencyAgent) Evaluate(snap SignalSnapshot) []Decision {
 				"Bounce %.1f%% (5m), deferral %.1f%% (5m), complaint %.2f%% (1h). "+
 				"%d sent in 5m, %d bounced in 1h, %d deferred in 5m. "+
 				"Critical IPs: %s. Affected IPs: %s. "+
-				"All queues halted. Manual resume required. DSN: %s.",
+				"Operator alerted — automated halt is disabled by policy; NO queues paused, manual review required. DSN: %s.",
 				a.ID.ISP, trigger,
 				snap.BounceRate5m, snap.DeferralRate5m, snap.ComplaintRate1h,
 				snap.Sent5m, snap.Bounced1h, snap.Deferred5m,

@@ -165,6 +165,12 @@ type pmtaAudiencePlan struct {
 	// ReserveTotal is the sum of ReserveCountsByISP — convenience for
 	// log lines and audit dashboards. Always equals 0 under the kill switch.
 	ReserveTotal int
+	// SuppressionReasons buckets every dropped candidate by reason
+	// (dedup_or_empty, isp_not_allowed, isp_quota_cap, offer_suppression,
+	// global_or_brand_suppression, exclusion_list, excluded_segment,
+	// recently_mailed, sds_cold_suppressed, sds_recent_24h). Powers the
+	// per-campaign audience funnel (targeted vs suppressed by reason).
+	SuppressionReasons map[string]int
 }
 
 // reservePoolMultiplier returns the over-select factor applied to each
@@ -686,6 +692,16 @@ func planPMTAAudience(
 	selectionRank := 0
 	qualifiedPerISP := make(map[string]int, len(normalized.Plans))
 
+	// Audience funnel: count every candidate dropped, bucketed by reason, so
+	// the operator gets first-class "targeted vs suppressed (by reason)"
+	// optics without per-recipient event volume. Persisted as a single
+	// aggregate row per campaign by the finalizer. Cheap: in-memory int map.
+	suppressionReasons := make(map[string]int)
+	deny := func(reason string) bool {
+		suppressionReasons[reason]++
+		return false
+	}
+
 	// Async ISP backfill: collect subscriber IDs that need ISP set, flush in background.
 	var ispBackfill []struct{ ID, ISP string }
 
@@ -713,7 +729,7 @@ func planPMTAAudience(
 	qualifyEmail := func(subID, email, sourceType, sourceID string) bool {
 		emailLower := strings.ToLower(strings.TrimSpace(email))
 		if emailLower == "" || seenEmails[emailLower] {
-			return false
+			return deny("dedup_or_empty")
 		}
 		seenEmails[emailLower] = true
 
@@ -725,7 +741,7 @@ func planPMTAAudience(
 		}
 		isp := domainToISPLookup(domain)
 		if len(allowedISPs) > 0 && !allowedISPs[isp] {
-			return false
+			return deny("isp_not_allowed")
 		}
 		// Per-ISP qualification gate. Use the inflated reserve target so
 		// over-select can fill the reserve pool past plan.Quota. When
@@ -737,17 +753,17 @@ func planPMTAAudience(
 				target = q
 			}
 			if qualifiedPerISP[isp] >= target {
-				return false
+				return deny("isp_quota_cap")
 			}
 		}
 
 		// Offer suppression: Bloom filter O(1) or DB set fallback
 		if useBloomForOffer {
 			if suppressed, avail := offerSuppMgrRef.IsSuppressed(offerID, emailLower); avail && suppressed {
-				return false
+				return deny("offer_suppression")
 			}
 		} else if offerSuppSet[subID] {
-			return false
+			return deny("offer_suppression")
 		}
 
 		hash := md5.Sum([]byte(emailLower))
@@ -756,16 +772,16 @@ func planPMTAAudience(
 		// Passing campaignBrandRoot="" falls back to global-only so unknown
 		// sending domains keep behaving exactly as before.
 		if globalHub != nil && globalHub.IsSuppressedForBrand(emailLower, campaignBrandRoot) {
-			return false
+			return deny("global_or_brand_suppression")
 		}
 		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressedMD5(md5Hex, exclusionIDs) {
-			return false
+			return deny("exclusion_list")
 		}
 		if exclusionSegEmails[emailLower] {
-			return false
+			return deny("excluded_segment")
 		}
 		if sourceType == "list" && len(recentlyMailed) > 0 && recentlyMailed[emailLower] {
-			return false
+			return deny("recently_mailed")
 		}
 
 		// Per-domain engagement engine — SA-2 in-memory filter.
@@ -783,12 +799,12 @@ func planPMTAAudience(
 				switch sdsRowVal.state {
 				case "cold", "suppressed":
 					sdsFilteredCold++
-					return false
+					return deny("sds_cold_suppressed")
 				}
 				if sdsRowVal.lastMailedAt.Valid &&
 					time.Since(sdsRowVal.lastMailedAt.Time) < 20*time.Hour {
 					sdsFilteredRecent24h++
-					return false
+					return deny("sds_recent_24h")
 				}
 			}
 		}
@@ -1531,6 +1547,7 @@ func planPMTAAudience(
 		AfterSuppression:   len(qualified),
 		SelectedTotal:      selectedTotal,
 		ReserveTotal:       reserveTotal,
+		SuppressionReasons: suppressionReasons,
 	}, nil
 }
 

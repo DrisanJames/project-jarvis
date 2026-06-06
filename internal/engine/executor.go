@@ -49,7 +49,13 @@ func NewExecutor(host string, port int, user, sshKeyPath string) *Executor {
 // by ISPRateRegistry.
 func (e *Executor) Execute(ctx context.Context, d Decision) error {
 	switch d.ActionTaken {
-	case "quarantine_ip", "disable_source_ip", "pause_isp_queues", "emergency_halt", "pause_warmup":
+	case "pause_isp_queues", "emergency_halt", "pause_all_queues":
+		// POLICY: the conviction engine is NEVER permitted to pause sending queues.
+		// The decision still flows through for alerting/audit, but no PMTA pause is
+		// ever issued. Rate control is handled at the application level (backoff).
+		log.Printf("[executor] DISABLED BY POLICY: %s for ISP %s target=%s — automated queue pausing is not permitted; no action taken", d.ActionTaken, d.ISP, d.TargetValue)
+		return nil
+	case "quarantine_ip", "disable_source_ip", "pause_warmup":
 		log.Printf("[executor] ADVISORY-ONLY: %s for ISP %s target=%s (decision persisted, IP status unchanged)", d.ActionTaken, d.ISP, d.TargetValue)
 		return nil
 	case "reduce_ip_volume":
@@ -201,17 +207,19 @@ func (e *Executor) reprioritizeIP(ctx context.Context, ip string, isp ISP) error
 	return e.sendCommand(ctx, cmd)
 }
 
-func (e *Executor) pauseQueues(ctx context.Context, isp ISP) error {
-	cmd := fmt.Sprintf("pmta pause queue */%s-pool", isp)
-	return e.sendCommand(ctx, cmd)
+// pauseQueues is intentionally a no-op. POLICY: automated queue pausing is
+// disabled so no code path can ever issue `pmta pause queue`. Manual pausing is
+// done by the operator via the explicit override endpoints, not the engine.
+func (e *Executor) pauseQueues(_ context.Context, isp ISP) error {
+	log.Printf("[executor] pauseQueues suppressed by policy for ISP %s (no-op)", isp)
+	return nil
 }
 
-func (e *Executor) emergencyHalt(ctx context.Context, isp ISP) error {
-	if err := e.pauseQueues(ctx, isp); err != nil {
-		return err
-	}
-	cmd := fmt.Sprintf("pmta disable source * */%s-pool", isp)
-	return e.sendCommand(ctx, cmd)
+// emergencyHalt is intentionally a no-op. POLICY: the engine is not permitted to
+// pause queues or disable sources automatically. Detection/alerting still runs.
+func (e *Executor) emergencyHalt(_ context.Context, isp ISP) error {
+	log.Printf("[executor] emergencyHalt suppressed by policy for ISP %s (no-op)", isp)
+	return nil
 }
 
 func (e *Executor) setBackoffMode(ctx context.Context, isp ISP) error {

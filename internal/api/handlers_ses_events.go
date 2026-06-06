@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha1" // SES SNS SignatureVersion 1 still mandates SHA-1 RSA.
@@ -19,12 +20,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
 
 // VersionSESEvents is bumped on every modification per the workspace versioning rule.
-const VersionSESEvents = "1.0"
+// 2.0 — persists every SES event type into mailing_tracking_events keyed by the
+// recipient_send_id / campaign_id / subscriber_id MessageTags so SES DELIVERY
+// becomes the authoritative delivery signal for SES-routed mail.
+// 2.1 — on a new SES DELIVERY event, also writes back ses_delivered into the
+// pmta_acct_daily_summary rollup at the summary builder's (date, campaign, isp)
+// grain so accounting-driven dashboards report SES-confirmed delivery.
+const VersionSESEvents = "2.1"
 
 // SESEventsHandler receives SNS-wrapped SES event-publishing notifications
 // (Bounce, Complaint, Open, Click, Send, Delivery, Reject, DeliveryDelay) and:
@@ -94,8 +103,20 @@ type sesEventNotification struct {
 	EventType        string                 `json:"eventType"`        // SES v2 event-publishing key
 	NotificationType string                 `json:"notificationType"` // legacy v1 key kept for backward compat
 	Mail             struct {
-		Tags map[string][]string `json:"tags"`
+		MessageId     string              `json:"messageId"`
+		Timestamp     string              `json:"timestamp"`
+		Source        string              `json:"source"`
+		Tags          map[string][]string `json:"tags"`
+		CommonHeaders struct {
+			To   []string `json:"to"`
+			From []string `json:"from"`
+		} `json:"commonHeaders"`
 	} `json:"mail"`
+	Delivery struct {
+		Timestamp    string   `json:"timestamp"`
+		Recipients   []string `json:"recipients"`
+		SmtpResponse string   `json:"smtpResponse"`
+	} `json:"delivery"`
 	Bounce struct {
 		BounceType        string `json:"bounceType"`        // Permanent | Transient | Undetermined
 		BounceSubType     string `json:"bounceSubType"`     // Suppressed, OnAccountSuppressionList, OnSuppressionList, ...
@@ -217,26 +238,52 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 	tagConfig := firstTag(note.Mail.Tags, "ses:configuration-set")
 	tagTenant := firstTag(note.Mail.Tags, "ses:tenant-name")
 
+	// Custom MessageTags stamped at send time (send_worker.go relay path and
+	// esp_ses.go direct path). These let us join the SES event back to the
+	// exact campaign + subscriber + send attempt.
+	tagCampaign := firstTag(note.Mail.Tags, "campaign_id")
+	tagSubscriber := firstTag(note.Mail.Tags, "subscriber_id")
+	tagSendID := firstTag(note.Mail.Tags, "recipient_send_id")
+
 	switch eventType {
 	case "Bounce":
 		h.handleBounce(r, env, note, tagConfig, tagTenant)
 	case "Complaint":
 		h.handleComplaint(r, env, note, tagConfig, tagTenant)
 	case "Open":
-		// Ingestion into mailing_tracking_events is a deliberate follow-up.
-		// For now log so we can confirm the SNS event-destination is
-		// publishing OPEN/CLICK without flooding the suppressions table.
+		h.persistSESEvent(r, "opened", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", note.Open.Timestamp)
 		log.Printf("[ses-events] OPEN config_set=%s tenant=%s ip=%s", tagConfig, tagTenant, note.Open.IPAddress)
 	case "Click":
+		h.persistSESEvent(r, "clicked", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", note.Click.Link, note.Click.Timestamp)
 		log.Printf("[ses-events] CLICK config_set=%s tenant=%s link=%s ip=%s", tagConfig, tagTenant, note.Click.Link, note.Click.IPAddress)
 	case "Send":
+		h.persistSESEvent(r, "sent", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", note.Mail.Timestamp)
 		log.Printf("[ses-events] SEND config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Delivery":
+		rcpt := firstRecipient(note.Delivery.Recipients)
+		if rcpt == "" {
+			rcpt = firstRecipient(note.Mail.CommonHeaders.To)
+		}
+		ts := note.Delivery.Timestamp
+		if ts == "" {
+			ts = note.Mail.Timestamp
+		}
+		// SES DELIVERY is the authoritative delivery signal for SES-routed
+		// mail (accepted by the recipient mail system; NOT inbox placement).
+		h.persistSESEvent(r, "delivered", note, tagCampaign, tagSubscriber, tagSendID, rcpt, "", "", ts)
 		log.Printf("[ses-events] DELIVERY config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Reject":
+		h.persistSESEvent(r, "rejected", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), note.Reject.Reason, "", note.Mail.Timestamp)
 		log.Printf("[ses-events] REJECT reason=%s config_set=%s tenant=%s msgid=%s",
 			note.Reject.Reason, tagConfig, tagTenant, env.MessageId)
 	case "DeliveryDelay":
+		// A delivery delay is a transient deferral, not a terminal state.
+		h.persistSESEvent(r, "deferred", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), note.DeliveryDelay.DelayType, "", note.Mail.Timestamp)
 		log.Printf("[ses-events] DELIVERY_DELAY type=%s expire=%s config_set=%s tenant=%s",
 			note.DeliveryDelay.DelayType, note.DeliveryDelay.ExpirationTime, tagConfig, tagTenant)
 	default:
@@ -245,11 +292,183 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 	}
 }
 
+// firstRecipient normalizes the first address in a recipient list.
+func firstRecipient(list []string) string {
+	for _, v := range list {
+		v = strings.ToLower(strings.TrimSpace(v))
+		// commonHeaders.to entries can be "Name <addr@x>"; pull the addr.
+		if lt := strings.LastIndex(v, "<"); lt >= 0 {
+			if gt := strings.Index(v[lt:], ">"); gt >= 0 {
+				v = v[lt+1 : lt+gt]
+			}
+		}
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// parseSESTime parses an SES/ISO-8601 timestamp, falling back to now.
+func parseSESTime(s string) time.Time {
+	if s == "" {
+		return time.Now().UTC()
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.000Z"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Now().UTC()
+}
+
+// persistSESEvent writes one SES event into mailing_tracking_events, attributed
+// to a campaign + subscriber via the MessageTags. It is idempotent: a
+// deterministic id derived from (campaign, subscriber, recipient_send_id,
+// event_type, event_at) plus ON CONFLICT (id, event_at) DO NOTHING means SNS
+// redeliveries collapse to a single row. recipientSendID is recorded in
+// bounce_reason-adjacent metadata only via the dedupe key for now; a dedicated
+// column rides the event lake in Phase 1.
+func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, note sesEventNotification,
+	campaignID, subscriberID, recipientSendID, recipientEmail, bounceType, linkURL, tsRaw string) {
+
+	if h.db == nil || campaignID == "" {
+		// Without a campaign tag we cannot attribute the event. Pre-tag
+		// in-flight sends will simply not persist; post-deploy sends carry
+		// the tag. (Suppression for bounce/complaint is unaffected.)
+		return
+	}
+	campUUID, err := uuid.Parse(campaignID)
+	if err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	recipientEmail = strings.ToLower(strings.TrimSpace(recipientEmail))
+
+	var subPtr *uuid.UUID
+	if subscriberID != "" {
+		if u, e := uuid.Parse(subscriberID); e == nil {
+			subPtr = &u
+		}
+	}
+	// Fallback: resolve subscriber from message_log when the tag is absent
+	// (e.g. legacy in-flight sends) but we have the recipient address.
+	if subPtr == nil && recipientEmail != "" {
+		var sid sql.NullString
+		h.db.QueryRowContext(ctx, `
+			SELECT subscriber_id::text FROM mailing_message_log
+			WHERE campaign_id = $1 AND LOWER(email) = $2
+			ORDER BY sent_at DESC LIMIT 1
+		`, campUUID, recipientEmail).Scan(&sid)
+		if sid.Valid {
+			if u, e := uuid.Parse(sid.String); e == nil {
+				subPtr = &u
+			}
+		}
+	}
+
+	recipientDomain := ""
+	if i := strings.LastIndex(recipientEmail, "@"); i >= 0 {
+		recipientDomain = recipientEmail[i+1:]
+	}
+
+	var orgPtr *uuid.UUID
+	if u, e := uuid.Parse(h.orgID); e == nil {
+		orgPtr = &u
+	}
+
+	eventAt := parseSESTime(tsRaw)
+
+	// Deterministic id: prefer recipient_send_id for uniqueness, else fall
+	// back to subscriber/email so retries still dedupe.
+	idSeed := recipientSendID
+	if idSeed == "" {
+		idSeed = subscriberID + "|" + recipientEmail
+	}
+	dedupe := fmt.Sprintf("ses|%s|%s|%s|%s", campaignID, idSeed, eventType, eventAt.Format(time.RFC3339Nano))
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(dedupe))
+
+	var linkPtr, bouncePtr *string
+	if linkURL != "" {
+		linkPtr = &linkURL
+	}
+	if bounceType != "" {
+		bouncePtr = &bounceType
+	}
+
+	res, err := h.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (id, event_at) DO NOTHING
+	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain)
+	if err != nil {
+		log.Printf("[ses-events] persist %s campaign=%s error: %v", eventType, campaignID, err)
+		return
+	}
+	// Only act on a genuinely new row — SNS can redeliver the same
+	// notification, and ON CONFLICT makes those a no-op (RowsAffected == 0).
+	if n, raErr := res.RowsAffected(); raErr != nil || n == 0 {
+		return
+	}
+
+	// Keep mailing_campaigns aggregate counters consistent for SES-routed
+	// mail, since PMTA "d" is now recorded as relayed_to_ses (not delivered)
+	// and SES owns the bounce/complaint signal for these sends. Per the
+	// bounce-metrics rule, hard and soft bounces stay separate.
+	switch eventType {
+	case "delivered":
+		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+
+		// Mirror the SES-confirmed delivery into the PMTA accounting rollup as a
+		// dedicated ses_delivered counter, keyed on the SAME
+		// (summary_date, campaign_id, recipient_isp) grain the summary builder
+		// uses (isp.GroupFromDomain on the recipient domain). This keeps every
+		// accounting-driven dashboard (deliverability heatmap, metrics endpoint,
+		// growth narrative, CSV exports) SES-aware: they read
+		// delivered + ses_delivered as true delivered, while relayed_to_ses
+		// stays the labeled "PMTA→SES handoff" and delivered stays pure
+		// PMTA-direct facts. The PMTA "d" relay row almost always pre-exists
+		// (relay happens at send time, DELIVERY arrives later), so this is
+		// typically a cheap UPDATE on the existing (campaign, isp) row.
+		ispGroup := isp.GroupFromDomain(recipientDomain)
+		summaryDate := eventAt.UTC().Format("2006-01-02")
+		if _, derr := h.db.ExecContext(ctx, `
+			INSERT INTO pmta_acct_daily_summary
+				(id, summary_date, campaign_id, recipient_isp, ses_delivered, total_records, last_updated_at)
+			VALUES (gen_random_uuid(), $1::date, $2::uuid, $3, 1, 0, NOW())
+			ON CONFLICT (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)
+			DO UPDATE SET ses_delivered = pmta_acct_daily_summary.ses_delivered + 1, last_updated_at = NOW()
+		`, summaryDate, campUUID, ispGroup); derr != nil {
+			log.Printf("[ses-events] ses_delivered rollup upsert campaign=%s isp=%s error: %v", campaignID, ispGroup, derr)
+		}
+	case "bounced":
+		if bounceType == "hard" {
+			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+		} else {
+			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+		}
+	case "complained":
+		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+	}
+}
+
 func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) {
+	campaignID := firstTag(note.Mail.Tags, "campaign_id")
+	subscriberID := firstTag(note.Mail.Tags, "subscriber_id")
+	sendID := firstTag(note.Mail.Tags, "recipient_send_id")
+
 	// Only Permanent bounces feed suppression. Transient (soft) bounces are
-	// logged but not list-hygiene events per the bounce-metrics rule.
+	// not list-hygiene events per the bounce-metrics rule, but we still
+	// persist them as soft bounces so deferral/soft-bounce analytics are
+	// accurate.
 	if note.Bounce.BounceType != "Permanent" {
 		for _, rec := range note.Bounce.BouncedRecipients {
+			h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
+				rec.EmailAddress, "soft", "", note.Mail.Timestamp)
 			log.Printf("[ses-events] BOUNCE-soft type=%s subtype=%s addr=%s diag=%q config_set=%s tenant=%s",
 				note.Bounce.BounceType, note.Bounce.BounceSubType,
 				logger.RedactEmail(rec.EmailAddress), rec.DiagnosticCode, tagConfig, tagTenant)
@@ -267,6 +486,10 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 		if rec.EmailAddress == "" {
 			continue
 		}
+		// Persist the hard bounce as a tracking event (bounce_type "hard" so
+		// HardBounceSQL classifies it correctly) in addition to suppressing.
+		h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
+			rec.EmailAddress, "hard", "", note.Mail.Timestamp)
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping bounce for %s", logger.RedactEmail(rec.EmailAddress))
 			continue
@@ -283,6 +506,10 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 }
 
 func (h *SESEventsHandler) handleComplaint(r *http.Request, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) {
+	campaignID := firstTag(note.Mail.Tags, "campaign_id")
+	subscriberID := firstTag(note.Mail.Tags, "subscriber_id")
+	sendID := firstTag(note.Mail.Tags, "recipient_send_id")
+
 	reason := "ses_complaint"
 	if note.Complaint.ComplaintFeedbackType != "" {
 		reason = "ses_complaint:" + note.Complaint.ComplaintFeedbackType
@@ -291,6 +518,8 @@ func (h *SESEventsHandler) handleComplaint(r *http.Request, env snsEnvelope, not
 		if rec.EmailAddress == "" {
 			continue
 		}
+		h.persistSESEvent(r, "complained", note, campaignID, subscriberID, sendID,
+			rec.EmailAddress, "", "", note.Mail.Timestamp)
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping complaint for %s", logger.RedactEmail(rec.EmailAddress))
 			continue

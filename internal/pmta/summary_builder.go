@@ -88,7 +88,17 @@ type rawAcctRow struct {
 	recipientDomain string
 	bounceCat       string
 	jobID           string
+	vmta            string
+	pool            string
 	receivedAt      time.Time
+}
+
+// isSESRelayRow mirrors engine.IsPMTARelayedToSES: a "d" record on an SES
+// relay VMTA/pool is a handoff to SES, not a recipient delivery, so it must not
+// inflate the daily delivered rollup.
+func isSESRelayRow(r rawAcctRow) bool {
+	return strings.Contains(strings.ToLower(r.pool), "ses") ||
+		strings.Contains(strings.ToLower(r.vmta), "ses")
 }
 
 func (b *AcctSummaryBuilder) processBatch() {
@@ -97,7 +107,8 @@ func (b *AcctSummaryBuilder) processBatch() {
 
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT id, record_type, recipient, COALESCE(recipient_domain, ''),
-		       COALESCE(bounce_cat, ''), COALESCE(job_id, ''), received_at
+		       COALESCE(bounce_cat, ''), COALESCE(job_id, ''),
+		       COALESCE(vmta, ''), COALESCE(pool, ''), received_at
 		FROM pmta_acct_raw
 		WHERE processed = FALSE
 		ORDER BY id ASC
@@ -116,6 +127,7 @@ func (b *AcctSummaryBuilder) processBatch() {
 	}
 	type summaryDelta struct {
 		delivered          int
+		relayedToSES       int
 		hardBounce         int
 		softBounce         int
 		reputationBlocked  int
@@ -135,7 +147,7 @@ func (b *AcctSummaryBuilder) processBatch() {
 	for rows.Next() {
 		var r rawAcctRow
 		if err := rows.Scan(&r.id, &r.recordType, &r.recipient, &r.recipientDomain,
-			&r.bounceCat, &r.jobID, &r.receivedAt); err != nil {
+			&r.bounceCat, &r.jobID, &r.vmta, &r.pool, &r.receivedAt); err != nil {
 			log.Printf("[AcctSummary] scan error: %v", err)
 			continue
 		}
@@ -154,7 +166,11 @@ func (b *AcctSummaryBuilder) processBatch() {
 
 		switch r.recordType {
 		case "d":
-			d.delivered++
+			if isSESRelayRow(r) {
+				d.relayedToSES++
+			} else {
+				d.delivered++
+			}
 		case "b":
 			switch classifyBounce(r.bounceCat) {
 			case bounceHard:
@@ -191,12 +207,13 @@ func (b *AcctSummaryBuilder) processBatch() {
 
 		_, err := b.db.ExecContext(ctx, `
 			INSERT INTO pmta_acct_daily_summary
-				(id, summary_date, campaign_id, recipient_isp, delivered, hard_bounced,
+				(id, summary_date, campaign_id, recipient_isp, delivered, relayed_to_ses, hard_bounced,
 				 soft_bounced, reputation_blocked, complained, deferred, total_records, last_updated_at)
-			VALUES (gen_random_uuid(), $1::date, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+			VALUES (gen_random_uuid(), $1::date, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 			ON CONFLICT (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)
 			DO UPDATE SET
 				delivered = pmta_acct_daily_summary.delivered + EXCLUDED.delivered,
+				relayed_to_ses = pmta_acct_daily_summary.relayed_to_ses + EXCLUDED.relayed_to_ses,
 				hard_bounced = pmta_acct_daily_summary.hard_bounced + EXCLUDED.hard_bounced,
 				soft_bounced = pmta_acct_daily_summary.soft_bounced + EXCLUDED.soft_bounced,
 				reputation_blocked = pmta_acct_daily_summary.reputation_blocked + EXCLUDED.reputation_blocked,
@@ -204,7 +221,7 @@ func (b *AcctSummaryBuilder) processBatch() {
 				deferred = pmta_acct_daily_summary.deferred + EXCLUDED.deferred,
 				total_records = pmta_acct_daily_summary.total_records + EXCLUDED.total_records,
 				last_updated_at = NOW()
-		`, key.date, campIDParam, key.recipientISP, d.delivered, d.hardBounce,
+		`, key.date, campIDParam, key.recipientISP, d.delivered, d.relayedToSES, d.hardBounce,
 			d.softBounce, d.reputationBlocked, d.complained, d.deferred, d.total)
 		if err != nil {
 			log.Printf("[AcctSummary] upsert error for %s/%s/%s: %v",

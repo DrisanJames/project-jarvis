@@ -228,19 +228,29 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// because the old oldest-first claim wastes wave slots on ISPs
 		// (yahoo) whose share of the queue dominates and whose cap is
 		// then defer-released.
+		// 2026-06-05 REDUCTION (operator directive "do not stop them just reduce
+		// the quotas"): DSN-truth analysis showed the drip's "14-17% hard bounce"
+		// is ~98% ISP reputation BLOCKS (5.0.0 policy, 5.3.2 system-not-accepting,
+		// 5.7.1 spam) on clean EO-verified addresses — i.e. a reputation/placement
+		// problem, not bad data. The cold-mail VOLUME on the shared PMTA IPs is what
+		// manufactures those blocks. Caps cut ~70% to relieve block pressure while
+		// the engaged-only model rebuilds reputation; the channel keeps flowing.
+		// Prior caps (gmail 200/yahoo 20/aol 20/microsoft 100/apple 200/comcast 100/
+		// charter 100/att 60/sbcglobal 60/cox 60/verizon 60/other 150) are preserved
+		// in git history; raise back once block rate (5.x.x reputation DSNs) recovers.
 		cfg.PerISPCapPerWave = map[string]int{
-			"gmail":     200,
-			"yahoo":     20,
-			"aol":       20,
-			"microsoft": 100,
-			"apple":     200,
-			"comcast":   100,
-			"charter":   100,
-			"att":       60,
-			"sbcglobal": 60,
-			"cox":       60,
-			"verizon":   60,
-			"other":     150,
+			"gmail":     50,
+			"yahoo":     8,
+			"aol":       8,
+			"microsoft": 30,
+			"apple":     50,
+			"comcast":   30,
+			"charter":   30,
+			"att":       20,
+			"sbcglobal": 20,
+			"cox":       20,
+			"verizon":   20,
+			"other":     40,
 		}
 	}
 	if cfg.PerISPDrainDays == nil {
@@ -731,12 +741,15 @@ func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical
 	if err != nil {
 		return c, fmt.Errorf("creative lookup (%s/%s): %w", vertical, brand, err)
 	}
-	if subj, pre, ok := po.rotateCopyLines(ctx, vertical, brand); ok {
+	if subj, pre, fn, ok := po.rotateCopyLines(ctx, vertical, brand); ok {
 		if subj != "" {
 			c.subject = subj
 		}
 		if pre != "" {
 			c.preheader = pre
+		}
+		if fn != "" {
+			c.fromName = fn
 		}
 	}
 	body, err := os.ReadFile(filepath.Join(po.cfg.CreativesDir, c.filename))
@@ -747,13 +760,13 @@ func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical
 	return c, nil
 }
 
-// rotateCopyLines picks subject + preheader from partner_drip_copy_lines when
-// seeded for a vertical. Subject and preheader rotate independently from their
-// respective pools (same pool may back both for mix-and-match copy tests).
-func (po *PartnerDripOrchestrator) rotateCopyLines(ctx context.Context, vertical, brand string) (subject, preheader string, ok bool) {
+// rotateCopyLines picks subject, preheader, and from_name from
+// partner_drip_copy_lines when seeded for a vertical. Each pool rotates
+// independently so copy tests can mix strict from-names with subject lines.
+func (po *PartnerDripOrchestrator) rotateCopyLines(ctx context.Context, vertical, brand string) (subject, preheader, fromName string, ok bool) {
 	subjects, err := po.fetchCopyLines(ctx, vertical, "subject")
 	if err != nil || len(subjects) == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	preheaders, err := po.fetchCopyLines(ctx, vertical, "preheader")
 	if err != nil {
@@ -762,12 +775,21 @@ func (po *PartnerDripOrchestrator) rotateCopyLines(ctx context.Context, vertical
 	if len(preheaders) == 0 {
 		preheaders = subjects
 	}
+	fromNames, err := po.fetchCopyLines(ctx, vertical, "from_name")
+	if err != nil {
+		fromNames = nil
+	}
 	bucket := time.Now().UTC().Truncate(5 * time.Minute).Unix()
 	rotKey := fmt.Sprintf("%s|%s|%d", vertical, brand, bucket)
 	rotSHA := sha256.Sum256([]byte(rotKey))
 	subIdx := int(rotSHA[0])<<8 | int(rotSHA[1])
 	preIdx := int(rotSHA[2])<<8 | int(rotSHA[3])
-	return subjects[subIdx%len(subjects)], preheaders[preIdx%len(preheaders)], true
+	fn := ""
+	if len(fromNames) > 0 {
+		fnIdx := int(rotSHA[4])<<8 | int(rotSHA[5])
+		fn = fromNames[fnIdx%len(fromNames)]
+	}
+	return subjects[subIdx%len(subjects)], preheaders[preIdx%len(preheaders)], fn, true
 }
 
 func (po *PartnerDripOrchestrator) fetchCopyLines(ctx context.Context, vertical, kind string) ([]string, error) {
