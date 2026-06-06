@@ -125,3 +125,81 @@ func TestResolveOfferFromLink_EmptyDict(t *testing.T) {
 		t.Fatal("expected ok=false against empty dictionary")
 	}
 }
+
+// TestExtractMoneySlug verifies the slug extractor returns the normalized key
+// used for both the offer dictionary and the consumer-signal redirect map.
+func TestExtractMoneySlug(t *testing.T) {
+	cases := []struct {
+		name     string
+		link     string
+		wantSlug string
+		wantOK   bool
+	}{
+		{"warby cratoolpro", "https://www.cratoolpro.com/BJB4Q5BF/K5C8PQQ/?source_id=email&sub1=x&sub2=quizfiesta.com", "K5C8PQQ", true},
+		{"trugreen cratoolpro lowercase", "https://www.cratoolpro.com/BJB4Q5BF/bxpft55/?creative_id=643433", "BXPFT55", true},
+		{"sams club affiliate PS slug", "https://www.eos57ytf.com/K4C5ZLC/PS8241/?source_id=email", "PS8241", true},
+		{"non-money link", "https://discountblog.com/article", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractMoneySlug(tc.link)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (link=%q)", ok, tc.wantOK, tc.link)
+			}
+			if ok && got != tc.wantSlug {
+				t.Fatalf("slug = %q, want %q (link=%q)", got, tc.wantSlug, tc.link)
+			}
+		})
+	}
+}
+
+// TestConsumerSignalRedirect mirrors the in-loop resolution: a Warby/TruGreen
+// slug redirects to the Sam's Club target offer; any other slug falls through
+// to the normal offer dictionary. This guards the core wiring of the
+// 2026-06-06 "consumer signal → Sam's Club drip" directive.
+func TestConsumerSignalRedirect(t *testing.T) {
+	signals := map[string]consumerSignal{
+		"K5C8PQQ": {targetOffer: "420", namePattern: "%sam%"}, // Warby Parker
+		"BXPFT55": {targetOffer: "420", namePattern: "%sam%"}, // TruGreen
+	}
+	dict := testSlugDict()
+
+	// resolve replicates the loop's offer-resolution precedence (signal first,
+	// then the normal slug dictionary).
+	resolve := func(link string) (offer string, redirect bool, ok bool) {
+		slug, hasSlug := extractMoneySlug(link)
+		if sig, isSignal := signals[slug]; hasSlug && isSignal {
+			return sig.targetOffer, true, true
+		}
+		if o, found := resolveOfferFromLink(link, dict); found {
+			return o, false, true
+		}
+		return "", false, false
+	}
+
+	cases := []struct {
+		name         string
+		link         string
+		wantOffer    string
+		wantRedirect bool
+		wantOK       bool
+	}{
+		{"warby click redirects to sams 420", "https://www.cratoolpro.com/BJB4Q5BF/K5C8PQQ/?sub2=quizfiesta.com", "420", true, true},
+		{"trugreen click redirects to sams 420", "https://www.cratoolpro.com/BJB4Q5BF/BXPFT55/?creative_id=643433", "420", true, true},
+		{"metal roofing click is NOT redirected", "https://www.cratoolpro.com/BJB4Q5BF/KW3Q1DJ/", "9539", false, true},
+		{"direct sams affiliate click maps normally (no redirect)", "https://www.eos57ytf.com/K4C5ZLC/PS8241/", "420", false, true},
+		{"unknown slug is skipped", "https://www.cratoolpro.com/BJB4Q5BF/ZZZZZZZ/", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			offer, redirect, ok := resolve(tc.link)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && (offer != tc.wantOffer || redirect != tc.wantRedirect) {
+				t.Fatalf("got (offer=%q, redirect=%v), want (offer=%q, redirect=%v)", offer, redirect, tc.wantOffer, tc.wantRedirect)
+			}
+		})
+	}
+}

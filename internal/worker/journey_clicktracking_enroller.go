@@ -71,6 +71,22 @@ var cratoolproSlugRe = regexp.MustCompile(`cratoolpro\.com/BJB4Q5BF/([A-Za-z0-9_
 // https://www.eos57ytf.com/K4C5ZLC/PS8241/?creative_id=4989&source_id=email...
 var affiliateSlugRe = regexp.MustCompile(`(?i)/PS([0-9]+)(?:/|\?|&|$)`)
 
+// consumerSignal is a "click this offer → enroll into a DIFFERENT offer's drip"
+// redirect, loaded from mailing_consumer_signal_slugs. Operator directive
+// 2026-06-06: a click on Warby Parker (K5C8PQQ) or TruGreen (BXPFT55) marks the
+// subscriber as a consumer and funnels them into the Sam's Club (offer 420)
+// drip — NOT a Warby/TruGreen drip (those have none).
+//
+// A redirect cannot be expressed as a plain slug→offer map row because the
+// reminder body (journey_event_enroller reads body_html from sub3_campaign_id)
+// must be the TARGET offer's creative, not the clicked Warby/TruGreen creative.
+// So a redirect carries both the target offer id and the name pattern used to
+// resolve the clicker's brand TARGET-offer campaign for sub3.
+type consumerSignal struct {
+	targetOffer string // everflow_offer_id of the drip to enroll into (e.g. "420")
+	namePattern string // ILIKE pattern to find that brand's target-offer campaign
+}
+
 // JourneyClickTrackingEnroller is the worker handle.
 type JourneyClickTrackingEnroller struct {
 	db         *sql.DB
@@ -181,6 +197,26 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		return // nothing mapped yet
 	}
 
+	// Load consumer-signal redirects (Warby/TruGreen → Sam's Club) and, for each
+	// distinct target-offer name pattern, the per-brand-root → most-recent
+	// target-offer campaign map used to resolve sub3_campaign_id so the reminder
+	// pitches the TARGET offer's creative. Loaded once per tick (a few rows /
+	// ~14 brands); read-only, outside the cursor tx to minimize lock time.
+	consumerSignals, err := w.loadConsumerSignals(tickCtx)
+	if err != nil {
+		// Non-fatal: a load failure must not stall the normal click→drip flow.
+		atomic.AddInt64(&w.totalErrors, 1)
+		log.Printf("JourneyClickTrackingEnroller: load consumer signals: %v", err)
+		consumerSignals = nil
+	}
+	brandCampaignByPattern := make(map[string]map[string]string)
+	for _, sig := range consumerSignals {
+		if _, done := brandCampaignByPattern[sig.namePattern]; done {
+			continue
+		}
+		brandCampaignByPattern[sig.namePattern] = w.loadBrandCampaignMap(tickCtx, sig.namePattern)
+	}
+
 	tx, err := w.db.BeginTx(tickCtx, nil)
 	if err != nil {
 		atomic.AddInt64(&w.totalErrors, 1)
@@ -262,15 +298,50 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 
 	queued := 0
 	for _, c := range cands {
-		offerID, ok := resolveOfferFromLink(c.linkURL, slugToOffer)
-		if !ok {
+		// Resolve the offer this click enrolls into. A consumer-signal slug
+		// (Warby/TruGreen) REDIRECTS to a different drip (Sam's Club 420); any
+		// other money slug maps to its own offer as usual.
+		offerID := ""
+		source := "internal_click_tracking"
+		// sub3_campaign_id defaults to the campaign the subscriber clicked, so
+		// the reminder reuses that creative. For a redirect it is instead the
+		// brand's TARGET-offer campaign (set below).
+		var campaignArg interface{} = ""
+		if c.campaignID != "" {
+			campaignArg = c.campaignID
+		}
+
+		slug, hasSlug := extractMoneySlug(c.linkURL)
+		if sig, isSignal := consumerSignals[slug]; hasSlug && isSignal {
+			// Redirect: enroll into the target offer's drip with the brand's
+			// target-offer creative as the reminder body. If this brand has no
+			// recent target-offer campaign we cannot pitch the redirected offer
+			// without a misaligned creative/money-link — skip rather than send
+			// the wrong thing.
+			brandRoot := brand.Root(c.sendingDomain)
+			targetCampaign := ""
+			if m := brandCampaignByPattern[sig.namePattern]; m != nil {
+				targetCampaign = m[brandRoot]
+			}
+			if targetCampaign == "" {
+				atomic.AddInt64(&w.totalSkipped, 1)
+				continue
+			}
+			offerID = sig.targetOffer
+			campaignArg = targetCampaign
+			source = "consumer_signal_redirect"
+		} else if o, ok := resolveOfferFromLink(c.linkURL, slugToOffer); ok {
+			offerID = o
+		} else {
 			atomic.AddInt64(&w.totalSkipped, 1)
 			continue
 		}
 
 		// Per-(subscriber, offer) 24h dedup — keeps the trigger queue tidy and
 		// guards the cursor-boundary reprocess case. (The downstream enroller
-		// also dedups, but suppressing here avoids noise.)
+		// also dedups, but suppressing here avoids noise.) For a redirect this
+		// dedups against the TARGET offer, so two consumer-signal clicks (or one
+		// Sam's Club + one Warby click) within 24h enroll the subscriber once.
 		var dup int
 		if err := tx.QueryRowContext(tickCtx, `
 			SELECT 1 FROM mailing_journey_event_triggers
@@ -286,24 +357,18 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 			continue
 		}
 
-		var campaignArg interface{}
-		if c.campaignID != "" {
-			campaignArg = c.campaignID
-		} else {
-			campaignArg = ""
-		}
-
 		if _, err := tx.ExecContext(tickCtx, `
 			INSERT INTO mailing_journey_event_triggers (
 				id, source, everflow_offer_id, subscriber_id, subscriber_email,
 				sub2_brand, sub3_campaign_id, click_id, sending_profile_id,
 				sending_domain, click_url, status, received_at
 			) VALUES (
-				gen_random_uuid(), 'internal_click_tracking', $1, $2, NULL,
-				$3, $4, '', NULL,
-				$5, $6, 'pending', NOW()
+				gen_random_uuid(), $1, $2, $3, NULL,
+				$4, $5, '', NULL,
+				$6, $7, 'pending', NOW()
 			)
 		`,
+			source,
 			offerID,
 			c.subscriberID,
 			brand.Root(c.sendingDomain),
@@ -364,6 +429,90 @@ func (w *JourneyClickTrackingEnroller) loadSlugMap(ctx context.Context) (map[str
 		out[normalizeSlug(slug)] = offer
 	}
 	return out, rows.Err()
+}
+
+// loadConsumerSignals returns enabled consumer-signal redirects keyed by
+// normalized slug. A click on one of these slugs enrolls the subscriber into
+// the target offer's drip (with that offer's creative) instead of the clicked
+// offer. Empty/missing table is fine — returns an empty map.
+func (w *JourneyClickTrackingEnroller) loadConsumerSignals(ctx context.Context) (map[string]consumerSignal, error) {
+	out := make(map[string]consumerSignal)
+	rows, err := w.db.QueryContext(ctx,
+		`SELECT slug, target_everflow_offer_id, target_campaign_name_ilike
+		   FROM mailing_consumer_signal_slugs WHERE enabled=TRUE`)
+	if err != nil {
+		// Table may not exist yet on a fresh DB before startup migrations run.
+		if strings.Contains(err.Error(), "does not exist") {
+			return out, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, target, pattern string
+		if err := rows.Scan(&slug, &target, &pattern); err != nil {
+			return nil, err
+		}
+		if target == "" || pattern == "" {
+			continue
+		}
+		out[normalizeSlug(slug)] = consumerSignal{targetOffer: target, namePattern: pattern}
+	}
+	return out, rows.Err()
+}
+
+// loadBrandCampaignMap returns, for each brand root, the most-recent campaign id
+// whose name matches namePattern and that carries a usable creative — the source
+// of the reminder body for a consumer-signal redirect. Sam's Club campaigns are
+// not offer_id-linked in production, so name matching is the only reliable
+// signal. brand.Root() collapses the em.<brand> click domain and the m.<brand>
+// Sam's Club send domain to the same root. Returns an empty map on error so a
+// failed load simply means redirects skip (never a misaligned send).
+func (w *JourneyClickTrackingEnroller) loadBrandCampaignMap(ctx context.Context, namePattern string) map[string]string {
+	out := make(map[string]string)
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT c.id::text, COALESCE(p.sending_domain,'')
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_sending_profiles p ON p.id = c.sending_profile_id
+		WHERE c.name ILIKE $1
+		  AND c.name NOT ILIKE '%proof%'
+		  AND c.campaign_type <> 'click_drip'
+		  AND c.html_content IS NOT NULL AND length(c.html_content) > 0
+		  AND c.created_at >= NOW() - INTERVAL '14 days'
+		ORDER BY c.created_at DESC
+	`, namePattern)
+	if err != nil {
+		log.Printf("JourneyClickTrackingEnroller: load brand campaign map (%q): %v", namePattern, err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, dom string
+		if err := rows.Scan(&id, &dom); err != nil {
+			continue
+		}
+		root := brand.Root(dom)
+		if root == "" {
+			continue
+		}
+		if _, exists := out[root]; !exists {
+			out[root] = id // first row per brand = most recent (ORDER BY created_at DESC)
+		}
+	}
+	return out
+}
+
+// extractMoneySlug pulls the normalized offer slug from a money URL, handling
+// both the cratoolpro publisher path and the eos57ytf affiliate PS#### form.
+// ok=false when the link carries no recognizable money slug.
+func extractMoneySlug(linkURL string) (string, bool) {
+	if m := cratoolproSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
+		return normalizeSlug(m[1]), true
+	}
+	if m := affiliateSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
+		return normalizeSlug("PS" + m[1]), true
+	}
+	return "", false
 }
 
 // resolveOfferFromLink extracts a money-URL slug and maps it to an everflow

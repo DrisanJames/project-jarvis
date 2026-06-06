@@ -2503,6 +2503,16 @@ func runStartupMigrations(db *sql.DB) {
 				'm.casainsure.com', true, true, true, 'verified', NOW(), NOW()
 			WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_domains
 				WHERE domain = 'm.casainsure.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		// EVERYTHING-via-SES (jun05): QF/HT/MH SES tenant profiles were seeded
+		// inactive during the jun03 cutover (only DB/RR went live then). The
+		// all-SES directive needs them active so pinned-profile preflight passes.
+		// Activated via API jun05; this UPDATE keeps them active across deploys.
+		{"activate_qf_ht_mh_ses_tenant_profiles", `UPDATE mailing_sending_profiles
+			SET status = 'active', updated_at = NOW()
+			WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+			  AND name IN ('Quiz Fiesta (SES Tenant)', 'History Thinking (SES Tenant)', 'My Own Health (SES Tenant)')
+			  AND status <> 'active'`},
 		// Ensure seed/test subscribers have first_name populated
 		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
 		// --- AWS SES via PMTA relay: m.discountblog.com ---
@@ -6502,6 +6512,38 @@ END $$`},
 		{"jun05_fix_samsclub_ef_offer_id_subjects_upd", `UPDATE mailing_offer_reminder_subjects
 			SET everflow_offer_id='420', updated_at=NOW()
 			WHERE everflow_offer_id='8241'`},
+
+		// Consumer-signal redirect (2026-06-06): a click on a "consumer signal"
+		// offer (Warby Parker / TruGreen) marks the subscriber as a buyer and
+		// funnels them into a DIFFERENT offer's click-drip. Operator directive:
+		// Warby Parker (slug K5C8PQQ) and TruGreen (slug BXPFT55) clickers enter
+		// the Sam's Club (Everflow offer 420) drip.
+		//
+		// Why a separate table (not just a mailing_offer_slug_map row): a plain
+		// slug→420 map row would tag the trigger as offer 420 but leave
+		// sub3_campaign_id pointing at the WARBY/TRUGREEN campaign, so the
+		// reminder body (journey_event_enroller reads body_html from sub3) would
+		// be the Warby creative under a Sam's Club subject — wrong offer pitched,
+		// wrong money link. The redirect therefore needs BOTH the target offer id
+		// AND a way to resolve the clicker's brand Sam's Club creative.
+		// target_campaign_name_ilike is the name pattern used to find that brand's
+		// most recent target-offer campaign (Sam's Club campaigns are NOT
+		// offer_id-linked in prod, so name match is the only signal).
+		{"jun06_consumer_signal_slugs_table", `CREATE TABLE IF NOT EXISTS mailing_consumer_signal_slugs (
+			slug                       VARCHAR(64) PRIMARY KEY,
+			target_everflow_offer_id   VARCHAR(64) NOT NULL,
+			target_campaign_name_ilike TEXT NOT NULL,
+			label                      TEXT DEFAULT '',
+			enabled                    BOOLEAN NOT NULL DEFAULT TRUE,
+			notes                      TEXT DEFAULT '',
+			created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"jun06_consumer_signal_slugs_seed", `INSERT INTO mailing_consumer_signal_slugs
+			(slug, target_everflow_offer_id, target_campaign_name_ilike, label, enabled, notes) VALUES
+			('K5C8PQQ', '420', '%sam%', 'Warby Parker', TRUE, 'cratoolpro slug K5C8PQQ (may23 redeploy); consumer signal → Sam''s Club offer 420 drip'),
+			('BXPFT55', '420', '%sam%', 'TruGreen',     TRUE, 'cratoolpro slug BXPFT55 (trugreen newsletter creatives); consumer signal → Sam''s Club offer 420 drip')
+			ON CONFLICT (slug) DO NOTHING`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
