@@ -41,10 +41,13 @@ PASSTHROUGH_ENV_VARS = [
     "SLACK_WEBHOOK_URL",
     "SLACK_ALERT_CHANNEL",
     # Conversion alerts → #conversions Slack channel (Everflow conversion
-    # postbacks). Set SLACK_CONVERSIONS_WEBHOOK_URL (an Incoming Webhook bound to
-    # #conversions) in the deploy shell on first rollout; once in the task
-    # definition, subsequent deploys inherit it. Alternatively SLACK_BOT_TOKEN +
-    # SLACK_CONVERSIONS_CHANNEL uses the chat.postMessage transport.
+    # postbacks). The active transport is the shared "Jarvis Maintenance Workers"
+    # bot token (SLACK_BOT_TOKEN, scopes chat:write + chat:write.public) which
+    # notify.ConversionsFromEnv() posts to SLACK_CONVERSIONS_CHANNEL (#conversions).
+    # SLACK_CONVERSIONS_WEBHOOK_URL is an alternative incoming-webhook transport
+    # (none currently bound to #conversions). Set in the deploy shell on first
+    # rollout; once in the task definition, subsequent deploys inherit it.
+    "SLACK_BOT_TOKEN",
     "SLACK_CONVERSIONS_WEBHOOK_URL",
     "SLACK_CONVERSIONS_CHANNEL",
 ]
