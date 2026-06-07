@@ -2189,6 +2189,27 @@ func runStartupMigrations(db *sql.DB) {
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
 
+		// Corrective re-pin: the HT/MH SES-Tenant profiles were created (Jun-03
+		// cutover) with ip_pool='ses-relay-b', but PMTA Server B has NO virtual-mta
+		// or virtual-mta-pool named 'ses-relay-b' — only the per-brand tenant pools
+		// 'ht-ses-pool' / 'mh-ses-pool' (and a generic 'ses-relay-pool'). The send
+		// worker's bare-pool path (esp_profile.go) passes ip_pool verbatim as the
+		// PMTA VMTA, so every message was rejected with
+		//   554 5.5.0 specified Virtual MTA 'ses-relay-b' does not exist
+		// stranding ~23k recipients/day with zero delivery. The seed INSERTs above
+		// can't fix an already-existing row (WHERE NOT EXISTS), so this UPDATE
+		// corrects the live rows to the tenant pools that actually exist on Server B
+		// (matching the 6 sibling Server-B brands that deliver fine). Idempotent.
+		{"fix_ht_mh_ses_tenant_ip_pool", `UPDATE mailing_sending_profiles
+			SET ip_pool = CASE sending_domain
+				WHEN 'm.historythinking.com' THEN 'ht-ses-pool'
+				WHEN 'm.myownhealth.net'     THEN 'mh-ses-pool'
+			END, updated_at = NOW()
+			WHERE sending_domain IN ('m.historythinking.com','m.myownhealth.net')
+			  AND via_ses = TRUE
+			  AND ip_pool = 'ses-relay-b'
+			  AND organization_id = '00000000-0000-0000-0000-000000000001'`},
+
 		// Quiz Fiesta (SES Tenant) — SECOND profile for em.quizfiesta.com brand.
 		// PMTA Server A (15.204.101.125), same as DB.
 		{"seed_pmta_qf_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
@@ -5060,10 +5081,23 @@ END $$`},
 		// m.historythinking.com, m.quizfiesta.com, m.myownhealth.net all have SPF
 		// but no A or MX record, causing "Domain not found" rejections from Apple
 		// and other strict MTAs. m.discountblog.com is excluded (has valid MX).
+		//
+		// 2026-06-06 guard (via_ses=false): under the all-SES tenant cutover the
+		// via_ses=true tenant profiles (Quiz Fiesta / History Thinking / My Own
+		// Health (SES Tenant)) deliver through their SES tenant — the missing
+		// m.* A/MX record is irrelevant on that path (proven by the 6 sibling
+		// Server-B tenant brands hw/lp/rb/tt/wf/yi, which are active and deliver
+		// fine with the identical no-A/MX posture). Without this guard, phase20
+		// runs AFTER activate_qf_ht_mh_ses_tenant_profiles every boot (migrations
+		// re-run in slice order, no applied-tracking) and silently re-deactivated
+		// the tenant profiles, blocking all future HT/MH/QF partner-drip deploys
+		// at preflight (which requires status='active'). The guard keeps phase20
+		// deactivating only the legacy via_ses=false relay duplicates.
 		{"phase20_deactivate_broken_ses_profiles", `UPDATE mailing_sending_profiles
 			SET status = 'inactive', updated_at = NOW()
 			WHERE sending_domain IN ('m.historythinking.com', 'm.quizfiesta.com', 'm.myownhealth.net')
-			  AND status = 'active'`},
+			  AND status = 'active'
+			  AND COALESCE(via_ses, false) = false`},
 
 		// ---------------------------------------------------------------------
 		// Phase 21: Master List Migration — additive schema (P1)
