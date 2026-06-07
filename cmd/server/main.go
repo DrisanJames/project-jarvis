@@ -4868,12 +4868,18 @@ BEGIN
     UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-a', pool_prefix = ''
     WHERE sending_domain = 'm.quizfiesta.com' AND vendor_type = 'pmta'
       AND (ip_pool != 'ses-relay-a' OR pool_prefix != '' OR pool_prefix IS NULL);
-    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-b', pool_prefix = ''
+    -- HT/MH route through their per-brand tenant pools, NOT ses-relay-b.
+    -- PMTA Server B has NO virtual-mta named ses-relay-b (only ht-ses-pool
+    -- and mh-ses-pool); pinning these to ses-relay-b makes every send fail
+    -- with a 554 "specified Virtual MTA ses-relay-b does not exist" reject.
+    -- This MUST match fix_ht_mh_ses_tenant_ip_pool — otherwise whichever of the
+    -- two migrations runs last on boot wins, and the bug silently returns.
+    UPDATE mailing_sending_profiles SET ip_pool = 'ht-ses-pool', pool_prefix = ''
     WHERE sending_domain = 'm.historythinking.com' AND vendor_type = 'pmta'
-      AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
-    UPDATE mailing_sending_profiles SET ip_pool = 'ses-relay-b', pool_prefix = ''
+      AND (ip_pool != 'ht-ses-pool' OR pool_prefix != '' OR pool_prefix IS NULL);
+    UPDATE mailing_sending_profiles SET ip_pool = 'mh-ses-pool', pool_prefix = ''
     WHERE sending_domain = 'm.myownhealth.net' AND vendor_type = 'pmta'
-      AND (ip_pool != 'ses-relay-b' OR pool_prefix != '' OR pool_prefix IS NULL);
+      AND (ip_pool != 'mh-ses-pool' OR pool_prefix != '' OR pool_prefix IS NULL);
 END $$`},
 
 		// ── Audience architecture refactor: add finalizing_audience status ──
