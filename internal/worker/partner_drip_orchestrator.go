@@ -346,10 +346,14 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	} else if n > 0 {
 		log.Printf("[PartnerDripOrchestrator] reconciled %d claimed rows to mailed (post-deploy markMailed miss)", n)
 	}
+	// A gateway-query failure (e.g. statement_timeout under heavy RDS IO) must
+	// NOT abort the whole tick — the follow-up pass below is an independent
+	// path with its own gateway and should still get a chance to ship. Log and
+	// fall through with an empty welcome set rather than returning early.
 	verticals, err := po.activeVerticalsWithBacklog(po.ctx)
 	if err != nil {
-		log.Printf("[PartnerDripOrchestrator] active_verticals: %v", err)
-		return
+		log.Printf("[PartnerDripOrchestrator] active_verticals: %v (continuing to follow-up pass)", err)
+		verticals = nil
 	}
 	for _, v := range verticals {
 		if po.ctx.Err() != nil {
@@ -394,72 +398,87 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 // from the DB. Used between intra-tick calls to processVertical so the
 // brand pointer + ready-count reflect the wave we just shipped.
 func (po *PartnerDripOrchestrator) refreshVerticalState(ctx context.Context, vertical string) (*verticalState, error) {
-	rows, err := po.db.QueryContext(ctx, `
-		WITH oldest AS (
-			SELECT q.vertical, q.dataset_id, MIN(q.ingested_at) AS oldest_at,
-			       COUNT(*) FILTER (WHERE q.status = 'ready') AS ready_total
-			FROM partner_clean_queue q
-			WHERE q.status = 'ready' AND q.vertical = $1
-			GROUP BY q.vertical, q.dataset_id
+	var (
+		v     verticalState
+		found bool
+	)
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		// Phase 1 — cheap per-vertical aggregate via idx_pcq_status_ready.
+		var (
+			readyTotal sql.NullInt64
+			oldestAt   sql.NullTime
 		)
-		SELECT s.vertical, s.next_brand_index,
-		       (SELECT SUM(o.ready_total) FROM oldest o WHERE o.vertical = s.vertical) AS ready_total,
-		       (SELECT MIN(o.oldest_at) FROM oldest o WHERE o.vertical = s.vertical) AS oldest_at,
-		       d.id, d.slug, p.slug, p.name, d.flush_window_hours,
-		       COALESCE(d.offer_id::text, '')
-		FROM partner_drip_state s
-		LEFT JOIN LATERAL (
-			SELECT q.dataset_id
-			FROM partner_clean_queue q
-			WHERE q.vertical = s.vertical AND q.status = 'ready'
-			ORDER BY q.ingested_at ASC
-			LIMIT 1
-		) AS dom ON true
-		LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
-		LEFT JOIN data_partners p ON p.id = d.partner_id
-		WHERE s.vertical = $1
-	`, vertical)
+		err := tx.QueryRowContext(ctx, `
+			SELECT s.next_brand_index, agg.ready_total, agg.oldest_at
+			FROM partner_drip_state s
+			JOIN (
+				SELECT COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
+				FROM partner_clean_queue
+				WHERE status = 'ready' AND vertical = $1
+			) agg ON true
+			WHERE s.vertical = $1
+		`, vertical).Scan(&v.brandIndex, &readyTotal, &oldestAt)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		v.vertical = vertical
+		if readyTotal.Valid {
+			v.readyCount = int(readyTotal.Int64)
+		}
+		v.oldestIngest = oldestAt
+
+		// Phase 2 — dominant-dataset metadata (oldest ready row).
+		var (
+			datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+			flushHours                                       sql.NullInt64
+			offerID                                          string
+		)
+		err = tx.QueryRowContext(ctx, `
+			SELECT d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+			       COALESCE(d.offer_id::text, '')
+			FROM (
+				SELECT dataset_id
+				FROM partner_clean_queue
+				WHERE vertical = $1 AND status = 'ready'
+				ORDER BY ingested_at ASC
+				LIMIT 1
+			) AS dom
+			LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+			LEFT JOIN data_partners p ON p.id = d.partner_id
+		`, vertical).Scan(&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		v.offerID = offerID
+		if datasetID.Valid {
+			v.datasetID = datasetID.String
+		}
+		if datasetSlug.Valid {
+			v.datasetSlug = datasetSlug.String
+		}
+		if partnerSlug.Valid {
+			v.partnerSlug = partnerSlug.String
+		}
+		if partnerName.Valid {
+			v.partnerName = partnerName.String
+		}
+		if flushHours.Valid {
+			v.flushHours = int(flushHours.Int64)
+		}
+		if v.flushHours <= 0 {
+			v.flushHours = 24
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	if !rows.Next() {
+	if !found {
 		return nil, nil
-	}
-	var v verticalState
-	var (
-		datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
-		flushHours                                       sql.NullInt64
-		readyTotal                                       sql.NullInt64
-		oldestAt                                         sql.NullTime
-		offerID                                          string
-	)
-	if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt,
-		&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
-		return nil, err
-	}
-	v.offerID = offerID
-	if readyTotal.Valid {
-		v.readyCount = int(readyTotal.Int64)
-	}
-	v.oldestIngest = oldestAt
-	if datasetID.Valid {
-		v.datasetID = datasetID.String
-	}
-	if datasetSlug.Valid {
-		v.datasetSlug = datasetSlug.String
-	}
-	if partnerSlug.Valid {
-		v.partnerSlug = partnerSlug.String
-	}
-	if partnerName.Valid {
-		v.partnerName = partnerName.String
-	}
-	if flushHours.Valid {
-		v.flushHours = int(flushHours.Int64)
-	}
-	if v.flushHours <= 0 {
-		v.flushHours = 24
 	}
 	return &v, nil
 }
@@ -483,77 +502,137 @@ type verticalState struct {
 	offerID string
 }
 
+// orchestratorQueryTimeout is the per-query statement_timeout the orchestrator
+// applies to its full-queue scans. The app's main pool runs at 30s
+// (main.go: statement_timeout=30000), but partner_clean_queue is >1M rows and
+// its aggregate / window scans legitimately exceed 30s whenever RDS IO is
+// saturated by concurrent audience/segment evaluation. When the gateway scan
+// (activeVerticalsWithBacklog) is cancelled, tickOnce returns early and ships
+// ZERO waves — the whole drip silently falls behind. Raising the ceiling for
+// just these queries keeps the tick alive under load.
+const orchestratorQueryTimeout = 120 * time.Second
+
+// withDBTimeout runs fn inside a read-committed transaction whose
+// statement_timeout is raised to orchestratorQueryTimeout via SET LOCAL.
+// Because SET LOCAL is transaction-scoped, the pooled connection returns to
+// the pool with the app's default 30s ceiling intact — no cross-query leak.
+// This mirrors the established pattern in segment_refresh.go and
+// mailing_admin_bulk_tag.go. The tx is read-committed and commits on success;
+// it carries the orchestrator's claim UPDATEs too (FOR UPDATE SKIP LOCKED rows
+// stay locked only until the immediate commit).
+func (po *PartnerDripOrchestrator) withDBTimeout(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := po.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", orchestratorQueryTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("set statement_timeout: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// activeVerticalsWithBacklog returns every vertical that has ready records,
+// the brand round-robin pointer, the ready count + oldest ingest, and the
+// dataset/partner metadata of the dataset owning the oldest ready record.
+//
+// 2026-06-07: split into a cheap aggregate gateway + a per-vertical metadata
+// fetch, all under withDBTimeout. The previous single query grouped the entire
+// ready set by (vertical, dataset_id) AND ran a correlated LATERAL per
+// drip-state row; on a >1M-row queue under IO pressure it blew past the 30s
+// pool timeout every tick, aborting the whole drip. Phase 1 is a plain
+// GROUP BY vertical satisfied by the partial index idx_pcq_status_ready
+// (vertical, status, ingested_at) WHERE status='ready'. Phase 2 is a per-
+// vertical LIMIT 1 index scan for the dominant (oldest-ingest) dataset.
 func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Context) ([]verticalState, error) {
-	// Pick the oldest ingest per vertical and the dataset/partner that owns it.
-	rows, err := po.db.QueryContext(ctx, `
-		WITH oldest AS (
-			SELECT q.vertical, q.dataset_id, MIN(q.ingested_at) AS oldest_at,
-			       COUNT(*) FILTER (WHERE q.status = 'ready') AS ready_total
-			FROM partner_clean_queue q
-			WHERE q.status = 'ready'
-			GROUP BY q.vertical, q.dataset_id
-		)
-		SELECT s.vertical, s.next_brand_index,
-		       (SELECT SUM(o.ready_total) FROM oldest o WHERE o.vertical = s.vertical) AS ready_total,
-		       (SELECT MIN(o.oldest_at) FROM oldest o WHERE o.vertical = s.vertical) AS oldest_at,
-		       d.id, d.slug, p.slug, p.name, d.flush_window_hours,
-		       COALESCE(d.offer_id::text, '')
-		FROM partner_drip_state s
-		LEFT JOIN LATERAL (
-			SELECT q.dataset_id
-			FROM partner_clean_queue q
-			WHERE q.vertical = s.vertical AND q.status = 'ready'
-			ORDER BY q.ingested_at ASC
-			LIMIT 1
-		) AS dom ON true
-		LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
-		LEFT JOIN data_partners p ON p.id = d.partner_id
-		WHERE EXISTS (SELECT 1 FROM partner_clean_queue q WHERE q.vertical = s.vertical AND q.status = 'ready')
-		ORDER BY s.vertical
-	`)
+	var out []verticalState
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		// Phase 1 — cheap aggregate over the ready partial index.
+		rows, err := tx.QueryContext(ctx, `
+			SELECT s.vertical, s.next_brand_index, agg.ready_total, agg.oldest_at
+			FROM partner_drip_state s
+			JOIN (
+				SELECT vertical, COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
+				FROM partner_clean_queue
+				WHERE status = 'ready'
+				GROUP BY vertical
+			) agg ON agg.vertical = s.vertical
+			ORDER BY s.vertical
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v verticalState
+			var (
+				readyTotal sql.NullInt64
+				oldestAt   sql.NullTime
+			)
+			if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt); err != nil {
+				continue
+			}
+			if !readyTotal.Valid || readyTotal.Int64 == 0 {
+				continue
+			}
+			v.readyCount = int(readyTotal.Int64)
+			v.oldestIngest = oldestAt
+			out = append(out, v)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		// Phase 2 — per-vertical dominant-dataset metadata (oldest ready row).
+		for i := range out {
+			var (
+				datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+				flushHours                                       sql.NullInt64
+				offerID                                          string
+			)
+			err := tx.QueryRowContext(ctx, `
+				SELECT d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+				       COALESCE(d.offer_id::text, '')
+				FROM (
+					SELECT dataset_id
+					FROM partner_clean_queue
+					WHERE vertical = $1 AND status = 'ready'
+					ORDER BY ingested_at ASC
+					LIMIT 1
+				) AS dom
+				LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+				LEFT JOIN data_partners p ON p.id = d.partner_id
+			`, out[i].vertical).Scan(&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			out[i].offerID = offerID
+			if datasetID.Valid {
+				out[i].datasetID = datasetID.String
+			}
+			if datasetSlug.Valid {
+				out[i].datasetSlug = datasetSlug.String
+			}
+			if partnerSlug.Valid {
+				out[i].partnerSlug = partnerSlug.String
+			}
+			if partnerName.Valid {
+				out[i].partnerName = partnerName.String
+			}
+			if flushHours.Valid {
+				out[i].flushHours = int(flushHours.Int64)
+			}
+			if out[i].flushHours <= 0 {
+				out[i].flushHours = 24
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-	var out []verticalState
-	for rows.Next() {
-		var v verticalState
-		var (
-			datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
-			flushHours                                       sql.NullInt64
-			readyTotal                                       sql.NullInt64
-			oldestAt                                         sql.NullTime
-			offerID                                          string
-		)
-		if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt,
-			&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
-			continue
-		}
-		v.offerID = offerID
-		if !readyTotal.Valid || readyTotal.Int64 == 0 {
-			continue
-		}
-		v.readyCount = int(readyTotal.Int64)
-		v.oldestIngest = oldestAt
-		if datasetID.Valid {
-			v.datasetID = datasetID.String
-		}
-		if datasetSlug.Valid {
-			v.datasetSlug = datasetSlug.String
-		}
-		if partnerSlug.Valid {
-			v.partnerSlug = partnerSlug.String
-		}
-		if partnerName.Valid {
-			v.partnerName = partnerName.String
-		}
-		if flushHours.Valid {
-			v.flushHours = int(flushHours.Int64)
-		}
-		if v.flushHours <= 0 {
-			v.flushHours = 24
-		}
-		out = append(out, v)
 	}
 	return out, nil
 }
@@ -1080,18 +1159,24 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 		RETURNING q.id, q.email, q.email_md5, q.isp_family, q.dataset_id, q.partner_id, q.batch_id, q.extra_metadata
 	`, strings.Join(valueClauses, ", "))
 
-	rows, err := po.db.QueryContext(ctx, query, args...)
+	out := make([]claimedRecord, 0, hardCap)
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r claimedRecord
+			if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
+				continue
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-	out := make([]claimedRecord, 0, hardCap)
-	for rows.Next() {
-		var r claimedRecord
-		if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
-			continue
-		}
-		out = append(out, r)
 	}
 	return out, nil
 }
@@ -1101,20 +1186,25 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 // completes (no subscriber_id, no mailed_campaign_id). Safe to re-queue.
 func (po *PartnerDripOrchestrator) releaseStaleClaims(ctx context.Context) (int64, error) {
 	cutoff := time.Now().UTC().Add(-po.cfg.ClaimedJanitorMaxAge)
-	res, err := po.db.ExecContext(ctx, `
-		UPDATE partner_clean_queue
-		SET status = 'ready',
-		    claimed_at = NULL
-		WHERE status = 'claimed'
-		  AND claimed_at IS NOT NULL
-		  AND claimed_at < $1
-		  AND subscriber_id IS NULL
-		  AND mailed_campaign_id IS NULL
-	`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	var n int64
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE partner_clean_queue
+			SET status = 'ready',
+			    claimed_at = NULL
+			WHERE status = 'claimed'
+			  AND claimed_at IS NOT NULL
+			  AND claimed_at < $1
+			  AND subscriber_id IS NULL
+			  AND mailed_campaign_id IS NULL
+		`, cutoff)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // reconcileShippedClaims repairs rows left in status='claimed' after a wave
@@ -1123,21 +1213,26 @@ func (po *PartnerDripOrchestrator) releaseStaleClaims(ctx context.Context) (int6
 // (which only picks status='mailed'). Idempotent: only touches rows whose
 // last_touch_campaign is already sending or terminal.
 func (po *PartnerDripOrchestrator) reconcileShippedClaims(ctx context.Context) (int64, error) {
-	res, err := po.db.ExecContext(ctx, `
-		UPDATE partner_clean_queue q
-		SET status = 'mailed'
-		WHERE q.status = 'claimed'
-		  AND q.last_touch_campaign_id IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1 FROM mailing_campaigns c
-		    WHERE c.id = q.last_touch_campaign_id
-		      AND c.status IN ('sending', 'sent', 'completed', 'completed_with_errors')
-		  )
-	`)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	var n int64
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE partner_clean_queue q
+			SET status = 'mailed'
+			WHERE q.status = 'claimed'
+			  AND q.last_touch_campaign_id IS NOT NULL
+			  AND EXISTS (
+			    SELECT 1 FROM mailing_campaigns c
+			    WHERE c.id = q.last_touch_campaign_id
+			      AND c.status IN ('sending', 'sent', 'completed', 'completed_with_errors')
+			  )
+		`)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // releaseClaim flips claimed records back to 'ready' so the next tick can
@@ -1401,22 +1496,23 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 		`
 	}
 
-	rows, err := po.db.QueryContext(ctx, query, vertical)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	readyByISP := make(map[string]int)
-	for rows.Next() {
-		var isp string
-		var n int
-		if err := rows.Scan(&isp, &n); err != nil {
-			continue
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, vertical)
+		if err != nil {
+			return err
 		}
-		readyByISP[strings.ToLower(strings.TrimSpace(isp))] = n
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var n int
+			if err := rows.Scan(&isp, &n); err != nil {
+				continue
+			}
+			readyByISP[strings.ToLower(strings.TrimSpace(isp))] = n
+		}
+		return rows.Err()
+	}); err != nil {
 		return nil, err
 	}
 
@@ -1779,7 +1875,9 @@ func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, st
 // is oldest-due so the wave inherits dataset metadata for the analytics
 // stamp.
 func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.Context) ([]verticalState, error) {
-	rows, err := po.db.QueryContext(ctx, `
+	var out []verticalState
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
 		WITH due AS (
 			SELECT q.vertical, q.dataset_id,
 			       MIN(q.next_touch_at) AS oldest_due,
@@ -1815,10 +1913,9 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 		ORDER BY v.vertical
 	`, MaxTouchCount-1)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var out []verticalState
 	for rows.Next() {
 		var v verticalState
 		var (
@@ -1855,6 +1952,11 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 			v.flushHours = 24
 		}
 		out = append(out, v)
+	}
+	return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -2007,23 +2109,31 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 
 	// First pick the dominant touch_count for this vertical.
 	var targetTouchCount int
-	if err := po.db.QueryRowContext(ctx, `
-		SELECT touch_count
-		FROM partner_clean_queue
-		WHERE status = 'mailed'
-		  AND vertical = $1
-		  AND touch_count BETWEEN 1 AND $2
-		  AND next_touch_at <= NOW()
-		  AND engaged_at IS NULL
-		  AND terminal_reason IS NULL
-		GROUP BY touch_count
-		ORDER BY COUNT(*) DESC, touch_count ASC
-		LIMIT 1
-	`, vertical, MaxTouchCount-1).Scan(&targetTouchCount); err != nil {
+	noRows := false
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `
+			SELECT touch_count
+			FROM partner_clean_queue
+			WHERE status = 'mailed'
+			  AND vertical = $1
+			  AND touch_count BETWEEN 1 AND $2
+			  AND next_touch_at <= NOW()
+			  AND engaged_at IS NULL
+			  AND terminal_reason IS NULL
+			GROUP BY touch_count
+			ORDER BY COUNT(*) DESC, touch_count ASC
+			LIMIT 1
+		`, vertical, MaxTouchCount-1).Scan(&targetTouchCount)
 		if err == sql.ErrNoRows {
-			return nil, nil
+			noRows = true
+			return nil
 		}
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("pick_dominant_touch: %w", err)
+	}
+	if noRows {
+		return nil, nil
 	}
 
 	// Build VALUES list for caps CTE.
@@ -2085,18 +2195,23 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 		RETURNING q.id, q.email, q.email_md5, q.isp_family, q.dataset_id, q.partner_id, q.batch_id, q.extra_metadata
 	`, strings.Join(valueClauses, ", "))
 
-	rows, err := po.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := make([]claimedRecord, 0, hardCap)
-	for rows.Next() {
-		var r claimedRecord
-		if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
-			continue
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
 		}
-		out = append(out, r)
+		defer rows.Close()
+		for rows.Next() {
+			var r claimedRecord
+			if err := rows.Scan(&r.id, &r.email, &r.emailMD5, &r.ispFamily, &r.datasetID, &r.partnerID, &r.batchID, &r.extra); err != nil {
+				continue
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
