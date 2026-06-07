@@ -54,6 +54,28 @@ func FromEnv() Notifier {
 	return NewSlackNotifier(token, channel)
 }
 
+// SlackChannelFromEnv builds a notifier bound to a specific Slack channel using
+// the shared SLACK_BOT_TOKEN. channelEnv (optional) overrides defaultChannel at
+// runtime — e.g. SlackChannelFromEnv("SLACK_WORKER_STALL_CHANNEL", "#worker-stall").
+// Falls back to SLACK_WEBHOOK_URL (channel fixed by the webhook) when no bot
+// token is set, then NoopNotifier. Used for the per-pager operational alert
+// channels (campaign-lateness, outbox self-check, storage guard, worker-stall).
+func SlackChannelFromEnv(channelEnv, defaultChannel string) Notifier {
+	ch := defaultChannel
+	if channelEnv != "" {
+		if v := os.Getenv(channelEnv); v != "" {
+			ch = v
+		}
+	}
+	if token := os.Getenv("SLACK_BOT_TOKEN"); token != "" && ch != "" {
+		return NewSlackNotifier(token, ch)
+	}
+	if webhook := os.Getenv("SLACK_WEBHOOK_URL"); webhook != "" {
+		return NewSlackWebhookNotifier(webhook)
+	}
+	return NoopNotifier{}
+}
+
 // ConversionsFromEnv selects the transport for revenue/conversion alerts, which
 // the operator wants in a dedicated #conversions channel separate from the
 // operational #alerts stream. Precedence:

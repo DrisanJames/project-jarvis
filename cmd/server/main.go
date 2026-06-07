@@ -37,7 +37,6 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
-	"github.com/ignite/sparkpost-monitor/internal/pkg/twilio"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
@@ -628,42 +627,31 @@ func main() {
 				api.StartOutboxSummaryRefresher(ctx, mailingDB)
 				log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
 
+				// Operational-alert transport. Twilio SMS was retired 2026-06-07
+				// (dead credentials → http 401); each operational pager now posts
+				// to its OWN Slack channel via the shared SLACK_BOT_TOKEN. The
+				// channel is overridable per-pager via env, defaulting to the
+				// dedicated channels created 2026-06-07.
+				outboxNotifier := notify.SlackChannelFromEnv("SLACK_OUTBOX_CHANNEL", "#outbox-self-check")
+				storageNotifier := notify.SlackChannelFromEnv("SLACK_STORAGE_GUARD_CHANNEL", "#storage-guard")
+
 				// Outbox self-check. Evaluates durable-outbox invariants every
-				// 5 minutes and routes breaches through the existing Twilio SMS
-				// pager. Shares the alerting config used by the campaign
-				// lateness monitor; alerting stays off unless both
-				// alerting.twilio.enabled and recipients are configured.
+				// 5 minutes and routes breaches to #outbox-self-check.
 				outboxSelfCheck := worker.NewOutboxSelfCheck(mailingDB)
-				if cfg.Alerting.Twilio.Enabled && len(cfg.Alerting.Twilio.ToNumbers) > 0 {
-					twilioClientSC := twilio.NewClient(
-						cfg.Alerting.Twilio.AccountSID,
-						cfg.Alerting.Twilio.AuthToken,
-						cfg.Alerting.Twilio.FromNumber,
-					)
-					if twilioClientSC != nil {
-						outboxSelfCheck.SetAlerter(twilioClientSC, cfg.Alerting.Twilio.ToNumbers)
-						log.Printf("Outbox Self-Check SMS alerts ENABLED (recipients=%d)",
-							len(cfg.Alerting.Twilio.ToNumbers))
-					} else {
-						log.Println("Outbox Self-Check SMS alerts DISABLED: Twilio credentials incomplete")
-					}
+				if _, noop := outboxNotifier.(notify.NoopNotifier); !noop {
+					outboxSelfCheck.SetAlerter(worker.NewSlackAlerter(outboxNotifier, "Outbox self-check"), []string{"slack"})
+					log.Printf("Outbox Self-Check Slack alerts ENABLED (transport=%s)", outboxNotifier.Name())
 				} else {
-					log.Println("Outbox Self-Check SMS alerts DISABLED (alerting.twilio.enabled=false or no recipients)")
+					log.Println("Outbox Self-Check Slack alerts DISABLED (no Slack transport configured)")
 				}
 				go outboxSelfCheck.Start(ctx)
 				log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
 
 				// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
 				storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)
-				if cfg.Alerting.Twilio.Enabled && len(cfg.Alerting.Twilio.ToNumbers) > 0 {
-					twilioClientSG := twilio.NewClient(
-						cfg.Alerting.Twilio.AccountSID,
-						cfg.Alerting.Twilio.AuthToken,
-						cfg.Alerting.Twilio.FromNumber,
-					)
-					if twilioClientSG != nil {
-						storageGuard.SetAlerter(twilioClientSG, cfg.Alerting.Twilio.ToNumbers)
-					}
+				if _, noop := storageNotifier.(notify.NoopNotifier); !noop {
+					storageGuard.SetAlerter(worker.NewSlackAlerter(storageNotifier, "Storage guard"), []string{"slack"})
+					log.Printf("Storage Guard Slack alerts ENABLED (transport=%s)", storageNotifier.Name())
 				}
 				go storageGuard.Start(ctx)
 				server.SetStorageGuard(storageGuard)
@@ -748,10 +736,10 @@ func main() {
 				// and alerts (Slack if SLACK_BOT_TOKEN set, else logs) when any
 				// instrumented worker misses 3× its declared cycle interval.
 				// Surfaced in the UI via /api/worker-health.
-				workerHealthNotifier := notify.FromEnv()
-				workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerHealthNotifier)
+				workerStallNotifier := notify.SlackChannelFromEnv("SLACK_WORKER_STALL_CHANNEL", "#worker-stall")
+				workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerStallNotifier)
 				go workerHealthMonitor.Start(ctx)
-				log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerHealthNotifier.Name())
+				log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerStallNotifier.Name())
 
 				// Journey Segment Enroller — auto-enrolls subscribers from
 				// segment-triggered journeys (Welcome Series Phase 2). Uses the
@@ -816,34 +804,25 @@ func main() {
 
 				healthMonitor := worker.NewCampaignHealthMonitor(mailingDB)
 
-				// Wire Twilio-backed campaign-lateness SMS pager. Feature is
-				// off by default; enable via alerting.campaign_lateness.enabled
-				// (yaml) or ALERT_CAMPAIGN_LATENESS_ENABLED=1 (env).
-				// Requires Twilio creds (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN /
-				// TWILIO_FROM_NUMBER) and at least one recipient in ToNumbers.
-				if cfg.Alerting.CampaignLateness.Enabled && cfg.Alerting.Twilio.Enabled &&
-					len(cfg.Alerting.Twilio.ToNumbers) > 0 {
-					twilioClient := twilio.NewClient(
-						cfg.Alerting.Twilio.AccountSID,
-						cfg.Alerting.Twilio.AuthToken,
-						cfg.Alerting.Twilio.FromNumber,
+				// Wire the campaign-lateness pager to Slack (Twilio SMS retired
+				// 2026-06-07). Feature is off by default; enable via
+				// alerting.campaign_lateness.enabled (yaml) or
+				// ALERT_CAMPAIGN_LATENESS_ENABLED=1 (env). Delivers to
+				// #campaign-lateness-pager (override: SLACK_CAMPAIGN_LATENESS_CHANNEL).
+				latenessNotifier := notify.SlackChannelFromEnv("SLACK_CAMPAIGN_LATENESS_CHANNEL", "#campaign-lateness-pager")
+				if _, noop := latenessNotifier.(notify.NoopNotifier); cfg.Alerting.CampaignLateness.Enabled && !noop {
+					threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
+					reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
+					healthMonitor.SetLatenessAlerter(
+						worker.NewSlackAlerter(latenessNotifier, "Campaign lateness"),
+						[]string{"slack"},
+						threshold,
+						reAlert,
 					)
-					if twilioClient != nil {
-						threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
-						reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
-						healthMonitor.SetLatenessAlerter(
-							twilioClient,
-							cfg.Alerting.Twilio.ToNumbers,
-							threshold,
-							reAlert,
-						)
-						log.Printf("Campaign lateness SMS alerts ENABLED: threshold=%s realert=%s recipients=%d",
-							threshold, reAlert, len(cfg.Alerting.Twilio.ToNumbers))
-					} else {
-						log.Println("Campaign lateness SMS alerts DISABLED: Twilio credentials incomplete")
-					}
+					log.Printf("Campaign lateness Slack alerts ENABLED: threshold=%s realert=%s transport=%s",
+						threshold, reAlert, latenessNotifier.Name())
 				} else {
-					log.Println("Campaign lateness SMS alerts DISABLED (alerting.campaign_lateness.enabled=false or no Twilio creds/recipients)")
+					log.Println("Campaign lateness Slack alerts DISABLED (alerting.campaign_lateness.enabled=false or no Slack transport)")
 				}
 
 				healthMonitor.Start()

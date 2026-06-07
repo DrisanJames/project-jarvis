@@ -40,6 +40,14 @@ PASSTHROUGH_ENV_VARS = [
     # used by the bot-token transport, not the webhook.
     "SLACK_WEBHOOK_URL",
     "SLACK_ALERT_CHANNEL",
+    # Per-pager operational Slack channels (Twilio SMS retired 2026-06-07).
+    # Defaults are baked into cmd/server/main.go (#outbox-self-check,
+    # #storage-guard, #worker-stall, #campaign-lateness-pager); these env vars
+    # only override the channel without a code change. All post via SLACK_BOT_TOKEN.
+    "SLACK_OUTBOX_CHANNEL",
+    "SLACK_STORAGE_GUARD_CHANNEL",
+    "SLACK_WORKER_STALL_CHANNEL",
+    "SLACK_CAMPAIGN_LATENESS_CHANNEL",
     # Conversion alerts → #conversions Slack channel (Everflow conversion
     # postbacks). The active transport is the shared "Jarvis Maintenance Workers"
     # bot token (SLACK_BOT_TOKEN, scopes chat:write + chat:write.public) which
