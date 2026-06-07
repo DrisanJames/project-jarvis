@@ -9,16 +9,29 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 )
 
 type EverflowPostbackHandler struct {
-	db *sql.DB
+	db       *sql.DB
+	notifier notify.Notifier
 }
 
 func NewEverflowPostbackHandler(db *sql.DB) *EverflowPostbackHandler {
-	return &EverflowPostbackHandler{db: db}
+	return &EverflowPostbackHandler{db: db, notifier: notify.NoopNotifier{}}
+}
+
+// WithConversionNotifier attaches the Slack notifier used to announce conversions
+// to the operator's #conversions channel. A nil notifier is ignored, leaving the
+// no-op default in place. Returns the handler for chaining at registration.
+func (h *EverflowPostbackHandler) WithConversionNotifier(n notify.Notifier) *EverflowPostbackHandler {
+	if n != nil {
+		h.notifier = n
+	}
+	return h
 }
 
 // HandlePostback receives Everflow conversion postbacks.
@@ -69,6 +82,13 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "no_subscriber_id"})
 		return
 	}
+
+	// Every call to this endpoint is a real conversion (revenue event). Surface
+	// it to the operator's #conversions Slack channel — email, offer, payout,
+	// date — independent of whether the offer resolves internally or is in the
+	// click-drip dictionary. Async + best-effort so the 200 to Everflow is never
+	// delayed or blocked by Slack.
+	notifyConversionAsync(h.notifier, h.db, subscriberID, efOfferID, payout, txnID)
 
 	ctx := r.Context()
 	orgID := "00000000-0000-0000-0000-000000000001"
@@ -160,6 +180,97 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		"subscriber_id":     subscriberID.String(),
 		"click_drip_exited": strconv.Itoa(int(exited)),
 	})
+}
+
+// notifyConversionAsync posts a single conversion alert to the #conversions
+// Slack channel with the subscriber email, a human-readable offer label, the
+// payout amount, and the date. It is shared by the conversion postback handler
+// and the click endpoint's conversion branch.
+//
+// It runs in its own goroutine with a fresh context so it never delays the HTTP
+// response to Everflow and is not cancelled when the request returns. A nil or
+// no-op notifier short-circuits to nothing.
+func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uuid.UUID, efOfferID string, payout float64, txnID string) {
+	if notifier == nil {
+		return
+	}
+	if _, isNoop := notifier.(notify.NoopNotifier); isNoop {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		email := "(unknown subscriber)"
+		if subscriberID != uuid.Nil && db != nil {
+			var e sql.NullString
+			_ = db.QueryRowContext(ctx,
+				`SELECT email FROM mailing_subscribers WHERE id=$1`, subscriberID).Scan(&e)
+			if e.Valid && strings.TrimSpace(e.String) != "" {
+				email = e.String
+			}
+		}
+
+		offer := conversionOfferLabel(ctx, db, efOfferID)
+
+		when := time.Now()
+		if loc, err := time.LoadLocation("America/Denver"); err == nil {
+			when = when.In(loc)
+		}
+
+		body := fmt.Sprintf("Email: %s\nOffer: %s\nPayout: $%.2f\nDate: %s",
+			email, offer, payout, when.Format("Jan 2, 2006 3:04 PM MST"))
+		if strings.TrimSpace(txnID) != "" {
+			body += "\nTransaction: " + txnID
+		}
+
+		if err := notifier.Notify("New conversion", body); err != nil {
+			log.Printf("[conversion-notify] failed to post to #conversions: %v", err)
+		}
+	}()
+}
+
+// conversionOfferLabel resolves a human-readable offer name for an Everflow
+// numeric offer id, falling back to the click-drip journey-map note and finally
+// the raw id. Best-effort: any lookup error yields the raw-id form.
+func conversionOfferLabel(ctx context.Context, db *sql.DB, efOfferID string) string {
+	efOfferID = strings.TrimSpace(efOfferID)
+	if efOfferID == "" {
+		return "(unknown offer)"
+	}
+	if db != nil {
+		var name sql.NullString
+		_ = db.QueryRowContext(ctx,
+			`SELECT name FROM mailing_offers WHERE everflow_offer_id=$1 AND name<>'' LIMIT 1`,
+			efOfferID).Scan(&name)
+		if name.Valid && strings.TrimSpace(name.String) != "" {
+			return fmt.Sprintf("%s (EF %s)", name.String, efOfferID)
+		}
+
+		var notes sql.NullString
+		_ = db.QueryRowContext(ctx,
+			`SELECT notes FROM mailing_offer_journey_map WHERE everflow_offer_id=$1`,
+			efOfferID).Scan(&notes)
+		if notes.Valid && strings.TrimSpace(notes.String) != "" {
+			return fmt.Sprintf("%s (EF %s)", notes.String, efOfferID)
+		}
+	}
+	return "EF offer " + efOfferID
+}
+
+// parsePostbackPayout extracts the conversion payout amount from a postback's
+// query params, accepting either "payout" or "amount". Returns 0 when absent or
+// unparseable.
+func parsePostbackPayout(r *http.Request) float64 {
+	q := r.URL.Query()
+	for _, k := range []string{"payout", "amount"} {
+		if v := strings.TrimSpace(q.Get(k)); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return f
+			}
+		}
+	}
+	return 0
 }
 
 // writeConvertedSuppression inserts a 'converted' suppression row keyed by

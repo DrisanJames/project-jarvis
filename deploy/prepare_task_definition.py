@@ -40,6 +40,13 @@ PASSTHROUGH_ENV_VARS = [
     # used by the bot-token transport, not the webhook.
     "SLACK_WEBHOOK_URL",
     "SLACK_ALERT_CHANNEL",
+    # Conversion alerts → #conversions Slack channel (Everflow conversion
+    # postbacks). Set SLACK_CONVERSIONS_WEBHOOK_URL (an Incoming Webhook bound to
+    # #conversions) in the deploy shell on first rollout; once in the task
+    # definition, subsequent deploys inherit it. Alternatively SLACK_BOT_TOKEN +
+    # SLACK_CONVERSIONS_CHANNEL uses the chat.postMessage transport.
+    "SLACK_CONVERSIONS_WEBHOOK_URL",
+    "SLACK_CONVERSIONS_CHANNEL",
 ]
 
 REMOVE_ENV_VARS = [

@@ -53,3 +53,28 @@ func FromEnv() Notifier {
 	}
 	return NewSlackNotifier(token, channel)
 }
+
+// ConversionsFromEnv selects the transport for revenue/conversion alerts, which
+// the operator wants in a dedicated #conversions channel separate from the
+// operational #alerts stream. Precedence:
+//
+//  1. SLACK_CONVERSIONS_WEBHOOK_URL — an Incoming Webhook bound to #conversions
+//     (channel fixed by the webhook). Simplest; preferred when set.
+//  2. SLACK_BOT_TOKEN (+ optional SLACK_CONVERSIONS_CHANNEL, default
+//     "#conversions") — reuses the shared bot token but posts to the
+//     conversions channel via chat.postMessage.
+//  3. neither set — alerts are logged only (NoopNotifier).
+func ConversionsFromEnv() Notifier {
+	if webhook := os.Getenv("SLACK_CONVERSIONS_WEBHOOK_URL"); webhook != "" {
+		return NewSlackWebhookNotifier(webhook)
+	}
+	token := os.Getenv("SLACK_BOT_TOKEN")
+	if token == "" {
+		return NoopNotifier{}
+	}
+	channel := os.Getenv("SLACK_CONVERSIONS_CHANNEL")
+	if channel == "" {
+		channel = "#conversions"
+	}
+	return NewSlackNotifier(token, channel)
+}

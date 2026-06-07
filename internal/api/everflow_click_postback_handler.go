@@ -52,17 +52,29 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 // EverflowClickPostbackHandler is the HTTP entry for /api/mailing/everflow/click-postback.
 type EverflowClickPostbackHandler struct {
-	db *sql.DB
+	db       *sql.DB
+	notifier notify.Notifier
 }
 
 // NewEverflowClickPostbackHandler wires the handler with a *sql.DB.
 func NewEverflowClickPostbackHandler(db *sql.DB) *EverflowClickPostbackHandler {
-	return &EverflowClickPostbackHandler{db: db}
+	return &EverflowClickPostbackHandler{db: db, notifier: notify.NoopNotifier{}}
+}
+
+// WithConversionNotifier attaches the Slack notifier used to announce conversions
+// (the conversion branch of this endpoint) to the operator's #conversions
+// channel. A nil notifier is ignored. Returns the handler for chaining.
+func (h *EverflowClickPostbackHandler) WithConversionNotifier(n notify.Notifier) *EverflowClickPostbackHandler {
+	if n != nil {
+		h.notifier = n
+	}
+	return h
 }
 
 // clickPostbackInput is the parsed request, normalized.
@@ -115,6 +127,12 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 	// shared conversion-STOP path (dictionary-gated exit + converted suppression,
 	// associated by subscriber UUID) and never enroll.
 	if isConversionEvent(r) {
+		// Surface the conversion to the operator's #conversions Slack channel —
+		// email, offer, payout, date — for every conversion received on this
+		// endpoint, independent of the click-drip dictionary outcome below.
+		// Async + best-effort so the 200 to Everflow is never delayed.
+		notifyConversionAsync(h.notifier, h.db, in.subscriberID, in.EverflowOfferID, parsePostbackPayout(r), in.TransactionID)
+
 		inDict, exited, exErr := exitClickDripEnrollmentsOnConversion(ctx, h.db, in.subscriberID, in.EverflowOfferID)
 		if exErr != nil {
 			log.Printf("[EverflowClickPostback] ERROR conversion exit: %v", exErr)

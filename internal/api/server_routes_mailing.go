@@ -17,6 +17,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/ipxo"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/ovh"
 	"github.com/ignite/sparkpost-monitor/internal/pmta"
 	"github.com/ignite/sparkpost-monitor/internal/vultr"
@@ -183,8 +184,14 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/track/unsubscribe/{data}", svc.HandleTrackUnsubscribe)
 		s.router.Post("/track/unsubscribe/{data}/{sig}", svc.HandleTrackUnsubscribe)
 
+		// Conversion alerts → operator's #conversions Slack channel. Selected
+		// from env (SLACK_CONVERSIONS_WEBHOOK_URL > SLACK_BOT_TOKEN +
+		// SLACK_CONVERSIONS_CHANNEL > noop). Shared by both Everflow conversion
+		// entry points below.
+		conversionNotifier := notify.ConversionsFromEnv()
+
 		// Everflow conversion postback — public (called by Everflow servers)
-		efPostback := NewEverflowPostbackHandler(db)
+		efPostback := NewEverflowPostbackHandler(db).WithConversionNotifier(conversionNotifier)
 		s.router.Post("/api/mailing/everflow/postback", efPostback.HandlePostback)
 		s.router.Get("/api/mailing/everflow/postback", efPostback.HandlePostback)
 
@@ -193,7 +200,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// JourneyEventEnroller worker (Phase 2) consumes the queue and creates
 		// journey enrollments. Mounted on s.router so Everflow can call it
 		// without auth headers, same as the conversion postback.
-		efClickPostback := NewEverflowClickPostbackHandler(db)
+		efClickPostback := NewEverflowClickPostbackHandler(db).WithConversionNotifier(conversionNotifier)
 		s.router.Post("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 		s.router.Get("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 
