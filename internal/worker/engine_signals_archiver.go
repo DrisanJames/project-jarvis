@@ -65,8 +65,12 @@ const (
 	archiveMaxBucketsPerCycle = 40
 
 	// archiveDeleteBatch mirrors DataCleanupWorker.cleanupBatchSize so DB
-	// lock holding times stay predictable.
-	archiveDeleteBatch = 50000
+	// lock holding times stay predictable. Lowered from 50000 to 20000 on
+	// 2026-06-07: 50k DELETEs (6 indexes to maintain per row) consistently
+	// blew the 60s per-batch timeout under concurrent send-day / segment-
+	// refresh IO; 20k completes within budget while still draining a full
+	// day-bucket in a handful of batches.
+	archiveDeleteBatch = 20000
 )
 
 // EngineSignalsArchiver moves aged signals to S3 and trims the hot table.
@@ -157,7 +161,23 @@ func (w *EngineSignalsArchiver) runOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		n, err := w.archiveBucket(ctx, b)
+		var (
+			n   int64
+			err error
+		)
+		if b.DeleteOnly {
+			// Rows already in S3 from an interrupted prior cycle (index row
+			// present, Phase-4 DELETE never finished). Skip re-archival and
+			// just drain them from the hot table. This is what un-wedges a
+			// backlog whose oldest day is fully archived but never deleted.
+			n, err = w.deleteBucketRows(ctx, b)
+			if err == nil && n > 0 {
+				log.Printf("[SignalsArchiver] %s/%s drained %d orphan rows (already archived)",
+					b.Date.Format("2006-01-02"), b.ISP, n)
+			}
+		} else {
+			n, err = w.archiveBucket(ctx, b)
+		}
 		if err != nil {
 			log.Printf("[SignalsArchiver] %s/%s FAILED: %v",
 				b.Date.Format("2006-01-02"), b.ISP, err)
@@ -174,6 +194,14 @@ func (w *EngineSignalsArchiver) runOnce(ctx context.Context) {
 type signalBucket struct {
 	Date time.Time
 	ISP  string
+	// DeleteOnly marks a bucket whose rows are already present in
+	// mailing_engine_signals_archive_index (a prior cycle archived to S3 but
+	// its Phase-4 DELETE was interrupted, leaving the rows in the hot table).
+	// For these we skip S3 archival and only run the delete loop. This is the
+	// fix for the 2026-04-06..08 wedge: ~2.8M rows were archived but never
+	// deleted, and the old anti-join enumerate timed out re-scanning them every
+	// cycle, freezing the archive index for ~2 months.
+	DeleteOnly bool
 }
 
 // findUnarchivedBuckets returns (date, isp) groups where at least one row
@@ -225,22 +253,49 @@ func (w *EngineSignalsArchiver) findUnarchivedBuckets(
 		}
 		next := day.Add(24 * time.Hour)
 
-		// 90s (was 30s): the per-day DISTINCT competes with send-day IO and the
-		// one-time engine-log archive; 30s tripped under load and aborted the
-		// whole cycle. 90s lets a day complete; a still-slow day aborts the
-		// cycle and is retried next pass (the walk re-derives from min()).
+		// Which isps for this day are already in the archive index. The index
+		// table is tiny (one row per (day, isp)) so this is a cheap lookup. We
+		// use it to classify each hot-table isp below as either DeleteOnly (an
+		// interrupted-Phase-4 orphan) or archive-and-delete (genuinely new).
+		// This REPLACES the previous `NOT EXISTS` correlated anti-join, which
+		// had to heap-scan the entire day to evaluate the subquery per row and
+		// timed out for ~2 months once a backlog formed (archive index frozen
+		// at 2026-04-08; ~862K-974K orphan rows/day wedged the walk on the
+		// oldest day, which the walk re-derives from min() every cycle).
+		archived := map[string]bool{}
+		actx, acancel := context.WithTimeout(ctx, 20*time.Second)
+		arows, aerr := w.db.QueryContext(actx, `
+			SELECT isp FROM mailing_engine_signals_archive_index WHERE date_bucket = $1::date
+		`, day)
+		if aerr != nil {
+			acancel()
+			return out, fmt.Errorf("archived isps for %s: %w", day.Format("2006-01-02"), aerr)
+		}
+		for arows.Next() {
+			var isp string
+			if arows.Scan(&isp) == nil {
+				archived[isp] = true
+			}
+		}
+		rerrA := arows.Err()
+		arows.Close()
+		acancel()
+		if rerrA != nil {
+			return out, rerrA
+		}
+
+		// Distinct isps that still have rows in the hot table for this day.
+		// With idx_engine_signals_recorded_isp (recorded_at, isp) this is an
+		// index-only scan of a single day's slice — fast even on a 50M+ row
+		// table and under send-day IO, so it can no longer wedge the walk. We
+		// advance `day` unconditionally after this, so even a day that returns
+		// only DeleteOnly buckets keeps the walk moving.
 		dctx, dcancel := context.WithTimeout(ctx, 90*time.Second)
 		rows, qerr := w.db.QueryContext(dctx, `
-			SELECT DISTINCT s.isp
-			FROM mailing_engine_signals s
-			WHERE s.recorded_at >= $1 AND s.recorded_at < $2
-			  AND NOT EXISTS (
-			      SELECT 1
-			      FROM mailing_engine_signals_archive_index a
-			      WHERE a.date_bucket = $1::date
-			        AND a.isp         = s.isp
-			  )
-			ORDER BY s.isp ASC
+			SELECT DISTINCT isp
+			FROM mailing_engine_signals
+			WHERE recorded_at >= $1 AND recorded_at < $2
+			ORDER BY isp ASC
 		`, day, next)
 		if qerr != nil {
 			dcancel()
@@ -255,7 +310,7 @@ func (w *EngineSignalsArchiver) findUnarchivedBuckets(
 				dcancel()
 				return out, err
 			}
-			out = append(out, signalBucket{Date: day, ISP: isp})
+			out = append(out, signalBucket{Date: day, ISP: isp, DeleteOnly: archived[isp]})
 			if len(out) >= archiveMaxBucketsPerCycle {
 				break
 			}
@@ -404,9 +459,27 @@ func (w *EngineSignalsArchiver) archiveBucket(
 		return 0, fmt.Errorf("insert index (orphan s3://%s/%s): %w", w.bucket, key, err)
 	}
 
-	// Phase 4 — delete archived rows in batches of archiveDeleteBatch.
-	// Sleep 100 ms between batches to match the DataCleanupWorker pacing
-	// and avoid replication-lag pressure.
+	// Phase 4 — delete archived rows in batches.
+	deleted, derr := w.deleteBucketRows(ctx, b)
+	if derr != nil {
+		return deleted, derr
+	}
+
+	log.Printf("[SignalsArchiver] %s/%s rows=%d deleted=%d bytes=%d key=%s",
+		startAt.Format("2006-01-02"), b.ISP, rowCount, deleted, buf.Len(), key)
+	return rowCount, nil
+}
+
+// deleteBucketRows removes every hot-table row for one (date, isp) bucket in
+// bounded batches of archiveDeleteBatch, sleeping 100 ms between batches to
+// match DataCleanupWorker pacing and avoid replication-lag pressure. It is used
+// both as archiveBucket's Phase 4 and standalone for DeleteOnly buckets whose
+// rows are already safely in S3 (interrupted prior cycle). Returns the number
+// of rows deleted.
+func (w *EngineSignalsArchiver) deleteBucketRows(ctx context.Context, b signalBucket) (int64, error) {
+	startAt := b.Date                   // inclusive
+	endAt := b.Date.Add(24 * time.Hour) // exclusive
+
 	var deleted int64
 	for {
 		if err := ctx.Err(); err != nil {
@@ -432,8 +505,5 @@ func (w *EngineSignalsArchiver) archiveBucket(
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
-	log.Printf("[SignalsArchiver] %s/%s rows=%d deleted=%d bytes=%d key=%s",
-		startAt.Format("2006-01-02"), b.ISP, rowCount, deleted, buf.Len(), key)
-	return rowCount, nil
+	return deleted, nil
 }

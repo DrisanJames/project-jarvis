@@ -6732,6 +6732,16 @@ END $$`},
 				 ON pmta_acct_raw (processed, received_at, id)
 				 WHERE processed = FALSE`,
 			},
+			{
+				// Covering index for EngineSignalsArchiver.findUnarchivedBuckets:
+				// makes the per-day `SELECT DISTINCT isp WHERE recorded_at IN [day)`
+				// an index-only scan (isp was previously heap-fetched, which
+				// timed out under load and wedged the archiver for ~2 months).
+				// Also accelerates the bucket DELETE's inner id lookup.
+				"idx_engine_signals_recorded_isp",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_engine_signals_recorded_isp
+				 ON mailing_engine_signals (recorded_at, isp)`,
+			},
 		}
 		if _, err := cleanupConn.ExecContext(cleanupIdxCtx, "SET statement_timeout = '600000'"); err != nil {
 			log.Printf("[StartupMigration] cleanup indexes: SET timeout failed: %v", err)
