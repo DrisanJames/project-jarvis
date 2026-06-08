@@ -2014,7 +2014,11 @@ func runStartupMigrations(db *sql.DB) {
 		{"idx_queue_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_queue_active_by_campaign ON mailing_campaign_queue(campaign_id) WHERE status IN ('queued','sending','claimed')`},
 		{"idx_waves_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_waves_active_by_campaign ON mailing_campaign_waves(campaign_id) WHERE status IN ('planned','enqueuing','dispatched')`},
 		// Mark genuinely-finished 'sending' campaigns 'sent': no active queue rows, no active waves,
-		// and >=1 completed wave. With the indexes above this is ~0.26s (was a never-completing 5s+ timeout).
+		// and >=1 completed wave. With the indexes above the plan is ~48ms. FOR UPDATE ... SKIP LOCKED
+		// so we never block on a campaign row the live app is mutating — those are simply skipped and
+		// caught on a later boot. Without it the UPDATE waited >5s on row locks and got cancelled
+		// every boot (the "canceling statement due to user request" we saw); idempotent + eventually
+		// consistent across boots.
 		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
 			WHERE id IN (
 				SELECT c.id FROM mailing_campaigns c
@@ -2022,6 +2026,7 @@ func runStartupMigrations(db *sql.DB) {
 				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = c.id AND q.status IN ('queued','sending','claimed'))
 				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched'))
 				AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = c.id AND w2.status = 'completed')
+				FOR UPDATE OF c SKIP LOCKED
 			)`},
 		{"reset_orphaned_sending_v3", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
 			WHERE status = 'sending'
