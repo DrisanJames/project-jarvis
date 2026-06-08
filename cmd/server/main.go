@@ -2003,11 +2003,26 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"create_domain_suppressions_lookup_idx", `CREATE INDEX IF NOT EXISTS idx_domsupp_lookup ON mailing_domain_suppressions (brand_root, email_hash)`},
 		{"create_domain_suppressions_org_idx", `CREATE INDEX IF NOT EXISTS idx_domsupp_org ON mailing_domain_suppressions (organization_id, created_at DESC)`},
+		// Supporting partial indexes so complete_finished_campaigns' (and reset_orphaned_sending's)
+		// anti-joins are tiny index probes instead of scanning every queue/wave row per campaign.
+		// Without them the cleanup cost ~79k and timed out every boot (and on the old shared-conn
+		// runner that silently blocked later migrations). Partial = only the ~78k active queue rows /
+		// ~20k active wave rows out of 10.9M / 1.9M total. IF NOT EXISTS: no-op on prod (already built
+		// CONCURRENTLY out-of-band); instant on fresh/small DBs. Non-concurrent on purpose — a real
+		// build only happens on a small DB, so the brief lock is negligible and we dodge CONCURRENTLY's
+		// transaction/timeout edge cases inside the migration runner.
+		{"idx_queue_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_queue_active_by_campaign ON mailing_campaign_queue(campaign_id) WHERE status IN ('queued','sending','claimed')`},
+		{"idx_waves_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_waves_active_by_campaign ON mailing_campaign_waves(campaign_id) WHERE status IN ('planned','enqueuing','dispatched')`},
+		// Mark genuinely-finished 'sending' campaigns 'sent': no active queue rows, no active waves,
+		// and >=1 completed wave. With the indexes above this is ~0.26s (was a never-completing 5s+ timeout).
 		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
-			WHERE status = 'sending'
-			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
-			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = mailing_campaigns.id AND w.status IN ('planned','enqueuing','dispatched'))
-			AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = mailing_campaigns.id AND w2.status = 'completed')`},
+			WHERE id IN (
+				SELECT c.id FROM mailing_campaigns c
+				WHERE c.status = 'sending'
+				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = c.id AND q.status IN ('queued','sending','claimed'))
+				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched'))
+				AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = c.id AND w2.status = 'completed')
+			)`},
 		{"reset_orphaned_sending_v3", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
 			WHERE status = 'sending'
 			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
@@ -6576,9 +6591,19 @@ END $$`},
 	execSQL := func(sql string) error {
 		if conn != nil {
 			_, err := conn.ExecContext(context.Background(), sql)
+			if err != nil {
+				// A timed-out/cancelled statement can leave the dedicated connection in a
+				// failed state, silently erroring every LATER migration on the same boot
+				// (this is what blocked the org-rename migration). Drop it; subsequent
+				// statements fall back to the pool below with a per-statement timeout.
+				conn.Close()
+				conn = nil
+			}
 			return err
 		}
-		_, err := db.Exec(sql)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := db.ExecContext(ctx, sql)
 		return err
 	}
 	if conn != nil {
