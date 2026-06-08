@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -153,50 +152,80 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		return
 	}
 
-	// Pre-load seed list IDs once for the entire refresh cycle.
-	// We pass these IDs into each segment query as a subquery parameter
-	// rather than using temp tables (which are connection-scoped and break
-	// with Go's connection pool).
-	seedListIDs := w.loadSeedListIDs(ctx)
-	log.Printf("SegmentRefreshWorker: found %d seed lists for exclusion", len(seedListIDs))
+	// Derive subscriber_count from the already-materialized membership table
+	// (mailing_segment_members, maintained by SegmentMaterializer daily + on
+	// boot) instead of re-deriving each segment's audience with live
+	// mailing_tracking_events scans.
+	//
+	// WHY (2026-06-07): the previous path called recalculate() per segment,
+	// which for event-based conditions ran a DISTINCT scan over the 50M+ row
+	// mailing_tracking_events table (buildCTEQuery, the `_evt_N` CTEs). With
+	// 187 of ~234 active dynamic segments event-based, a single refresh cycle
+	// took 4h+ under send-day IO and repeatedly tripped the stall detector
+	// (heartbeat is emitted only at end-of-cycle). It also silently dropped
+	// `tags` conditions (mapCol has no "tags"), so tag-scoped segments were
+	// counted as the entire opener/clicker population — both wrong and maximally
+	// expensive. subscriber_count is a display metric, so a COUNT over the
+	// indexed members table (PK leads with segment_id → index-only, ms-scale)
+	// at last-materialization freshness is both cheaper and more accurate.
+	//
+	// The heavy recalculate()/buildCTEQuery()/buildRefreshWhereClause() helpers
+	// are intentionally retained (covered by segment_refresh_test.go and
+	// available as a fallback) but are no longer on the hot cycle path.
+	ids := make([]uuid.UUID, len(segments))
+	for i, s := range segments {
+		ids[i] = s.ID
+	}
 
+	counts := make(map[uuid.UUID]int, len(segments))
+	cctx, ccancel := context.WithTimeout(ctx, 120*time.Second)
+	mrows, mErr := w.db.QueryContext(cctx, `
+		SELECT segment_id, COUNT(*)
+		FROM mailing_segment_members
+		WHERE segment_id = ANY($1)
+		GROUP BY segment_id
+	`, pq.Array(ids))
+	if mErr != nil {
+		ccancel()
+		hbStatus, hbErr = "error", mErr.Error()
+		log.Printf("SegmentRefreshWorker: member-count query error: %v", mErr)
+		return
+	}
+	for mrows.Next() {
+		var id uuid.UUID
+		var n int
+		if err := mrows.Scan(&id, &n); err == nil {
+			counts[id] = n
+		}
+	}
+	mrows.Close()
+	ccancel()
+
+	// Segments with no row in the result simply have zero materialized members
+	// (genuinely empty, or created since the last materialization pass — they
+	// fill in on the next SegmentMaterializer run).
 	var updated int64
-	sem := make(chan struct{}, w.concurrency)
-	var wg sync.WaitGroup
-
 	for _, seg := range segments {
 		if ctx.Err() != nil {
 			break
 		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(s segmentRow) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			newCount := w.recalculate(ctx, s, seedListIDs)
-			if newCount < 0 {
-				return
-			}
-			_, err := w.writeDB.ExecContext(ctx, `
-				UPDATE mailing_segments
-				SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
-				WHERE id = $1
-			`, s.ID, newCount)
-			if err != nil {
-				log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", s.Name, s.ID, err)
-				return
-			}
-			if newCount != s.OldCount {
-				log.Printf("SegmentRefreshWorker: %s — %d → %d", s.Name, s.OldCount, newCount)
-			}
-			atomic.AddInt64(&updated, 1)
-		}(seg)
+		newCount := counts[seg.ID]
+		if _, err := w.writeDB.ExecContext(ctx, `
+			UPDATE mailing_segments
+			SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
+			WHERE id = $1
+		`, seg.ID, newCount); err != nil {
+			log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", seg.Name, seg.ID, err)
+			continue
+		}
+		if newCount != seg.OldCount {
+			log.Printf("SegmentRefreshWorker: %s — %d → %d", seg.Name, seg.OldCount, newCount)
+		}
+		atomic.AddInt64(&updated, 1)
 	}
-	wg.Wait()
 
-	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments in %s (concurrency=%d)",
-		atomic.LoadInt64(&updated), len(segments), time.Since(start).Round(time.Millisecond), w.concurrency)
+	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments from materialized members in %s",
+		atomic.LoadInt64(&updated), len(segments), time.Since(start).Round(time.Millisecond))
 }
 
 // loadSeedListIDs returns the UUIDs of all lists whose name contains "seed".
