@@ -6766,6 +6766,19 @@ END $$`},
 				 ON mailing_campaign_queue (campaign_id, recipient_isp, status)
 				 WHERE recipient_isp IS NOT NULL`,
 			},
+			{
+				// Supports DataCleanupWorker.slimAcceptedQueueHTML's victim
+				// SELECT and StorageGuard.checkQueueHTML's count. Partial on the
+				// exact predicate (accepted rows that still carry HTML), so it
+				// points straight at un-slimmed rows and shrinks to empty once
+				// the backlog (5.5M rows flagged 2026-06-07) is drained —
+				// keeping both the slim batches and the 5-min monitor count
+				// index-only/instant instead of scanning the full accepted set.
+				"idx_mcq_accepted_html",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_accepted_html
+				 ON mailing_campaign_queue (id)
+				 WHERE status = 'accepted' AND html_content IS NOT NULL`,
+			},
 		}
 		if _, err := cleanupConn.ExecContext(cleanupIdxCtx, "SET statement_timeout = '600000'"); err != nil {
 			log.Printf("[StartupMigration] cleanup indexes: SET timeout failed: %v", err)
