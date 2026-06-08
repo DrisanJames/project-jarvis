@@ -6,6 +6,32 @@ import (
 	"time"
 )
 
+func TestParseMaterializeConcurrency(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"empty falls back to default", "", defaultMaterializeConcurrency},
+		{"whitespace falls back to default", "   ", defaultMaterializeConcurrency},
+		{"valid value", "4", 4},
+		{"trimmed valid value", "  3  ", 3},
+		{"lower clamp boundary", "1", 1},
+		{"upper clamp boundary", "16", 16},
+		{"zero is invalid -> default", "0", defaultMaterializeConcurrency},
+		{"negative is invalid -> default", "-2", defaultMaterializeConcurrency},
+		{"above max is invalid -> default", "17", defaultMaterializeConcurrency},
+		{"non-numeric -> default", "lots", defaultMaterializeConcurrency},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseMaterializeConcurrency(tt.raw); got != tt.want {
+				t.Fatalf("parseMaterializeConcurrency(%q) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDurationUntilNext(t *testing.T) {
 	tests := []struct {
 		name     string

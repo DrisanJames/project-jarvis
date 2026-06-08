@@ -6750,6 +6750,22 @@ END $$`},
 				 ON partner_clean_queue (vertical, touch_count, isp_family, next_touch_at)
 				 WHERE status = 'mailed' AND engaged_at IS NULL AND terminal_reason IS NULL`,
 			},
+			{
+				// Per-ISP queue breakdown for the dispatcher / wave planner.
+				// mailing_campaign_queue is partitioned and >>1M rows, so a
+				// plain CREATE INDEX takes an AccessExclusiveLock on every
+				// partition and blocks ALL sends for the duration of the build
+				// (this happened during the 2026-06-07 outbox-zombie incident:
+				// the non-concurrent build wedged behind an orphaned UPDATE and
+				// froze the send path). Built CONCURRENTLY here on the dedicated
+				// 10-min-timeout connection so a rebuild (new env, dropped index)
+				// never freezes sending again. IF NOT EXISTS makes it a no-op
+				// once present.
+				"idx_campaign_queue_recipient_isp",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_queue_recipient_isp
+				 ON mailing_campaign_queue (campaign_id, recipient_isp, status)
+				 WHERE recipient_isp IS NOT NULL`,
+			},
 		}
 		if _, err := cleanupConn.ExecContext(cleanupIdxCtx, "SET statement_timeout = '600000'"); err != nil {
 			log.Printf("[StartupMigration] cleanup indexes: SET timeout failed: %v", err)
@@ -6812,11 +6828,13 @@ END $$`},
 	}
 	bfCancel()
 
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`); err != nil {
-		log.Printf("[StartupMigration] idx_campaign_queue_recipient_isp: ERROR %v", err)
-	} else {
-		log.Println("[StartupMigration] idx_campaign_queue_recipient_isp: OK")
-	}
+	// idx_campaign_queue_recipient_isp is now built CONCURRENTLY in the
+	// cleanupIndexes block above (dedicated connection, 10-min timeout). It
+	// previously ran here as a plain non-concurrent CREATE INDEX, which takes
+	// an AccessExclusiveLock on every mailing_campaign_queue partition and
+	// blocks all sends for the build duration — a latent send-blocking hazard
+	// (see the 2026-06-07 outbox-zombie incident). Do not reintroduce a
+	// non-concurrent build of this index here.
 
 	// IP pool preferences for ops-controlled isolation (must be in startup migrations
 	// because DB_ADMIN_URL is not set in production ECS so runAdminMigrations is skipped)
@@ -7145,7 +7163,7 @@ func runAdminMigrations() {
 		{"nuke_warmup_log_today", `DELETE FROM mailing_ip_warmup_log WHERE date = CURRENT_DATE`},
 		{"nuke_mta1_cold", `UPDATE mailing_ip_addresses SET status = 'cold' WHERE hostname LIKE 'mta1%' OR ip_address::text LIKE '15.204.22.176%'`},
 
-		{"idx_queue_recipient_isp", `CREATE INDEX IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`},
+		{"idx_queue_recipient_isp", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_queue_recipient_isp ON mailing_campaign_queue (campaign_id, recipient_isp, status) WHERE recipient_isp IS NOT NULL`},
 		{"idx_queue_campaign_status_queued", `CREATE INDEX IF NOT EXISTS idx_queue_campaign_status_scheduled ON mailing_campaign_queue (campaign_id, status, scheduled_at) WHERE status = 'queued'`},
 
 		{"fix_warmup_ips_177_179_pool", `DO $$

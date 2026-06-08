@@ -5,10 +5,52 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
 )
+
+// Segment-materialization throttle.
+//
+// MaterializeSegment runs a full mailing_subscribers × mailing_tracking_events
+// scan (6-10 min each on the 50M+ row events table) and DELETE/INSERTs into
+// mailing_segment_members. It is invoked from MANY call sites with no shared
+// concurrency control: the nightly SegmentMaterializer cycle, the boot-time
+// canonical + engagement-catalog hydrators, and — critically — an UNBOUNDED
+// `go func()` spawned per POST /api/mailing/segments request (see
+// CreateSegment / segmentation_handlers). A burst of segment creations (e.g. a
+// catalog-seeder script) therefore launches N concurrent multi-minute heap
+// scans, which saturates RDS IO and stalls unrelated workers — the recurring
+// "audience/segment-evaluation IO storm" that wedged both the partner drip and
+// the outbox self-check on 2026-06-07.
+//
+// materializeSem bounds the number of concurrent heavy materializations
+// process-wide. Default 2 (conservative for an already-IO-pressured primary);
+// override via SEGMENT_MATERIALIZE_CONCURRENCY for ops tuning without a
+// redeploy. Acquisition is context-aware so a cancelled/timed-out caller never
+// blocks on a saturated semaphore.
+const defaultMaterializeConcurrency = 2
+
+// parseMaterializeConcurrency resolves the throttle width from a raw env value,
+// clamping to [1,16] and falling back to defaultMaterializeConcurrency for
+// empty/invalid input. Pure so it can be unit-tested without touching package
+// init or the process environment.
+func parseMaterializeConcurrency(raw string) int {
+	if v := strings.TrimSpace(raw); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 16 {
+			return n
+		}
+		log.Printf("[MaterializeSegment] invalid SEGMENT_MATERIALIZE_CONCURRENCY=%q, using default %d", v, defaultMaterializeConcurrency)
+	}
+	return defaultMaterializeConcurrency
+}
+
+var materializeConcurrency = parseMaterializeConcurrency(os.Getenv("SEGMENT_MATERIALIZE_CONCURRENCY"))
+
+var materializeSem = make(chan struct{}, materializeConcurrency)
 
 // SegmentMaterializer pre-computes segment membership into
 // mailing_segment_members once per day at a fixed UTC time so that audience
@@ -332,6 +374,16 @@ func MaterializeSegment(ctx context.Context, db *sql.DB, segmentID, listID, cond
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == '-') {
 			return 0, fmt.Errorf("invalid segment ID character: %c", c)
 		}
+	}
+
+	// Throttle concurrent heavy scans process-wide (see materializeSem
+	// docstring). Context-aware so a cancelled/timed-out caller bails instead
+	// of piling onto a saturated primary.
+	select {
+	case materializeSem <- struct{}{}:
+		defer func() { <-materializeSem }()
+	case <-segCtx.Done():
+		return 0, fmt.Errorf("materialize throttle wait cancelled: %w", segCtx.Err())
 	}
 
 	conn, err := db.Conn(segCtx)
