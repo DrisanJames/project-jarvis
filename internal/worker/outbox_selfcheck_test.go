@@ -59,11 +59,13 @@ func newSelfCheckMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 func TestSelfCheck_AllInvariantsHealthy(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
+	mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`status = 'submitting'`).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
 	mock.ExpectQuery(`dead_letter`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(5)))
-	mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(1000)))
 	mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(30)))
@@ -81,11 +83,13 @@ func TestSelfCheck_AllInvariantsHealthy(t *testing.T) {
 func TestSelfCheck_SubmittingStuckFiresSMS(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
+	mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`status = 'submitting'`).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(42), int64(900)))
 	mock.ExpectQuery(`dead_letter`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
-	mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 	mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
@@ -106,11 +110,13 @@ func TestSelfCheck_SubmittingStuckFiresSMS(t *testing.T) {
 func TestSelfCheck_DeadLetterSpikeFiresSMS(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
+	mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`status = 'submitting'`).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
 	mock.ExpectQuery(`dead_letter`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(1500)))
-	mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 	mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
@@ -133,11 +139,13 @@ func TestSelfCheck_ReAlertSuppression(t *testing.T) {
 	// Two consecutive runOnce — the same conditions on every query. Every
 	// query must be expected per run.
 	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`status = 'submitting'`).
+		mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`status = 'submitting'`).
 			WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(10), int64(900)))
 		mock.ExpectQuery(`dead_letter`).
 			WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
-		mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+		mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 			WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 		mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 			WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
@@ -160,11 +168,13 @@ func TestSelfCheck_ReAlertSuppression(t *testing.T) {
 func TestSelfCheck_AlertingDisabled(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
+	mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`status = 'submitting'`).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(10), int64(900)))
 	mock.ExpectQuery(`dead_letter`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
-	mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 	mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
@@ -180,10 +190,12 @@ func TestSelfCheck_AlertingDisabled(t *testing.T) {
 func TestSelfCheck_ContinuesAfterQueryError(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
+	mock.ExpectExec(`victims`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`status = 'submitting'`).WillReturnError(sql.ErrConnDone)
 	mock.ExpectQuery(`dead_letter`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(1500)))
-	mock.ExpectQuery(`status = 'queued'\s*$|status = 'queued'\)`).
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 	mock.ExpectQuery(`scheduled_at IS NOT NULL`).
 		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
@@ -196,4 +208,37 @@ func TestSelfCheck_ContinuesAfterQueryError(t *testing.T) {
 	got := alerter.drain()
 	require.Len(t, got, 1, "dead-letter alert must fire even though submitting query failed")
 	require.Contains(t, got[0].Body, "1500 permanent failures")
+}
+
+// TestSelfCheck_QueuedInvariantsExcludeTerminalParents guards the 2026-06-07
+// regression: a single 'queued' row left behind by a long-completed campaign
+// tripped the oldest-queued (and nearly the backlog) invariant forever because
+// neither query excluded terminal-parent rows. Both queued-row aggregates must
+// now carry the live-parent EXISTS filter, and the terminal-parent janitor must
+// run each tick. sqlmock's regexp matcher fails the test if the production
+// queries drop the filter.
+func TestSelfCheck_QueuedInvariantsExcludeTerminalParents(t *testing.T) {
+	db, mock := newSelfCheckMockDB(t)
+
+	// Janitor sweep must run (here it reports 7 zombies cancelled).
+	mock.ExpectExec(`WITH victims[\s\S]*c\.status IN \('completed','cancelled','failed','sent'\)`).
+		WillReturnResult(sqlmock.NewResult(0, 7))
+	mock.ExpectQuery(`status = 'submitting'`).
+		WillReturnRows(sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
+	mock.ExpectQuery(`dead_letter`).
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	// Backlog query MUST restrict to live-parent rows.
+	mock.ExpectQuery(`COUNT\(\*\)::bigint FROM mailing_campaign_queue q[\s\S]*EXISTS[\s\S]*mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	// Oldest-queued query MUST restrict to live-parent rows.
+	mock.ExpectQuery(`MIN\(scheduled_at\)[\s\S]*EXISTS[\s\S]*mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
+
+	alerter := &capturingAlerter{}
+	sc := NewOutboxSelfCheck(db)
+	sc.SetAlerter(alerter, []string{"+15555550100"})
+
+	sc.runOnce(context.Background())
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Empty(t, alerter.drain(), "zombie-only backlog must not page once filtered")
 }

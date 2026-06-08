@@ -64,7 +64,27 @@ const (
 	deadLetterRatePerHourThreshold = 500   // permanent fails / hr / system
 	queuedBacklogThreshold         = 150000
 	oldestQueuedAgeThresholdSec    = 3600 // 1 hour
+
+	// selfCheckJanitorBatch bounds how many zombie 'queued' rows the
+	// terminal-parent janitor cancels per tick. Keeps the sweep cheap and
+	// non-blocking even if a huge cold send leaves a large tail behind.
+	selfCheckJanitorBatch = 10000
 )
+
+// liveParentClause restricts a queued-row aggregate to rows whose parent
+// campaign is still actionable. A 'queued' row only signals a real scheduler/
+// worker problem if its campaign is in a live state — once the campaign reaches
+// a terminal state (completed/cancelled/failed/sent) the row is a zombie that
+// no worker will ever pick up, and 'paused' rows are intentionally held. Without
+// this clause a single abandoned row from a long-finished campaign trips the
+// oldest-queued and backlog invariants forever, paging the on-call for a
+// non-issue (2026-06-07 incident: a 12-day-old row from a completed cold send).
+const liveParentClause = `
+		  AND EXISTS (
+			SELECT 1 FROM mailing_campaigns c
+			WHERE c.id = q.campaign_id
+			  AND c.status NOT IN ('completed','cancelled','failed','sent','paused')
+		  )`
 
 // selfCheckInvariantKey identifies each distinct alert channel so per-alert
 // suppression is scoped correctly. Never exposed outside the package.
@@ -160,6 +180,14 @@ func (c *OutboxSelfCheck) Start(ctx context.Context) {
 // not short-circuit the others — we want operators to see every problem each
 // tick surfaces, not just the first.
 func (c *OutboxSelfCheck) runOnce(ctx context.Context) {
+	// Hygiene first, on its own budget: terminalize zombie 'queued' rows whose
+	// parent campaign already finished. Running this before the invariant
+	// checks keeps the age/backlog signals reflecting only live work, and a
+	// slow sweep can't starve the cheap aggregate checks below.
+	janitorCtx, cancelJanitor := context.WithTimeout(ctx, 60*time.Second)
+	c.cancelTerminalParentQueued(janitorCtx)
+	cancelJanitor()
+
 	queryCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
@@ -167,6 +195,41 @@ func (c *OutboxSelfCheck) runOnce(ctx context.Context) {
 	c.checkDeadLetterSpike(queryCtx)
 	c.checkQueuedBacklog(queryCtx)
 	c.checkOldestQueuedStuck(queryCtx)
+}
+
+// cancelTerminalParentQueued sweeps a bounded batch of 'queued' rows whose
+// parent campaign has already reached a terminal state and marks them
+// 'cancelled'. These rows are abandoned by design — when a campaign's send
+// window closes it is marked completed/sent (or cancelled/failed) but any
+// leftover queue rows are not drained, so they age forever in the outbox.
+// This is the root-cause fix for the recurring "oldest queued row" false
+// alarm; it runs every self-check tick and is bounded so it can never run away
+// under load.
+func (c *OutboxSelfCheck) cancelTerminalParentQueued(ctx context.Context) {
+	res, err := c.db.ExecContext(ctx, `
+		WITH victims AS (
+			SELECT q.id
+			FROM mailing_campaign_queue q
+			JOIN mailing_campaigns c ON c.id = q.campaign_id
+			WHERE q.status = 'queued'
+			  AND c.status IN ('completed','cancelled','failed','sent')
+			LIMIT $1
+		)
+		UPDATE mailing_campaign_queue q
+		SET status = 'cancelled',
+		    updated_at = NOW(),
+		    error_message = COALESCE(NULLIF(q.error_message, ''), '') ||
+		                    ' [outbox-selfcheck janitor: parent campaign terminal]'
+		FROM victims v
+		WHERE q.id = v.id
+	`, selfCheckJanitorBatch)
+	if err != nil {
+		log.Printf("[OutboxSelfCheck] terminal-parent janitor failed: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[OutboxSelfCheck] terminal-parent janitor cancelled %d zombie queued row(s)", n)
+	}
 }
 
 // checkSubmittingStuck looks for rows that have been in 'submitting' beyond
@@ -232,10 +295,13 @@ func (c *OutboxSelfCheck) checkDeadLetterSpike(ctx context.Context) {
 // 100k, but this self-check exists because the backpressure signal tells
 // enqueue to pause — it doesn't tell operators a sustained backup is
 // happening. A 150k+ depth sustained across two ticks is a paging event.
+// Restricted to live-parent rows (see liveParentClause) so abandoned rows from
+// finished campaigns don't inflate the depth toward a false backlog alarm.
 func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) {
 	var count int64
 	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE status = 'queued'
+		SELECT COUNT(*)::bigint FROM mailing_campaign_queue q
+		WHERE q.status = 'queued'`+liveParentClause+`
 	`).Scan(&count)
 	if err != nil {
 		log.Printf("[OutboxSelfCheck] queued-backlog query failed: %v", err)
@@ -254,14 +320,16 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) {
 // checkOldestQueuedStuck distinguishes "queue is deep because of a hot send"
 // from "queue has a stuck head because scheduling is broken". A single row
 // older than 1 hour in 'queued' usually means the scheduler stopped firing
-// or a specific campaign's priority was set wrong.
+// or a specific campaign's priority was set wrong. Restricted to rows whose
+// parent campaign is still live (see liveParentClause) so a zombie row from a
+// long-finished campaign can't trip it forever.
 func (c *OutboxSelfCheck) checkOldestQueuedStuck(ctx context.Context) {
 	var ageSec int64
 	err := c.db.QueryRowContext(ctx, `
 		SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(scheduled_at)))::bigint, 0)
-		FROM mailing_campaign_queue
-		WHERE status = 'queued'
-		  AND scheduled_at IS NOT NULL
+		FROM mailing_campaign_queue q
+		WHERE q.status = 'queued'
+		  AND q.scheduled_at IS NOT NULL`+liveParentClause+`
 	`).Scan(&ageSec)
 	if err != nil {
 		log.Printf("[OutboxSelfCheck] oldest-queued query failed: %v", err)
