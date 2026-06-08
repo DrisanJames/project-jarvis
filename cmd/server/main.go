@@ -2007,12 +2007,23 @@ func runStartupMigrations(db *sql.DB) {
 		// anti-joins are tiny index probes instead of scanning every queue/wave row per campaign.
 		// Without them the cleanup cost ~79k and timed out every boot (and on the old shared-conn
 		// runner that silently blocked later migrations). Partial = only the ~78k active queue rows /
-		// ~20k active wave rows out of 10.9M / 1.9M total. IF NOT EXISTS: no-op on prod (already built
-		// CONCURRENTLY out-of-band); instant on fresh/small DBs. Non-concurrent on purpose — a real
-		// build only happens on a small DB, so the brief lock is negligible and we dodge CONCURRENTLY's
-		// transaction/timeout edge cases inside the migration runner.
-		{"idx_queue_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_queue_active_by_campaign ON mailing_campaign_queue(campaign_id) WHERE status IN ('queued','sending','claimed')`},
-		{"idx_waves_active_by_campaign", `CREATE INDEX IF NOT EXISTS idx_waves_active_by_campaign ON mailing_campaign_waves(campaign_id) WHERE status IN ('planned','enqueuing','dispatched')`},
+		// ~20k active wave rows out of 10.9M / 1.9M total. Built CONCURRENTLY on prod out-of-band.
+		//
+		// Guarded by a pg_indexes catalog check, NOT plain CREATE INDEX IF NOT EXISTS: the latter
+		// grabs a SHARE lock on the table BEFORE checking existence, so on these constantly-written
+		// tables even the no-op path blocked on the hot-table lock and got cancelled at 5s every boot.
+		// The catalog check takes no table lock on the skip path (prod), and only CREATEs on a fresh
+		// DB where the tables are empty and the brief lock is free.
+		{"idx_queue_active_by_campaign", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_queue_active_by_campaign') THEN
+				CREATE INDEX idx_queue_active_by_campaign ON mailing_campaign_queue(campaign_id) WHERE status IN ('queued','sending','claimed');
+			END IF;
+		END $$`},
+		{"idx_waves_active_by_campaign", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_waves_active_by_campaign') THEN
+				CREATE INDEX idx_waves_active_by_campaign ON mailing_campaign_waves(campaign_id) WHERE status IN ('planned','enqueuing','dispatched');
+			END IF;
+		END $$`},
 		// Mark genuinely-finished 'sending' campaigns 'sent': no active queue rows, no active waves,
 		// and >=1 completed wave. With the indexes above the plan is ~48ms. FOR UPDATE ... SKIP LOCKED
 		// so we never block on a campaign row the live app is mutating — those are simply skipped and
