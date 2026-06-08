@@ -505,7 +505,7 @@ adaptive_learning:
 output:
   warmup_plan:
     ip: "192.168.1.100"
-    domain: "mail.ignite.com"
+    domain: "mail.jamesventurescorp.com"
     current_stage: "mid_warmup"
     current_daily_limit: 25000
     recommended_action: "increase_25_percent"

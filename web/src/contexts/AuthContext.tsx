@@ -52,15 +52,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const setDevUser = useCallback(() => {
     const devUser: User = {
       id: 'dev-user',
-      email: 'dev@ignitemediagroup.co',
+      email: 'dev@jamesventurescorp.com',
       name: 'Developer',
       picture: '',
-      domain: 'ignitemediagroup.co',
+      domain: 'jamesventurescorp.com',
     };
     const devOrg: Organization = {
       id: '00000000-0000-0000-0000-000000000001',
       name: 'Jarvis',
-      domain: 'ignitemediagroup.co',
+      domain: 'jamesventurescorp.com',
     };
     setUser(devUser);
     setOrganization(devOrg);
@@ -157,7 +157,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       let errorMessage = 'Authentication failed';
       switch (errorParam) {
         case 'domain_not_allowed':
-          errorMessage = 'Access denied. Only @ignitemediagroup.co accounts are allowed.';
+          errorMessage = 'Access denied. Only @jamesventurescorp.com accounts are allowed.';
           break;
         case 'invalid_state':
           errorMessage = 'Invalid authentication state. Please try again.';

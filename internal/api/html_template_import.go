@@ -173,7 +173,7 @@ func classifyAndRewriteHTML(
 const unsubDisclaimerMarker = `<!-- unsub-disclaimer -->`
 
 func buildUnsubDisclaimerHTML(brandName, physicalAddress string) string {
-	addrLine := "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801"
+	addrLine := "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801"
 	if physicalAddress != "" {
 		addrLine = physicalAddress
 	}

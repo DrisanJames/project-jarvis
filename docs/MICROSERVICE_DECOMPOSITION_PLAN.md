@@ -1,6 +1,6 @@
 ---
 name: Microservice Decomposition Effort
-overview: Level-of-effort analysis for decomposing the IGNITE monolith into microservices aligned to the 18 sidebar navigation items, including three viable strategies with escalating effort and risk.
+overview: Level-of-effort analysis for decomposing the Project Jarvis monolith into microservices aligned to the 18 sidebar navigation items, including three viable strategies with escalating effort and risk.
 todos:
   - id: strategy-decision
     content: User decides which strategy (A, B, or C) to pursue

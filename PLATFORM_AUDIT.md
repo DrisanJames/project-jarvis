@@ -1,4 +1,4 @@
-# IGNITE Mailing Platform — Comprehensive Audit
+# Project Jarvis Mailing Platform — Comprehensive Audit
 
 **Date**: 2026-03-01
 **Purpose**: Identify all gaps preventing production-ready PMTA campaign orchestration.

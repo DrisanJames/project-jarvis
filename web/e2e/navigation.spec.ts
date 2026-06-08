@@ -46,9 +46,9 @@ test.describe('Navigation', () => {
 
   test('should navigate to Mailing portal', async ({ page }) => {
     await page.click('.nav-item:has-text("Mailing")');
-    // MailingPortal has h1 "📬 IGNITE" with subtitle "Mailing Platform"
+    // MailingPortal has h1 "📬 Project Jarvis" with subtitle "Mailing Platform"
     await expect(page.locator('.mailing-portal')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('.sidebar-header h1')).toContainText('IGNITE');
+    await expect(page.locator('.sidebar-header h1')).toContainText('Project Jarvis');
   });
 
   test('should navigate to Mailgun dashboard', async ({ page }) => {

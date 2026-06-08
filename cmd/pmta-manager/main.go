@@ -641,11 +641,11 @@ func handleWarmup(args []string) {
 		for _, s := range schedule {
 			fmt.Printf("  %-12s  %6d emails/day\n", s.days, s.volume)
 		}
-		fmt.Println("\nWarmup must be managed through the IGNITE platform API for automated tracking.")
+		fmt.Println("\nWarmup must be managed through the Project Jarvis platform API for automated tracking.")
 		fmt.Println("Use: POST /api/mailing/ips/{id}/warmup/start")
 
 	case "status":
-		fmt.Println("Warmup status is tracked in the IGNITE platform database.")
+		fmt.Println("Warmup status is tracked in the Project Jarvis platform database.")
 		fmt.Println("Use: GET /api/mailing/warmup/dashboard")
 	}
 }

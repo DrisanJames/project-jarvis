@@ -22,7 +22,7 @@ func main() {
 	log.Println("║    go run cmd/server/main.go                              ║")
 	log.Println("╚════════════════════════════════════════════════════════════╝")
 	log.Println("")
-	log.Println("Starting IGNITE STUB API (hardcoded responses)...")
+	log.Println("Starting Project Jarvis STUB API (hardcoded responses)...")
 
 	// Database connection
 	dbURL := os.Getenv("DATABASE_URL")

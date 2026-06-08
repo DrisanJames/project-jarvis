@@ -68,12 +68,12 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 			respondJSON(w, http.StatusOK, map[string]interface{}{
 				"authenticated": true,
 				"user": map[string]interface{}{
-					"id": "admin", "email": "admin@ignitemediagroup.co",
-					"name": "Admin", "domain": "ignitemediagroup.co",
+					"id": "admin", "email": "admin@jamesventurescorp.com",
+					"name": "Admin", "domain": "jamesventurescorp.com",
 				},
 				"organization": map[string]interface{}{
 					"id": "00000000-0000-0000-0000-000000000001",
-					"name": "Jarvis", "domain": "ignitemediagroup.co",
+					"name": "Jarvis", "domain": "jamesventurescorp.com",
 				},
 			})
 		})

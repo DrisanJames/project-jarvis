@@ -536,13 +536,13 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 
 	// Defaults (use sending profile values or fallback)
 	if fromName == "" {
-		fromName = "IGNITE"
+		fromName = "Notifications"
 	}
 	if fromEmail == "" {
 		fromEmail = "noreply@ignite.media"
 	}
 	if subject == "" {
-		subject = "Message from IGNITE"
+		subject = "You have a new message"
 	}
 	if htmlContent == "" {
 		htmlContent = "<p>Hello!</p>"

@@ -1,4 +1,4 @@
-# IGNITE Platform Architecture
+# Project Jarvis Platform Architecture
 
 ## Package Dependency Graph
 

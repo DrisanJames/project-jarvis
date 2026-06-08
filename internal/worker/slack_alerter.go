@@ -26,7 +26,7 @@ type SlackAlerter struct {
 // disabled alerter whose SendSMS returns an error (which callers log).
 func NewSlackAlerter(n notify.Notifier, title string) *SlackAlerter {
 	if title == "" {
-		title = "IGNITE alert"
+		title = "Project Jarvis alert"
 	}
 	return &SlackAlerter{notifier: n, title: title}
 }

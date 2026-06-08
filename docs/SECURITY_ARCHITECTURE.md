@@ -601,8 +601,8 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 
 // Production config
 var productionCORS = []string{
-    "https://app.ignite.com",
-    "https://www.ignite.com",
+    "https://app.jamesventurescorp.com",
+    "https://www.jamesventurescorp.com",
 }
 ```
 

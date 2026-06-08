@@ -11,8 +11,8 @@ test.describe('Mailing Portal', () => {
     await page.waitForSelector('.mailing-portal', { timeout: 5000 });
   });
 
-  test('should display IGNITE Mailing header', async ({ page }) => {
-    await expect(page.locator('.sidebar-header h1')).toContainText('IGNITE');
+  test('should display Project Jarvis Mailing header', async ({ page }) => {
+    await expect(page.locator('.sidebar-header h1')).toContainText('Project Jarvis');
     await expect(page.locator('.sidebar-header .subtitle')).toContainText('Mailing Platform');
   });
 

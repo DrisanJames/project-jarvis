@@ -812,7 +812,7 @@ CREATE TRIGGER trigger_update_list_counts
 INSERT INTO organizations (id, name, slug, plan, daily_email_limit, monthly_email_limit)
 VALUES (
     '00000000-0000-0000-0000-000000000001',
-    'Ignite Media Group',
+    'James Ventures Corp',
     'ignite',
     'enterprise',
     1000000,

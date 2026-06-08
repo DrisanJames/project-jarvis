@@ -75,13 +75,13 @@ status: MISSING
 
 requirements:
   public_policy:
-    url: "https://ignite.com/.well-known/security.txt"
-    contact: "security@ignite.com"
+    url: "https://jamesventurescorp.com/.well-known/security.txt"
+    contact: "security@jamesventurescorp.com"
     response_sla: "Acknowledge within 24 hours"
     
   scope:
     in_scope:
-      - "*.ignite.com"
+      - "*.jamesventurescorp.com"
       - "Ignite API"
       - "Ignite mobile apps"
     out_of_scope:

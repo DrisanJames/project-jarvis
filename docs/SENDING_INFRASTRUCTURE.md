@@ -16,7 +16,7 @@
 
 ## Architecture Overview
 
-The IGNITE Mailing Platform provides an enterprise-grade email sending infrastructure supporting multiple Email Service Providers (ESPs) with intelligent throttling, real-time tracking, and comprehensive suppression management.
+The Project Jarvis Mailing Platform provides an enterprise-grade email sending infrastructure supporting multiple Email Service Providers (ESPs) with intelligent throttling, real-time tracking, and comprehensive suppression management.
 
 ### High-Level Architecture
 
@@ -295,7 +295,7 @@ curl -X POST http://localhost:8080/api/mailing/sending-profiles \
     "description": "Main SparkPost account for newsletters",
     "vendor_type": "sparkpost",
     "api_key": "your-sparkpost-api-key",
-    "from_name": "IGNITE News",
+    "from_name": "Project Jarvis News",
     "from_email": "news@newsletter.yourdomain.com",
     "reply_email": "support@yourdomain.com",
     "sending_domain": "newsletter.yourdomain.com",
@@ -1188,7 +1188,7 @@ POST /api/mailing/campaigns
   "segment_ids": ["uuid1", "uuid2"],
   "suppression_list_ids": ["uuid1", "uuid2"],
   "sending_profile_id": "uuid",
-  "from_name": "IGNITE News",
+  "from_name": "Project Jarvis News",
   "from_email": "news@newsletter.domain.com",
   "reply_email": "support@domain.com",
   "send_type": "scheduled",

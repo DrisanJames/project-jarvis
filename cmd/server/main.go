@@ -81,7 +81,7 @@ var besmedSuppressionSQL string
 
 func main() {
 	log.Println("╔════════════════════════════════════════════════════════════╗")
-	log.Println("║  IGNITE Production Server (cmd/server/main.go)            ║")
+	log.Println("║  Project Jarvis Production Server (cmd/server/main.go)            ║")
 	log.Println("║  Real database-backed API with full ESP integrations      ║")
 	log.Println("╚════════════════════════════════════════════════════════════╝")
 	bi := buildinfo.Current()
@@ -1650,7 +1650,7 @@ func main() {
 // Resolution order:
 //  1. Explicit DEFAULT_ORG_ID environment variable, if set.
 //  2. Auto-discovery: if exactly one organization exists in the `organizations`
-//     table, use it. (Production is single-tenant — Ignite Media Group.)
+//     table, use it. (Production is single-tenant — James Ventures Corp.)
 //
 // Logs every outcome so the operational team can confirm what was wired.
 func seedProcessDefaultOrgID(db *sql.DB) {
@@ -5269,6 +5269,8 @@ END $$`},
 		{"phase21_seed_cross_brand_cap", `UPDATE organizations
 			SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{cross_brand_daily_cap}', '2'::jsonb, true)
 			WHERE settings->>'cross_brand_daily_cap' IS NULL`},
+		// Rebrand: rename single-tenant org Ignite Media Group -> James Ventures Corp (idempotent).
+		{"rebrand_org_to_james_ventures", `UPDATE organizations SET name='James Ventures Corp' WHERE name='Ignite Media Group'`},
 		// ---------------------------------------------------------------------
 		// Master List Migration P7 — subscriber provenance metadata.
 		//

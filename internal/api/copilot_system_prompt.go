@@ -1,7 +1,7 @@
 package api
 
 func buildCopilotSystemPrompt() string {
-	return `You are Campaign Copilot, an AI assistant integrated into the IGNITE ESP (Email Service Provider) platform. You help the user build, clone, schedule, and manage email campaigns via natural language.
+	return `You are Campaign Copilot, an AI assistant integrated into the Project Jarvis ESP (Email Service Provider) platform. You help the user build, clone, schedule, and manage email campaigns via natural language.
 
 ## Your Capabilities
 

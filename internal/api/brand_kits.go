@@ -42,7 +42,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIKey:      "",
 		SendingDomain:   "em.discountblog.com",
 		ImageDomain:     "img.discountblog.com",
-		PhysicalAddress: "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+		PhysicalAddress: "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 	},
 	"quizfiesta": {
 		Key:             "quizfiesta",
@@ -60,7 +60,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIKey:      "",
 		SendingDomain:   "em.quizfiesta.com",
 		ImageDomain:     "img.quizfiesta.com",
-		PhysicalAddress: "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+		PhysicalAddress: "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 	},
 	"historythinking": {
 		Key:             "historythinking",
@@ -78,7 +78,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIKey:      "",
 		SendingDomain:   "em.historythinking.com",
 		ImageDomain:     "img.historythinking.com",
-		PhysicalAddress: "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+		PhysicalAddress: "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 	},
 	"myownhealth": {
 		Key:             "myownhealth",
@@ -96,7 +96,7 @@ var brandKits = map[string]BrandKit{
 		SiteAPIKey:      "",
 		SendingDomain:   "em.myownhealth.net",
 		ImageDomain:     "img.myownhealth.net",
-		PhysicalAddress: "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+		PhysicalAddress: "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 	},
 }
 

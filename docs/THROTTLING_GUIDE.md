@@ -2,7 +2,7 @@
 
 ## Overview
 
-The IGNITE Mailing Platform implements a multi-level throttling system designed to:
+The Project Jarvis Mailing Platform implements a multi-level throttling system designed to:
 - Protect sender reputation across all ESPs
 - Comply with ESP rate limits
 - Enable intelligent send time distribution

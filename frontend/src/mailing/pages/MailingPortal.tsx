@@ -48,7 +48,7 @@ export const MailingPortal: React.FC = () => {
     <div className="mailing-portal">
       <aside className="mailing-sidebar">
         <div className="sidebar-header">
-          <h1>📬 IGNITE</h1>
+          <h1>📬 Project Jarvis</h1>
           <span className="subtitle">Mailing Platform</span>
         </div>
 

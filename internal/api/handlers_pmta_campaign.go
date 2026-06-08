@@ -1792,7 +1792,7 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 		input.To = "drisanjames@gmail.com"
 	}
 	if input.Subject == "" {
-		input.Subject = "IGNITE SES-PMTA Relay Test"
+		input.Subject = "SES-PMTA Relay Test"
 	}
 	if input.Domain == "" {
 		input.Domain = "m.discountblog.com"
@@ -1803,7 +1803,7 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 
 	// Build RFC822 message
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("From: IGNITE Test <%s>\r\n", fromEmail))
+	msg.WriteString(fmt.Sprintf("From: SES Relay Test <%s>\r\n", fromEmail))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", input.To))
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", input.Subject))
 	msg.WriteString(fmt.Sprintf("Date: %s\r\n", now))
@@ -1815,7 +1815,7 @@ func (s *PMTACampaignService) HandleTestSESSend(w http.ResponseWriter, r *http.R
 <h2>SES-PMTA Relay Test</h2>
 <p>This message was sent from <strong>%s</strong> through PMTA relaying to AWS SES.</p>
 <p>Sent at: %s</p>
-<p>If you received this, the relay chain is working: <code>IGNITE -&gt; PMTA Bridge -&gt; PMTA -&gt; SES SMTP -&gt; Gmail</code></p>
+<p>If you received this, the relay chain is working: <code>Origin -&gt; PMTA Bridge -&gt; PMTA -&gt; SES SMTP -&gt; Gmail</code></p>
 </body></html>`, input.Domain, now))
 
 	// Look up PMTA bridge endpoint

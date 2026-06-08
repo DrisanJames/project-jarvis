@@ -242,7 +242,7 @@ Automated alert from PMTA Infrastructure Monitor.
 
 // SendPipelineReport sends a formatted email summarizing a data pipeline run.
 func (a *Alerter) SendPipelineReport(report PipelineRunReport) error {
-	subject := fmt.Sprintf("[IGNITE] Data Pipeline Complete — %d verified, %d suppressed", report.EmailsVerified, report.EmailsSuppressed)
+	subject := fmt.Sprintf("[Project Jarvis] Data Pipeline Complete — %d verified, %d suppressed", report.EmailsVerified, report.EmailsSuppressed)
 
 	var sb strings.Builder
 	sb.WriteString("Data Pipeline Run Report\n")
@@ -279,7 +279,7 @@ func (a *Alerter) SendPipelineReport(report PipelineRunReport) error {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("---\nAutomated report from IGNITE Data Pipeline.\n")
+	sb.WriteString("---\nAutomated report from Project Jarvis Data Pipeline.\n")
 
 	return a.sendEmailAuth(subject, sb.String())
 }

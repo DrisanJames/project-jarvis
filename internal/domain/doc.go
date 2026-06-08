@@ -1,4 +1,4 @@
-// Package domain defines the core business types for the IGNITE mailing platform.
+// Package domain defines the core business types for the Project Jarvis mailing platform.
 //
 // Types in this package are pure value objects with no behavior, no database
 // dependencies, and no HTTP concerns. They are the shared language between

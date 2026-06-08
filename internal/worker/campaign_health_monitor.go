@@ -551,7 +551,7 @@ func (m *CampaignHealthMonitor) checkLateCampaigns() {
 			name = lc.ID
 		}
 		body := fmt.Sprintf(
-			"[IGNITE] Campaign %q did not send at scheduled time (%s UTC, +%s late). id=%s",
+			"[Project Jarvis] Campaign %q did not send at scheduled time (%s UTC, +%s late). id=%s",
 			truncateName(name, 48),
 			lc.ScheduledAt.UTC().Format("2006-01-02 15:04"),
 			delay,

@@ -246,7 +246,7 @@ func (s *IPXOService) HandleAssignASN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.CompanyName == "" {
-		input.CompanyName = "Ignite Media Group"
+		input.CompanyName = "James Ventures Corp"
 	}
 
 	result, err := s.client.AssignASN(input.ASN, input.Subnet, input.CompanyName)

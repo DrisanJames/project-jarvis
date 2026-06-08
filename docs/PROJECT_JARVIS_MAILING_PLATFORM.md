@@ -58,7 +58,7 @@ The Ignite Mailing Platform is an enterprise-grade affiliate email marketing Saa
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        IGNITE MAILING PLATFORM                               │
+│                        Project Jarvis MAILING PLATFORM                               │
 │                         (Landing Page on Login)                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │

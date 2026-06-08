@@ -168,7 +168,7 @@ func (g *StorageGuard) checkReplicationSlots(ctx context.Context, snap *StorageS
 		if !active {
 			inactiveCount++
 			msg := fmt.Sprintf(
-				"[IGNITE] StorageGuard: replication slot %q is INACTIVE (retained WAL ~%.1f GB). Investigate replica health immediately.",
+				"[Project Jarvis] StorageGuard: replication slot %q is INACTIVE (retained WAL ~%.1f GB). Investigate replica health immediately.",
 				name, float64(retained)/(1024*1024*1024),
 			)
 			snap.Alerts = append(snap.Alerts, msg)
@@ -185,7 +185,7 @@ func (g *StorageGuard) checkReplicationSlots(ctx context.Context, snap *StorageS
 
 	if !g.replicaConfigured && slotCount > 0 {
 		msg := fmt.Sprintf(
-			"[IGNITE] StorageGuard: %d unexpected replication slot(s) with no READ_REPLICA_URL configured (max retained WAL ~%.1f GB).",
+			"[Project Jarvis] StorageGuard: %d unexpected replication slot(s) with no READ_REPLICA_URL configured (max retained WAL ~%.1f GB).",
 			slotCount, float64(maxRetained)/(1024*1024*1024),
 		)
 		snap.Alerts = append(snap.Alerts, msg)
@@ -194,7 +194,7 @@ func (g *StorageGuard) checkReplicationSlots(ctx context.Context, snap *StorageS
 
 	if maxRetained >= walRetainedSev1Bytes {
 		msg := fmt.Sprintf(
-			"[IGNITE] StorageGuard SEV-1: retained WAL ~%.1f GB (threshold 100 GB). Pause heavy writes until resolved.",
+			"[Project Jarvis] StorageGuard SEV-1: retained WAL ~%.1f GB (threshold 100 GB). Pause heavy writes until resolved.",
 			float64(maxRetained)/(1024*1024*1024),
 		)
 		snap.Alerts = append(snap.Alerts, msg)
@@ -204,7 +204,7 @@ func (g *StorageGuard) checkReplicationSlots(ctx context.Context, snap *StorageS
 		}
 	} else if maxRetained >= walRetainedWarnBytes {
 		msg := fmt.Sprintf(
-			"[IGNITE] StorageGuard: retained WAL ~%.1f GB (warning threshold 10 GB).",
+			"[Project Jarvis] StorageGuard: retained WAL ~%.1f GB (warning threshold 10 GB).",
 			float64(maxRetained)/(1024*1024*1024),
 		)
 		snap.Alerts = append(snap.Alerts, msg)
@@ -229,7 +229,7 @@ func (g *StorageGuard) checkQueueHTML(ctx context.Context, snap *StorageSnapshot
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] StorageGuard: %d accepted queue rows still carry html_content (threshold %d). Deploy queue slimming or investigate.",
+		"[Project Jarvis] StorageGuard: %d accepted queue rows still carry html_content (threshold %d). Deploy queue slimming or investigate.",
 		count, queueAcceptedHTMLWarn,
 	)
 	snap.Alerts = append(snap.Alerts, msg)
@@ -253,7 +253,7 @@ func (g *StorageGuard) checkQueueTerminalAged(ctx context.Context, snap *Storage
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] StorageGuard: %d operationally-terminal queue rows older than 14d (threshold %d). Run terminal purge.",
+		"[Project Jarvis] StorageGuard: %d operationally-terminal queue rows older than 14d (threshold %d). Run terminal purge.",
 		count, queueTerminalAgedWarn,
 	)
 	snap.Alerts = append(snap.Alerts, msg)
@@ -277,7 +277,7 @@ func (g *StorageGuard) checkAcctRawBacklog(ctx context.Context, snap *StorageSna
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] StorageGuard: %d unprocessed pmta_acct_raw rows (threshold %d). Increase AcctSummaryBuilder throughput.",
+		"[Project Jarvis] StorageGuard: %d unprocessed pmta_acct_raw rows (threshold %d). Increase AcctSummaryBuilder throughput.",
 		count, acctRawBacklogWarn,
 	)
 	snap.Alerts = append(snap.Alerts, msg)

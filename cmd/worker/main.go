@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	log.Println("Starting IGNITE Send Worker...")
+	log.Println("Starting Project Jarvis Send Worker...")
 
 	// Database connection
 	dbURL := os.Getenv("DATABASE_URL")

@@ -40,7 +40,7 @@ var PropertyMapping = map[string]string{
 	"DIH":  "dayinhistory.org",
 	"FTD":  "financialtipsdaily.net",
 	"FYF":  "findyourfit.net",
-	"IGN":  "ignitemedia.com", // Internal/default
+	"IGN":  "jamesventurescorp.com", // Internal/default
 }
 
 // DataPartnerMapping maps data-set prefixes (from Everflow sub2) to partner names.

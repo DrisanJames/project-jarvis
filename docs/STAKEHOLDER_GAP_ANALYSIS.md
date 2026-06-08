@@ -340,7 +340,7 @@ security_architecture:
       default: "1000/hour"
       authenticated: "10000/hour"
     cors:
-      allowed_origins: ["https://app.ignite.com"]
+      allowed_origins: ["https://app.jamesventurescorp.com"]
       allowed_methods: ["GET", "POST", "PUT", "DELETE"]
     input_validation: "JSON Schema"
     

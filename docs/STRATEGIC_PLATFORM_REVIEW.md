@@ -97,7 +97,7 @@ PAIN POINT                          YOUR SOLUTION                   COMPETITOR G
 ### 2.1 Competitive Matrix
 
 ```
-                        │ Mailchimp │ Klaviyo │ Ongage  │ Brevo   │ IGNITE
+                        │ Mailchimp │ Klaviyo │ Ongage  │ Brevo   │ Project Jarvis
 ────────────────────────┼───────────┼─────────┼─────────┼─────────┼────────
 Target Market           │ SMB       │ eComm   │ High-Vol│ SMB     │ Affiliate
                         │           │         │         │         │
@@ -122,7 +122,7 @@ Approval Workflows      │ ✗         │ Basic   │ ✗       │ ✗       
 Pricing Model           │ Contacts  │ Contacts│ Volume  │ Contacts│ Revenue %
 ────────────────────────┴───────────┴─────────┴─────────┴─────────┴────────
 
-IGNITE UNIQUE ADVANTAGES:
+Project Jarvis UNIQUE ADVANTAGES:
 • Only platform with true per-mailbox AI learning
 • Only platform with autonomous revenue-driven sending
 • Only platform with approvable AI-generated plans

@@ -197,7 +197,7 @@ export const PROPERTY_MAPPING: Record<string, string> = {
   'DIH': 'dayinhistory.org',
   'FTD': 'financialtipsdaily.net',
   'FYF': 'findyourfit.net',
-  'IGN': 'ignitemedia.com',
+  'IGN': 'jamesventurescorp.com',
 };
 
 // Budget Options

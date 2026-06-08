@@ -323,7 +323,7 @@ func (c *OutboxSelfCheck) checkSubmittingStuck(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] Outbox invariant breach: %d row(s) stuck in submitting state (oldest %ds). Reconciler may be failing; check /api/outbox/summary and logs.",
+		"[Project Jarvis] Outbox invariant breach: %d row(s) stuck in submitting state (oldest %ds). Reconciler may be failing; check /api/outbox/summary and logs.",
 		count, oldestSec,
 	)
 	c.maybeAlert(ctx, invSubmittingStuck, msg)
@@ -352,7 +352,7 @@ func (c *OutboxSelfCheck) checkDeadLetterSpike(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] Outbox invariant breach: %d permanent failures in the last hour (threshold %d). Likely broken template, auth failure, or DNS regression.",
+		"[Project Jarvis] Outbox invariant breach: %d permanent failures in the last hour (threshold %d). Likely broken template, auth failure, or DNS regression.",
 		count, deadLetterRatePerHourThreshold,
 	)
 	c.maybeAlert(ctx, invDeadLetterSpike, msg)
@@ -381,7 +381,7 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] Outbox invariant breach: queued backlog %d (threshold %d). Send workers may be stalled or backpressure saturated.",
+		"[Project Jarvis] Outbox invariant breach: queued backlog %d (threshold %d). Send workers may be stalled or backpressure saturated.",
 		count, queuedBacklogThreshold,
 	)
 	c.maybeAlert(ctx, invQueuedBacklog, msg)
@@ -411,7 +411,7 @@ func (c *OutboxSelfCheck) checkOldestQueuedStuck(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[IGNITE] Outbox invariant breach: oldest queued row is %ds old (threshold %ds). Scheduler or send worker pool may be stalled.",
+		"[Project Jarvis] Outbox invariant breach: oldest queued row is %ds old (threshold %ds). Scheduler or send worker pool may be stalled.",
 		ageSec, oldestQueuedAgeThresholdSec,
 	)
 	c.maybeAlert(ctx, invOldestQueuedStuck, msg)

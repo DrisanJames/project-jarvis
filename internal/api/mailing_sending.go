@@ -162,10 +162,10 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 
 	// Set content defaults
 	if input.HTMLContent == "" {
-		input.HTMLContent = fmt.Sprintf("<html><body><h1>%s</h1><p>This is a test email from IGNITE Mailing Platform.</p></body></html>", input.Subject)
+		input.HTMLContent = fmt.Sprintf("<html><body><h1>%s</h1><p>This is a test email.</p></body></html>", input.Subject)
 	}
 	if input.TextContent == "" {
-		input.TextContent = fmt.Sprintf("%s\n\nThis is a test email from IGNITE Mailing Platform.", input.Subject)
+		input.TextContent = fmt.Sprintf("%s\n\nThis is a test email.", input.Subject)
 	}
 
 	// ── Resolve per-profile tracking domain (matches production send worker) ──

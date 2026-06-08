@@ -54,14 +54,14 @@ func TestBuildUnsubDisclaimerHTML_IncludesPhysicalAddress(t *testing.T) {
 			brandName:       "QuizFiesta",
 			physicalAddress: "",
 			wantBrand:       "QuizFiesta",
-			wantAddress:     "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+			wantAddress:     "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 		},
 		{
 			name:            "both empty uses fallback address no brand prefix",
 			brandName:       "",
 			physicalAddress: "",
 			wantBrand:       "",
-			wantAddress:     "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801",
+			wantAddress:     "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
 		},
 	}
 
@@ -141,7 +141,7 @@ func TestInjectUnsubDisclaimerBrand_NoBodyTag(t *testing.T) {
 	if !strings.HasPrefix(result, unsubDisclaimerMarker) {
 		t.Error("without <body>, disclaimer should be prepended")
 	}
-	if !strings.Contains(result, "Ignite Media Group") {
+	if !strings.Contains(result, "James Ventures Corp") {
 		t.Error("default address should appear when no address given")
 	}
 }
@@ -150,7 +150,7 @@ func TestInjectUnsubDisclaimer_DefaultSignature(t *testing.T) {
 	html := `<html><body><p>Test</p></body></html>`
 	result := injectUnsubDisclaimer(html)
 
-	if !strings.Contains(result, "Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801") {
+	if !strings.Contains(result, "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801") {
 		t.Error("default wrapper should include fallback physical address")
 	}
 	if strings.Contains(result, " · ") {
@@ -255,7 +255,7 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please ` +
 		`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.</p>` +
 		`<p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">` +
-		`DiscountBlog · Ignite Media Group, 30 N Gould St, Ste R, Sheridan, WY 82801</p>` +
+		`DiscountBlog · James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801</p>` +
 		`<h1>Big Sale!</h1><a href="https://discountblog.com/deal">Shop Now</a></body></html>`
 
 	mock.ExpectQuery(`SELECT COALESCE\(html_content,''\) FROM mailing_offer_creatives`).
@@ -356,7 +356,7 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 	}
 
 	// Physical address present (CAN-SPAM)
-	if !strings.Contains(msg.HTMLContent, "Ignite Media Group") {
+	if !strings.Contains(msg.HTMLContent, "James Ventures Corp") {
 		t.Error("HTML missing physical address (CAN-SPAM violation)")
 	}
 	if !strings.Contains(msg.HTMLContent, "Sheridan, WY") {

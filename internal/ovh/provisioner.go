@@ -140,7 +140,7 @@ func GenerateSetupScript(cfg ProvisionConfig) string {
 	sb.WriteString("echo '  2. Configure forward DNS (A records) for each mta hostname'\n")
 	sb.WriteString("echo '  3. Set up DKIM signing in /etc/pmta/config'\n")
 	sb.WriteString("echo '  4. Upload PMTA license to /etc/pmta/license'\n")
-	sb.WriteString("echo '  5. Create a sending profile in IGNITE pointing to this server'\n")
+	sb.WriteString("echo '  5. Create a sending profile in Project Jarvis pointing to this server'\n")
 
 	return sb.String()
 }

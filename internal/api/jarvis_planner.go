@@ -252,7 +252,7 @@ func (j *JarvisOrchestrator) HandleAutonomousPlan(w http.ResponseWriter, r *http
 		},
 		KnownIssues: []string{
 			"Yahoo inbox placement is degraded — prior campaigns landed in spam for drisanjames@yahoo.com",
-			"Only djames@ignitemediagroup.co consistently inboxed in previous campaigns",
+			"Only djames@jamesventurescorp.com consistently inboxed in previous campaigns",
 			"No historical STO data exists for these specific test accounts — using domain-level defaults",
 		},
 		Mitigations: []string{

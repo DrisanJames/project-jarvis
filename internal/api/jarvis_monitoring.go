@@ -852,7 +852,7 @@ var ownerTestAccounts = map[string]bool{
 	"drisanjames@yahoo.com":       true,
 	"drisan@myprolific.org":       true,
 	"drisan@athletenarrative.com": true,
-	"djames@ignitemediagroup.co":  true,
+	"djames@jamesventurescorp.com":  true,
 	"smurfturfgamin@gmail.com":    true,
 }
 

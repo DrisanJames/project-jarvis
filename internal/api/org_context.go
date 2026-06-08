@@ -255,7 +255,7 @@ func GetUserIDFromContext(ctx context.Context) uuid.UUID {
 // skipped).
 //
 // This is the production reality of a single-tenant deployment: there is
-// exactly one organization (Ignite Media Group) and using its id when nothing
+// exactly one organization (James Ventures Corp) and using its id when nothing
 // else identifies the caller is correct, not a hack.
 const SingleTenantFallbackOrgID = "00000000-0000-0000-0000-000000000001"
 
@@ -265,7 +265,7 @@ const SingleTenantFallbackOrgID = "00000000-0000-0000-0000-000000000001"
 // organization that exists in the database for this single-tenant deployment.
 //
 // This exists because the production deployment has exactly one organization
-// (Ignite Media Group). When the auth context transiently fails to hydrate
+// (James Ventures Corp). When the auth context transiently fails to hydrate
 // (e.g. during a session refresh or under load), every read endpoint that
 // scopes by organization_id was silently filtering by uuid.Nil and returning
 // zero rows — making the UI appear empty even though the data is right there.

@@ -66,7 +66,7 @@ func setupTestHandlers(t *testing.T) (*Handlers, *MockCollector) {
 			{IP: "18.236.253.72", Status: "healthy"},
 		},
 		domain: []sparkpost.DomainMetrics{
-			{Domain: "mail.ignite.com", Status: "healthy"},
+			{Domain: "mail.jamesventurescorp.com", Status: "healthy"},
 		},
 		signals: &sparkpost.SignalsData{
 			Timestamp: time.Now(),

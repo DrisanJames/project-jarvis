@@ -1,4 +1,4 @@
-# IGNITE Mailing Platform
+# Project Jarvis Mailing Platform
 
 Enterprise-grade email marketing platform with AI-powered delivery optimization.
 
