@@ -6721,6 +6721,35 @@ END $$`},
 				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_engine_signals_recorded_isp
 				 ON mailing_engine_signals (recorded_at, isp)`,
 			},
+			{
+				// PartnerDripOrchestrator welcome path. resolvePerISPCaps
+				// (GROUP BY isp_family) and claimRecordsByISPCaps
+				// (PARTITION BY isp_family ORDER BY ingested_at) both filter
+				// (vertical, status='ready') but rank/group by isp_family.
+				// The existing idx_pcq_status_ready (vertical, status,
+				// ingested_at) does NOT carry isp_family, so these queries
+				// heap-fetch isp_family for every ready row — which times out
+				// under RDS IO pressure and silently zeroes every tick
+				// (the "partner drip behind schedule" incident, 2026-06-07).
+				// Including isp_family in the partial index makes both
+				// index-only. ingested_at last preserves the oldest-first ORDER.
+				"idx_pcq_ready_isp",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ready_isp
+				 ON partner_clean_queue (vertical, isp_family, ingested_at)
+				 WHERE status = 'ready'`,
+			},
+			{
+				// PartnerDripOrchestrator follow-up path. Mirrors the welcome
+				// index for claimFollowupRecordsByISPCaps, which partitions the
+				// due 'mailed' set by isp_family ORDER BY next_touch_at and
+				// filters (vertical, touch_count, next_touch_at<=NOW(),
+				// engaged_at IS NULL, terminal_reason IS NULL). Keeps the
+				// isp-partitioned follow-up claim index-only under the same load.
+				"idx_pcq_followup_isp",
+				`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_followup_isp
+				 ON partner_clean_queue (vertical, touch_count, isp_family, next_touch_at)
+				 WHERE status = 'mailed' AND engaged_at IS NULL AND terminal_reason IS NULL`,
+			},
 		}
 		if _, err := cleanupConn.ExecContext(cleanupIdxCtx, "SET statement_timeout = '600000'"); err != nil {
 			log.Printf("[StartupMigration] cleanup indexes: SET timeout failed: %v", err)

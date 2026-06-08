@@ -1513,7 +1513,14 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 		}
 		return rows.Err()
 	}); err != nil {
-		return nil, err
+		// Graceful degradation: the drain-horizon recompute is an optimization
+		// (it widens caps when the queue is small). If it can't run — e.g. the
+		// per-ISP COUNT loses the IO race under a finalization storm — DO NOT
+		// fail the whole wave. Fall back to the static PerISPCapPerWave
+		// ceilings so the orchestrator still ships at the conservative caps
+		// instead of shipping nothing. (2026-06-07 incident.)
+		log.Printf("[PartnerDripOrchestrator] resolvePerISPCaps vertical=%s: drain-horizon recompute failed (%v) — falling back to static caps", vertical, err)
+		return caps, nil
 	}
 
 	wavesPerDay := po.wavesPerVerticalPerDay(followup)
