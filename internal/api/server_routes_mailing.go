@@ -541,6 +541,20 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
 			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
 
+			// AUDIENCE LAKE read layer — Athena queries over the
+			// ignite_analytics.audience table (daily full-replace snapshot
+			// of mailing_subscribers, dt-partitioned). Same degradation
+			// contract as the event-lake routes above. breakdown slices one
+			// snapshot; source-performance joins a snapshot against
+			// email_events; first-touch counts first-in-lake recipients per
+			// day; member is a single-address profile + 90d event history.
+			// See handlers_analytics_audience.go.
+			r.Get("/analytics/lake/audience/status", s.HandleAudienceLakeStatus)
+			r.Get("/analytics/lake/audience/breakdown", s.HandleAudienceLakeBreakdown)
+			r.Get("/analytics/lake/audience/source-performance", s.HandleAudienceLakeSourcePerformance)
+			r.Get("/analytics/lake/audience/first-touch", s.HandleAudienceLakeFirstTouch)
+			r.Get("/analytics/lake/audience/member", s.HandleAudienceLakeMember)
+
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)
 			r.Get("/reports/top-performers", advSvc.HandleTopPerformers)

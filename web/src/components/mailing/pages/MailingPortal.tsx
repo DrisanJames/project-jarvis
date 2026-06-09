@@ -24,7 +24,9 @@ const SendTestEmail = lazy(() => import('../components/SendTestEmail').then(m =>
 const JourneyCenter = lazy(() => import('../components/JourneyCenter').then(m => ({ default: m.JourneyCenter })));
 const MissionControl = lazy(() => import('../components/MissionControl').then(m => ({ default: m.MissionControl })));
 const DomainCenter = lazy(() => import('../components/DomainCenter').then(m => ({ default: m.DomainCenter })));
-const AnalyticsCenter = lazy(() => import('../components/AnalyticsCenter').then(m => ({ default: m.AnalyticsCenter })));
+// AnalyticsCenter retired 2026-06-09: the Event Lake Explorer (now labeled
+// "Analytics") is the operator's analytics surface. Component file kept for
+// reference; no longer mounted.
 const OfferManagement = lazy(() => import('../components/OfferManagement').then(m => ({ default: m.OfferManagement })));
 const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(m => ({ default: m.JarvisDashboard })));
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
@@ -41,7 +43,9 @@ const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketing
 // follow-up; nothing else imports them and they cause no harm.
 const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
 const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
-const WelcomeAudienceHealth = lazy(() => import('../components/WelcomeAudienceHealth').then(m => ({ default: m.WelcomeAudienceHealth })));
+// AudienceAnalytics (2026-06-09) replaced WelcomeAudienceHealth as the
+// 'audience-health' tab; the welcome-pool gauge lives on as a sub-tab inside it.
+const AudienceAnalytics = lazy(() => import('../components/AudienceAnalytics').then(m => ({ default: m.AudienceAnalytics })));
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
@@ -75,9 +79,8 @@ const tabs: Tab[] = [
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
-  { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
-  { id: 'event-lake', label: 'Event Lake', icon: faDatabase, description: 'S3/Athena email-event lake' },
-  { id: 'audience-health', label: 'Audience Health', icon: faSeedling, description: 'Welcome pool freshness, sunset trajectory & next-list-upload signal' },
+  { id: 'event-lake', label: 'Analytics', icon: faChartPie, description: 'S3/Athena email-event lake — ISP, brand & campaign analytics' },
+  { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Audience analytics — acquisition, churn, source performance, member lookup & welcome pool' },
   { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
@@ -171,12 +174,11 @@ export const MailingPortal: React.FC = () => {
         return <SuppressionsSection activeSubTab={activeTab} onSubTabChange={setActiveTab} />;
       case 'send':
         return <SendTestEmail />;
-      case 'analytics':
-        return <AnalyticsCenter />;
+      case 'analytics': // legacy id — AnalyticsCenter retired, alias to the lake explorer
       case 'event-lake':
         return <Suspense fallback={<ChunkLoader />}><EventLakeExplorer /></Suspense>;
       case 'audience-health':
-        return <Suspense fallback={<ChunkLoader />}><WelcomeAudienceHealth /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><AudienceAnalytics /></Suspense>;
       case 'audience-cadence':
         return <Suspense fallback={<ChunkLoader />}><AudienceCadenceByCell /></Suspense>;
       case 'content-library':
@@ -1898,8 +1900,9 @@ const SiteTrafficDashboard: React.FC = () => {
 };
 
 // _AnalyticsDashboard and SuggestionsWidget legacy stubs were removed in
-// PAGE_VERSION_DASHBOARD = 1.0 (2026-05-08). The active analytics surface is
-// AnalyticsCenter (mounted in renderContent above).
+// PAGE_VERSION_DASHBOARD = 1.0 (2026-05-08). AnalyticsCenter was retired
+// 2026-06-09; the active analytics surface is EventLakeExplorer (tab id
+// 'event-lake', labeled "Analytics", mounted in renderContent above).
 
 export default MailingPortal;
 
