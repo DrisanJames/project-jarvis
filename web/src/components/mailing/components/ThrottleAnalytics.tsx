@@ -7,7 +7,8 @@ import {
   faChevronDown, faChevronRight,
   faUsers, faToggleOn, faToggleOff,
 } from '@fortawesome/free-solid-svg-icons';
-import { useAuth } from '../../../contexts/AuthContext';
+import { apiFetch } from '../shared/apiFetch';
+import { useToast } from '../shared/ToastSystem';
 import './ThrottleAnalytics.css';
 
 interface LiveRate {
@@ -132,7 +133,7 @@ function formatTimestamp(dateStr: string): string {
 }
 
 export const ThrottleAnalytics: React.FC = () => {
-  const { organization } = useAuth();
+  const { addToast } = useToast();
   const [data, setData] = useState<ThrottleAnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedISPs, setExpandedISPs] = useState<Set<string>>(new Set());
@@ -143,31 +144,29 @@ export const ThrottleAnalytics: React.FC = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (organization?.id) headers['X-Organization-ID'] = organization.id;
-      const res = await fetch('/api/mailing/engine/throttle-analytics', { headers });
+      const res = await apiFetch('/api/mailing/engine/throttle-analytics');
       if (res.ok) {
         setData(await res.json());
       }
     } catch (err) {
       console.error('Failed to load throttle analytics:', err);
+      addToast({ type: 'error', title: 'Throttle analytics', message: 'Failed to load throttle analytics' });
     } finally {
       setLoading(false);
     }
-  }, [organization?.id]);
+  }, [addToast]);
 
   const fetchAudience = useCallback(async () => {
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (organization?.id) headers['X-Organization-ID'] = organization.id;
       const params = new URLSearchParams({ date: selectedDate });
       if (excludeMPP) params.set('exclude_mpp', 'true');
-      const res = await fetch(`/api/mailing/engine/audience-analytics?${params}`, { headers });
+      const res = await apiFetch(`/api/mailing/engine/audience-analytics?${params}`);
       if (res.ok) setAudienceData(await res.json());
     } catch (err) {
       console.error('Failed to load audience analytics:', err);
+      addToast({ type: 'error', title: 'Audience analytics', message: 'Failed to load audience analytics' });
     }
-  }, [organization?.id, selectedDate, excludeMPP]);
+  }, [selectedDate, excludeMPP, addToast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { fetchAudience(); }, [fetchAudience]);
