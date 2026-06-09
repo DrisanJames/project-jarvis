@@ -186,6 +186,157 @@ func TestSESEvents_OpenClickSendDelivery_AcceptedNoDB(t *testing.T) {
 	}
 }
 
+func TestSESEvents_Open_IncrementsOpenCount(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Both campaign_id and subscriber_id tags present -> no message_log
+	// fallback lookup; a fresh event row INSERTs, then the full engagement
+	// cascade runs (rollups + unique + subscriber + SDS + inbox + score).
+	// Mocked in the exact order applyOpenEngagement issues them.
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET open_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET unique_open_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_subscribers SET total_opens").WillReturnResult(sqlmock.NewResult(0, 1))
+	// ResolveSendingDomainForCampaign: empty from_email short-circuits the SDS writes.
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	// recomputeSubscriberEngagementScore: SELECT then UPDATE.
+	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
+			AddRow(1, 0, 1, nil, nil))
+	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
+	// inbox upsert + recompute (total_sends=0 -> recompute returns before UPDATE).
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Open",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"open": map[string]interface{}{"timestamp": "2026-06-08T19:00:00Z", "ipAddress": "1.2.3.4"},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestSESEvents_HumanClick_IncrementsClickCount(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET click_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET unique_click_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_subscribers SET total_clicks").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
+			AddRow(0, 1, 1, nil, nil))
+	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-06-08T19:00:00Z", "ipAddress": "1.2.3.4",
+			"link": "https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestSESEvents_AssetClick_DoesNotIncrementClickCount(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Machine/asset click: the event row still persists (is_machine_click=true)
+	// but click_count must NOT increment, so only the INSERT is expected.
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-06-08T19:00:00Z", "ipAddress": "1.2.3.4",
+			"link": "https://fonts.googleapis.com/css?family=Nunito+Sans:100,300,500,700,900",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations (INSERT only, no click_count update): %v", err)
+	}
+}
+
+func TestIsMachineClickURL(t *testing.T) {
+	cases := []struct {
+		url     string
+		machine bool
+	}{
+		{"https://fonts.googleapis.com/css?family=Nunito", true},
+		{"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css", true},
+		{"https://cdn.example.com/styles/main.css?v=2", true},
+		{"https://img.example.com/banner.png", true},
+		{"https://www.gravatar.com/avatar/abc", true},
+		{"https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc", false},
+		{"https://www.eos57ytf.com/K4C5ZLC/PS8241/?creative_id=4989", false},
+		{"https://projectjarvis.io/api/mailing/bt/abc123/def", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isMachineClickURL(c.url); got != c.machine {
+			t.Errorf("isMachineClickURL(%q) = %v, want %v", c.url, got, c.machine)
+		}
+	}
+}
+
 func TestSESEvents_LegacyNotificationType_StillRoutes(t *testing.T) {
 	h, mock, _ := newHandlerForTest(t)
 	expectGlobalSuppressionInsert(mock)

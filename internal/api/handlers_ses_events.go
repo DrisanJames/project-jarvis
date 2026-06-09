@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
@@ -33,7 +35,19 @@ import (
 // 2.1 — on a new SES DELIVERY event, also writes back ses_delivered into the
 // pmta_acct_daily_summary rollup at the summary builder's (date, campaign, isp)
 // grain so accounting-driven dashboards report SES-confirmed delivery.
-const VersionSESEvents = "2.1"
+// 2.2 — SES OPEN/CLICK now increment the mailing_campaigns open_count/click_count
+// rollups (previously only DELIVERY/BOUNCE/COMPLAINT did), giving SES-routed mail
+// the same campaign-level open/click reporting the internal tracking pixel gives
+// dedicated-PMTA mail. SES click-tracking of stylesheet/font/asset <link> URLs is
+// flagged is_machine_click=true so it neither inflates click_count nor pollutes
+// the `NOT is_machine_click` real-click segment/funnel queries.
+// 2.3 — full engagement parity with the internal tracking pixel on via_ses sends:
+// SES OPEN/CLICK now also (a) increment unique_open_count/unique_click_count on the
+// subscriber's FIRST open/human-click of a campaign, (b) update mailing_subscribers
+// total_opens/last_open_at + total_clicks/last_click_at + engagement_score,
+// (c) shadow-write subscriber_domain_state (UpsertSDSOpen/Click + RecomputeSDSScoreLocal),
+// and (d) upsert mailing_inbox_profiles. Machine/asset clicks are excluded from all of these.
+const VersionSESEvents = "2.3"
 
 // SESEventsHandler receives SNS-wrapped SES event-publishing notifications
 // (Bounce, Complaint, Open, Click, Send, Delivery, Reject, DeliveryDelay) and:
@@ -292,6 +306,14 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 	}
 }
 
+// subscriberIDStr renders an optional subscriber UUID for the event lake.
+func subscriberIDStr(p *uuid.UUID) string {
+	if p == nil {
+		return ""
+	}
+	return p.String()
+}
+
 // firstRecipient normalizes the first address in a recipient list.
 func firstRecipient(list []string) string {
 	for _, v := range list {
@@ -399,12 +421,19 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		bouncePtr = &bounceType
 	}
 
+	// SES click-tracking rewrites EVERY http(s) URL in the HTML body, so mail
+	// clients loading remote stylesheets, web fonts, and images trip CLICK
+	// events the moment the message renders. Flag those is_machine_click=true
+	// (mirroring the internal ClassifyClickAsMachine path) so they stay out of
+	// click_count and out of the `NOT is_machine_click` real-click queries.
+	machineClick := eventType == "clicked" && isMachineClickURL(linkURL)
+
 	res, err := h.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain, is_machine_click)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id, event_at) DO NOTHING
-	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain)
+	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick)
 	if err != nil {
 		log.Printf("[ses-events] persist %s campaign=%s error: %v", eventType, campaignID, err)
 		return
@@ -415,11 +444,43 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		return
 	}
 
+	// Phase 1 event lake (best-effort, no-op unless enabled). Emitted only on a
+	// genuinely new row so SNS redeliveries don't double-feed the lake. This is
+	// the SES "delivered != relay" truth that the RRU reconciliation depends on.
+	analytics.Emit(analytics.Event{
+		EventUID:        "ses:" + eventID.String(),
+		RecipientSendID: recipientSendID,
+		CampaignID:      campaignID,
+		SubscriberID:    subscriberIDStr(subPtr),
+		Email:           recipientEmail,
+		EmailDomain:     recipientDomain,
+		ISPGroup:        isp.GroupFromDomain(recipientDomain),
+		RouteType:       "ses",
+		EventType:       analytics.CanonicalEventType(eventType),
+		BounceCat:       bounceType,
+		LinkURL:         linkURL,
+		EventAt:         eventAt.UTC().Format(time.RFC3339),
+		Source:          "ses",
+	})
+
 	// Keep mailing_campaigns aggregate counters consistent for SES-routed
 	// mail, since PMTA "d" is now recorded as relayed_to_ses (not delivered)
 	// and SES owns the bounce/complaint signal for these sends. Per the
 	// bounce-metrics rule, hard and soft bounces stay separate.
 	switch eventType {
+	case "opened":
+		// Full parity with the internal tracking pixel (mailing_tracking.go),
+		// which is skipped on via_ses sends. Every SES OPEN counts; MPP/
+		// machine-open filtering stays a downstream concern (the internal path
+		// counts every open too).
+		h.applyOpenEngagement(ctx, campUUID, subPtr, recipientEmail, recipientDomain)
+	case "clicked":
+		// Asset/font/stylesheet fetches (machineClick) are recorded as events
+		// but excluded from click_count and all engagement side-effects,
+		// matching the internal click handler's human-click semantics.
+		if !machineClick {
+			h.applyClickEngagement(ctx, campUUID, subPtr, recipientEmail, recipientDomain)
+		}
 	case "delivered":
 		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 
@@ -454,6 +515,159 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 	case "complained":
 		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	}
+}
+
+// applyOpenEngagement mirrors the durable engagement side-effects the internal
+// tracking pixel performs in HandleTrackOpen (mailing_tracking.go), which is
+// SKIPPED on via_ses sends because send_worker.go only injects the pixel when
+// !sesInfo.ViaSES. It is invoked only on a genuinely new SES OPEN row (the
+// caller already verified RowsAffected > 0), so SNS redeliveries do not
+// double-count. Every write is best-effort; a failure on one does not block the
+// others or the 200 response back to SNS.
+func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
+	// Campaign-level total opens (parity with mailing_tracking.go:194).
+	h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+
+	if subID != nil {
+		// Unique opener: bump only when the just-inserted row is this
+		// subscriber's FIRST opened event for the campaign (count == 1). Later
+		// opens leave it unchanged, so the column converges on distinct openers.
+		h.db.ExecContext(ctx, `
+			UPDATE mailing_campaigns SET unique_open_count = COALESCE(unique_open_count, 0) + 1, updated_at = NOW()
+			WHERE id = $1 AND (
+				SELECT COUNT(*) FROM mailing_tracking_events
+				WHERE campaign_id = $1 AND subscriber_id = $2 AND event_type = 'opened'
+			) = 1`, campaignID, *subID)
+
+		// Subscriber denorm columns. last_open_at in particular gates the
+		// standing Welcome saturation segment (prior_sends > 8 AND
+		// last_open_at IS NULL) — without this, SES-route opens never clear a
+		// subscriber out of the "never opened" cohort.
+		h.db.ExecContext(ctx, `
+			UPDATE mailing_subscribers SET total_opens = COALESCE(total_opens, 0) + 1, last_open_at = NOW(), updated_at = NOW()
+			WHERE id = $1`, *subID)
+
+		// Master-selection shadow state (parity with mailing_tracking.go:204-206).
+		sd := mailing.ResolveSendingDomainForCampaign(ctx, h.db, campaignID)
+		mailing.UpsertSDSOpen(ctx, h.db, *subID, sd)
+		mailing.RecomputeSDSScoreLocal(ctx, h.db, *subID, sd)
+
+		h.recomputeSubscriberEngagementScore(ctx, *subID)
+	}
+
+	if email != "" {
+		eHash := emailHash(email)
+		h.db.ExecContext(ctx, `
+			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_opens, last_open_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+			ON CONFLICT (email_hash) DO UPDATE SET total_opens = mailing_inbox_profiles.total_opens + 1, last_open_at = NOW(), updated_at = NOW()
+		`, eHash, email, domain, extractISP(email))
+		h.recomputeInboxProfileScore(ctx, eHash)
+	}
+}
+
+// applyClickEngagement mirrors HandleTrackClick's durable side-effects for SES
+// human clicks (machine/asset clicks never reach here). Same new-row / best-effort
+// contract as applyOpenEngagement.
+func (h *SESEventsHandler) applyClickEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
+	h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+
+	if subID != nil {
+		// Unique human clicker: only the subscriber's first non-machine click
+		// of the campaign counts (the count filters out machine clicks too).
+		h.db.ExecContext(ctx, `
+			UPDATE mailing_campaigns SET unique_click_count = COALESCE(unique_click_count, 0) + 1, updated_at = NOW()
+			WHERE id = $1 AND (
+				SELECT COUNT(*) FROM mailing_tracking_events
+				WHERE campaign_id = $1 AND subscriber_id = $2 AND event_type = 'clicked'
+				  AND NOT COALESCE(is_machine_click, false)
+			) = 1`, campaignID, *subID)
+
+		h.db.ExecContext(ctx, `
+			UPDATE mailing_subscribers SET total_clicks = COALESCE(total_clicks, 0) + 1, last_click_at = NOW(), updated_at = NOW()
+			WHERE id = $1`, *subID)
+
+		sd := mailing.ResolveSendingDomainForCampaign(ctx, h.db, campaignID)
+		mailing.UpsertSDSClick(ctx, h.db, *subID, sd)
+		mailing.RecomputeSDSScoreLocal(ctx, h.db, *subID, sd)
+
+		h.recomputeSubscriberEngagementScore(ctx, *subID)
+	}
+
+	if email != "" {
+		eHash := emailHash(email)
+		h.db.ExecContext(ctx, `
+			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_clicks, last_click_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
+			ON CONFLICT (email_hash) DO UPDATE SET total_clicks = mailing_inbox_profiles.total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
+		`, eHash, email, domain, extractISP(email))
+		h.recomputeInboxProfileScore(ctx, eHash)
+	}
+}
+
+// recomputeSubscriberEngagementScore replicates MailingService.updateEngagementScore
+// (mailing_tracking.go) for the SES webhook, which has no MailingService handle.
+// Score is on the 0–100 scale used by mailing_subscribers (thresholds 70/30).
+func (h *SESEventsHandler) recomputeSubscriberEngagementScore(ctx context.Context, subscriberID uuid.UUID) {
+	var totalOpens, totalClicks, totalEmails int
+	var lastOpenAt, lastClickAt *time.Time
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT COALESCE(total_opens, 0), COALESCE(total_clicks, 0), COALESCE(total_emails_received, 1),
+			   last_open_at, last_click_at
+		FROM mailing_subscribers WHERE id = $1
+	`, subscriberID).Scan(&totalOpens, &totalClicks, &totalEmails, &lastOpenAt, &lastClickAt); err != nil {
+		return
+	}
+	if totalEmails <= 0 {
+		totalEmails = 1
+	}
+	openRate := float64(totalOpens) / float64(totalEmails) * 100
+	clickRate := float64(totalClicks) / float64(totalEmails) * 100
+	score := (openRate * 0.4) + (clickRate * 0.6)
+	if lastOpenAt != nil && time.Since(*lastOpenAt) < 7*24*time.Hour {
+		score += 20
+	} else if lastOpenAt != nil && time.Since(*lastOpenAt) < 30*24*time.Hour {
+		score += 10
+	}
+	if score > 100 {
+		score = 100
+	}
+	h.db.ExecContext(ctx, `UPDATE mailing_subscribers SET engagement_score = $2, updated_at = NOW() WHERE id = $1`, subscriberID, score)
+}
+
+// recomputeInboxProfileScore replicates MailingService.recomputeInboxProfileScore
+// (mailing_tracking.go) for the SES webhook. Score is on the 0–1 scale used by
+// mailing_inbox_profiles (thresholds 0.70/0.40).
+func (h *SESEventsHandler) recomputeInboxProfileScore(ctx context.Context, eHash string) {
+	var totalSends, totalOpens, totalClicks int
+	var lastOpen *time.Time
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT COALESCE(total_sends,0), COALESCE(total_opens,0), COALESCE(total_clicks,0), last_open_at
+		FROM mailing_inbox_profiles WHERE email_hash = $1
+	`, eHash).Scan(&totalSends, &totalOpens, &totalClicks, &lastOpen); err != nil {
+		return
+	}
+	if totalSends == 0 {
+		return
+	}
+	openRate := float64(totalOpens) / float64(totalSends)
+	clickRate := float64(totalClicks) / float64(totalSends)
+	score := (openRate * 0.6) + (clickRate * 0.4)
+	if lastOpen != nil {
+		daysSince := time.Since(*lastOpen).Hours() / 24
+		if daysSince < 7 {
+			score += 0.20
+		} else if daysSince < 30 {
+			score += 0.10
+		}
+	}
+	if score > 1.0 {
+		score = 1.0
+	}
+	h.db.ExecContext(ctx, `
+		UPDATE mailing_inbox_profiles SET engagement_score = $2, updated_at = NOW()
+		WHERE email_hash = $1
+	`, eHash, score)
 }
 
 func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) {
@@ -540,6 +754,42 @@ func firstTag(tags map[string][]string, key string) string {
 		return v[0]
 	}
 	return ""
+}
+
+// isMachineClickURL reports whether a clicked link is an automated resource
+// fetch rather than a human click. SES click-tracking rewrites every http(s)
+// URL in the HTML body, so remote stylesheets, web fonts, and images trip
+// CLICK events the moment the message renders in a mail client. Those must
+// not count as engagement. Detection is by well-known asset/CDN host or by
+// the URL path's file extension (query/fragment stripped first).
+func isMachineClickURL(link string) bool {
+	l := strings.ToLower(strings.TrimSpace(link))
+	if l == "" {
+		return false
+	}
+	for _, host := range []string{
+		"fonts.googleapis.com", "fonts.gstatic.com", "cdnjs.cloudflare.com",
+		"ajax.googleapis.com", "use.fontawesome.com", "use.typekit.net",
+		"maxcdn.bootstrapcdn.com", "stackpath.bootstrapcdn.com",
+		".gravatar.com", "schema.org", "www.w3.org",
+	} {
+		if strings.Contains(l, host) {
+			return true
+		}
+	}
+	path := l
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	for _, ext := range []string{
+		".css", ".js", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+	} {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

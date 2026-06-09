@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/ignite/sparkpost-monitor/internal/agent"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/api"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
 	"github.com/ignite/sparkpost-monitor/internal/azure"
@@ -691,6 +692,23 @@ func main() {
 					}
 				}
 
+				// Analytics event lake (Phase 1) — best-effort fan-out of
+				// per-recipient delivery/engagement events to Firehose ->
+				// s3://ignite-analytics-lake (JSON->Parquet, Glue+Athena).
+				// DISABLED unless ANALYTICS_FIREHOSE_STREAM is set, so this
+				// ships dark and is enabled later via env (no code change).
+				// Never blocks the send/ingest hot path; lossy by design.
+				{
+					lakeStream := os.Getenv("ANALYTICS_FIREHOSE_STREAM")
+					lakeRegion := os.Getenv("ANALYTICS_FIREHOSE_REGION")
+					if lakeRegion == "" {
+						lakeRegion = "us-west-2"
+					}
+					if err := analytics.Init(context.Background(), lakeStream, lakeRegion); err != nil {
+						log.Printf("WARNING: analytics event lake init failed: %v", err)
+					}
+				}
+
 				// Start ISP Backfill Worker (classifies mailing_subscribers.isp
 				// for rows with empty/NULL isp). The PMTA campaign planner's
 				// per-ISP cold-fallback stripe relies on this column being
@@ -740,6 +758,17 @@ func main() {
 				workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerStallNotifier)
 				go workerHealthMonitor.Start(ctx)
 				log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerStallNotifier.Name())
+
+				// Sam's Club internal drip digest. Posts a 6-hourly progress
+				// snapshot (queue depth by ISP, sent last 24h, drain ETA, live
+				// status) for the samsclub_internal vertical — the 1.4M
+				// Yahoo/AOL net-new engaged load — to #yahoo-aol-sams-drip
+				// (override: SLACK_SAMSCLUB_DRIP_CHANNEL). Posts via the shared
+				// SLACK_BOT_TOKEN; logs only if no Slack transport is configured.
+				samsDripNotifier := notify.SlackChannelFromEnv("SLACK_SAMSCLUB_DRIP_CHANNEL", "#yahoo-aol-sams-drip")
+				samsDripDigest := worker.NewPartnerDripDigestMonitor(mailingDB, samsDripNotifier, "samsclub_internal", "Yahoo/AOL Engaged")
+				go samsDripDigest.Start(ctx)
+				log.Printf("Sam's Club drip digest started (vertical=samsclub_internal, 6h, transport=%s)", samsDripNotifier.Name())
 
 				// Journey Segment Enroller — auto-enrolls subscribers from
 				// segment-triggered journeys (Welcome Series Phase 2). Uses the
@@ -1630,6 +1659,9 @@ func main() {
 
 	// Cancel background tasks
 	cancel()
+
+	// Flush any buffered analytics events to the lake (no-op when disabled).
+	analytics.Shutdown()
 
 	// Graceful shutdown with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)

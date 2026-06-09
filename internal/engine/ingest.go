@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
 	"github.com/redis/go-redis/v9"
 )
@@ -373,6 +374,32 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 		DSNCode:    rec.DSNStatus,
 		DSNDiag:    rec.DSNDiag,
 		Timestamp:  time.Now(),
+	})
+
+	// Phase 1 event lake (best-effort, no-op unless enabled). Mirrors the PMTA
+	// side of the backfill so the live feed continues seamlessly. event_uid is
+	// derived from PMTA's stable per-record fields so HTTP-bridge redeliveries
+	// dedupe in Athena via SELECT DISTINCT event_uid.
+	routeType := "pmta_direct"
+	if IsPMTARelayedToSES(rec) {
+		routeType = "ses_tenant"
+	}
+	analytics.Emit(analytics.Event{
+		EventUID:    "pmta:" + rec.JobID + ":" + rec.Recipient + ":" + rec.Type + ":" + rec.DeliveryTime,
+		CampaignID:  rec.JobID,
+		Email:       rec.Recipient,
+		EmailDomain: rec.Domain,
+		ISPGroup:    string(isp),
+		RouteType:   routeType,
+		EventType:   analytics.CanonicalEventType(eventType),
+		VMTA:        rec.VMTA,
+		Pool:        rec.Pool,
+		BounceCat:   rec.BounceCat,
+		DSNCode:     rec.DSNStatus,
+		DSNDiag:     rec.DSNDiag,
+		SourceIP:    rec.SourceIP,
+		EventAt:     time.Now().UTC().Format(time.RFC3339),
+		Source:      "pmta",
 	})
 }
 

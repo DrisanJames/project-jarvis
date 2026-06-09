@@ -657,7 +657,7 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// that wasted wave slots on yahoo records that would later be
 	// deferred and released. See claimRecordsByISPCaps for the full
 	// rationale and the May 14 cap bump.
-	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, ispCapBacklogReady)
+	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, v.datasetID, ispCapBacklogReady)
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
@@ -1471,8 +1471,21 @@ func baseISPCap(perISPCaps map[string]int, isp string) int {
 // resolvePerISPCaps merges static PerISPCapPerWave ceilings with drain-horizon
 // caps for ISPs listed in PerISPDrainDays. Recomputed every wave from live DB
 // counts so caps rise if the ingest queue refills during the drain window.
-func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertical, backlogKind string) (map[string]int, error) {
-	caps := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+//
+// Dataset-scoped overrides: any per-ISP max_per_wave row in
+// partner_isp_distribution_overrides for this wave's dominant dataset REPLACES
+// the global PerISPCapPerWave ceiling for that ISP — for this dataset only.
+// This lets one Yahoo-heavy list run at a raised Yahoo cap without lifting the
+// reputation-protective global caps for every other vertical/brand. The
+// override becomes the base the drain-horizon clamp is computed against, so a
+// raised cap still floats down on a tiny backlog. Best-effort: any lookup
+// error falls back to the global caps.
+func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertical, datasetID, backlogKind string) (map[string]int, error) {
+	base := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	if datasetID != "" {
+		po.applyDatasetISPCapOverrides(ctx, datasetID, base)
+	}
+	caps := cloneISPCapMap(base)
 	if len(po.cfg.PerISPDrainDays) == 0 {
 		return caps, nil
 	}
@@ -1526,9 +1539,45 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 	wavesPerDay := po.wavesPerVerticalPerDay(followup)
 	for isp, drainDays := range po.cfg.PerISPDrainDays {
 		isp = strings.ToLower(strings.TrimSpace(isp))
-		caps[isp] = ispCapForDrainHorizon(readyByISP[isp], baseISPCap(po.cfg.PerISPCapPerWave, isp), drainDays, wavesPerDay)
+		caps[isp] = ispCapForDrainHorizon(readyByISP[isp], baseISPCap(base, isp), drainDays, wavesPerDay)
 	}
 	return caps, nil
+}
+
+// applyDatasetISPCapOverrides overlays per-ISP max_per_wave ceilings from
+// partner_isp_distribution_overrides for one dataset onto base, mutating base
+// in place. Only rows with a positive max_per_wave override the global cap;
+// pct_override (distribution shaping) is ignored here. Best-effort — on any
+// error the caller keeps the global caps. dataset_id is a UUID column, so the
+// param is cast explicitly.
+func (po *PartnerDripOrchestrator) applyDatasetISPCapOverrides(ctx context.Context, datasetID string, base map[string]int) {
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT LOWER(TRIM(isp)) AS isp, max_per_wave
+			FROM partner_isp_distribution_overrides
+			WHERE dataset_id = $1::uuid
+			  AND max_per_wave IS NOT NULL
+			  AND max_per_wave > 0
+		`, datasetID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var mpw int
+			if err := rows.Scan(&isp, &mpw); err != nil {
+				continue
+			}
+			if isp == "" {
+				continue
+			}
+			base[isp] = mpw
+		}
+		return rows.Err()
+	}); err != nil {
+		log.Printf("[PartnerDripOrchestrator] dataset ISP cap overrides (dataset=%s) failed (%v) — using global caps", datasetID, err)
+	}
 }
 
 // applyThroughputSafety filters claimed records based on:
@@ -1983,7 +2032,7 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		hardCap = po.cfg.MaxWaveSize
 	}
 
-	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, ispCapBacklogFollowup)
+	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, v.datasetID, ispCapBacklogFollowup)
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
