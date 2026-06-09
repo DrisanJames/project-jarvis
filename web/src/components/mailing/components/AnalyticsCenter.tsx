@@ -20,6 +20,9 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import { HarvestStreamDashboard } from './HarvestStreamDashboard';
 import { AnalyticsTabs, AnalyticsTabKey, PAGE_VERSION_ANALYTICS_TABS } from './AnalyticsTabs';
+import { apiFetch } from '../shared/apiFetch';
+import { useToast } from '../shared/ToastSystem';
+import { SubNav } from '../shared/SubNav';
 import './AnalyticsCenter.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -317,9 +320,10 @@ function buildRangeQS(range: TimeRange): string {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const orgFetch = async (url: string, orgId?: string) => {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (orgId) headers['X-Organization-ID'] = orgId;
-  return fetch(url, { headers });
+  // Delegate to the shared apiFetch so org-scoping + credentials stay
+  // consistent with the rest of the portal. Passing orgId as a caller
+  // header keeps the explicit value winning over apiFetch's default.
+  return apiFetch(url, orgId ? { headers: { 'X-Organization-ID': orgId } } : undefined);
 };
 
 const fmt = (n: number): string => {
@@ -850,6 +854,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
 
 export const AnalyticsCenter: React.FC = () => {
   const { organization } = useAuth();
+  const { addToast } = useToast();
   const orgId = organization?.id || '';
 
   const [range, setRange] = useState<TimeRange>('today');
@@ -932,10 +937,11 @@ export const AnalyticsCenter: React.FC = () => {
       }));
     } catch (err) {
       console.error('Analytics load error:', err);
+      addToast({ type: 'error', title: 'Analytics failed to load', message: 'Failed to load analytics overview.' });
     } finally {
       setLoading(false);
     }
-  }, [range, orgId, excludeMPP]);
+  }, [range, orgId, excludeMPP, addToast]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -995,10 +1001,11 @@ export const AnalyticsCenter: React.FC = () => {
       setApiVersions(prev => ({ ...prev, infrastructure: result.api_version || '?' }));
     } catch (err) {
       console.error('Infra load error:', err);
+      addToast({ type: 'error', title: 'Infrastructure failed to load', message: 'Failed to load infrastructure breakdown.' });
     } finally {
       setInfraLoading(false);
     }
-  }, [range, orgId]);
+  }, [range, orgId, addToast]);
 
   useEffect(() => {
     fetchInfrastructure(selectedDomain, drilldownType, selectedCampaign?.id);
@@ -1017,10 +1024,11 @@ export const AnalyticsCenter: React.FC = () => {
       setApiVersions(prev => ({ ...prev, sds_audience_health: data?.api_version || '?' }));
     } catch (err) {
       console.error('SDS health load error:', err);
+      addToast({ type: 'error', title: 'Audience health failed to load', message: 'Failed to load SDS audience health.' });
     } finally {
       setSdsLoading(false);
     }
-  }, [orgId]);
+  }, [orgId, addToast]);
 
   useEffect(() => { fetchSDSHealth(); }, [fetchSDSHealth]);
 
@@ -1038,11 +1046,14 @@ export const AnalyticsCenter: React.FC = () => {
         const res = await orgFetch(`/api/mailing/analytics/overview${qp}`, orgId);
         const data = await res.json();
         if (!cancelled) setChartTrend(data.daily_trend || []);
-      } catch { /* noop */ }
+      } catch (err) {
+        console.error('Chart trend load error:', err);
+        if (!cancelled) addToast({ type: 'error', title: 'Chart failed to load', message: 'Failed to load trend chart for the selected domain.' });
+      }
       finally { if (!cancelled) setChartLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [chartDomain, overview, range, orgId]);
+  }, [chartDomain, overview, range, orgId, addToast]);
 
   // Sync chart trend from overview when no domain filter
   useEffect(() => {
@@ -1092,13 +1103,8 @@ export const AnalyticsCenter: React.FC = () => {
       </div>
 
       {/* ─── Tab Navigation ─────────────────────────────────────────── */}
-      <div
-        className="ac-range-selector"
-        style={{ marginBottom: 16, gap: 4, flexWrap: 'wrap' }}
-        role="tablist"
-        aria-label="Analytics sections"
-      >
-        {([
+      <SubNav
+        items={[
           { key: 'overview', label: 'Overview' },
           { key: 'deliverability', label: 'Deliverability' },
           { key: 'engagement', label: 'Engagement' },
@@ -1106,18 +1112,11 @@ export const AnalyticsCenter: React.FC = () => {
           { key: 'audience', label: 'Audience' },
           { key: 'operations', label: 'Operations' },
           { key: 'reports', label: 'Reports' },
-        ] as Array<{ key: AnalyticsTabKey; label: string }>).map(t => (
-          <button
-            key={t.key}
-            className={activeTab === t.key ? 'active' : ''}
-            onClick={() => setActiveTab(t.key)}
-            role="tab"
-            aria-selected={activeTab === t.key}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+        ]}
+        active={activeTab}
+        onChange={(k) => setActiveTab(k as AnalyticsTabKey)}
+        ariaLabel="Analytics sections"
+      />
 
       {loading && !overview && activeTab === 'overview' ? (
         <div className="ac-loading">

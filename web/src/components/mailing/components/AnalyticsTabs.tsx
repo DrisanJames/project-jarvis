@@ -14,6 +14,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faSpinner, faSync, faExclamationTriangle, faDownload,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 export const PAGE_VERSION_ANALYTICS_TABS = '1.1'; // SES-aware: PMTA→SES handoff column in Domain×ISP matrix + Growth narrative
 // Change history:
@@ -44,11 +45,10 @@ function rangeParam(range: 'today' | 'yesterday'): string {
 // fetchJSON is the shared GET helper. Mirrors the headers/credentials
 // pattern used by the rest of AnalyticsCenter.
 async function fetchJSON<T>(url: string, orgId: string | null): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (orgId) headers['X-Organization-ID'] = orgId;
-  const res = await fetch(url, { credentials: 'include', headers });
+  // Delegate to the shared apiFetch (org-scoping + credentials). The
+  // explicit orgId is passed as a caller header so it still wins over
+  // apiFetch's default X-Organization-ID.
+  const res = await apiFetch(url, orgId ? { headers: { 'X-Organization-ID': orgId } } : undefined);
   if (!res.ok) {
     throw new Error(`${res.status} ${res.statusText}`);
   }
