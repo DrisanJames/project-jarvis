@@ -9,6 +9,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import './MissionControl.css';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { apiFetch } from '../shared/apiFetch';
 
 // ============================================================================
 // TYPES
@@ -148,12 +149,12 @@ export const MissionControl: React.FC = () => {
     try {
       // Try live campaign data first — if an active campaign exists, use real metrics.
       // Fall back to simulation snapshot for dry-run / demo mode.
-      let res = await fetch('/api/mailing/campaigns/active/live');
+      let res = await apiFetch('/api/mailing/campaigns/active/live');
       let data = await res.json();
 
       // If no active live campaign found, fall back to simulation
       if (!data.campaign_id && !data.is_running) {
-        res = await fetch('/api/mailing/simulation/snapshot');
+        res = await apiFetch('/api/mailing/simulation/snapshot');
         data = await res.json();
       }
 
@@ -161,7 +162,7 @@ export const MissionControl: React.FC = () => {
     } catch (err) {
       // Fallback to simulation if live endpoint doesn't exist yet
       try {
-        const res = await fetch('/api/mailing/simulation/snapshot');
+        const res = await apiFetch('/api/mailing/simulation/snapshot');
         const data = await res.json();
         setSnapshot(data);
       } catch {
@@ -175,8 +176,8 @@ export const MissionControl: React.FC = () => {
   const fetchLiveAgents = useCallback(async () => {
     try {
       const [sendingRes, adaptingRes] = await Promise.all([
-        fetch('/api/mailing/isp-agents/managed?status=sending'),
-        fetch('/api/mailing/isp-agents/managed?status=adapting'),
+        apiFetch('/api/mailing/isp-agents/managed?status=sending'),
+        apiFetch('/api/mailing/isp-agents/managed?status=adapting'),
       ]);
       const [sendingData, adaptingData] = await Promise.all([
         sendingRes.json().catch(() => ({ agents: [] })),
@@ -206,23 +207,23 @@ export const MissionControl: React.FC = () => {
   }, [snapshot?.consultations?.length]);
 
   async function startSim() {
-    await fetch('/api/mailing/simulation/start', { method: 'POST' });
+    await apiFetch('/api/mailing/simulation/start', { method: 'POST' });
     fetchSnapshot();
   }
 
   async function stopSim() {
-    await fetch('/api/mailing/simulation/stop', { method: 'POST' });
+    await apiFetch('/api/mailing/simulation/stop', { method: 'POST' });
     fetchSnapshot();
   }
 
   async function resetSim() {
-    await fetch('/api/mailing/simulation/reset', { method: 'POST' });
+    await apiFetch('/api/mailing/simulation/reset', { method: 'POST' });
     fetchSnapshot();
   }
 
   async function sendConsult() {
     if (!consultInput.trim()) return;
-    await fetch('/api/mailing/simulation/consult', {
+    await apiFetch('/api/mailing/simulation/consult', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: consultInput }),

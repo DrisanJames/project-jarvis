@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.0';
 
@@ -75,7 +76,7 @@ export const WarmupDashboard: React.FC = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/warmup/dashboard');
+      const res = await apiFetch('/api/mailing/warmup/dashboard');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);

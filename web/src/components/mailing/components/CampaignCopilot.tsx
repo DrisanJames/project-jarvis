@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { apiFetch } from '../shared/apiFetch';
 
 interface CopilotMessage {
   role: 'user' | 'assistant';
@@ -63,7 +64,7 @@ export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClos
     const updatedHistory: ChatHistoryEntry[] = [...history, { role: 'user', content: userMsg }];
 
     try {
-      const resp = await fetch('/api/mailing/copilot/chat', {
+      const resp = await apiFetch('/api/mailing/copilot/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg, history: updatedHistory }),

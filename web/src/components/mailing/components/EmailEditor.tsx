@@ -38,6 +38,7 @@ import {
   faExclamationTriangle,
 } from '@fortawesome/free-solid-svg-icons';
 import './EmailEditor.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // =============================================================================
 // TYPES
@@ -197,7 +198,7 @@ export const EmailEditor: React.FC<EmailEditorProps> = ({
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await fetch('/api/mailing/images', {
+      const res = await apiFetch('/api/mailing/images', {
         method: 'POST',
         body: formData,
         credentials: 'include',

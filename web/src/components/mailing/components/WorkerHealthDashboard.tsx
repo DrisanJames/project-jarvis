@@ -8,6 +8,7 @@ import {
   faSyncAlt,
   faSkull,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 // WorkerHealthDashboard — live view of background-worker heartbeats and stall
 // status. Mirrors GET /api/worker-health (handlers_worker_health.go), which
@@ -78,7 +79,7 @@ export const WorkerHealthDashboard: React.FC = () => {
 
   const fetchHealth = useCallback(async () => {
     try {
-      const res = await fetch('/api/worker-health', { credentials: 'include' });
+      const res = await apiFetch('/api/worker-health', { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as HealthResponse;
       setData(json);

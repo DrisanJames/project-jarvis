@@ -7,6 +7,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import './AgentConfigWizard.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -104,7 +105,7 @@ interface DeployResult {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const orgFetch = async (url: string, opts?: RequestInit) =>
-  fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts?.headers } });
+  apiFetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts?.headers } });
 
 const fmt = (n: number | undefined | null): string => {
   if (n == null || isNaN(n)) return '0';

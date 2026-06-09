@@ -11,6 +11,7 @@ import {
   faDownload,
   faRobot,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 // AttributionMatchDashboard — review screen for resolving Everflow click and
 // conversion CSV exports back to subscriber profiles in our database.
@@ -173,7 +174,7 @@ export const AttributionMatchDashboard: React.FC = () => {
       if (conversionsFile) fd.append('conversions', conversionsFile);
       if (offerPattern.trim()) fd.append('offer_pattern', offerPattern.trim());
 
-      const resp = await fetch('/api/mailing/attribution/match-csv', {
+      const resp = await apiFetch('/api/mailing/attribution/match-csv', {
         method: 'POST',
         body: fd,
         credentials: 'include',

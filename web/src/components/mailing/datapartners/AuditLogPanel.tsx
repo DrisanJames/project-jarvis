@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faSync, faExclamationTriangle, faClipboardList } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 interface AuditEvent {
   id: string;
@@ -37,7 +38,7 @@ export const AuditLogPanel: React.FC = () => {
     if (actionFilter) params.set('action', actionFilter);
     if (actorFilter) params.set('actor', actorFilter);
     params.set('limit', '200');
-    fetch(`/api/mailing/data-partners/audit-log?${params.toString()}`, { credentials: 'include' })
+    apiFetch(`/api/mailing/data-partners/audit-log?${params.toString()}`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => setEvents(data?.events ?? []))
       .catch(err => setError(String(err)))

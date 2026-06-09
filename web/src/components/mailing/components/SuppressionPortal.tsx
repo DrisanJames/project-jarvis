@@ -40,6 +40,7 @@ import {
   faClock,
 } from '@fortawesome/free-solid-svg-icons';
 import './SuppressionPortal.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // ============================================================================
 // TYPES
@@ -127,7 +128,7 @@ export const SuppressionPortal: React.FC = () => {
   // Fetch ONLY dashboard stats (lightweight - safe for polling)
   const fetchStats = useCallback(async () => {
     try {
-      const statsRes = await fetch('/api/mailing/suppressions/dashboard');
+      const statsRes = await apiFetch('/api/mailing/suppressions/dashboard');
       const statsData = await statsRes.json().catch(() => ({}));
       
       const globalSupp = statsData.global_suppression || {};
@@ -172,7 +173,7 @@ export const SuppressionPortal: React.FC = () => {
   // Fetch suppression lists (heavier - only on demand)
   const fetchLists = useCallback(async () => {
     try {
-      const listsRes = await fetch('/api/mailing/suppression-lists');
+      const listsRes = await apiFetch('/api/mailing/suppression-lists');
       const listsData = await listsRes.json().catch(() => ({ lists: [] }));
       setLists(listsData.lists || []);
     } catch (err) {
@@ -825,7 +826,7 @@ const SuppressionListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigat
 
   const handleDelete = async (id: string) => {
     try {
-      await fetch(`/api/mailing/suppression-lists/${id}`, { method: 'DELETE' });
+      await apiFetch(`/api/mailing/suppression-lists/${id}`, { method: 'DELETE' });
       setDeleteConfirm(null);
       onRefresh();
     } catch (err) {
@@ -1009,7 +1010,7 @@ const CreateSuppressionList: React.FC<CreateListProps> = ({ onCancel, onSuccess,
     setError(null);
 
     try {
-      const res = await fetch('/api/mailing/suppression-lists', {
+      const res = await apiFetch('/api/mailing/suppression-lists', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -1118,7 +1119,7 @@ const EditSuppressionList: React.FC<EditListProps> = ({ list, onCancel, onSucces
     setError(null);
 
     try {
-      const res = await fetch(`/api/mailing/suppression-lists/${list.id}`, {
+      const res = await apiFetch(`/api/mailing/suppression-lists/${list.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -1225,7 +1226,7 @@ const SuppressionEntries: React.FC<EntriesProps> = ({ list, onBack, animateIn })
 
   const fetchEntries = async () => {
     try {
-      const res = await fetch(`/api/mailing/suppression-lists/${list.id}/entries`);
+      const res = await apiFetch(`/api/mailing/suppression-lists/${list.id}/entries`);
       const data = await res.json();
       setEntries(data.entries || []);
     } catch (err) {
@@ -1240,7 +1241,7 @@ const SuppressionEntries: React.FC<EntriesProps> = ({ list, onBack, animateIn })
     if (!addEmail.trim()) return;
 
     try {
-      const res = await fetch(`/api/mailing/suppression-lists/${list.id}/entries`, {
+      const res = await apiFetch(`/api/mailing/suppression-lists/${list.id}/entries`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: addEmail, reason: addReason }),
@@ -1258,7 +1259,7 @@ const SuppressionEntries: React.FC<EntriesProps> = ({ list, onBack, animateIn })
 
   const handleRemoveEntry = async (entryId: string) => {
     try {
-      await fetch(`/api/mailing/suppression-lists/${list.id}/entries/${entryId}`, {
+      await apiFetch(`/api/mailing/suppression-lists/${list.id}/entries/${entryId}`, {
         method: 'DELETE',
       });
       fetchEntries();
@@ -1407,9 +1408,9 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
   const fetchOptizmoData = async () => {
     try {
       const [configRes, statusRes, listsRes] = await Promise.all([
-        fetch('/api/mailing/optizmo/config'),
-        fetch('/api/mailing/optizmo/status'),
-        fetch('/api/mailing/optizmo/lists'),
+        apiFetch('/api/mailing/optizmo/config'),
+        apiFetch('/api/mailing/optizmo/status'),
+        apiFetch('/api/mailing/optizmo/lists'),
       ]);
 
       const configData = await configRes.json().catch(() => ({}));
@@ -1432,7 +1433,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
   const handleSync = async () => {
     setSyncing(true);
     try {
-      await fetch('/api/mailing/optizmo/sync', { method: 'POST' });
+      await apiFetch('/api/mailing/optizmo/sync', { method: 'POST' });
       await fetchOptizmoData();
       onRefresh();
     } catch (err) {
@@ -1444,7 +1445,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
 
   const handleSaveConfig = async () => {
     try {
-      await fetch('/api/mailing/optizmo/config', {
+      await apiFetch('/api/mailing/optizmo/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1647,7 +1648,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
   useEffect(() => {
     const checkScheduled = async () => {
       try {
-        const res = await fetch('/api/mailing/campaigns/scheduled');
+        const res = await apiFetch('/api/mailing/campaigns/scheduled');
         const data = await res.json();
         if (data.count > 0) {
           setScheduledCampaigns(data.campaigns || []);
@@ -1663,7 +1664,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
   const handleCancelAllScheduled = async () => {
     setCancellingCampaigns(true);
     try {
-      const res = await fetch('/api/mailing/campaigns/cancel-all-scheduled', { method: 'POST' });
+      const res = await apiFetch('/api/mailing/campaigns/cancel-all-scheduled', { method: 'POST' });
       const data = await res.json();
       setScheduledCampaigns([]);
       setShowCampaignWarning(false);
@@ -1681,7 +1682,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/mailing/suppression-import/${jobId}/progress`);
+        const res = await apiFetch(`/api/mailing/suppression-import/${jobId}/progress`);
         const data = await res.json();
         setImportProgress(data);
 
@@ -1753,7 +1754,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
         setUploadProgress(0);
 
         // Step 1: Init upload session
-        const initRes = await fetch('/api/mailing/suppression-import/init', {
+        const initRes = await apiFetch('/api/mailing/suppression-import/init', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1783,7 +1784,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
             const chunk = file.slice(start, end);
 
             chunkPromises.push(
-              fetch(
+              apiFetch(
                 `/api/mailing/suppression-import/${currentJobId}/chunk?chunk=${i}`,
                 { method: 'POST', body: chunk }
               ).then(async (res) => {
@@ -1800,7 +1801,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
         }
 
         // Step 3: Trigger processing
-        const procRes = await fetch(
+        const procRes = await apiFetch(
           `/api/mailing/suppression-import/${currentJobId}/process`,
           { method: 'POST' }
         );

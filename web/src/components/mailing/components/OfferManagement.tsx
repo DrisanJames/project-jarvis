@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../shared/ToastSystem';
 import './OfferManagement.css';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.0';
 
@@ -267,7 +268,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchTree = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/offers/tree`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/tree`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         const verts: TreeVertical[] = data.verticals || [];
@@ -289,7 +290,7 @@ export const OfferManagement: React.FC = () => {
   const fetchOffer = useCallback(async (id: string) => {
     setDetailLoading(true);
     try {
-      const res = await fetch(`${API}/offers/${id}`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setOffer(data.offer || data);
@@ -302,7 +303,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchSubjects = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/subjects`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/subjects`, { credentials: 'include' });
       if (res.ok) setSubjects(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load subject lines' });
@@ -311,7 +312,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchFromNames = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/from-names`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/from-names`, { credentials: 'include' });
       if (res.ok) setFromNames(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load from names' });
@@ -320,7 +321,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchCreatives = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/creatives`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/creatives`, { credentials: 'include' });
       if (res.ok) setCreatives(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load creatives' });
@@ -329,7 +330,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchDeployments = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/deployments`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/deployments`, { credentials: 'include' });
       if (res.ok) setDeployments(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load deployments' });
@@ -338,7 +339,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchPerformance = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/performance`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/performance`, { credentials: 'include' });
       if (res.ok) setPerformance(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load performance data' });
@@ -347,7 +348,7 @@ export const OfferManagement: React.FC = () => {
 
   const fetchOptizmoStatus = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/offers/${id}/optizmo/status`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${id}/optizmo/status`, { credentials: 'include' });
       if (res.ok) setOptizmoStatus(await res.json());
     } catch {
       addToast({ type: 'warning', title: 'Failed to load Optizmo status' });
@@ -395,7 +396,7 @@ export const OfferManagement: React.FC = () => {
   const createVertical = async () => {
     if (!newVerticalName.trim()) return;
     try {
-      const res = await fetch(`${API}/verticals`, {
+      const res = await apiFetch(`${API}/verticals`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newVerticalName.trim(), sort_order: tree.length }),
@@ -634,7 +635,7 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${API}/offers/${offer.id}`, {
+      const res = await apiFetch(`${API}/offers/${offer.id}`, {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -755,7 +756,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
     setBulkAdding(true);
     try {
       for (const line of lines) {
-        const res = await fetch(`${API}/offers/${offerId}/subjects`, {
+        const res = await apiFetch(`${API}/offers/${offerId}/subjects`, {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subject_line: line, status: 'draft' }),
@@ -774,7 +775,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
 
   const updateSubject = async (sid: string, payload: { subject_line?: string; status?: string }) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/subjects/${sid}`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/subjects/${sid}`, {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -788,7 +789,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
 
   const deleteSubject = async (sid: string) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/subjects/${sid}`, { method: 'DELETE', credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${offerId}/subjects/${sid}`, { method: 'DELETE', credentials: 'include' });
       if (res.ok) { onRefresh(); }
       else { addToast({ type: 'error', title: 'Failed to delete subject line' }); }
     } catch {
@@ -881,7 +882,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
     setBulkAdding(true);
     try {
       for (const line of lines) {
-        const res = await fetch(`${API}/offers/${offerId}/from-names`, {
+        const res = await apiFetch(`${API}/offers/${offerId}/from-names`, {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ from_name: line, status: 'draft' }),
@@ -900,7 +901,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
 
   const updateFromName = async (fid: string, payload: { from_name?: string; status?: string }) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/from-names/${fid}`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/from-names/${fid}`, {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -914,7 +915,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
 
   const deleteFromName = async (fid: string) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/from-names/${fid}`, { method: 'DELETE', credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${offerId}/from-names/${fid}`, { method: 'DELETE', credentials: 'include' });
       if (res.ok) { onRefresh(); }
       else { addToast({ type: 'error', title: 'Failed to delete from name' }); }
     } catch {
@@ -1029,7 +1030,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
     setGenError('');
     setGenResult('');
     try {
-      const res = await fetch(`${API}/offers/${offerId}/creatives/generate`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/creatives/generate`, {
         method: 'POST', credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
@@ -1046,7 +1047,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
   const uploadCreative = async () => {
     if (!htmlContent.trim()) return;
     try {
-      const res = await fetch(`${API}/offers/${offerId}/creatives`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/creatives`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ html_content: htmlContent, status: 'draft' }),
@@ -1060,7 +1061,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
 
   const updateCreativeStatus = async (cid: string, status: string) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/creatives/${cid}`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/creatives/${cid}`, {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -1075,7 +1076,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
   const deleteAllCreatives = async () => {
     if (!confirm(`Delete all ${creatives.length} creatives? This cannot be undone.`)) return;
     try {
-      const res = await fetch(`${API}/offers/${offerId}/creatives/all`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/creatives/all`, {
         method: 'DELETE', credentials: 'include',
       });
       if (res.ok) { onRefresh(); addToast({ type: 'info', title: `Deleted all creatives` }); }
@@ -1333,7 +1334,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
   const fetchAssets = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/assets`, { credentials: 'include' });
+      const res = await apiFetch(`${API}/offers/${offerId}/assets`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setAssets(data.assets || []);
@@ -1359,7 +1360,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
       const fd = new FormData();
       fd.append('file', file);
       try {
-        const res = await fetch(`${API}/offers/${offerId}/assets`, {
+        const res = await apiFetch(`${API}/offers/${offerId}/assets`, {
           method: 'POST', credentials: 'include', body: fd,
         });
         if (!res.ok) failed++;
@@ -1395,7 +1396,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
     try {
       setUploadPhase('processing');
       setUploadProgress('Server is extracting & processing images…');
-      const res = await fetch(`${API}/offers/${offerId}/assets/upload-zip`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/assets/upload-zip`, {
         method: 'POST', credentials: 'include', body: fd,
       });
       if (res.ok) {
@@ -1431,7 +1432,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
   const deleteAsset = async (assetId: string) => {
     try {
-      const res = await fetch(`${API}/offers/${offerId}/assets/${assetId}`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/assets/${assetId}`, {
         method: 'DELETE', credentials: 'include',
       });
       if (res.ok) { setAssets(prev => prev.filter(a => a.id !== assetId)); }
@@ -1444,7 +1445,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
   const deleteAllAssets = async () => {
     if (!confirm(`Delete all ${assets.length} assets? This cannot be undone.`)) return;
     try {
-      const res = await fetch(`${API}/offers/${offerId}/assets/all`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/assets/all`, {
         method: 'DELETE', credentials: 'include',
       });
       if (res.ok) {
@@ -1672,7 +1673,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
     setGenerating(true);
     setError('');
     try {
-      const res = await fetch(`${API}/offers/${offer.id}/landing-page/generate`, {
+      const res = await apiFetch(`${API}/offers/${offer.id}/landing-page/generate`, {
         method: 'POST', credentials: 'include',
       });
       if (res.ok) { onRefresh(); }
@@ -1685,7 +1686,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
     setRepublishing(true);
     setError('');
     try {
-      const res = await fetch(`${API}/offers/${offer.id}/landing-page/republish`, {
+      const res = await apiFetch(`${API}/offers/${offer.id}/landing-page/republish`, {
         method: 'POST', credentials: 'include',
       });
       if (res.ok) { onRefresh(); }
@@ -1795,7 +1796,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
   const requestScrub = async () => {
     setRequesting(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/optizmo/request-scrub`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/optizmo/request-scrub`, {
         method: 'POST', credentials: 'include',
       });
       if (res.ok) {
@@ -1812,7 +1813,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
   const cancelScrub = async () => {
     setCancelling(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/optizmo/cancel-scrub`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/optizmo/cancel-scrub`, {
         method: 'POST', credentials: 'include',
       });
       if (res.ok) onRefresh();
@@ -1826,7 +1827,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
   const resetScrub = async () => {
     setResetting(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/optizmo/reset-scrub`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/optizmo/reset-scrub`, {
         method: 'POST', credentials: 'include',
       });
       if (res.ok) onRefresh();
@@ -1845,7 +1846,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
     try {
       const form = new FormData();
       form.append('file', file);
-      const res = await fetch(`${API}/offers/${offerId}/optizmo/import-result`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/optizmo/import-result`, {
         method: 'POST', credentials: 'include', body: form,
       });
       const data = await res.json();
@@ -1980,7 +1981,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                 onClick={async () => {
                   setSyncTriggering(true);
                   try {
-                    const res = await fetch(`${API}/offers/${offerId}/optizmo/trigger-sync`, { method: 'POST', credentials: 'include' });
+                    const res = await apiFetch(`${API}/offers/${offerId}/optizmo/trigger-sync`, { method: 'POST', credentials: 'include' });
                     if (res.ok) {
                       addToast({ type: 'success', title: 'Sync triggered', message: 'Running in background — progress updates automatically' });
                       setTimeout(onRefresh, 2000);
@@ -2007,7 +2008,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
               onClick={async () => {
                 setSyncToggling(true);
                 try {
-                  const res = await fetch(`${API}/offers/${offerId}/optizmo/toggle-sync`, {
+                  const res = await apiFetch(`${API}/offers/${offerId}/optizmo/toggle-sync`, {
                     method: 'POST', credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: !offer?.suppression_sync_enabled }),
@@ -2261,7 +2262,7 @@ const DeployTab: React.FC<{
     setProofQueue(prev => prev.map(c => ({ ...c, status: 'sending' as const })));
 
     try {
-      const res = await fetch(`${API}/offers/${offerId}/proof-send`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/proof-send`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2321,7 +2322,7 @@ const DeployTab: React.FC<{
     if (sentCards.length === 0) return;
     setDeploying(true);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/deploy`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/deploy`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2549,7 +2550,7 @@ const NewOfferModal: React.FC<{
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const res = await fetch(`${API}/offers/${offerId}/assets/upload-zip`, {
+      const res = await apiFetch(`${API}/offers/${offerId}/assets/upload-zip`, {
         method: 'POST', credentials: 'include', body: fd,
       });
       if (res.ok) {
@@ -2569,7 +2570,7 @@ const NewOfferModal: React.FC<{
     try {
       const payload: Record<string, unknown> = { ...form };
       payload.payout = form.payout ? parseFloat(form.payout) : null;
-      const res = await fetch(`${API}/offers`, {
+      const res = await apiFetch(`${API}/offers`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

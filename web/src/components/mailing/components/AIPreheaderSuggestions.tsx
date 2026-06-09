@@ -15,6 +15,7 @@ import {
   faGift, 
   faArrowRight 
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 import './AISubjectSuggestions.css'; // Reuse the same styles
 
 // ============================================
@@ -95,7 +96,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/mailing/ai/preheader-suggestions', {
+      const response = await apiFetch('/api/mailing/ai/preheader-suggestions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

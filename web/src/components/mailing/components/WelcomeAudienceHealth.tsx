@@ -27,6 +27,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartsTooltip, LineChart, Line, Legend, Cell,
 } from 'recharts';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.0';
 
@@ -184,7 +185,7 @@ export const WelcomeAudienceHealth: React.FC = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/mailing/analytics/welcome-audience-health', {
+      const res = await apiFetch('/api/mailing/analytics/welcome-audience-health', {
         credentials: 'include',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

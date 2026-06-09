@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faCopy, faExclamationTriangle, faCheckCircle } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 interface Props {
   onClose: () => void;
@@ -44,7 +45,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch('/api/mailing/data-partners', {
+      const res = await apiFetch('/api/mailing/data-partners', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -73,7 +74,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/mailing/data-partners/${partnerId}/datasets`, {
+      const res = await apiFetch(`/api/mailing/data-partners/${partnerId}/datasets`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

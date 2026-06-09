@@ -6,6 +6,7 @@ import {
   faFileExport, faPlus, faSync, faUpload,
   faChartBar, faGlobe, faSpinner, faPaste,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 const API_BASE = '/api/mailing';
 
@@ -87,7 +88,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/suppressions/dashboard`);
+      const res = await apiFetch(`${API_BASE}/suppressions/dashboard`);
       if (res.ok) setStats(await res.json());
     } catch { /* ignore */ }
   }, []);
@@ -97,7 +98,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       setLoading(true);
       const params = new URLSearchParams({ limit: '50' });
       if (q) params.set('q', q);
-      const res = await fetch(`${API_BASE}/suppressions/global/entries?${params}`);
+      const res = await apiFetch(`${API_BASE}/suppressions/global/entries?${params}`);
       if (res.ok) {
         const data = await res.json();
         setEntries(data.entries || []);
@@ -123,7 +124,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
     setSuppressing(true);
     setSuppressResult(null);
     try {
-      const res = await fetch(`${API_BASE}/suppressions/global`, {
+      const res = await apiFetch(`${API_BASE}/suppressions/global`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, category: suppressReason, source: 'manual_ui' }),
@@ -144,7 +145,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
 
   const handleRemove = async (email: string) => {
     if (!confirm(`Remove ${email} from global suppression?`)) return;
-    await fetch(`${API_BASE}/suppressions/global/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    await apiFetch(`${API_BASE}/suppressions/global/${encodeURIComponent(email)}`, { method: 'DELETE' });
     fetchStats();
     fetchEntries(searchQuery);
   };
@@ -191,7 +192,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       if (abortRef.current) break;
       const batch = emails.slice(i, i + BATCH_SIZE);
       try {
-        const res = await fetch(`${API_BASE}/suppressions/global/bulk`, {
+        const res = await apiFetch(`${API_BASE}/suppressions/global/bulk`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ emails: batch, category: reason, source }),

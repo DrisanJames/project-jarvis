@@ -7,6 +7,7 @@ import {
   faEdit, faSave, faArrowLeft, faBolt, faClock,
   faChevronDown, faChevronRight, faEye, faLayerGroup,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.7';
 
@@ -90,14 +91,14 @@ const AgentChat: React.FC = () => {
 
   const loadConversations = async () => {
     try {
-      const resp = await fetch('/api/mailing/agent/conversations');
+      const resp = await apiFetch('/api/mailing/agent/conversations');
       if (resp.ok) setConversations(await resp.json());
     } catch {}
   };
 
   const loadConversation = async (id: string) => {
     try {
-      const resp = await fetch(`/api/mailing/agent/conversations/${id}`);
+      const resp = await apiFetch(`/api/mailing/agent/conversations/${id}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setConversationId(id);
@@ -114,7 +115,7 @@ const AgentChat: React.FC = () => {
   };
 
   const deleteConversation = async (id: string) => {
-    await fetch(`/api/mailing/agent/conversations/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/mailing/agent/conversations/${id}`, { method: 'DELETE' });
     if (conversationId === id) startNewConversation();
     loadConversations();
   };
@@ -126,7 +127,7 @@ const AgentChat: React.FC = () => {
     setMessages(prev => [...prev, { role: 'user', content: text.trim(), timestamp: new Date() }]);
 
     try {
-      const resp = await fetch('/api/mailing/agent/chat', {
+      const resp = await apiFetch('/api/mailing/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text.trim(), conversation_id: conversationId || '' }),
@@ -240,7 +241,7 @@ const ActiveSendsPanel: React.FC = () => {
 
   const fetchSending = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/campaigns?status=sending');
+      const res = await apiFetch('/api/mailing/campaigns?status=sending');
       if (!res.ok) return;
       const json = await res.json();
       setCampaigns(json.data ?? []);
@@ -443,7 +444,7 @@ const AgentCalendar: React.FC = () => {
       setTestSendResult(null);
       if (cfg.template_id) {
         setTemplateLoading(true);
-        fetch(`/api/mailing/templates/${cfg.template_id}`)
+        apiFetch(`/api/mailing/templates/${cfg.template_id}`)
           .then(r => r.ok ? r.json() : null)
           .then(data => { if (data?.html_content) setTemplateHtml(data.html_content); })
           .catch(() => {})
@@ -454,7 +455,7 @@ const AgentCalendar: React.FC = () => {
 
   const loadDomains = async () => {
     try {
-      const resp = await fetch('/api/mailing/agent/strategies');
+      const resp = await apiFetch('/api/mailing/agent/strategies');
       if (resp.ok) {
         const data = await resp.json();
         const d = data.map((s: DomainStrategy) => s.sending_domain);
@@ -467,7 +468,7 @@ const AgentCalendar: React.FC = () => {
   const loadForecast = async () => {
     setLoading(true);
     try {
-      const resp = await fetch(`/api/mailing/agent/calendar/forecast?month=${month}&sending_domain=${encodeURIComponent(selectedDomain)}`);
+      const resp = await apiFetch(`/api/mailing/agent/calendar/forecast?month=${month}&sending_domain=${encodeURIComponent(selectedDomain)}`);
       if (resp.ok) setForecast(await resp.json());
     } catch {} finally { setLoading(false); }
   };
@@ -476,7 +477,7 @@ const AgentCalendar: React.FC = () => {
     if (dayVariants[date]) return;
     setVariantsLoading(true);
     try {
-      const resp = await fetch(`/api/mailing/agent/calendar/day/${date}/variants`);
+      const resp = await apiFetch(`/api/mailing/agent/calendar/day/${date}/variants`);
       if (resp.ok) {
         const data = await resp.json();
         setDayVariants(prev => ({ ...prev, [date]: data.campaigns || [] }));
@@ -488,7 +489,7 @@ const AgentCalendar: React.FC = () => {
     if (!selectedDomain) return;
     setGenerating(true);
     try {
-      await fetch('/api/mailing/agent/calendar/generate', {
+      await apiFetch('/api/mailing/agent/calendar/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sending_domain: selectedDomain, month, force_regenerate: true }),
       });
@@ -506,7 +507,7 @@ const AgentCalendar: React.FC = () => {
         if (payload.scheduled_time) {
           payload.scheduled_time = mstToUtc(payload.scheduled_time);
         }
-        const patchResp = await fetch(`/api/mailing/agent/calendar/recommendations/${id}`, {
+        const patchResp = await apiFetch(`/api/mailing/agent/calendar/recommendations/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -517,7 +518,7 @@ const AgentCalendar: React.FC = () => {
           return;
         }
       }
-      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${id}/approve`, { method: 'POST' });
+      const resp = await apiFetch(`/api/mailing/agent/calendar/recommendations/${id}/approve`, { method: 'POST' });
       const data = await resp.json();
       if (!resp.ok) {
         setApprovalResult({ error: data.error || 'Approval failed' });
@@ -532,7 +533,7 @@ const AgentCalendar: React.FC = () => {
     }
   };
   const rejectRec = async (id: string) => {
-    await fetch(`/api/mailing/agent/calendar/recommendations/${id}/reject`, { method: 'POST' });
+    await apiFetch(`/api/mailing/agent/calendar/recommendations/${id}/reject`, { method: 'POST' });
     loadForecast();
     setSelectedRec(null);
   };
@@ -543,8 +544,8 @@ const AgentCalendar: React.FC = () => {
     try {
       if (type === 'inclusion') {
         const [listResp, segResp] = await Promise.all([
-          fetch('/api/mailing/lists?limit=100'),
-          fetch('/api/mailing/segments?limit=50'),
+          apiFetch('/api/mailing/lists?limit=100'),
+          apiFetch('/api/mailing/segments?limit=50'),
         ]);
         const combined: {id: string; name: string; type: string}[] = [];
         if (listResp.ok) {
@@ -560,8 +561,8 @@ const AgentCalendar: React.FC = () => {
         setAvailableLists(combined);
       } else {
         const [suppResp, segResp] = await Promise.all([
-          fetch('/api/mailing/suppression-lists?limit=50'),
-          fetch('/api/mailing/segments?limit=50'),
+          apiFetch('/api/mailing/suppression-lists?limit=50'),
+          apiFetch('/api/mailing/segments?limit=50'),
         ]);
         const combined: {id: string; name: string; type: string}[] = [];
         if (suppResp.ok) {
@@ -601,7 +602,7 @@ const AgentCalendar: React.FC = () => {
       if (payload.scheduled_time) {
         payload.scheduled_time = mstToUtc(payload.scheduled_time);
       }
-      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${selectedRec.id}`, {
+      const resp = await apiFetch(`/api/mailing/agent/calendar/recommendations/${selectedRec.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -620,7 +621,7 @@ const AgentCalendar: React.FC = () => {
     setMiniChatMessages(prev => [...prev, { role: 'user', content: msg }]);
     setMiniChatLoading(true);
     try {
-      const resp = await fetch('/api/mailing/agent/chat', {
+      const resp = await apiFetch('/api/mailing/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -650,7 +651,7 @@ const AgentCalendar: React.FC = () => {
 
     for (const email of emails) {
       try {
-        const resp = await fetch('/api/mailing/send-test', {
+        const resp = await apiFetch('/api/mailing/send-test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -680,7 +681,7 @@ const AgentCalendar: React.FC = () => {
   const deleteRecommendation = async (recId: string) => {
     setDeleting(true);
     try {
-      const resp = await fetch(`/api/mailing/agent/calendar/recommendations/${recId}`, { method: 'DELETE' });
+      const resp = await apiFetch(`/api/mailing/agent/calendar/recommendations/${recId}`, { method: 'DELETE' });
       if (resp.ok) {
         setSelectedRec(null);
         setSelectedDay(null);
@@ -1257,7 +1258,7 @@ const AgentStrategy: React.FC = () => {
   const loadStrategies = async () => {
     setLoading(true);
     try {
-      const resp = await fetch('/api/mailing/agent/strategies');
+      const resp = await apiFetch('/api/mailing/agent/strategies');
       if (resp.ok) setStrategies(await resp.json());
     } catch {} finally { setLoading(false); }
   };
@@ -1267,9 +1268,9 @@ const AgentStrategy: React.FC = () => {
     const body = { sending_domain: form.sending_domain, strategy: form.strategy, params };
 
     if (editing) {
-      await fetch(`/api/mailing/agent/strategies/${editing.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy: form.strategy, params }) });
+      await apiFetch(`/api/mailing/agent/strategies/${editing.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy: form.strategy, params }) });
     } else {
-      await fetch('/api/mailing/agent/strategies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      await apiFetch('/api/mailing/agent/strategies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
     setEditing(null);
     setCreating(false);
@@ -1277,7 +1278,7 @@ const AgentStrategy: React.FC = () => {
   };
 
   const deleteStrategy = async (id: string) => {
-    await fetch(`/api/mailing/agent/strategies/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/mailing/agent/strategies/${id}`, { method: 'DELETE' });
     loadStrategies();
   };
 

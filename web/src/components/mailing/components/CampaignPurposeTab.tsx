@@ -29,6 +29,7 @@ import {
   faServer,
 } from '@fortawesome/free-solid-svg-icons';
 import './CampaignPurposeTab.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // ============================================================================
 // TYPES
@@ -418,7 +419,7 @@ const DataActivationSettings: React.FC<{
   const fetchActivationIntelligence = async () => {
     setActivationLoading(true);
     try {
-      const response = await fetch('/api/activation/intelligence');
+      const response = await apiFetch('/api/activation/intelligence');
       if (response.ok) {
         const data = await response.json();
         setActivationData(data);
@@ -764,7 +765,7 @@ const OfferRevenueSettings: React.FC<{
   const fetchNetworkTopOffers = async () => {
     setNetworkLoading(true);
     try {
-      const response = await fetch('/api/everflow/network-top-offers');
+      const response = await apiFetch('/api/everflow/network-top-offers');
       if (response.ok) {
         const data = await response.json();
         setNetworkOffers(data.top_offers || []);
@@ -786,7 +787,7 @@ const OfferRevenueSettings: React.FC<{
 
   const fetchAffiliates = async () => {
     try {
-      const response = await fetch('/api/everflow/affiliates');
+      const response = await apiFetch('/api/everflow/affiliates');
       if (response.ok) {
         const data = await response.json();
         setAffiliates(data.affiliates || []);
@@ -805,7 +806,7 @@ const OfferRevenueSettings: React.FC<{
       const params = new URLSearchParams({ affiliate_id: affiliateId, lookback_days: '7' });
       if (offerTypeFilter) params.append('offer_type', offerTypeFilter);
       
-      const response = await fetch(`/api/everflow/campaign-offers?${params}`);
+      const response = await apiFetch(`/api/everflow/campaign-offers?${params}`);
       if (response.ok) {
         const data = await response.json();
         setAffiliateOffers(data.offers || []);

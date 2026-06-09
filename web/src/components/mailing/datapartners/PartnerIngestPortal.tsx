@@ -9,6 +9,7 @@ import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.0';
 
@@ -83,8 +84,8 @@ export const PartnerIngestPortal: React.FC = () => {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetch('/api/mailing/data-partners/dashboard', { credentials: 'include' }).then(r => r.json()),
-      fetch('/api/mailing/data-partners/datasets', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/data-partners/dashboard', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/data-partners/datasets', { credentials: 'include' }).then(r => r.json()),
     ])
       .then(([dash, ds]) => {
         // Defensive: an unauthenticated response is `{error:"unauthorized"}`,
@@ -110,7 +111,7 @@ export const PartnerIngestPortal: React.FC = () => {
   const handlePauseDataset = async (id: string) => {
     if (!window.confirm('Emergency stop this dataset? Slicer will halt at the next slice boundary.')) return;
     const reason = window.prompt('Reason for emergency stop:', 'operator emergency stop') ?? '';
-    await fetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
+    await apiFetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -120,7 +121,7 @@ export const PartnerIngestPortal: React.FC = () => {
   };
 
   const handleResumeDataset = async (id: string) => {
-    await fetch(`/api/mailing/data-partners/datasets/${id}/resume`, { method: 'POST', credentials: 'include' });
+    await apiFetch(`/api/mailing/data-partners/datasets/${id}/resume`, { method: 'POST', credentials: 'include' });
     fetchAll();
   };
 
@@ -377,7 +378,7 @@ const CreativesPanel: React.FC = () => {
 
   const fetchCreatives = useCallback(() => {
     setLoading(true);
-    fetch('/api/mailing/data-partners/creatives', { credentials: 'include' })
+    apiFetch('/api/mailing/data-partners/creatives', { credentials: 'include' })
       .then(r => r.json())
       .then(data => setCreatives(data?.creatives ?? []))
       .finally(() => setLoading(false));
@@ -463,7 +464,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/mailing/data-partners/creatives/${vertical}/${brand}`, {
+      const res = await apiFetch(`/api/mailing/data-partners/creatives/${vertical}/${brand}`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

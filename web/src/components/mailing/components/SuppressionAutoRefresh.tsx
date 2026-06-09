@@ -10,6 +10,7 @@ import {
   faList
 } from '@fortawesome/free-solid-svg-icons';
 import './SuppressionAutoRefresh.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // ============================================================================
 // TYPES
@@ -276,7 +277,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/suppression-refresh/status');
+      const res = await apiFetch('/api/mailing/suppression-refresh/status');
       if (!res.ok) throw new Error(`Status fetch failed: ${res.status}`);
       const data: EngineStatus = await res.json();
       setStatus(data);
@@ -296,7 +297,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       if (sourcesFilter.provider) params.set('provider', sourcesFilter.provider);
       if (sourcesFilter.group) params.set('group', sourcesFilter.group);
       if (sourcesFilter.status) params.set('status', sourcesFilter.status);
-      const res = await fetch(`/api/mailing/suppression-refresh/sources?${params.toString()}`);
+      const res = await apiFetch(`/api/mailing/suppression-refresh/sources?${params.toString()}`);
       if (!res.ok) throw new Error(`Sources fetch failed: ${res.status}`);
       const data = await res.json();
       setSources(data.sources || data.data || []);
@@ -311,7 +312,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       const params = new URLSearchParams();
       params.set('page', String(cyclesPage));
       params.set('limit', '20');
-      const res = await fetch(`/api/mailing/suppression-refresh/cycles?${params.toString()}`);
+      const res = await apiFetch(`/api/mailing/suppression-refresh/cycles?${params.toString()}`);
       if (!res.ok) throw new Error(`Cycles fetch failed: ${res.status}`);
       const data = await res.json();
       setCycles(data.cycles || data.data || []);
@@ -323,7 +324,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const fetchCycleLogs = useCallback(async (cycleId: string) => {
     try {
-      const res = await fetch(`/api/mailing/suppression-refresh/cycles/${cycleId}/logs`);
+      const res = await apiFetch(`/api/mailing/suppression-refresh/cycles/${cycleId}/logs`);
       if (!res.ok) throw new Error(`Cycle logs fetch failed: ${res.status}`);
       const data: RefreshLog[] = await res.json();
       setCycleLogs((prev) => ({ ...prev, [cycleId]: data }));
@@ -334,7 +335,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const fetchGroups = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/suppression-refresh/groups');
+      const res = await apiFetch('/api/mailing/suppression-refresh/groups');
       if (!res.ok) throw new Error(`Groups fetch failed: ${res.status}`);
       const data: RefreshGroup[] = await res.json();
       setGroups(data);
@@ -345,7 +346,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const fetchSourceDetail = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`/api/mailing/suppression-refresh/sources/${id}`);
+      const res = await apiFetch(`/api/mailing/suppression-refresh/sources/${id}`);
       if (!res.ok) throw new Error(`Source detail fetch failed: ${res.status}`);
       const data = await res.json();
       setDetailSource(data.source || data);
@@ -393,7 +394,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const triggerCycle = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/suppression-refresh/trigger', { method: 'POST' });
+      const res = await apiFetch('/api/mailing/suppression-refresh/trigger', { method: 'POST' });
       if (!res.ok) throw new Error(`Trigger failed: ${res.status}`);
       await fetchStatus();
     } catch (err) {
@@ -403,7 +404,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
 
   const stopCycle = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/suppression-refresh/stop', { method: 'POST' });
+      const res = await apiFetch('/api/mailing/suppression-refresh/stop', { method: 'POST' });
       if (!res.ok) throw new Error(`Stop failed: ${res.status}`);
       await fetchStatus();
     } catch (err) {
@@ -414,7 +415,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
   const toggleSource = useCallback(
     async (id: string, currentActive: boolean) => {
       try {
-        const res = await fetch(`/api/mailing/suppression-refresh/sources/${id}`, {
+        const res = await apiFetch(`/api/mailing/suppression-refresh/sources/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: !currentActive }),
@@ -433,7 +434,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       try {
         const ids = Array.from(selectedSources);
         if (ids.length === 0) return;
-        const res = await fetch('/api/mailing/suppression-refresh/sources/bulk-update', {
+        const res = await apiFetch('/api/mailing/suppression-refresh/sources/bulk-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids, action, group, priority }),
@@ -453,7 +454,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
     try {
       setTestingSource(id);
       setTestResult(null);
-      const res = await fetch(`/api/mailing/suppression-refresh/sources/${id}/test`, {
+      const res = await apiFetch(`/api/mailing/suppression-refresh/sources/${id}/test`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`Test failed: ${res.status}`);
@@ -479,7 +480,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       setImportResult(null);
       const formData = new FormData();
       formData.append('file', importFile);
-      const res = await fetch('/api/mailing/suppression-refresh/sources/bulk-import', {
+      const res = await apiFetch('/api/mailing/suppression-refresh/sources/bulk-import', {
         method: 'POST',
         body: formData,
       });
@@ -504,7 +505,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
   const deleteSource = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(`/api/mailing/suppression-refresh/sources/${id}`, {
+        const res = await apiFetch(`/api/mailing/suppression-refresh/sources/${id}`, {
           method: 'DELETE',
         });
         if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
@@ -524,7 +525,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
   const createGroup = useCallback(async () => {
     if (!newGroupName.trim()) return;
     try {
-      const res = await fetch('/api/mailing/suppression-refresh/groups', {
+      const res = await apiFetch('/api/mailing/suppression-refresh/groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -545,7 +546,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
   const deleteGroup = useCallback(
     async (name: string) => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/mailing/suppression-refresh/groups/${encodeURIComponent(name)}`,
           { method: 'DELETE' },
         );
@@ -562,7 +563,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
   const bulkGroupAction = useCallback(
     async (groupName: string, action: 'activate' | 'deactivate') => {
       try {
-        const res = await fetch('/api/mailing/suppression-refresh/sources/bulk-update', {
+        const res = await apiFetch('/api/mailing/suppression-refresh/sources/bulk-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ group: groupName, action }),

@@ -30,6 +30,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartsTooltip, Cell as RechartsCell, ReferenceLine,
 } from 'recharts';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '2.0';
 
@@ -150,7 +151,7 @@ export const AudienceCadenceByCell: React.FC = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/mailing/analytics/audience-cadence-by-isp', {
+      const res = await apiFetch('/api/mailing/analytics/audience-cadence-by-isp', {
         credentials: 'include',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -167,7 +168,7 @@ export const AudienceCadenceByCell: React.FC = () => {
   const forceRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await fetch('/api/mailing/analytics/audience-cadence-by-isp/refresh', {
+      const res = await apiFetch('/api/mailing/analytics/audience-cadence-by-isp/refresh', {
         method: 'POST',
         credentials: 'include',
       });

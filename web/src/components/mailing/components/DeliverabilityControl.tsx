@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { apiFetch } from '../shared/apiFetch';
 
 // PAGE_VERSION 2.0 (2026-04-27) — ISP Health Center expansion
 //
@@ -218,7 +219,7 @@ export const DeliverabilityControl: React.FC = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/deliverability/config');
+      const res = await apiFetch('/api/mailing/deliverability/config');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: ConfigData = await res.json();
       json.configs.sort((a, b) => ISP_ORDER.indexOf(a.isp) - ISP_ORDER.indexOf(b.isp));
@@ -254,7 +255,7 @@ export const DeliverabilityControl: React.FC = () => {
     if (!newRate || newRate <= 0) return;
     setSaving(prev => ({ ...prev, [isp]: true }));
     try {
-      const res = await fetch(`/api/mailing/deliverability/config/${isp}`, {
+      const res = await apiFetch(`/api/mailing/deliverability/config/${isp}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_msg_rate: newRate }),
@@ -277,7 +278,7 @@ export const DeliverabilityControl: React.FC = () => {
   const handleResetThrottle = async (isp: string) => {
     setSaving(prev => ({ ...prev, [isp]: true }));
     try {
-      const res = await fetch(`/api/mailing/deliverability/config/${isp}/reset-throttle`, { method: 'POST' });
+      const res = await apiFetch(`/api/mailing/deliverability/config/${isp}/reset-throttle`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       setToast({ msg: `${isp} throttle reset — effective rate ${body.effective_rate}/hr`, type: 'success' });
@@ -511,7 +512,7 @@ const KPIStrip: React.FC<{ windowKey: WindowKey }> = ({ windowKey }) => {
     let cancel = false;
     const fetchIt = async () => {
       try {
-        const res = await fetch(`/api/mailing/deliverability/matrix?window=${windowKey}`);
+        const res = await apiFetch(`/api/mailing/deliverability/matrix?window=${windowKey}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: MatrixResponse = await res.json();
         if (!cancel) {
@@ -569,7 +570,7 @@ const HealthCenterChart: React.FC<{
     let cancel = false;
     const fetchIt = async () => {
       try {
-        const res = await fetch(`/api/mailing/deliverability/timeseries?metric=${metric}&groupBy=${groupBy}&window=${windowKey}`);
+        const res = await apiFetch(`/api/mailing/deliverability/timeseries?metric=${metric}&groupBy=${groupBy}&window=${windowKey}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: TimeseriesResponse = await res.json();
         if (!cancel) {
@@ -688,7 +689,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
     let cancel = false;
     const fetchIt = async () => {
       try {
-        const res = await fetch(`/api/mailing/deliverability/matrix?window=${windowKey}`);
+        const res = await apiFetch(`/api/mailing/deliverability/matrix?window=${windowKey}`);
         if (!res.ok) return;
         const json: MatrixResponse = await res.json();
         if (!cancel) setData(json);
@@ -834,7 +835,7 @@ const DrilldownPanel: React.FC<{
       const params = new URLSearchParams({ window: defaultWindow, limit: '20' });
       if (ispFilter) params.set('isp', ispFilter);
       if (domainFilter) params.set('sending_domain', domainFilter);
-      const res = await fetch(`/api/mailing/deliverability/${endpoint}?${params.toString()}`);
+      const res = await apiFetch(`/api/mailing/deliverability/${endpoint}?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: { rows: DrilldownRow[] } = await res.json();
       setRows(json.rows || []);
@@ -936,7 +937,7 @@ const IPActivityPanel: React.FC = () => {
     let cancel = false;
     const fetchIt = async () => {
       try {
-        const res = await fetch('/api/mailing/deliverability/ip-activity?window=24h');
+        const res = await apiFetch('/api/mailing/deliverability/ip-activity?window=24h');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: IPActivityResponse = await res.json();
         if (!cancel) {

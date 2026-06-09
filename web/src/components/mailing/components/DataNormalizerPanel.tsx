@@ -5,6 +5,7 @@ import {
   faSync, faPlay, faFileImport, faExclamationTriangle,
   faChartBar, faServer, faClock, faFileAlt, faHourglass,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 interface NormalizerStatus {
   initialized: boolean;
@@ -84,14 +85,14 @@ export const DataNormalizerPanel: React.FC = () => {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/data-normalizer/status', { credentials: 'include' });
+      const res = await apiFetch('/api/mailing/data-normalizer/status', { credentials: 'include' });
       if (res.ok) setStatus(await res.json());
     } catch { /* server unreachable */ }
   }, []);
 
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch(`/api/mailing/data-normalizer/logs?limit=20&offset=${page * 20}`, { credentials: 'include' });
+      const res = await apiFetch(`/api/mailing/data-normalizer/logs?limit=20&offset=${page * 20}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         const entries: ImportLog[] = data.logs || [];
@@ -110,7 +111,7 @@ export const DataNormalizerPanel: React.FC = () => {
 
   const fetchQuality = useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/data-normalizer/quality-breakdown', { credentials: 'include' });
+      const res = await apiFetch('/api/mailing/data-normalizer/quality-breakdown', { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setQualityData(data.verification || []);
@@ -133,7 +134,7 @@ export const DataNormalizerPanel: React.FC = () => {
   const handleTrigger = async () => {
     setTriggering(true);
     try {
-      await fetch('/api/mailing/data-normalizer/trigger', { method: 'POST', credentials: 'include' });
+      await apiFetch('/api/mailing/data-normalizer/trigger', { method: 'POST', credentials: 'include' });
       setTimeout(fetchStatus, 2000);
     } catch { /* */ }
     setTriggering(false);

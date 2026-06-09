@@ -14,6 +14,7 @@ import {
   faArrowLeft,
   faQuestionCircle,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from './shared/apiFetch';
 
 // =============================================================================
 // TYPES
@@ -150,7 +151,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
     
     try {
       // Load system fields
-      const fieldsRes = await fetch('/api/mailing/lists/upload/fields');
+      const fieldsRes = await apiFetch('/api/mailing/lists/upload/fields');
       if (fieldsRes.ok) {
         const data = await fieldsRes.json();
         setSystemFields(data.system_fields || []);
@@ -164,7 +165,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         const content = e.target?.result as string;
         
         // Validate headers with Jarvis's API
-        const validateRes = await fetch('/api/mailing/lists/upload/validate', {
+        const validateRes = await apiFetch('/api/mailing/lists/upload/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content }),
@@ -282,7 +283,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
     formData.append('field_mapping', JSON.stringify(mappingArray));
     formData.append('update_existing', 'true');
     
-    const res = await fetch(`/api/mailing/lists/${listId}/upload`, {
+    const res = await apiFetch(`/api/mailing/lists/${listId}/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -305,7 +306,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
     abortControllerRef.current = new AbortController();
     
     // Step 1: Initialize upload session
-    const initRes = await fetch(`/api/mailing/lists/${listId}/upload/init`, {
+    const initRes = await apiFetch(`/api/mailing/lists/${listId}/upload/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -339,7 +340,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
       const end = Math.min(start + chunkSize, file.size);
       const chunk = file.slice(start, end);
       
-      const chunkRes = await fetch(
+      const chunkRes = await apiFetch(
         `/api/mailing/lists/${listId}/upload/${session.session_id}/chunk/${i}`,
         {
           method: 'POST',
@@ -361,7 +362,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
     // Step 3: Complete upload and start processing
     setStep('processing');
     
-    const completeRes = await fetch(
+    const completeRes = await apiFetch(
       `/api/mailing/lists/${listId}/upload/${session.session_id}/complete`,
       {
         method: 'POST',
@@ -393,7 +394,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
       }
       
       try {
-        const progressRes = await fetch(
+        const progressRes = await apiFetch(
           `/api/mailing/lists/${listId}/upload/${sessionId}/progress`,
           { signal: abortControllerRef.current?.signal }
         );

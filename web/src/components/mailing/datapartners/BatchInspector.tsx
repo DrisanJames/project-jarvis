@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faTimes, faSpinner } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 interface Props {
   batchId: string;
@@ -38,7 +39,7 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
       // Use the admin endpoint for full detail. The partner-facing endpoint is
       // also valid but requires a partner key, which the operator UI does not
       // hold. We piggyback on the dashboard's recent_batches data structure.
-      fetch(`/api/mailing/data-partners/datasets?batch_id=${batchId}`, { credentials: 'include' })
+      apiFetch(`/api/mailing/data-partners/datasets?batch_id=${batchId}`, { credentials: 'include' })
         .catch(() => null)
         .finally(() => {
           // The admin GET-batch endpoint isn't yet implemented — fall back to
@@ -54,7 +55,7 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
   // wired (only the partner-facing endpoint requires a key). We surface a
   // direct query against the recent-batches dashboard data.
   useEffect(() => {
-    fetch('/api/mailing/data-partners/dashboard', { credentials: 'include' })
+    apiFetch('/api/mailing/data-partners/dashboard', { credentials: 'include' })
       .then(r => r.json())
       .then(d => {
         const found = d?.recent_batches?.find((b: any) => b.id === batchId);

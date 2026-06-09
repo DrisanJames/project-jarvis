@@ -36,6 +36,24 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // =============================================================================
+// MODULE-LEVEL ORG ID (non-hook access)
+// =============================================================================
+
+// currentOrgId mirrors the active organization?.id so that plain (non-React,
+// non-hook) helpers such as components/mailing/shared/apiFetch.ts can read the
+// SAME organization id that hook-consuming components send via X-Organization-ID.
+// The AuthProvider keeps this in sync whenever `organization` changes.
+let currentOrgId: string | null = null;
+
+/** Returns the active organization id, or null if none is set yet. */
+export const getCurrentOrgId = (): string | null => currentOrgId;
+
+/** Internal: updates the module-level org id. Called by AuthProvider only. */
+export const __setCurrentOrgId = (id: string | null): void => {
+  currentOrgId = id;
+};
+
+// =============================================================================
 // PROVIDER
 // =============================================================================
 
@@ -147,6 +165,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setIsLoading(false);
     }
   }, [setDevUser]);
+
+  // Keep the module-level org id in sync so non-hook helpers (apiFetch) can
+  // read the same organization id that hook-consuming components use.
+  useEffect(() => {
+    __setCurrentOrgId(organization?.id ?? null);
+  }, [organization]);
 
   useEffect(() => {
     checkAuth();

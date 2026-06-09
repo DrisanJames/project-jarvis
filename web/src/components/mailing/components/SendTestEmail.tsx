@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner } from '@fortawesome/free-solid-svg-icons';
 import './SendTestEmail.css';
+import { apiFetch } from '../shared/apiFetch';
 
 interface ThrottleStatus {
   minute_used: number;
@@ -58,7 +59,7 @@ export const SendTestEmail: React.FC = () => {
 
   const fetchThrottle = async () => {
     try {
-      const response = await fetch('/api/mailing/throttle/status');
+      const response = await apiFetch('/api/mailing/throttle/status');
       const data = await response.json();
       setThrottle(data);
     } catch (err) {
@@ -68,7 +69,7 @@ export const SendTestEmail: React.FC = () => {
 
   const fetchProfiles = async () => {
     try {
-      const response = await fetch('/api/mailing/sending-profiles');
+      const response = await apiFetch('/api/mailing/sending-profiles');
       const data = await response.json();
       const activeProfiles = (data.profiles || []).filter((p: SendingProfile) => p.status === 'active');
       setProfiles(activeProfiles);
@@ -100,7 +101,7 @@ export const SendTestEmail: React.FC = () => {
     setResult(null);
 
     try {
-      const response = await fetch('/api/mailing/send-test', {
+      const response = await apiFetch('/api/mailing/send-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

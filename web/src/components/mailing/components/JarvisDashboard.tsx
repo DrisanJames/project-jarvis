@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '../shared/apiFetch';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    JARVIS — Autonomous AI Campaign Orchestrator Dashboard
@@ -117,7 +118,7 @@ export const JarvisDashboard: React.FC = () => {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/status`);
+      const res = await apiFetch(`${API}/status`);
       if (!res.ok) {
         setIdle(true);
         setCampaign(null);
@@ -146,7 +147,7 @@ export const JarvisDashboard: React.FC = () => {
   }, [fetchStatus, autoRefresh]);
 
   const handleAction = async (action: string) => {
-    await fetch(`${API}/${action}`, { method: 'POST' });
+    await apiFetch(`${API}/${action}`, { method: 'POST' });
     fetchStatus();
   };
 

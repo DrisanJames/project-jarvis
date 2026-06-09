@@ -12,6 +12,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import './MailingPortal.css';
 import '../shared/animations.css';
 import { ToastProvider } from '../shared/ToastSystem';
+import { apiFetch } from '../shared/apiFetch';
 
 // ── Lazy-loaded heavy components (code-split into separate chunks) ──────────
 const ListPortal = lazy(() => import('../components/ListPortal').then(m => ({ default: m.ListPortal })));
@@ -125,7 +126,7 @@ export const MailingPortal: React.FC = () => {
       if (organization?.id) {
         headers['X-Organization-ID'] = organization.id;
       }
-      fetch('/api/mailing/dashboard', { headers, credentials: 'include' })
+      apiFetch('/api/mailing/dashboard', { headers, credentials: 'include' })
         .then(res => res.json())
         .then(data => setRealTimeStats(data))
         .catch(() => {});
@@ -137,7 +138,7 @@ export const MailingPortal: React.FC = () => {
 
   // Fetch version info once on mount
   useEffect(() => {
-    fetch('/api/mailing/version', { credentials: 'include' })
+    apiFetch('/api/mailing/version', { credentials: 'include' })
       .then(res => res.json())
       .then(data => setVersionInfo(data))
       .catch(() => {});
@@ -336,7 +337,7 @@ const EnhancedDashboard: React.FC = () => {
     // Single round-trip: throttle is delivered as dashboard.throttle_status.
     // The previous code did two GETs (the second being /throttle/status)
     // which returned the exact same payload as dashboard.throttle_status.
-    fetch('/api/mailing/dashboard', { headers, credentials: 'include' })
+    apiFetch('/api/mailing/dashboard', { headers, credentials: 'include' })
       .then(r => r.json())
       .then(dash => {
         setDashboard(dash);
@@ -608,8 +609,8 @@ const AutomationsManager: React.FC = () => {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/mailing/automations').then(r => r.json()),
-      fetch('/api/mailing/lists').then(r => r.json()),
+      apiFetch('/api/mailing/automations').then(r => r.json()),
+      apiFetch('/api/mailing/lists').then(r => r.json()),
     ]).then(([auto, lst]) => {
       setAutomations(auto.automations || []);
       setLists(lst.lists || []);
@@ -619,7 +620,7 @@ const AutomationsManager: React.FC = () => {
 
   const createAutomation = async () => {
     try {
-      const res = await fetch('/api/mailing/automations', {
+      const res = await apiFetch('/api/mailing/automations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newAuto),
@@ -634,14 +635,14 @@ const AutomationsManager: React.FC = () => {
 
   const activateAutomation = async (id: string) => {
     try {
-      await fetch(`/api/mailing/automations/${id}/activate`, { method: 'POST' });
+      await apiFetch(`/api/mailing/automations/${id}/activate`, { method: 'POST' });
       setAutomations(prev => prev.map(a => a.id === id ? {...a, status: 'active'} : a));
     } catch (err) {}
   };
 
   const pauseAutomation = async (id: string) => {
     try {
-      await fetch(`/api/mailing/automations/${id}/pause`, { method: 'POST' });
+      await apiFetch(`/api/mailing/automations/${id}/pause`, { method: 'POST' });
       setAutomations(prev => prev.map(a => a.id === id ? {...a, status: 'paused'} : a));
     } catch (err) {}
   };
@@ -771,8 +772,8 @@ const ABTestsManager: React.FC = () => {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/mailing/ab-tests').then(r => r.json()),
-      fetch('/api/mailing/campaigns').then(r => r.json()),
+      apiFetch('/api/mailing/ab-tests').then(r => r.json()),
+      apiFetch('/api/mailing/campaigns').then(r => r.json()),
     ]).then(([ab, camp]) => {
       setTests(ab.tests || []);
       setCampaigns(camp.campaigns || []);
@@ -782,7 +783,7 @@ const ABTestsManager: React.FC = () => {
 
   const createTest = async () => {
     try {
-      const res = await fetch('/api/mailing/ab-tests', {
+      const res = await apiFetch('/api/mailing/ab-tests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newTest),
@@ -880,9 +881,9 @@ const DeliveryServersManager: React.FC = () => {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/mailing/delivery-servers').then(r => r.json()).catch(() => ({ servers: [] })),
-      fetch('/api/mailing/pmta-servers').then(r => r.json()).catch(() => ({ servers: [] })),
-      fetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
+      apiFetch('/api/mailing/delivery-servers').then(r => r.json()).catch(() => ({ servers: [] })),
+      apiFetch('/api/mailing/pmta-servers').then(r => r.json()).catch(() => ({ servers: [] })),
+      apiFetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
     ]).then(([ds, pmta, prof]) => {
       setServers(ds.servers || []);
       setPmtaServers(pmta.servers || []);
@@ -1001,7 +1002,7 @@ const TemplatesManager: React.FC = () => {
   const btnGhost: React.CSSProperties = { background: 'none', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' };
 
   const fetchFolders = useCallback(() => {
-    fetch('/api/mailing/template-folders/tree', { credentials: 'include' })
+    apiFetch('/api/mailing/template-folders/tree', { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         const tree = data.tree || data.folders || [];
@@ -1017,7 +1018,7 @@ const TemplatesManager: React.FC = () => {
     const url = selectedFolder
       ? `/api/mailing/template-folders/${selectedFolder}/templates?recursive=true`
       : '/api/mailing/templates';
-    fetch(url, { credentials: 'include' })
+    apiFetch(url, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { setTemplates(data.templates || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -1030,7 +1031,7 @@ const TemplatesManager: React.FC = () => {
     try {
       const payload: any = { ...newTemplate };
       if (selectedFolder) payload.folder_id = selectedFolder;
-      const res = await fetch('/api/mailing/templates', {
+      const res = await apiFetch('/api/mailing/templates', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         credentials: 'include', body: JSON.stringify(payload),
       });
@@ -1045,14 +1046,14 @@ const TemplatesManager: React.FC = () => {
   const deleteTemplate = async (id: string) => {
     if (!confirm('Delete this template?')) return;
     try {
-      await fetch(`/api/mailing/templates/${id}`, { method: 'DELETE', credentials: 'include' });
+      await apiFetch(`/api/mailing/templates/${id}`, { method: 'DELETE', credentials: 'include' });
       fetchTemplates();
     } catch {}
   };
 
   const startEdit = async (t: any) => {
     try {
-      const res = await fetch(`/api/mailing/templates/${t.id}`, { credentials: 'include' });
+      const res = await apiFetch(`/api/mailing/templates/${t.id}`, { credentials: 'include' });
       if (res.ok) {
         const full = await res.json();
         const tpl = full.template || full;
@@ -1072,7 +1073,7 @@ const TemplatesManager: React.FC = () => {
     if (!editingId || !editData) return;
     setEditSaving(true);
     try {
-      const res = await fetch(`/api/mailing/templates/${editingId}`, {
+      const res = await apiFetch(`/api/mailing/templates/${editingId}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         credentials: 'include', body: JSON.stringify(editData),
       });
@@ -1396,8 +1397,8 @@ const CampaignCenterSection: React.FC<{
     const iv = setInterval(async () => {
       for (const c of preparingCampaigns) {
         try {
-          const res = await fetch(`/api/mailing/campaigns/${c.id}`, {
-            headers: { 'x-organization-id': orgId },
+          const res = await apiFetch(`/api/mailing/campaigns/${c.id}`, {
+            headers: { 'X-Organization-ID': orgId },
           });
           if (!res.ok) continue;
           const data = await res.json();
@@ -1507,7 +1508,7 @@ const SiteTrafficDashboard: React.FC = () => {
     try {
       const params = new URLSearchParams({ range: timeRange });
       if (selectedDomain) params.set('domain', selectedDomain);
-      const res = await fetch(`/api/mailing/site-pixel/traffic?${params}`, {
+      const res = await apiFetch(`/api/mailing/site-pixel/traffic?${params}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
       });
@@ -1518,7 +1519,7 @@ const SiteTrafficDashboard: React.FC = () => {
 
   const fetchDomains = React.useCallback(async () => {
     try {
-      const res = await fetch('/api/mailing/site-pixel/domains', {
+      const res = await apiFetch('/api/mailing/site-pixel/domains', {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
       });
@@ -1533,7 +1534,7 @@ const SiteTrafficDashboard: React.FC = () => {
     try {
       const params = new URLSearchParams({ range: timeRange });
       if (selectedDomain) params.set('domain', selectedDomain);
-      const res = await fetch(`/api/mailing/site-pixel/visitors?${params}`, {
+      const res = await apiFetch(`/api/mailing/site-pixel/visitors?${params}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
       });
@@ -1565,7 +1566,7 @@ const SiteTrafficDashboard: React.FC = () => {
 
   const fetchSnippet = async () => {
     try {
-      const res = await fetch(`/api/mailing/site-pixel/snippet?domain=${encodeURIComponent(snippetDomain)}`, {
+      const res = await apiFetch(`/api/mailing/site-pixel/snippet?domain=${encodeURIComponent(snippetDomain)}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
       });
@@ -1580,7 +1581,7 @@ const SiteTrafficDashboard: React.FC = () => {
     setReconLoading(true);
     try {
       const reconRange = timeRange === '1h' ? '1d' : timeRange;
-      const res = await fetch(`/api/mailing/site-pixel/isp-reconciliation?range=${reconRange}`, {
+      const res = await apiFetch(`/api/mailing/site-pixel/isp-reconciliation?range=${reconRange}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
       });

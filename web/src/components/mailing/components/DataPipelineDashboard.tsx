@@ -9,6 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.0';
 
@@ -68,10 +69,10 @@ export const DataPipelineDashboard: React.FC = () => {
 
   const fetchAll = useCallback(() => {
     Promise.all([
-      fetch('/api/mailing/pipeline/stats', { credentials: 'include' }).then(r => r.json()),
-      fetch('/api/mailing/pipeline/runs', { credentials: 'include' }).then(r => r.json()),
-      fetch('/api/mailing/pipeline/health', { credentials: 'include' }).then(r => r.json()),
-      fetch('/api/mailing/pipeline/chart', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/pipeline/stats', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/pipeline/runs', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/pipeline/health', { credentials: 'include' }).then(r => r.json()),
+      apiFetch('/api/mailing/pipeline/chart', { credentials: 'include' }).then(r => r.json()),
     ]).then(([statsRes, runsRes, healthRes, chartRes]) => {
       setStats(statsRes);
       setRuns(runsRes?.runs ?? []);
@@ -90,7 +91,7 @@ export const DataPipelineDashboard: React.FC = () => {
   const handleTrigger = async () => {
     setTriggering(true);
     try {
-      await fetch('/api/mailing/pipeline/trigger', {
+      await apiFetch('/api/mailing/pipeline/trigger', {
         method: 'POST',
         credentials: 'include',
       });

@@ -5,6 +5,7 @@ import {
   faSave, faRocket, faCog, faEye, faBookOpen, faFilter,
 } from '@fortawesome/free-solid-svg-icons';
 import './JourneyBuilder.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // JOURNEY_BUILDER_VERSION is surfaced in the canvas header so we can verify
 // the deployed UI build at a glance after each release. Bumped whenever the
@@ -240,11 +241,11 @@ export const JourneyBuilder: React.FC = () => {
   // Load data
   useEffect(() => {
     Promise.all([
-      fetch('/api/mailing/journeys').then(r => r.json()).catch(() => ({ journeys: [] })),
-      fetch('/api/mailing/lists').then(r => r.json()).catch(() => ({ lists: [] })),
-      fetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
-      fetch('/api/mailing/segments').then(r => r.json()).catch(() => ({ segments: [] })),
-      fetch('/api/mailing/templates').then(r => r.json()).catch(() => ({ templates: [] })),
+      apiFetch('/api/mailing/journeys').then(r => r.json()).catch(() => ({ journeys: [] })),
+      apiFetch('/api/mailing/lists').then(r => r.json()).catch(() => ({ lists: [] })),
+      apiFetch('/api/mailing/sending-profiles').then(r => r.json()).catch(() => ({ profiles: [] })),
+      apiFetch('/api/mailing/segments').then(r => r.json()).catch(() => ({ segments: [] })),
+      apiFetch('/api/mailing/templates').then(r => r.json()).catch(() => ({ templates: [] })),
     ]).then(([journeyData, listData, profileData, segmentData, templateData]) => {
       setJourneys(journeyData.journeys || []);
       setLists(listData.lists || []);
@@ -265,7 +266,7 @@ export const JourneyBuilder: React.FC = () => {
     }
     let cancelled = false;
     const fetchStats = () => {
-      fetch(`/api/mailing/journeys/${encodeURIComponent(activeJourney.id)}/node-stats`)
+      apiFetch(`/api/mailing/journeys/${encodeURIComponent(activeJourney.id)}/node-stats`)
         .then(r => r.json())
         .then((data: JourneyNodeStatsResponse) => {
           if (cancelled) return;
@@ -510,7 +511,7 @@ export const JourneyBuilder: React.FC = () => {
     const tplId = selectedNode.config.templateId;
     if (tplId) {
       try {
-        const resp = await fetch(`/api/mailing/templates/${tplId}`);
+        const resp = await apiFetch(`/api/mailing/templates/${tplId}`);
         if (resp.ok) {
           const detail: TemplateDetail = await resp.json();
           setPreviewHtml(detail.html_content || '<p><em>(empty template)</em></p>');
@@ -633,7 +634,7 @@ export const JourneyBuilder: React.FC = () => {
     if (!activeJourney) return;
     
     try {
-      await fetch(`/api/mailing/journeys/${activeJourney.id}`, {
+      await apiFetch(`/api/mailing/journeys/${activeJourney.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(activeJourney),
@@ -655,7 +656,7 @@ export const JourneyBuilder: React.FC = () => {
     setJourneys(journeys.map(j => j.id === activeJourney.id ? updated : j));
     
     try {
-      await fetch(`/api/mailing/journeys/${activeJourney.id}/activate`, { method: 'POST' });
+      await apiFetch(`/api/mailing/journeys/${activeJourney.id}/activate`, { method: 'POST' });
     } catch (error) {
       console.error('Error activating journey:', error);
     }

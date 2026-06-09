@@ -10,6 +10,7 @@ import {
   faSpinner,
   faSyncAlt,
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 // OutboxDashboard — live observability for the durable injection outbox.
 //
@@ -119,8 +120,8 @@ export const OutboxDashboard: React.FC = () => {
   const fetchAll = useCallback(async () => {
     try {
       const [sumRes, dlRes] = await Promise.all([
-        fetch('/api/outbox/summary', { credentials: 'include' }),
-        fetch('/api/outbox/dead-letter?limit=200', { credentials: 'include' }),
+        apiFetch('/api/outbox/summary', { credentials: 'include' }),
+        apiFetch('/api/outbox/dead-letter?limit=200', { credentials: 'include' }),
       ]);
       if (!sumRes.ok) throw new Error(`summary HTTP ${sumRes.status}`);
       if (!dlRes.ok) throw new Error(`dead-letter HTTP ${dlRes.status}`);

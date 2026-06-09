@@ -11,6 +11,7 @@ import {
   faTimes, 
   faQuestionCircle 
 } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from './shared/apiFetch';
 
 // ==========================================
 // TYPES
@@ -88,8 +89,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
     const loadData = async () => {
       try {
         const [templatesRes, fieldsRes] = await Promise.all([
-          fetch('/api/mailing/import/templates'),
-          fetch('/api/mailing/import/fields'),
+          apiFetch('/api/mailing/import/templates'),
+          apiFetch('/api/mailing/import/fields'),
         ]);
 
         if (templatesRes.ok) {
@@ -119,7 +120,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const previewRes = await fetch('/api/mailing/import/preview', {
+      const previewRes = await apiFetch('/api/mailing/import/preview', {
         method: 'POST',
         body: formData,
       });
@@ -130,7 +131,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         setPreviewRows(data.preview_rows);
 
         // Validate headers and get mapping suggestions
-        const validateRes = await fetch('/api/mailing/import/validate', {
+        const validateRes = await apiFetch('/api/mailing/import/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ headers: data.headers }),
@@ -195,7 +196,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
       formData.append('file', file);
       formData.append('field_mapping', JSON.stringify(fieldMapping));
 
-      const res = await fetch(`/api/mailing/lists/${listId}/import`, {
+      const res = await apiFetch(`/api/mailing/lists/${listId}/import`, {
         method: 'POST',
         body: formData,
       });
@@ -221,7 +222,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
   const pollJobStatus = async (jobId: string) => {
     const poll = async () => {
       try {
-        const res = await fetch(`/api/mailing/import-jobs/${jobId}`);
+        const res = await apiFetch(`/api/mailing/import-jobs/${jobId}`);
         if (res.ok) {
           const job = await res.json();
           setImportJob(job);

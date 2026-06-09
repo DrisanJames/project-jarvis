@@ -17,6 +17,7 @@ import {
   faUsers 
 } from '@fortawesome/free-solid-svg-icons';
 import './AISubjectSuggestions.css';
+import { apiFetch } from '../shared/apiFetch';
 
 // ============================================
 // TYPES
@@ -86,7 +87,7 @@ export const AISubjectSuggestions: React.FC<AISubjectSuggestionsProps> = ({
     setError(null);
 
     try {
-      const response = await fetch('/api/mailing/ai/subject-suggestions', {
+      const response = await apiFetch('/api/mailing/ai/subject-suggestions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

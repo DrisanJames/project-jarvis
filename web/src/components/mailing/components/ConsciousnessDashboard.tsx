@@ -7,6 +7,7 @@ import {
   faBolt,
 } from '@fortawesome/free-solid-svg-icons';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { apiFetch } from '../shared/apiFetch';
 
 interface Philosophy {
   id: string;
@@ -112,9 +113,9 @@ export const ConsciousnessDashboard: React.FC = () => {
   const fetchState = useCallback(async () => {
     try {
       const [stateRes, campaignsRes, dbCampaignsRes] = await Promise.all([
-        fetch('/api/mailing/consciousness/state'),
-        fetch('/api/mailing/campaign-events/campaigns'),
-        fetch('/api/mailing/campaigns'),
+        apiFetch('/api/mailing/consciousness/state'),
+        apiFetch('/api/mailing/campaign-events/campaigns'),
+        apiFetch('/api/mailing/campaigns'),
       ]);
       if (stateRes.ok) setState(await stateRes.json());
       const inMemory = campaignsRes.ok ? await campaignsRes.json() : [];

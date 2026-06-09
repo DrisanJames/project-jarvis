@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faSync, faExclamationTriangle, faChartBar } from '@fortawesome/free-solid-svg-icons';
+import { apiFetch } from '../shared/apiFetch';
 
 interface ISPOverride {
   isp: string;
@@ -53,7 +54,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
   const fetchThroughput = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/mailing/data-partners/datasets/${datasetId}/throughput`, { credentials: 'include' })
+    apiFetch(`/api/mailing/data-partners/datasets/${datasetId}/throughput`, { credentials: 'include' })
       .then(r => r.json())
       .then((d: ThroughputResponse) => {
         setData(d);
@@ -88,7 +89,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
         return { isp: e.isp, pct_override: pct, max_per_wave: cap };
       });
     try {
-      const res = await fetch(`/api/mailing/data-partners/datasets/${datasetId}/isp-distribution`, {
+      const res = await apiFetch(`/api/mailing/data-partners/datasets/${datasetId}/isp-distribution`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
