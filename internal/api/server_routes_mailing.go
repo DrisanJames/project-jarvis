@@ -533,10 +533,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Analytics event lake READ layer (Athena-backed) — read-only
 			// query surface over s3://ignite-analytics-lake. Disabled by
 			// default (ANALYTICS_ATHENA_OUTPUT unset); status always works,
-			// summary/events degrade gracefully. See handlers_analytics_lake.go.
+			// summary/events/breakdown degrade gracefully. breakdown is the
+			// generic GROUP BY surface (1..3 whitelisted dims + eq filters).
+			// See handlers_analytics_lake.go.
 			r.Get("/analytics/lake/status", s.HandleLakeStatus)
 			r.Get("/analytics/lake/summary", s.HandleLakeSummary)
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
+			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
 
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)

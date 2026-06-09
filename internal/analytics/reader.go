@@ -7,7 +7,7 @@
 // Design contract (mirrors the emitter):
 //   - DISABLED BY DEFAULT. InitReader is a no-op unless an Athena results
 //     output location is provided (wired from env ANALYTICS_ATHENA_OUTPUT in
-//     main.go). When disabled, Summary/RecentEvents return a clear error and
+//     main.go). When disabled, Summary/RecentEvents/Breakdown return a clear error and
 //     ReaderEnabled() reports false — zero behaviour change for a server that
 //     doesn't set the new env vars. Safe to ship dark.
 //   - READ ONLY. This package never writes to the lake (that's the emitter)
@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,10 @@ var (
 	dtRe    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	tokenRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 	uuidRe  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	// dottedRe admits dot-containing identifiers (email domains like
+	// "yahoo.co.uk", VMTA/pool names like "db-gmail-pool.1"). Still no quotes,
+	// spaces, or SQL specials — safe for sqlStr interpolation.
+	dottedRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,255}$`)
 )
 
 const (
@@ -75,6 +80,46 @@ type EventFilter struct {
 	ISPGroup   string // ^[a-zA-Z0-9_\-]+$
 	EventType  string // ^[a-zA-Z0-9_\-]+$
 	Limit      int    // clamped to [1,1000]
+}
+
+// BreakdownRow is one GROUP BY bucket from Breakdown. Keys maps each requested
+// dimension name to its value for the bucket (in no particular order — the
+// caller knows the GroupBy order it asked for).
+type BreakdownRow struct {
+	Keys  map[string]string `json:"keys"`
+	Count int64             `json:"count"`
+}
+
+// BreakdownFilter is the (validated) input for Breakdown. From/To are required
+// dt bounds; GroupBy must name 1..3 whitelisted dimensions; Eq holds optional
+// equality predicates (empty values are skipped, not applied).
+type BreakdownFilter struct {
+	From    string            // YYYY-MM-DD, required
+	To      string            // YYYY-MM-DD, required
+	GroupBy []string          // 1..3 dims from breakdownDims
+	Eq      map[string]string // optional equality predicates, column -> value
+	Limit   int               // clamped to [1,5000], default 1000 if <=0
+}
+
+// breakdownDims is the closed set of columns Breakdown may GROUP BY or filter
+// on, each paired with the validation pattern its Eq values must satisfy.
+// Anything outside this map is rejected by name before SQL construction —
+// caller text never reaches a column position.
+var breakdownDims = map[string]*regexp.Regexp{
+	"dt":                 dtRe,
+	"event_type":         tokenRe,
+	"isp_group":          tokenRe,
+	"brand":              dottedRe, // brands are apex domains ("discountblog.com")
+	"email_domain":       dottedRe, // recipient domains contain dots
+	"route_type":         tokenRe,
+	"source":             tokenRe,
+	"bounce_cat":         tokenRe,
+	"vmta":               dottedRe, // VMTA names may contain dots
+	"pool":               dottedRe, // pool names may contain dots
+	"suppression_reason": tokenRe,
+	"dsn_code":           tokenRe,
+	"variant":            tokenRe,
+	"campaign_id":        uuidRe,
 }
 
 // InitReader wires the global reader. output == "" leaves the reader DISABLED
@@ -317,6 +362,170 @@ func scanEvent(row []string) Event {
 	}
 }
 
+// clampBreakdownLimit clamps a Breakdown LIMIT to [1,5000], defaulting to 1000
+// when the caller passes <=0. Exported (via ClampBreakdownLimit) so the HTTP
+// handler can compute the same effective limit for its "truncated" flag.
+func clampBreakdownLimit(n int) int {
+	if n <= 0 {
+		return 1000
+	}
+	if n > 5000 {
+		return 5000
+	}
+	return n
+}
+
+// ClampBreakdownLimit is the exported form of clampBreakdownLimit so handlers
+// can mirror the effective LIMIT without duplicating the clamp rules.
+func ClampBreakdownLimit(n int) int { return clampBreakdownLimit(n) }
+
+// validateBreakdownFilter checks every caller-supplied piece of a
+// BreakdownFilter against the whitelist/regexes and returns the deduplicated
+// GroupBy list (original order preserved). Nothing reaches SQL construction
+// until this passes.
+func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
+	if f.From == "" || f.To == "" {
+		return nil, fmt.Errorf("from and to dates are required")
+	}
+	if err := validateDt("from", f.From); err != nil {
+		return nil, err
+	}
+	if err := validateDt("to", f.To); err != nil {
+		return nil, err
+	}
+	// Both dates are YYYY-MM-DD, so lexical order == chronological order. An
+	// inverted range would make BETWEEN silently return zero rows, which reads
+	// as "no events in this range" — reject it explicitly instead.
+	if f.From > f.To {
+		return nil, fmt.Errorf("invalid range: from %s is after to %s", f.From, f.To)
+	}
+
+	// GroupBy: whitelist every dim, dedupe preserving order, require 1..3.
+	seen := make(map[string]bool, len(f.GroupBy))
+	dims := make([]string, 0, len(f.GroupBy))
+	for _, d := range f.GroupBy {
+		if _, ok := breakdownDims[d]; !ok {
+			return nil, fmt.Errorf("invalid group_by dimension %q", d)
+		}
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		dims = append(dims, d)
+	}
+	if len(dims) == 0 {
+		return nil, fmt.Errorf("group_by requires at least one dimension")
+	}
+	if len(dims) > 3 {
+		return nil, fmt.Errorf("group_by allows at most 3 dimensions, got %d", len(dims))
+	}
+
+	// Eq: keys must be whitelisted dims; values must match that dim's pattern.
+	// Empty values are skipped here too (they are not predicates) so a bad key
+	// with an empty value still surfaces as an error while an empty value on a
+	// valid key is silently ignored — matching the EventFilter convention.
+	for col, val := range f.Eq {
+		re, ok := breakdownDims[col]
+		if !ok {
+			return nil, fmt.Errorf("invalid filter column %q", col)
+		}
+		if val == "" {
+			continue
+		}
+		if !re.MatchString(val) {
+			return nil, fmt.Errorf("invalid value for %s", col)
+		}
+	}
+	return dims, nil
+}
+
+// buildBreakdownSQL validates f and renders the full Athena query. Factored
+// out of Breakdown so the SQL shape is unit-testable without an Athena client.
+//
+// SQL shape (validated literals only, via sqlStr):
+//
+//	SELECT <dims...>, COUNT(DISTINCT event_uid) c FROM email_events
+//	WHERE dt BETWEEN '<from>' AND '<to>' [AND <col> = '<val>'...]
+//	GROUP BY <dims> ORDER BY c DESC LIMIT <n>
+//
+// COUNT(DISTINCT event_uid) is deliberate: the PMTA HTTP bridge can redeliver
+// the same event, and the lake collapses those duplicates by event_uid (see
+// lake_emitter.go) — a plain COUNT(*) would inflate counts by the redelivery
+// factor. Eq predicates are rendered in sorted column order so the output is
+// deterministic. LIMIT is rendered from the clamped int via strconv (Athena
+// cannot bind a parameter in the LIMIT position), same as RecentEvents.
+func buildBreakdownSQL(f BreakdownFilter) (string, error) {
+	dims, err := validateBreakdownFilter(f)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	b.WriteString(strings.Join(dims, ", "))
+	b.WriteString(", COUNT(DISTINCT event_uid) c FROM ")
+	b.WriteString(lakeTable)
+	b.WriteString(" WHERE dt BETWEEN ")
+	b.WriteString(sqlStr(f.From))
+	b.WriteString(" AND ")
+	b.WriteString(sqlStr(f.To))
+
+	// Equality predicates: validated above, rendered as quoted literals in
+	// sorted column order (map iteration is random; tests assert exact SQL).
+	cols := make([]string, 0, len(f.Eq))
+	for col, val := range f.Eq {
+		if val == "" {
+			continue
+		}
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
+	for _, col := range cols {
+		b.WriteString(" AND ")
+		b.WriteString(col)
+		b.WriteString(" = ")
+		b.WriteString(sqlStr(f.Eq[col]))
+	}
+
+	b.WriteString(" GROUP BY ")
+	b.WriteString(strings.Join(dims, ", "))
+	b.WriteString(" ORDER BY c DESC LIMIT ")
+	b.WriteString(strconv.Itoa(clampBreakdownLimit(f.Limit)))
+	return b.String(), nil
+}
+
+// Breakdown runs a generic GROUP BY aggregation over [From,To] and returns one
+// row per dimension-value combination, highest count first. The first
+// len(GroupBy) result cells are the key values (in GroupBy order, after
+// dedupe); the last cell is the COUNT(DISTINCT event_uid).
+func (r *Reader) Breakdown(ctx context.Context, f BreakdownFilter) ([]BreakdownRow, error) {
+	dims, err := validateBreakdownFilter(f)
+	if err != nil {
+		return nil, err
+	}
+	sql, err := buildBreakdownSQL(f)
+	if err != nil {
+		return nil, err
+	}
+	_, rows, err := r.runQuery(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BreakdownRow, 0, len(rows))
+	for _, row := range rows {
+		if len(row) < len(dims)+1 {
+			continue
+		}
+		keys := make(map[string]string, len(dims))
+		for i, d := range dims {
+			keys[d] = row[i]
+		}
+		c, _ := strconv.ParseInt(row[len(dims)], 10, 64)
+		out = append(out, BreakdownRow{Keys: keys, Count: c})
+	}
+	return out, nil
+}
+
 // runQuery executes sql against Athena and returns the column headers and the
 // data rows (header row stripped). All values are interpolated as validated
 // quoted literals by the callers (see sqlStr), not bound parameters. Bounded by ctx.
@@ -433,6 +642,16 @@ func RecentEvents(ctx context.Context, f EventFilter) ([]Event, error) {
 		return nil, errDisabled
 	}
 	return r.RecentEvents(ctx, f)
+}
+
+// Breakdown runs against the global reader. Returns errDisabled when the
+// reader is not configured.
+func Breakdown(ctx context.Context, f BreakdownFilter) ([]BreakdownRow, error) {
+	r := getReader()
+	if r == nil {
+		return nil, errDisabled
+	}
+	return r.Breakdown(ctx, f)
 }
 
 // IsDisabledErr reports whether err is the "lake read disabled" sentinel so

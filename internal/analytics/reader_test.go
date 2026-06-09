@@ -165,3 +165,132 @@ func TestValidationErrorMentionsField(t *testing.T) {
 		t.Fatalf("expected dt error, got %v", err)
 	}
 }
+
+func TestBuildBreakdownSQL(t *testing.T) {
+	// Eq predicates render in sorted column order, so the expected strings are
+	// deterministic. COUNT(DISTINCT event_uid) is load-bearing (bridge
+	// redelivery dedup) — these assertions guard against a COUNT(*) regression.
+	cases := []struct {
+		name string
+		f    BreakdownFilter
+		want string
+	}{
+		{
+			"one-dim",
+			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			"two-dims",
+			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"isp_group", "event_type"}, Limit: 50},
+			"SELECT isp_group, event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" GROUP BY isp_group, event_type ORDER BY c DESC LIMIT 50",
+		},
+		{
+			"with-eq-filters",
+			BreakdownFilter{
+				From: "2026-06-01", To: "2026-06-08",
+				GroupBy: []string{"event_type"},
+				Eq: map[string]string{
+					"isp_group":   "gmail",
+					"brand":       "discountblog.com",
+					"campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+					"vmta":        "", // empty value: skipped, not a predicate
+				},
+				Limit: 10,
+			},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND brand = 'discountblog.com'" +
+				" AND campaign_id = '550e8400-e29b-41d4-a716-446655440000'" +
+				" AND isp_group = 'gmail'" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 10",
+		},
+	}
+	for _, tc := range cases {
+		got, err := buildBreakdownSQL(tc.f)
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s:\n got  %s\n want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildBreakdownSQLRejections(t *testing.T) {
+	base := func() BreakdownFilter {
+		return BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}}
+	}
+	bad := []struct {
+		name string
+		f    BreakdownFilter
+	}{
+		{"unknown-dim", BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"email"}}},
+		{"too-many-dims", BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"dt", "brand", "isp_group", "event_type"}}},
+		{"empty-group-by", BreakdownFilter{From: "2026-06-01", To: "2026-06-08"}},
+		{"missing-from", BreakdownFilter{To: "2026-06-08", GroupBy: []string{"event_type"}}},
+		// An inverted range would make BETWEEN silently return zero rows.
+		{"from-after-to", BreakdownFilter{From: "2026-06-09", To: "2026-06-01", GroupBy: []string{"event_type"}}},
+		{"bad-from-dt", BreakdownFilter{From: "2026'; DROP", To: "2026-06-08", GroupBy: []string{"event_type"}}},
+		{"bad-to-dt", BreakdownFilter{From: "2026-06-01", To: "2026-6-8", GroupBy: []string{"event_type"}}},
+		{"unknown-eq-column", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"email": "a@b.com"}; return f }()},
+		// One injection-shaped value per validation class.
+		{"eq-dt-quote", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"dt": "2026-06-08' OR 1=1"}; return f }()},
+		{"eq-campaign-not-uuid", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"campaign_id": "not-a-uuid"}; return f }()},
+		{"eq-campaign-quote", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"campaign_id": "1' OR '1'='1"}; return f }()},
+		{"eq-token-semicolon", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"event_type": "click;DROP"}; return f }()},
+		{"eq-token-quote", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"isp_group": "gmail'"}; return f }()},
+		{"eq-dotted-quote", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"brand": "x.com'"}; return f }()},
+		{"eq-dotted-semicolon", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"email_domain": "b.com;DROP"}; return f }()},
+		// isp_group is token-validated: dots are NOT allowed there.
+		{"eq-isp-dot-rejected", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"isp_group": "gmail.com"}; return f }()},
+	}
+	for _, tc := range bad {
+		if _, err := buildBreakdownSQL(tc.f); err == nil {
+			t.Errorf("%s: expected validation error, got nil", tc.name)
+		}
+	}
+
+	// Unknown dims must be named in the error so the caller can fix the request.
+	if _, err := buildBreakdownSQL(BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"bogus"}}); err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("unknown dim error should name the dim, got %v", err)
+	}
+
+	// dotted-pattern columns ACCEPT dots (domains, vmta/pool names).
+	f := base()
+	f.Eq = map[string]string{"brand": "discountblog.com", "vmta": "db-gmail-pool.1", "email_domain": "yahoo.co.uk"}
+	if _, err := buildBreakdownSQL(f); err != nil {
+		t.Errorf("dotted values on dotted columns should be accepted, got %v", err)
+	}
+
+	// Duplicate dims dedupe rather than error (and 4-with-dup is 3 unique = OK).
+	if _, err := buildBreakdownSQL(BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type", "event_type", "brand", "isp_group"}}); err != nil {
+		t.Errorf("deduped group_by should be accepted, got %v", err)
+	}
+}
+
+func TestClampBreakdownLimit(t *testing.T) {
+	cases := map[int]int{-1: 1000, 0: 1000, 1: 1, 1000: 1000, 5000: 5000, 99999: 5000}
+	for in, want := range cases {
+		if got := clampBreakdownLimit(in); got != want {
+			t.Errorf("clampBreakdownLimit(%d)=%d want %d", in, got, want)
+		}
+		if got := ClampBreakdownLimit(in); got != want {
+			t.Errorf("ClampBreakdownLimit(%d)=%d want %d", in, got, want)
+		}
+	}
+}
+
+func TestBreakdownDisabled(t *testing.T) {
+	resetReader()
+	if _, err := Breakdown(context.Background(), BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}}); err == nil {
+		t.Fatalf("Breakdown should error when reader disabled")
+	} else if !IsDisabledErr(err) {
+		t.Fatalf("expected disabled sentinel, got %v", err)
+	}
+}

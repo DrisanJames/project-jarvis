@@ -1093,8 +1093,13 @@ const CampaignsList: React.FC<{
 }> = ({ campaigns, loading, filter, search, error, dataAsOf, cacheAgeSeconds, denominators, partnerDrillLabel, onClearDrill, onFilterChange, onSearchChange, onViewCampaign, onAction, onRefresh }) => {
   const filteredCampaigns = campaigns.filter(c => {
     const matchesFilter = matchesStatusFilter(c.status, filter);
+    // Match by name OR id so pasting a campaign UUID (or its prefix) into the
+    // search box quick-finds the campaign — the same id used by the Event Lake
+    // campaign lookup and /analytics/campaign-summary/{id}.
+    const q = search.toLowerCase();
     const matchesSearch = search === '' ||
-      c.name.toLowerCase().includes(search.toLowerCase());
+      c.name.toLowerCase().includes(q) ||
+      c.id.toLowerCase().includes(q);
     return matchesFilter && matchesSearch;
   });
 
