@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -810,32 +811,59 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if input.Name == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign name is required"})
+	campaignID, status, err := s.DeployFromInput(r.Context(), getOrgID(r), input)
+	if err != nil {
+		var inputErr *deployInputError
+		if errors.As(err, &inputErr) {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": inputErr.Error()})
+		} else {
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 		return
 	}
 
+	// Respond immediately — campaign is accepted.
+	// The AudienceFinalizationWorker will pick it up and process it.
+	respondJSON(w, http.StatusAccepted, map[string]interface{}{
+		"campaign_id":   campaignID,
+		"name":          input.Name,
+		"status":        status,
+		"target_isps":   input.TargetISPs,
+		"variant_count": len(input.Variants),
+	})
+}
+
+// deployInputError marks payload validation / preflight / normalization
+// failures that map to HTTP 400 in HandleDeployCampaign. Reservation failures
+// remain plain errors (HTTP 500).
+type deployInputError struct{ msg string }
+
+func (e *deployInputError) Error() string { return e.msg }
+
+// DeployFromInput runs the synchronous deploy path — validation, preflight,
+// normalization, campaign reservation — for an already-decoded payload. It is
+// shared by HandleDeployCampaign and in-process callers (Domain Agent plan
+// approval). Returns the reserved campaign UUID and its status
+// ("finalizing_audience"); the AudienceFinalizationWorker completes the
+// deploy asynchronously, exactly as with the HTTP endpoint's 202 semantics.
+func (s *PMTACampaignService) DeployFromInput(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, error) {
+	if input.Name == "" {
+		return "", "", &deployInputError{"campaign name is required"}
+	}
+
 	if len(input.Variants) == 0 {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
-		return
+		return "", "", &deployInputError{"at least one content variant is required"}
 	}
 	for i, v := range input.Variants {
 		if strings.TrimSpace(v.HTMLContent) == "" {
-			respondJSON(w, http.StatusBadRequest, map[string]string{
-				"error": fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName),
-			})
-			return
+			return "", "", &deployInputError{fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName)}
 		}
 	}
 	if len(input.TargetISPs) == 0 {
 		if len(input.ISPPlans) == 0 {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
-			return
+			return "", "", &deployInputError{"at least one target ISP is required"}
 		}
 	}
-
-	ctx := r.Context()
-	orgID := getOrgID(r)
 
 	// ── Phase 1: synchronous pre-checks (fast, <2s) ─────────────────────
 
@@ -845,34 +873,21 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		for i, e := range preflight.Errors {
 			msgs[i] = e.Check + ": " + e.Message
 		}
-		respondJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "preflight failed: " + strings.Join(msgs, "; "),
-		})
-		return
+		return "", "", &deployInputError{"preflight failed: " + strings.Join(msgs, "; ")}
 	}
 
 	normalized, err := normalizePMTACampaignInput(input)
 	if err != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+		return "", "", &deployInputError{err.Error()}
 	}
 
 	// Reserve campaign row as 'preparing' so the dashboard shows it immediately.
 	campaignID, err := s.reserveCampaignForDeploy(ctx, orgID, input, normalized)
 	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return "", "", err
 	}
 
-	// Respond immediately — campaign is accepted.
-	// The AudienceFinalizationWorker will pick it up and process it.
-	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"campaign_id":   campaignID,
-		"name":          input.Name,
-		"status":        "finalizing_audience",
-		"target_isps":   input.TargetISPs,
-		"variant_count": len(input.Variants),
-	})
+	return campaignID, "finalizing_audience", nil
 }
 
 // reserveCampaignForDeploy resolves campaign identity and marks it as

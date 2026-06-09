@@ -27,6 +27,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
 	"github.com/ignite/sparkpost-monitor/internal/datanorm"
+	"github.com/ignite/sparkpost-monitor/internal/domainagent"
 	"github.com/ignite/sparkpost-monitor/internal/emailoversight"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
@@ -660,6 +661,14 @@ func main() {
 			dataCleanup := worker.NewDataCleanupWorker(mailingDB)
 			go dataCleanup.Start(ctx)
 			log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
+
+			// Domain Agent scorecard worker — rebuilds the per-domain × ISP
+			// daily scorecard (mailing_domain_agent_scorecard) for the trailing
+			// 3 days, for every org with active sending profiles. Backs the
+			// /api/mailing/domain-agent endpoints.
+			domainAgentScorecard := domainagent.NewScorecardWorker(mailingDB, redisClient)
+			domainAgentScorecard.Start(ctx)
+			log.Println("Domain Agent Scorecard Worker started (first run in 60s, then every 6h, 3-day rollup window)")
 
 			// Start Engine Signals Archiver. Keeps mailing_engine_signals
 			// at a 14-day hot window; everything older lands in
@@ -6632,6 +6641,31 @@ END $$`},
 			('K5C8PQQ', '420', '%sam%', 'Warby Parker', TRUE, 'cratoolpro slug K5C8PQQ (may23 redeploy); consumer signal → Sam''s Club offer 420 drip'),
 			('BXPFT55', '420', '%sam%', 'TruGreen',     TRUE, 'cratoolpro slug BXPFT55 (trugreen newsletter creatives); consumer signal → Sam''s Club offer 420 drip')
 			ON CONFLICT (slug) DO NOTHING`},
+
+		// Domain Agent (2026-06-09): per-domain × ISP daily scorecard rolled up
+		// by domainagent.ScorecardWorker, plus the plan lifecycle table backing
+		// /api/mailing/domain-agent/plans (draft → compiled → approved →
+		// deployed/failed). See internal/domainagent/.
+		{"create_domain_agent_scorecard", `CREATE TABLE IF NOT EXISTS mailing_domain_agent_scorecard (
+			organization_id UUID NOT NULL, day DATE NOT NULL,
+			sending_domain VARCHAR(255) NOT NULL, isp VARCHAR(50) NOT NULL,
+			sends INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0,
+			human_opens INTEGER NOT NULL DEFAULT 0, machine_opens INTEGER NOT NULL DEFAULT 0,
+			human_clicks INTEGER NOT NULL DEFAULT 0, machine_clicks INTEGER NOT NULL DEFAULT 0,
+			hard_bounces INTEGER NOT NULL DEFAULT 0, soft_bounces INTEGER NOT NULL DEFAULT 0,
+			other_bounces INTEGER NOT NULL DEFAULT 0, complaints INTEGER NOT NULL DEFAULT 0,
+			unsubscribes INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (organization_id, day, sending_domain, isp))`},
+		{"create_domain_agent_plans", `CREATE TABLE IF NOT EXISTS mailing_domain_agent_plans (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(), organization_id UUID NOT NULL,
+			sending_domain VARCHAR(255) NOT NULL, plan_date DATE NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'draft',
+			briefing JSONB NOT NULL DEFAULT '{}'::jsonb, slots JSONB NOT NULL DEFAULT '[]'::jsonb,
+			payloads JSONB NOT NULL DEFAULT '[]'::jsonb, deploy_results JSONB NOT NULL DEFAULT '[]'::jsonb,
+			approved_by VARCHAR(255), approved_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, sending_domain, plan_date))`},
+		{"create_domain_agent_plans_status_idx", `CREATE INDEX IF NOT EXISTS idx_domain_agent_plans_org_status ON mailing_domain_agent_plans(organization_id, status)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

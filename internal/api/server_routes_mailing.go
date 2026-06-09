@@ -1063,6 +1063,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/send-day/host-health", advSvc.HandleSendDayHostHealth)
 			r.Post("/send-day/host-health/attest", advSvc.HandleSendDayHostHealthAttest)
 
+			// === DOMAIN AGENT (per-domain scorecard → briefing → plan → deploy) ===
+			// Scorecard rollups are maintained by domainagent.ScorecardWorker
+			// (wired in cmd/server/main.go); plan approval deploys each compiled
+			// payload in-process via pmtaCampaignAPI.DeployFromInput. Routes live
+			// under /api/mailing/domain-agent/*; see domain_agent_handlers.go.
+			domainAgentAPI := NewDomainAgentAPI(db, pmtaCampaignAPI)
+			domainAgentAPI.RegisterRoutes(r)
+
 			// === AUDIENCE ARCHITECTURE: Background workers ===
 			workerCtx := context.Background()
 			segMaterializer := NewSegmentMaterializer(db, "04:00")

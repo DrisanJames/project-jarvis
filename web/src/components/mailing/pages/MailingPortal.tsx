@@ -24,6 +24,7 @@ const SendTestEmail = lazy(() => import('../components/SendTestEmail').then(m =>
 const JourneyCenter = lazy(() => import('../components/JourneyCenter').then(m => ({ default: m.JourneyCenter })));
 const MissionControl = lazy(() => import('../components/MissionControl').then(m => ({ default: m.MissionControl })));
 const DomainCenter = lazy(() => import('../components/DomainCenter').then(m => ({ default: m.DomainCenter })));
+const DomainAgents = lazy(() => import('../components/DomainAgents').then(m => ({ default: m.DomainAgents })));
 // AnalyticsCenter retired 2026-06-09: the Event Lake Explorer (now labeled
 // "Analytics") is the operator's analytics surface. Component file kept for
 // reference; no longer mounted.
@@ -60,7 +61,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners';
 
 interface Tab {
   id: TabId;
@@ -78,6 +79,7 @@ const tabs: Tab[] = [
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
+  { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'Per-domain agentic send planning & approval' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'event-lake', label: 'Analytics', icon: faChartPie, description: 'S3/Athena email-event lake — ISP, brand & campaign analytics' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Audience analytics — acquisition, churn, source performance, member lookup & welcome pool' },
@@ -169,6 +171,8 @@ export const MailingPortal: React.FC = () => {
         return <AIAgentsSection activeSubTab={activeTab === 'ai-agents' ? 'sending-plans' : activeTab} onSubTabChange={setActiveTab} />;
       case 'domain-center':
         return <DomainCenter />;
+      case 'domain-agents':
+        return <Suspense fallback={<ChunkLoader />}><DomainAgents /></Suspense>;
       case 'suppressions':
       case 'global-suppression':
         return <SuppressionsSection activeSubTab={activeTab} onSubTabChange={setActiveTab} />;
