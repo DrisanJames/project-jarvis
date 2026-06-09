@@ -13,9 +13,8 @@
 //   - READ ONLY. This package never writes to the lake (that's the emitter)
 //     and never touches Postgres. Athena is a separate store.
 //   - SQL-injection safe. Every caller-supplied filter is strictly validated
-//     (regex/UUID/clamp) before it is ever placed in a query, and values are
-//     bound through Athena ExecutionParameters where possible. No untrusted
-//     string is concatenated into SQL.
+//     (regex/UUID/clamp) before it is ever placed in a query, then rendered as a
+//     single-quoted literal via sqlStr. No untrusted string reaches SQL.
 package analytics
 
 import (
@@ -24,6 +23,7 @@ import (
 	"log"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -174,13 +174,24 @@ func clampLimit(n int) int {
 	return n
 }
 
+// sqlStr renders an already-validated value as a single-quoted Athena string
+// literal. Every caller validates its input with the regexes above (no quotes
+// or specials can pass), so this is injection-safe; the ” replacement is
+// defense-in-depth. We interpolate literals rather than use Athena
+// ExecutionParameters because Athena evaluates a date-shaped parameter like
+// 2026-06-03 as integer arithmetic, which breaks BETWEEN against the string
+// `dt` partition column (TYPE_MISMATCH: varchar BETWEEN integer and integer).
+func sqlStr(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 // Summary aggregates event counts by event_type over [fromDt, toDt]
 // (inclusive). Both bounds are required and must be YYYY-MM-DD.
 //
-// SQL (parameters bound via Athena ExecutionParameters):
+// SQL (validated dates interpolated as quoted literals; see sqlStr):
 //
 //	SELECT event_type, COUNT(*) c FROM email_events
-//	WHERE dt BETWEEN ? AND ?
+//	WHERE dt BETWEEN '<from>' AND '<to>'
 //	GROUP BY event_type ORDER BY c DESC
 func (r *Reader) Summary(ctx context.Context, fromDt, toDt string) ([]SummaryRow, error) {
 	if err := validateDt("from", fromDt); err != nil {
@@ -193,8 +204,9 @@ func (r *Reader) Summary(ctx context.Context, fromDt, toDt string) ([]SummaryRow
 		return nil, fmt.Errorf("from and to dates are required")
 	}
 	sql := "SELECT event_type, COUNT(*) c FROM " + lakeTable +
-		" WHERE dt BETWEEN ? AND ? GROUP BY event_type ORDER BY c DESC"
-	_, rows, err := r.runQuery(ctx, sql, fromDt, toDt)
+		" WHERE dt BETWEEN " + sqlStr(fromDt) + " AND " + sqlStr(toDt) +
+		" GROUP BY event_type ORDER BY c DESC"
+	_, rows, err := r.runQuery(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -226,11 +238,11 @@ func (r *Reader) RecentEvents(ctx context.Context, f EventFilter) ([]Event, erro
 	}
 	limit := clampLimit(f.Limit)
 
-	// Build the WHERE clause from validated filters only. Each predicate uses a
-	// bound parameter (?), so even though the values are already validated they
-	// are never interpolated into the SQL string.
+	// Build the WHERE clause from validated filters only. Every value was
+	// regex-validated above (no quotes/specials can pass), so it is rendered as a
+	// single-quoted literal via sqlStr rather than an Athena ExecutionParameter
+	// (which would mis-evaluate date-shaped values as integer arithmetic).
 	where := ""
-	var params []string
 	addPred := func(col, val string) {
 		if val == "" {
 			return
@@ -240,8 +252,7 @@ func (r *Reader) RecentEvents(ctx context.Context, f EventFilter) ([]Event, erro
 		} else {
 			where += " AND "
 		}
-		where += col + " = ?"
-		params = append(params, val)
+		where += col + " = " + sqlStr(val)
 	}
 	addPred("dt", f.Dt)
 	addPred("campaign_id", f.CampaignID)
@@ -257,7 +268,7 @@ func (r *Reader) RecentEvents(ctx context.Context, f EventFilter) ([]Event, erro
 		"event_at, event_epoch_ms, ingested_at, source, dt FROM " + lakeTable +
 		where + " ORDER BY event_epoch_ms DESC LIMIT " + strconv.Itoa(limit)
 
-	_, rows, err := r.runQuery(ctx, sql, params...)
+	_, rows, err := r.runQuery(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -307,9 +318,9 @@ func scanEvent(row []string) Event {
 }
 
 // runQuery executes sql against Athena and returns the column headers and the
-// data rows (header row stripped). params are bound via ExecutionParameters in
-// order of the `?` placeholders. Bounded by ctx.
-func (r *Reader) runQuery(ctx context.Context, sql string, params ...string) (cols []string, rows [][]string, err error) {
+// data rows (header row stripped). All values are interpolated as validated
+// quoted literals by the callers (see sqlStr), not bound parameters. Bounded by ctx.
+func (r *Reader) runQuery(ctx context.Context, sql string) (cols []string, rows [][]string, err error) {
 	start := &athena.StartQueryExecutionInput{
 		QueryString: aws.String(sql),
 		QueryExecutionContext: &atypes.QueryExecutionContext{
@@ -319,9 +330,6 @@ func (r *Reader) runQuery(ctx context.Context, sql string, params ...string) (co
 		ResultConfiguration: &atypes.ResultConfiguration{
 			OutputLocation: aws.String(r.output),
 		},
-	}
-	if len(params) > 0 {
-		start.ExecutionParameters = params
 	}
 	startOut, err := r.client.StartQueryExecution(ctx, start)
 	if err != nil {

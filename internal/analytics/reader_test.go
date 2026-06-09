@@ -118,6 +118,22 @@ func TestClampLimit(t *testing.T) {
 	}
 }
 
+func TestSqlStr(t *testing.T) {
+	// Date-shaped values MUST become quoted string literals (the fix for the
+	// Athena "varchar BETWEEN integer and integer" type-mismatch). The '' escape
+	// is defense-in-depth; validation prevents quotes from ever reaching here.
+	cases := map[string]string{
+		"2026-06-03": "'2026-06-03'",
+		"gmail":      "'gmail'",
+		"a'b":        "'a''b'",
+	}
+	for in, want := range cases {
+		if got := sqlStr(in); got != want {
+			t.Errorf("sqlStr(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
 func TestRecentEventsBuiltSQLShape(t *testing.T) {
 	// Validate the SELECT column order matches scanEvent by round-tripping a
 	// synthetic row. This guards against column/scan drift.
