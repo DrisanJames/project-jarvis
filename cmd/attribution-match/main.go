@@ -30,6 +30,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/api"
+	"github.com/ignite/sparkpost-monitor/internal/guard"
 )
 
 func main() {
@@ -70,6 +71,8 @@ func main() {
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is required (or pass --no-db to emit join keys without lookups)")
 	}
+	// Read-only lookups: announce the target DB for visibility (never blocks).
+	guard.RequireDBConfirmation(dsn, "attribution-match", false)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatalf("open db: %v", err)

@@ -8,15 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/guard"
 	_ "github.com/lib/pq"
 )
 
 const (
-	listID            = "f492768b-ea52-4e22-813a-16deb2b5c261"
-	expectedCount     = 52183541
-	firstHash         = "0000031e53065df5edf6218cbc938d93"
-	lastHash          = "fffffe4512b746da14dc76a7bf7794e3"
-	expectedListName  = "Sams Club Suppression"
+	listID           = "f492768b-ea52-4e22-813a-16deb2b5c261"
+	expectedCount    = 52183541
+	firstHash        = "0000031e53065df5edf6218cbc938d93"
+	lastHash         = "fffffe4512b746da14dc76a7bf7794e3"
+	expectedListName = "Sams Club Suppression"
 )
 
 type checkResult struct {
@@ -46,6 +47,9 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+
+	// Read-only tool: announce the target DB for visibility (never blocks).
+	guard.RequireDBConfirmation(dsn, "verify-suppression", false)
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {

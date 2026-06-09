@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ignite/sparkpost-monitor/internal/guard"
 	_ "github.com/lib/pq"
 )
 
@@ -27,6 +28,10 @@ func main() {
 			dir = a
 		}
 	}
+
+	// Fail closed against the wrong-environment hazard: this tool MUTATES schema,
+	// so refuse a remote DB unless IGNITE_DB_CONFIRM=1 (local dev proceeds freely).
+	guard.RequireDBConfirmation(dsn, "migrate", true)
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {

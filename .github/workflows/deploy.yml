@@ -30,6 +30,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Assert production AWS account (fail closed on wrong environment)
+        run: |
+          ACCT=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACCT" != "146361001621" ]; then
+            echo "REFUSING: AWS account $ACCT != prod 146361001621 — wrong environment (the us-east-1 env is a DIFFERENT database)" >&2
+            exit 87
+          fi
+          echo "✓ Production AWS account confirmed: $ACCT (region ${{ env.AWS_REGION }}, cluster ${{ env.ECS_CLUSTER }})"
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
