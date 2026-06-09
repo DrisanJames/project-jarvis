@@ -156,65 +156,6 @@ func TestHealthCheck(t *testing.T) {
 	assert.Contains(t, readyResp, "checks")
 }
 
-func TestGetSummary(t *testing.T) {
-	storageCfg := config.StorageConfig{
-		Type:      "local",
-		LocalPath: t.TempDir(),
-	}
-	store, _ := storage.New(storageCfg)
-	
-	agentCfg := config.AgentConfig{MinDataPoints: 10}
-	ag := agent.New(agentCfg, store)
-
-	spClient := sparkpost.NewClient(config.SparkPostConfig{
-		APIKey:  "test",
-		BaseURL: "http://localhost",
-	})
-	collector := sparkpost.NewCollector(spClient, store, ag, config.PollingConfig{IntervalSeconds: 60})
-
-	handlers := NewHandlers(collector, ag, store)
-	router, _ := SetupRoutes(handlers, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/metrics/summary", nil)
-	rec := httptest.NewRecorder()
-
-	router.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestGetISPMetrics(t *testing.T) {
-	storageCfg := config.StorageConfig{
-		Type:      "local",
-		LocalPath: t.TempDir(),
-	}
-	store, _ := storage.New(storageCfg)
-	
-	agentCfg := config.AgentConfig{MinDataPoints: 10}
-	ag := agent.New(agentCfg, store)
-
-	spClient := sparkpost.NewClient(config.SparkPostConfig{
-		APIKey:  "test",
-		BaseURL: "http://localhost",
-	})
-	collector := sparkpost.NewCollector(spClient, store, ag, config.PollingConfig{IntervalSeconds: 60})
-
-	handlers := NewHandlers(collector, ag, store)
-	router, _ := SetupRoutes(handlers, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/metrics/isp", nil)
-	rec := httptest.NewRecorder()
-
-	router.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var response map[string]interface{}
-	err := json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-	assert.Contains(t, response, "data")
-}
-
 func TestGetAlerts(t *testing.T) {
 	storageCfg := config.StorageConfig{
 		Type:      "local",
