@@ -129,6 +129,16 @@ def main() -> int:
     # Partner drip phase 2: follow-ups on; bypass stale ISP throttle deferrals.
     upsert_env(env_list, "PARTNER_DRIP_THROTTLE_THRESHOLD", "0")
     upsert_env(env_list, "PARTNER_DRIP_CREATIVES_DIR", "docs/emails")
+    # Analytics event-lake READ layer (Athena). Setting ANALYTICS_ATHENA_OUTPUT
+    # enables the reader (/api/mailing/analytics/lake/*) and un-darks the Event
+    # Lake screen; it points at the live ignite_analytics Glue DB + Athena
+    # workgroup (output bucket s3://ignite-analytics-lake/athena-results/).
+    # Reversible: remove these three lines and redeploy to take read dark again.
+    # The WRITE side is enabled separately via ANALYTICS_FIREHOSE_STREAM, which is
+    # already on the task definition and carries forward from the base.
+    upsert_env(env_list, "ANALYTICS_ATHENA_DATABASE", "ignite_analytics")
+    upsert_env(env_list, "ANALYTICS_ATHENA_WORKGROUP", "ignite_analytics")
+    upsert_env(env_list, "ANALYTICS_ATHENA_OUTPUT", "s3://ignite-analytics-lake/athena-results/")
 
     for var_name in PASSTHROUGH_ENV_VARS:
         val = os.environ.get(var_name)
