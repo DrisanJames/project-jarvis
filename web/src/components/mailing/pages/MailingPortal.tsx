@@ -43,6 +43,7 @@ const DeliverabilityControl = lazy(() => import('../components/DeliverabilityCon
 const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
 const WelcomeAudienceHealth = lazy(() => import('../components/WelcomeAudienceHealth').then(m => ({ default: m.WelcomeAudienceHealth })));
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
+const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const WorkerHealthDashboard = lazy(() => import('../components/WorkerHealthDashboard').then(m => ({ default: m.WorkerHealthDashboard })));
 const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
@@ -55,7 +56,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'data-partners';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners';
 
 interface Tab {
   id: TabId;
@@ -75,6 +76,7 @@ const tabs: Tab[] = [
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'analytics', label: 'Analytics', icon: faChartPie, description: 'Comprehensive mail & AI analytics' },
+  { id: 'event-lake', label: 'Event Lake', icon: faDatabase, description: 'S3/Athena email-event lake' },
   { id: 'audience-health', label: 'Audience Health', icon: faSeedling, description: 'Welcome pool freshness, sunset trajectory & next-list-upload signal' },
   { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
@@ -171,6 +173,8 @@ export const MailingPortal: React.FC = () => {
         return <SendTestEmail />;
       case 'analytics':
         return <AnalyticsCenter />;
+      case 'event-lake':
+        return <Suspense fallback={<ChunkLoader />}><EventLakeExplorer /></Suspense>;
       case 'audience-health':
         return <Suspense fallback={<ChunkLoader />}><WelcomeAudienceHealth /></Suspense>;
       case 'audience-cadence':
