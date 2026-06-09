@@ -23,6 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=deploy/_guardrails.sh
+source "$SCRIPT_DIR/_guardrails.sh"
+
 AWS_ACCOUNT_ID="$(aws sts get-caller-identity "${AWS_ARGS[@]}" --query Account --output text)"
 ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 IMAGE_REPO="$ECR_REGISTRY/$ECR_REPOSITORY"
@@ -34,6 +37,12 @@ echo "AWS Region: $AWS_REGION"
 echo "AWS Profile: $AWS_PROFILE"
 echo "Git SHA: $GIT_SHA"
 echo "Build Time: $BUILD_TIME"
+echo ""
+
+# Fail closed unless this is the known-good production environment (us-west-2 /
+# account 146361001621 / apex-cluster / ignite-service). Runs BEFORE the
+# pre-deploy gate and any mutating AWS action.
+assert_prod_environment "$AWS_ACCOUNT_ID" "$AWS_REGION" "$ECS_CLUSTER" "$ECS_SERVICE" "${AWS_ARGS[@]}"
 echo ""
 
 if [ "${SKIP_PRE_DEPLOY:-}" != "1" ]; then

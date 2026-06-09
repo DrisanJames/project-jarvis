@@ -19,6 +19,15 @@ echo "=== Ignite Upside-Down Rollback ==="
 echo "AWS Region: $AWS_REGION"
 echo ""
 
+# Fail closed unless this is the known-good production environment, BEFORE any
+# mutating action (rollback previously had no identity check at all).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=deploy/_guardrails.sh
+source "$SCRIPT_DIR/_guardrails.sh"
+ROLLBACK_ACCOUNT_ID="$(aws sts get-caller-identity "${AWS_ARGS[@]}" --query Account --output text)"
+assert_prod_environment "$ROLLBACK_ACCOUNT_ID" "$AWS_REGION" "$ECS_CLUSTER" "$ECS_SERVICE" "${AWS_ARGS[@]}"
+echo ""
+
 CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
   --cluster "$ECS_CLUSTER" \
   --services "$ECS_SERVICE" \
