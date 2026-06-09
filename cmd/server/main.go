@@ -6875,6 +6875,102 @@ END $$`},
 	cleanupIdxCancel()
 
 	// ---------------------------------------------------------------------
+	// partner_clean_queue uniqueness — dedup + UNIQUE(vertical, email_md5).
+	//
+	// partner_clean_queue had NO uniqueness guarantee (only the PK on id).
+	// The slicer's `INSERT ... ON CONFLICT DO NOTHING` (partner_slicer.go)
+	// has no arbiter index, so it never actually deduped: re-uploads of the
+	// same address AND slice-reprocessing after a bulk-insert statement
+	// timeout (the 2026-06-09 RDS-IO-saturation incident) both produced
+	// duplicate rows. Duplicate 'ready' rows get claimed independently by
+	// the orchestrator → the same person is mailed twice in a lane.
+	//
+	// A UNIQUE index on (vertical, email_md5) — the orchestrator's natural
+	// processing grain (one send per person per lane) — fixes this two ways:
+	//   1. It becomes the arbiter for the slicer's existing ON CONFLICT DO
+	//      NOTHING, so re-uploads and slice retries are silently deduped.
+	//   2. It hard-prevents double-mailing the same address within a vertical.
+	//
+	// Build sequence (one-time; guarded so it's a no-op once the VALID index
+	// exists):
+	//   a. If a VALID unique index already exists → skip everything.
+	//   b. Drop any INVALID leftover from a prior failed CONCURRENTLY build.
+	//   c. Table-wide dedup keeping the most-progressed status per
+	//      (vertical, email_md5): mailed > claimed > ready > eo_in_flight >
+	//      pending_eo > suppressed_eo, then oldest ingested_at, then id.
+	//      Keeping 'mailed' first guarantees we never delete an already-sent
+	//      row (so nothing re-mails) and collapses double-'ready' to one.
+	//   d. CREATE UNIQUE INDEX CONCURRENTLY (cannot run in a txn; the
+	//      dedicated autocommit Conn handles that). If a live slicer insert
+	//      races a new dup into the gap between (c) and (d) the build fails
+	//      and leaves an invalid index — step (b) drops it and the next boot
+	//      retries. Once the slicer's ON CONFLICT has this arbiter, no new
+	//      dups can form and the build succeeds for good.
+	//
+	// Dedicated connection, 25-min statement_timeout (the table-wide dedup
+	// DELETE can be heavy on the first boot; it shrinks to zero work after).
+	// ---------------------------------------------------------------------
+	pcqUniqCtx, pcqUniqCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	if pcqConn, pcqConnErr := db.Conn(pcqUniqCtx); pcqConnErr == nil {
+		var validUniq bool
+		_ = pcqConn.QueryRowContext(pcqUniqCtx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_class c
+				JOIN pg_index i ON i.indexrelid = c.oid
+				WHERE c.relname = 'uq_pcq_vertical_email_md5'
+				  AND i.indisvalid AND i.indisunique
+			)`).Scan(&validUniq)
+		if validUniq {
+			log.Println("[StartupMigration] uq_pcq_vertical_email_md5: valid index present — skipping dedup")
+		} else {
+			if _, err := pcqConn.ExecContext(pcqUniqCtx, "SET statement_timeout = '1500000'"); err != nil { // 25 min
+				log.Printf("[StartupMigration] uq_pcq_vertical_email_md5: SET timeout failed: %v", err)
+			}
+			// (b) drop any invalid leftover from a prior failed CONCURRENTLY build.
+			if _, err := pcqConn.ExecContext(pcqUniqCtx, `DROP INDEX IF EXISTS uq_pcq_vertical_email_md5`); err != nil {
+				log.Printf("[StartupMigration] uq_pcq_vertical_email_md5: drop-invalid failed: %v", err)
+			}
+			// (c) table-wide dedup, keeping the most-progressed row per (vertical, email_md5).
+			dedupStart := time.Now()
+			res, derr := pcqConn.ExecContext(pcqUniqCtx, `
+				DELETE FROM partner_clean_queue q
+				USING (
+					SELECT id, row_number() OVER (
+						PARTITION BY vertical, email_md5
+						ORDER BY CASE status
+							WHEN 'mailed'        THEN 1
+							WHEN 'claimed'       THEN 2
+							WHEN 'ready'         THEN 3
+							WHEN 'eo_in_flight'  THEN 4
+							WHEN 'pending_eo'    THEN 5
+							WHEN 'suppressed_eo' THEN 6
+							ELSE 7 END,
+							ingested_at ASC, id ASC
+					) AS rn
+					FROM partner_clean_queue
+				) d
+				WHERE q.id = d.id AND d.rn > 1`)
+			if derr != nil {
+				log.Printf("[StartupMigration] pcq_dedup_vertical_email_md5: ERROR %v (took %s) — deferring unique index to next boot", derr, time.Since(dedupStart))
+			} else {
+				n, _ := res.RowsAffected()
+				log.Printf("[StartupMigration] pcq_dedup_vertical_email_md5: removed %d duplicate rows (took %s)", n, time.Since(dedupStart))
+				// (d) build the unique index CONCURRENTLY.
+				idxStart := time.Now()
+				if _, ierr := pcqConn.ExecContext(pcqUniqCtx, `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_pcq_vertical_email_md5 ON partner_clean_queue (vertical, email_md5)`); ierr != nil {
+					log.Printf("[StartupMigration] uq_pcq_vertical_email_md5: ERROR %v (took %s) — will retry next boot", ierr, time.Since(idxStart))
+				} else {
+					log.Printf("[StartupMigration] uq_pcq_vertical_email_md5: OK (took %s)", time.Since(idxStart))
+				}
+			}
+		}
+		pcqConn.Close()
+	} else {
+		log.Printf("[StartupMigration] uq_pcq_vertical_email_md5: db.Conn failed: %v", pcqConnErr)
+	}
+	pcqUniqCancel()
+
+	// ---------------------------------------------------------------------
 	// P2a — backfill recipient_domain on the last 7 days of 'opened' and
 	// 'clicked' rows. Before tracking/consumer.go was fixed (commit
 	// 7dfa4c3 / 2026-04-28), the SQS consumer wrote these rows without
