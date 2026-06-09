@@ -60,6 +60,8 @@ github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.17 h1:JqcdRG//czea7Ppjb+g/n4o8i/R
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.17/go.mod h1:CO+WeGmIdj/MlPel2KwID9Gt7CNq4M65HUfBW97liM0=
 github.com/aws/aws-sdk-go-v2/service/acm v1.30.5 h1:xT0pAxIVWjR9bFw2xrGpL1lt6eXmXaJ4nxXCYBegs00=
 github.com/aws/aws-sdk-go-v2/service/acm v1.30.5/go.mod h1:Fo90MZbAao/owZjAKO1dhazUlf2EFovI7bxOmoUFqoY=
+github.com/aws/aws-sdk-go-v2/service/athena v1.58.4 h1:RXwMOjjGo1p2EucGcWsUJ3thdF0aH1LuCv1YmxGyCvw=
+github.com/aws/aws-sdk-go-v2/service/athena v1.58.4/go.mod h1:AFgcdu+EBc+c3FMvhbcsnFUYgCh75ZFkVsuETz8rVzM=
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.21.0 h1:or6e0Pof2LFwj16QYeLQTJJhRliKPhYYFPdpaqWVJWk=
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.21.0/go.mod h1:YSSgYnasDKm5OjU3bOPkaz+2PFO6WjEQGIA6KQNsR3Q=
 github.com/aws/aws-sdk-go-v2/service/cloudfront v1.43.0 h1:Ny0HHch5IyjWd3Hh/csFvAZFPDHvu7eeePFh7+BnbZ8=

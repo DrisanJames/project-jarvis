@@ -28,21 +28,21 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
 	"github.com/ignite/sparkpost-monitor/internal/datanorm"
 	"github.com/ignite/sparkpost-monitor/internal/emailoversight"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
 	"github.com/ignite/sparkpost-monitor/internal/financial"
 	"github.com/ignite/sparkpost-monitor/internal/intelligence"
 	"github.com/ignite/sparkpost-monitor/internal/kanban"
-	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/mailgun"
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
+	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
 	"github.com/ignite/sparkpost-monitor/internal/sparkpost"
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
-	"github.com/ignite/sparkpost-monitor/internal/engine"
-	"github.com/ignite/sparkpost-monitor/internal/segmentation"
-	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 
 	"github.com/google/uuid"
@@ -444,568 +444,575 @@ func main() {
 
 		if dbReachable {
 
-				// Start Backpressure Monitor
-				backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
-				go backpressure.Start(ctx)
-				worker.SetPackageBackpressure(backpressure)
-				log.Println("Backpressure Monitor started (threshold: 100,000, check every 30s)")
+			// Start Backpressure Monitor
+			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
+			go backpressure.Start(ctx)
+			worker.SetPackageBackpressure(backpressure)
+			log.Println("Backpressure Monitor started (threshold: 100,000, check every 30s)")
 
-				// Start Campaign Scheduler Worker (polls for scheduled campaigns and enqueues them)
-				campaignScheduler := worker.NewCampaignScheduler(mailingDB)
-				campaignScheduler.SetBackpressure(backpressure)
-				if redisClient != nil {
-					campaignScheduler.SetRedisClient(redisClient)
-				}
-				if err := campaignScheduler.Start(); err != nil {
-					log.Printf("Warning: Failed to start Campaign Scheduler: %v", err)
+			// Start Campaign Scheduler Worker (polls for scheduled campaigns and enqueues them)
+			campaignScheduler := worker.NewCampaignScheduler(mailingDB)
+			campaignScheduler.SetBackpressure(backpressure)
+			if redisClient != nil {
+				campaignScheduler.SetRedisClient(redisClient)
+			}
+			if err := campaignScheduler.Start(); err != nil {
+				log.Printf("Warning: Failed to start Campaign Scheduler: %v", err)
+			} else {
+				log.Println("Campaign Scheduler Worker started (polls every 30s for scheduled campaigns)")
+			}
+
+			// Start PMTA ISP wave scheduler / consumer.
+			pmtaWaveQueueURL := os.Getenv("SQS_PMTA_WAVE_QUEUE_URL")
+			var pmtaWaveSQSClient *sqs.Client
+			// Hoisted outside the if-block so the cross-brand cap
+			// wiring downstream can reach it via SetCapChecker.
+			var pmtaWaveConsumer *worker.PMTAWaveConsumer
+			if pmtaWaveQueueURL != "" {
+				awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+				if err != nil {
+					log.Printf("Warning: AWS config for PMTA wave SQS failed: %v", err)
 				} else {
-					log.Println("Campaign Scheduler Worker started (polls every 30s for scheduled campaigns)")
+					pmtaWaveSQSClient = sqs.NewFromConfig(awsCfg)
+					pmtaWaveConsumer = worker.NewPMTAWaveConsumer(pmtaWaveSQSClient, pmtaWaveQueueURL, mailingDB)
+					pmtaWaveConsumer.Start(ctx)
+					log.Printf("PMTA wave consumer started (queue=%s)", pmtaWaveQueueURL)
 				}
+			}
+			pmtaWaveScheduler := worker.NewPMTAWaveScheduler(mailingDB, pmtaWaveSQSClient, pmtaWaveQueueURL)
+			if redisClient != nil {
+				pmtaWaveScheduler.SetRedisClient(redisClient)
+			}
+			if err := pmtaWaveScheduler.Start(); err != nil {
+				log.Printf("Warning: Failed to start PMTA wave scheduler: %v", err)
+			} else if pmtaWaveQueueURL != "" {
+				log.Printf("PMTA wave scheduler started (queue=%s)", pmtaWaveQueueURL)
+			} else {
+				log.Println("PMTA wave scheduler started (direct DB enqueue fallback)")
+			}
 
-				// Start PMTA ISP wave scheduler / consumer.
-				pmtaWaveQueueURL := os.Getenv("SQS_PMTA_WAVE_QUEUE_URL")
-				var pmtaWaveSQSClient *sqs.Client
-				// Hoisted outside the if-block so the cross-brand cap
-				// wiring downstream can reach it via SetCapChecker.
-				var pmtaWaveConsumer *worker.PMTAWaveConsumer
-				if pmtaWaveQueueURL != "" {
-					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
-					if err != nil {
-						log.Printf("Warning: AWS config for PMTA wave SQS failed: %v", err)
-					} else {
-						pmtaWaveSQSClient = sqs.NewFromConfig(awsCfg)
-						pmtaWaveConsumer = worker.NewPMTAWaveConsumer(pmtaWaveSQSClient, pmtaWaveQueueURL, mailingDB)
-						pmtaWaveConsumer.Start(ctx)
-						log.Printf("PMTA wave consumer started (queue=%s)", pmtaWaveQueueURL)
-					}
-				}
-				pmtaWaveScheduler := worker.NewPMTAWaveScheduler(mailingDB, pmtaWaveSQSClient, pmtaWaveQueueURL)
-				if redisClient != nil {
-					pmtaWaveScheduler.SetRedisClient(redisClient)
-				}
-				if err := pmtaWaveScheduler.Start(); err != nil {
-					log.Printf("Warning: Failed to start PMTA wave scheduler: %v", err)
-				} else if pmtaWaveQueueURL != "" {
-					log.Printf("PMTA wave scheduler started (queue=%s)", pmtaWaveQueueURL)
+			// Start Send Worker Pool (processes the queue and sends emails)
+			sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 25)
+			profileSender := worker.NewProfileBasedSender(mailingDB)
+			sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
+			sendWorkerPool.SetPMTASender(profileSender)
+
+			trackURL := os.Getenv("TRACKING_URL")
+			if trackURL == "" {
+				trackURL = "http://localhost:8080"
+			}
+			trackSecret := os.Getenv("TRACKING_SECRET")
+			if trackSecret == "" {
+				trackSecret = "ignite-tracking-secret-dev"
+			}
+			sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
+
+			// Start SQS tracking event consumer
+			var trackingConsumer *tracking.Consumer
+			if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {
+				awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+				if err != nil {
+					log.Printf("Warning: AWS config for SQS consumer failed: %v", err)
 				} else {
-					log.Println("PMTA wave scheduler started (direct DB enqueue fallback)")
+					sqsClient := sqs.NewFromConfig(awsCfg)
+					trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
+					trackingConsumer.Start(ctx)
+					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
 				}
+			}
 
-				// Start Send Worker Pool (processes the queue and sends emails)
-				sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 25)
-				profileSender := worker.NewProfileBasedSender(mailingDB)
-				sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
-				sendWorkerPool.SetPMTASender(profileSender)
+			// Wire global suppression hub to send worker pool for bounce recording
+			if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
+				sendWorkerPool.SetGlobalSuppressionHub(hub)
+			}
+			if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
+				sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
+			}
 
-				trackURL := os.Getenv("TRACKING_URL")
-				if trackURL == "" {
-					trackURL = "http://localhost:8080"
-				}
-				trackSecret := os.Getenv("TRACKING_SECRET")
-				if trackSecret == "" {
-					trackSecret = "ignite-tracking-secret-dev"
-				}
-				sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
-
-				// Start SQS tracking event consumer
-				var trackingConsumer *tracking.Consumer
-				if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {
-					awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
-					if err != nil {
-						log.Printf("Warning: AWS config for SQS consumer failed: %v", err)
-					} else {
-						sqsClient := sqs.NewFromConfig(awsCfg)
-						trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
-						trackingConsumer.Start(ctx)
-						log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
-					}
-				}
-
-				// Wire global suppression hub to send worker pool for bounce recording
-				if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
-					sendWorkerPool.SetGlobalSuppressionHub(hub)
-				}
-				if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
-					sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
-				}
-
-				if rr := server.GetRateRegistry(); rr != nil {
-					sendWorkerPool.SetRateRegistry(rr)
-					perIPEnabled := os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
-					sendWorkerPool.SetPerIPRateLimiting(perIPEnabled)
-					disableRateLimiting := os.Getenv("DISABLE_ISP_RATE_LIMITING") == "true"
-					sendWorkerPool.SetRateLimitingDisabled(disableRateLimiting)
-					profileSender.SetIPChangeCallback(func(_ string, ispGroups map[string][]worker.VMTAInfo) {
-						for poolSuffix, entries := range ispGroups {
-							isp := engine.ISP(poolSuffix)
-							ips := make([]engine.IPEntry, len(entries))
-							for i, e := range entries {
-								ips[i] = engine.IPEntry{
-									Hostname:         e.Hostname,
-									Status:           e.Status,
-									WarmupDailyLimit: e.WarmupDailyLimit,
-								}
+			if rr := server.GetRateRegistry(); rr != nil {
+				sendWorkerPool.SetRateRegistry(rr)
+				perIPEnabled := os.Getenv("ENABLE_PER_IP_RATE_LIMITING") == "true"
+				sendWorkerPool.SetPerIPRateLimiting(perIPEnabled)
+				disableRateLimiting := os.Getenv("DISABLE_ISP_RATE_LIMITING") == "true"
+				sendWorkerPool.SetRateLimitingDisabled(disableRateLimiting)
+				profileSender.SetIPChangeCallback(func(_ string, ispGroups map[string][]worker.VMTAInfo) {
+					for poolSuffix, entries := range ispGroups {
+						isp := engine.ISP(poolSuffix)
+						ips := make([]engine.IPEntry, len(entries))
+						for i, e := range entries {
+							ips[i] = engine.IPEntry{
+								Hostname:         e.Hostname,
+								Status:           e.Status,
+								WarmupDailyLimit: e.WarmupDailyLimit,
 							}
-							rr.SetIPList(isp, ips)
 						}
-					})
-					log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v, rate limiting disabled: %v)", perIPEnabled, disableRateLimiting)
-				}
-
-				// Wire offer suppression Bloom checker to send worker
-				if server.OfferSuppMgr != nil {
-					sendWorkerPool.SetOfferSuppressionChecker(server.OfferSuppMgr)
-					log.Println("Offer suppression Bloom filter wired to send worker pool")
-				}
-
-				// Cross-brand daily cap enforcer (P5a). Redis fast path +
-				// Postgres fallback. Default cap=2; org settings override.
-				// Disable entirely with DISABLE_CROSS_BRAND_CAP=true.
-				//
-				// The same CapChecker is also wired into the PMTA wave
-				// scheduler (cap-aware reserve pool, Slice 4) so the
-				// dispatcher can Peek the cap and substitute reserves
-				// before the worker layer ever sees over-cap subscribers.
-				if os.Getenv("DISABLE_CROSS_BRAND_CAP") != "true" {
-					capChecker := mailing.NewCapChecker(mailingDB, redisClient, 2)
-					sendWorkerPool.SetCapChecker(capChecker)
-					pmtaWaveScheduler.SetCapChecker(capChecker)
-					if pmtaWaveConsumer != nil {
-						pmtaWaveConsumer.SetCapChecker(capChecker)
+						rr.SetIPList(isp, ips)
 					}
-					if redisClient != nil {
-						log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (Redis fast path + PG fallback)")
-					} else {
-						log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (PG-only, not race-safe under high concurrency)")
-					}
-				} else {
-					log.Println("Cross-brand daily cap DISABLED via DISABLE_CROSS_BRAND_CAP env var")
-				}
-
-				// Durable injection outbox state machine. Controlled by
-				// mailing.outbox_mode in config.yaml (or OUTBOX_MODE env var).
-				// "legacy" preserves historic pending->sending->sent flow;
-				// "durable" activates queued->submitting->accepted with atomic
-				// state guards and the X-Ignite-Idempotency-Key header. This
-				// is the one-line rollback: flip the flag, restart, done.
-				outboxMode := strings.ToLower(strings.TrimSpace(cfg.Mailing.OutboxMode))
-				if outboxMode == "" {
-					outboxMode = "legacy"
-				}
-				sendWorkerPool.SetOutboxMode(outboxMode)
-				log.Printf("Send worker pool outbox mode: %s", outboxMode)
-
-				sendWorkerPool.Start()
-
-				// SA-7: pure observability — register the wave-processor
-				// status endpoint AFTER the send worker pool exists so the
-				// handler can read its in-memory throughput. Mounted on
-				// the root router (bypasses /api auth) following the same
-				// pattern as /api/outbox/summary so operators can curl it
-				// during live incidents without auth dance.
-				server.RegisterWaveProcessorStatusRoute(sendWorkerPool)
-				log.Println("[wave_processor_status] GET /api/wave-processor/status registered")
-
-				// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
-				queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
-				go queueRecovery.Start(ctx)
-				log.Println("Queue Recovery Worker started (scans every 2m for stuck items, max 5 retries)")
-
-				// Durable-outbox reconciler. Only meaningful when OutboxMode=durable
-				// because nothing ever writes 'submitting' in legacy mode. Starting
-				// it unconditionally is cheap (single indexed SELECT, no writes if
-				// no submitting rows exist) and leaves a safety net in place if
-				// durable mode is flipped on without a restart.
-				outboxReconciler := worker.NewOutboxReconciler(mailingDB)
-				go outboxReconciler.Start(ctx)
-				log.Println("Outbox Reconciler started (60s interval, 10m grace, commits crash-window sends + requeues stranded rows)")
-
-				// Outbox summary refresher. Keeps /api/outbox/summary on a warm
-				// in-memory cache so dashboard polls never block on the aggregate
-				// scans that previously took ~15s against a 1M+ row queue table.
-				api.StartOutboxSummaryRefresher(ctx, mailingDB)
-				log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
-
-				// Operational-alert transport. Twilio SMS was retired 2026-06-07
-				// (dead credentials → http 401); each operational pager now posts
-				// to its OWN Slack channel via the shared SLACK_BOT_TOKEN. The
-				// channel is overridable per-pager via env, defaulting to the
-				// dedicated channels created 2026-06-07.
-				outboxNotifier := notify.SlackChannelFromEnv("SLACK_OUTBOX_CHANNEL", "#outbox-self-check")
-				storageNotifier := notify.SlackChannelFromEnv("SLACK_STORAGE_GUARD_CHANNEL", "#storage-guard")
-
-				// Outbox self-check. Evaluates durable-outbox invariants every
-				// 5 minutes and routes breaches to #outbox-self-check.
-				outboxSelfCheck := worker.NewOutboxSelfCheck(mailingDB)
-				if _, noop := outboxNotifier.(notify.NoopNotifier); !noop {
-					outboxSelfCheck.SetAlerter(worker.NewSlackAlerter(outboxNotifier, "Outbox self-check"), []string{"slack"})
-					log.Printf("Outbox Self-Check Slack alerts ENABLED (transport=%s)", outboxNotifier.Name())
-				} else {
-					log.Println("Outbox Self-Check Slack alerts DISABLED (no Slack transport configured)")
-				}
-				go outboxSelfCheck.Start(ctx)
-				log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
-
-				// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
-				storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)
-				if _, noop := storageNotifier.(notify.NoopNotifier); !noop {
-					storageGuard.SetAlerter(worker.NewSlackAlerter(storageNotifier, "Storage guard"), []string{"slack"})
-					log.Printf("Storage Guard Slack alerts ENABLED (transport=%s)", storageNotifier.Name())
-				}
-				go storageGuard.Start(ctx)
-				server.SetStorageGuard(storageGuard)
-				log.Println("Storage Guard started (5m interval, state-aware slot/WAL/queue/acct checks)")
-
-				// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
-				dataCleanup := worker.NewDataCleanupWorker(mailingDB)
-				go dataCleanup.Start(ctx)
-				log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
-
-				// Start Engine Signals Archiver. Keeps mailing_engine_signals
-				// at a 14-day hot window; everything older lands in
-				// s3://$ENGINE_S3_BUCKET/engine-signals/dt=YYYY-MM-DD/isp=<isp>/
-				// with a pointer row in mailing_engine_signals_archive_index.
-				// Cold reads go through internal/engine/signal_archive.go.
-				{
-					engineBucket := os.Getenv("ENGINE_S3_BUCKET")
-					if engineBucket == "" {
-						engineBucket = "ignite-pmta-engine"
-					}
-					engineRegion := os.Getenv("ENGINE_S3_REGION")
-					if engineRegion == "" {
-						engineRegion = "us-west-2"
-					}
-					engAwsCfg, engErr := awsconfig.LoadDefaultConfig(
-						context.Background(),
-						awsconfig.WithRegion(engineRegion),
-					)
-					if engErr != nil {
-						log.Printf("WARNING: Engine Signals Archiver disabled — AWS config failed: %v", engErr)
-					} else {
-						engS3 := s3.NewFromConfig(engAwsCfg)
-						archiver := worker.NewEngineSignalsArchiver(mailingDB, engS3, engineBucket)
-						go archiver.Start(ctx)
-						log.Printf("Engine Signals Archiver started (hot=14d, interval=6h, bucket=%s, region=%s)",
-							engineBucket, engineRegion)
-					}
-				}
-
-				// Analytics event lake (Phase 1) — best-effort fan-out of
-				// per-recipient delivery/engagement events to Firehose ->
-				// s3://ignite-analytics-lake (JSON->Parquet, Glue+Athena).
-				// DISABLED unless ANALYTICS_FIREHOSE_STREAM is set, so this
-				// ships dark and is enabled later via env (no code change).
-				// Never blocks the send/ingest hot path; lossy by design.
-				{
-					lakeStream := os.Getenv("ANALYTICS_FIREHOSE_STREAM")
-					lakeRegion := os.Getenv("ANALYTICS_FIREHOSE_REGION")
-					if lakeRegion == "" {
-						lakeRegion = "us-west-2"
-					}
-					if err := analytics.Init(context.Background(), lakeStream, lakeRegion); err != nil {
-						log.Printf("WARNING: analytics event lake init failed: %v", err)
-					}
-				}
-
-				// Start ISP Backfill Worker (classifies mailing_subscribers.isp
-				// for rows with empty/NULL isp). The PMTA campaign planner's
-				// per-ISP cold-fallback stripe relies on this column being
-				// populated, so we eagerly backfill on startup and then hourly.
-				// Uses the canonical isp.SQLCaseFromEmail classifier so the SQL
-				// and Go classifiers never drift.
-				ispBackfill := worker.NewISPBackfillWorker(mailingDB)
-				go ispBackfill.Start(ctx)
-				log.Println("ISP Backfill Worker started (classifies mailing_subscribers.isp hourly)")
-
-				// Start Warmup Graduation Worker (P5b): nightly sweep that
-				// promotes warming→engaged and demotes engaged→dormant on
-				// the SDS table. First pass runs 2m after boot, then every
-				// 24h aligned to 02:00 UTC.
-				warmupGraduator := mailing.NewWarmupGraduator(mailingDB)
-				warmupGraduator.Start(ctx)
-				log.Println("Warmup Graduation Worker started (nightly sweep on mailing_subscriber_domain_state)")
-
-				// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
-				// Reads heavy COUNT queries from readDB (replica when configured, primary otherwise).
-				// Writes subscriber_count updates back to mailingDB (always the primary).
-				segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(readDB, mailingDB, 30*time.Minute, 2)
-				segRefresh.Start(ctx)
-				log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
-
-				// Start Segment Cleanup Worker. This was previously built but
-				// never wired into main, which is why ~19.8k segments
-				// accumulated. It hard-deletes single-use static snapshots
-				// (segment + member rows, no FK cascade) 7d after last_used,
-				// and runs the warn→grace→archive→delete lifecycle for unused
-				// dynamic segments per mailing_segment_cleanup_settings.
-				// emailSender is nil: warnings are recorded in-DB (and surfaced
-				// in the UI) without sending email. Stops on ctx cancellation.
-				segCleanup := worker.NewSegmentCleanupWorker(mailingDB, nil)
-				segCleanup.Start()
-				go func() {
-					<-ctx.Done()
-					segCleanup.Stop()
-				}()
-				log.Println("Segment Cleanup Worker started (static snapshots hard-deleted 7d after last_used; dynamic on warn/grace/archive)")
-
-				// Start Worker Health Monitor. Scans mailing_worker_heartbeats
-				// and alerts (Slack if SLACK_BOT_TOKEN set, else logs) when any
-				// instrumented worker misses 3× its declared cycle interval.
-				// Surfaced in the UI via /api/worker-health.
-				workerStallNotifier := notify.SlackChannelFromEnv("SLACK_WORKER_STALL_CHANNEL", "#worker-stall")
-				workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerStallNotifier)
-				go workerHealthMonitor.Start(ctx)
-				log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerStallNotifier.Name())
-
-				// Sam's Club internal drip digest. Posts a 6-hourly progress
-				// snapshot (queue depth by ISP, sent last 24h, drain ETA, live
-				// status) for the samsclub_internal vertical — the 1.4M
-				// Yahoo/AOL net-new engaged load — to #yahoo-aol-sams-drip
-				// (override: SLACK_SAMSCLUB_DRIP_CHANNEL). Posts via the shared
-				// SLACK_BOT_TOKEN; logs only if no Slack transport is configured.
-				samsDripNotifier := notify.SlackChannelFromEnv("SLACK_SAMSCLUB_DRIP_CHANNEL", "#yahoo-aol-sams-drip")
-				samsDripDigest := worker.NewPartnerDripDigestMonitor(mailingDB, samsDripNotifier, "samsclub_internal", "Yahoo/AOL Engaged")
-				go samsDripDigest.Start(ctx)
-				log.Printf("Sam's Club drip digest started (vertical=samsclub_internal, 6h, transport=%s)", samsDripNotifier.Name())
-
-				// Journey Segment Enroller — auto-enrolls subscribers from
-				// segment-triggered journeys (Welcome Series Phase 2). Uses the
-				// segmentation engine for saved segments, and the
-				// "__preset_cleaned_never_mailed__" preset for the UI's
-				// cleaned-never-mailed shortcut. Idempotent via UNIQUE
-				// (journey_id, subscriber_email) ON CONFLICT DO NOTHING.
-				journeySegmentEnroller := worker.NewJourneySegmentEnroller(mailingDB, segmentation.NewEngine(mailingDB))
-				journeySegmentEnroller.Start(ctx)
-				log.Println("Journey Segment Enroller started (auto-enrolls segment-triggered journeys every 5m)")
-
-				// Click-Drip Journey workers (2026-06-01). These run IN-PROCESS in
-				// the server because there is no separate worker deployment in
-				// production (cmd/worker is not deployed; only cmd/server runs as
-				// ignite-service). Safe to run here: the only active journey in the
-				// system is the click-drip journey, so the executor never touches
-				// Welcome-series sending (which goes through PMTA waves, not the
-				// journey tables).
-				//
-				//  1. JourneyEventEnroller drains mailing_journey_event_triggers
-				//     (queued by EverflowClickPostbackHandler) into
-				//     mailing_journey_enrollments every 5s.
-				//  2. JourneyExecutor advances enrollments through the delay/email
-				//     nodes; click-drip email nodes dispatch via JourneyClickDripSender
-				//     which reuses the in-process profileSender (PMTA HTTP bridge +
-				//     per-ISP VMTA pool routing) so reminders go out on the exact
-				//     brand profile the subscriber originally clicked from, with
-				//     open/click tracking and a mailing_message_log row.
-				journeyEventEnroller := worker.NewJourneyEventEnroller(mailingDB)
-				journeyEventEnroller.Start(ctx)
-				log.Println("Journey Event Enroller started (drains click-drip trigger queue every 5s)")
-
-				// JourneyClickTrackingEnroller is the INTERNAL-click inlet: it
-				// reads real click events from mailing_tracking_events, resolves
-				// the offer from the money-URL slug (cratoolpro or affiliate PS####;
-				// mailing_offer_slug_map), and writes them into the SAME
-				// mailing_journey_event_triggers queue the Everflow path uses.
-				// This is what actually feeds the drip, since Everflow's per-offer
-				// click postbacks don't reliably reach us.
-				journeyClickTrackingEnroller := worker.NewJourneyClickTrackingEnroller(mailingDB)
-				journeyClickTrackingEnroller.Start(ctx)
-				log.Println("Journey Click-Tracking Enroller started (enrolls internal money-URL clicks every 30s)")
-
-				journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
-				journeyExecutor := worker.NewJourneyExecutor(mailingDB)
-				journeyExecutor.SetClickDripSender(journeyClickDripSender)
-				journeyExecutor.Start()
-				log.Println("Journey Executor started (advances click-drip enrollments; reminders sent via PMTA on original profile)")
-
-				ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
-				ghostVisitorWorker.Start(ctx)
-				log.Println("Ghost Visitor Worker started (tags ghost visitors every 4h)")
-
-				// Start List Refresh Worker (updates subscriber_count and mailed_to on lists)
-				listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
-				listRefresh.Start(ctx)
-				log.Println("List Refresh Worker started (updates list counts every 1h)")
-
-				suppressionListWorker := worker.NewSuppressionListWorker(mailingDB, 24*time.Hour)
-				suppressionListWorker.Start(ctx)
-				log.Println("Suppression List Worker started (brand-specific sunset suppression, runs daily)")
-
-				healthMonitor := worker.NewCampaignHealthMonitor(mailingDB)
-
-				// Wire the campaign-lateness pager to Slack (Twilio SMS retired
-				// 2026-06-07). Feature is off by default; enable via
-				// alerting.campaign_lateness.enabled (yaml) or
-				// ALERT_CAMPAIGN_LATENESS_ENABLED=1 (env). Delivers to
-				// #campaign-lateness-pager (override: SLACK_CAMPAIGN_LATENESS_CHANNEL).
-				latenessNotifier := notify.SlackChannelFromEnv("SLACK_CAMPAIGN_LATENESS_CHANNEL", "#campaign-lateness-pager")
-				if _, noop := latenessNotifier.(notify.NoopNotifier); cfg.Alerting.CampaignLateness.Enabled && !noop {
-					threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
-					reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
-					healthMonitor.SetLatenessAlerter(
-						worker.NewSlackAlerter(latenessNotifier, "Campaign lateness"),
-						[]string{"slack"},
-						threshold,
-						reAlert,
-					)
-					log.Printf("Campaign lateness Slack alerts ENABLED: threshold=%s realert=%s transport=%s",
-						threshold, reAlert, latenessNotifier.Name())
-				} else {
-					log.Println("Campaign lateness Slack alerts DISABLED (alerting.campaign_lateness.enabled=false or no Slack transport)")
-				}
-
-				healthMonitor.Start()
-				defer healthMonitor.Stop()
-				log.Println("Campaign Health Monitor started (per-ISP threshold auto-pause, checks every 60s)")
-
-				// Start Content Refresh Worker (pre-generates wave email content nightly)
-				contentRefresh := worker.NewContentRefreshWorker(mailingDB, 24*time.Hour)
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "discountblog", BlogDomain: "discountblog.com",
-					SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
-					CampaignType: "newsletter",
-					Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. First-person storytelling. You say things like "My wife and I tried this..." and "Here's what actually worked for our family." Pull specific numbers from the articles — dollar amounts, percentages, timeframes. Never generic. Every sentence should teach or reveal something useful. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. Think: personal finance blog meets friendly text message.`,
-					Audience: `Budget-conscious families, young professionals figuring out adulting, and savvy deal hunters. They're busy, skeptical of hype, and want actionable advice — not listicles. They read Discount Blog because it feels real, not manufactured.`,
-					HTMLTemplate: api.DiscountBlogHTMLTemplate,
 				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "quizfiesta", BlogDomain: "quizfiesta.com",
-					SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
-					CampaignType: "trivia",
-					Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. Write like an arcade machine that gained sentience and got really into hyping people up. Short punchy sentences. Direct challenges to the reader. Arcade/gaming lingo: "INSERT COIN", "GAME OVER", "player", "high score", "streak", "level up." Competitive but encouraging — you want them to play, not feel bad. Use ALL CAPS sparingly for emphasis on key words (one per paragraph max). Think: the text on an arcade cabinet's attract screen mixed with a friend trash-talking you at game night.`,
-					Audience: `Trivia lovers, casual gamers, friend groups who want game night content, and competitive players chasing leaderboard spots. They're on their phone, they have 2 minutes, and you need to get them excited enough to tap PLAY.`,
-					HTMLTemplate: api.QuizFiestaHTMLTemplate,
-					FallbackContent: []mailing.BlogExcerpt{
-						{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty. How high can you score?", URL: "https://quizfiesta.com/play"},
-						{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last. Stack streak bonuses for massive multipliers. Current record: 47 questions.", URL: "https://quizfiesta.com/play"},
-						{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out. Every second wasted is points lost.", URL: "https://quizfiesta.com/play"},
-						{Title: "AI Challenge — A.P.E.X. Is Watching", Excerpt: "Race the machine through 20 levels. Our AI adapts to your skill in real-time. It studies your weaknesses.", URL: "https://quizfiesta.com/play"},
-						{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles where every millisecond matters.", URL: "https://quizfiesta.com/play"},
-						{Title: "Party Mode — Up to 8 Players. Total Chaos.", Excerpt: "Create a room. Share the code. Jackbox-style trivia with friends. Perfect for game night.", URL: "https://quizfiesta.com/play"},
-						{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 average 94% accuracy. Where do you rank?", URL: "https://quizfiesta.com/leaderboard"},
-					},
-				})
+				log.Printf("ISP rate registry wired to send worker pool (per-IP rate limiting: %v, rate limiting disabled: %v)", perIPEnabled, disableRateLimiting)
+			}
+
+			// Wire offer suppression Bloom checker to send worker
+			if server.OfferSuppMgr != nil {
+				sendWorkerPool.SetOfferSuppressionChecker(server.OfferSuppMgr)
+				log.Println("Offer suppression Bloom filter wired to send worker pool")
+			}
+
+			// Cross-brand daily cap enforcer (P5a). Redis fast path +
+			// Postgres fallback. Default cap=2; org settings override.
+			// Disable entirely with DISABLE_CROSS_BRAND_CAP=true.
+			//
+			// The same CapChecker is also wired into the PMTA wave
+			// scheduler (cap-aware reserve pool, Slice 4) so the
+			// dispatcher can Peek the cap and substitute reserves
+			// before the worker layer ever sees over-cap subscribers.
+			if os.Getenv("DISABLE_CROSS_BRAND_CAP") != "true" {
+				capChecker := mailing.NewCapChecker(mailingDB, redisClient, 2)
+				sendWorkerPool.SetCapChecker(capChecker)
+				pmtaWaveScheduler.SetCapChecker(capChecker)
+				if pmtaWaveConsumer != nil {
+					pmtaWaveConsumer.SetCapChecker(capChecker)
+				}
+				if redisClient != nil {
+					log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (Redis fast path + PG fallback)")
+				} else {
+					log.Println("Cross-brand daily cap wired to send worker pool + PMTA wave dispatcher (PG-only, not race-safe under high concurrency)")
+				}
+			} else {
+				log.Println("Cross-brand daily cap DISABLED via DISABLE_CROSS_BRAND_CAP env var")
+			}
+
+			// Durable injection outbox state machine. Controlled by
+			// mailing.outbox_mode in config.yaml (or OUTBOX_MODE env var).
+			// "legacy" preserves historic pending->sending->sent flow;
+			// "durable" activates queued->submitting->accepted with atomic
+			// state guards and the X-Ignite-Idempotency-Key header. This
+			// is the one-line rollback: flip the flag, restart, done.
+			outboxMode := strings.ToLower(strings.TrimSpace(cfg.Mailing.OutboxMode))
+			if outboxMode == "" {
+				outboxMode = "legacy"
+			}
+			sendWorkerPool.SetOutboxMode(outboxMode)
+			log.Printf("Send worker pool outbox mode: %s", outboxMode)
+
+			sendWorkerPool.Start()
+
+			// SA-7: pure observability — register the wave-processor
+			// status endpoint AFTER the send worker pool exists so the
+			// handler can read its in-memory throughput. Mounted on
+			// the root router (bypasses /api auth) following the same
+			// pattern as /api/outbox/summary so operators can curl it
+			// during live incidents without auth dance.
+			server.RegisterWaveProcessorStatusRoute(sendWorkerPool)
+			log.Println("[wave_processor_status] GET /api/wave-processor/status registered")
+
+			// Start Queue Recovery Worker (reclaims stuck items from crashed workers)
+			queueRecovery := worker.NewQueueRecoveryWorker(mailingDB)
+			go queueRecovery.Start(ctx)
+			log.Println("Queue Recovery Worker started (scans every 2m for stuck items, max 5 retries)")
+
+			// Durable-outbox reconciler. Only meaningful when OutboxMode=durable
+			// because nothing ever writes 'submitting' in legacy mode. Starting
+			// it unconditionally is cheap (single indexed SELECT, no writes if
+			// no submitting rows exist) and leaves a safety net in place if
+			// durable mode is flipped on without a restart.
+			outboxReconciler := worker.NewOutboxReconciler(mailingDB)
+			go outboxReconciler.Start(ctx)
+			log.Println("Outbox Reconciler started (60s interval, 10m grace, commits crash-window sends + requeues stranded rows)")
+
+			// Outbox summary refresher. Keeps /api/outbox/summary on a warm
+			// in-memory cache so dashboard polls never block on the aggregate
+			// scans that previously took ~15s against a 1M+ row queue table.
+			api.StartOutboxSummaryRefresher(ctx, mailingDB)
+			log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
+
+			// Operational-alert transport. Twilio SMS was retired 2026-06-07
+			// (dead credentials → http 401); each operational pager now posts
+			// to its OWN Slack channel via the shared SLACK_BOT_TOKEN. The
+			// channel is overridable per-pager via env, defaulting to the
+			// dedicated channels created 2026-06-07.
+			outboxNotifier := notify.SlackChannelFromEnv("SLACK_OUTBOX_CHANNEL", "#outbox-self-check")
+			storageNotifier := notify.SlackChannelFromEnv("SLACK_STORAGE_GUARD_CHANNEL", "#storage-guard")
+
+			// Outbox self-check. Evaluates durable-outbox invariants every
+			// 5 minutes and routes breaches to #outbox-self-check.
+			outboxSelfCheck := worker.NewOutboxSelfCheck(mailingDB)
+			if _, noop := outboxNotifier.(notify.NoopNotifier); !noop {
+				outboxSelfCheck.SetAlerter(worker.NewSlackAlerter(outboxNotifier, "Outbox self-check"), []string{"slack"})
+				log.Printf("Outbox Self-Check Slack alerts ENABLED (transport=%s)", outboxNotifier.Name())
+			} else {
+				log.Println("Outbox Self-Check Slack alerts DISABLED (no Slack transport configured)")
+			}
+			go outboxSelfCheck.Start(ctx)
+			log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
+
+			// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
+			storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)
+			if _, noop := storageNotifier.(notify.NoopNotifier); !noop {
+				storageGuard.SetAlerter(worker.NewSlackAlerter(storageNotifier, "Storage guard"), []string{"slack"})
+				log.Printf("Storage Guard Slack alerts ENABLED (transport=%s)", storageNotifier.Name())
+			}
+			go storageGuard.Start(ctx)
+			server.SetStorageGuard(storageGuard)
+			log.Println("Storage Guard started (5m interval, state-aware slot/WAL/queue/acct checks)")
+
+			// Start Data Cleanup Worker (removes old queue items, tracking events, agent decisions)
+			dataCleanup := worker.NewDataCleanupWorker(mailingDB)
+			go dataCleanup.Start(ctx)
+			log.Println("Data Cleanup Worker started (runs every 1h, batch deletes old data)")
+
+			// Start Engine Signals Archiver. Keeps mailing_engine_signals
+			// at a 14-day hot window; everything older lands in
+			// s3://$ENGINE_S3_BUCKET/engine-signals/dt=YYYY-MM-DD/isp=<isp>/
+			// with a pointer row in mailing_engine_signals_archive_index.
+			// Cold reads go through internal/engine/signal_archive.go.
+			{
+				engineBucket := os.Getenv("ENGINE_S3_BUCKET")
+				if engineBucket == "" {
+					engineBucket = "ignite-pmta-engine"
+				}
+				engineRegion := os.Getenv("ENGINE_S3_REGION")
+				if engineRegion == "" {
+					engineRegion = "us-west-2"
+				}
+				engAwsCfg, engErr := awsconfig.LoadDefaultConfig(
+					context.Background(),
+					awsconfig.WithRegion(engineRegion),
+				)
+				if engErr != nil {
+					log.Printf("WARNING: Engine Signals Archiver disabled — AWS config failed: %v", engErr)
+				} else {
+					engS3 := s3.NewFromConfig(engAwsCfg)
+					archiver := worker.NewEngineSignalsArchiver(mailingDB, engS3, engineBucket)
+					go archiver.Start(ctx)
+					log.Printf("Engine Signals Archiver started (hot=14d, interval=6h, bucket=%s, region=%s)",
+						engineBucket, engineRegion)
+				}
+			}
+
+			// Analytics event lake (Phase 1) — best-effort fan-out of
+			// per-recipient delivery/engagement events to Firehose ->
+			// s3://ignite-analytics-lake (JSON->Parquet, Glue+Athena).
+			// DISABLED unless ANALYTICS_FIREHOSE_STREAM is set, so this
+			// ships dark and is enabled later via env (no code change).
+			// Never blocks the send/ingest hot path; lossy by design.
+			{
+				lakeStream := os.Getenv("ANALYTICS_FIREHOSE_STREAM")
+				lakeRegion := os.Getenv("ANALYTICS_FIREHOSE_REGION")
+				if lakeRegion == "" {
+					lakeRegion = "us-west-2"
+				}
+				if err := analytics.Init(context.Background(), lakeStream, lakeRegion); err != nil {
+					log.Printf("WARNING: analytics event lake init failed: %v", err)
+				}
+
+				// READ side of the same lake (Athena-backed). Disabled
+				// unless ANALYTICS_ATHENA_OUTPUT is set, so this also ships
+				// dark. Best-effort: never fail boot.
+				if err := analytics.InitReader(context.Background(), os.Getenv("ANALYTICS_ATHENA_DATABASE"), os.Getenv("ANALYTICS_ATHENA_WORKGROUP"), os.Getenv("ANALYTICS_ATHENA_OUTPUT"), lakeRegion); err != nil {
+					log.Printf("WARNING: analytics lake reader init failed: %v", err)
+				}
+			}
+
+			// Start ISP Backfill Worker (classifies mailing_subscribers.isp
+			// for rows with empty/NULL isp). The PMTA campaign planner's
+			// per-ISP cold-fallback stripe relies on this column being
+			// populated, so we eagerly backfill on startup and then hourly.
+			// Uses the canonical isp.SQLCaseFromEmail classifier so the SQL
+			// and Go classifiers never drift.
+			ispBackfill := worker.NewISPBackfillWorker(mailingDB)
+			go ispBackfill.Start(ctx)
+			log.Println("ISP Backfill Worker started (classifies mailing_subscribers.isp hourly)")
+
+			// Start Warmup Graduation Worker (P5b): nightly sweep that
+			// promotes warming→engaged and demotes engaged→dormant on
+			// the SDS table. First pass runs 2m after boot, then every
+			// 24h aligned to 02:00 UTC.
+			warmupGraduator := mailing.NewWarmupGraduator(mailingDB)
+			warmupGraduator.Start(ctx)
+			log.Println("Warmup Graduation Worker started (nightly sweep on mailing_subscriber_domain_state)")
+
+			// Start Segment Refresh Worker (recalculates dynamic segment subscriber counts).
+			// Reads heavy COUNT queries from readDB (replica when configured, primary otherwise).
+			// Writes subscriber_count updates back to mailingDB (always the primary).
+			segRefresh := worker.NewSegmentRefreshWorkerWithConcurrency(readDB, mailingDB, 30*time.Minute, 2)
+			segRefresh.Start(ctx)
+			log.Println("Segment Refresh Worker started (recalculates dynamic segments every 30m, concurrency=2)")
+
+			// Start Segment Cleanup Worker. This was previously built but
+			// never wired into main, which is why ~19.8k segments
+			// accumulated. It hard-deletes single-use static snapshots
+			// (segment + member rows, no FK cascade) 7d after last_used,
+			// and runs the warn→grace→archive→delete lifecycle for unused
+			// dynamic segments per mailing_segment_cleanup_settings.
+			// emailSender is nil: warnings are recorded in-DB (and surfaced
+			// in the UI) without sending email. Stops on ctx cancellation.
+			segCleanup := worker.NewSegmentCleanupWorker(mailingDB, nil)
+			segCleanup.Start()
+			go func() {
+				<-ctx.Done()
+				segCleanup.Stop()
+			}()
+			log.Println("Segment Cleanup Worker started (static snapshots hard-deleted 7d after last_used; dynamic on warn/grace/archive)")
+
+			// Start Worker Health Monitor. Scans mailing_worker_heartbeats
+			// and alerts (Slack if SLACK_BOT_TOKEN set, else logs) when any
+			// instrumented worker misses 3× its declared cycle interval.
+			// Surfaced in the UI via /api/worker-health.
+			workerStallNotifier := notify.SlackChannelFromEnv("SLACK_WORKER_STALL_CHANNEL", "#worker-stall")
+			workerHealthMonitor := worker.NewWorkerHealthMonitor(mailingDB, workerStallNotifier)
+			go workerHealthMonitor.Start(ctx)
+			log.Printf("Worker Health Monitor started (5m scan, transport=%s)", workerStallNotifier.Name())
+
+			// Sam's Club internal drip digest. Posts a 6-hourly progress
+			// snapshot (queue depth by ISP, sent last 24h, drain ETA, live
+			// status) for the samsclub_internal vertical — the 1.4M
+			// Yahoo/AOL net-new engaged load — to #yahoo-aol-sams-drip
+			// (override: SLACK_SAMSCLUB_DRIP_CHANNEL). Posts via the shared
+			// SLACK_BOT_TOKEN; logs only if no Slack transport is configured.
+			samsDripNotifier := notify.SlackChannelFromEnv("SLACK_SAMSCLUB_DRIP_CHANNEL", "#yahoo-aol-sams-drip")
+			samsDripDigest := worker.NewPartnerDripDigestMonitor(mailingDB, samsDripNotifier, "samsclub_internal", "Yahoo/AOL Engaged")
+			go samsDripDigest.Start(ctx)
+			log.Printf("Sam's Club drip digest started (vertical=samsclub_internal, 6h, transport=%s)", samsDripNotifier.Name())
+
+			// Journey Segment Enroller — auto-enrolls subscribers from
+			// segment-triggered journeys (Welcome Series Phase 2). Uses the
+			// segmentation engine for saved segments, and the
+			// "__preset_cleaned_never_mailed__" preset for the UI's
+			// cleaned-never-mailed shortcut. Idempotent via UNIQUE
+			// (journey_id, subscriber_email) ON CONFLICT DO NOTHING.
+			journeySegmentEnroller := worker.NewJourneySegmentEnroller(mailingDB, segmentation.NewEngine(mailingDB))
+			journeySegmentEnroller.Start(ctx)
+			log.Println("Journey Segment Enroller started (auto-enrolls segment-triggered journeys every 5m)")
+
+			// Click-Drip Journey workers (2026-06-01). These run IN-PROCESS in
+			// the server because there is no separate worker deployment in
+			// production (cmd/worker is not deployed; only cmd/server runs as
+			// ignite-service). Safe to run here: the only active journey in the
+			// system is the click-drip journey, so the executor never touches
+			// Welcome-series sending (which goes through PMTA waves, not the
+			// journey tables).
+			//
+			//  1. JourneyEventEnroller drains mailing_journey_event_triggers
+			//     (queued by EverflowClickPostbackHandler) into
+			//     mailing_journey_enrollments every 5s.
+			//  2. JourneyExecutor advances enrollments through the delay/email
+			//     nodes; click-drip email nodes dispatch via JourneyClickDripSender
+			//     which reuses the in-process profileSender (PMTA HTTP bridge +
+			//     per-ISP VMTA pool routing) so reminders go out on the exact
+			//     brand profile the subscriber originally clicked from, with
+			//     open/click tracking and a mailing_message_log row.
+			journeyEventEnroller := worker.NewJourneyEventEnroller(mailingDB)
+			journeyEventEnroller.Start(ctx)
+			log.Println("Journey Event Enroller started (drains click-drip trigger queue every 5s)")
+
+			// JourneyClickTrackingEnroller is the INTERNAL-click inlet: it
+			// reads real click events from mailing_tracking_events, resolves
+			// the offer from the money-URL slug (cratoolpro or affiliate PS####;
+			// mailing_offer_slug_map), and writes them into the SAME
+			// mailing_journey_event_triggers queue the Everflow path uses.
+			// This is what actually feeds the drip, since Everflow's per-offer
+			// click postbacks don't reliably reach us.
+			journeyClickTrackingEnroller := worker.NewJourneyClickTrackingEnroller(mailingDB)
+			journeyClickTrackingEnroller.Start(ctx)
+			log.Println("Journey Click-Tracking Enroller started (enrolls internal money-URL clicks every 30s)")
+
+			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
+			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
+			journeyExecutor.SetClickDripSender(journeyClickDripSender)
+			journeyExecutor.Start()
+			log.Println("Journey Executor started (advances click-drip enrollments; reminders sent via PMTA on original profile)")
+
+			ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
+			ghostVisitorWorker.Start(ctx)
+			log.Println("Ghost Visitor Worker started (tags ghost visitors every 4h)")
+
+			// Start List Refresh Worker (updates subscriber_count and mailed_to on lists)
+			listRefresh := worker.NewListRefreshWorker(mailingDB, 1*time.Hour)
+			listRefresh.Start(ctx)
+			log.Println("List Refresh Worker started (updates list counts every 1h)")
+
+			suppressionListWorker := worker.NewSuppressionListWorker(mailingDB, 24*time.Hour)
+			suppressionListWorker.Start(ctx)
+			log.Println("Suppression List Worker started (brand-specific sunset suppression, runs daily)")
+
+			healthMonitor := worker.NewCampaignHealthMonitor(mailingDB)
+
+			// Wire the campaign-lateness pager to Slack (Twilio SMS retired
+			// 2026-06-07). Feature is off by default; enable via
+			// alerting.campaign_lateness.enabled (yaml) or
+			// ALERT_CAMPAIGN_LATENESS_ENABLED=1 (env). Delivers to
+			// #campaign-lateness-pager (override: SLACK_CAMPAIGN_LATENESS_CHANNEL).
+			latenessNotifier := notify.SlackChannelFromEnv("SLACK_CAMPAIGN_LATENESS_CHANNEL", "#campaign-lateness-pager")
+			if _, noop := latenessNotifier.(notify.NoopNotifier); cfg.Alerting.CampaignLateness.Enabled && !noop {
+				threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
+				reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
+				healthMonitor.SetLatenessAlerter(
+					worker.NewSlackAlerter(latenessNotifier, "Campaign lateness"),
+					[]string{"slack"},
+					threshold,
+					reAlert,
+				)
+				log.Printf("Campaign lateness Slack alerts ENABLED: threshold=%s realert=%s transport=%s",
+					threshold, reAlert, latenessNotifier.Name())
+			} else {
+				log.Println("Campaign lateness Slack alerts DISABLED (alerting.campaign_lateness.enabled=false or no Slack transport)")
+			}
+
+			healthMonitor.Start()
+			defer healthMonitor.Stop()
+			log.Println("Campaign Health Monitor started (per-ISP threshold auto-pause, checks every 60s)")
+
+			// Start Content Refresh Worker (pre-generates wave email content nightly)
+			contentRefresh := worker.NewContentRefreshWorker(mailingDB, 24*time.Hour)
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "discountblog", BlogDomain: "discountblog.com",
+				SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
+				CampaignType: "newsletter",
+				Voice:        `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. First-person storytelling. You say things like "My wife and I tried this..." and "Here's what actually worked for our family." Pull specific numbers from the articles — dollar amounts, percentages, timeframes. Never generic. Every sentence should teach or reveal something useful. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. Think: personal finance blog meets friendly text message.`,
+				Audience:     `Budget-conscious families, young professionals figuring out adulting, and savvy deal hunters. They're busy, skeptical of hype, and want actionable advice — not listicles. They read Discount Blog because it feels real, not manufactured.`,
+				HTMLTemplate: api.DiscountBlogHTMLTemplate,
+			})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "quizfiesta", BlogDomain: "quizfiesta.com",
+				SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
+				CampaignType: "trivia",
+				Voice:        `You are the voice of QuizFiesta — a retro-arcade trivia platform. Write like an arcade machine that gained sentience and got really into hyping people up. Short punchy sentences. Direct challenges to the reader. Arcade/gaming lingo: "INSERT COIN", "GAME OVER", "player", "high score", "streak", "level up." Competitive but encouraging — you want them to play, not feel bad. Use ALL CAPS sparingly for emphasis on key words (one per paragraph max). Think: the text on an arcade cabinet's attract screen mixed with a friend trash-talking you at game night.`,
+				Audience:     `Trivia lovers, casual gamers, friend groups who want game night content, and competitive players chasing leaderboard spots. They're on their phone, they have 2 minutes, and you need to get them excited enough to tap PLAY.`,
+				HTMLTemplate: api.QuizFiestaHTMLTemplate,
+				FallbackContent: []mailing.BlogExcerpt{
+					{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty. How high can you score?", URL: "https://quizfiesta.com/play"},
+					{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last. Stack streak bonuses for massive multipliers. Current record: 47 questions.", URL: "https://quizfiesta.com/play"},
+					{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out. Every second wasted is points lost.", URL: "https://quizfiesta.com/play"},
+					{Title: "AI Challenge — A.P.E.X. Is Watching", Excerpt: "Race the machine through 20 levels. Our AI adapts to your skill in real-time. It studies your weaknesses.", URL: "https://quizfiesta.com/play"},
+					{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles where every millisecond matters.", URL: "https://quizfiesta.com/play"},
+					{Title: "Party Mode — Up to 8 Players. Total Chaos.", Excerpt: "Create a room. Share the code. Jackbox-style trivia with friends. Perfect for game night.", URL: "https://quizfiesta.com/play"},
+					{Title: "Weekly Leaderboard — The Arcade's Finest", Excerpt: "New leaderboard resets every Monday. Current top 3 average 94% accuracy. Where do you rank?", URL: "https://quizfiesta.com/leaderboard"},
+				},
+			})
 			contentRefresh.RegisterBrand(worker.ContentBrand{
 				Key: "discountblog", BlogDomain: "discountblog.com",
 				SendingDomain: "em.discountblog.com", BrandName: "Discount Blog",
 				CampaignType: "welcome",
-				Voice: `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. This is a WELCOME email for brand-new subscribers. Your job is to prove — with real numbers and real examples — that this newsletter will save them money. First-person storytelling: "My wife and I tried this..." Pull specific dollar amounts, percentages, and store names from the articles. Feature 2-3 of the best current deals as proof of value. Include a clear CTA to browse deals. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. The first impression must feel real, not manufactured.`,
-				Audience: `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression. They're skeptical of yet another email list and need immediate proof this one is different. Show them a real deal they would have missed.`,
+				Voice:        `You are writing as "Jamie" from Discount Blog — a relatable, practical person who genuinely loves saving money and sharing what works. This is a WELCOME email for brand-new subscribers. Your job is to prove — with real numbers and real examples — that this newsletter will save them money. First-person storytelling: "My wife and I tried this..." Pull specific dollar amounts, percentages, and store names from the articles. Feature 2-3 of the best current deals as proof of value. Include a clear CTA to browse deals. Tone: warm, honest, slightly conspiratorial (like sharing a secret with a friend). NOT salesy, NOT clickbaity, NOT corporate. The first impression must feel real, not manufactured.`,
+				Audience:     `Brand-new subscribers who just signed up. Curious but uncommitted — this is the first impression. They're skeptical of yet another email list and need immediate proof this one is different. Show them a real deal they would have missed.`,
 				HTMLTemplate: api.DiscountBlogWelcomeHTMLTemplate,
 			})
 			contentRefresh.RegisterBrand(worker.ContentBrand{
 				Key: "quizfiesta", BlogDomain: "quizfiesta.com",
 				SendingDomain: "em.quizfiesta.com", BrandName: "QuizFiesta",
 				CampaignType: "welcome",
-				Voice: `You are the voice of QuizFiesta — a retro-arcade trivia platform. This is a WELCOME email for brand-new players. Your job is to get them to tap PLAY within 60 seconds of opening. Short punchy sentences. Direct challenges: "Think you know science? Prove it." Arcade/gaming lingo: "INSERT COIN", "PLAYER ONE", "high score", "streak." Highlight 2-3 game modes with specific hooks — mention the leaderboard record, mention the AI opponent, mention multiplayer. Competitive but encouraging — trash-talk with a wink. Think: the attract screen on an arcade cabinet that makes you dig for quarters.`,
-				Audience: `Brand-new players who just signed up. They haven't played yet. They're one tap away from becoming addicted or unsubscribing. This email decides which. Hit them with the most exciting game mode, a challenge they can't ignore, and a CTA that feels like pressing START.`,
-					HTMLTemplate: api.QuizFiestaWelcomeHTMLTemplate,
-					FallbackContent: []mailing.BlogExcerpt{
-						{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
-						{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last.", URL: "https://quizfiesta.com/play"},
-						{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out.", URL: "https://quizfiesta.com/play"},
-						{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
-					},
-				})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "historythinking", BlogDomain: "historythinking.com",
-					SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
-					CampaignType: "newsletter",
-					Voice: `You are the voice of History Thinking — a scholarly yet accessible history publication. Write like a brilliant professor who tells stories at dinner parties that leave everyone speechless. Every article must surprise: reveal hidden connections, debunk myths, or reframe well-known events. Use vivid period detail and primary sources. Tone: authoritative but never dry, passionate about making history feel alive and relevant. Think: a documentary narrator who can't help but lean in when the story gets good.`,
-					Audience: `History enthusiasts who want surprising, well-researched stories that go beyond textbook summaries. They're curious, educated, and love "I didn't know that" moments.`,
-					HTMLTemplate: api.HistoryThinkingHTMLTemplate,
-				})
+				Voice:        `You are the voice of QuizFiesta — a retro-arcade trivia platform. This is a WELCOME email for brand-new players. Your job is to get them to tap PLAY within 60 seconds of opening. Short punchy sentences. Direct challenges: "Think you know science? Prove it." Arcade/gaming lingo: "INSERT COIN", "PLAYER ONE", "high score", "streak." Highlight 2-3 game modes with specific hooks — mention the leaderboard record, mention the AI opponent, mention multiplayer. Competitive but encouraging — trash-talk with a wink. Think: the attract screen on an arcade cabinet that makes you dig for quarters.`,
+				Audience:     `Brand-new players who just signed up. They haven't played yet. They're one tap away from becoming addicted or unsubscribing. This email decides which. Hit them with the most exciting game mode, a challenge they can't ignore, and a CTA that feels like pressing START.`,
+				HTMLTemplate: api.QuizFiestaWelcomeHTMLTemplate,
+				FallbackContent: []mailing.BlogExcerpt{
+					{Title: "Classic Mode — Test Your Knowledge", Excerpt: "15 questions. 30 seconds each. Streak multipliers and adaptive difficulty.", URL: "https://quizfiesta.com/play"},
+					{Title: "Survival Mode — One Wrong Answer and It's Over", Excerpt: "3 lives. Questions get harder the longer you last.", URL: "https://quizfiesta.com/play"},
+					{Title: "Speed Run — 30 Seconds. Go.", Excerpt: "The clock is ticking. Answer as many as you can before time runs out.", URL: "https://quizfiesta.com/play"},
+					{Title: "Multiplayer Duels — Settle It in Real-Time", Excerpt: "Share a room code. Go head-to-head. Real-time trivia battles.", URL: "https://quizfiesta.com/play"},
+				},
+			})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "historythinking", BlogDomain: "historythinking.com",
+				SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
+				CampaignType: "newsletter",
+				Voice:        `You are the voice of History Thinking — a scholarly yet accessible history publication. Write like a brilliant professor who tells stories at dinner parties that leave everyone speechless. Every article must surprise: reveal hidden connections, debunk myths, or reframe well-known events. Use vivid period detail and primary sources. Tone: authoritative but never dry, passionate about making history feel alive and relevant. Think: a documentary narrator who can't help but lean in when the story gets good.`,
+				Audience:     `History enthusiasts who want surprising, well-researched stories that go beyond textbook summaries. They're curious, educated, and love "I didn't know that" moments.`,
+				HTMLTemplate: api.HistoryThinkingHTMLTemplate,
+			})
 			contentRefresh.RegisterBrand(worker.ContentBrand{
 				Key: "historythinking", BlogDomain: "historythinking.com",
 				SendingDomain: "em.historythinking.com", BrandName: "History Thinking",
 				CampaignType: "welcome",
-				Voice: `You are the voice of History Thinking — a scholarly yet accessible history publication. This is a WELCOME email for brand-new subscribers. Your job is to prove that this newsletter will consistently surprise and educate them. Write like a brilliant professor telling stories at a dinner party that leave everyone speechless. Lead with the most jaw-dropping historical fact you can find from the blog. Feature 2-3 articles with vivid period detail: dates, names, consequences. Every article summary should end on a hook that makes them want to click through. Tone: authoritative but never dry, passionate about making history feel alive and relevant.`,
-				Audience: `Brand-new subscribers who just signed up. They're curious about history but haven't committed — this is the email that proves History Thinking is different from boring history textbooks. They want "I didn't know that" moments they can share with friends.`,
+				Voice:        `You are the voice of History Thinking — a scholarly yet accessible history publication. This is a WELCOME email for brand-new subscribers. Your job is to prove that this newsletter will consistently surprise and educate them. Write like a brilliant professor telling stories at a dinner party that leave everyone speechless. Lead with the most jaw-dropping historical fact you can find from the blog. Feature 2-3 articles with vivid period detail: dates, names, consequences. Every article summary should end on a hook that makes them want to click through. Tone: authoritative but never dry, passionate about making history feel alive and relevant.`,
+				Audience:     `Brand-new subscribers who just signed up. They're curious about history but haven't committed — this is the email that proves History Thinking is different from boring history textbooks. They want "I didn't know that" moments they can share with friends.`,
 				HTMLTemplate: api.HistoryThinkingWelcomeHTMLTemplate,
 			})
-				contentRefresh.RegisterBrand(worker.ContentBrand{
-					Key: "myownhealth", BlogDomain: "myownhealth.net",
-					SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
-					CampaignType: "newsletter",
-					Voice: `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. Write like a sports medicine doctor who also lifts. Direct, actionable, zero fluff. Every claim needs a mechanism: don't just say "drink water," explain what dehydration does to cortisol and recovery. Use specific numbers: grams, reps, minutes, studies. Challenge bro-science and wellness hype with actual data. Tone: confident, slightly irreverent, respects the reader's intelligence. Think: a coach who reads PubMed for fun.`,
-					Audience: `Health-conscious adults who want actionable tips without fluff. They're tired of vague "eat clean, train hard" advice and want specific protocols backed by evidence.`,
-					HTMLTemplate: api.MyOwnHealthHTMLTemplate,
-				})
+			contentRefresh.RegisterBrand(worker.ContentBrand{
+				Key: "myownhealth", BlogDomain: "myownhealth.net",
+				SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
+				CampaignType: "newsletter",
+				Voice:        `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. Write like a sports medicine doctor who also lifts. Direct, actionable, zero fluff. Every claim needs a mechanism: don't just say "drink water," explain what dehydration does to cortisol and recovery. Use specific numbers: grams, reps, minutes, studies. Challenge bro-science and wellness hype with actual data. Tone: confident, slightly irreverent, respects the reader's intelligence. Think: a coach who reads PubMed for fun.`,
+				Audience:     `Health-conscious adults who want actionable tips without fluff. They're tired of vague "eat clean, train hard" advice and want specific protocols backed by evidence.`,
+				HTMLTemplate: api.MyOwnHealthHTMLTemplate,
+			})
 			contentRefresh.RegisterBrand(worker.ContentBrand{
 				Key: "myownhealth", BlogDomain: "myownhealth.net",
 				SendingDomain: "em.myownhealth.net", BrandName: "My Own Health",
 				CampaignType: "welcome",
-				Voice: `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. This is a WELCOME email for brand-new subscribers. Your job is to prove in 30 seconds of reading that this newsletter is different from every other wellness spam in their inbox. Lead with a specific, surprising health fact backed by a mechanism. Feature 2-3 articles with concrete numbers — grams, percentages, study sizes, timeframes. Challenge conventional wisdom: if a popular belief is wrong, say so and explain why. Mention the free tools (BMI, macro, calorie calculators) as proof of value. Tone: confident like a sports medicine doctor who also lifts, slightly irreverent, zero fluff, respects the reader's intelligence.`,
-				Audience: `Brand-new subscribers who just signed up. They're tired of vague "eat clean, train hard" wellness newsletters and want evidence-based content with specific protocols. This email must immediately prove we're different — hit them with the most counterintuitive, well-sourced health insight from the blog.`,
+				Voice:        `You are the voice of My Own Health — a no-nonsense, evidence-based health publication. This is a WELCOME email for brand-new subscribers. Your job is to prove in 30 seconds of reading that this newsletter is different from every other wellness spam in their inbox. Lead with a specific, surprising health fact backed by a mechanism. Feature 2-3 articles with concrete numbers — grams, percentages, study sizes, timeframes. Challenge conventional wisdom: if a popular belief is wrong, say so and explain why. Mention the free tools (BMI, macro, calorie calculators) as proof of value. Tone: confident like a sports medicine doctor who also lifts, slightly irreverent, zero fluff, respects the reader's intelligence.`,
+				Audience:     `Brand-new subscribers who just signed up. They're tired of vague "eat clean, train hard" wellness newsletters and want evidence-based content with specific protocols. This email must immediately prove we're different — hit them with the most counterintuitive, well-sourced health insight from the blog.`,
 				HTMLTemplate: api.MyOwnHealthWelcomeHTMLTemplate,
 			})
-				contentRefresh.Start(ctx)
-				log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
+			contentRefresh.Start(ctx)
+			log.Println("Content Refresh Worker started (generates fresh wave content every 24h)")
 
-				// Start Offer Suppression Worker (fatigue suppression + performance rollups nightly)
-				offerSuppWorker := worker.NewOfferSuppressionWorker(mailingDB, 24*time.Hour)
-				offerSuppWorker.Start(ctx)
-				log.Println("Offer Suppression Worker started (fatigue suppression + performance rollups every 24h)")
+			// Start Offer Suppression Worker (fatigue suppression + performance rollups nightly)
+			offerSuppWorker := worker.NewOfferSuppressionWorker(mailingDB, 24*time.Hour)
+			offerSuppWorker.Start(ctx)
+			log.Println("Offer Suppression Worker started (fatigue suppression + performance rollups every 24h)")
 
-				// Start S3 Data Normalizer (imports from jvc-email-data bucket)
-				datanormCfg := datanorm.Config{
-					Bucket:     cfg.DataNorm.S3Bucket,
-					Region:     cfg.DataNorm.S3Region,
-					AWSProfile: cfg.DataNorm.AWSProfile,
-					OrgID:      "00000000-0000-0000-0000-000000000001",
-					ListID:     cfg.DataNorm.DefaultListID,
-					Interval:   time.Duration(cfg.DataNorm.IntervalMinutes) * time.Minute,
+			// Start S3 Data Normalizer (imports from jvc-email-data bucket)
+			datanormCfg := datanorm.Config{
+				Bucket:     cfg.DataNorm.S3Bucket,
+				Region:     cfg.DataNorm.S3Region,
+				AWSProfile: cfg.DataNorm.AWSProfile,
+				OrgID:      "00000000-0000-0000-0000-000000000001",
+				ListID:     cfg.DataNorm.DefaultListID,
+				Interval:   time.Duration(cfg.DataNorm.IntervalMinutes) * time.Minute,
+			}
+			var normalizer *datanorm.Normalizer
+			if cfg.DataNorm.Enabled {
+				var err error
+				normalizer, err = datanorm.NewNormalizer(mailingDB, datanormCfg)
+				if err != nil {
+					log.Printf("Warning: Data normalizer init failed: %v", err)
+				} else {
+					normalizer.Start()
+					server.SetNormalizer(normalizer)
+					log.Printf("S3 Data Normalizer started (bucket: %s, interval: %dm)", cfg.DataNorm.S3Bucket, cfg.DataNorm.IntervalMinutes)
 				}
-				var normalizer *datanorm.Normalizer
-				if cfg.DataNorm.Enabled {
-					var err error
-					normalizer, err = datanorm.NewNormalizer(mailingDB, datanormCfg)
-					if err != nil {
-						log.Printf("Warning: Data normalizer init failed: %v", err)
-					} else {
-						normalizer.Start()
-						server.SetNormalizer(normalizer)
-						log.Printf("S3 Data Normalizer started (bucket: %s, interval: %dm)", cfg.DataNorm.S3Bucket, cfg.DataNorm.IntervalMinutes)
-					}
-				}
+			}
 
-				// Initialize EventWriter for subscriber_events table
-				eventWriter := datanorm.NewEventWriter(mailingDB)
-				_ = eventWriter // will be wired to handlers in subsequent phases
+			// Initialize EventWriter for subscriber_events table
+			eventWriter := datanorm.NewEventWriter(mailingDB)
+			_ = eventWriter // will be wired to handlers in subsequent phases
 
 			// Start Data Pipeline (nightly S3 ingestion, EO validation, list replenishment)
 			var dataPipeline *worker.DataPipeline
 			log.Printf("[DataPipeline] Config: enabled=%v bucket=%q prefix=%q eo_token_set=%v",
 				cfg.DataPipeline.Enabled, cfg.DataPipeline.S3Bucket, cfg.DataPipeline.S3Prefix, cfg.DataPipeline.EOAPIToken != "")
 			if cfg.DataPipeline.Enabled {
-					var err error
-					dataPipeline, err = worker.NewDataPipeline(mailingDB, cfg.DataPipeline, "00000000-0000-0000-0000-000000000001")
-					if err != nil {
-						log.Printf("Warning: Data Pipeline init failed: %v", err)
-					} else {
-						// Wire notifications via alerter with SES auth
-						sesUser := os.Getenv("SES_SMTP_USER")
-						sesSecret := os.Getenv("SES_SMTP_SECRET")
-						sesRegion := os.Getenv("SES_REGION")
-						if sesRegion == "" {
-							sesRegion = "us-east-1"
-						}
-						if sesUser != "" && sesSecret != "" {
-							pipelineAlerter := engine.NewAlerter(engine.AlerterConfig{
-								SMTPHost: fmt.Sprintf("email-smtp.%s.amazonaws.com", sesRegion),
-								SMTPPort: 587,
-								SMTPUser: sesUser,
-								SMTPPass: sesSecret,
-								From:     "noreply@projectjarvis.io",
-								To:       []string{cfg.DataPipeline.AdminEmail},
-							})
-							dataPipeline.Notifier = &pipelineAlerterAdapter{alerter: pipelineAlerter}
-						}
-
-						dataPipeline.Start()
-						server.DataPipeline = dataPipeline
-						log.Printf("Data Pipeline started (bucket: %s, prefix: %s, run_hour_utc: %d)",
-							cfg.DataPipeline.S3Bucket, cfg.DataPipeline.S3Prefix, cfg.DataPipeline.RunHourUTC)
+				var err error
+				dataPipeline, err = worker.NewDataPipeline(mailingDB, cfg.DataPipeline, "00000000-0000-0000-0000-000000000001")
+				if err != nil {
+					log.Printf("Warning: Data Pipeline init failed: %v", err)
+				} else {
+					// Wire notifications via alerter with SES auth
+					sesUser := os.Getenv("SES_SMTP_USER")
+					sesSecret := os.Getenv("SES_SMTP_SECRET")
+					sesRegion := os.Getenv("SES_REGION")
+					if sesRegion == "" {
+						sesRegion = "us-east-1"
 					}
+					if sesUser != "" && sesSecret != "" {
+						pipelineAlerter := engine.NewAlerter(engine.AlerterConfig{
+							SMTPHost: fmt.Sprintf("email-smtp.%s.amazonaws.com", sesRegion),
+							SMTPPort: 587,
+							SMTPUser: sesUser,
+							SMTPPass: sesSecret,
+							From:     "noreply@projectjarvis.io",
+							To:       []string{cfg.DataPipeline.AdminEmail},
+						})
+						dataPipeline.Notifier = &pipelineAlerterAdapter{alerter: pipelineAlerter}
+					}
+
+					dataPipeline.Start()
+					server.DataPipeline = dataPipeline
+					log.Printf("Data Pipeline started (bucket: %s, prefix: %s, run_hour_utc: %d)",
+						cfg.DataPipeline.S3Bucket, cfg.DataPipeline.S3Prefix, cfg.DataPipeline.RunHourUTC)
 				}
+			}
 
 			// Data Partner Ingestion workers (slicer, validator, drip orchestrator).
 			// Each is a polled goroutine — see internal/worker/partner_*.go.
@@ -1066,37 +1073,37 @@ func main() {
 				}
 			}
 
-				// Ensure workers stop on shutdown (H12)
-				go func() {
-					<-ctx.Done()
-					campaignScheduler.Stop()
-					sendWorkerPool.Stop()
-					offerSuppWorker.Stop()
-					server.StopDeltaSyncWorker()
-					if trackingConsumer != nil {
-						trackingConsumer.Stop()
-					}
-					if normalizer != nil {
-						normalizer.Stop()
-					}
-					if dataPipeline != nil {
-						dataPipeline.Stop()
-					}
-					if partnerSlicer != nil {
-						partnerSlicer.Stop()
-					}
-					if partnerValidator != nil {
-						partnerValidator.Stop()
-					}
-					if orch := server.GetPartnerDripOrchestrator(); orch != nil {
-						orch.Stop()
-					}
-					if redisClient != nil {
-						redisClient.Close()
-					}
-				}()
-			}
+			// Ensure workers stop on shutdown (H12)
+			go func() {
+				<-ctx.Done()
+				campaignScheduler.Stop()
+				sendWorkerPool.Stop()
+				offerSuppWorker.Stop()
+				server.StopDeltaSyncWorker()
+				if trackingConsumer != nil {
+					trackingConsumer.Stop()
+				}
+				if normalizer != nil {
+					normalizer.Stop()
+				}
+				if dataPipeline != nil {
+					dataPipeline.Stop()
+				}
+				if partnerSlicer != nil {
+					partnerSlicer.Stop()
+				}
+				if partnerValidator != nil {
+					partnerValidator.Stop()
+				}
+				if orch := server.GetPartnerDripOrchestrator(); orch != nil {
+					orch.Stop()
+				}
+				if redisClient != nil {
+					redisClient.Close()
+				}
+			}()
 		}
+	}
 	if mailingDB == nil {
 		log.Println("Mailing Platform not configured (disabled or missing database_url)")
 	}
@@ -2908,7 +2915,6 @@ func runStartupMigrations(db *sql.DB) {
 			  AND o.event_at >= s.event_at
 			  AND o.event_at <= s.event_at + INTERVAL '120 seconds'
 		`},
-
 
 		{"create_wave_content_cache", `CREATE TABLE IF NOT EXISTS mailing_wave_content_cache (
 			id            SERIAL PRIMARY KEY,

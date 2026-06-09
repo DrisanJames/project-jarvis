@@ -46,7 +46,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// audienceCadenceRefreshInterval). Read SCHEDULING_INTEGRITY_PLAYBOOK
 		// §15 for context. Cancellation tied to process lifetime.
 		advSvc.StartAudienceCadenceWorker(context.Background())
-		
+
 		// Injection Analytics — public (no auth required)
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
 		s.router.Get("/api/mailing/injection-analytics", injectionAnalytics.HandleGetInjectionAnalytics)
@@ -399,7 +399,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/send", svc.HandleSendEmail)
 			r.Post("/send-test", svc.HandleSendTestEmail)
 			r.Post("/send-transactional", svc.HandleSendTransactional)
-			
+
 			// Real-time Tracking (open, click, unsubscribe)
 			r.Get("/track/open/{data}", svc.HandleTrackOpen)
 			r.Get("/track/click/{data}", svc.HandleTrackClick)
@@ -430,34 +430,34 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// Infrastructure preflight check
 			r.Get("/preflight", s.HandlePreflightCheck)
-			
+
 			// ISP Agent Intelligence
 			r.Get("/isp-agents", svc.HandleGetISPAgents)
-			
+
 			// === ADVANCED FEATURES ===
-			
+
 			// Bounce/Complaint Webhooks (auto-suppression)
 			r.Post("/webhooks/sparkpost", advSvc.HandleSparkPostWebhook)
 			r.Post("/webhooks/ses", advSvc.HandleSESWebhook)
-			
+
 			// A/B Testing
 			r.Get("/ab-tests", advSvc.HandleGetABTests)
 			r.Post("/ab-tests", advSvc.HandleCreateABTest)
 			r.Get("/ab-tests/{testId}", advSvc.HandleGetABTest)
 			r.Post("/ab-tests/{testId}/start", advSvc.HandleStartABTest)
 			r.Post("/ab-tests/{testId}/pick-winner", advSvc.HandlePickWinner)
-			
+
 			// Campaign Management (Extended) - Note: PUT/DELETE handled by CampaignBuilder below
 			r.Post("/campaigns/{campaignId}/clone", advSvc.HandleCloneCampaign)
 			r.Post("/campaigns/{campaignId}/schedule", advSvc.HandleScheduleCampaign)
 			// r.Put and r.Delete moved to CampaignBuilder for full field support
-			
+
 			// Subscriber Import
 			r.Post("/lists/{listId}/import", advSvc.HandleImportSubscribers)
 			r.Get("/imports", advSvc.HandleGetImportJobs)
 			r.Get("/imports/{jobId}", advSvc.HandleGetImportJob)
 			r.Get("/import-jobs/{jobId}", advSvc.HandleGetImportJob) // Alias for frontend
-			
+
 			// Segments
 			r.Get("/segments", advSvc.HandleGetSegments)
 			r.Post("/segments", advSvc.HandleCreateSegment)
@@ -466,7 +466,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Put("/segments/{segmentId}", advSvc.HandleUpdateSegment)
 			r.Get("/segments/{segmentId}/preview", advSvc.HandlePreviewSegment)
 			r.Delete("/segments/{segmentId}", advSvc.HandleDeleteSegment)
-			
+
 			// Automation Workflows (Journeys)
 			r.Get("/automations", advSvc.HandleGetAutomations)
 			r.Post("/automations", advSvc.HandleCreateAutomation)
@@ -475,14 +475,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/automations/{workflowId}/activate", advSvc.HandleActivateAutomation)
 			r.Post("/automations/{workflowId}/pause", advSvc.HandlePauseAutomation)
 			r.Get("/automations/{workflowId}/enrollments", advSvc.HandleGetEnrollments)
-			
+
 			// Journey Visualization & Analytics
 			r.Get("/journeys/{workflowId}/visualization", advSvc.HandleGetJourneyVisualization)
 			r.Get("/journeys/{workflowId}/analytics", advSvc.HandleGetJourneyAnalytics)
 			r.Get("/journeys/subscriber/{email}", advSvc.HandleGetSubscriberJourney)
 			r.Post("/journeys/{workflowId}/enroll", advSvc.HandleEnrollSubscriberInJourney)
 			r.Post("/journey-center/journeys/{workflowId}/enrollments", advSvc.HandleEnrollSubscriberInJourney)
-			
+
 			// Templates
 			r.Get("/templates", advSvc.HandleGetTemplates)
 			r.Post("/templates", advSvc.HandleCreateTemplate)
@@ -490,12 +490,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Put("/templates/{templateId}", advSvc.HandleUpdateTemplate)
 			r.Post("/templates/{templateId}/clone", advSvc.HandleCloneTemplate)
 			r.Delete("/templates/{templateId}", advSvc.HandleDeleteTemplate)
-			
+
 			// Tags
 			r.Get("/tags", advSvc.HandleGetTags)
 			r.Post("/tags", advSvc.HandleCreateTag)
 			r.Post("/subscribers/{subscriberId}/tags", advSvc.HandleAssignTags)
-			
+
 			// Enhanced Analytics
 			r.Get("/analytics/campaigns/{campaignId}/timeline", advSvc.HandleCampaignTimeline)
 			r.Get("/analytics/campaigns/{campaignId}/domains", advSvc.HandleCampaignByDomain)
@@ -529,7 +529,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/campaign-summary", advSvc.HandleCampaignSummaryList)
 			r.Get("/analytics/campaign-summary/{id}", advSvc.HandleCampaignSummaryByID)
 			r.Get("/analytics/campaign-summary/{id}/reconcile", advSvc.HandleCampaignSummaryReconcile)
-			
+
+			// Analytics event lake READ layer (Athena-backed) — read-only
+			// query surface over s3://ignite-analytics-lake. Disabled by
+			// default (ANALYTICS_ATHENA_OUTPUT unset); status always works,
+			// summary/events degrade gracefully. See handlers_analytics_lake.go.
+			r.Get("/analytics/lake/status", s.HandleLakeStatus)
+			r.Get("/analytics/lake/summary", s.HandleLakeSummary)
+			r.Get("/analytics/lake/events", s.HandleLakeEvents)
+
 			// Cross-Campaign Reporting
 			r.Get("/reports/campaigns", advSvc.HandleCampaignComparison)
 			r.Get("/reports/top-performers", advSvc.HandleTopPerformers)
@@ -538,19 +546,19 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/reports/deliverability", advSvc.HandleDeliverabilityReport)
 			r.Get("/reports/infrastructure", advSvc.HandleInfrastructureBreakdown)
 			r.Get("/reports/revenue", advSvc.HandleRevenueReport)
-			
+
 			// Historical Metrics & LLM Learning
 			r.Get("/learning/historical-metrics", advSvc.HandleGetHistoricalMetrics)
 			r.Get("/learning/llm-data", advSvc.HandleGetLLMLearningData)
 			r.Post("/learning/campaigns/{campaignId}/store", advSvc.HandleStoreCampaignLearning)
-			
+
 			// === ENTERPRISE SUPPRESSION MANAGEMENT ===
 			suppSvc := NewSuppressionService(db, "") // Optizmo API key from config
 			oneClickHandler = suppSvc.HandleOneClickUnsubscribe
-			
+
 			// Suppression Dashboard
 			r.Get("/suppressions/dashboard", suppSvc.HandleSuppressionDashboard)
-			
+
 			// Global Suppression List (Industry Standard)
 			r.Get("/suppressions/global", suppSvc.HandleGetGlobalSuppression)
 			r.Post("/suppressions/global", suppSvc.HandleAddToGlobalSuppression)
@@ -558,11 +566,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Delete("/suppressions/global/{email}", suppSvc.HandleRemoveFromGlobalSuppression)
 			r.Get("/suppressions/global/entries", suppSvc.HandleGetGlobalSuppressionEntries)
 			r.Get("/suppressions/global/check/{email}", suppSvc.HandleCheckGlobalSuppression)
-			
+
 			// Webhook handlers for automatic suppression
 			r.Post("/suppressions/webhooks/bounce", suppSvc.HandleProcessBounce)
 			r.Post("/suppressions/webhooks/complaint", suppSvc.HandleProcessComplaint)
-			
+
 			// Core suppression
 			r.Get("/v2/suppressions", suppSvc.HandleGetSuppressions)
 			r.Post("/v2/suppressions", suppSvc.HandleAddSuppression)
@@ -571,20 +579,20 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/v2/suppressions/check/{email}", suppSvc.HandleCheckSuppression)
 			r.Get("/v2/suppressions/export", suppSvc.HandleExportSuppressions)
 			r.Post("/v2/suppressions/import", suppSvc.HandleImportSuppressions)
-			
+
 			// Suppression lists (like Ongage)
 			r.Get("/suppression-lists", suppSvc.HandleGetSuppressionLists)
 			r.Post("/suppression-lists", suppSvc.HandleCreateSuppressionList)
 			r.Get("/suppression-lists/{listId}", suppSvc.HandleGetSuppressionList)
 			r.Put("/suppression-lists/{listId}", suppSvc.HandleUpdateSuppressionList)
 			r.Delete("/suppression-lists/{listId}", suppSvc.HandleDeleteSuppressionList)
-			
+
 			// Suppression list entries
 			r.Get("/suppression-lists/{listId}/entries", suppSvc.HandleGetSuppressionListEntries)
 			r.Post("/suppression-lists/{listId}/entries", suppSvc.HandleAddSuppressionListEntry)
 			r.Delete("/suppression-lists/{listId}/entries/{entryId}", suppSvc.HandleRemoveSuppressionListEntry)
 			r.Post("/suppression-lists/{listId}/import", suppSvc.HandleImportSuppressionListEntries)
-			
+
 			// === BULK SUPPRESSION IMPORT (handles multi-GB files) ===
 			// Works with or without Redis; falls back to in-memory progress tracking
 			suppImportSvc := NewSuppressionImportAPI(db, s.redisClient)
@@ -594,21 +602,21 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/suppression-import/{jobId}/progress", suppImportSvc.HandleGetProgress)
 			// Direct upload (small files, single request)
 			r.Post("/suppression-import/direct", suppImportSvc.HandleDirectUpload)
-			
+
 			// Domain suppressions
 			r.Get("/domain-suppressions", suppSvc.HandleGetDomainSuppressions)
 			r.Post("/domain-suppressions", suppSvc.HandleAddDomainSuppression)
 			r.Delete("/domain-suppressions/{domain}", suppSvc.HandleRemoveDomainSuppression)
-			
+
 			// Soft bounce management
 			r.Get("/soft-bounces", suppSvc.HandleGetSoftBounces)
 			r.Post("/soft-bounces/promote", suppSvc.HandlePromoteSoftBounces)
-			
+
 			// Preference center
 			r.Get("/preferences/{email}", suppSvc.HandleGetPreferences)
 			r.Put("/preferences/{email}", suppSvc.HandleUpdatePreferences)
 			r.Post("/preferences/unsubscribe", suppSvc.HandleUnsubscribeAll)
-			
+
 			// Optizmo Integration (Enhanced)
 			r.Post("/optizmo/sync", suppSvc.HandleOptizmoSync)
 			r.Get("/optizmo/status", suppSvc.HandleOptizmoStatus)
@@ -617,19 +625,19 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Put("/optizmo/config", suppSvc.HandleUpdateOptizmoConfig)
 			r.Get("/optizmo/lists", suppSvc.HandleGetOptizmoLists)
 			r.Post("/optizmo/lists/{listId}/sync", suppSvc.HandleOptizmoListSync)
-			
+
 			// Fast Suppression Matching (Bloom Filter based)
 			r.Post("/suppressions/check-batch", suppSvc.HandleBatchSuppressionCheck)
 			r.Get("/suppressions/matcher-stats", suppSvc.HandleMatcherStats)
-			
+
 			// Analytics
 			r.Get("/v2/suppressions/analytics", suppSvc.HandleSuppressionAnalytics)
 			r.Get("/v2/suppressions/audit", suppSvc.HandleSuppressionAudit)
-			
+
 			// === SENDING PROFILES (like Ongage Vendor Connections) ===
 			profileSvc := NewSendingProfileService(db)
 			profileSvc.RegisterRoutes(r)
-			
+
 			// === MODERN CAMPAIGN BUILDER ===
 			campaignBuilder := NewCampaignBuilder(db, svc)
 			if s.redisClient != nil {
@@ -637,21 +645,21 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			// Global suppression hub wired below after engine init
 			campaignBuilder.RegisterRoutes(r)
-			
+
 			// === EVERFLOW CREATIVE INTEGRATION ===
 			efAPIKey := os.Getenv("EVERFLOW_API_KEY")
 			if efAPIKey == "" {
 				efAPIKey = "Pn9S4t76TWezyTJ5iwtQbQ" // Default from config
 			}
 			RegisterEverflowCreativeRoutes(r, db, efAPIKey)
-			
+
 			// === OFFER CENTER (Network Intelligence, Creative Library, AI Suggestions) ===
 			s.deltaSyncWorker = RegisterOfferCenterRoutes(r, db, s.handlers, s.suppressionS3, s.OfferSuppMgr)
 			RegisterOfferCreativeAssetRoutes(r, db, s.s3Client, s.imageBucket, s.cdnDomain, s.awsRegion)
-			
+
 			// === AGENT CONFIGURATION WIZARD (AI-Driven Campaign Setup) ===
 			RegisterAgentWizardRoutes(r, db, s.handlers)
-			
+
 			// === ISP AGENT MANAGER (Persistent Agent CRUD, Learning, Decisions) ===
 			RegisterISPAgentRoutes(r, db)
 
@@ -663,7 +671,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/isp-agents/research/status", ispLearner.HandleLearnerStatus)
 			r.Post("/isp-agents/research/trigger", ispLearner.HandleTriggerLearn)
 			ispLearner.Start() // Begin hourly learning scheduler
-			
+
 			// === AUTOMATED SUPPRESSION REFRESH ENGINE (Daily Provider Downloads) ===
 			suppressionRefreshEngine := NewSuppressionRefreshEngine(db)
 			suppressionRefreshAPI := NewSuppressionRefreshAPI(db, suppressionRefreshEngine)
@@ -672,17 +680,17 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// === CREATIVE AI OPTIMIZER (HTML→Text, Differentiation, Scoring) ===
 			RegisterCreativeOptimizerRoutes(r, db)
-			
+
 			// === JARVIS — AI-Driven Autonomous Campaign Orchestrator ===
 			RegisterJarvisRoutes(r, db, svc)
-			
+
 			// === LIVE CAMPAIGN MONITORING (for Mission Control) ===
 			RegisterLiveCampaignRoutes(r, db)
-			
+
 			// === PERSONALIZATION ENGINE (Template Variables & Preview) ===
 			personalizationSvc := NewPersonalizationService(db)
 			r.Route("/personalization", personalizationSvc.RegisterRoutes)
-			
+
 			// === AI CONTENT SUGGESTIONS & ADVANCED AI CONTENT SERVICE ===
 			aiSuggestionSvc := NewAISubjectSuggestionService(db, s.openAIConfig)
 			aiContentHandlers := NewAIContentHandlers(db)
@@ -691,78 +699,78 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				aiContentHandlers.RegisterRoutes(aiRouter)
 				aiRouter.Post("/suggest-subject-preheader", HandleSuggestSubjectPreheader(db))
 			})
-			
+
 			// === A/B SPLIT TESTING (Integrated with Campaigns) ===
 			abTestingSvc := NewABTestingService(db, svc)
 			abTestingSvc.RegisterRoutes(r)
-			
+
 			// === VISUAL JOURNEY BUILDER ===
 			journeyBuilder := NewJourneyBuilder(db, svc)
 			journeyBuilder.RegisterRoutes(r)
-			
+
 			// === JOURNEY CENTER (Analytics & Management Dashboard) ===
 			journeyCenter := NewJourneyCenter(db, svc)
 			journeyCenter.RegisterRoutes(r)
-			
+
 			// === ENTERPRISE SEGMENTATION ENGINE ===
 			segmentationAPI := NewSegmentationAPI(db)
 			segmentationAPI.RegisterRoutes(r)
-			
+
 			// === SEGMENT CLEANUP & HYGIENE ===
 			segmentCleanupAPI := NewSegmentCleanupAPI(db)
 			segmentCleanupAPI.RegisterRoutes(r)
-			
+
 			// === IMPORT TEMPLATES & FIELD MAPPING ===
 			importTemplateSvc := NewImportTemplateService(db)
 			importTemplateSvc.RegisterRoutes(r)
-			
+
 			// === RSS FEED CAMPAIGNS ===
 			rssCampaignSvc := mailing.NewRSSCampaignService(db, mailing.NewStore(db))
 			rssHandler := NewRSSCampaignHandler(db, rssCampaignSvc, nil) // Poller set separately
 			rssHandler.RegisterRoutes(r)
-			
+
 			// === CUSTOM TRACKING DOMAINS ===
 			// Platform domain is where CNAME should point, default tracking URL is fallback
 			platformDomain := "tracking.projectjarvis.io"
 			defaultTrackingURL := "https://tracking.projectjarvis.io"
 			RegisterTrackingDomainRoutes(r, db, platformDomain, defaultTrackingURL)
-			
+
 			// === AWS INFRASTRUCTURE (for custom domain provisioning) ===
 			// Note: AWS infrastructure is optional - if AWS credentials aren't available, this will be nil
 			awsInfraCfg := mailing.AWSInfraConfig{
-				Region:       "us-east-1",  // Default region
-				HostedZoneID: "",           // Set from config if Route53 management is needed
+				Region:       "us-east-1", // Default region
+				HostedZoneID: "",          // Set from config if Route53 management is needed
 			}
 			awsInfraService, err := mailing.NewAWSInfrastructureService(context.Background(), db, awsInfraCfg)
 			if err == nil && awsInfraService != nil {
 				awsInfraHandlers := NewAWSInfrastructureHandlers(db, awsInfraService)
 				awsInfraHandlers.RegisterRoutes(r)
 			}
-			
+
 			// One-click unsubscribe (RFC 8058)
 			r.Post("/unsubscribe/one-click", suppSvc.HandleOneClickUnsubscribe)
 			r.Get("/unsubscribe/list-header", suppSvc.HandleListUnsubscribeHeader)
 
 			// NOTE: /webhooks/unsub-inbound is registered on s.router (public, line ~170)
 			// so AWS SNS POSTs aren't blocked by the apiRouter auth middleware.
-			
+
 			// === AI SEND TIME OPTIMIZATION ===
 			aiSendTimeHandlers := NewAISendTimeHandlers(db)
 			aiSendTimeHandlers.RegisterRoutes(r)
-			
+
 			// === ADVANCED THROTTLING (Per-Domain/Per-ISP Rate Limiting) ===
 			if s.redisClient != nil {
 				advancedThrottleAPI := NewAdvancedThrottleAPI(db, s.redisClient)
 				advancedThrottleAPI.RegisterRoutes(r)
 			}
-			
+
 			// === IMAGE CDN & HOSTING ===
 			// Always register routes; handlers gracefully degrade without S3
 			RegisterImageCDNRoutes(r, db, s.s3Client, s.imageBucket, s.cdnDomain, s.awsRegion)
-			
+
 			// === INBOX PLACEMENT & DELIVERABILITY ===
 			RegisterInboxPlacementRoutes(r, db)
-			
+
 			// === EDATASOURCE INBOX MONITORING ===
 			// API key: configured via env or hardcoded
 			// dryRun=false: LIVE mode — real eDataSource API calls for Yahoo inbox monitoring
@@ -772,21 +780,21 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			}
 			edsDryRun := os.Getenv("EDATASOURCE_DRY_RUN") == "true"
 			RegisterEDataSourceRoutes(r, edsKey, edsDryRun)
-			
+
 			// === YAHOO DATA ACTIVATION AGENT ===
 			RegisterYahooActivationRoutes(r)
-			
+
 			// === CAMPAIGN SIMULATION (dry-run mission control) ===
 			RegisterCampaignSimulationRoutes(r)
-			
+
 			// === TEMPLATE FOLDERS & TEMPLATES WITH FOLDER SUPPORT ===
 			templateFolderAPI := NewTemplateFolderAPI(db)
 			templateFolderAPI.RegisterRoutes(r)
-			
+
 			// === CUSTOM FIELDS (for CSV import field mapping) ===
 			customFieldsAPI := NewCustomFieldsAPI(db)
 			customFieldsAPI.RegisterRoutes(r)
-			
+
 			// === PMTA / IP MANAGEMENT ===
 			pmtaCollector := pmta.NewCollector(db, 60*time.Second)
 			_ = pmtaCollector.LoadServersFromDB()
@@ -811,16 +819,16 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			acctSummary := pmta.NewAcctSummaryBuilderWithConfig(db, acctBatch, acctTick)
 			acctSummary.Start()
 			log.Printf("[AcctSummary] configured batch=%d tick=%s", acctBatch, acctTick)
-			
+
 			// IP warmup scheduler (checks every 15 minutes)
 			warmupScheduler := pmta.NewWarmupScheduler(db, 15*time.Minute)
 			warmupScheduler.SetMailingDB(db)
 			warmupScheduler.Start()
-			
+
 			// Blacklist monitoring (checks every 24 hours)
 			blMonitor := pmta.NewBlacklistMonitor(db, 24*time.Hour)
 			blMonitor.Start()
-			
+
 			// === IPXO IP BROKER INTEGRATION ===
 			ipxoCfg := ipxo.Config{
 				ClientID:    os.Getenv("IPXO_CLIENT_ID"),
@@ -1112,13 +1120,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				ar.Post("/calendar/recommendations/{id}/reject", marketingAgent.HandleRejectRecommendation)
 				ar.Delete("/calendar/recommendations/{id}", marketingAgent.HandleDeleteRecommendation)
 				ar.Delete("/calendar/recommendations", marketingAgent.HandleBulkDeleteRecommendations)
-			ar.Get("/calendar/compute-quotas", marketingAgent.HandleComputeQuotas)
-			ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
-			ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)
-			ar.Post("/calendar/cancel-tomorrow", marketingAgent.HandleCancelTomorrowCampaigns)
-			ar.Post("/calendar/clone-day", marketingAgent.HandleCloneDay)
-			ar.Post("/calendar/campaigns/{campaignId}/generate-variants", marketingAgent.HandleGenerateVariants)
-			ar.Get("/calendar/day/{date}/variants", marketingAgent.HandleGetDayVariants)
+				ar.Get("/calendar/compute-quotas", marketingAgent.HandleComputeQuotas)
+				ar.Post("/calendar/generate", marketingAgent.HandleGenerateForecast)
+				ar.Post("/calendar/clear-forecasts", marketingAgent.HandleClearForecasts)
+				ar.Post("/calendar/cancel-tomorrow", marketingAgent.HandleCancelTomorrowCampaigns)
+				ar.Post("/calendar/clone-day", marketingAgent.HandleCloneDay)
+				ar.Post("/calendar/campaigns/{campaignId}/generate-variants", marketingAgent.HandleGenerateVariants)
+				ar.Get("/calendar/day/{date}/variants", marketingAgent.HandleGetDayVariants)
 			})
 
 			// === PMTA SEND-TIME RECOMMENDATIONS ===
@@ -1213,13 +1221,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 						ISP:        isp,
 					})
 
-				// Unsubscribes and hard bounces go to global suppression
-				switch eventType {
-				case "unsubscribe":
-					globalHub.Suppress(context.Background(), recipient, "unsubscribe", "tracking_pixel", isp, "", "", "", campaignID)
-				case "bounced":
-					globalHub.Suppress(context.Background(), recipient, "hard_bounce", "sync_send", isp, "", "", "", campaignID)
-				}
+					// Unsubscribes and hard bounces go to global suppression
+					switch eventType {
+					case "unsubscribe":
+						globalHub.Suppress(context.Background(), recipient, "unsubscribe", "tracking_pixel", isp, "", "", "", campaignID)
+					case "bounced":
+						globalHub.Suppress(context.Background(), recipient, "hard_bounce", "sync_send", isp, "", "", "", campaignID)
+					}
 				})
 			}
 
