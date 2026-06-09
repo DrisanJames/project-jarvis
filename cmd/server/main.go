@@ -123,9 +123,7 @@ func main() {
 	// Initialize SparkPost metrics collector
 	spCollector := sparkpost.NewCollector(spClient, store, learningAgent, cfg.Polling)
 
-	// Start the SparkPost collector in background
 	ctx, cancel := context.WithCancel(context.Background())
-	go spCollector.Start(ctx)
 
 	// Initialize authentication manager if enabled
 	var authManager *auth.AuthManager
