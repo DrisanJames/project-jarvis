@@ -536,7 +536,11 @@ func planPMTAAudience(
 	if len(offerSuppMgr) > 0 {
 		offerSuppMgrRef = offerSuppMgr[0]
 	}
-	useBloomForOffer := offerID != "" && offerSuppMgrRef != nil
+	// A Bloom is only usable if one is actually loaded for THIS offer —
+	// the manager being non-nil isn't enough. Offers without a loaded Bloom
+	// (no Optizmo sync, or load failure) must use the DB set, otherwise
+	// their offer-level suppressions are silently skipped at planning time.
+	useBloomForOffer := offerID != "" && offerSuppMgrRef != nil && offerSuppMgrRef.HasBloom(offerID)
 	offerSuppSet := make(map[string]bool)
 	if offerID != "" && !useBloomForOffer {
 		osRows, osErr := db.QueryContext(ctx,

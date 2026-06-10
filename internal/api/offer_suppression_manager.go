@@ -271,6 +271,36 @@ func (m *OfferSuppressionManager) IsSuppressedMD5(offerID, md5Hash string) (bool
 	return bf.ContainsMD5(md5Hash), true
 }
 
+// HasBloom reports whether a Bloom filter is currently loaded for the offer.
+// Callers without a Bloom should fall back to DB-backed suppression checks.
+func (m *OfferSuppressionManager) HasBloom(offerID string) bool {
+	m.mu.RLock()
+	_, ok := m.filters[offerID]
+	m.mu.RUnlock()
+	return ok
+}
+
+// AddHashesToBloom adds MD5 hashes to an offer's in-memory Bloom filter so
+// planning-time checks pick up manual suppressions immediately. Returns false
+// if no Bloom is loaded for the offer (DB rows still enforce at send time).
+// The addition is in-memory only — it is not persisted to S3 and will be
+// dropped on the next rebuild/restart, which is fine because the DB is the
+// durable source of truth.
+func (m *OfferSuppressionManager) AddHashesToBloom(offerID string, md5Hashes []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	bf, ok := m.filters[offerID]
+	if !ok {
+		return false
+	}
+	for _, h := range md5Hashes {
+		if h != "" {
+			bf.AddMD5(h)
+		}
+	}
+	return true
+}
+
 // EvictOffer removes an offer's Bloom filter from memory (e.g., when deactivated).
 func (m *OfferSuppressionManager) EvictOffer(offerID string) {
 	m.mu.Lock()

@@ -132,6 +132,12 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *Su
 	r.Post("/offer-center/offers/{id}/optizmo/reset-scrub", optizmo.HandleResetScrub)
 	r.Get("/offer-center/offers/{id}/optizmo/status", optizmo.HandleGetScrubStatus)
 
+	// --- Manual per-offer suppression (single/bulk address upload) ---
+	offerSupp := &OfferSuppressionUploadHandlers{db: db, suppMgr: suppMgr}
+	r.Get("/offer-center/offers/{id}/suppressions", offerSupp.HandleListOfferSuppressions)
+	r.Post("/offer-center/offers/{id}/suppressions", offerSupp.HandleAddOfferSuppressions)
+	r.Delete("/offer-center/offers/{id}/suppressions", offerSupp.HandleRemoveOfferSuppression)
+
 	// --- Optizmo Nightly Delta Sync ---
 	deltaSyncWorker := NewOptizmoDeltaSyncWorker(db)
 	deltaSyncWorker.SetS3Client(suppS3)
