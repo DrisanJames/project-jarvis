@@ -152,10 +152,15 @@ type SourcePerfRow struct {
 }
 
 // FirstTouchRow is one dt bucket from AudienceFirstTouch: how many distinct
-// recipients saw their first lake event on that day.
+// recipients saw their first lake event on that day, and how many of that
+// cohort have since ACTIVATED — i.e. produced at least one open (and click)
+// event anywhere in lake history. Opened/Count is the cohort activation rate
+// the operator uses to judge acquisition quality thresholds.
 type FirstTouchRow struct {
-	Dt    string `json:"dt"`
-	Count int64  `json:"count"`
+	Dt      string `json:"dt"`
+	Count   int64  `json:"count"`
+	Opened  int64  `json:"opened"`
+	Clicked int64  `json:"clicked"`
 }
 
 // sourcePerfDims is the closed set of audience dimensions
@@ -579,21 +584,32 @@ func (r *Reader) AudienceSourcePerformance(ctx context.Context, f SourcePerfFilt
 // buildAudienceFirstTouchSQL validates the range and renders the first-touch
 // query. Factored out for unit tests.
 //
-// SQL shape (validated literals only, via sqlStr):
+// SQL shape (validated literals only, via sqlStr). One pass over the events
+// table computes, per recipient key, BOTH the first send-ish day and whether
+// the recipient ever opened/clicked; the outer query buckets by cohort day:
 //
-//	SELECT first_dt, COUNT(*) c FROM (
+//	SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k FROM (
 //	  SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id
-//	               ELSE lower(email) END) k, MIN(dt) AS first_dt
+//	               ELSE lower(email) END) rk,
+//	         MIN(CASE WHEN event_type IN ('attempted','delivered','relayed_to_ses')
+//	                  THEN dt END) AS first_dt,
+//	         MAX(CASE WHEN event_type = 'open' THEN 1 ELSE 0 END) AS opened,
+//	         MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked
 //	  FROM email_events
-//	  WHERE event_type IN ('attempted','delivered','relayed_to_ses')
 //	  GROUP BY 1
-//	) WHERE first_dt BETWEEN '<from>' AND '<to>' GROUP BY 1 ORDER BY 1
+//	) WHERE first_dt IS NOT NULL AND first_dt BETWEEN '<from>' AND '<to>'
+//	GROUP BY 1 ORDER BY 1
 //
 // SEMANTICS: this is "first touch within lake history" — the lake only goes
 // back to the ~2026-03 backfill, so a recipient first mailed before that
 // reads as first-touched on their earliest in-lake event, NOT their lifetime
-// first send. The inner GROUP BY uses the canonical per-recipient key (see
-// the file header for the split-identity reality).
+// first send. opened/clicked are LIFETIME-in-lake activation flags for the
+// cohort (any open/click ever, not just after first_dt — opens can only
+// follow a send, so the distinction is moot in practice). Open/click events
+// reach the lake only for SES-routed mail + the app-tracking backfill, so
+// activation is directional for PMTA-heavy cohorts. The inner GROUP BY uses
+// the canonical per-recipient key (see the file header for the
+// split-identity reality).
 func buildAudienceFirstTouchSQL(from, to string) (string, error) {
 	if from == "" || to == "" {
 		return "", fmt.Errorf("from and to dates are required")
@@ -607,17 +623,22 @@ func buildAudienceFirstTouchSQL(from, to string) (string, error) {
 	if from > to {
 		return "", fmt.Errorf("invalid range: from %s is after to %s", from, to)
 	}
-	return "SELECT first_dt, COUNT(*) c FROM (" +
-		"SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id ELSE lower(email) END) k, MIN(dt) AS first_dt FROM " +
+	return "SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k FROM (" +
+		"SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id ELSE lower(email) END) rk, " +
+		"MIN(CASE WHEN event_type IN ('attempted','delivered','relayed_to_ses') THEN dt END) AS first_dt, " +
+		"MAX(CASE WHEN event_type = 'open' THEN 1 ELSE 0 END) AS opened, " +
+		"MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked FROM " +
 		lakeTable +
-		" WHERE event_type IN ('attempted','delivered','relayed_to_ses') GROUP BY 1" +
-		") WHERE first_dt BETWEEN " + sqlStr(from) + " AND " + sqlStr(to) +
+		" GROUP BY 1" +
+		") WHERE first_dt IS NOT NULL AND first_dt BETWEEN " + sqlStr(from) + " AND " + sqlStr(to) +
 		" GROUP BY 1 ORDER BY 1", nil
 }
 
 // AudienceFirstTouch returns, per day in [from,to], how many distinct
-// recipients saw their first-ever in-lake send event on that day. See the
-// builder comment for the "lake history, not lifetime" caveat.
+// recipients saw their first-ever in-lake send event on that day, plus how
+// many of each day's cohort have an open/click anywhere in lake history
+// (cohort activation). See the builder comment for the "lake history, not
+// lifetime" caveat.
 func (r *Reader) AudienceFirstTouch(ctx context.Context, from, to string) ([]FirstTouchRow, error) {
 	sql, err := buildAudienceFirstTouchSQL(from, to)
 	if err != nil {
@@ -629,11 +650,13 @@ func (r *Reader) AudienceFirstTouch(ctx context.Context, from, to string) ([]Fir
 	}
 	out := make([]FirstTouchRow, 0, len(rows))
 	for _, row := range rows {
-		if len(row) < 2 {
+		if len(row) < 4 {
 			continue
 		}
 		c, _ := strconv.ParseInt(row[1], 10, 64)
-		out = append(out, FirstTouchRow{Dt: row[0], Count: c})
+		o, _ := strconv.ParseInt(row[2], 10, 64)
+		k, _ := strconv.ParseInt(row[3], 10, 64)
+		out = append(out, FirstTouchRow{Dt: row[0], Count: c, Opened: o, Clicked: k})
 	}
 	return out, nil
 }

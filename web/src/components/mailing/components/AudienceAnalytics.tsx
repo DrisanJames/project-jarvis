@@ -56,7 +56,7 @@ import {
   faChevronDown, faChevronRight, faUser, faHistory, faInbox, faMoon,
 } from '@fortawesome/free-solid-svg-icons';
 import {
-  ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
   CartesianGrid, Tooltip,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
@@ -111,6 +111,11 @@ interface SourcePerfResponse {
 interface FirstTouchRow {
   dt: string;
   count: number;
+  // Cohort activation: of the members first-touched on dt, how many have at
+  // least one open / click anywhere in lake history. opened/count is the
+  // activation rate used to judge acquisition-quality thresholds.
+  opened: number;
+  clicked: number;
 }
 
 interface FirstTouchResponse {
@@ -1744,17 +1749,31 @@ const GrowthTab: React.FC = () => {
     [fetched]
   );
   const chartData = useMemo(
-    () => sortedAsc.map((r) => ({ dt: r.dt, 'new audience mailed': r.count })),
+    () => sortedAsc.map((r) => ({
+      dt: r.dt,
+      'new audience mailed': r.count,
+      'activated (opened)': r.opened ?? 0,
+      'activation %': r.count > 0 ? Number((((r.opened ?? 0) / r.count) * 100).toFixed(2)) : 0,
+    })),
     [sortedAsc]
   );
-  const todayCount = useMemo(() => {
+  const todayRow = useMemo(() => {
     const t = todayUTC();
-    return fetched?.rows.find((r) => r.dt === t)?.count ?? 0; // 0 if absent
+    return fetched?.rows.find((r) => r.dt === t) ?? null; // null if absent
   }, [fetched]);
-  const last7Total = useMemo(() => {
+  const todayCount = todayRow?.count ?? 0;
+  const last7 = useMemo(() => {
     const start = daysAgoUTC(6);
-    return (fetched?.rows || []).filter((r) => r.dt >= start).reduce((a, r) => a + r.count, 0);
+    const rows = (fetched?.rows || []).filter((r) => r.dt >= start);
+    const count = rows.reduce((a, r) => a + r.count, 0);
+    const opened = rows.reduce((a, r) => a + (r.opened ?? 0), 0);
+    return { count, opened, pct: count > 0 ? (opened / count) * 100 : null };
   }, [fetched]);
+  const windowActivation = useMemo(() => {
+    const count = sortedAsc.reduce((a, r) => a + r.count, 0);
+    const opened = sortedAsc.reduce((a, r) => a + (r.opened ?? 0), 0);
+    return { count, opened, pct: count > 0 ? (opened / count) * 100 : null };
+  }, [sortedAsc]);
 
   return (
     <div style={styles.panel}>
@@ -1766,8 +1785,9 @@ const GrowthTab: React.FC = () => {
           </h2>
           <p style={styles.panelSubtitle}>
             Recipients whose FIRST-ever lake event (attempted / delivered / relayed) fell on each day —
-            i.e. addresses newly put into rotation. Includes seedlist/proof recipients (the count is
-            events-side, not joined to the audience snapshot), so treat it as directional. Window {fetched?.from || daysAgoUTC(rangeDays - 1)} → {fetched?.to || todayUTC()}. <TimingNote meta={fetched?.meta ?? null} />
+            i.e. addresses newly put into rotation — and how many of each day's cohort ACTIVATED
+            (≥1 open ever; this is the acquisition signal). Includes seedlist/proof recipients (the
+            count is events-side, not joined to the audience snapshot), so treat it as directional. Window {fetched?.from || daysAgoUTC(rangeDays - 1)} → {fetched?.to || todayUTC()}. <TimingNote meta={fetched?.meta ?? null} />
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1797,16 +1817,36 @@ const GrowthTab: React.FC = () => {
         sortedAsc.length === 0 ? <EmptyRow label="No first-touch datapoints in this window." /> : (
         <>
           <div style={styles.kpiGrid}>
-            <KpiCard label="New audience mailed today" value={todayCount} color={COLORS.good} />
-            <KpiCard label="Last 7 days" value={last7Total} color={COLORS.accent} />
+            <KpiCard label="New audience mailed today" value={todayCount} color={COLORS.good}
+              pct={todayRow && todayRow.count > 0 ? ((todayRow.opened ?? 0) / todayRow.count) * 100 : null}
+              pctLabel="activated" />
+            <KpiCard label="Last 7 days" value={last7.count} color={COLORS.accent}
+              pct={last7.pct} pctLabel="activated" />
+            <KpiCard label="Activated in window" value={windowActivation.opened} color={OPEN_CYAN}
+              pct={windowActivation.pct} pctLabel="of first-touched" />
           </div>
           <div style={{ marginTop: 20 }}>
-            <StackedBars
-              data={chartData}
-              keys={['new audience mailed']}
-              colorFor={() => COLORS.good}
-              height={260}
-            />
+            {/* Grouped bars (cohort size vs activated) + right-axis activation-rate
+                line — the threshold-finding view: where the line settles is the
+                acquisition quality this source mix supports. */}
+            <ResponsiveContainer width="100%" height={280}>
+              <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis dataKey="dt"
+                  tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
+                  tick={{ fill: COLORS.textMuted, fontSize: 10 }}
+                  axisLine={{ stroke: COLORS.borderStrong }} tickLine={false} />
+                <YAxis yAxisId="vol" tickFormatter={(v: number) => fmtCompact(v)}
+                  tick={{ fill: COLORS.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={48} />
+                <YAxis yAxisId="rate" orientation="right" tickFormatter={(v: number) => `${v}%`}
+                  tick={{ fill: COLORS.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
+                <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                <Bar yAxisId="vol" dataKey="new audience mailed" fill={COLORS.good} fillOpacity={0.75} maxBarSize={22} />
+                <Bar yAxisId="vol" dataKey="activated (opened)" fill={OPEN_CYAN} fillOpacity={0.85} maxBarSize={22} />
+                <Line yAxisId="rate" type="monotone" dataKey="activation %" stroke={COLORS.warn}
+                  strokeWidth={2} dot={false} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
           </div>
           <div style={{ ...styles.tableWrap, marginTop: 16, maxHeight: 320, overflowY: 'auto' }}>
             <table style={styles.table}>
@@ -1814,21 +1854,38 @@ const GrowthTab: React.FC = () => {
                 <tr>
                   <th style={{ ...styles.th, textAlign: 'left' }}>dt</th>
                   <th style={{ ...styles.th, textAlign: 'right' }}>first-touched members</th>
+                  <th style={{ ...styles.th, textAlign: 'right' }}>activated (opened)</th>
+                  <th style={{ ...styles.th, textAlign: 'right' }}>activation %</th>
+                  <th style={{ ...styles.th, textAlign: 'right' }}>clicked</th>
+                  <th style={{ ...styles.th, textAlign: 'right' }}>click %</th>
                 </tr>
               </thead>
               <tbody>
-                {[...sortedAsc].reverse().map((r) => (
-                  <tr key={r.dt} style={styles.tr}>
-                    <td style={{ ...styles.td, fontVariantNumeric: 'tabular-nums' }}>{r.dt}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.count)}</td>
-                  </tr>
-                ))}
+                {[...sortedAsc].reverse().map((r) => {
+                  const actPct = r.count > 0 ? ((r.opened ?? 0) / r.count) * 100 : null;
+                  const clkPct = r.count > 0 ? ((r.clicked ?? 0) / r.count) * 100 : null;
+                  return (
+                    <tr key={r.dt} style={styles.tr}>
+                      <td style={{ ...styles.td, fontVariantNumeric: 'tabular-nums' }}>{r.dt}</td>
+                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.count)}</td>
+                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmt(r.opened ?? 0)}</td>
+                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmtPct(actPct, 2)}</td>
+                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.clicked ?? 0)}</td>
+                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtPct(clkPct, 2)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
           <div style={styles.tableFooterNote}>
             "First touch" means first touch within lake history, NOT lifetime — members mailed before the
             lake began recording will show their first lake-era send here, even if they are not actually new.
+            "Activated" = the cohort member has ≥1 open event anywhere in lake history (clicked likewise).
+            Two caveats: young cohorts (the last few days) under-read because members haven't had time to
+            open yet, and open/click events reach the lake only for SES-routed mail + the app-tracking
+            backfill — PMTA-heavy cohorts read activation low. Compare cohorts against each other, not
+            against an absolute target.
           </div>
         </>
       )}
