@@ -24,9 +24,11 @@
 //       dim ∈ {source, data_source, source_system, isp, verification_status,
 //         engagement_band, acquired_dt, status}. from/to = email-events window.
 //   GET /first-touch?from=&to=
-//       → { from, to, rows: [{dt, count}] } — members whose FIRST-ever lake
-//         event (attempted/delivered/relayed) fell on that day. "First touch
-//         within lake history", NOT lifetime.
+//       → { from, to, rows: [{dt, count, opened, clicked, unsubscribed,
+//         hard_bounced, complained}] } — members whose FIRST-ever lake event
+//         (attempted/delivered/relayed) fell on that day, with lifetime-in-lake
+//         activation (opened/clicked) and churn (unsub/hard/complaint) flags
+//         per cohort. "First touch within lake history", NOT lifetime.
 //   GET /member?email=&dt=&events_limit=
 //       → { email, audience_dt, profiles: AudienceProfile[], events: LakeEvent[] }
 //         profiles is per-list rows for the email (can be >1).
@@ -116,6 +118,11 @@ interface FirstTouchRow {
   // activation rate used to judge acquisition-quality thresholds.
   opened: number;
   clicked: number;
+  // Cohort churn: members with an unsubscribe / hard_bounce / complaint event
+  // anywhere in lake history. (unsub+hard+compl)/count = cohort churn rate.
+  unsubscribed: number;
+  hard_bounced: number;
+  complained: number;
 }
 
 interface FirstTouchResponse {
@@ -1089,125 +1096,6 @@ const AcquisitionPanel: React.FC = () => {
   );
 };
 
-// ─── Churn trend: stacked daily bars by churn_reason + 7d-vs-7d KPI ────────
-
-const CHURN_WINDOW_DAYS = 60;
-
-const ChurnPanel: React.FC = () => {
-  const { addToast } = useToast();
-  const [fetched, setFetched] = useState<PanelData<AudBreakdownResponse> | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const abortRef = useRef<AbortController | null>(null);
-
-  const load = useCallback(async (bypass: boolean) => {
-    abortRef.current?.abort();
-    const ctl = new AbortController();
-    abortRef.current = ctl;
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetchCachedJSON<AudBreakdownResponse>(
-        audBreakdownURL({
-          groupBy: ['churned_dt', 'churn_reason'], limit: 5000,
-          churnedFrom: daysAgoUTC(CHURN_WINDOW_DAYS - 1),
-        }),
-        0, { signal: ctl.signal, bypass }
-      );
-      setFetched({ data: normBreakdown(res.data), meta: res.meta });
-    } catch (e) {
-      if (isAbortError(e)) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      setFetched(null);
-      setError(msg);
-      addToast({ type: 'error', title: 'Churn trend failed', message: msg });
-    } finally {
-      if (abortRef.current === ctl) setLoading(false);
-    }
-  }, [addToast]);
-
-  useEffect(() => {
-    load(false);
-    return () => abortRef.current?.abort();
-  }, [load]);
-
-  const series = useMemo(
-    () => (fetched ? buildStackedSeries(fetched.data.rows, 'churned_dt', 'churn_reason', 6) : null),
-    [fetched]
-  );
-
-  // 7d vs prior-7d delta, computed from the same rows (ISO dates compare lexically).
-  const weekKpi = useMemo(() => {
-    if (!fetched) return null;
-    const last7Start = daysAgoUTC(6);
-    const prior7Start = daysAgoUTC(13);
-    let last7 = 0;
-    let prior7 = 0;
-    for (const r of fetched.data.rows) {
-      const dt = r.keys['churned_dt'] ?? '';
-      if (!dt) continue;
-      if (dt >= last7Start) last7 += r.count;
-      else if (dt >= prior7Start) prior7 += r.count;
-    }
-    const deltaPct = prior7 > 0 ? ((last7 - prior7) / prior7) * 100 : null;
-    return { last7, prior7, deltaPct };
-  }, [fetched]);
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.panelHeader}>
-        <div>
-          <h2 style={styles.panelTitle}>
-            <FontAwesomeIcon icon={faChartLine} style={{ marginRight: 8, color: HARD_RED }} />
-            Churn Trend
-          </h2>
-          <p style={styles.panelSubtitle}>
-            Churned subscriber-list rows per day, stacked by churn_reason (unsubscribed indigo · hard_bounced red ·
-            complained rose). group_by=churned_dt,churn_reason · churned_from={daysAgoUTC(CHURN_WINDOW_DAYS - 1)}. <TimingNote meta={fetched?.meta ?? null} />
-          </p>
-        </div>
-        <RefreshBtn loading={loading} onClick={() => load(true)} />
-      </div>
-      <TruncationBanner truncated={fetched?.data.truncated} limit={5000} />
-      {error ? (
-        <ErrorPanel label="Churn trend failed" error={error} onRetry={() => load(true)} />
-      ) : loading && !fetched ? <LoadingRow /> : !fetched ? <EmptyRow label="Waiting for first query…" /> :
-        fetched.data.disabled ? <FriendlyState kind="disabled" /> :
-        fetched.data.empty || !series || series.data.length === 0 ? (
-          <EmptyRow label={`No churn recorded in the last ${CHURN_WINDOW_DAYS} days.`} />
-        ) : (
-        <>
-          {weekKpi && (
-            <div style={styles.kpiInlineRow}>
-              <span style={styles.kpiInline}>churned last 7d: <b style={{ color: HARD_RED }}>{fmt(weekKpi.last7)}</b></span>
-              <span style={styles.kpiInline}>prior 7d: <b style={{ color: COLORS.textPrimary }}>{fmt(weekKpi.prior7)}</b></span>
-              <span style={styles.kpiInline}>
-                Δ:{' '}
-                <b style={{ color: weekKpi.deltaPct == null ? COLORS.textMuted : weekKpi.deltaPct > 0 ? HARD_RED : COLORS.good }}>
-                  {weekKpi.deltaPct == null ? '—' : `${weekKpi.deltaPct > 0 ? '+' : ''}${weekKpi.deltaPct.toFixed(1)}%`}
-                </b>
-                <span style={{ color: COLORS.textMuted }}> (rising churn = red)</span>
-              </span>
-            </div>
-          )}
-          <div style={styles.seriesToggleRow}>
-            {series.keys.map((k) => {
-              const color = churnReasonColor(k);
-              return (
-                <span key={k} style={{ ...styles.legendChip, color, borderColor: color + '66', background: color + '14' }}>
-                  <FontAwesomeIcon icon={faCircle} style={{ fontSize: 7 }} />
-                  {k || '(empty)'}
-                </span>
-              );
-            })}
-          </div>
-          <StackedBars data={series.data} keys={series.keys} colorFor={(_, k) => churnReasonColor(k)} height={240} />
-        </>
-      )}
-    </div>
-  );
-};
-
 // ─── Composition: top data_sources with avg engagement ─────────────────────
 
 const COMPOSITION_TOP_N = 12;
@@ -1313,7 +1201,6 @@ const OverviewTab: React.FC = () => (
   <div>
     <OverviewKpiStrip />
     <AcquisitionPanel />
-    <ChurnPanel />
     <CompositionPanel />
   </div>
 );
@@ -1703,6 +1590,38 @@ interface GrowthFetched {
   meta: FetchMeta;
 }
 
+// One enriched first-touch cohort row (counts null-safed, rates derived).
+interface GrowthRow {
+  dt: string;
+  count: number;
+  opened: number;
+  clicked: number;
+  unsubscribed: number;
+  hard_bounced: number;
+  complained: number;
+  churned: number;            // unsubscribed + hard_bounced + complained
+  actPct: number | null;      // opened / count
+  clickPct: number | null;    // clicked / count
+  churnPct: number | null;    // churned / count
+}
+
+type GrowthSortCol =
+  | 'dt' | 'count' | 'opened' | 'actPct' | 'clicked' | 'clickPct'
+  | 'unsubscribed' | 'hard_bounced' | 'complained' | 'churned' | 'churnPct';
+
+// Chart series registry: volume series = left-axis bars; rate series =
+// right-axis lines. Keys double as chartData keys and toggle-chip labels.
+const GROWTH_SERIES: Array<{ key: string; color: string; kind: 'bar' | 'line' }> = [
+  { key: 'new audience mailed', color: COLORS.good, kind: 'bar' },
+  { key: 'activated (opened)', color: OPEN_CYAN, kind: 'bar' },
+  { key: 'clicked', color: CLICK_VIOLET, kind: 'bar' },
+  { key: 'unsubscribed', color: COLORS.accentAlt, kind: 'bar' },
+  { key: 'hard bounced', color: HARD_RED, kind: 'bar' },
+  { key: 'complained', color: COMPLAINT_ROSE, kind: 'bar' },
+  { key: 'activation %', color: COLORS.warn, kind: 'line' },
+  { key: 'churn %', color: HARD_RED, kind: 'line' },
+];
+
 const GrowthTab: React.FC = () => {
   const { addToast } = useToast();
   const [rangeDays, setRangeDays] = useState(30);
@@ -1744,36 +1663,128 @@ const GrowthTab: React.FC = () => {
     return () => abortRef.current?.abort();
   }, [load]);
 
+  // Enriched per-cohort rows: null-safe counts (older cached payloads predate
+  // the churn fields) + derived rates. churned = unsub + hard_bounce +
+  // complaint members (the audience-lifecycle churn concept — distinct from
+  // the hard/soft bounce-reporting rule, which still keeps those separate in
+  // their own columns).
+  const enriched = useMemo<GrowthRow[]>(() => (fetched ? fetched.rows.map((r) => {
+    const opened = r.opened ?? 0;
+    const clicked = r.clicked ?? 0;
+    const unsubscribed = r.unsubscribed ?? 0;
+    const hardBounced = r.hard_bounced ?? 0;
+    const complained = r.complained ?? 0;
+    const churned = unsubscribed + hardBounced + complained;
+    return {
+      dt: r.dt, count: r.count, opened, clicked, unsubscribed,
+      hard_bounced: hardBounced, complained, churned,
+      actPct: r.count > 0 ? (opened / r.count) * 100 : null,
+      clickPct: r.count > 0 ? (clicked / r.count) * 100 : null,
+      churnPct: r.count > 0 ? (churned / r.count) * 100 : null,
+    };
+  }) : []), [fetched]);
+
+  // Cohort threshold filters — blank means unconstrained. Applied to BOTH the
+  // chart and the table so the visible cohort set is always the filtered one.
+  // KPIs intentionally stay UNfiltered (they describe the whole window).
+  const [minCohort, setMinCohort] = useState('');
+  const [minAct, setMinAct] = useState('');
+  const [maxChurn, setMaxChurn] = useState('');
+  const filtered = useMemo(() => enriched.filter((r) => {
+    if (minCohort !== '') {
+      const v = Number(minCohort);
+      if (!Number.isNaN(v) && r.count < v) return false;
+    }
+    if (minAct !== '') {
+      const v = Number(minAct);
+      if (!Number.isNaN(v) && (r.actPct ?? -1) < v) return false;
+    }
+    if (maxChurn !== '') {
+      const v = Number(maxChurn);
+      if (!Number.isNaN(v) && (r.churnPct ?? 0) > v) return false;
+    }
+    return true;
+  }), [enriched, minCohort, minAct, maxChurn]);
+
   const sortedAsc = useMemo(
-    () => (fetched ? [...fetched.rows].sort((a, b) => a.dt.localeCompare(b.dt)) : []),
-    [fetched]
+    () => [...filtered].sort((a, b) => a.dt.localeCompare(b.dt)),
+    [filtered]
   );
-  const chartData = useMemo(
-    () => sortedAsc.map((r) => ({
-      dt: r.dt,
-      'new audience mailed': r.count,
-      'activated (opened)': r.opened ?? 0,
-      'activation %': r.count > 0 ? Number((((r.opened ?? 0) / r.count) * 100).toFixed(2)) : 0,
-    })),
-    [sortedAsc]
-  );
+
+  // Chart series toggles (chips). Volume series share the left axis; rate
+  // series ride the right axis as lines.
+  const [seriesOn, setSeriesOn] = useState<Record<string, boolean>>({
+    'new audience mailed': true,
+    'activated (opened)': true,
+    'clicked': false,
+    'unsubscribed': false,
+    'hard bounced': false,
+    'complained': false,
+    'activation %': true,
+    'churn %': true,
+  });
+  const chartData = useMemo(() => sortedAsc.map((r) => ({
+    dt: r.dt,
+    'new audience mailed': r.count,
+    'activated (opened)': r.opened,
+    'clicked': r.clicked,
+    'unsubscribed': r.unsubscribed,
+    'hard bounced': r.hard_bounced,
+    'complained': r.complained,
+    'activation %': r.actPct != null ? Number(r.actPct.toFixed(2)) : 0,
+    'churn %': r.churnPct != null ? Number(r.churnPct.toFixed(2)) : 0,
+  })), [sortedAsc]);
+
+  // Table sort: click a header to sort; same column toggles direction.
+  const [sort, setSort] = useState<{ col: GrowthSortCol; dir: 'asc' | 'desc' }>({ col: 'dt', dir: 'desc' });
+  const onSort = (col: GrowthSortCol) => setSort((s) =>
+    s.col === col ? { col, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
+  const tableRows = useMemo(() => {
+    const v = (r: GrowthRow): number | string => {
+      switch (sort.col) {
+        case 'dt': return r.dt;
+        case 'count': return r.count;
+        case 'opened': return r.opened;
+        case 'actPct': return r.actPct ?? -1;
+        case 'clicked': return r.clicked;
+        case 'clickPct': return r.clickPct ?? -1;
+        case 'unsubscribed': return r.unsubscribed;
+        case 'hard_bounced': return r.hard_bounced;
+        case 'complained': return r.complained;
+        case 'churned': return r.churned;
+        case 'churnPct': return r.churnPct ?? -1;
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const av = v(a); const bv = v(b);
+      const cmp = typeof av === 'string' ? av.localeCompare(String(bv)) : av - Number(bv);
+      return sort.dir === 'asc' ? cmp : -cmp;
+    });
+  }, [filtered, sort]);
+
+  // KPIs — computed over the WHOLE window (unfiltered).
   const todayRow = useMemo(() => {
     const t = todayUTC();
-    return fetched?.rows.find((r) => r.dt === t) ?? null; // null if absent
-  }, [fetched]);
+    return enriched.find((r) => r.dt === t) ?? null; // null if absent
+  }, [enriched]);
   const todayCount = todayRow?.count ?? 0;
   const last7 = useMemo(() => {
     const start = daysAgoUTC(6);
-    const rows = (fetched?.rows || []).filter((r) => r.dt >= start);
+    const rows = enriched.filter((r) => r.dt >= start);
     const count = rows.reduce((a, r) => a + r.count, 0);
-    const opened = rows.reduce((a, r) => a + (r.opened ?? 0), 0);
+    const opened = rows.reduce((a, r) => a + r.opened, 0);
     return { count, opened, pct: count > 0 ? (opened / count) * 100 : null };
-  }, [fetched]);
+  }, [enriched]);
   const windowActivation = useMemo(() => {
-    const count = sortedAsc.reduce((a, r) => a + r.count, 0);
-    const opened = sortedAsc.reduce((a, r) => a + (r.opened ?? 0), 0);
+    const count = enriched.reduce((a, r) => a + r.count, 0);
+    const opened = enriched.reduce((a, r) => a + r.opened, 0);
     return { count, opened, pct: count > 0 ? (opened / count) * 100 : null };
-  }, [sortedAsc]);
+  }, [enriched]);
+  const windowChurn = useMemo(() => {
+    const count = enriched.reduce((a, r) => a + r.count, 0);
+    const churned = enriched.reduce((a, r) => a + r.churned, 0);
+    return { count, churned, pct: count > 0 ? (churned / count) * 100 : null };
+  }, [enriched]);
 
   return (
     <div style={styles.panel}>
@@ -1785,9 +1796,10 @@ const GrowthTab: React.FC = () => {
           </h2>
           <p style={styles.panelSubtitle}>
             Recipients whose FIRST-ever lake event (attempted / delivered / relayed) fell on each day —
-            i.e. addresses newly put into rotation — and how many of each day's cohort ACTIVATED
-            (≥1 open ever; this is the acquisition signal). Includes seedlist/proof recipients (the
-            count is events-side, not joined to the audience snapshot), so treat it as directional. Window {fetched?.from || daysAgoUTC(rangeDays - 1)} → {fetched?.to || todayUTC()}. <TimingNote meta={fetched?.meta ?? null} />
+            i.e. addresses newly put into rotation — with each cohort's ACTIVATION (≥1 open ever; the
+            acquisition signal) and CHURN (unsubscribed / hard-bounced / complained). Filter cohorts by
+            the thresholds below. Includes seedlist/proof recipients (events-side, not joined to the
+            audience snapshot), so treat it as directional. Window {fetched?.from || daysAgoUTC(rangeDays - 1)} → {fetched?.to || todayUTC()}. <TimingNote meta={fetched?.meta ?? null} />
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1818,17 +1830,60 @@ const GrowthTab: React.FC = () => {
         <>
           <div style={styles.kpiGrid}>
             <KpiCard label="New audience mailed today" value={todayCount} color={COLORS.good}
-              pct={todayRow && todayRow.count > 0 ? ((todayRow.opened ?? 0) / todayRow.count) * 100 : null}
+              pct={todayRow && todayRow.count > 0 ? todayRow.actPct : null}
               pctLabel="activated" />
             <KpiCard label="Last 7 days" value={last7.count} color={COLORS.accent}
               pct={last7.pct} pctLabel="activated" />
             <KpiCard label="Activated in window" value={windowActivation.opened} color={OPEN_CYAN}
               pct={windowActivation.pct} pctLabel="of first-touched" />
+            <KpiCard label="Churned in window" value={windowChurn.churned} color={HARD_RED}
+              pct={windowChurn.pct} pctLabel="of first-touched" />
           </div>
-          <div style={{ marginTop: 20 }}>
-            {/* Grouped bars (cohort size vs activated) + right-axis activation-rate
-                line — the threshold-finding view: where the line settles is the
-                acquisition quality this source mix supports. */}
+
+          {/* Cohort filters + chart series toggles */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap', marginTop: 18 }}>
+            <label style={styles.fieldLabel}>min cohort size
+              <input type="number" min={0} value={minCohort} placeholder="any"
+                onChange={(e) => setMinCohort(e.target.value)} style={{ ...styles.input, width: 110 }} />
+            </label>
+            <label style={styles.fieldLabel}>min activation %
+              <input type="number" min={0} max={100} step="0.1" value={minAct} placeholder="any"
+                onChange={(e) => setMinAct(e.target.value)} style={{ ...styles.input, width: 120 }} />
+            </label>
+            <label style={styles.fieldLabel}>max churn %
+              <input type="number" min={0} max={100} step="0.1" value={maxChurn} placeholder="any"
+                onChange={(e) => setMaxChurn(e.target.value)} style={{ ...styles.input, width: 110 }} />
+            </label>
+            {(minCohort !== '' || minAct !== '' || maxChurn !== '') && (
+              <button style={{ ...styles.presetBtn, color: COLORS.textSecondary, borderColor: COLORS.borderStrong, background: 'transparent' }}
+                onClick={() => { setMinCohort(''); setMinAct(''); setMaxChurn(''); }}>
+                clear filters ({filtered.length}/{enriched.length} cohorts shown)
+              </button>
+            )}
+            <div style={{ flex: 1 }} />
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {GROWTH_SERIES.map((s) => {
+                const on = !!seriesOn[s.key];
+                return (
+                  <button key={s.key}
+                    style={{
+                      ...styles.presetBtn,
+                      color: on ? s.color : COLORS.textMuted,
+                      borderColor: on ? s.color + '66' : COLORS.borderStrong,
+                      background: on ? s.color + '14' : 'transparent',
+                    }}
+                    onClick={() => setSeriesOn((m) => ({ ...m, [s.key]: !m[s.key] }))}>
+                    {s.kind === 'line' ? '〜 ' : '▮ '}{s.key}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            {/* Toggleable grouped bars (left axis = members) + rate lines (right
+                axis) — the threshold-finding view: where activation% settles vs
+                where churn% settles is the acquisition quality of the mix. */}
             <ResponsiveContainer width="100%" height={280}>
               <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
@@ -1841,51 +1896,70 @@ const GrowthTab: React.FC = () => {
                 <YAxis yAxisId="rate" orientation="right" tickFormatter={(v: number) => `${v}%`}
                   tick={{ fill: COLORS.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
                 <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                <Bar yAxisId="vol" dataKey="new audience mailed" fill={COLORS.good} fillOpacity={0.75} maxBarSize={22} />
-                <Bar yAxisId="vol" dataKey="activated (opened)" fill={OPEN_CYAN} fillOpacity={0.85} maxBarSize={22} />
-                <Line yAxisId="rate" type="monotone" dataKey="activation %" stroke={COLORS.warn}
-                  strokeWidth={2} dot={false} connectNulls />
+                {GROWTH_SERIES.filter((s) => s.kind === 'bar' && seriesOn[s.key]).map((s) => (
+                  <Bar key={s.key} yAxisId="vol" dataKey={s.key} fill={s.color} fillOpacity={0.8} maxBarSize={22} />
+                ))}
+                {GROWTH_SERIES.filter((s) => s.kind === 'line' && seriesOn[s.key]).map((s) => (
+                  <Line key={s.key} yAxisId="rate" type="monotone" dataKey={s.key} stroke={s.color}
+                    strokeWidth={2} dot={false} connectNulls
+                    strokeDasharray={s.key === 'churn %' ? '5 3' : undefined} />
+                ))}
               </ComposedChart>
             </ResponsiveContainer>
           </div>
-          <div style={{ ...styles.tableWrap, marginTop: 16, maxHeight: 320, overflowY: 'auto' }}>
+
+          <div style={{ ...styles.tableWrap, marginTop: 16, maxHeight: 360, overflowY: 'auto' }}>
             <table style={styles.table}>
               <thead>
                 <tr>
-                  <th style={{ ...styles.th, textAlign: 'left' }}>dt</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>first-touched members</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>activated (opened)</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>activation %</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>clicked</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>click %</th>
+                  {([
+                    ['dt', 'dt', 'left'],
+                    ['count', 'first-touched', 'right'],
+                    ['opened', 'activated', 'right'],
+                    ['actPct', 'activation %', 'right'],
+                    ['clicked', 'clicked', 'right'],
+                    ['clickPct', 'click %', 'right'],
+                    ['unsubscribed', 'unsub', 'right'],
+                    ['hard_bounced', 'hard bounced', 'right'],
+                    ['complained', 'complained', 'right'],
+                    ['churnPct', 'churn %', 'right'],
+                  ] as Array<[GrowthSortCol, string, 'left' | 'right']>).map(([col, label, align]) => (
+                    <th key={col}
+                      style={{ ...styles.th, textAlign: align, cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => onSort(col)}
+                      title="click to sort">
+                      {label}{sort.col === col ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {[...sortedAsc].reverse().map((r) => {
-                  const actPct = r.count > 0 ? ((r.opened ?? 0) / r.count) * 100 : null;
-                  const clkPct = r.count > 0 ? ((r.clicked ?? 0) / r.count) * 100 : null;
-                  return (
-                    <tr key={r.dt} style={styles.tr}>
-                      <td style={{ ...styles.td, fontVariantNumeric: 'tabular-nums' }}>{r.dt}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.count)}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmt(r.opened ?? 0)}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmtPct(actPct, 2)}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.clicked ?? 0)}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtPct(clkPct, 2)}</td>
-                    </tr>
-                  );
-                })}
+                {tableRows.map((r) => (
+                  <tr key={r.dt} style={styles.tr}>
+                    <td style={{ ...styles.td, fontVariantNumeric: 'tabular-nums' }}>{r.dt}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.count)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmt(r.opened)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: OPEN_CYAN }}>{fmtPct(r.actPct, 2)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: CLICK_VIOLET }}>{fmt(r.clicked)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: CLICK_VIOLET }}>{fmtPct(r.clickPct, 2)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: COLORS.accentAlt }}>{fmt(r.unsubscribed)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: HARD_RED }}>{fmt(r.hard_bounced)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: COMPLAINT_ROSE }}>{fmt(r.complained)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: HARD_RED }}>{fmtPct(r.churnPct, 2)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
           <div style={styles.tableFooterNote}>
             "First touch" means first touch within lake history, NOT lifetime — members mailed before the
             lake began recording will show their first lake-era send here, even if they are not actually new.
-            "Activated" = the cohort member has ≥1 open event anywhere in lake history (clicked likewise).
-            Two caveats: young cohorts (the last few days) under-read because members haven't had time to
-            open yet, and open/click events reach the lake only for SES-routed mail + the app-tracking
-            backfill — PMTA-heavy cohorts read activation low. Compare cohorts against each other, not
-            against an absolute target.
+            "Activated" = ≥1 open event ever (clicked likewise). "Churn %" = members with an unsubscribe,
+            hard-bounce or complaint event, over cohort size — the per-reason columns stay separate.
+            Caveats: young cohorts (the last few days) under-read activation because members haven't had
+            time to open yet; open/click/unsubscribe events reach the lake only for SES-routed mail + the
+            app-tracking backfill (hard bounces flow from BOTH PMTA and SES, so bounce churn is solid
+            everywhere). Compare cohorts against each other, not an absolute target.
           </div>
         </>
       )}

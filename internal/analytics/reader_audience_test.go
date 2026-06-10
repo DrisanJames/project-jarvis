@@ -234,11 +234,14 @@ func TestBuildAudienceFirstTouchSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error %v", err)
 	}
-	want := "SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k FROM (" +
+	want := "SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k, SUM(unsub) u, SUM(hardb) hb, SUM(compl) fb FROM (" +
 		"SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id ELSE lower(email) END) rk, " +
 		"MIN(CASE WHEN event_type IN ('attempted','delivered','relayed_to_ses') THEN dt END) AS first_dt, " +
 		"MAX(CASE WHEN event_type = 'open' THEN 1 ELSE 0 END) AS opened, " +
-		"MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked FROM email_events GROUP BY 1" +
+		"MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked, " +
+		"MAX(CASE WHEN event_type = 'unsubscribe' THEN 1 ELSE 0 END) AS unsub, " +
+		"MAX(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END) AS hardb, " +
+		"MAX(CASE WHEN event_type = 'complaint' THEN 1 ELSE 0 END) AS compl FROM email_events GROUP BY 1" +
 		") WHERE first_dt IS NOT NULL AND first_dt BETWEEN '2026-05-26' AND '2026-06-08' GROUP BY 1 ORDER BY 1"
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)

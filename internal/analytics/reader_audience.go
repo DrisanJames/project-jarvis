@@ -152,15 +152,20 @@ type SourcePerfRow struct {
 }
 
 // FirstTouchRow is one dt bucket from AudienceFirstTouch: how many distinct
-// recipients saw their first lake event on that day, and how many of that
-// cohort have since ACTIVATED — i.e. produced at least one open (and click)
-// event anywhere in lake history. Opened/Count is the cohort activation rate
-// the operator uses to judge acquisition quality thresholds.
+// recipients saw their first lake event on that day, how many of that cohort
+// have since ACTIVATED — i.e. produced at least one open (and click) event
+// anywhere in lake history — and how many have since CHURNED (unsubscribe /
+// hard_bounce / complaint events). Opened/Count is the cohort activation rate
+// and (Unsubscribed+HardBounced+Complained)/Count the cohort churn rate the
+// operator uses to judge acquisition quality thresholds.
 type FirstTouchRow struct {
-	Dt      string `json:"dt"`
-	Count   int64  `json:"count"`
-	Opened  int64  `json:"opened"`
-	Clicked int64  `json:"clicked"`
+	Dt           string `json:"dt"`
+	Count        int64  `json:"count"`
+	Opened       int64  `json:"opened"`
+	Clicked      int64  `json:"clicked"`
+	Unsubscribed int64  `json:"unsubscribed"`
+	HardBounced  int64  `json:"hard_bounced"`
+	Complained   int64  `json:"complained"`
 }
 
 // sourcePerfDims is the closed set of audience dimensions
@@ -588,13 +593,17 @@ func (r *Reader) AudienceSourcePerformance(ctx context.Context, f SourcePerfFilt
 // table computes, per recipient key, BOTH the first send-ish day and whether
 // the recipient ever opened/clicked; the outer query buckets by cohort day:
 //
-//	SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k FROM (
+//	SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k,
+//	       SUM(unsub) u, SUM(hardb) hb, SUM(compl) fb FROM (
 //	  SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id
 //	               ELSE lower(email) END) rk,
 //	         MIN(CASE WHEN event_type IN ('attempted','delivered','relayed_to_ses')
 //	                  THEN dt END) AS first_dt,
 //	         MAX(CASE WHEN event_type = 'open' THEN 1 ELSE 0 END) AS opened,
-//	         MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked
+//	         MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked,
+//	         MAX(CASE WHEN event_type = 'unsubscribe' THEN 1 ELSE 0 END) AS unsub,
+//	         MAX(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END) AS hardb,
+//	         MAX(CASE WHEN event_type = 'complaint' THEN 1 ELSE 0 END) AS compl
 //	  FROM email_events
 //	  GROUP BY 1
 //	) WHERE first_dt IS NOT NULL AND first_dt BETWEEN '<from>' AND '<to>'
@@ -603,13 +612,14 @@ func (r *Reader) AudienceSourcePerformance(ctx context.Context, f SourcePerfFilt
 // SEMANTICS: this is "first touch within lake history" — the lake only goes
 // back to the ~2026-03 backfill, so a recipient first mailed before that
 // reads as first-touched on their earliest in-lake event, NOT their lifetime
-// first send. opened/clicked are LIFETIME-in-lake activation flags for the
-// cohort (any open/click ever, not just after first_dt — opens can only
-// follow a send, so the distinction is moot in practice). Open/click events
-// reach the lake only for SES-routed mail + the app-tracking backfill, so
-// activation is directional for PMTA-heavy cohorts. The inner GROUP BY uses
-// the canonical per-recipient key (see the file header for the
-// split-identity reality).
+// first send. opened/clicked/unsub/hardb/compl are LIFETIME-in-lake flags for
+// the cohort (any such event ever, not just after first_dt — all of them can
+// only follow a send, so the distinction is moot in practice). Open/click
+// events reach the lake only for SES-routed mail + the app-tracking backfill,
+// so activation is directional for PMTA-heavy cohorts; hard_bounce events
+// flow from BOTH PMTA accounting and SES, so cohort churn-by-bounce is solid
+// everywhere. The inner GROUP BY uses the canonical per-recipient key (see
+// the file header for the split-identity reality).
 func buildAudienceFirstTouchSQL(from, to string) (string, error) {
 	if from == "" || to == "" {
 		return "", fmt.Errorf("from and to dates are required")
@@ -623,11 +633,14 @@ func buildAudienceFirstTouchSQL(from, to string) (string, error) {
 	if from > to {
 		return "", fmt.Errorf("invalid range: from %s is after to %s", from, to)
 	}
-	return "SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k FROM (" +
+	return "SELECT first_dt, COUNT(*) c, SUM(opened) o, SUM(clicked) k, SUM(unsub) u, SUM(hardb) hb, SUM(compl) fb FROM (" +
 		"SELECT (CASE WHEN subscriber_id <> '' THEN subscriber_id ELSE lower(email) END) rk, " +
 		"MIN(CASE WHEN event_type IN ('attempted','delivered','relayed_to_ses') THEN dt END) AS first_dt, " +
 		"MAX(CASE WHEN event_type = 'open' THEN 1 ELSE 0 END) AS opened, " +
-		"MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked FROM " +
+		"MAX(CASE WHEN event_type = 'click' THEN 1 ELSE 0 END) AS clicked, " +
+		"MAX(CASE WHEN event_type = 'unsubscribe' THEN 1 ELSE 0 END) AS unsub, " +
+		"MAX(CASE WHEN event_type = 'hard_bounce' THEN 1 ELSE 0 END) AS hardb, " +
+		"MAX(CASE WHEN event_type = 'complaint' THEN 1 ELSE 0 END) AS compl FROM " +
 		lakeTable +
 		" GROUP BY 1" +
 		") WHERE first_dt IS NOT NULL AND first_dt BETWEEN " + sqlStr(from) + " AND " + sqlStr(to) +
@@ -650,13 +663,19 @@ func (r *Reader) AudienceFirstTouch(ctx context.Context, from, to string) ([]Fir
 	}
 	out := make([]FirstTouchRow, 0, len(rows))
 	for _, row := range rows {
-		if len(row) < 4 {
+		if len(row) < 7 {
 			continue
 		}
 		c, _ := strconv.ParseInt(row[1], 10, 64)
 		o, _ := strconv.ParseInt(row[2], 10, 64)
 		k, _ := strconv.ParseInt(row[3], 10, 64)
-		out = append(out, FirstTouchRow{Dt: row[0], Count: c, Opened: o, Clicked: k})
+		u, _ := strconv.ParseInt(row[4], 10, 64)
+		hb, _ := strconv.ParseInt(row[5], 10, 64)
+		fb, _ := strconv.ParseInt(row[6], 10, 64)
+		out = append(out, FirstTouchRow{
+			Dt: row[0], Count: c, Opened: o, Clicked: k,
+			Unsubscribed: u, HardBounced: hb, Complained: fb,
+		})
 	}
 	return out, nil
 }
