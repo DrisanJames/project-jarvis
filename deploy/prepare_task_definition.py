@@ -169,6 +169,9 @@ def main() -> int:
         sidecar["portMappings"] = [{"containerPort": 3100, "protocol": "tcp"}]
         sidecar_env = sidecar.setdefault("environment", [])
         upsert_env(sidecar_env, "PORT", "3100")
+        # Next standalone binds to $HOSTNAME; in ECS that's the task hostname,
+        # which leaves 127.0.0.1 unbound and the Go server locked out.
+        upsert_env(sidecar_env, "HOSTNAME", "0.0.0.0")
         upsert_env(sidecar_env, "REVIEW_FORGE_DISABLE_LOCAL_FEEDS", "1")
         if target.get("logConfiguration") and not sidecar.get("logConfiguration"):
             log_cfg = json.loads(json.dumps(target["logConfiguration"]))
