@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,22 +19,48 @@ import (
 // MemoryStore provides S3-backed long-term memory for agents.
 // Each agent instance has its own S3 key namespace under
 // agents/{isp}/{agentType}/.
+//
+// APPEND STREAMS (convictions/decisions/signals) are written as small DELTA
+// OBJECTS, never by rewriting one growing file. The previous implementation's
+// appendObject did GET(full file) + concat + PUT(full file) on EVERY append —
+// with ~21MB journals and thousands of appends/hour that moved terabytes/day
+// through the NAT gateway (the 2026-06 USW2-NatGateway-Bytes incident) and,
+// with bucket versioning enabled, stored every rewritten copy (~7TB/day of
+// dead versions). Deltas are buffered in memory and flushed every 30s as one
+// object per stream:
+//
+//	agents/{isp}/{agentType}/convictions/dt=2026-06-10/040730.123-000042.jsonl
+//
+// Keys sort lexically == chronologically. Readers walk day prefixes newest-
+// first (plus the legacy single-file key for pre-cutover history) and only
+// need the recent tail: the conviction hot buffer is a 2000-entry ring.
 type MemoryStore struct {
 	client     *s3.Client
 	bucket     string
 	mu         sync.Mutex
-	flushQueue map[string][]byte
+	flushQueue map[string][]byte // whole-object writes (state.json etc.), last-write-wins
+	appendQueue map[string][]byte // stream base prefix -> buffered JSONL lines pending delta flush
+	flushSeq   uint64            // monotonic suffix so same-second delta keys never collide
 	flushTick  *time.Ticker
 	stopCh     chan struct{}
 }
 
+// Tail-read bounds for append streams. The conviction ring keeps 2000
+// entries (conviction.go maxPerAgent), so reading further back is wasted I/O.
+const (
+	streamReadMaxLines   = 2000
+	streamReadMaxObjects = 200
+	streamReadLookbackDays = 7
+)
+
 // NewMemoryStore creates a new S3-backed memory store.
 func NewMemoryStore(client *s3.Client, bucket string) *MemoryStore {
 	m := &MemoryStore{
-		client:     client,
-		bucket:     bucket,
-		flushQueue: make(map[string][]byte),
-		stopCh:     make(chan struct{}),
+		client:      client,
+		bucket:      bucket,
+		flushQueue:  make(map[string][]byte),
+		appendQueue: make(map[string][]byte),
+		stopCh:      make(chan struct{}),
 	}
 	m.flushTick = time.NewTicker(30 * time.Second)
 	go m.flushLoop()
@@ -51,16 +79,22 @@ func (m *MemoryStore) flushLoop() {
 	}
 }
 
-// Stop terminates the background flush loop.
+// Stop terminates the background flush loop, draining buffered writes first
+// so up to 30s of queued deltas aren't lost on shutdown.
 func (m *MemoryStore) Stop() {
 	close(m.stopCh)
+	m.Flush(context.Background())
 }
 
-// Flush writes all pending data to S3.
+// Flush writes all pending data to S3: whole-object writes as-is, and each
+// append stream's buffered lines as ONE small delta object (never a rewrite
+// of the full journal).
 func (m *MemoryStore) Flush(ctx context.Context) {
 	m.mu.Lock()
 	pending := m.flushQueue
+	pendingAppends := m.appendQueue
 	m.flushQueue = make(map[string][]byte)
+	m.appendQueue = make(map[string][]byte)
 	m.mu.Unlock()
 
 	for key, data := range pending {
@@ -71,6 +105,33 @@ func (m *MemoryStore) Flush(ctx context.Context) {
 			m.mu.Unlock()
 		}
 	}
+
+	for stream, lines := range pendingAppends {
+		key := m.deltaKey(stream, time.Now().UTC())
+		if err := m.putObject(ctx, key, lines); err != nil {
+			log.Printf("[memory] delta flush error stream=%s: %v", stream, err)
+			// Re-queue at the FRONT so order is preserved relative to lines
+			// appended while we were flushing.
+			m.mu.Lock()
+			m.appendQueue[stream] = append(lines, m.appendQueue[stream]...)
+			m.mu.Unlock()
+		}
+	}
+}
+
+// deltaKey builds a delta-object key whose lexical order matches
+// chronological order: <stream>/dt=YYYY-MM-DD/HHMMSS.mmm-SEQ.jsonl.
+func (m *MemoryStore) deltaKey(stream string, now time.Time) string {
+	seq := atomic.AddUint64(&m.flushSeq, 1)
+	return fmt.Sprintf("%s/dt=%s/%s-%06d.jsonl",
+		stream, now.Format("2006-01-02"), now.Format("150405.000"), seq)
+}
+
+// enqueueLine buffers one JSONL line on an append stream for the next flush.
+func (m *MemoryStore) enqueueLine(stream string, line []byte) {
+	m.mu.Lock()
+	m.appendQueue[stream] = append(m.appendQueue[stream], line...)
+	m.mu.Unlock()
 }
 
 // FlushImmediate forces an immediate flush (used during emergencies).
@@ -101,26 +162,27 @@ func (m *MemoryStore) WriteState(isp ISP, agentType AgentType, state interface{}
 	return nil
 }
 
-// AppendDecision appends a decision entry to the JSONL log.
+// AppendDecision buffers a decision entry; the flush loop writes it as part
+// of a small delta object (write-only audit stream, nothing reads it back).
 func (m *MemoryStore) AppendDecision(ctx context.Context, isp ISP, agentType AgentType, decision interface{}) error {
-	key := m.agentPrefix(isp, agentType) + "/decisions.jsonl"
+	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(decision)
 	if err != nil {
 		return err
 	}
-	line = append(line, '\n')
-	return m.appendObject(ctx, key, line)
+	m.enqueueLine(m.agentPrefix(isp, agentType)+"/decisions", append(line, '\n'))
+	return nil
 }
 
-// AppendSignal appends a signal snapshot to the JSONL log.
+// AppendSignal buffers a signal snapshot; flushed as a delta object.
 func (m *MemoryStore) AppendSignal(ctx context.Context, isp ISP, agentType AgentType, signal interface{}) error {
-	key := m.agentPrefix(isp, agentType) + "/signals.jsonl"
+	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(signal)
 	if err != nil {
 		return err
 	}
-	line = append(line, '\n')
-	return m.appendObject(ctx, key, line)
+	m.enqueueLine(m.agentPrefix(isp, agentType)+"/signals", append(line, '\n'))
+	return nil
 }
 
 // ReadPatterns loads learned behavior patterns from S3.
@@ -146,30 +208,45 @@ func (m *MemoryStore) WritePatterns(isp ISP, agentType AgentType, patterns inter
 // Conviction Memory — Binary Verdict Storage
 // ---------------------------------------------------------------------------
 
-// AppendConviction appends a single conviction to the agent's JSONL log in S3.
+// AppendConviction buffers a single conviction; flushed as a delta object.
 func (m *MemoryStore) AppendConviction(ctx context.Context, isp ISP, agentType AgentType, conviction interface{}) error {
-	key := m.agentPrefix(isp, agentType) + "/convictions.jsonl"
+	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(conviction)
 	if err != nil {
 		return err
 	}
-	line = append(line, '\n')
-	return m.appendObject(ctx, key, line)
+	m.enqueueLine(m.agentPrefix(isp, agentType)+"/convictions", append(line, '\n'))
+	return nil
 }
 
-// ReadConvictions loads all convictions for an agent from S3.
+// ReadConvictions loads the recent conviction tail for an agent from S3:
+// delta objects from the last few day-prefixes (newest first, bounded), plus
+// the legacy single-file journal for pre-cutover history when the deltas
+// alone don't fill the window. Returned oldest-first (the ring hydrator
+// appends sequentially and keeps the last 2000).
 func (m *MemoryStore) ReadConvictions(ctx context.Context, isp ISP, agentType AgentType) ([]Conviction, error) {
-	key := m.agentPrefix(isp, agentType) + "/convictions.jsonl"
-	data, err := m.getObject(ctx, key)
+	stream := m.agentPrefix(isp, agentType) + "/convictions"
+
+	lines, err := m.readStreamTail(ctx, stream)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 {
-		return nil, nil
+
+	// Legacy pre-cutover journal (the old full-file key). Only consulted when
+	// the delta window is short — its lines are strictly OLDER than any delta.
+	if len(lines) < streamReadMaxLines {
+		legacy, _ := m.getObject(ctx, stream+".jsonl")
+		if len(legacy) > 0 {
+			legacyLines := splitJSONL(legacy)
+			if keep := streamReadMaxLines - len(lines); len(legacyLines) > keep {
+				legacyLines = legacyLines[len(legacyLines)-keep:]
+			}
+			lines = append(legacyLines, lines...)
+		}
 	}
 
 	var convictions []Conviction
-	for _, line := range splitJSONL(data) {
+	for _, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
@@ -180,6 +257,68 @@ func (m *MemoryStore) ReadConvictions(ctx context.Context, isp ISP, agentType Ag
 		convictions = append(convictions, c)
 	}
 	return convictions, nil
+}
+
+// readStreamTail returns the most recent JSONL lines of an append stream by
+// walking day prefixes newest-first and fetching delta objects from the tail,
+// bounded by streamReadMaxLines / streamReadMaxObjects. Lines are returned
+// oldest-first.
+func (m *MemoryStore) readStreamTail(ctx context.Context, stream string) ([][]byte, error) {
+	if m.client == nil {
+		return nil, nil
+	}
+
+	// Collect candidate delta keys, newest day first. Keys within a day sort
+	// lexically == chronologically by construction (deltaKey).
+	var keysNewestFirst []string
+	now := time.Now().UTC()
+	for d := 0; d < streamReadLookbackDays && len(keysNewestFirst) < streamReadMaxObjects; d++ {
+		day := now.AddDate(0, 0, -d).Format("2006-01-02")
+		prefix := fmt.Sprintf("%s/dt=%s/", stream, day)
+		var dayKeys []string
+		p := s3.NewListObjectsV2Paginator(m.client, &s3.ListObjectsV2Input{
+			Bucket: aws.String(m.bucket),
+			Prefix: aws.String(prefix),
+		})
+		for p.HasMorePages() {
+			page, err := p.NextPage(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list %s: %w", prefix, err)
+			}
+			for _, obj := range page.Contents {
+				if obj.Key != nil {
+					dayKeys = append(dayKeys, *obj.Key)
+				}
+			}
+		}
+		sort.Strings(dayKeys)
+		// Newest first within the day, appended after newer days.
+		for i := len(dayKeys) - 1; i >= 0 && len(keysNewestFirst) < streamReadMaxObjects; i-- {
+			keysNewestFirst = append(keysNewestFirst, dayKeys[i])
+		}
+	}
+
+	// Fetch newest-first until the line budget is met, then restore
+	// chronological (oldest-first) order.
+	var chunksNewestFirst [][][]byte
+	total := 0
+	for _, key := range keysNewestFirst {
+		if total >= streamReadMaxLines {
+			break
+		}
+		data, err := m.getObject(ctx, key)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		chunk := splitJSONL(data)
+		chunksNewestFirst = append(chunksNewestFirst, chunk)
+		total += len(chunk)
+	}
+	var lines [][]byte
+	for i := len(chunksNewestFirst) - 1; i >= 0; i-- {
+		lines = append(lines, chunksNewestFirst[i]...)
+	}
+	return lines, nil
 }
 
 func splitJSONL(data []byte) [][]byte {
@@ -274,11 +413,8 @@ func (m *MemoryStore) putObject(ctx context.Context, key string, data []byte) er
 	return err
 }
 
-func (m *MemoryStore) appendObject(ctx context.Context, key string, data []byte) error {
-	if m.client == nil {
-		return nil
-	}
-	existing, _ := m.getObject(ctx, key)
-	combined := append(existing, data...)
-	return m.putObject(ctx, key, combined)
-}
+// NOTE: the old appendObject (GET full file + concat + PUT full file on every
+// append) is intentionally gone — it was the root cause of the 2026-06 NAT /
+// S3-versioning cost incident. Append streams go through enqueueLine + delta
+// flush instead. AppendIncident below keeps its read-modify-write because
+// incidents are rare (a handful per month) and consumers read one JSON array.
