@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 )
@@ -71,6 +72,85 @@ func EmitHeartbeat(ctx context.Context, db *sql.DB, workerName string, expectedI
 			log.Printf("[heartbeat] %s: %v", workerName, err)
 		}
 	}
+}
+
+// runDetailMaxLen caps the free-text detail stored per run so a multi-KB
+// error string can't bloat the run-summary table.
+const runDetailMaxLen = 300
+
+// workerRunRetention is how long per-cycle run rows are kept before the
+// opportunistic cleanup in RecordWorkerRun deletes them.
+const workerRunRetention = 30 * 24 * time.Hour
+
+// truncateRunDetail caps detail at runDetailMaxLen bytes, backing off to a
+// valid UTF-8 boundary so the truncated string stays insertable into a
+// Postgres TEXT column.
+func truncateRunDetail(detail string) string {
+	if len(detail) <= runDetailMaxLen {
+		return detail
+	}
+	cut := detail[:runDetailMaxLen]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
+// RecordWorkerRun appends a run-level summary row for one completed worker
+// cycle into mailing_worker_runs (finished_at = now, duration derived from
+// startedAt). Like EmitHeartbeat it is best-effort: failures are logged and
+// never propagated, so run bookkeeping can never break a worker's real job.
+// status is "ok", "partial" or "failed"; detail is free text truncated to
+// runDetailMaxLen. Each call also opportunistically deletes rows older than
+// 30 days for the same worker_name (cheap via idx_worker_runs_name_time;
+// errors ignored).
+//
+// If the caller's context is already cancelled (e.g. the worker is shutting
+// down mid-cycle), the write detaches to a fresh background context so the
+// terminal run row still lands.
+func RecordWorkerRun(ctx context.Context, db *sql.DB, workerName string, startedAt time.Time, status string, itemsProcessed, itemsFailed int, detail string) {
+	if db == nil || workerName == "" {
+		return
+	}
+	if status == "" {
+		status = "ok"
+	}
+	if ctx == nil || ctx.Err() != nil {
+		ctx = context.Background()
+	}
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	finishedAt := time.Now()
+	durMs := int(finishedAt.Sub(startedAt).Milliseconds())
+	if durMs < 0 {
+		durMs = 0
+	}
+	var detailArg interface{}
+	if d := truncateRunDetail(detail); d != "" {
+		detailArg = d
+	}
+
+	if _, err := db.ExecContext(rctx, `
+		INSERT INTO mailing_worker_runs
+			(worker_name, started_at, finished_at, duration_ms, status,
+			 items_processed, items_failed, detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, workerName, startedAt, finishedAt, durMs, status, itemsProcessed, itemsFailed, detailArg); err != nil {
+		// Table may not exist yet on first boot before runStartupMigrations;
+		// stay quiet in that case to avoid log spam.
+		if !isTableNotExistsError(err) {
+			log.Printf("[worker-run] %s: %v", workerName, err)
+		}
+		return
+	}
+
+	// Opportunistic retention: bounded by the (worker_name, started_at DESC)
+	// index, so this is cheap. Errors are deliberately ignored.
+	_, _ = db.ExecContext(rctx, `
+		DELETE FROM mailing_worker_runs
+		WHERE worker_name = $1 AND started_at < NOW() - $2::interval
+	`, workerName, fmt.Sprintf("%d seconds", int(workerRunRetention.Seconds())))
 }
 
 // WorkerHealthMonitor scans heartbeats and alerts on stalls.

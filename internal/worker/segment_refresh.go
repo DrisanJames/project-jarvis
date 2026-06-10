@@ -108,8 +108,22 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	start := time.Now()
 
 	hbStatus, hbErr := "ok", ""
+	var refreshed, failed int64
 	defer func() {
 		EmitHeartbeat(ctx, w.writeDB, "segment_refresh", int(w.interval.Seconds()), hbStatus, hbErr)
+
+		// Run-level summary, next to the heartbeat: what this cycle did.
+		ok, bad := atomic.LoadInt64(&refreshed), atomic.LoadInt64(&failed)
+		runStatus := "ok"
+		detail := fmt.Sprintf("refreshed %d dynamic segments (%d failed)", ok, bad)
+		switch {
+		case hbStatus == "error":
+			runStatus = "failed"
+			detail = truncateRunDetail("cycle error: " + hbErr)
+		case bad > 0:
+			runStatus = "partial"
+		}
+		RecordWorkerRun(ctx, w.writeDB, "segment_refresh", start, runStatus, int(ok), int(bad), detail)
 	}()
 
 	// Staleness guard: skip segments that have gone unused long enough to be
@@ -204,7 +218,6 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	// Segments with no row in the result simply have zero materialized members
 	// (genuinely empty, or created since the last materialization pass — they
 	// fill in on the next SegmentMaterializer run).
-	var updated int64
 	for _, seg := range segments {
 		if ctx.Err() != nil {
 			break
@@ -216,16 +229,17 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 			WHERE id = $1
 		`, seg.ID, newCount); err != nil {
 			log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", seg.Name, seg.ID, err)
+			atomic.AddInt64(&failed, 1)
 			continue
 		}
 		if newCount != seg.OldCount {
 			log.Printf("SegmentRefreshWorker: %s — %d → %d", seg.Name, seg.OldCount, newCount)
 		}
-		atomic.AddInt64(&updated, 1)
+		atomic.AddInt64(&refreshed, 1)
 	}
 
 	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments from materialized members in %s",
-		atomic.LoadInt64(&updated), len(segments), time.Since(start).Round(time.Millisecond))
+		atomic.LoadInt64(&refreshed), len(segments), time.Since(start).Round(time.Millisecond))
 }
 
 // loadSeedListIDs returns the UUIDs of all lists whose name contains "seed".

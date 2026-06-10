@@ -130,12 +130,45 @@ func (w *SegmentCleanupWorker) run() {
 	}
 }
 
+// cleanupCycleTotals accumulates the countable outcomes of one full cleanup
+// cycle across all organizations, for the run-level summary row.
+type cleanupCycleTotals struct {
+	warned        int64 // stale segments warned (marked + notification row)
+	archived      int64 // grace-expired segments archived or deactivated
+	purgedStatic  int64 // aged static snapshots hard-deleted
+	deletedArchiv int64 // archived segments hard-deleted past retention
+	failedOrgs    int64 // orgs whose settings row could not be processed
+}
+
+func (t cleanupCycleTotals) processed() int64 {
+	return t.warned + t.archived + t.purgedStatic + t.deletedArchiv
+}
+
+func (t cleanupCycleTotals) detail() string {
+	return fmt.Sprintf("warned %d, archived/deactivated %d, purged %d static snapshots, deleted %d expired archives",
+		t.warned, t.archived, t.purgedStatic, t.deletedArchiv)
+}
+
 func (w *SegmentCleanupWorker) processAllOrganizations() {
 	ctx := context.Background()
+	start := time.Now()
 
 	hbStatus, hbErr := "ok", ""
+	var totals cleanupCycleTotals
 	defer func() {
 		EmitHeartbeat(ctx, w.db, "segment_cleanup", int(w.checkInterval.Seconds()), hbStatus, hbErr)
+
+		// Run-level summary, next to the heartbeat: what this cycle did.
+		runStatus := "ok"
+		detail := totals.detail()
+		switch {
+		case hbStatus == "error":
+			runStatus = "failed"
+			detail = truncateRunDetail("cycle error: " + hbErr)
+		case totals.failedOrgs > 0:
+			runStatus = "partial"
+		}
+		RecordWorkerRun(ctx, w.db, "segment_cleanup", start, runStatus, int(totals.processed()), int(totals.failedOrgs), detail)
 	}()
 
 	// Get all organizations with cleanup enabled
@@ -172,6 +205,7 @@ func (w *SegmentCleanupWorker) processAllOrganizations() {
 		)
 		if err != nil {
 			log.Printf("SegmentCleanupWorker: Error scanning settings: %v", err)
+			totals.failedOrgs++
 			continue
 		}
 
@@ -184,36 +218,39 @@ func (w *SegmentCleanupWorker) processAllOrganizations() {
 		}
 
 		// Process this organization
-		w.processOrganization(ctx, settings)
+		w.processOrganization(ctx, settings, &totals)
 	}
 }
 
-func (w *SegmentCleanupWorker) processOrganization(ctx context.Context, settings CleanupSettings) {
+func (w *SegmentCleanupWorker) processOrganization(ctx context.Context, settings CleanupSettings, totals *cleanupCycleTotals) {
 	log.Printf("SegmentCleanupWorker: Processing organization %s", settings.OrganizationID)
+	if totals == nil {
+		totals = &cleanupCycleTotals{}
+	}
 
 	// 0. Hard-delete aged single-use static snapshots (segment + members).
 	//    Runs before the warn/grace flow because static snapshots are dead
 	//    weight the moment their campaign has sent — there is no value in a
 	//    7-day warning email for an audience snapshot nobody will reuse.
-	w.purgeStaticSnapshots(ctx, settings)
+	totals.purgedStatic += w.purgeStaticSnapshots(ctx, settings)
 
 	// 1. Find segments that need warning
 	staleSegments := w.findStaleSegments(ctx, settings)
 	if len(staleSegments) > 0 {
 		log.Printf("SegmentCleanupWorker: Found %d stale segments for org %s", len(staleSegments), settings.OrganizationID)
-		w.sendWarningNotifications(ctx, settings, staleSegments)
+		totals.warned += int64(w.sendWarningNotifications(ctx, settings, staleSegments))
 	}
 
 	// 2. Process segments where grace period has expired
 	expiredNotifications := w.findExpiredNotifications(ctx, settings.OrganizationID)
 	if len(expiredNotifications) > 0 {
 		log.Printf("SegmentCleanupWorker: Found %d segments with expired grace period for org %s", len(expiredNotifications), settings.OrganizationID)
-		w.processExpiredSegments(ctx, settings, expiredNotifications)
+		totals.archived += int64(w.processExpiredSegments(ctx, settings, expiredNotifications))
 	}
 
 	// 3. Clean up old archived segments (if auto-delete enabled)
 	if settings.AutoDelete && settings.ArchiveRetentionDays > 0 {
-		w.cleanupArchivedSegments(ctx, settings)
+		totals.deletedArchiv += w.cleanupArchivedSegments(ctx, settings)
 	}
 }
 
@@ -279,20 +316,21 @@ func (w *SegmentCleanupWorker) findStaleSegments(ctx context.Context, settings C
 	return segments
 }
 
-func (w *SegmentCleanupWorker) sendWarningNotifications(ctx context.Context, settings CleanupSettings, segments []StaleSegment) {
+// sendWarningNotifications returns the number of segments marked as warned.
+func (w *SegmentCleanupWorker) sendWarningNotifications(ctx context.Context, settings CleanupSettings, segments []StaleSegment) int {
 	if !settings.NotifyAdmins || w.emailSender == nil {
 		// Just mark as warned without sending email
 		for _, seg := range segments {
 			w.markSegmentWarned(ctx, settings, seg)
 		}
-		return
+		return len(segments)
 	}
 
 	// Get admin emails for this organization
 	adminEmails := w.getAdminEmails(ctx, settings)
 	if len(adminEmails) == 0 {
 		log.Printf("SegmentCleanupWorker: No admin emails found for org %s", settings.OrganizationID)
-		return
+		return 0
 	}
 
 	// Build email content
@@ -311,6 +349,7 @@ func (w *SegmentCleanupWorker) sendWarningNotifications(ctx context.Context, set
 	for _, seg := range segments {
 		w.markSegmentWarned(ctx, settings, seg)
 	}
+	return len(segments)
 }
 
 func (w *SegmentCleanupWorker) markSegmentWarned(ctx context.Context, settings CleanupSettings, seg StaleSegment) {
@@ -367,7 +406,9 @@ func (w *SegmentCleanupWorker) findExpiredNotifications(ctx context.Context, org
 	return notifications
 }
 
-func (w *SegmentCleanupWorker) processExpiredSegments(ctx context.Context, settings CleanupSettings, notifications []CleanupNotification) {
+// processExpiredSegments returns the number of segments archived/deactivated.
+func (w *SegmentCleanupWorker) processExpiredSegments(ctx context.Context, settings CleanupSettings, notifications []CleanupNotification) int {
+	acted := 0
 	for _, n := range notifications {
 		var action string
 
@@ -400,14 +441,17 @@ func (w *SegmentCleanupWorker) processExpiredSegments(ctx context.Context, setti
 
 		// Update notification record
 		_, _ = w.db.ExecContext(ctx, `
-			UPDATE mailing_segment_cleanup_notifications 
+			UPDATE mailing_segment_cleanup_notifications
 			SET action_taken = $1, action_taken_at = NOW()
 			WHERE id = $2
 		`, action, n.ID)
+		acted++
 	}
+	return acted
 }
 
-func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, settings CleanupSettings) {
+// cleanupArchivedSegments returns the number of archived segments deleted.
+func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, settings CleanupSettings) int64 {
 	// Find archived segments past retention. There is NO FK cascade from
 	// mailing_segment_members -> mailing_segments, so we MUST delete member
 	// rows explicitly first or they orphan and the space is never reclaimed.
@@ -420,7 +464,7 @@ func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, sett
 	`, settings.OrganizationID, settings.ArchiveRetentionDays, staticPurgeMaxPerCycle)
 	if err != nil {
 		log.Printf("SegmentCleanupWorker: Error listing old archived segments: %v", err)
-		return
+		return 0
 	}
 	var ids []uuid.UUID
 	for rows.Next() {
@@ -431,7 +475,7 @@ func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, sett
 	}
 	rows.Close()
 	if len(ids) == 0 {
-		return
+		return 0
 	}
 
 	segs, members := w.deleteSegmentsWithMembers(ctx, ids)
@@ -439,18 +483,19 @@ func (w *SegmentCleanupWorker) cleanupArchivedSegments(ctx context.Context, sett
 		log.Printf("SegmentCleanupWorker: Permanently deleted %d archived segments (+%d member rows) older than %d days",
 			segs, members, settings.ArchiveRetentionDays)
 	}
+	return segs
 }
 
 // purgeStaticSnapshots hard-deletes single-use static segment snapshots (and
 // their member rows) once they age past staticSnapshotRetentionDays from
 // last_used_at. Pinned (keep_active) and already-archived segments are exempt.
 // Work is chunked so member-row deletes stay lock- and IO-friendly under
-// send-day load.
-func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, settings CleanupSettings) {
+// send-day load. Returns the number of snapshot segments deleted.
+func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, settings CleanupSettings) int64 {
 	var totalSegs, totalMembers int64
 	for totalSegs < staticPurgeMaxPerCycle {
 		if ctx.Err() != nil {
-			return
+			return totalSegs
 		}
 
 		lctx, lcancel := context.WithTimeout(ctx, 30*time.Second)
@@ -466,7 +511,7 @@ func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, setting
 		if err != nil {
 			lcancel()
 			log.Printf("SegmentCleanupWorker: static purge list error: %v", err)
-			return
+			return totalSegs
 		}
 		var ids []uuid.UUID
 		for rows.Next() {
@@ -493,6 +538,7 @@ func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, setting
 		log.Printf("SegmentCleanupWorker: hard-deleted %d static snapshot(s) (+%d member rows) older than %dd for org %s",
 			totalSegs, totalMembers, staticSnapshotRetentionDays, settings.OrganizationID)
 	}
+	return totalSegs
 }
 
 // deleteSegmentsWithMembers removes member rows (indexed by segment_id) and

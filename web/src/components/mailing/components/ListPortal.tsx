@@ -25,6 +25,11 @@ import {
   faDownload,
   faFileAlt,
   faRocket,
+  faRotate,
+  faServer,
+  faDatabase,
+  faChevronDown,
+  faChevronUp,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ChunkedUploader } from '../ChunkedUploader';
@@ -244,6 +249,7 @@ export const ListPortal: React.FC = () => {
           <ListDashboard
             segments={segments}
             onNavigate={navigateTo}
+            orgFetch={orgFetch}
             animateIn={animateIn}
           />
         );
@@ -423,7 +429,7 @@ export const ListPortal: React.FC = () => {
 };
 
 // ============================================================================
-// DASHBOARD COMPONENT — SEGMENTS OPERATIONS (v2.0, 2026-06-10)
+// DASHBOARD COMPONENT — SEGMENTS OPERATIONS (v2.1, 2026-06-10)
 //
 // The dashboard view is segments-only by operator request ("I do NOT care
 // for insight about the lists"). List management stays reachable via the
@@ -433,11 +439,19 @@ export const ListPortal: React.FC = () => {
 // partner_wave_static rows are excluded server-side) — chosen over adding
 // include_counts=1 to the fetch because the rows are already in hand and
 // the by-category panel only needs counts over the operated set.
+//
+// v2.1 adds the Refresh Workers panel (segment_refresh / segment_cleanup
+// heartbeats + nightly lake chain) fed by GET /api/mailing/v2/segments/workers.
+// That fetch is owned by RefreshWorkersSection (its own 60s interval, mounted
+// only while the dashboard view is visible) rather than fetchDashboard, so a
+// workers-endpoint failure can never disturb the segments poll — the panel
+// just degrades to an "unavailable" state.
 // ============================================================================
 
 interface DashboardProps {
   segments: Segment[];
   onNavigate: (view: ViewMode, list?: List, segment?: Segment) => void;
+  orgFetch: (url: string, options?: RequestInit) => Promise<Response>;
   animateIn: boolean;
 }
 
@@ -497,7 +511,286 @@ const ATTENTION_ROW_CAP = 12;
 
 type AttentionReason = 'failed' | 'blocked_delta' | 'stale';
 
-const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, animateIn }) => {
+// ----------------------------------------------------------------------------
+// Refresh Workers panel (v2.1) — GET /api/mailing/v2/segments/workers
+// ----------------------------------------------------------------------------
+
+interface WorkerRun {
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  status: 'ok' | 'partial' | 'failed' | string;
+  items_processed: number;
+  items_failed: number;
+  detail: string;
+}
+
+interface WorkerStatus {
+  name: string;
+  online: boolean;
+  last_beat_at: string;
+  seconds_since_beat: number;
+  expected_interval_seconds: number;
+  cycle_count: number;
+  stalled: boolean;
+  last_status: string;
+  last_error: string;
+  // Runs may be null/empty while the runs table is brand new — the card
+  // falls back to heartbeat data and a "no run records yet" line.
+  last_run: WorkerRun | null;
+  recent_runs: WorkerRun[] | null;
+}
+
+interface LakeChainStatus {
+  last_standard_built_at: string | null;
+  standard_built_24h: number;
+  engaged_built_24h: number;
+  lake_builder_built_24h: number;
+  failed_now: number;
+  blocked_now: number;
+}
+
+interface WorkersResponse {
+  workers: WorkerStatus[];
+  lake_chain: LakeChainStatus | null;
+}
+
+/** items_processed label per worker name. */
+const WORKER_ITEM_LABELS: Record<string, string> = {
+  segment_refresh: 'segments refreshed',
+  segment_cleanup: 'segments cleaned',
+};
+
+const RUN_STATUS_COLORS: Record<string, string> = {
+  ok: '#10b981',
+  partial: '#f59e0b',
+  failed: '#ef4444',
+};
+
+const formatDurationMs = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+};
+
+const formatIntervalSeconds = (sec: number): string => {
+  if (!Number.isFinite(sec) || sec <= 0) return 'interval unknown';
+  if (sec < 60) return `every ${Math.round(sec)}s`;
+  if (sec < 3600) return `every ${Math.round(sec / 60)}m`;
+  const h = sec / 3600;
+  return `every ${Number.isInteger(h) ? h : h.toFixed(1)}h`;
+};
+
+const WorkerCard: React.FC<{ worker: WorkerStatus }> = ({ worker }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const state = worker.stalled ? 'stalled' : worker.online ? 'online' : 'offline';
+  const lastRun = worker.last_run;
+  const runs = worker.recent_runs ?? [];
+  const itemsLabel = WORKER_ITEM_LABELS[worker.name] ?? 'items processed';
+
+  return (
+    <div className="worker-card">
+      <div className="worker-card-header">
+        <span className="worker-name">
+          <FontAwesomeIcon icon={faServer} /> {worker.name}
+        </span>
+        <span className={`worker-state ${state}`}>
+          <span className="worker-state-dot" />
+          {state.toUpperCase()}
+        </span>
+      </div>
+
+      <div className="worker-line">
+        {lastRun?.finished_at ? (
+          <>last run {formatTimeAgo(lastRun.finished_at)} · took {formatDurationMs(lastRun.duration_ms)}</>
+        ) : worker.last_beat_at ? (
+          <>last heartbeat {formatTimeAgo(worker.last_beat_at)}</>
+        ) : (
+          'no heartbeat recorded'
+        )}
+      </div>
+
+      {lastRun ? (
+        <div className="worker-items">
+          {lastRun.items_processed.toLocaleString()} {itemsLabel}
+          {lastRun.items_failed > 0 && (
+            <span className="worker-items-failed"> · {lastRun.items_failed.toLocaleString()} failed</span>
+          )}
+        </div>
+      ) : (
+        <div className="worker-items muted">no run records yet</div>
+      )}
+
+      {lastRun?.detail && <div className="worker-detail">{lastRun.detail}</div>}
+      {worker.last_error && <div className="worker-detail error">{worker.last_error}</div>}
+
+      {runs.length > 0 && (
+        <>
+          <button className="worker-runs-toggle" onClick={() => setExpanded(e => !e)}>
+            <FontAwesomeIcon icon={expanded ? faChevronUp : faChevronDown} /> recent runs ({runs.length})
+          </button>
+          {expanded && (
+            <table className="worker-runs-table">
+              <thead>
+                <tr>
+                  <th>started</th>
+                  <th>took</th>
+                  <th>items</th>
+                  <th>status</th>
+                  <th>detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r, i) => {
+                  const chip = RUN_STATUS_COLORS[r.status] ?? '#94a3b8';
+                  return (
+                    <tr key={`${r.started_at}-${i}`}>
+                      <td>{formatTimeAgo(r.started_at)}</td>
+                      <td>{formatDurationMs(r.duration_ms)}</td>
+                      <td>
+                        {r.items_processed.toLocaleString()}
+                        {r.items_failed > 0 && (
+                          <span className="worker-items-failed"> / {r.items_failed} failed</span>
+                        )}
+                      </td>
+                      <td>
+                        <span
+                          className="run-status-chip"
+                          style={{ color: chip, borderColor: `${chip}55`, background: `${chip}1a` }}
+                        >
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="run-detail">{r.detail}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      <div className="worker-footer">
+        <span>{formatIntervalSeconds(worker.expected_interval_seconds)}</span>
+        <span>{worker.cycle_count.toLocaleString()} cycles</span>
+      </div>
+    </div>
+  );
+};
+
+const LakeChainCard: React.FC<{ lake: LakeChainStatus }> = ({ lake }) => {
+  const healthy = lake.failed_now === 0 && lake.blocked_now === 0;
+  return (
+    <div className="worker-card">
+      <div className="worker-card-header">
+        <span className="worker-name">
+          <FontAwesomeIcon icon={faDatabase} /> nightly lake chain
+        </span>
+        {healthy ? (
+          <span className="worker-state online">
+            <span className="worker-state-dot" />
+            HEALTHY
+          </span>
+        ) : (
+          <span className="worker-lake-badges">
+            {lake.failed_now > 0 && <span className="worker-alert-badge">{lake.failed_now} failed</span>}
+            {lake.blocked_now > 0 && <span className="worker-alert-badge blocked">{lake.blocked_now} blocked Δ</span>}
+          </span>
+        )}
+      </div>
+      <div className="worker-line">
+        {lake.last_standard_built_at
+          ? <>last run {formatTimeAgo(lake.last_standard_built_at)}</>
+          : 'no standard build recorded yet'}
+      </div>
+      <div className="worker-items">
+        {lake.standard_built_24h.toLocaleString()} standard + {lake.engaged_built_24h.toLocaleString()} engaged segments built (24h)
+      </div>
+      <div className="worker-detail">{lake.lake_builder_built_24h.toLocaleString()} lake-builder builds (24h)</div>
+      <div className="worker-footer">
+        <span>06:30 UTC daily</span>
+        <span>Fargate</span>
+      </div>
+    </div>
+  );
+};
+
+const RefreshWorkersSection: React.FC<{
+  orgFetch: (url: string, options?: RequestInit) => Promise<Response>;
+}> = ({ orgFetch }) => {
+  const [data, setData] = useState<WorkersResponse | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  // Self-contained poll on the same 60s cadence as fetchDashboard. Mounted
+  // only while the dashboard view is shown; a failing workers endpoint flips
+  // the panel to "unavailable" without touching the rest of the dashboard.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchWorkers = async () => {
+      try {
+        const res = await orgFetch('/api/mailing/v2/segments/workers');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json: WorkersResponse = await res.json();
+        if (!cancelled) {
+          setData(json);
+          setUnavailable(false);
+        }
+      } catch (err) {
+        if (!cancelled) setUnavailable(true);
+      }
+    };
+    fetchWorkers();
+    const interval = setInterval(fetchWorkers, 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [orgFetch]);
+
+  const workers = data?.workers ?? [];
+  const lake = data?.lake_chain ?? null;
+
+  return (
+    <div className="dashboard-section" style={{ animationDelay: '175ms' }}>
+      <h3><FontAwesomeIcon icon={faRotate} /> Refresh Workers</h3>
+      <div className="refresh-workers-grid">
+        {unavailable ? (
+          <div className="worker-card unavailable">
+            <div className="worker-card-header">
+              <span className="worker-name"><FontAwesomeIcon icon={faServer} /> worker status</span>
+            </div>
+            <div className="worker-items muted">unavailable — /v2/segments/workers not responding</div>
+          </div>
+        ) : !data ? (
+          <div className="worker-card unavailable">
+            <div className="worker-card-header">
+              <span className="worker-name"><FontAwesomeIcon icon={faSpinner} spin /> worker status</span>
+            </div>
+            <div className="worker-items muted">loading…</div>
+          </div>
+        ) : (
+          <>
+            {workers.map(w => <WorkerCard key={w.name} worker={w} />)}
+            {lake && <LakeChainCard lake={lake} />}
+            {workers.length === 0 && !lake && (
+              <div className="worker-card unavailable">
+                <div className="worker-items muted">no workers reported yet</div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetch, animateIn }) => {
   const now = Date.now();
 
   // Operated set: machine rows are excluded server-side, but never count them
@@ -605,6 +898,9 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, animate
           </div>
         </div>
       </div>
+
+      {/* Refresh Workers (v2.1) — worker heartbeats + nightly lake chain */}
+      <RefreshWorkersSection orgFetch={orgFetch} />
 
       {/* Quick Actions */}
       <div className="dashboard-section" style={{ animationDelay: '200ms' }}>

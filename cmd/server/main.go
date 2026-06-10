@@ -1989,6 +1989,27 @@ func runStartupMigrations(db *sql.DB) {
 			last_alerted_at           TIMESTAMPTZ,
 			updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+		// Run-level worker observability — one row per completed worker cycle
+		// (written by RecordWorkerRun, internal/worker/worker_health.go).
+		// Complements the heartbeat upsert above: heartbeats answer "is it
+		// alive?", runs answer "what did each cycle actually do?". Surfaced by
+		// GET /api/mailing/v2/segments/workers. Placed near the top of this
+		// slice (new table, no deps, fast) because end-of-slice entries can be
+		// skipped when the migration runner exhausts its boot time budget;
+		// ops also applies this DDL manually, so it must stay idempotent.
+		{"create_worker_runs", `CREATE TABLE IF NOT EXISTS mailing_worker_runs (
+			id BIGSERIAL PRIMARY KEY,
+			worker_name TEXT NOT NULL,
+			started_at TIMESTAMPTZ NOT NULL,
+			finished_at TIMESTAMPTZ NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			items_processed INTEGER NOT NULL DEFAULT 0,
+			items_failed INTEGER NOT NULL DEFAULT 0,
+			detail TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
 		// Creative registry — browse/preview surface for the send-day creative
 		// archive (ReviewForge phase 2). Synced from operator tooling via
 		// /api/admin/creatives-sync; read by the portal Creative Studio tab.

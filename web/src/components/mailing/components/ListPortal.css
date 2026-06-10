@@ -1846,3 +1846,220 @@
   font-weight: 600;
   color: rgba(180, 210, 240, 0.8);
 }
+
+/* ============================================================================
+   REFRESH WORKERS PANEL (v2.1, 2026-06-10)
+   Worker heartbeat cards (segment_refresh / segment_cleanup) + nightly lake
+   chain card, fed by GET /api/mailing/v2/segments/workers. Lives inside a
+   standard .dashboard-section after the hero KPIs.
+   ============================================================================ */
+
+.list-portal .refresh-workers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.list-portal .worker-card {
+  background: #0a1020;
+  border: 1px solid rgba(0, 200, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list-portal .worker-card.unavailable {
+  opacity: 0.55;
+}
+
+.list-portal .worker-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.list-portal .worker-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e6f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-portal .worker-name svg {
+  color: #00e5ff;
+}
+
+.list-portal .worker-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+
+.list-portal .worker-state.online {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.list-portal .worker-state.offline {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.list-portal .worker-state.stalled {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.list-portal .worker-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.list-portal .worker-state.online .worker-state-dot {
+  animation: workerPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes workerPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }
+  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+}
+
+.list-portal .worker-line {
+  font-size: 13px;
+  color: #e0e6f0;
+}
+
+.list-portal .worker-items {
+  font-size: 13px;
+  color: rgba(180, 210, 240, 0.85);
+}
+
+.list-portal .worker-items.muted {
+  color: rgba(180, 210, 240, 0.5);
+  font-style: italic;
+}
+
+.list-portal .worker-items-failed {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.list-portal .worker-detail {
+  font-size: 12px;
+  color: rgba(180, 210, 240, 0.65);
+}
+
+.list-portal .worker-detail.error {
+  color: #f87171;
+}
+
+.list-portal .worker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.5);
+  border-top: 1px solid rgba(0, 200, 255, 0.08);
+  padding-top: 8px;
+  margin-top: auto;
+}
+
+.list-portal .worker-lake-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.list-portal .worker-alert-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+  white-space: nowrap;
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.list-portal .worker-alert-badge.blocked {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.list-portal .worker-runs-toggle {
+  background: none;
+  border: none;
+  color: #00e5ff;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.list-portal .worker-runs-toggle:hover {
+  text-decoration: underline;
+}
+
+.list-portal .worker-runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: rgba(180, 210, 240, 0.8);
+}
+
+.list-portal .worker-runs-table th {
+  text-align: left;
+  font-weight: 600;
+  color: rgba(180, 210, 240, 0.5);
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(0, 200, 255, 0.1);
+  white-space: nowrap;
+}
+
+.list-portal .worker-runs-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(0, 200, 255, 0.05);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.list-portal .worker-runs-table td.run-detail {
+  white-space: normal;
+  min-width: 120px;
+  color: rgba(180, 210, 240, 0.6);
+}
+
+.list-portal .run-status-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid;
+  line-height: 1.5;
+}

@@ -104,6 +104,11 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 		// segment per requested window, built sequentially through the
 		// single lake-build slot). See lake_segment_builder.go.
 		r.Post("/build-request", api.LakeSegmentBuildRequest)
+
+		// Run-level observability for the segment workers (heartbeats +
+		// mailing_worker_runs + lake-chain ledger stats). Read-only, safe
+		// to poll. See segment_workers_handlers.go.
+		r.Get("/workers", api.GetSegmentWorkers)
 	})
 
 	r.Route("/v2/snapshots/{snapshotID}", func(r chi.Router) {
