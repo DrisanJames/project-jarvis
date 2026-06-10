@@ -648,6 +648,12 @@ func HandleBulkTagCanonical(db *sql.DB) http.HandlerFunc {
 			emit(map[string]interface{}{"phase": "error", "where": "segment_count_update", "error": err.Error()})
 			return
 		}
+		// Best-effort build-ledger upsert so the v2 segments list shows the
+		// authoritative member count for this segment without re-counting the
+		// rollup (segment_ledger.go). Observability only — never fails the run.
+		if err := UpsertSegmentLedger(ctx, db, segmentID, int64(members), "bulk-tag", "ok", 0, 0, ""); err != nil {
+			log.Printf("[BulkTag] segment ledger upsert failed for %s (continuing): %v", segmentID, err)
+		}
 		emit(map[string]interface{}{
 			"phase":               "materialized",
 			"members":             members,

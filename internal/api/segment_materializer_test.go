@@ -1,9 +1,13 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestParseMaterializeConcurrency(t *testing.T) {
@@ -226,5 +230,70 @@ func TestBuildSegmentQuery_EmptyFlatArrayStillReturnsEmpty(t *testing.T) {
 	query, _ := buildSegmentQuery("[]", nil)
 	if !strings.Contains(query, "WHERE FALSE") {
 		t.Errorf("empty flat-array segment with no list_id should return empty set; got: %s", query)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lake-spec rejection (defense against the unscoped-rebuild catastrophe)
+//
+// A lake segment's conditions are {"lake_spec":{...}} — neither a V2 group
+// nor a legacy condition array. buildSegmentQuery's legacy branch DISCARDS
+// its unmarshal error and degrades such a blob to an empty WHERE clause, so
+// running it through the materializer would DELETE the segment's members and
+// INSERT the ENTIRE active subscriber base, cross-org. Both materializer
+// entrypoints must therefore reject lake-spec conditions outright; the only
+// rebuild path for these segments is POST /v2/segments/{id}/refresh.
+// ---------------------------------------------------------------------------
+
+const testLakeSpecConditions = `{"lake_spec":{"event":"open","window_days":14,"scope":"global","exclude_seeds":true}}`
+
+func TestMaterializeSegmentCoreRejectsLakeSpecConditions(t *testing.T) {
+	// nil db: the guard must fire before ANY database work (semaphore, conn,
+	// DELETE) — if it didn't, this call would panic on the nil handle.
+	count, err := materializeSegmentCore(context.Background(), nil,
+		"11111111-2222-3333-4444-555555555555", "", testLakeSpecConditions)
+	if !errors.Is(err, errLakeSegmentNotMaterializable) {
+		t.Fatalf("err = %v, want errLakeSegmentNotMaterializable", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestMaterializeSegmentWithLedgerRejectsLakeSpecConditions(t *testing.T) {
+	// nil db: the guard fires before MarkSegmentBuildRunning, so a misrouted
+	// recalculate never pollutes the ledger either.
+	count, err := materializeSegmentWithLedger(context.Background(), nil,
+		"11111111-2222-3333-4444-555555555555", "", testLakeSpecConditions, "recalculate")
+	if !errors.Is(err, errLakeSegmentNotMaterializable) {
+		t.Fatalf("err = %v, want errLakeSegmentNotMaterializable", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+// Legacy and V2 conditions must keep flowing through (guard must not
+// over-trigger): parseLakeSpec returns nil for them, so the core proceeds
+// past the guard into real database work — observed here as a sqlmock
+// "not expected" error from the build transaction, NOT the lake guard error.
+func TestMaterializeSegmentCoreAllowsNonLakeConditions(t *testing.T) {
+	for name, raw := range map[string]string{
+		"legacy array": `[{"field":"email_opened","operator":"in_last_days","value":"30"}]`,
+		"v2 group":     `{"logic_operator":"AND","conditions":[]}`,
+		"empty array":  `[]`,
+	} {
+		db, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("sqlmock: %v", err)
+		}
+		_, err = materializeSegmentCore(context.Background(), db,
+			"11111111-2222-3333-4444-555555555555", "", raw)
+		if err == nil {
+			t.Errorf("%s: expected an error from the unexpected-call mock", name)
+		} else if errors.Is(err, errLakeSegmentNotMaterializable) {
+			t.Errorf("%s: guard misfired on non-lake conditions", name)
+		}
+		db.Close()
 	}
 }

@@ -34,7 +34,23 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 
 // VersionSegmentationAPI is the response version surfaced on every list/count
 // payload so the UI and operators can confirm what they are talking to.
-const VersionSegmentationAPI = "2.2.0"
+//
+// 2.3.0 — segment build ledger. ListSegments and GetSegmentCount now read the
+//
+//	app-owned mailing_segment_build_ledger summary table instead of
+//	running COUNT(*) over mailing_segment_members. ListSegments rows
+//	gain last_built_at, build_source, last_build_status (stale 'running'
+//	coerced to 'failed'), last_build_ms and last_delta_pct; existing
+//	keys (audience_count / audience_source / materialized_count /
+//	materialized_at) are unchanged, falling back to the segment row's
+//	cached subscriber_count (audience_source 'cached') when no ledger
+//	row exists. GetSegmentCount reports audience_source 'ledger' when
+//	served from the ledger.
+//
+// 2.2.0 — materialized rollup read path (mailing_segment_members), explicit
+//
+//	/recalculate action.
+const VersionSegmentationAPI = "2.3.0"
 
 // RegisterRoutes registers segmentation routes under /api/mailing/v2
 func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
@@ -47,8 +63,12 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 			r.Get("/", api.GetSegment)
 			r.Put("/", api.UpdateSegment)
 			r.Delete("/", api.DeleteSegment)
-			r.Get("/count", api.GetSegmentCount)        // Cheap materialized count
+			r.Get("/count", api.GetSegmentCount)           // Cheap materialized count
 			r.Post("/recalculate", api.RecalculateSegment) // Synchronous re-materialize
+			// Lake-aware refresh (lake_segment_builder.go): async Athena
+			// build (202, single slot) for {"lake_spec":...} segments,
+			// synchronous materialize (200) for dynamic segments.
+			r.Post("/refresh", api.RefreshSegment)
 			r.Post("/execute", api.ExecuteSegment)
 			r.Post("/snapshot", api.CreateSnapshot)
 			r.Get("/subscribers", api.GetSegmentSubscribers)
@@ -63,6 +83,11 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 		// Use case: "give me one CSV of every email currently in any
 		// of these N segments" for hygiene runs against a verifier.
 		r.Post("/export.csv", api.ExportSegmentsUnionCSV)
+
+		// Create + build standard lake recency segments (one static
+		// segment per requested window, built sequentially through the
+		// single lake-build slot). See lake_segment_builder.go.
+		r.Post("/build-request", api.LakeSegmentBuildRequest)
 	})
 
 	r.Route("/v2/snapshots/{snapshotID}", func(r chi.Router) {
@@ -101,10 +126,11 @@ type CreateSegmentRequest struct {
 
 // ListSegments returns all segments for the organization with a materialized
 // audience snapshot per segment (count + freshness). The hot read path NEVER
-// touches mailing_subscribers; the materialized rollup is read from
-// mailing_segment_members which is indexed by segment_id and refreshed by the
-// nightly + on-boot SegmentMaterializer worker. This keeps the segments page
-// safe to load during 24/7 send hours.
+// touches mailing_subscribers OR mailing_segment_members; counts come from the
+// app-owned mailing_segment_build_ledger summary table (one tiny row per
+// segment, upserted by every member-writing path — materializer, recalculate,
+// lake builders). This keeps the segments page safe to load during 24/7 send
+// hours even as the members rollup grows.
 //
 // Response shape (JSON array):
 //
@@ -113,8 +139,13 @@ type CreateSegmentRequest struct {
 //	    ...all *segmentation.Segment fields...,
 //	    "materialized_count": 17234,
 //	    "materialized_at":    "2026-04-27T11:02:13Z",
-//	    "audience_count":     17234,         // displayable number — materialized when present, cached fallback
-//	    "audience_source":    "materialized" // or "cached"
+//	    "audience_count":     17234,         // displayable number — ledger when present, cached fallback
+//	    "audience_source":    "materialized", // or "cached"
+//	    "last_built_at":      "2026-06-09T04:12:01Z", // RFC3339 or null
+//	    "build_source":       "materializer",         // string or null
+//	    "last_build_status":  "ok",   // 'running'|'ok'|'failed'|'blocked_delta'|'unknown'; stale 'running' coerced to 'failed'
+//	    "last_build_ms":      48211,  // int or null
+//	    "last_delta_pct":     -2.4    // float or null
 //	  }, ...
 //	]
 //
@@ -144,9 +175,10 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		segments = []*segmentation.Segment{}
 	}
 
-	// One cheap aggregate over mailing_segment_members for ALL returned segment ids.
-	// This is an indexed read; no joins to mailing_subscribers, no per-segment loop.
-	matCounts, matTimes := api.fetchMaterializedRollups(ctx, segments)
+	// One batched point-read of the build ledger for ALL returned segment ids.
+	// No aggregate, no joins, no touch of mailing_segment_members.
+	ledger := api.fetchSegmentLedgerRows(ctx, segments)
+	now := time.Now().UTC()
 
 	type segmentRow struct {
 		*segmentation.Segment
@@ -154,22 +186,50 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		MaterializedAt    *time.Time `json:"materialized_at,omitempty"`
 		AudienceCount     int64      `json:"audience_count"`
 		AudienceSource    string     `json:"audience_source"`
+		LastBuiltAt       *time.Time `json:"last_built_at"`
+		BuildSource       *string    `json:"build_source"`
+		LastBuildStatus   *string    `json:"last_build_status"`
+		LastBuildMs       *int       `json:"last_build_ms"`
+		LastDeltaPct      *float64   `json:"last_delta_pct"`
 	}
 
 	rows := make([]segmentRow, 0, len(segments))
 	for _, seg := range segments {
 		row := segmentRow{Segment: seg}
-		key := seg.ID.String()
-		if c, ok := matCounts[key]; ok {
+		led, hasLedger := ledger[seg.ID.String()]
+		if hasLedger && led.lastBuiltAt.Valid {
+			// At least one completed build — the ledger count is authoritative.
+			c := led.subscriberCount
+			t := led.lastBuiltAt.Time
 			row.MaterializedCount = &c
+			row.MaterializedAt = &t
 			row.AudienceCount = c
 			row.AudienceSource = "materialized"
 		} else {
+			// No ledger row (or a first build is still in flight and has never
+			// completed): fall back to the segment row's cached subscriber_count.
 			row.AudienceCount = int64(seg.SubscriberCount)
 			row.AudienceSource = "cached"
 		}
-		if t, ok := matTimes[key]; ok {
-			row.MaterializedAt = &t
+		if hasLedger {
+			if led.lastBuiltAt.Valid {
+				t := led.lastBuiltAt.Time
+				row.LastBuiltAt = &t
+			}
+			if led.buildSource.Valid {
+				s := led.buildSource.String
+				row.BuildSource = &s
+			}
+			status := coerceLedgerStatus(led.status, led.updatedAt, now)
+			row.LastBuildStatus = &status
+			if led.buildMs.Valid {
+				ms := int(led.buildMs.Int64)
+				row.LastBuildMs = &ms
+			}
+			if led.deltaPct.Valid {
+				d := led.deltaPct.Float64
+				row.LastDeltaPct = &d
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -177,14 +237,25 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 	segmentRespondJSON(w, rows)
 }
 
-// fetchMaterializedRollups returns segment_id → COUNT(*) and segment_id → MAX(materialized_at)
-// for every id in segments, in a single indexed query. Empty maps are returned
-// when the list is empty or the query fails (fail-open: cached count is shown).
-func (api *SegmentationAPI) fetchMaterializedRollups(ctx context.Context, segments []*segmentation.Segment) (map[string]int64, map[string]time.Time) {
-	counts := make(map[string]int64, len(segments))
-	times := make(map[string]time.Time, len(segments))
+// segmentLedgerRow mirrors one mailing_segment_build_ledger row for the
+// list/count read paths.
+type segmentLedgerRow struct {
+	subscriberCount int64
+	lastBuiltAt     sql.NullTime
+	buildSource     sql.NullString
+	status          string
+	buildMs         sql.NullInt64
+	deltaPct        sql.NullFloat64
+	updatedAt       time.Time
+}
+
+// fetchSegmentLedgerRows returns segment_id → ledger row for every id in
+// segments, in a single indexed (PK) query. An empty map is returned when the
+// list is empty or the query fails (fail-open: cached counts are shown).
+func (api *SegmentationAPI) fetchSegmentLedgerRows(ctx context.Context, segments []*segmentation.Segment) map[string]segmentLedgerRow {
+	out := make(map[string]segmentLedgerRow, len(segments))
 	if len(segments) == 0 || api.db == nil {
-		return counts, times
+		return out
 	}
 
 	ids := make([]string, 0, len(segments))
@@ -198,31 +269,32 @@ func (api *SegmentationAPI) fetchMaterializedRollups(ctx context.Context, segmen
 
 	rows, err := api.db.QueryContext(rollupCtx, `
 		SELECT segment_id::text,
-		       COUNT(*) AS members,
-		       MAX(materialized_at) AS last_at
-		  FROM mailing_segment_members
+		       subscriber_count,
+		       last_built_at,
+		       build_source,
+		       last_build_status,
+		       last_build_ms,
+		       last_delta_pct,
+		       updated_at
+		  FROM mailing_segment_build_ledger
 		 WHERE segment_id = ANY($1::uuid[])
-		 GROUP BY segment_id
 	`, segmentIDArray(ids))
 	if err != nil {
-		log.Printf("[Segment] materialized rollup query error (returning cached counts): %v", err)
-		return counts, times
+		log.Printf("[Segment] build-ledger query error (returning cached counts): %v", err)
+		return out
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var sid string
-		var n int64
-		var at sql.NullTime
-		if err := rows.Scan(&sid, &n, &at); err != nil {
+		var lr segmentLedgerRow
+		if err := rows.Scan(&sid, &lr.subscriberCount, &lr.lastBuiltAt, &lr.buildSource,
+			&lr.status, &lr.buildMs, &lr.deltaPct, &lr.updatedAt); err != nil {
 			continue
 		}
-		counts[sid] = n
-		if at.Valid {
-			times[sid] = at.Time
-		}
+		out[sid] = lr
 	}
-	return counts, times
+	return out
 }
 
 // segmentIDArray formats a string slice as a Postgres uuid[] literal.
@@ -759,10 +831,10 @@ func (api *SegmentationAPI) ExportSegmentsUnionCSV(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 
 	var body struct {
-		SegmentIDs                 []string `json:"segment_ids"`
-		IncludeSegmentAttribution  bool     `json:"include_segment_attribution"`
-		Format                     string   `json:"format"`
-		Filename                   string   `json:"filename"`
+		SegmentIDs                []string `json:"segment_ids"`
+		IncludeSegmentAttribution bool     `json:"include_segment_attribution"`
+		Format                    string   `json:"format"`
+		Filename                  string   `json:"filename"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -886,9 +958,12 @@ func (api *SegmentationAPI) ExportSegmentsUnionCSV(w http.ResponseWriter, r *htt
 	}
 }
 
-// GetSegmentCount returns the count for a segment from the materialized
-// rollup (mailing_segment_members). This is a single indexed read and is
-// safe to call repeatedly during sending hours.
+// GetSegmentCount returns the count for a segment, preferring the build
+// ledger (mailing_segment_build_ledger — a single PK point read, source
+// 'ledger'). When no completed build is recorded there it falls back to the
+// previous behavior: COUNT(*) over the materialized rollup
+// (mailing_segment_members), then the segment row's cached count. Safe to
+// call repeatedly during sending hours.
 //
 // To trigger a fresh recalculation (which DOES touch mailing_subscribers),
 // call POST /v2/segments/{segmentID}/recalculate explicitly.
@@ -909,6 +984,32 @@ func (api *SegmentationAPI) GetSegmentCount(w http.ResponseWriter, r *http.Reque
 
 	countCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
+	// Ledger first: one PK point read. Only a row with a completed build
+	// (last_built_at NOT NULL) is authoritative — a row created solely by
+	// MarkSegmentBuildRunning has count 0 and must not mask the fallback.
+	var ledCount int64
+	var ledBuiltAt sql.NullTime
+	ledErr := api.db.QueryRowContext(countCtx, `
+		SELECT subscriber_count, last_built_at
+		  FROM mailing_segment_build_ledger
+		 WHERE segment_id = $1
+	`, segmentID).Scan(&ledCount, &ledBuiltAt)
+	if ledErr == nil && ledBuiltAt.Valid {
+		segmentRespondJSON(w, map[string]interface{}{
+			"api_version":        VersionSegmentationAPI,
+			"segment_id":         segmentID,
+			"count":              ledCount,
+			"audience_count":     ledCount,
+			"audience_source":    "ledger",
+			"last_calculated_at": segment.LastCalculatedAt,
+			"materialized_at":    ledBuiltAt.Time,
+		})
+		return
+	}
+	if ledErr != nil && ledErr != sql.ErrNoRows {
+		log.Printf("[Segment] build-ledger read error for %s (falling back to rollup): %v", segmentID, ledErr)
+	}
 
 	var matCount int64
 	var matAt sql.NullTime
@@ -984,10 +1085,29 @@ func (api *SegmentationAPI) RecalculateSegment(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Lake-built segments MUST NOT go through the legacy materializer:
+	// their {"lake_spec":...} conditions fall through buildSegmentQuery's
+	// legacy branch (which discards the unmarshal error) to an empty WHERE
+	// clause, i.e. DELETE members + INSERT the ENTIRE active subscriber
+	// base, cross-org. Route operators to the lake refresh endpoint.
+	// materializeSegmentCore carries the same guard as defense-in-depth.
+	if parseLakeSpec(conditionsRaw.String) != nil {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"api_version": VersionSegmentationAPI,
+			"segment_id":  segmentID,
+			"error":       "lake-built segment — use POST /v2/segments/{id}/refresh",
+		})
+		return
+	}
+
 	matCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()
 
-	count, err := MaterializeSegment(matCtx, api.db, segmentID.String(), listIDStr, conditionsRaw.String)
+	// materializeSegmentWithLedger (rather than MaterializeSegment) so the
+	// build-ledger row records source 'recalculate' — an explicit user action,
+	// not the background materializer. Ledger bookkeeping is handled inside;
+	// it is best-effort and never fails the build.
+	count, err := materializeSegmentWithLedger(matCtx, api.db, segmentID.String(), listIDStr, conditionsRaw.String, "recalculate")
 	if err != nil {
 		log.Printf("[Segment] recalculate failed for %s: %v", segmentID, err)
 		segmentRespondJSONStatus(w, http.StatusServiceUnavailable, map[string]interface{}{

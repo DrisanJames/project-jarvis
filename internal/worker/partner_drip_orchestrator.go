@@ -1393,6 +1393,7 @@ func (po *PartnerDripOrchestrator) createWaveSegment(ctx context.Context, v vert
 		rowIndex++
 	}
 	if rowIndex == 0 {
+		po.upsertWaveSegmentLedger(ctx, segID, 0)
 		return segID, nil
 	}
 	q := fmt.Sprintf(`
@@ -1400,10 +1401,53 @@ func (po *PartnerDripOrchestrator) createWaveSegment(ctx context.Context, v vert
 		VALUES %s
 		ON CONFLICT DO NOTHING
 	`, strings.Join(placeholders, ","))
-	if _, err := po.db.ExecContext(ctx, q, args...); err != nil {
+	res, err := po.db.ExecContext(ctx, q, args...)
+	if err != nil {
 		return "", fmt.Errorf("insert segment members: %w", err)
 	}
+	// The segment is brand new, so rows-affected (ON CONFLICT DO NOTHING
+	// skips none on a fresh segment_id) IS the resulting member count — no
+	// COUNT(*) needed.
+	memberCount := int64(rowIndex)
+	if n, raErr := res.RowsAffected(); raErr == nil {
+		memberCount = n
+	}
+	po.upsertWaveSegmentLedger(ctx, segID, memberCount)
 	return segID, nil
+}
+
+// upsertWaveSegmentLedger best-effort records the wave segment's membership
+// in mailing_segment_build_ledger so the v2 segments list shows an
+// authoritative count for partner-drip wave segments instead of a stale
+// "never built" row.
+//
+// The SQL is inlined here (rather than calling api.UpsertSegmentLedger)
+// because internal/api already imports internal/worker — a worker→api import
+// would be a cycle. internal/api/segment_ledger.go is the CANONICAL
+// implementation; keep this statement in sync with it (notably:
+// last_built_at / subscriber_count only advance on status 'ok', which this
+// write always is).
+func (po *PartnerDripOrchestrator) upsertWaveSegmentLedger(ctx context.Context, segmentID string, count int64) {
+	if po.db == nil {
+		return
+	}
+	if _, err := po.db.ExecContext(ctx, `
+		INSERT INTO mailing_segment_build_ledger
+			(segment_id, subscriber_count, last_built_at, build_source,
+			 last_build_status, last_build_ms, last_delta_pct, last_error, updated_at)
+		VALUES ($1::uuid, $2, NOW(), 'partner-drip', 'ok', 0, 0, NULL, NOW())
+		ON CONFLICT (segment_id) DO UPDATE SET
+			subscriber_count  = EXCLUDED.subscriber_count,
+			last_built_at     = NOW(),
+			build_source      = EXCLUDED.build_source,
+			last_build_status = EXCLUDED.last_build_status,
+			last_build_ms     = EXCLUDED.last_build_ms,
+			last_delta_pct    = EXCLUDED.last_delta_pct,
+			last_error        = NULL,
+			updated_at        = NOW()
+	`, segmentID, count); err != nil {
+		log.Printf("[PartnerDripOrchestrator] segment ledger upsert failed for %s (continuing): %v", segmentID, err)
+	}
 }
 
 const (

@@ -334,6 +334,9 @@ func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 }
 
 func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, listID, conditionsRaw string) (int, error) {
+	// MaterializeSegment records the build in mailing_segment_build_ledger
+	// (running → ok/failed, source 'materializer') — no extra ledger write
+	// is needed here.
 	count, err := MaterializeSegment(ctx, m.db, segmentID, listID, conditionsRaw)
 	if err != nil {
 		return count, err
@@ -363,7 +366,74 @@ func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, lis
 
 // MaterializeSegment populates mailing_segment_members for a single segment.
 // Called by the nightly materializer and by segment-creation handlers.
+// Every call is recorded in mailing_segment_build_ledger with source
+// 'materializer'; callers that want a different ledger source (e.g. the
+// explicit /recalculate endpoint) call materializeSegmentWithLedger directly.
 func MaterializeSegment(ctx context.Context, db *sql.DB, segmentID, listID, conditionsRaw string) (int, error) {
+	return materializeSegmentWithLedger(ctx, db, segmentID, listID, conditionsRaw, "materializer")
+}
+
+// materializeSegmentWithLedger wraps the core member-writing build with
+// segment-build-ledger bookkeeping: mark 'running' before, upsert a terminal
+// 'ok'/'failed' row after (count, duration, delta vs the previous build).
+//
+// Ledger writes are strictly best-effort: every error is logged and
+// swallowed — the build's own result is never affected by the ledger. The
+// terminal upsert also survives caller-context cancellation (ledgerWriteCtx
+// detaches), so a 10-min-timeout build still records its failure.
+func materializeSegmentWithLedger(ctx context.Context, db *sql.DB, segmentID, listID, conditionsRaw, source string) (int, error) {
+	// Refuse lake-built segments BEFORE touching the ledger so a misrouted
+	// recalculate doesn't even pollute the ledger row with a failed status
+	// (materializeSegmentCore repeats the check as defense-in-depth).
+	if parseLakeSpec(conditionsRaw) != nil {
+		return 0, errLakeSegmentNotMaterializable
+	}
+	if err := MarkSegmentBuildRunning(ctx, db, segmentID, source); err != nil {
+		log.Printf("[SegmentLedger] mark-running failed for %s (continuing): %v", safePrefix(segmentID, 12), err)
+	}
+	prevCount, hasPrev := ledgerPriorCount(ctx, db, segmentID)
+
+	start := time.Now()
+	count, err := materializeSegmentCore(ctx, db, segmentID, listID, conditionsRaw)
+	durMs := int(time.Since(start).Milliseconds())
+
+	if err != nil {
+		// Keep the previous good count on failure — a failed rebuild must not
+		// zero out the displayed audience size.
+		if lerr := UpsertSegmentLedger(ctx, db, segmentID, prevCount, source, "failed", durMs, 0, err.Error()); lerr != nil {
+			log.Printf("[SegmentLedger] upsert(failed) for %s: %v", safePrefix(segmentID, 12), lerr)
+		}
+		return count, err
+	}
+
+	deltaPct := 0.0
+	if hasPrev {
+		deltaPct = computeLedgerDeltaPct(prevCount, int64(count))
+	}
+	if lerr := UpsertSegmentLedger(ctx, db, segmentID, int64(count), source, "ok", durMs, deltaPct, ""); lerr != nil {
+		log.Printf("[SegmentLedger] upsert(ok) for %s: %v", safePrefix(segmentID, 12), lerr)
+	}
+	return count, nil
+}
+
+// errLakeSegmentNotMaterializable guards lake-built segments out of every
+// legacy materialization path. Their {"lake_spec":...} conditions are not a
+// V2 group and not a legacy condition array, so buildSegmentQuery's legacy
+// branch (which DISCARDS the unmarshal error) would degrade them to an empty
+// WHERE clause — and the DELETE + INSERT..SELECT below would then replace the
+// segment's members with the ENTIRE active subscriber base, cross-org.
+var errLakeSegmentNotMaterializable = fmt.Errorf(
+	"lake-built segment — refusing legacy materialization; use POST /v2/segments/{id}/refresh")
+
+// materializeSegmentCore is the ledger-free member-writing build:
+// DELETE + INSERT..SELECT into mailing_segment_members in one transaction.
+func materializeSegmentCore(ctx context.Context, db *sql.DB, segmentID, listID, conditionsRaw string) (int, error) {
+	// Defense-in-depth (see errLakeSegmentNotMaterializable): never run a
+	// lake-spec conditions blob through buildSegmentQuery.
+	if parseLakeSpec(conditionsRaw) != nil {
+		return 0, errLakeSegmentNotMaterializable
+	}
+
 	segCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 

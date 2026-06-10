@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faListUl,
@@ -95,6 +95,16 @@ interface Segment {
   audience_count?: number;
   audience_source?: 'materialized' | 'cached';
   last_calculated_at?: string;
+  // Build-ledger fields (segmentation api v2.3.0). Every row from
+  // GET /v2/segments now carries the latest entry from the segment build
+  // ledger: when it was built, by which pipeline, how it ended, how long it
+  // took, and the audience delta vs the previous build. The server coerces
+  // stale 'running' entries to 'failed', so 'running' here is trustworthy.
+  last_built_at?: string | null;
+  build_source?: 'materializer' | 'recalculate' | 'lake-builder' | 'lake-standard' | 'lake-engaged' | 'backfill' | string | null;
+  last_build_status?: 'ok' | 'failed' | 'running' | 'blocked_delta' | null;
+  last_build_ms?: number | null;
+  last_delta_pct?: number | null;
 }
 
 interface Subscriber {
@@ -1386,7 +1396,45 @@ interface SegmentsManagerProps {
 // PAGE_VERSION lets operators confirm what build of the segments dashboard they
 // are looking at (per the workspace testing rule). Bump on every visible change.
 // 2.2.0 — added category + status filters and category badges (May 29 segment catalog cleanup).
-const SEGMENTS_PAGE_VERSION = '2.2.0';
+// 2.3.0 — build-ledger integration: per-row freshness/source/status indicators,
+//         ledger Refresh (+Force for blocked_delta) with async lake polling, and
+//         the "Request Segment" lake-builder modal (POST /v2/segments/build-request).
+const SEGMENTS_PAGE_VERSION = '2.3.0';
+
+// --- Build-ledger presentation helpers (segmentation api v2.3.0) -----------
+
+// Dot colors for last_build_status. 'running' renders a spinner instead.
+const BUILD_STATUS_DOT: Record<string, string> = {
+  ok: '#10b981',
+  failed: '#ef4444',
+  blocked_delta: '#f59e0b',
+};
+
+const BUILD_STATUS_TOOLTIP: Record<string, string> = {
+  ok: 'last build ok',
+  failed: 'last build failed',
+  running: 'build running',
+  blocked_delta: 'blocked: count changed >50% — use Force refresh',
+};
+
+// Lake builds run async server-side; we poll the (now ledger-backed, fast)
+// list endpoint every 5s for up to 5 minutes per build.
+const BUILD_POLL_INTERVAL_MS = 5_000;
+const BUILD_POLL_MAX_MS = 5 * 60_000;
+
+// Preset windows offered as chips in the Request Segment modal; custom day
+// counts can be added on top, capped at 8 windows per the build-request API.
+const BUILD_REQUEST_PRESET_WINDOWS = [3, 7, 14, 30];
+const BUILD_REQUEST_MAX_WINDOWS = 8;
+const BUILD_REQUEST_KNOWN_ISPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast', 'att', 'charter', 'cox', 'verizon', 'icloud'];
+
+// Lake-built rows must NEVER go through the legacy POST /recalculate path:
+// their {"lake_spec":...} conditions don't parse as legacy conditions and
+// would degrade to an unfiltered rebuild server-side. The server now rejects
+// that with a 400, and the Refresh (build-ledger) button is the only rebuild
+// affordance we offer for these rows.
+const LAKE_BUILD_SOURCES = ['lake-builder', 'lake-standard', 'lake-engaged'];
+const isLakeSegment = (s: Segment): boolean => LAKE_BUILD_SOURCES.includes(s.build_source || '');
 
 // formatFreshness renders a materialized_at timestamp as a short relative
 // indicator: "fresh", "1d ago", "5d ago", "never". Five days or older is
@@ -1483,6 +1531,235 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
     }
   };
 
+  // --- Build-ledger refresh + lake polling (v2.3.0) -------------------------
+  // Lake refreshes return 202 and run async; we mark the row running locally
+  // and poll GET /v2/segments (single shared interval, every 5s, max 5 min per
+  // segment) until last_build_status leaves 'running'. Materializer refreshes
+  // return 200 synchronously. Async completions surface via lightweight toasts
+  // (alert() can't fire from a background poll without hijacking the operator).
+  const [refreshingLedger, setRefreshingLedger] = useState<string | null>(null);
+  const [localRunning, setLocalRunning] = useState<Record<string, boolean>>({});
+  const [toasts, setToasts] = useState<{ id: number; kind: 'ok' | 'error' | 'info'; msg: string }[]>([]);
+  const toastSeqRef = useRef(0);
+  const watchedBuildsRef = useRef<Map<string, number>>(new Map()); // segment id -> poll start (ms epoch)
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Keep latest orgFetch/onRefresh visible to the long-lived interval closure.
+  const orgFetchRef = useRef(orgFetch);
+  orgFetchRef.current = orgFetch;
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
+
+  const pushToast = (kind: 'ok' | 'error' | 'info', msg: string) => {
+    const id = ++toastSeqRef.current;
+    setToasts(prev => [...prev, { id, kind, msg }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
+  };
+
+  const stopPollingIfIdle = () => {
+    if (watchedBuildsRef.current.size === 0 && pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const pollBuildTick = async () => {
+    const watched = watchedBuildsRef.current;
+    if (watched.size === 0) { stopPollingIfIdle(); return; }
+    let rows: Segment[] = [];
+    try {
+      const res = await orgFetchRef.current('/api/mailing/v2/segments');
+      const raw = await res.json().catch(() => []);
+      rows = Array.isArray(raw) ? raw : (raw?.segments || []);
+    } catch {
+      // Transient fetch failure — retry on the next tick, but still count the
+      // elapsed time toward each build's 5-min budget so a down API can't
+      // keep this interval spinning forever.
+      const failNow = Date.now();
+      let anyExpired = false;
+      watched.forEach((startedAt, id) => {
+        if (failNow - startedAt < BUILD_POLL_MAX_MS) return;
+        watched.delete(id);
+        anyExpired = true;
+        setLocalRunning(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        pushToast('error', `${id}: build status unknown — segment list unreachable for 5 min`);
+      });
+      if (anyExpired) stopPollingIfIdle();
+      return;
+    }
+    const now = Date.now();
+    let anyFinished = false;
+    watched.forEach((startedAt, id) => {
+      const seg = rows.find(s => s.id === id);
+      const status = seg?.last_build_status;
+      const timedOut = now - startedAt >= BUILD_POLL_MAX_MS;
+      if (seg && status === 'running' && !timedOut) return; // still building — keep watching
+      watched.delete(id);
+      anyFinished = true;
+      setLocalRunning(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      const name = seg?.name || id;
+      if (!seg) {
+        pushToast('error', `${name}: segment no longer in list`);
+      } else if (status === 'running') {
+        pushToast('error', `${name}: still building after 5 min — check back later`);
+      } else if (status === 'ok') {
+        pushToast('ok', `${name}: build complete — ${(seg.audience_count ?? seg.materialized_count ?? 0).toLocaleString()} subscribers`);
+      } else if (status === 'blocked_delta') {
+        pushToast('error', `${name}: blocked — count changed >50%, use Force refresh`);
+      } else {
+        pushToast('error', `${name}: last build failed`);
+      }
+    });
+    if (anyFinished) onRefreshRef.current();
+    stopPollingIfIdle();
+  };
+
+  const startBuildPolling = (ids: string[]) => {
+    const watched = watchedBuildsRef.current;
+    const now = Date.now();
+    ids.forEach(id => { if (!watched.has(id)) watched.set(id, now); });
+    setLocalRunning(prev => {
+      const next = { ...prev };
+      ids.forEach(id => { next[id] = true; });
+      return next;
+    });
+    if (!pollTimerRef.current) {
+      pollTimerRef.current = setInterval(pollBuildTick, BUILD_POLL_INTERVAL_MS);
+    }
+  };
+
+  useEffect(() => () => {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+  }, []);
+
+  // handleLedgerRefresh hits the v2.3 refresh endpoint. Lake segments → 202 +
+  // async poll; dynamic segments → 200 with a fresh count (materializer path).
+  // force=true bypasses the >50% delta guard and is confirm-gated.
+  const handleLedgerRefresh = async (segment: Segment, force = false) => {
+    if (force && !confirm(`Force refresh "${segment.name}"?\n\nThe last build was blocked because the audience count changed by more than 50%. Forcing bypasses that guard and overwrites the current audience.`)) return;
+    setRefreshingLedger(segment.id);
+    try {
+      const res = await orgFetch(`/api/mailing/v2/segments/${segment.id}/refresh?force=${force ? 'true' : 'false'}`, { method: 'POST' });
+      const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (res.status === 202) {
+        pushToast('info', `${segment.name}: lake build started — watching for completion`);
+        startBuildPolling([segment.id]);
+      } else if (res.ok) {
+        const count = typeof payload?.count === 'number' ? payload.count : undefined;
+        if (typeof count === 'number') {
+          setRecalcResult(prev => ({ ...prev, [segment.id]: { count, at: new Date().toISOString() } }));
+        }
+        pushToast('ok', `${segment.name}: refreshed${typeof count === 'number' ? ` — ${count.toLocaleString()} subscribers` : ''}`);
+        onRefresh();
+      } else if (res.status === 409) {
+        pushToast('error', 'another lake build is running — try shortly');
+      } else if (res.status === 503) {
+        pushToast('error', 'lake reader is disabled — refresh unavailable');
+      } else {
+        pushToast('error', `${segment.name}: ${String(payload?.error || `refresh failed (HTTP ${res.status})`)}`);
+      }
+    } catch (err) {
+      pushToast('error', `${segment.name}: refresh request failed`);
+    } finally {
+      setRefreshingLedger(null);
+    }
+  };
+
+  // --- Request Segment modal (POST /v2/segments/build-request) --------------
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [reqEvent, setReqEvent] = useState<'open' | 'click'>('open');
+  const [reqWindows, setReqWindows] = useState<number[]>([7]);
+  const [reqCustomWindow, setReqCustomWindow] = useState('');
+  const [reqScope, setReqScope] = useState<'global' | 'brand' | 'isp'>('global');
+  const [reqBrandApex, setReqBrandApex] = useState('');
+  const [reqIsp, setReqIsp] = useState('');
+  const [reqExcludeSeeds, setReqExcludeSeeds] = useState(true);
+  const [reqName, setReqName] = useState('');
+  const [reqSubmitting, setReqSubmitting] = useState(false);
+  const [reqError, setReqError] = useState<string | null>(null);
+
+  const toggleReqWindow = (w: number) => {
+    setReqError(null);
+    setReqWindows(prev => {
+      if (prev.includes(w)) return prev.filter(x => x !== w);
+      if (prev.length >= BUILD_REQUEST_MAX_WINDOWS) {
+        setReqError(`Max ${BUILD_REQUEST_MAX_WINDOWS} windows per request`);
+        return prev;
+      }
+      return [...prev, w];
+    });
+  };
+
+  const addCustomReqWindow = () => {
+    const n = parseInt(reqCustomWindow, 10);
+    // Server rejects windows outside 1..120 (LakeSegmentBuildRequest) — keep
+    // the client-side cap identical so operators fail fast.
+    if (!Number.isFinite(n) || n <= 0 || n > 120) {
+      setReqError('Custom window must be between 1 and 120 days');
+      return;
+    }
+    setReqError(null);
+    if (!reqWindows.includes(n)) {
+      if (reqWindows.length >= BUILD_REQUEST_MAX_WINDOWS) {
+        setReqError(`Max ${BUILD_REQUEST_MAX_WINDOWS} windows per request`);
+        return;
+      }
+      setReqWindows(prev => [...prev, n]);
+    }
+    setReqCustomWindow('');
+  };
+
+  const submitBuildRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReqError(null);
+    if (reqWindows.length === 0) { setReqError('Select at least one window'); return; }
+    if (reqScope === 'brand' && !reqBrandApex.trim()) { setReqError('Brand apex is required for brand scope (e.g. discountblog.com)'); return; }
+    if (reqScope === 'isp' && !reqIsp.trim()) { setReqError('ISP is required for ISP scope (e.g. gmail)'); return; }
+    const body: Record<string, unknown> = {
+      event: reqEvent,
+      windows: [...reqWindows].sort((a, b) => a - b),
+      scope: reqScope,
+      exclude_seeds: reqExcludeSeeds,
+    };
+    if (reqScope === 'brand') body.brand_apex = reqBrandApex.trim();
+    if (reqScope === 'isp') body.isp = reqIsp.trim();
+    if (reqName.trim()) body.name = reqName.trim();
+    setReqSubmitting(true);
+    try {
+      const res = await orgFetch('/api/mailing/v2/segments/build-request', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (res.status === 201) {
+        const created: { id: string; name: string; window_days: number }[] = Array.isArray(payload?.segments) ? payload.segments : [];
+        pushToast('ok', `${created.length} segment(s) created, building…`);
+        setShowRequestModal(false);
+        onRefresh();
+        if (created.length > 0) startBuildPolling(created.map(s => s.id));
+      } else if (res.status === 409) {
+        setReqError('Build slot busy — another lake build is already running. Try again shortly.');
+      } else if (res.status === 503) {
+        setReqError('Lake reader is disabled — segment build requests are unavailable right now.');
+      } else {
+        setReqError(String(payload?.error || `Request failed (HTTP ${res.status})`));
+      }
+    } catch (err) {
+      setReqError('Network error submitting build request');
+    } finally {
+      setReqSubmitting(false);
+    }
+  };
+
+  const reqChipWindows = Array.from(new Set([...BUILD_REQUEST_PRESET_WINDOWS, ...reqWindows])).sort((a, b) => a - b);
+
   return (
     <div className={`segments-manager ${animateIn ? 'animate-in' : ''}`}>
       <div className="manager-header">
@@ -1496,6 +1773,13 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
           </p>
         </div>
         <div className="header-actions">
+          <button
+            className="btn btn-secondary"
+            onClick={() => { setReqError(null); setShowRequestModal(true); }}
+            title="Request engagement segments from the event lake (open/click × windows × scope)"
+          >
+            <FontAwesomeIcon icon={faRocket} /> Request Segment
+          </button>
           <button className="btn btn-primary" onClick={() => onNavigate('create-segment')}>
             <FontAwesomeIcon icon={faPlus} /> Create Segment
           </button>
@@ -1556,6 +1840,16 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                 : 'cached';
             const freshIso = recalc?.at ?? segment.materialized_at ?? segment.last_calculated_at;
             const fresh = formatFreshness(freshIso);
+            // Build-ledger view of the row: a locally-started lake build wins
+            // over the (possibly stale) prop status until polling resolves it.
+            const buildStatus = localRunning[segment.id] ? 'running' : (segment.last_build_status ?? null);
+            const buildBusy = refreshingLedger === segment.id || buildStatus === 'running';
+            const builtTooltip = [
+              segment.last_built_at ? `Built at ${segment.last_built_at}` : 'Never built via ledger',
+              buildStatus ? BUILD_STATUS_TOOLTIP[buildStatus] : null,
+              typeof segment.last_build_ms === 'number' ? `took ${segment.last_build_ms.toLocaleString()}ms` : null,
+              typeof segment.last_delta_pct === 'number' ? `Δ ${segment.last_delta_pct.toFixed(1)}% vs previous build` : null,
+            ].filter(Boolean).join(' · ');
             return (
             <div 
               key={segment.id} 
@@ -1607,6 +1901,24 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                         </span>
                       );
                     })()}
+                    {segment.build_source && (
+                      <span
+                        title={`Source of the last audience build: ${segment.build_source}`}
+                        style={{
+                          fontSize: '0.6rem',
+                          padding: '2px 7px',
+                          borderRadius: '10px',
+                          fontWeight: 600,
+                          background: 'rgba(99,102,241,0.15)',
+                          color: '#a5b4fc',
+                          border: '1px solid rgba(129,140,248,0.35)',
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.4,
+                        }}
+                      >
+                        {segment.build_source}
+                      </span>
+                    )}
                     {segment.status === 'archived' && (
                       <span style={{
                         fontSize: '0.6rem',
@@ -1640,6 +1952,38 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
                   <span style={{ color: fresh.stale ? '#f59e0b' : undefined }}>{fresh.label}</span>
                   <label>refreshed</label>
                 </div>
+                {(segment.last_built_at || buildStatus) && (
+                  <div className="stat" title={builtTooltip}>
+                    {buildStatus === 'running' ? (
+                      <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#818cf8' }} />
+                    ) : (
+                      <span
+                        aria-label={buildStatus ? BUILD_STATUS_TOOLTIP[buildStatus] : 'no build recorded'}
+                        style={{
+                          display: 'inline-block',
+                          width: 9,
+                          height: 9,
+                          borderRadius: '50%',
+                          backgroundColor: (buildStatus && BUILD_STATUS_DOT[buildStatus]) || 'rgba(156,163,175,0.6)',
+                          boxShadow: buildStatus === 'blocked_delta' ? '0 0 6px rgba(245,158,11,0.7)' : undefined,
+                        }}
+                      />
+                    )}
+                    <span style={{ color: buildStatus === 'failed' ? '#ef4444' : buildStatus === 'blocked_delta' ? '#f59e0b' : undefined }}>
+                      {buildStatus === 'running'
+                        ? 'building…'
+                        : segment.last_built_at
+                          ? `built ${formatTimeAgo(segment.last_built_at).toLowerCase()}`
+                          : 'never built'}
+                      {buildStatus !== 'running' && typeof segment.last_delta_pct === 'number' && (
+                        <span style={{ marginLeft: 5, opacity: 0.8 }}>
+                          Δ {segment.last_delta_pct > 0 ? '+' : ''}{segment.last_delta_pct.toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                    <label>last build</label>
+                  </div>
+                )}
                 {segment.list_name && (
                   <div className="stat">
                     <FontAwesomeIcon icon={faListUl} />
@@ -1652,17 +1996,45 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
               <div className="segment-card-footer">
                 <span className={`status-badge status-${segment.status}`}>{segment.status}</span>
                 <div className="segment-actions">
+                  {buildStatus === 'blocked_delta' && (
+                    <button
+                      className="action-btn"
+                      onClick={() => handleLedgerRefresh(segment, true)}
+                      disabled={refreshingLedger === segment.id}
+                      title="Force refresh — bypass the >50% delta guard (confirms first)"
+                      style={{ width: 'auto', padding: '0 8px', fontSize: '0.62rem', fontWeight: 700, color: '#f59e0b', letterSpacing: 0.4 }}
+                    >
+                      FORCE
+                    </button>
+                  )}
                   <button
                     className="action-btn"
-                    onClick={() => handleRecalculate(segment)}
-                    disabled={recalculating === segment.id}
-                    title="Recalculate audience now (re-materializes segment)"
+                    onClick={() => handleLedgerRefresh(segment, false)}
+                    disabled={buildBusy}
+                    title={buildStatus === 'running'
+                      ? 'A build is running for this segment'
+                      : isLakeSegment(segment)
+                        ? 'lake-built — use Refresh (rebuilds async from the event lake; legacy Recalculate is disabled for lake segments)'
+                        : 'Refresh via build ledger — lake segments build async (202), dynamic segments re-materialize synchronously (200)'}
                   >
                     <FontAwesomeIcon
-                      icon={recalculating === segment.id ? faSpinner : faSyncAlt}
-                      spin={recalculating === segment.id}
+                      icon={buildBusy ? faSpinner : faBolt}
+                      spin={buildBusy}
                     />
                   </button>
+                  {!isLakeSegment(segment) && (
+                    <button
+                      className="action-btn"
+                      onClick={() => handleRecalculate(segment)}
+                      disabled={recalculating === segment.id}
+                      title="Recalculate audience now (re-materializes segment)"
+                    >
+                      <FontAwesomeIcon
+                        icon={recalculating === segment.id ? faSpinner : faSyncAlt}
+                        spin={recalculating === segment.id}
+                      />
+                    </button>
+                  )}
                   {!segment.is_system && (
                     <button 
                       className="action-btn"
@@ -1696,6 +2068,187 @@ const SegmentsManager: React.FC<SegmentsManagerProps> = ({ segments, onNavigate,
           })
         )}
       </div>
+
+      {/* Request Segment modal — drives POST /v2/segments/build-request (lake builder) */}
+      {showRequestModal && (
+        <div className="modal-overlay" onClick={() => !reqSubmitting && setShowRequestModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3><FontAwesomeIcon icon={faRocket} /> Request Segment</h3>
+              <button className="modal-close" onClick={() => setShowRequestModal(false)}>
+                <FontAwesomeIcon icon={faTimes} />
+              </button>
+            </div>
+            <form onSubmit={submitBuildRequest}>
+              <div className="form-group">
+                <label>Event *</label>
+                <div style={{ display: 'flex', gap: 18 }}>
+                  {(['open', 'click'] as const).map(ev => (
+                    <label key={ev} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400, cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="segreq-event"
+                        checked={reqEvent === ev}
+                        onChange={() => setReqEvent(ev)}
+                      />
+                      {ev === 'open' ? 'Open' : 'Click'}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Windows (days) * — one segment per window, max {BUILD_REQUEST_MAX_WINDOWS}</label>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {reqChipWindows.map(w => {
+                    const selected = reqWindows.includes(w);
+                    return (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => toggleReqWindow(w)}
+                        style={{
+                          padding: '4px 12px',
+                          borderRadius: 14,
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          background: selected ? 'rgba(99,102,241,0.35)' : 'rgba(75,85,99,0.25)',
+                          color: selected ? '#c7d2fe' : '#9ca3af',
+                          border: selected ? '1px solid rgba(129,140,248,0.7)' : '1px solid rgba(156,163,175,0.3)',
+                        }}
+                      >
+                        {w}d{selected ? ' ✓' : ''}
+                      </button>
+                    );
+                  })}
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    placeholder="custom"
+                    value={reqCustomWindow}
+                    onChange={e => setReqCustomWindow(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustomReqWindow(); } }}
+                    style={{ width: 90 }}
+                  />
+                  <button type="button" className="btn btn-secondary btn-small" onClick={addCustomReqWindow}>
+                    <FontAwesomeIcon icon={faPlus} /> Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Scope *</label>
+                <select value={reqScope} onChange={e => setReqScope(e.target.value as 'global' | 'brand' | 'isp')}>
+                  <option value="global">Global (all brands, all ISPs)</option>
+                  <option value="brand">Brand (single sending brand)</option>
+                  <option value="isp">ISP (single recipient ISP)</option>
+                </select>
+              </div>
+              {reqScope === 'brand' && (
+                <div className="form-group">
+                  <label>Brand apex *</label>
+                  <input
+                    type="text"
+                    value={reqBrandApex}
+                    onChange={e => setReqBrandApex(e.target.value)}
+                    placeholder="e.g. discountblog.com"
+                  />
+                </div>
+              )}
+              {reqScope === 'isp' && (
+                <div className="form-group">
+                  <label>ISP *</label>
+                  <input
+                    type="text"
+                    value={reqIsp}
+                    onChange={e => setReqIsp(e.target.value)}
+                    placeholder="gmail, yahoo, microsoft…"
+                    list="segreq-isp-options"
+                  />
+                  <datalist id="segreq-isp-options">
+                    {BUILD_REQUEST_KNOWN_ISPS.map(isp => <option key={isp} value={isp} />)}
+                  </datalist>
+                </div>
+              )}
+
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={reqExcludeSeeds}
+                    onChange={e => setReqExcludeSeeds(e.target.checked)}
+                    style={{ width: 'auto' }}
+                  />
+                  Exclude seed accounts (recommended)
+                </label>
+              </div>
+
+              <div className="form-group">
+                <label>Name (optional — server generates one if blank)</label>
+                <input
+                  type="text"
+                  value={reqName}
+                  onChange={e => setReqName(e.target.value)}
+                  placeholder="e.g. Lake-Openers-Gmail"
+                />
+              </div>
+
+              {reqError && (
+                <div style={{
+                  margin: '4px 0 8px',
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  background: 'rgba(239,68,68,0.12)',
+                  border: '1px solid rgba(239,68,68,0.4)',
+                  color: '#fca5a5',
+                  fontSize: '0.8rem',
+                }}>
+                  {reqError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowRequestModal(false)} disabled={reqSubmitting}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={reqSubmitting || reqWindows.length === 0}>
+                  <FontAwesomeIcon icon={reqSubmitting ? faSpinner : faRocket} spin={reqSubmitting} />
+                  {reqSubmitting ? 'Requesting…' : `Request ${reqWindows.length || ''} Segment${reqWindows.length === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Lightweight toasts for async build outcomes (no global toast system in this portal) */}
+      {toasts.length > 0 && (
+        <div style={{ position: 'fixed', bottom: 24, right: 24, display: 'flex', flexDirection: 'column', gap: 8, zIndex: 1100 }}>
+          {toasts.map(t => (
+            <div
+              key={t.id}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 10,
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                color: '#fff',
+                maxWidth: 380,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
+                background: t.kind === 'ok'
+                  ? 'linear-gradient(135deg, #059669, #10b981)'
+                  : t.kind === 'error'
+                    ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                    : 'linear-gradient(135deg, #4f46e5, #6366f1)',
+              }}
+            >
+              {t.msg}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

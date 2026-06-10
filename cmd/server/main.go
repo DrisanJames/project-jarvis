@@ -6957,6 +6957,29 @@ END $$`},
 			source_hash TEXT NOT NULL DEFAULT ''
 		)`},
 		{"idx_esp_metric_snapshots_collected", `CREATE INDEX IF NOT EXISTS idx_esp_metric_snapshots_collected ON esp_metric_snapshots (collected_at)`},
+
+		// Segment build ledger (2026-06-09): app-owned, one-row-per-segment
+		// summary table behind the v2 segments list. Replaces the per-page-load
+		// COUNT(*) GROUP BY over mailing_segment_members (huge) with a tiny
+		// indexed read. Every member-writing path (materializer, recalculate,
+		// lake builders) upserts its row via internal/api/segment_ledger.go.
+		// This is a COMPANION table by design: mailing_segments is owned by
+		// apex_admin and the app user cannot ALTER it (CLAUDE.md §4), so the
+		// summary columns live here under app ownership instead.
+		// One-time backfill from mailing_segment_members runs AFTER this slice
+		// behind a Go-side emptiness probe — see segment_build_ledger_backfill
+		// below; do NOT add the backfill INSERT..SELECT to this slice.
+		{"create_segment_build_ledger", `CREATE TABLE IF NOT EXISTS mailing_segment_build_ledger (
+			segment_id UUID PRIMARY KEY,
+			subscriber_count BIGINT NOT NULL DEFAULT 0,
+			last_built_at TIMESTAMPTZ,
+			build_source TEXT,
+			last_build_status TEXT NOT NULL DEFAULT 'unknown',
+			last_build_ms INTEGER,
+			last_delta_pct REAL,
+			last_error TEXT,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -7065,6 +7088,48 @@ END $$`},
 		}
 	} else if besmedCount > 0 {
 		log.Printf("[StartupMigration] besmed_suppression_import: already loaded (%d entries)", besmedCount)
+	}
+
+	// One-time segment-build-ledger backfill (companion to the
+	// create_segment_build_ledger migration in the slice above).
+	//
+	// CRITICAL ordering: the Go-side emptiness probe runs FIRST, and the
+	// INSERT..SELECT only executes when the ledger has ZERO rows.
+	// mailing_segment_members is enormous, and the GROUP BY aggregate is a
+	// full scan — ON CONFLICT DO NOTHING alone would still PAY that scan on
+	// every boot of every ECS task before discarding the rows. The EXISTS
+	// probe is an index-only point read, so all routine boots skip the scan
+	// entirely; only the very first boot after this table ships (or a manual
+	// TRUNCATE for a re-seed) runs the aggregate once.
+	var ledgerSeeded bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM mailing_segment_build_ledger LIMIT 1)`).Scan(&ledgerSeeded); err != nil {
+		log.Printf("[StartupMigration] segment_build_ledger_backfill: probe error %v (skipping backfill)", err)
+	} else if ledgerSeeded {
+		log.Println("[StartupMigration] segment_build_ledger_backfill: already seeded")
+	} else {
+		// The one-time GROUP BY scan will exceed the 5s migration timeout —
+		// run it on a dedicated connection with a 10-minute statement_timeout
+		// (same pattern as idx_mcq_dead_letter_recent below).
+		ledgerCtx, ledgerCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		if ledgerConn, ledgerConnErr := db.Conn(ledgerCtx); ledgerConnErr == nil {
+			if _, err := ledgerConn.ExecContext(ledgerCtx, "SET statement_timeout = '600000'"); err != nil {
+				log.Printf("[StartupMigration] segment_build_ledger_backfill: SET timeout failed: %v", err)
+			}
+			if _, err := ledgerConn.ExecContext(ledgerCtx, `INSERT INTO mailing_segment_build_ledger
+					(segment_id, subscriber_count, last_built_at, build_source, last_build_status)
+				SELECT segment_id, COUNT(*), NOW(), 'backfill', 'ok'
+				FROM mailing_segment_members
+				GROUP BY segment_id
+				ON CONFLICT (segment_id) DO NOTHING`); err != nil {
+				log.Printf("[StartupMigration] segment_build_ledger_backfill: ERROR %v (ledger still empty — will retry next boot)", err)
+			} else {
+				log.Println("[StartupMigration] segment_build_ledger_backfill: OK")
+			}
+			ledgerConn.Close()
+		} else {
+			log.Printf("[StartupMigration] segment_build_ledger_backfill: db.Conn failed: %v", ledgerConnErr)
+		}
+		ledgerCancel()
 	}
 
 	// Outbox dead-letter listing index. mailing_campaign_queue is
