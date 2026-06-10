@@ -13,7 +13,7 @@ import {
 } from './types';
 import {
   C, panelStyle, sectionTitleStyle, btnStyle, btnDisabledStyle, inputStyle,
-  Loading, ErrorState, fmtInt, fmtPct,
+  Loading, ErrorState, fmtInt, fmtPct, fmtPct100,
 } from './ui';
 
 const STATUS_CHIP_COLORS: Record<PlanStatus, { bg: string; border: string; fg: string }> = {
@@ -225,7 +225,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
                     <StatusBadge status={postureToBadge(p.posture)} label={p.posture} />
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
-                    {fmtInt(p.sends)} sends · open {fmtPct(p.open_pct)} · machine {fmtPct(p.machine_open_share)} · {fmtInt(p.human_clicks)} human clicks
+                    {fmtInt(p.sends)} sends · open {fmtPct100(p.open_pct)} · machine {fmtPct(p.machine_open_share)} · {fmtInt(p.human_clicks)} human clicks
                   </div>
                   {p.reasons && p.reasons.length > 0 && (
                     <ul style={{ margin: '6px 0 0', paddingLeft: 16, color: C.muted, fontSize: 11.5 }}>
@@ -283,6 +283,31 @@ export const BriefingPlanSection: React.FC<Props> = ({
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>
             Slots ({plan.slots?.length ?? 0})
           </div>
+          {(!plan.slots || plan.slots.length === 0) && (
+            <div
+              style={{
+                background: 'rgba(10,15,26,0.7)',
+                border: `1px dashed ${C.panelBorder}`,
+                borderRadius: 8,
+                padding: '14px 16px',
+                fontSize: 12,
+                color: C.muted,
+                lineHeight: 1.6,
+              }}
+            >
+              No slots yet. Slots and deploy payloads are attached by the compile step — creatives
+              live in review-forge on the operator machine, so compilation runs there, not on the
+              server. From the repo root:
+              <div style={{ marginTop: 6 }}>
+                <code style={{ color: C.accent, fontSize: 12 }}>
+                  python3 -m agents.domainagent compile --domain {domain} --brief
+                  send-days/{plan.plan_date}/mature_brief.yaml --date {plan.plan_date}
+                </code>
+              </div>
+              Once payloads are attached the plan becomes <b>compiled</b>, slots appear here for
+              editing, and Approve &amp; Deploy unlocks below.
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {(plan.slots || []).map((s, i) => (
               <div
@@ -349,7 +374,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
           </div>
 
           {/* Save */}
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ marginTop: 12, display: plan.slots && plan.slots.length > 0 ? 'flex' : 'none', justifyContent: 'flex-end' }}>
             <button
               onClick={handleSave}
               disabled={!editable || !dirty || saving}

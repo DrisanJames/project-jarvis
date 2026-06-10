@@ -16,7 +16,7 @@ import { useToast } from '../shared/ToastSystem';
 import { StatusBadge } from '../../common/StatusBadge';
 import { DOMAIN_AGENT_BASE, DomainSummary, Plan, postureToBadge } from './domain-agents/types';
 import {
-  C, panelStyle, btnStyle, btnDisabledStyle, Loading, ErrorState, fmtInt, fmtPct,
+  C, panelStyle, btnStyle, btnDisabledStyle, Loading, ErrorState, fmtInt, fmtPct100,
 } from './domain-agents/ui';
 import { ScorecardSection } from './domain-agents/ScorecardSection';
 import { BriefingPlanSection } from './domain-agents/BriefingPlanSection';
@@ -174,7 +174,7 @@ export const DomainAgents: React.FC = () => {
                 <StatusBadge status={postureToBadge(d.posture_worst)} label={d.posture_worst} showIcon={false} />
               </div>
               <div style={{ fontSize: 11.5, color: C.muted }}>
-                {fmtInt(d.sends_7d)} sends 7d · open {fmtPct(d.human_open_pct_7d)}
+                {fmtInt(d.sends_7d)} sends 7d · open {fmtPct100(d.human_open_pct_7d)}
               </div>
             </div>
           );

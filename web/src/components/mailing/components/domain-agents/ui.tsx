@@ -115,3 +115,7 @@ export const fmtInt = (n: number): string => n.toLocaleString('en-US');
 
 export const fmtPct = (frac: number): string =>
   Number.isFinite(frac) ? `${(frac * 100).toFixed(1)}%` : '—';
+
+// For values the API already expresses as 0–100 (open_pct, human_open_pct_7d).
+export const fmtPct100 = (pct: number): string =>
+  Number.isFinite(pct) ? `${pct.toFixed(1)}%` : '—';
