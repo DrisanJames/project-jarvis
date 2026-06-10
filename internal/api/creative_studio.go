@@ -150,7 +150,8 @@ func studioSlug(s string) string {
 var cratoolproRe = regexp.MustCompile(`https?://(?:www\.)?cratoolpro\.com/[A-Za-z0-9]+/[A-Za-z0-9]+/`)
 
 type StudioGenerateRequest struct {
-	SiteKey           string          `json:"site_key"`
+	SiteKey           string          `json:"site_key,omitempty"`
+	SiteKeys          []string        `json:"site_keys,omitempty"` // multi-brand fan-out
 	PrimaryBrandKey   string          `json:"primary_brand_key"`
 	SecondaryBrandKey string          `json:"secondary_brand_key,omitempty"`
 	SubjectLine       string          `json:"subject_line,omitempty"`
@@ -158,11 +159,17 @@ type StudioGenerateRequest struct {
 	RefreshContent    bool            `json:"refresh_content"`
 	Mode              string          `json:"mode,omitempty"` // newsletter (default) | solo
 	Solo              json.RawMessage `json:"solo,omitempty"`
-	Save              bool            `json:"save"`
-	Name              string          `json:"name,omitempty"` // template display name override
+	// Engine BrandOverrides passthrough (title, subtitle, excerpt, rating,
+	// highlights, ctaLabel, ctaUrl, bannerUrl, logoUrl, imageOrientation) —
+	// the operator swaps imagery per send often.
+	PrimaryOverrides   json.RawMessage `json:"primary_overrides,omitempty"`
+	SecondaryOverrides json.RawMessage `json:"secondary_overrides,omitempty"`
+	Save               bool            `json:"save"`
+	Name               string          `json:"name,omitempty"` // template display name override
 }
 
 type StudioGenerateResult struct {
+	SiteKey    string `json:"site_key"`
 	HTML       string `json:"html"`
 	Subject    string `json:"subject"`
 	Preheader  string `json:"preheader"`
@@ -171,6 +178,7 @@ type StudioGenerateResult struct {
 	CreativeID string `json:"creative_id,omitempty"`
 	MoneyURLs  int    `json:"money_urls"`
 	Saved      bool   `json:"saved"`
+	Error      string `json:"error,omitempty"` // per-site failure in a fan-out
 }
 
 // Generate renders via the sidecar and (optionally) persists. Shared by the
@@ -207,6 +215,20 @@ func (s *CreativeStudioService) Generate(r *http.Request, req StudioGenerateRequ
 		}
 		enginePayload["solo"] = solo
 	}
+	if len(req.PrimaryOverrides) > 0 {
+		var ov interface{}
+		if err := json.Unmarshal(req.PrimaryOverrides, &ov); err != nil {
+			return nil, fmt.Errorf("invalid primary_overrides: %w", err)
+		}
+		enginePayload["primaryOverrides"] = ov
+	}
+	if len(req.SecondaryOverrides) > 0 {
+		var ov interface{}
+		if err := json.Unmarshal(req.SecondaryOverrides, &ov); err != nil {
+			return nil, fmt.Errorf("invalid secondary_overrides: %w", err)
+		}
+		enginePayload["secondaryOverrides"] = ov
+	}
 
 	body, _ := json.Marshal(enginePayload)
 	resp, err := s.client.Post(studioEngineBase()+"/api/template-email", "application/json", bytes.NewReader(body))
@@ -229,6 +251,7 @@ func (s *CreativeStudioService) Generate(r *http.Request, req StudioGenerateRequ
 	}
 
 	result := &StudioGenerateResult{
+		SiteKey:   strings.ToLower(req.SiteKey),
 		HTML:      rendered.HTML,
 		Subject:   rendered.SubjectLine,
 		Preheader: rendered.Preheader,
@@ -304,16 +327,34 @@ func (s *CreativeStudioService) Generate(r *http.Request, req StudioGenerateRequ
 	return result, nil
 }
 
+// HandleGenerate fans out over site_keys (falling back to the single
+// site_key), isolating per-site failures so one bad feed doesn't kill the
+// batch. Response: {results: [StudioGenerateResult]}.
 func (s *CreativeStudioService) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	var req StudioGenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	res, err := s.Generate(r, req)
-	if err != nil {
-		respondJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	sites := req.SiteKeys
+	if len(sites) == 0 && req.SiteKey != "" {
+		sites = []string{req.SiteKey}
+	}
+	if len(sites) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "site_key or site_keys required"})
 		return
 	}
-	respondJSON(w, http.StatusOK, res)
+	results := make([]StudioGenerateResult, 0, len(sites))
+	for _, site := range sites {
+		perSite := req
+		perSite.SiteKey = site
+		perSite.SiteKeys = nil
+		res, err := s.Generate(r, perSite)
+		if err != nil {
+			results = append(results, StudioGenerateResult{SiteKey: strings.ToLower(site), Error: err.Error()})
+			continue
+		}
+		results = append(results, *res)
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"results": results})
 }

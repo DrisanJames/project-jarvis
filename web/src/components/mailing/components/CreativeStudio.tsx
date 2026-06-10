@@ -18,6 +18,7 @@ import { apiFetch } from '../shared/apiFetch';
 // operator's local ReviewForge); saves land in the Content Library
 // ("Creative Studio/<SITE>") + the mailing_creatives registry; the docked
 // agent generates conversationally (replaces the Cursor loop).
+// Multi-brand: pick several sites, generate once, tab across the results.
 
 const SITE_KEYS = [
   'db', 'mh', 'qf', 'ht', 'bwp', 'fc', 'cp', 'hws',
@@ -31,6 +32,7 @@ interface StudioBrand {
 }
 
 interface GenerateResult {
+  site_key: string;
   html: string;
   subject: string;
   preheader: string;
@@ -39,6 +41,7 @@ interface GenerateResult {
   creative_id?: string;
   money_urls: number;
   saved: boolean;
+  error?: string;
 }
 
 interface CreativeMeta {
@@ -78,6 +81,13 @@ const btnStyle = (bg: string, border: string): React.CSSProperties => ({
   display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600,
 });
 
+const chipStyle = (active: boolean): React.CSSProperties => ({
+  background: active ? '#312e81' : '#1e293b',
+  border: `1px solid ${active ? '#6366f1' : '#334155'}`,
+  borderRadius: 999, color: active ? '#e0e7ff' : '#94a3b8',
+  padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
+});
+
 // Minimal markdown for agent replies (bold, inline code, line breaks).
 function renderAgentText(text: string): React.ReactNode {
   return text.split('\n').map((line, i) => {
@@ -105,18 +115,26 @@ export const CreativeStudio: React.FC = () => {
 
   // Builder state
   const [mode, setMode] = useState<'newsletter' | 'solo'>('newsletter');
-  const [siteKey, setSiteKey] = useState('db');
+  const [selectedSites, setSelectedSites] = useState<string[]>(['db']);
   const [primaryBrandKey, setPrimaryBrandKey] = useState('');
   const [secondaryBrandKey, setSecondaryBrandKey] = useState('');
   const [subjectLine, setSubjectLine] = useState('');
   const [preheader, setPreheader] = useState('');
   const [refreshContent, setRefreshContent] = useState(true);
+  // Imagery / copy overrides — shared by newsletter and solo (operator swaps
+  // imagery per send often).
+  const [bannerUrl, setBannerUrl] = useState('');
+  const [logoUrl, setLogoUrl] = useState('');
+  const [imageOrientation, setImageOrientation] = useState<'' | 'horizontal' | 'vertical' | 'logo'>('');
+  const [titleOverride, setTitleOverride] = useState('');
+  const [subtitleOverride, setSubtitleOverride] = useState('');
+  const [ctaLabel, setCtaLabel] = useState('');
+  const [ctaUrl, setCtaUrl] = useState('');
   const [soloCreativeUrl, setSoloCreativeUrl] = useState('');
-  const [soloHeadline, setSoloHeadline] = useState('');
-  const [soloCtaLabel, setSoloCtaLabel] = useState('');
   const [soloBelowMode, setSoloBelowMode] = useState<'review_card' | 'full_review' | 'none'>('review_card');
   const [generating, setGenerating] = useState(false);
-  const [result, setResult] = useState<GenerateResult | null>(null);
+  const [results, setResults] = useState<GenerateResult[]>([]);
+  const [activeResultSite, setActiveResultSite] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Library state
@@ -180,12 +198,29 @@ export const CreativeStudio: React.FC = () => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, chatBusy]);
 
+  const toggleSite = useCallback((s: string) => {
+    setSelectedSites((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+  }, []);
+
   const generate = useCallback(async (save: boolean) => {
+    if (selectedSites.length === 0) {
+      setError('pick at least one site');
+      return;
+    }
     setGenerating(true);
     setError(null);
     try {
+      const overrides: Record<string, unknown> = {};
+      if (bannerUrl) overrides.bannerUrl = bannerUrl;
+      if (logoUrl) overrides.logoUrl = logoUrl;
+      if (imageOrientation) overrides.imageOrientation = imageOrientation;
+      if (titleOverride) overrides.title = titleOverride;
+      if (subtitleOverride) overrides.subtitle = subtitleOverride;
+      if (ctaLabel) overrides.ctaLabel = ctaLabel;
+      if (ctaUrl) overrides.ctaUrl = ctaUrl;
+
       const body: Record<string, unknown> = {
-        site_key: siteKey,
+        site_keys: selectedSites,
         primary_brand_key: primaryBrandKey,
         secondary_brand_key: secondaryBrandKey || undefined,
         subject_line: subjectLine || undefined,
@@ -194,11 +229,15 @@ export const CreativeStudio: React.FC = () => {
         mode,
         save,
       };
+      if (Object.keys(overrides).length > 0) body.primary_overrides = overrides;
       if (mode === 'solo') {
         body.solo = {
           creativeUrl: soloCreativeUrl,
-          headline: soloHeadline || undefined,
-          ctaLabel: soloCtaLabel || undefined,
+          headline: titleOverride || undefined,
+          subheadline: subtitleOverride || undefined,
+          ctaLabel: ctaLabel || undefined,
+          ctaUrl: ctaUrl || undefined,
+          logoUrl: logoUrl || undefined,
           belowMode: soloBelowMode,
         };
       }
@@ -209,14 +248,18 @@ export const CreativeStudio: React.FC = () => {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-      setResult(json as GenerateResult);
+      const out: GenerateResult[] = json.results ?? [];
+      setResults(out);
+      const firstOk = out.find((r) => !r.error);
+      setActiveResultSite((firstOk ?? out[0])?.site_key ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setGenerating(false);
     }
-  }, [siteKey, primaryBrandKey, secondaryBrandKey, subjectLine, preheader,
-      refreshContent, mode, soloCreativeUrl, soloHeadline, soloCtaLabel, soloBelowMode]);
+  }, [selectedSites, primaryBrandKey, secondaryBrandKey, subjectLine, preheader,
+      refreshContent, mode, bannerUrl, logoUrl, imageOrientation, titleOverride,
+      subtitleOverride, ctaLabel, ctaUrl, soloCreativeUrl, soloBelowMode]);
 
   const openPreview = useCallback(async (c: CreativeMeta) => {
     setSelected(c);
@@ -269,6 +312,11 @@ export const CreativeStudio: React.FC = () => {
     [brands],
   );
 
+  const activeResult = useMemo(
+    () => results.find((r) => r.site_key === activeResultSite) ?? null,
+    [results, activeResultSite],
+  );
+
   return (
     <div style={{ padding: '20px 24px', color: '#e5e7eb', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
@@ -311,7 +359,7 @@ export const CreativeStudio: React.FC = () => {
         <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 16 }}>
           {view === 'builder' ? (
             <>
-              <div style={{ flex: '0 0 320px', overflowY: 'auto', paddingRight: 4 }}>
+              <div style={{ flex: '0 0 330px', overflowY: 'auto', paddingRight: 4 }}>
                 <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
                   <button onClick={() => setMode('newsletter')}
                     style={btnStyle(mode === 'newsletter' ? '#312e81' : '#1e293b', mode === 'newsletter' ? '#4338ca' : '#334155')}>
@@ -323,10 +371,22 @@ export const CreativeStudio: React.FC = () => {
                   </button>
                 </div>
 
-                <label style={labelStyle}>Site (sending brand)</label>
-                <select value={siteKey} onChange={(e) => setSiteKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
-                  {SITE_KEYS.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-                </select>
+                <label style={labelStyle}>
+                  Sites ({selectedSites.length} selected)
+                  <span style={{ float: 'right', display: 'flex', gap: 8 }}>
+                    <span style={{ cursor: 'pointer', color: '#a78bfa' }}
+                      onClick={() => setSelectedSites([...SITE_KEYS])}>all</span>
+                    <span style={{ cursor: 'pointer', color: '#64748b' }}
+                      onClick={() => setSelectedSites([])}>none</span>
+                  </span>
+                </label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 12 }}>
+                  {SITE_KEYS.map((s) => (
+                    <span key={s} style={chipStyle(selectedSites.includes(s))} onClick={() => toggleSite(s)}>
+                      {s.toUpperCase()}
+                    </span>
+                  ))}
+                </div>
 
                 <label style={labelStyle}>Primary offer brand</label>
                 <select value={primaryBrandKey} onChange={(e) => setPrimaryBrandKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
@@ -348,10 +408,6 @@ export const CreativeStudio: React.FC = () => {
                     <label style={labelStyle}>Creative image URL *</label>
                     <input value={soloCreativeUrl} onChange={(e) => setSoloCreativeUrl(e.target.value)}
                       placeholder="https://img.projectjarvis.io/…" style={{ ...inputStyle, marginBottom: 12 }} />
-                    <label style={labelStyle}>Headline (optional)</label>
-                    <input value={soloHeadline} onChange={(e) => setSoloHeadline(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
-                    <label style={labelStyle}>CTA label (optional)</label>
-                    <input value={soloCtaLabel} onChange={(e) => setSoloCtaLabel(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
                     <label style={labelStyle}>Below the ad</label>
                     <select value={soloBelowMode} onChange={(e) => setSoloBelowMode(e.target.value as typeof soloBelowMode)} style={{ ...inputStyle, marginBottom: 12 }}>
                       <option value="review_card">Review card</option>
@@ -360,6 +416,37 @@ export const CreativeStudio: React.FC = () => {
                     </select>
                   </>
                 )}
+
+                <div style={{ borderTop: '1px solid #1f2937', margin: '4px 0 12px', paddingTop: 10 }}>
+                  <div style={{ ...labelStyle, color: '#a78bfa' }}>
+                    {mode === 'solo' ? 'Copy & imagery' : 'Overrides — swap imagery & copy (optional)'}
+                  </div>
+                  {mode === 'newsletter' && (
+                    <>
+                      <label style={labelStyle}>Banner / hero image URL</label>
+                      <input value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)}
+                        placeholder="blank = brand default" style={{ ...inputStyle, marginBottom: 10 }} />
+                      <label style={labelStyle}>Image orientation</label>
+                      <select value={imageOrientation} onChange={(e) => setImageOrientation(e.target.value as typeof imageOrientation)} style={{ ...inputStyle, marginBottom: 10 }}>
+                        <option value="">auto</option>
+                        <option value="horizontal">horizontal (full-bleed)</option>
+                        <option value="vertical">vertical (portrait)</option>
+                        <option value="logo">logo (centered, capped)</option>
+                      </select>
+                    </>
+                  )}
+                  <label style={labelStyle}>Logo URL</label>
+                  <input value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)}
+                    placeholder="blank = brand default" style={{ ...inputStyle, marginBottom: 10 }} />
+                  <label style={labelStyle}>{mode === 'solo' ? 'Headline' : 'Title'}</label>
+                  <input value={titleOverride} onChange={(e) => setTitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <label style={labelStyle}>{mode === 'solo' ? 'Subheadline' : 'Subtitle'}</label>
+                  <input value={subtitleOverride} onChange={(e) => setSubtitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <label style={labelStyle}>CTA label</label>
+                  <input value={ctaLabel} onChange={(e) => setCtaLabel(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <label style={labelStyle}>CTA URL (leave blank — pipeline manages money links)</label>
+                  <input value={ctaUrl} onChange={(e) => setCtaUrl(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                </div>
 
                 <label style={labelStyle}>Subject (blank = pool pick)</label>
                 <input value={subjectLine} onChange={(e) => setSubjectLine(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
@@ -387,28 +474,53 @@ export const CreativeStudio: React.FC = () => {
                     <FontAwesomeIcon icon={faTriangleExclamation} /> {error}
                   </div>
                 )}
-                {result?.saved && (
+                {results.some((r) => r.saved) && (
                   <div style={{ marginTop: 12, color: '#22c55e', fontSize: 13 }}>
-                    <FontAwesomeIcon icon={faCircleCheck} /> Saved <code>{result.filename}</code> to the
-                    Content Library + registry ({result.money_urls} money URL{result.money_urls === 1 ? '' : 's'})
+                    <FontAwesomeIcon icon={faCircleCheck} /> Saved {results.filter((r) => r.saved).length}/{results.length} to
+                    the Content Library + registry
                   </div>
                 )}
               </div>
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {result ? (
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                {results.length > 0 ? (
                   <>
-                    <div style={{ fontSize: 13, marginBottom: 8 }}>
-                      <div style={{ fontWeight: 600 }}>{result.subject}</div>
-                      <div style={{ color: '#94a3b8', marginTop: 2 }}>{result.preheader}</div>
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 8 }}>
+                      {results.map((r) => (
+                        <span key={r.site_key}
+                          style={{
+                            ...chipStyle(activeResultSite === r.site_key),
+                            ...(r.error ? { borderColor: '#ef4444', color: '#ef4444' } : {}),
+                          }}
+                          onClick={() => setActiveResultSite(r.site_key)}>
+                          {r.site_key.toUpperCase()}{r.error ? ' ✕' : r.saved ? ' ✓' : ''}
+                        </span>
+                      ))}
                     </div>
-                    <iframe title="builder-preview" sandbox="" srcDoc={result.html}
-                      style={{ width: '100%', height: 'calc(100% - 48px)', background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                    {activeResult?.error ? (
+                      <div style={{ color: '#ef4444', fontSize: 13, padding: 16 }}>
+                        <FontAwesomeIcon icon={faTriangleExclamation} /> {activeResult.site_key.toUpperCase()}: {activeResult.error}
+                      </div>
+                    ) : activeResult ? (
+                      <>
+                        <div style={{ fontSize: 13, marginBottom: 8 }}>
+                          <div style={{ fontWeight: 600 }}>{activeResult.subject}</div>
+                          <div style={{ color: '#94a3b8', marginTop: 2 }}>{activeResult.preheader}</div>
+                          {activeResult.filename && (
+                            <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>
+                              {activeResult.filename} · {activeResult.money_urls} money URL{activeResult.money_urls === 1 ? '' : 's'}
+                            </div>
+                          )}
+                        </div>
+                        <iframe title={`preview-${activeResult.site_key}`} sandbox="" srcDoc={activeResult.html}
+                          style={{ width: '100%', flex: 1, background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                      </>
+                    ) : null}
                   </>
                 ) : (
                   <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>
-                    Configure and hit Preview — the engine renders the exact email a recipient would see
-                    (live editorial blocks included).
+                    Pick sites and hit Preview — one render per brand, tab across the results. The
+                    engine produces the exact email a recipient would see (live editorial included).
                   </div>
                 )}
               </div>
@@ -480,8 +592,8 @@ export const CreativeStudio: React.FC = () => {
             <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {messages.length === 0 && (
                 <div style={{ color: '#64748b', fontSize: 12, lineHeight: 1.6 }}>
-                  Try: “Make a Warby Parker newsletter for DB and RRU”, “Give me 5 subject ideas for
-                  the BWP pool”, “Generate a solo for the Jacuzzi hero image on MH”.
+                  Try: “Make a Warby Parker newsletter for all brands”, “Regenerate DB with this hero:
+                  &lt;url&gt;”, “Give me 5 subject ideas from the BWP pool”.
                 </div>
               )}
               {messages.map((m, i) => (

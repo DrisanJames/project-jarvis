@@ -79,16 +79,25 @@ func creativeAgentTools() []agentToolDef {
 		}},
 		{Type: "function", Function: agentToolFuncDef{
 			Name:        "generate_newsletter",
-			Description: "Render and SAVE a newsletter creative for one site (sending brand) featuring an offer brand. Saves to the Content Library + creative registry and returns the filename.",
+			Description: "Render and SAVE newsletter creatives for one or more sites (sending brands) featuring an offer brand. Saves each to the Content Library + creative registry and returns the filenames. Use site_keys for multi-brand requests ('all brands' = all 16 site keys).",
 			Parameters: obj(map[string]interface{}{
-				"site_key":            str("site key (db, bwp, ...)"),
+				"site_key": str("single site key (db, bwp, ...) — or use site_keys"),
+				"site_keys": map[string]interface{}{
+					"type": "array", "items": map[string]interface{}{"type": "string"},
+					"description": "site keys to generate for, e.g. [\"db\",\"rru\"]",
+				},
 				"primary_brand_key":   str("offer brandKey from list_brands"),
 				"secondary_brand_key": str("optional second offer for the compact card"),
 				"subject_line":        str("optional subject override (else pool pick)"),
 				"preheader":           str("optional preheader override"),
+				"banner_url":          str("optional hero/banner image URL override (imagery swap)"),
+				"logo_url":            str("optional logo image URL override"),
+				"title":               str("optional headline/title override"),
+				"cta_label":           str("optional CTA button text override"),
+				"cta_url":             str("optional CTA URL override — only when the operator supplies it"),
 				"refresh_content":     boolean("refetch live editorial feeds (default true)"),
 				"name":                str("optional display name in the library"),
-			}, "site_key", "primary_brand_key"),
+			}, "primary_brand_key"),
 		}},
 		{Type: "function", Function: agentToolFuncDef{
 			Name:        "generate_solo",
@@ -324,6 +333,25 @@ func (ca *CreativeAgent) execute(r *http.Request, orgID, name, rawArgs string) (
 		if v, ok := args["refresh_content"].(bool); ok {
 			req.RefreshContent = v
 		}
+		overrides := map[string]interface{}{}
+		if v := getS("banner_url"); v != "" {
+			overrides["bannerUrl"] = v
+		}
+		if v := getS("logo_url"); v != "" {
+			overrides["logoUrl"] = v
+		}
+		if v := getS("title"); v != "" {
+			overrides["title"] = v
+		}
+		if v := getS("cta_label"); v != "" {
+			overrides["ctaLabel"] = v
+		}
+		if v := getS("cta_url"); v != "" {
+			overrides["ctaUrl"] = v
+		}
+		if len(overrides) > 0 {
+			req.PrimaryOverrides, _ = json.Marshal(overrides)
+		}
 		if name == "generate_solo" {
 			req.Mode = "solo"
 			solo := map[string]interface{}{"creativeUrl": getS("creative_url")}
@@ -346,17 +374,44 @@ func (ca *CreativeAgent) execute(r *http.Request, orgID, name, rawArgs string) (
 			solo["belowMode"] = below
 			req.Solo, _ = json.Marshal(solo)
 		}
-		res, err := ca.studio.Generate(r, req)
-		if err != nil {
-			return "ERROR: " + err.Error(), "", nil
+
+		sites := []string{}
+		if raw, ok := args["site_keys"].([]interface{}); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					sites = append(sites, strings.TrimSpace(s))
+				}
+			}
 		}
-		action = fmt.Sprintf("Generated %s (%s)", res.Filename, req.SiteKey)
-		created = map[string]string{
-			"id": res.CreativeID, "template_id": res.TemplateID,
-			"filename": res.Filename, "subject": res.Subject,
+		if len(sites) == 0 {
+			if req.SiteKey == "" {
+				return "ERROR: site_key or site_keys required", "", nil
+			}
+			sites = []string{req.SiteKey}
 		}
-		return fmt.Sprintf("SAVED. filename=%s subject=%q preheader=%q money_urls=%d registry_id=%s library_template_id=%s",
-			res.Filename, res.Subject, res.Preheader, res.MoneyURLs, res.CreativeID, res.TemplateID), action, created
+
+		var lines []string
+		okCount := 0
+		for _, site := range sites {
+			perSite := req
+			perSite.SiteKey = site
+			res, err := ca.studio.Generate(r, perSite)
+			if err != nil {
+				lines = append(lines, fmt.Sprintf("%s: ERROR %s", site, err.Error()))
+				continue
+			}
+			okCount++
+			if created == nil { // surface the first creative for the UI refresh hook
+				created = map[string]string{
+					"id": res.CreativeID, "template_id": res.TemplateID,
+					"filename": res.Filename, "subject": res.Subject,
+				}
+			}
+			lines = append(lines, fmt.Sprintf("%s: SAVED %s subject=%q money_urls=%d registry_id=%s",
+				site, res.Filename, res.Subject, res.MoneyURLs, res.CreativeID))
+		}
+		action = fmt.Sprintf("Generated %d/%d creatives (%s)", okCount, len(sites), req.PrimaryBrandKey)
+		return strings.Join(lines, "\n"), action, created
 
 	case "list_creatives":
 		rows, err := ca.db.QueryContext(r.Context(), `
