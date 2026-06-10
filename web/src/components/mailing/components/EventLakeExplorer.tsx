@@ -53,6 +53,12 @@
 // (the lake's only open/click emit site is the SES events webhook); a 200 body
 // without a `campaign` key is treated as a failed campaign-summary lookup;
 // module caches are bounded.
+//
+// 2.1 (2026-06-09): Campaign Lookup gains a find-by-name picker backed by
+// GET /api/mailing/analytics/campaign-summary?limit=200 (recent-activity
+// order, rollup rows excluded) — no more hunting UUIDs; the raw UUID field
+// stays as the escape hatch, and Recent chips show campaign names when the
+// picker list knows them.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -69,7 +75,7 @@ import {
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
 
-const PAGE_VERSION = '2.0';
+const PAGE_VERSION = '2.1';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES (match backend JSON keys exactly)
@@ -1513,6 +1519,44 @@ const STATUS_CHIP_COLORS: Record<string, string> = {
   failed: HARD_RED,
 };
 
+// ─── Campaign picker (find-by-name instead of pasting a UUID) ──────────────
+//
+// Backed by GET /api/mailing/analytics/campaign-summary?limit=200 — the same
+// fast, pre-aggregated list Campaign Center uses (sorted by recent activity,
+// 30s server cache). Partner-drip rollup rows carry a synthetic
+// "drip-rollup:<tag>" id that is NOT a campaign UUID, so they are excluded.
+
+interface CampaignPickRow {
+  id: string;
+  name: string;
+  status: string;
+  scheduled_at?: string;
+  route_type?: string;
+  sent?: number;
+  is_rollup?: boolean;
+}
+
+interface CampaignPickResponse {
+  campaigns?: CampaignPickRow[];
+  error?: string;
+}
+
+// Module-level cache: the picker list is shared across tab visits and only
+// refetched when older than a minute (the server caches for 30s anyway).
+let campaignListCache: { rows: CampaignPickRow[]; at: number } | null = null;
+
+async function fetchCampaignList(signal: AbortSignal): Promise<CampaignPickRow[]> {
+  if (campaignListCache && Date.now() - campaignListCache.at < 60_000) {
+    return campaignListCache.rows;
+  }
+  const res = await apiFetch('/api/mailing/analytics/campaign-summary?limit=200', { signal });
+  const json: CampaignPickResponse = await res.json();
+  if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
+  const rows = (json.campaigns || []).filter((c) => !c.is_rollup && isUUID(c.id));
+  campaignListCache = { rows, at: Date.now() };
+  return rows;
+}
+
 const CampaignTab: React.FC<{
   request: { id: string; nonce: number } | null;
 }> = ({ request }) => {
@@ -1527,6 +1571,48 @@ const CampaignTab: React.FC<{
   const abortRef = useRef<AbortController | null>(null);
   const rangeRef = useRef({ from, to });
   rangeRef.current = { from, to };
+
+  // Campaign picker: search the recent-activity campaign list by name instead
+  // of pasting a UUID.
+  const [pickQuery, setPickQuery] = useState('');
+  const [pickOpen, setPickOpen] = useState(false);
+  const [pickRows, setPickRows] = useState<CampaignPickRow[]>([]);
+  const [pickLoading, setPickLoading] = useState(false);
+  const [pickError, setPickError] = useState('');
+  const pickAbortRef = useRef<AbortController | null>(null);
+
+  const loadPickList = useCallback(async () => {
+    pickAbortRef.current?.abort();
+    const ctl = new AbortController();
+    pickAbortRef.current = ctl;
+    setPickLoading(true);
+    setPickError('');
+    try {
+      const rows = await fetchCampaignList(ctl.signal);
+      if (ctl.signal.aborted) return;
+      setPickRows(rows);
+    } catch (e) {
+      if (isAbortError(e)) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      setPickError(msg);
+      addToast({ type: 'error', title: 'Campaign list failed', message: msg });
+    } finally {
+      if (pickAbortRef.current === ctl) setPickLoading(false);
+    }
+  }, [addToast]);
+
+  useEffect(() => {
+    loadPickList();
+    return () => pickAbortRef.current?.abort();
+  }, [loadPickList]);
+
+  const pickMatches = useMemo(() => {
+    const q = pickQuery.trim().toLowerCase();
+    const base = q === ''
+      ? pickRows
+      : pickRows.filter((c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+    return base.slice(0, 12);
+  }, [pickRows, pickQuery]);
 
   const runLookup = useCallback(async (rawId: string) => {
     const id = rawId.trim();
@@ -1648,12 +1734,66 @@ const CampaignTab: React.FC<{
           </div>
         </div>
         <div style={styles.eventFilterBar}>
+          {/* Find-by-name picker — the primary path. The raw UUID field stays
+              as the escape hatch (deep links, ids from logs). */}
+          <label style={{ ...styles.fieldLabel, position: 'relative' }}>find campaign (name)
+            <input
+              type="text" value={pickQuery} placeholder="Search recent campaigns…"
+              onChange={(e) => { setPickQuery(e.target.value); setPickOpen(true); }}
+              onFocus={() => setPickOpen(true)}
+              onBlur={() => setTimeout(() => setPickOpen(false), 150)}
+              style={{ ...styles.input, width: 340 }}
+            />
+            {pickOpen && (
+              <div style={styles.pickerDropdown}>
+                {pickLoading ? (
+                  <div style={styles.pickerNote}><FontAwesomeIcon icon={faSpinner} spin /> Loading campaigns…</div>
+                ) : pickError ? (
+                  <div style={{ ...styles.pickerNote, color: COLORS.danger }}>{pickError}</div>
+                ) : pickMatches.length === 0 ? (
+                  <div style={styles.pickerNote}>No campaigns match "{pickQuery}".</div>
+                ) : (
+                  pickMatches.map((c) => (
+                    <div
+                      key={c.id}
+                      style={styles.pickerItem}
+                      // onMouseDown (not onClick) so it fires before the input's
+                      // blur closes the dropdown.
+                      onMouseDown={() => {
+                        setInput(c.id);
+                        setPickQuery(c.name);
+                        setPickOpen(false);
+                        runLookup(c.id);
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ color: COLORS.textPrimary, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }} title={c.name}>
+                          {c.name || '(unnamed)'}
+                        </span>
+                        <span style={{
+                          ...styles.typeChip, fontSize: 10, padding: '1px 6px',
+                          color: STATUS_CHIP_COLORS[c.status] || COLORS.accent,
+                          borderColor: (STATUS_CHIP_COLORS[c.status] || COLORS.accent) + '55',
+                        }}>{c.status}</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 10, fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
+                        <span>{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+                        {typeof c.sent === 'number' && <span>sent {fmt(c.sent)}</span>}
+                        {c.route_type && <span>{c.route_type}</span>}
+                        <span style={{ fontFamily: 'monospace' }}>{truncate(c.id, 12)}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </label>
           <label style={styles.fieldLabel}>campaign_id (UUID)
             <input
-              type="text" value={input} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              type="text" value={input} placeholder="or paste a UUID"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') runLookup(input); }}
-              style={{ ...styles.input, width: 320, fontFamily: 'monospace' }}
+              style={{ ...styles.input, width: 280, fontFamily: 'monospace' }}
             />
           </label>
           <label style={styles.fieldLabel}>From
@@ -1669,19 +1809,24 @@ const CampaignTab: React.FC<{
         {recent.length > 0 && (
           <div style={styles.chipRow}>
             <span style={styles.chipRowLabel}><FontAwesomeIcon icon={faHistory} style={{ marginRight: 4 }} />Recent:</span>
-            {recent.map((rc) => (
-              <button
-                key={rc.id}
-                style={styles.recentChip}
-                title={`looked up ${new Date(rc.at).toLocaleString('en-US', { hour12: false })}`}
-                onClick={() => { setInput(rc.id); runLookup(rc.id); }}
-              >
-                {truncate(rc.id, 14)}
-                <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 10 }}>
-                  {new Date(rc.at).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </button>
-            ))}
+            {recent.map((rc) => {
+              // Prefer the campaign's NAME when the picker list knows it —
+              // raw UUIDs are unreadable; the id stays in the tooltip.
+              const known = pickRows.find((c) => c.id === rc.id);
+              return (
+                <button
+                  key={rc.id}
+                  style={{ ...styles.recentChip, fontFamily: known ? 'inherit' : 'monospace' }}
+                  title={`${rc.id} — looked up ${new Date(rc.at).toLocaleString('en-US', { hour12: false })}`}
+                  onClick={() => { setInput(rc.id); runLookup(rc.id); }}
+                >
+                  {known ? truncate(known.name, 32) : truncate(rc.id, 14)}
+                  <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 10 }}>
+                    {new Date(rc.at).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -2436,6 +2581,22 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', border: `1px solid ${COLORS.borderStrong}`,
     color: COLORS.textSecondary, borderRadius: 999, padding: '4px 10px',
     fontSize: 11, fontFamily: 'monospace', cursor: 'pointer',
+  },
+
+  // ── Campaign picker dropdown ──
+  pickerDropdown: {
+    position: 'absolute', top: '100%', left: 0, zIndex: 30,
+    width: 420, maxHeight: 320, overflowY: 'auto', marginTop: 4,
+    background: COLORS.bgPanelAlt, border: `1px solid ${COLORS.borderStrong}`,
+    borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+  },
+  pickerItem: {
+    padding: '8px 12px', cursor: 'pointer',
+    borderBottom: `1px solid ${COLORS.border}`,
+  },
+  pickerNote: {
+    padding: '12px 14px', fontSize: 12, color: COLORS.textMuted,
+    display: 'flex', alignItems: 'center', gap: 8,
   },
 
   // ── Tab nav ──
