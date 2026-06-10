@@ -65,9 +65,21 @@ func RollupDay(ctx context.Context, db *sql.DB, orgID string, day time.Time) err
 		return c
 	}
 
+	// One tx for the whole rollup: SET LOCAL only binds to a transaction, and
+	// the day-slice aggregates need more than the pool's default
+	// statement_timeout (30s in prod — the first backfill died on it).
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("scorecard begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '300s'`); err != nil {
+		return fmt.Errorf("scorecard set timeout: %w", err)
+	}
+
 	// (a) sends + delivered from the message log, joined to the sending
 	// profile for the sending domain.
-	sendRows, err := db.QueryContext(ctx, `
+	sendRows, err := tx.QueryContext(ctx, `
 		SELECT sp.sending_domain,
 		       LOWER(SPLIT_PART(m.email, '@', 2)) AS rdom,
 		       COUNT(*),
@@ -98,7 +110,7 @@ func RollupDay(ctx context.Context, db *sql.DB, orgID string, day time.Time) err
 	sendRows.Close()
 
 	// (b) engagement + negative events from the tracking table.
-	evtRows, err := db.QueryContext(ctx, `
+	evtRows, err := tx.QueryContext(ctx, `
 		SELECT sending_domain, COALESCE(recipient_domain, ''), event_type,
 		       COALESCE(is_machine_open, FALSE), COALESCE(is_machine_click, FALSE),
 		       COALESCE(bounce_type, ''), COUNT(*)
@@ -153,17 +165,7 @@ func RollupDay(ctx context.Context, db *sql.DB, orgID string, day time.Time) err
 	}
 	evtRows.Close()
 
-	// Rebuild the day atomically: DELETE + INSERT inside one transaction is
-	// simpler than per-row upsert and the row count is small (domains × ISPs).
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("scorecard begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '300s'`); err != nil {
-		return fmt.Errorf("scorecard set timeout: %w", err)
-	}
+	// Rebuild the day atomically: DELETE + INSERT, still inside the same tx.
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM mailing_domain_agent_scorecard
 		WHERE organization_id = $1 AND day = $2
