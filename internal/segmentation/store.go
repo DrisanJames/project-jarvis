@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // Store provides database operations for segmentation
@@ -395,8 +397,80 @@ func (s *Store) UpdateSegmentCount(ctx context.Context, segmentID uuid.UUID, cou
 	return err
 }
 
-// ListSegments lists all segments for an organization
+// SegmentListFilter narrows ListSegmentsFiltered / CountSegments. The zero
+// value applies NO additional filtering, i.e. legacy ListSegments behavior
+// (every non-deleted segment for the org, no LIMIT).
+type SegmentListFilter struct {
+	// NameQuery is a case-insensitive substring match on ms.name. The raw
+	// user input goes here; LIKE metacharacters (\ % _) are escaped when the
+	// SQL is built.
+	NameQuery string
+	// Status filters ms.status. "" and "all" mean "any non-deleted status"
+	// (the legacy behavior); any other value becomes an exact equality match.
+	Status string
+	// Categories is an include-only filter on COALESCE(ms.category,'uncategorized').
+	Categories []string
+	// ExcludeCategories removes matching categories (applied after Categories).
+	ExcludeCategories []string
+	// Limit caps the number of rows returned; <=0 means no LIMIT (legacy).
+	Limit int
+	// Offset skips rows; <=0 means no OFFSET.
+	Offset int
+}
+
+// escapeLikePattern escapes LIKE/ILIKE metacharacters so user input only ever
+// matches literally inside a '%...%' pattern. Backslash is Postgres' default
+// ESCAPE character, so it must be escaped first.
+func escapeLikePattern(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// buildSegmentListFilterSQL renders f as an " AND ..." WHERE fragment whose
+// placeholders start at $next, plus the matching args. All values are bound
+// parameters — nothing from f is ever interpolated into the SQL text.
+// includeCategoryFilters=false skips Categories/ExcludeCategories (used by the
+// per-category counts query, which must ignore category filters so the UI can
+// show counts for unselected category chips). Limit/Offset are NOT rendered
+// here; list and count paths handle them differently.
+func buildSegmentListFilterSQL(f SegmentListFilter, next int, includeCategoryFilters bool) (string, []interface{}) {
+	var b strings.Builder
+	var args []interface{}
+
+	if f.NameQuery != "" {
+		fmt.Fprintf(&b, " AND ms.name ILIKE $%d", next)
+		args = append(args, "%"+escapeLikePattern(f.NameQuery)+"%")
+		next++
+	}
+	if f.Status != "" && f.Status != "all" {
+		fmt.Fprintf(&b, " AND ms.status = $%d", next)
+		args = append(args, f.Status)
+		next++
+	}
+	if includeCategoryFilters {
+		if len(f.Categories) > 0 {
+			fmt.Fprintf(&b, " AND COALESCE(ms.category, 'uncategorized') = ANY($%d::text[])", next)
+			args = append(args, pq.Array(f.Categories))
+			next++
+		}
+		if len(f.ExcludeCategories) > 0 {
+			fmt.Fprintf(&b, " AND COALESCE(ms.category, 'uncategorized') <> ALL($%d::text[])", next)
+			args = append(args, pq.Array(f.ExcludeCategories))
+			next++
+		}
+	}
+
+	return b.String(), args
+}
+
+// ListSegments lists all segments for an organization (legacy unfiltered path).
 func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID) ([]*Segment, error) {
+	return s.ListSegmentsFiltered(ctx, orgID, listID, SegmentListFilter{})
+}
+
+// ListSegmentsFiltered lists segments for an organization with optional
+// server-side filtering/paging. A zero-value filter reproduces ListSegments
+// exactly (same SQL predicates, same ordering, no LIMIT/OFFSET).
+func (s *Store) ListSegmentsFiltered(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID, f SegmentListFilter) ([]*Segment, error) {
 	query := `
 		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type,
 			COALESCE(ms.category, 'uncategorized'),
@@ -414,7 +488,20 @@ func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.
 		args = append(args, listID)
 	}
 
+	clause, filterArgs := buildSegmentListFilterSQL(f, len(args)+1, true)
+	query += clause
+	args = append(args, filterArgs...)
+
 	query += " ORDER BY (ss.segment_id IS NOT NULL) DESC, ms.name"
+
+	if f.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, f.Limit)
+	}
+	if f.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", len(args)+1)
+		args = append(args, f.Offset)
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -437,6 +524,72 @@ func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.
 	}
 
 	return segments, nil
+}
+
+// CountSegments returns the number of segments matching ALL of f's predicates
+// (name/status/category filters), ignoring Limit/Offset. Used for the
+// include_counts=1 "total" so paged UIs know the full matching population.
+func (s *Store) CountSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID, f SegmentListFilter) (int64, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM mailing_segments ms
+		WHERE ms.organization_id = $1 AND ms.status != 'deleted'
+	`
+	args := []interface{}{orgID}
+
+	if listID != nil {
+		query += " AND ms.list_id = $2"
+		args = append(args, listID)
+	}
+
+	clause, filterArgs := buildSegmentListFilterSQL(f, len(args)+1, true)
+	query += clause
+	args = append(args, filterArgs...)
+
+	var total int64
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	return total, err
+}
+
+// CountSegmentsByCategory returns category → segment count, applying f's
+// name/status filters but deliberately IGNORING Categories/ExcludeCategories
+// (and Limit/Offset). This lets a UI render category chips with counts that
+// stay stable while the user toggles category filters.
+func (s *Store) CountSegmentsByCategory(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID, f SegmentListFilter) (map[string]int64, error) {
+	query := `
+		SELECT COALESCE(ms.category, 'uncategorized') AS category, COUNT(*)
+		FROM mailing_segments ms
+		WHERE ms.organization_id = $1 AND ms.status != 'deleted'
+	`
+	args := []interface{}{orgID}
+
+	if listID != nil {
+		query += " AND ms.list_id = $2"
+		args = append(args, listID)
+	}
+
+	clause, filterArgs := buildSegmentListFilterSQL(f, len(args)+1, false)
+	query += clause
+	args = append(args, filterArgs...)
+
+	query += " GROUP BY 1"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var category string
+		var n int64
+		if err := rows.Scan(&category, &n); err != nil {
+			return nil, err
+		}
+		out[category] = n
+	}
+	return out, rows.Err()
 }
 
 // DeleteSegment soft-deletes a segment

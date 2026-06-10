@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,20 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 // VersionSegmentationAPI is the response version surfaced on every list/count
 // payload so the UI and operators can confirm what they are talking to.
 //
+// 2.4.0 — server-side list filtering. ListSegments gains optional query params
+//
+//	q (case-insensitive name substring, ILIKE with %/_/\ escaped),
+//	status (active|archived|inactive|all; default unchanged = any
+//	non-deleted), categories / exclude_categories (comma lists matched
+//	against COALESCE(category,'uncategorized')), limit (1..2000, clamped)
+//	and offset (>=0). All filtering happens in SQL with bound parameters.
+//	include_counts=1 switches the response from the legacy bare array to
+//	{"segments":[...], "total":N, "category_counts":{...}, "api_version":...}
+//	where total honors every filter (ignoring limit/offset) and
+//	category_counts honors q/status but ignores category filters. Requests
+//	with NO params return exactly the 2.3.0 payload (bare array, all
+//	non-deleted segments, no LIMIT).
+//
 // 2.3.0 — segment build ledger. ListSegments and GetSegmentCount now read the
 //
 //	app-owned mailing_segment_build_ledger summary table instead of
@@ -50,7 +66,7 @@ func NewSegmentationAPI(db *sql.DB) *SegmentationAPI {
 // 2.2.0 — materialized rollup read path (mailing_segment_members), explicit
 //
 //	/recalculate action.
-const VersionSegmentationAPI = "2.3.0"
+const VersionSegmentationAPI = "2.4.0"
 
 // RegisterRoutes registers segmentation routes under /api/mailing/v2
 func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
@@ -124,6 +140,101 @@ type CreateSegmentRequest struct {
 	GlobalExclusions  []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
 }
 
+// segmentCategoryToken validates category filter values. We deliberately do
+// NOT validate against validSegmentCategories here: that map is the enum for
+// *writes* (CreateSegment/UpdateSegment), but production data is wider — real
+// rows carry categories like 'engaged-model' and 'data-partner' that predate
+// the enum, and filtering must be able to target them. Injection is impossible
+// regardless (values are bound parameters), so this regex only rejects
+// obvious garbage (spaces, quotes, empty after trim) with a clear 400 instead
+// of a silent empty result.
+var segmentCategoryToken = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+
+// segmentListStatuses are the accepted values for ListSegments' status param.
+// "" (absent) and "all" both reproduce the legacy predicate status != 'deleted'.
+var segmentListStatuses = map[string]bool{
+	"":         true,
+	"all":      true,
+	"active":   true,
+	"archived": true,
+	"inactive": true,
+}
+
+const segmentListMaxLimit = 2000
+
+// parseSegmentListFilter parses ListSegments' optional query params into a
+// store filter. It returns includeCounts (include_counts=1|true) and a
+// non-empty errMsg when a param is invalid (caller responds 400). Absent
+// params yield the zero filter = exact legacy behavior.
+func parseSegmentListFilter(q url.Values) (f segmentation.SegmentListFilter, includeCounts bool, errMsg string) {
+	f.NameQuery = strings.TrimSpace(q.Get("q"))
+
+	f.Status = strings.ToLower(strings.TrimSpace(q.Get("status")))
+	if !segmentListStatuses[f.Status] {
+		return f, false, "status must be one of: active, archived, inactive, all"
+	}
+
+	parseCategories := func(param string) ([]string, string) {
+		raw := q.Get(param)
+		if strings.TrimSpace(raw) == "" {
+			return nil, ""
+		}
+		var out []string
+		for _, tok := range strings.Split(raw, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			if !segmentCategoryToken.MatchString(tok) {
+				return nil, fmt.Sprintf("invalid %s value %q: categories must match ^[a-zA-Z0-9_-]+$", param, tok)
+			}
+			out = append(out, tok)
+		}
+		return out, ""
+	}
+
+	if f.Categories, errMsg = parseCategories("categories"); errMsg != "" {
+		return f, false, errMsg
+	}
+	if f.ExcludeCategories, errMsg = parseCategories("exclude_categories"); errMsg != "" {
+		return f, false, errMsg
+	}
+
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return f, false, "limit must be an integer"
+		}
+		// Clamp into [1, segmentListMaxLimit] rather than erroring; absent
+		// limit keeps the legacy unlimited behavior.
+		if n < 1 {
+			n = 1
+		}
+		if n > segmentListMaxLimit {
+			n = segmentListMaxLimit
+		}
+		f.Limit = n
+	}
+
+	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return f, false, "offset must be an integer"
+		}
+		if n < 0 {
+			n = 0
+		}
+		f.Offset = n
+	}
+
+	switch q.Get("include_counts") {
+	case "1", "true":
+		includeCounts = true
+	}
+
+	return f, includeCounts, ""
+}
+
 // ListSegments returns all segments for the organization with a materialized
 // audience snapshot per segment (count + freshness). The hot read path NEVER
 // touches mailing_subscribers OR mailing_segment_members; counts come from the
@@ -132,7 +243,24 @@ type CreateSegmentRequest struct {
 // lake builders). This keeps the segments page safe to load during 24/7 send
 // hours even as the members rollup grows.
 //
-// Response shape (JSON array):
+// Optional query params (2.4.0) — ALL filtering happens in SQL so the
+// machine-generated bulk (~31k partner_wave_static rows) never leaves the DB:
+//
+//	q=                  case-insensitive substring on name (ILIKE, %/_/\ escaped)
+//	status=             active|archived|inactive|all (absent/all = legacy: any non-deleted)
+//	categories=         comma list, include-only on COALESCE(category,'uncategorized')
+//	exclude_categories= comma list, exclusion filter
+//	limit=              1..2000 (clamped); absent = no LIMIT (legacy)
+//	offset=             >=0; absent = 0
+//	include_counts=1    wrap response in an envelope with totals (see below)
+//
+// Requests with NO params behave exactly as before (bare array, every
+// non-deleted segment).
+//
+// Response shape (JSON array; with include_counts=1 the array moves under
+// "segments" in an envelope that adds "total" — count matching all filters,
+// ignoring limit/offset — "category_counts" — per-category counts honoring
+// q/status but ignoring category filters — and "api_version"):
 //
 //	[
 //	  {
@@ -165,7 +293,16 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	segments, err := api.engine.Store().ListSegments(ctx, orgID, listID)
+	filter, includeCounts, errMsg := parseSegmentListFilter(r.URL.Query())
+	if errMsg != "" {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   "invalid_filter",
+			"details": errMsg,
+		})
+		return
+	}
+
+	segments, err := api.engine.Store().ListSegmentsFiltered(ctx, orgID, listID, filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -234,7 +371,30 @@ func (api *SegmentationAPI) ListSegments(w http.ResponseWriter, r *http.Request)
 		rows = append(rows, row)
 	}
 
-	segmentRespondJSON(w, rows)
+	if !includeCounts {
+		// Legacy payload: bare JSON array, byte-compatible with 2.3.0.
+		segmentRespondJSON(w, rows)
+		return
+	}
+
+	store := api.engine.Store()
+	total, err := store.CountSegments(ctx, orgID, listID, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	categoryCounts, err := store.CountSegmentsByCategory(ctx, orgID, listID, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	segmentRespondJSON(w, map[string]interface{}{
+		"segments":        rows,
+		"total":           total,
+		"category_counts": categoryCounts,
+		"api_version":     VersionSegmentationAPI,
+	})
 }
 
 // segmentLedgerRow mirrors one mailing_segment_build_ledger row for the
@@ -607,10 +767,42 @@ func (api *SegmentationAPI) PreviewSegment(w http.ResponseWriter, r *http.Reques
 	segmentRespondJSON(w, preview)
 }
 
+// segmentIsLakeBuilt reports whether a segment's conditions carry a lake_spec
+// block. Lake-built segments must never flow through the live segmentation
+// engine: their conditions parse as EMPTY in the legacy path (the unmarshal
+// error is discarded), which silently becomes an unscoped org-wide query.
+func (api *SegmentationAPI) segmentIsLakeBuilt(ctx context.Context, segmentID uuid.UUID) (bool, error) {
+	var conditionsRaw sql.NullString
+	if err := api.db.QueryRowContext(ctx,
+		`SELECT COALESCE(conditions::text, '[]') FROM mailing_segments WHERE id = $1`, segmentID,
+	).Scan(&conditionsRaw); err != nil {
+		return false, err
+	}
+	return parseLakeSpec(conditionsRaw.String) != nil, nil
+}
+
 // ExecuteSegment calculates a segment
 func (api *SegmentationAPI) ExecuteSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
+
+	// Lake-built segments cannot be "executed" live — same hazard as the
+	// RecalculateSegment guard (empty WHERE → entire active base). FAIL
+	// CLOSED: if we cannot determine lake-ness, refuse rather than risk the
+	// org-wide scan (which also corrupts subscriber_count).
+	lake, lakeErr := api.segmentIsLakeBuilt(ctx, segmentID)
+	if lakeErr != nil {
+		http.Error(w, "could not load segment conditions: "+lakeErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if lake {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"api_version": VersionSegmentationAPI,
+			"segment_id":  segmentID,
+			"error":       "lake-built segment — members are materialized; use GET /v2/segments/{id}/subscribers or POST /v2/segments/{id}/refresh",
+		})
+		return
+	}
 
 	result, err := api.engine.ExecuteSegment(ctx, segmentID)
 	if err != nil {
@@ -640,6 +832,57 @@ func (api *SegmentationAPI) GetSegmentSubscribers(w http.ResponseWriter, r *http
 		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
 			offset = o
 		}
+	}
+
+	// Lake-built (and any materialized static) segments are served straight
+	// from mailing_segment_members — an indexed read that is safe during send
+	// hours. Running them through the live engine would parse the lake_spec
+	// conditions as EMPTY and scan the entire org (same hazard the
+	// RecalculateSegment guard closes). FAIL CLOSED on the lake check: never
+	// fall through to the live engine when lake-ness is unknown.
+	lake, lakeErr := api.segmentIsLakeBuilt(ctx, segmentID)
+	if lakeErr != nil {
+		http.Error(w, "could not load segment conditions: "+lakeErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if lake {
+		var total int64
+		if err := api.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
+		).Scan(&total); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rows, qerr := api.db.QueryContext(ctx,
+			`SELECT subscriber_id FROM mailing_segment_members WHERE segment_id = $1 ORDER BY subscriber_id LIMIT $2 OFFSET $3`,
+			segmentID, limit, offset)
+		if qerr != nil {
+			http.Error(w, qerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		ids := make([]string, 0, limit)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		segmentRespondJSON(w, map[string]interface{}{
+			"count":          total,
+			"subscriber_ids": ids,
+			"limit":          limit,
+			"offset":         offset,
+			"has_more":       int64(offset+len(ids)) < total,
+			"source":         "materialized",
+		})
+		return
 	}
 
 	result, err := api.engine.ExecuteSegment(ctx, segmentID)
