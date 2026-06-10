@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -959,19 +960,38 @@ func (s *PMTACampaignService) HandlePipelineHealth(w http.ResponseWriter, r *htt
 	}
 
 	// --- Campaign queue ---
+	// Served from the outbox summary cache (30s background refresher in
+	// outbox_admin.go) instead of re-running the full-heap GROUP BY on the
+	// request path — that scan was a primary read amplifier in the
+	// 2026-06-09 IO saturation (CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §4.2).
+	// Falls back to the live query only in the cold-cache boot window.
 	var queueStats []map[string]interface{}
-	qRows, err := s.db.QueryContext(ctx, `
-		SELECT status, COUNT(*)
-		FROM mailing_campaign_queue
-		GROUP BY status ORDER BY COUNT(*) DESC
-	`)
-	if err == nil {
-		defer qRows.Close()
-		for qRows.Next() {
-			var status string
-			var count int
-			if qRows.Scan(&status, &count) == nil {
-				queueStats = append(queueStats, map[string]interface{}{"status": status, "count": count})
+	if snapshot, populated := defaultOutboxCache.Snapshot(); populated {
+		statuses := make([]string, 0, len(snapshot.DepthByStatus))
+		for status := range snapshot.DepthByStatus {
+			statuses = append(statuses, status)
+		}
+		sort.Slice(statuses, func(i, j int) bool {
+			return snapshot.DepthByStatus[statuses[i]] > snapshot.DepthByStatus[statuses[j]]
+		})
+		for _, status := range statuses {
+			queueStats = append(queueStats, map[string]interface{}{"status": status, "count": snapshot.DepthByStatus[status]})
+		}
+		result["queue_cache_age_seconds"] = int64(time.Since(snapshot.GeneratedAt).Seconds())
+	} else {
+		qRows, err := s.db.QueryContext(ctx, `
+			SELECT status, COUNT(*)
+			FROM mailing_campaign_queue
+			GROUP BY status ORDER BY COUNT(*) DESC
+		`)
+		if err == nil {
+			defer qRows.Close()
+			for qRows.Next() {
+				var status string
+				var count int
+				if qRows.Scan(&status, &count) == nil {
+					queueStats = append(queueStats, map[string]interface{}{"status": status, "count": count})
+				}
 			}
 		}
 	}

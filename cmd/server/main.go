@@ -429,6 +429,10 @@ func main() {
 				runAdminMigrations()
 				runStartupMigrations(mailingDB)
 				seedProcessDefaultOrgID(mailingDB)
+				// Long-running CONCURRENTLY builds live outside the
+				// 5s-per-statement migration runner: they wait for a
+				// calm-IO window and never block writes.
+				ensureConcurrentIndexes(mailingDB)
 			}()
 		}
 
@@ -1736,6 +1740,107 @@ func seedProcessDefaultOrgID(db *sql.DB) {
 	log.Printf("[OrgContext] process default org_id auto-discovered (single tenant): %s", id)
 }
 
+// concurrentIndexSpecs are indexes too large to build inside the 5s-per-
+// statement migration runner. Each is built with CREATE INDEX CONCURRENTLY
+// (never blocks writes) on a dedicated connection with statement_timeout=0,
+// only after the primary's IO-wait backend count drops below
+// concurrentIndexIOWaitMax — the same gate the queue HTML slimmer uses
+// (worker/data_cleanup.go), per CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §4.1
+// ("build in a calmer IO window").
+var concurrentIndexSpecs = []struct {
+	name string
+	sql  string
+}{
+	// Event-ingestion lookups (engine/ingest.go) filter
+	// mailing_message_log on LOWER(email) and order by sent_at DESC.
+	// Without this expression index each lookup is a ~13M-row seq scan
+	// (~17s under load) — the dominant read amplifier in the 2026-06-09
+	// IO-saturation incident.
+	{"idx_message_log_lower_email_sent", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_lower_email_sent ON mailing_message_log (LOWER(email), sent_at DESC)`},
+	// Partial index over snapshot-bearing queue rows: drives the snapshot
+	// retention NOT EXISTS probe in data_cleanup.go without a queue scan.
+	// Lives here (not the migrations slice) because even a partial-index
+	// build scans the full multi-GB queue heap — far beyond the runner's
+	// 5s statement budget.
+	{"idx_queue_content_snapshot_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_content_snapshot_id ON mailing_campaign_queue (content_snapshot_id) WHERE content_snapshot_id IS NOT NULL`},
+}
+
+const concurrentIndexIOWaitMax = 8
+
+// ensureConcurrentIndexes builds the indexes above, skipping ones already
+// valid and dropping invalid leftovers from interrupted CONCURRENTLY builds
+// (an invalid index is both useless and write-amplifying). Failures are
+// logged and retried on the next boot — never fatal.
+func ensureConcurrentIndexes(db *sql.DB) {
+	for _, spec := range concurrentIndexSpecs {
+		var valid bool
+		err := db.QueryRow(`
+			SELECT i.indisvalid
+			FROM pg_class c
+			JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = $1
+		`, spec.name).Scan(&valid)
+		switch {
+		case err == nil && valid:
+			continue // already built
+		case err == nil && !valid:
+			log.Printf("[ConcurrentIndex] %s exists but is INVALID (interrupted build) — dropping for rebuild", spec.name)
+			if _, dropErr := db.Exec(`DROP INDEX IF EXISTS ` + spec.name); dropErr != nil {
+				log.Printf("[ConcurrentIndex] drop of invalid %s failed: %v — skipping", spec.name, dropErr)
+				continue
+			}
+		case err != sql.ErrNoRows:
+			log.Printf("[ConcurrentIndex] validity probe for %s failed: %v — skipping", spec.name, err)
+			continue
+		}
+
+		// Wait for a calm-IO window: the build itself is two full scans of
+		// the table, and the whole point is not to pile onto saturation.
+		// Bounded wait (~6h in 10-minute probes); give up until next boot.
+		calm := false
+		for attempt := 0; attempt < 36; attempt++ {
+			var ioWait int
+			probeErr := db.QueryRow(`
+				SELECT COUNT(*)::int
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND state = 'active'
+				  AND wait_event_type = 'IO'
+				  AND pid <> pg_backend_pid()
+			`).Scan(&ioWait)
+			if probeErr == nil && ioWait < concurrentIndexIOWaitMax {
+				calm = true
+				break
+			}
+			log.Printf("[ConcurrentIndex] deferring %s — primary busy (io_wait_backends=%d, probe_err=%v); retry in 10m", spec.name, ioWait, probeErr)
+			time.Sleep(10 * time.Minute)
+		}
+		if !calm {
+			log.Printf("[ConcurrentIndex] %s: no calm IO window found — will retry next boot", spec.name)
+			continue
+		}
+
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			log.Printf("[ConcurrentIndex] %s: dedicated connection failed: %v", spec.name, err)
+			continue
+		}
+		if _, err := conn.ExecContext(context.Background(), `SET statement_timeout = 0`); err != nil {
+			log.Printf("[ConcurrentIndex] %s: reset statement_timeout failed: %v", spec.name, err)
+		}
+		start := time.Now()
+		log.Printf("[ConcurrentIndex] building %s (CONCURRENTLY — writes unblocked) ...", spec.name)
+		if _, err := conn.ExecContext(context.Background(), spec.sql); err != nil {
+			// An interrupted CONCURRENTLY build leaves an INVALID index;
+			// the validity probe above cleans it up on the next boot.
+			log.Printf("[ConcurrentIndex] %s build FAILED after %s: %v", spec.name, time.Since(start).Round(time.Second), err)
+		} else {
+			log.Printf("[ConcurrentIndex] %s built in %s", spec.name, time.Since(start).Round(time.Second))
+		}
+		conn.Close()
+	}
+}
+
 // runStartupMigrations applies critical schema fixes that must run before
 // the scheduler and send workers start. These are idempotent and safe to
 // re-run on every boot. Uses a PostgreSQL advisory lock so only one ECS
@@ -1793,6 +1898,28 @@ func runStartupMigrations(db *sql.DB) {
 			UNIQUE (organization_id, filename)
 		)`},
 		{"idx_mailing_creatives_offer", `CREATE INDEX IF NOT EXISTS idx_mailing_creatives_org_offer_brand ON mailing_creatives (organization_id, offer_key, brand_code, generated_at DESC)`},
+		// Creative Studio v2: registry rows link to their Content Library
+		// template so copy edits stay in sync; conversations for the embedded
+		// creative agent live in their own tables (EDITH's list stays clean).
+		{"add_mailing_creatives_template_id", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS template_id UUID`},
+		{"create_creative_agent_conversations", `CREATE TABLE IF NOT EXISTS creative_agent_conversations (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			title           TEXT NOT NULL DEFAULT '',
+			message_count   INTEGER NOT NULL DEFAULT 0,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"create_creative_agent_messages", `CREATE TABLE IF NOT EXISTS creative_agent_messages (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			conversation_id UUID NOT NULL,
+			role            TEXT NOT NULL,
+			content         TEXT,
+			tool_calls      JSONB,
+			tool_call_id    TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_creative_agent_messages_convo", `CREATE INDEX IF NOT EXISTS idx_creative_agent_messages_convo ON creative_agent_messages (conversation_id, created_at)`},
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},
@@ -6688,6 +6815,24 @@ END $$`},
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (organization_id, sending_domain, plan_date))`},
 		{"create_domain_agent_plans_status_idx", `CREATE INDEX IF NOT EXISTS idx_domain_agent_plans_org_status ON mailing_domain_agent_plans(organization_id, status)`},
+
+		// Content snapshots (2026-06-09): hash-addressed base creatives for
+		// the set-based wave enqueue. One row per distinct (html, plain,
+		// content_locked) creative; queue rows reference it via
+		// content_snapshot_id instead of carrying a per-recipient body copy.
+		// See docs/CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §5 and
+		// worker/content_snapshot.go.
+		{"create_content_snapshots", `CREATE TABLE IF NOT EXISTS mailing_content_snapshots (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			content_hash TEXT NOT NULL UNIQUE,
+			campaign_id UUID,
+			wave_id UUID,
+			html_content TEXT NOT NULL,
+			plain_content TEXT NOT NULL DEFAULT '',
+			content_locked BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"add_queue_content_snapshot_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS content_snapshot_id UUID`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

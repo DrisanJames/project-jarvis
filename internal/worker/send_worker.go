@@ -56,6 +56,11 @@ type SendWorkerPool struct {
 	batchSize    int
 	pollInterval time.Duration
 
+	// snapshotCache serves wave-shared base creatives for queue rows that
+	// reference mailing_content_snapshots instead of carrying html_content
+	// inline (LRU + singleflight; see content_snapshot.go).
+	snapshotCache *SnapshotCache
+
 	// Stats
 	totalSent       int64
 	totalFailed     int64
@@ -311,6 +316,14 @@ type QueueItem struct {
 	// hot path (millions of calls per campaign) never recomputes it.
 	// Populated in scanQueueRows via api.BrandRoot.
 	BrandRoot string
+
+	// ContentSnapshotID dereferences the wave's shared base creative in
+	// mailing_content_snapshots (set-based enqueue path). Nil for legacy
+	// rows that carry html_content inline — hydrateSnapshots dual-reads.
+	ContentSnapshotID uuid.UUID
+	// WaveID seeds the deterministic per-recipient fingerprint mutation
+	// (computeMutationSeed) when rendering from a snapshot.
+	WaveID uuid.UUID
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -326,6 +339,7 @@ func NewSendWorkerPool(db *sql.DB, numWorkers int) *SendWorkerPool {
 		batchSize:         100,                    // Claim 100 items per batch
 		pollInterval:      100 * time.Millisecond, // Poll frequently for low latency
 		throughputTracker: NewDomainThroughputTracker(60 * time.Second),
+		snapshotCache:     NewSnapshotCache(defaultSnapshotCacheSize),
 	}
 }
 
@@ -648,7 +662,7 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 				LIMIT $4
 				FOR UPDATE SKIP LOCKED
 			)
-			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id, idempotency_key
+			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id, idempotency_key, content_snapshot_id, wave_id
 		)
 		SELECT
 			c.id, c.campaign_id, c.subscriber_id,
@@ -668,7 +682,9 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 			COALESCE(c.creative_id, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.subject_line_id, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.idempotency_key, '00000000-0000-0000-0000-000000000000')
+			COALESCE(c.idempotency_key, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.content_snapshot_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(c.wave_id, '00000000-0000-0000-0000-000000000000')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -678,7 +694,46 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 		return nil, err
 	}
 	defer rows.Close()
-	return p.scanQueueRows(rows)
+	items, err := p.scanQueueRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return p.hydrateSnapshots(ctx, items), nil
+}
+
+// hydrateSnapshots resolves queue rows that reference a content snapshot
+// (set-based enqueue path) into ready-to-send bodies: load the wave's shared
+// base creative through the LRU/singleflight cache, then apply the
+// deterministic per-recipient fingerprint mutation + honeypot. Rows that
+// already carry html_content inline (legacy enqueue, pre-cutover backlog)
+// pass through untouched — this is the dual-read half of the migration.
+//
+// A row whose snapshot cannot be loaded is marked failed (retryable per
+// markFailed's normal policy) and dropped from the batch so an empty body can
+// never reach an ISP.
+func (p *SendWorkerPool) hydrateSnapshots(ctx context.Context, items []QueueItem) []QueueItem {
+	out := items[:0]
+	for i := range items {
+		item := items[i]
+		if item.ContentSnapshotID == uuid.Nil || strings.TrimSpace(item.HTMLContent) != "" {
+			out = append(out, item)
+			continue
+		}
+		snap, err := p.snapshotCache.Get(ctx, p.db, item.ContentSnapshotID)
+		if err != nil {
+			log.Printf("[SendWorkerPool] snapshot hydrate failed item=%s snapshot=%s: %v", item.ID, item.ContentSnapshotID, err)
+			if markErr := p.markFailed(ctx, item.ID, "snapshot_load_failed: "+err.Error()); markErr != nil {
+				log.Printf("[SendWorkerPool] markFailed after snapshot miss item=%s: %v", item.ID, markErr)
+			}
+			continue
+		}
+		item.HTMLContent = renderSnapshotBody(snap, item.SubscriberID, item.WaveID.String())
+		if strings.TrimSpace(item.TextContent) == "" {
+			item.TextContent = snap.PlainContent
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // claimISPBatch claims items proportionally across ISPs for a single campaign.
@@ -1256,6 +1311,8 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 			&item.SubjectLineID,
 			&item.FromNameID,
 			&item.IdempotencyKey,
+			&item.ContentSnapshotID,
+			&item.WaveID,
 		)
 		if err != nil {
 			log.Printf("SendWorkerPool: scan error: %v", err)

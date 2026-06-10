@@ -1636,22 +1636,45 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	var queueStats []queueStat
-	qrows, err := s.db.QueryContext(ctx, `
-		SELECT campaign_id::text, status, COUNT(*), COALESCE(MAX(error_message),'')
-		FROM mailing_campaign_queue
-		WHERE campaign_id IN (
-			SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND created_at > NOW() - INTERVAL '6 hours'
-		)
-		GROUP BY campaign_id, status
-		ORDER BY campaign_id, status
+	// Resolve the recent-campaign ids first, then aggregate the queue with an
+	// explicit = ANY(array) predicate. The previous IN-(subquery on
+	// created_at > NOW()-6h) form let the planner misestimate and fall back
+	// to a full heap scan of the multi-GB queue table — one of the uncached
+	// "on-demand twins" called out in CAMPAIGN_QUEUE_STORAGE_REDESIGN.md
+	// §4.2. With explicit ids the (campaign_id, ...) indexes always drive a
+	// nested-loop, and we skip the queue entirely when there are no recent
+	// campaigns.
+	var recentCampaignIDs []string
+	idRows, err := s.db.QueryContext(ctx, `
+		SELECT id::text FROM mailing_campaigns
+		WHERE organization_id = $1 AND created_at > NOW() - INTERVAL '6 hours'
 	`, orgID)
 	if err == nil {
-		defer qrows.Close()
-		for qrows.Next() {
-			var qs queueStat
-			qrows.Scan(&qs.CampaignID, &qs.Status, &qs.Count, &qs.Error)
-			queueStats = append(queueStats, qs)
+		defer idRows.Close()
+		for idRows.Next() {
+			var id string
+			if idRows.Scan(&id) == nil {
+				recentCampaignIDs = append(recentCampaignIDs, id)
+			}
+		}
+	}
+
+	var queueStats []queueStat
+	if len(recentCampaignIDs) > 0 {
+		qrows, err := s.db.QueryContext(ctx, `
+			SELECT campaign_id::text, status, COUNT(*), COALESCE(MAX(error_message),'')
+			FROM mailing_campaign_queue
+			WHERE campaign_id = ANY($1::uuid[])
+			GROUP BY campaign_id, status
+			ORDER BY campaign_id, status
+		`, pq.Array(recentCampaignIDs))
+		if err == nil {
+			defer qrows.Close()
+			for qrows.Next() {
+				var qs queueStat
+				qrows.Scan(&qs.CampaignID, &qs.Status, &qs.Count, &qs.Error)
+				queueStats = append(queueStats, qs)
+			}
 		}
 	}
 

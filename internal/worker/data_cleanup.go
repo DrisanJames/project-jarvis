@@ -92,6 +92,7 @@ func (dc *DataCleanupWorker) cleanup(ctx context.Context) {
 	dc.cleanupTerminalQueueItems(ctx)
 	dc.slimAcceptedQueueHTML(ctx)
 	dc.cleanupPlanRecipients(ctx)
+	dc.cleanupContentSnapshots(ctx)
 	dc.cleanupProcessedAcctRaw(ctx)
 	dc.cleanupTrackingEvents(ctx)
 	dc.cleanupAgentDecisions(ctx)
@@ -343,6 +344,35 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 	`)
 	if total > 0 {
 		log.Printf("[DataCleanup] Removed %d plan-recipient rows for terminal campaigns older than 14 days (DELETE fallback)", total)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cleanupContentSnapshots — Delete hash-addressed wave creatives once no queue
+// row references them and they're 30+ days old. Snapshots are tiny (one per
+// distinct wave creative, ~15-200 KB) so this is hygiene, not pressure relief;
+// the 30-day floor keeps recent waves auditable. The NOT EXISTS probe is
+// index-driven via the partial idx_queue_content_snapshot_id, and the volume
+// is small enough that a single batched pass per cycle suffices.
+// ---------------------------------------------------------------------------
+func (dc *DataCleanupWorker) cleanupContentSnapshots(ctx context.Context) {
+	total := dc.batchDelete(ctx, "mailing_content_snapshots", `
+		WITH doomed AS (
+			SELECT s.id
+			FROM mailing_content_snapshots s
+			WHERE s.created_at < NOW() - INTERVAL '30 days'
+			  AND NOT EXISTS (
+				SELECT 1 FROM mailing_campaign_queue q
+				WHERE q.content_snapshot_id = s.id
+			  )
+			LIMIT $1
+		)
+		DELETE FROM mailing_content_snapshots s
+		USING doomed
+		WHERE s.id = doomed.id
+	`)
+	if total > 0 {
+		log.Printf("[DataCleanup] Removed %d unreferenced content snapshots older than 30 days", total)
 	}
 }
 

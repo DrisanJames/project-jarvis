@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
+
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
@@ -28,6 +30,15 @@ type campaignVariant struct {
 // enabled — the reserve pool only fills its purpose when this is on.
 func capAwareClaimDisabled() bool {
 	return os.Getenv("DISABLE_CAP_AWARE_CLAIM") == "true"
+}
+
+// setBasedEnqueueDisabled is the kill switch for the set-based wave enqueue
+// (content snapshots + batched inserts). Set DISABLE_SETBASED_ENQUEUE=true to
+// revert to the legacy row-at-a-time loop that copies the full creative into
+// every queue row. Default is the set-based path — see
+// docs/CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §5/§7.
+func setBasedEnqueueDisabled() bool {
+	return os.Getenv("DISABLE_SETBASED_ENQUEUE") == "true"
 }
 
 // EnqueuePMTAWave materializes one due PMTA wave into the existing recipient queue.
@@ -185,202 +196,48 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	sanitized := sanitizeVariantURLsAtDispatch([]campaignVariant{{HTMLContent: baseHTML}}, brandKey)
 	baseHTML = sanitized[0].HTMLContent
 
-	// Cap-aware reserve pool claim (Slice 4):
-	//   When enabled: pull from status IN ('selected','reserve') with a 2x
-	//   over-pull buffer and order by (selected first, then by selection_rank).
-	//   FOR UPDATE SKIP LOCKED lets concurrent waves on the same isp_plan
-	//   make progress without blocking each other.
-	//
-	//   When disabled (kill switch or capChecker==nil): preserve the legacy
-	//   single-status claim with FOR UPDATE so behavior matches pre-Slice-4
-	//   prod. Reserves written by Slice 2 sit untouched.
+	// Deterministic idempotency key namespace: uuidv5 of (campaign,
+	// subscriber, wave). Parsed once here — both enqueue paths need it, and a
+	// malformed waveID must fail the wave loudly rather than silently drop
+	// the idempotency guarantee.
+	waveUUID, waveParseErr := uuid.Parse(waveID)
+	if waveParseErr != nil {
+		return 0, fmt.Errorf("wave_id %q is not a valid UUID: %w", waveID, waveParseErr)
+	}
+
 	useCapAware := capChecker != nil && !capAwareClaimDisabled()
-	var rows *sql.Rows
-	if useCapAware {
-		claimLimit := remaining * 2
-		if claimLimit < remaining {
-			claimLimit = remaining
-		}
-		rows, err = tx.QueryContext(ctx, `
-			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
-			       audience_source_type, audience_source_id, status
-			FROM mailing_campaign_plan_recipients
-			WHERE isp_plan_id = $1
-			  AND status IN ('selected','reserve')
-			ORDER BY (CASE WHEN status = 'selected' THEN 0 ELSE 1 END) ASC,
-			         selection_rank ASC
-			LIMIT $2
-			FOR UPDATE SKIP LOCKED
-		`, ispPlanID, claimLimit)
+	params := waveEnqueueParams{
+		waveID:       waveID,
+		waveUUID:     waveUUID,
+		campaignID:   campaignID,
+		ispPlanID:    ispPlanID,
+		orgID:        orgID,
+		scheduledAt:  scheduledAt,
+		remaining:    remaining,
+		baseHTML:     baseHTML,
+		baseSubject:  baseSubject,
+		plainContent: campaignPlain.String,
+		isLocked:     isContentLocked,
+		brandKey:     brandKey,
+		useCapAware:  useCapAware,
+	}
+
+	var queuedCount, skippedCount, capSkippedCount, reserveUsedCount int
+	if setBasedEnqueueDisabled() {
+		queuedCount, skippedCount, capSkippedCount, reserveUsedCount, err = enqueueWaveRowAtATime(ctx, tx, capChecker, params)
 	} else {
-		rows, err = tx.QueryContext(ctx, `
-			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
-			       audience_source_type, audience_source_id, 'selected'::text AS status
-			FROM mailing_campaign_plan_recipients
-			WHERE isp_plan_id = $1
-			  AND status = 'selected'
-			ORDER BY selection_rank ASC
-			LIMIT $2
-			FOR UPDATE
-		`, ispPlanID, remaining)
+		queuedCount, skippedCount, capSkippedCount, reserveUsedCount, err = enqueueWaveSetBased(ctx, tx, db, capChecker, params)
 	}
 	if err != nil {
 		return 0, err
-	}
-	defer rows.Close()
-
-	type queueCandidate struct {
-		recordID           uuid.UUID
-		subscriberID       uuid.UUID
-		email              string
-		recipientISP       string
-		selectionRank      int
-		audienceSourceType string
-		audienceSourceID   sql.NullString
-		// planRecStatus is either "selected" or "reserve" — used to
-		// (a) report reserve_used_count on the wave and (b) update the
-		// plan_recipient row's prior status when we mark it as 'queued'
-		// or 'cap_skipped'.
-		planRecStatus string
-	}
-
-	var candidates []queueCandidate
-	for rows.Next() {
-		var rec queueCandidate
-		if err := rows.Scan(&rec.recordID, &rec.subscriberID, &rec.email, &rec.recipientISP, &rec.selectionRank, &rec.audienceSourceType, &rec.audienceSourceID, &rec.planRecStatus); err != nil {
-			return 0, err
-		}
-		candidates = append(candidates, rec)
-	}
-
-	queuedCount := 0
-	skippedCount := 0
-	capSkippedCount := 0
-	reserveUsedCount := 0
-	for _, rec := range candidates {
-		// Stop as soon as we've satisfied the wave's planned size. The
-		// cap-aware path over-pulls candidates so this is the early-exit
-		// gate for the reserve substitution loop.
-		if queuedCount >= remaining {
-			break
-		}
-		// Phase D: last-second compliance guard — skip if subscriber is no longer active
-		// or email is globally suppressed. This protects against unsubs/bounces that
-		// occurred between audience snapshot and wave enqueue.
-		//
-		// We accept either status as the row's prior state because the
-		// claim now spans selected+reserve in the cap-aware path.
-		var subStatus string
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(status, 'active') FROM mailing_subscribers WHERE id = $1`,
-			rec.subscriberID,
-		).Scan(&subStatus); err == nil && subStatus != "active" && subStatus != "confirmed" {
-			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
-			skippedCount++
-			continue
-		}
-		var suppExists bool
-		if err := tx.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = md5($1))`,
-			strings.ToLower(rec.email),
-		).Scan(&suppExists); err == nil && suppExists {
-			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
-			skippedCount++
-			continue
-		}
-
-		// Cap-aware Peek (Slice 4): if the subscriber has already hit
-		// the cross-brand daily cap from earlier brands, marking the
-		// plan_recipient 'cap_skipped' frees the slot for the next
-		// reserve in line. The worker still does the authoritative
-		// Reserve in applyCrossBrandCap — Peek is advisory and may
-		// return false negatives under Redis hiccups; we let those rows
-		// through and let the worker decide.
-		if useCapAware {
-			overCap, _, peekErr := capChecker.Peek(ctx, orgID.String(), rec.subscriberID.String())
-			if peekErr == nil && overCap {
-				if _, execErr := tx.ExecContext(ctx,
-					`UPDATE mailing_campaign_plan_recipients SET status = 'cap_skipped' WHERE id = $1 AND status IN ('selected','reserve')`,
-					rec.recordID,
-				); execErr != nil {
-					return 0, execErr
-				}
-				capSkippedCount++
-				continue
-			}
-		}
-
-		seed := computeMutationSeed(rec.subscriberID, waveID)
-		var recipientHTML, recipientSubject string
-		if isContentLocked {
-			recipientHTML = baseHTML
-			recipientSubject = baseSubject
-		} else {
-			recipientHTML = mutateHTMLHash(baseHTML, seed)
-			recipientSubject = mutateSubjectLine(baseSubject, seed, brandKey)
-		}
-		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
-
-		var sourceID interface{}
-		if rec.audienceSourceID.Valid {
-			parsed, err := uuid.Parse(rec.audienceSourceID.String)
-			if err == nil {
-				sourceID = parsed
-			}
-		}
-		// Deterministic idempotency key: uuidv5 of (campaign, subscriber, wave).
-		// Re-running the wave enqueue for any reason (retry, leader change,
-		// crash recovery) will produce the same key, and the partial unique
-		// index uq_mcq_idempotency_key will reject the duplicate row via
-		// ON CONFLICT DO NOTHING. This is the single largest durability
-		// improvement in this deploy: accidental double-enqueue is now a
-		// no-op at the DB level regardless of what upstream does.
-		waveUUID, waveParseErr := uuid.Parse(waveID)
-		if waveParseErr != nil {
-			// Defensive: a malformed waveID should never reach here because
-			// the caller pulled it from a UUID column, but if it ever did we
-			// must not silently drop the idempotency guarantee. Skip the row
-			// and surface the error so the wave fails loudly.
-			return 0, fmt.Errorf("wave_id %q is not a valid UUID: %w", waveID, waveParseErr)
-		}
-		idempotencyKey := outboxIdempotencyKey(campaignID, rec.subscriberID, waveUUID)
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO mailing_campaign_queue (
-				id, campaign_id, subscriber_id, subject, html_content, plain_content,
-				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
-				recipient_isp, selection_rank, audience_source_type, audience_source_id,
-				idempotency_key
-			) VALUES (
-				$1, $2, $3, $4, $5, $13,
-				'queued', 5, $6, NOW(), $7, $8,
-				$9, $10, $11, $12, $14
-			)
-			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-		`, uuid.New(), campaignID, rec.subscriberID, recipientSubject, recipientHTML,
-			scheduledAt, ispPlanID, waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
-			campaignPlain.String, idempotencyKey,
-		); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE mailing_campaign_plan_recipients
-			SET status = 'queued', queued_at = NOW(), wave_id = $2
-			WHERE id = $1
-		`, rec.recordID, waveID); err != nil {
-			return 0, err
-		}
-		queuedCount++
-		if rec.planRecStatus == "reserve" {
-			reserveUsedCount++
-		}
 	}
 
 	if skippedCount > 0 {
 		log.Printf("[WaveEnqueue] wave %s: skipped %d recipients (Phase D compliance)", waveID, skippedCount)
 	}
 	if useCapAware && (capSkippedCount > 0 || reserveUsedCount > 0) {
-		log.Printf("[WaveEnqueue] wave %s: cap_skipped=%d reserve_used=%d queued=%d remaining=%d candidates=%d",
-			waveID, capSkippedCount, reserveUsedCount, queuedCount, remaining, len(candidates))
+		log.Printf("[WaveEnqueue] wave %s: cap_skipped=%d reserve_used=%d queued=%d remaining=%d",
+			waveID, capSkippedCount, reserveUsedCount, queuedCount, remaining)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -416,6 +273,414 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	}
 
 	return queuedCount, tx.Commit()
+}
+
+// waveEnqueueParams carries the per-wave context both enqueue paths need.
+type waveEnqueueParams struct {
+	waveID       string
+	waveUUID     uuid.UUID
+	campaignID   uuid.UUID
+	ispPlanID    uuid.UUID
+	orgID        uuid.UUID
+	scheduledAt  time.Time
+	remaining    int
+	baseHTML     string
+	baseSubject  string
+	plainContent string
+	isLocked     bool
+	brandKey     string
+	useCapAware  bool
+}
+
+// enqueueWaveRowAtATime is the legacy enqueue path (pre set-based cutover):
+// per-recipient compliance round trips and a full creative copy into every
+// queue row. Kept verbatim behind DISABLE_SETBASED_ENQUEUE=true.
+func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.CapChecker, p waveEnqueueParams) (queuedCount, skippedCount, capSkippedCount, reserveUsedCount int, retErr error) {
+	var rows *sql.Rows
+	var err error
+	if p.useCapAware {
+		claimLimit := p.remaining * 2
+		if claimLimit < p.remaining {
+			claimLimit = p.remaining
+		}
+		rows, err = tx.QueryContext(ctx, `
+			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, status
+			FROM mailing_campaign_plan_recipients
+			WHERE isp_plan_id = $1
+			  AND status IN ('selected','reserve')
+			ORDER BY (CASE WHEN status = 'selected' THEN 0 ELSE 1 END) ASC,
+			         selection_rank ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		`, p.ispPlanID, claimLimit)
+	} else {
+		rows, err = tx.QueryContext(ctx, `
+			SELECT id, subscriber_id, email, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, 'selected'::text AS status
+			FROM mailing_campaign_plan_recipients
+			WHERE isp_plan_id = $1
+			  AND status = 'selected'
+			ORDER BY selection_rank ASC
+			LIMIT $2
+			FOR UPDATE
+		`, p.ispPlanID, p.remaining)
+	}
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer rows.Close()
+
+	type queueCandidate struct {
+		recordID           uuid.UUID
+		subscriberID       uuid.UUID
+		email              string
+		recipientISP       string
+		selectionRank      int
+		audienceSourceType string
+		audienceSourceID   sql.NullString
+		// planRecStatus is either "selected" or "reserve" — used to
+		// (a) report reserve_used_count on the wave and (b) update the
+		// plan_recipient row's prior status when we mark it as 'queued'
+		// or 'cap_skipped'.
+		planRecStatus string
+	}
+
+	var candidates []queueCandidate
+	for rows.Next() {
+		var rec queueCandidate
+		if err := rows.Scan(&rec.recordID, &rec.subscriberID, &rec.email, &rec.recipientISP, &rec.selectionRank, &rec.audienceSourceType, &rec.audienceSourceID, &rec.planRecStatus); err != nil {
+			return 0, 0, 0, 0, err
+		}
+		candidates = append(candidates, rec)
+	}
+
+	for _, rec := range candidates {
+		// Stop as soon as we've satisfied the wave's planned size. The
+		// cap-aware path over-pulls candidates so this is the early-exit
+		// gate for the reserve substitution loop.
+		if queuedCount >= p.remaining {
+			break
+		}
+		// Phase D: last-second compliance guard — skip if subscriber is no longer active
+		// or email is globally suppressed. This protects against unsubs/bounces that
+		// occurred between audience snapshot and wave enqueue.
+		//
+		// We accept either status as the row's prior state because the
+		// claim now spans selected+reserve in the cap-aware path.
+		var subStatus string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(status, 'active') FROM mailing_subscribers WHERE id = $1`,
+			rec.subscriberID,
+		).Scan(&subStatus); err == nil && subStatus != "active" && subStatus != "confirmed" {
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
+			skippedCount++
+			continue
+		}
+		var suppExists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM mailing_global_suppressions WHERE md5_hash = md5($1))`,
+			strings.ToLower(rec.email),
+		).Scan(&suppExists); err == nil && suppExists {
+			tx.ExecContext(ctx, `UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = $1 AND status IN ('selected','reserve')`, rec.recordID)
+			skippedCount++
+			continue
+		}
+
+		// Cap-aware Peek (Slice 4): if the subscriber has already hit
+		// the cross-brand daily cap from earlier brands, marking the
+		// plan_recipient 'cap_skipped' frees the slot for the next
+		// reserve in line. The worker still does the authoritative
+		// Reserve in applyCrossBrandCap — Peek is advisory and may
+		// return false negatives under Redis hiccups; we let those rows
+		// through and let the worker decide.
+		if p.useCapAware {
+			overCap, _, peekErr := capChecker.Peek(ctx, p.orgID.String(), rec.subscriberID.String())
+			if peekErr == nil && overCap {
+				if _, execErr := tx.ExecContext(ctx,
+					`UPDATE mailing_campaign_plan_recipients SET status = 'cap_skipped' WHERE id = $1 AND status IN ('selected','reserve')`,
+					rec.recordID,
+				); execErr != nil {
+					return 0, 0, 0, 0, execErr
+				}
+				capSkippedCount++
+				continue
+			}
+		}
+
+		seed := computeMutationSeed(rec.subscriberID, p.waveID)
+		var recipientHTML, recipientSubject string
+		if p.isLocked {
+			recipientHTML = p.baseHTML
+			recipientSubject = p.baseSubject
+		} else {
+			recipientHTML = mutateHTMLHash(p.baseHTML, seed)
+			recipientSubject = mutateSubjectLine(p.baseSubject, seed, p.brandKey)
+		}
+		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
+
+		var sourceID interface{}
+		if rec.audienceSourceID.Valid {
+			parsed, err := uuid.Parse(rec.audienceSourceID.String)
+			if err == nil {
+				sourceID = parsed
+			}
+		}
+		// Deterministic idempotency key: uuidv5 of (campaign, subscriber, wave).
+		// Re-running the wave enqueue for any reason (retry, leader change,
+		// crash recovery) will produce the same key, and the partial unique
+		// index uq_mcq_idempotency_key will reject the duplicate row via
+		// ON CONFLICT DO NOTHING.
+		idempotencyKey := outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO mailing_campaign_queue (
+				id, campaign_id, subscriber_id, subject, html_content, plain_content,
+				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
+				recipient_isp, selection_rank, audience_source_type, audience_source_id,
+				idempotency_key
+			) VALUES (
+				$1, $2, $3, $4, $5, $13,
+				'queued', 5, $6, NOW(), $7, $8,
+				$9, $10, $11, $12, $14
+			)
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		`, uuid.New(), p.campaignID, rec.subscriberID, recipientSubject, recipientHTML,
+			p.scheduledAt, p.ispPlanID, p.waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
+			p.plainContent, idempotencyKey,
+		); err != nil {
+			return 0, 0, 0, 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailing_campaign_plan_recipients
+			SET status = 'queued', queued_at = NOW(), wave_id = $2
+			WHERE id = $1
+		`, rec.recordID, p.waveID); err != nil {
+			return 0, 0, 0, 0, err
+		}
+		queuedCount++
+		if rec.planRecStatus == "reserve" {
+			reserveUsedCount++
+		}
+	}
+
+	return queuedCount, skippedCount, capSkippedCount, reserveUsedCount, nil
+}
+
+// setBasedCandidate is one claimed plan_recipient row plus the compliance
+// verdicts computed inside the claim statement itself (subscriber status via
+// LEFT JOIN, global suppression via EXISTS) — replacing the legacy path's two
+// per-recipient round trips.
+type setBasedCandidate struct {
+	recordID           uuid.UUID
+	subscriberID       uuid.UUID
+	email              string
+	recipientISP       string
+	selectionRank      int
+	audienceSourceType string
+	audienceSourceID   sql.NullString
+	planRecStatus      string
+	subscriberStatus   string
+	suppressed         bool
+}
+
+// enqueueWaveSetBased is the Phase A+B enqueue path
+// (docs/CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §5/§7): the wave's base creative is
+// written ONCE to mailing_content_snapshots and every queue row references it
+// by id; compliance verdicts ride the claim statement; queue inserts and
+// plan_recipient transitions are batched. The whole wave is ~6 statements
+// regardless of size, so the wave/campaign/plan row locks held by the
+// surrounding transaction last milliseconds instead of the full per-recipient
+// loop duration.
+//
+// Behavioral parity with enqueueWaveRowAtATime, by construction:
+//   - same candidate ordering, early exit, and reserve substitution;
+//   - same compliance semantics (missing subscriber row counts as active;
+//     suppression keyed on md5(lower(email)));
+//   - subject mutation still happens here (CPU-only, stays inline on the row);
+//   - HTML mutation + honeypot move to send time via renderSnapshotBody,
+//     which is deterministic in (subscriber_id, wave_id) — identical bytes;
+//   - identical idempotency keys and ON CONFLICT semantics.
+func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker *mailing.CapChecker, p waveEnqueueParams) (queuedCount, skippedCount, capSkippedCount, reserveUsedCount int, retErr error) {
+	// Snapshot first, on db (autocommit) — committed before any queue row
+	// can reference it, and shared across waves by content_hash.
+	snapshotID, err := ensureContentSnapshot(ctx, db, p.campaignID, p.waveID, p.baseHTML, p.plainContent, p.isLocked)
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("content snapshot: %w", err)
+	}
+
+	var rows *sql.Rows
+	if p.useCapAware {
+		claimLimit := p.remaining * 2
+		if claimLimit < p.remaining {
+			claimLimit = p.remaining
+		}
+		rows, err = tx.QueryContext(ctx, `
+			SELECT pr.id, pr.subscriber_id, pr.email, pr.recipient_isp, pr.selection_rank,
+			       pr.audience_source_type, pr.audience_source_id, pr.status,
+			       COALESCE(s.status, 'active'),
+			       EXISTS(SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = md5(lower(pr.email)))
+			FROM mailing_campaign_plan_recipients pr
+			LEFT JOIN mailing_subscribers s ON s.id = pr.subscriber_id
+			WHERE pr.isp_plan_id = $1
+			  AND pr.status IN ('selected','reserve')
+			ORDER BY (CASE WHEN pr.status = 'selected' THEN 0 ELSE 1 END) ASC,
+			         pr.selection_rank ASC
+			LIMIT $2
+			FOR UPDATE OF pr SKIP LOCKED
+		`, p.ispPlanID, claimLimit)
+	} else {
+		rows, err = tx.QueryContext(ctx, `
+			SELECT pr.id, pr.subscriber_id, pr.email, pr.recipient_isp, pr.selection_rank,
+			       pr.audience_source_type, pr.audience_source_id, 'selected'::text,
+			       COALESCE(s.status, 'active'),
+			       EXISTS(SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = md5(lower(pr.email)))
+			FROM mailing_campaign_plan_recipients pr
+			LEFT JOIN mailing_subscribers s ON s.id = pr.subscriber_id
+			WHERE pr.isp_plan_id = $1
+			  AND pr.status = 'selected'
+			ORDER BY pr.selection_rank ASC
+			LIMIT $2
+			FOR UPDATE OF pr
+		`, p.ispPlanID, p.remaining)
+	}
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer rows.Close()
+
+	var candidates []setBasedCandidate
+	for rows.Next() {
+		var rec setBasedCandidate
+		if err := rows.Scan(&rec.recordID, &rec.subscriberID, &rec.email, &rec.recipientISP, &rec.selectionRank,
+			&rec.audienceSourceType, &rec.audienceSourceID, &rec.planRecStatus,
+			&rec.subscriberStatus, &rec.suppressed); err != nil {
+			return 0, 0, 0, 0, err
+		}
+		candidates = append(candidates, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	// Partition in memory. The only remaining per-candidate external call is
+	// the advisory Redis cap Peek (same as legacy; the worker still does the
+	// authoritative Reserve in applyCrossBrandCap).
+	var (
+		queueIDs, subscriberIDs, subjects, isps, sourceTypes, idemKeys, queuedPlanIDs []string
+		ranks                                                                         []int64
+		sourceIDs                                                                     []sql.NullString
+		skippedPlanIDs, capSkippedPlanIDs                                             []string
+	)
+	for _, rec := range candidates {
+		if queuedCount >= p.remaining {
+			break
+		}
+		// Phase D compliance — same predicates as legacy, verdicts already
+		// computed by the claim statement.
+		if rec.subscriberStatus != "active" && rec.subscriberStatus != "confirmed" {
+			skippedPlanIDs = append(skippedPlanIDs, rec.recordID.String())
+			skippedCount++
+			continue
+		}
+		if rec.suppressed {
+			skippedPlanIDs = append(skippedPlanIDs, rec.recordID.String())
+			skippedCount++
+			continue
+		}
+		if p.useCapAware {
+			overCap, _, peekErr := capChecker.Peek(ctx, p.orgID.String(), rec.subscriberID.String())
+			if peekErr == nil && overCap {
+				capSkippedPlanIDs = append(capSkippedPlanIDs, rec.recordID.String())
+				capSkippedCount++
+				continue
+			}
+		}
+
+		recipientSubject := p.baseSubject
+		if !p.isLocked {
+			recipientSubject = mutateSubjectLine(p.baseSubject, computeMutationSeed(rec.subscriberID, p.waveID), p.brandKey)
+		}
+
+		sourceIDs = append(sourceIDs, normalizeSourceID(rec.audienceSourceID))
+		queueIDs = append(queueIDs, uuid.New().String())
+		subscriberIDs = append(subscriberIDs, rec.subscriberID.String())
+		subjects = append(subjects, recipientSubject)
+		isps = append(isps, rec.recipientISP)
+		ranks = append(ranks, int64(rec.selectionRank))
+		sourceTypes = append(sourceTypes, rec.audienceSourceType)
+		idemKeys = append(idemKeys, outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID).String())
+		queuedPlanIDs = append(queuedPlanIDs, rec.recordID.String())
+		queuedCount++
+		if rec.planRecStatus == "reserve" {
+			reserveUsedCount++
+		}
+	}
+
+	if len(skippedPlanIDs) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailing_campaign_plan_recipients SET status = 'skipped' WHERE id = ANY($1::uuid[]) AND status IN ('selected','reserve')`,
+			pq.Array(skippedPlanIDs)); err != nil {
+			return 0, 0, 0, 0, err
+		}
+	}
+	if len(capSkippedPlanIDs) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailing_campaign_plan_recipients SET status = 'cap_skipped' WHERE id = ANY($1::uuid[]) AND status IN ('selected','reserve')`,
+			pq.Array(capSkippedPlanIDs)); err != nil {
+			return 0, 0, 0, 0, err
+		}
+	}
+	if len(queueIDs) > 0 {
+		// html_content/plain_content stay NULL: the body lives once in the
+		// snapshot; the send worker dereferences content_snapshot_id and
+		// applies the deterministic per-recipient mutation.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO mailing_campaign_queue (
+				id, campaign_id, subscriber_id, subject, html_content, plain_content,
+				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
+				recipient_isp, selection_rank, audience_source_type, audience_source_id,
+				idempotency_key, content_snapshot_id
+			)
+			SELECT t.id, $1, t.subscriber_id, t.subject, NULL, NULL,
+			       'queued', 5, $2, NOW(), $3, $4,
+			       t.recipient_isp, t.selection_rank, t.audience_source_type, t.audience_source_id,
+			       t.idempotency_key, $5
+			FROM unnest(
+				$6::uuid[], $7::uuid[], $8::text[], $9::text[], $10::int[],
+				$11::text[], $12::uuid[], $13::uuid[]
+			) AS t(id, subscriber_id, subject, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, idempotency_key)
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		`, p.campaignID, p.scheduledAt, p.ispPlanID, p.waveUUID, snapshotID,
+			pq.Array(queueIDs), pq.Array(subscriberIDs), pq.Array(subjects), pq.Array(isps), pq.Array(ranks),
+			pq.Array(sourceTypes), pq.Array(sourceIDs), pq.Array(idemKeys),
+		); err != nil {
+			return 0, 0, 0, 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailing_campaign_plan_recipients
+			SET status = 'queued', queued_at = NOW(), wave_id = $2
+			WHERE id = ANY($1::uuid[])
+		`, pq.Array(queuedPlanIDs), p.waveUUID); err != nil {
+			return 0, 0, 0, 0, err
+		}
+	}
+
+	return queuedCount, skippedCount, capSkippedCount, reserveUsedCount, nil
+}
+
+// normalizeSourceID mirrors the legacy per-row handling of
+// plan_recipients.audience_source_id: a value that parses as a UUID is kept,
+// anything else becomes SQL NULL.
+func normalizeSourceID(raw sql.NullString) sql.NullString {
+	if !raw.Valid {
+		return sql.NullString{}
+	}
+	parsed, err := uuid.Parse(raw.String)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: parsed.String(), Valid: true}
 }
 
 func loadCampaignVariantsForWave(ctx context.Context, tx *sql.Tx, campaignID, fallbackFromName, fallbackSubject, fallbackHTML string) ([]campaignVariant, error) {

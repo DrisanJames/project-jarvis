@@ -40,6 +40,12 @@ import (
 //   - Subscriber B has no cap key → Peek returns under-cap → queued (reserve_used=1)
 //   - Wave row ends with cap_skip_count=1, reserve_used_count=1, enqueued_recipients=1
 func TestEnqueuePMTAWave_CapAwareClaim_ReplacesCappedWithReserve(t *testing.T) {
+	// This test's expectations encode the legacy row-at-a-time enqueue
+	// (per-recipient compliance round trips + inline creative copy). Pin
+	// that path explicitly; the set-based default's reserve substitution is
+	// covered by TestEnqueueWaveSetBased_CountsReserveUse.
+	t.Setenv("DISABLE_SETBASED_ENQUEUE", "true")
+
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
