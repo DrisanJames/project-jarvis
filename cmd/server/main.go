@@ -1849,6 +1849,15 @@ var concurrentIndexSpecs = []struct {
 	{"idx_mcq_accepted_html", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_accepted_html ON mailing_campaign_queue (id) WHERE status = 'accepted' AND html_content IS NOT NULL`},
 	{"idx_pmta_acct_raw_unprocessed", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pmta_acct_raw_unprocessed ON pmta_acct_raw (processed, received_at, id) WHERE processed = FALSE`},
 	{"idx_engine_signals_recorded_isp", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_engine_signals_recorded_isp ON mailing_engine_signals (recorded_at, isp)`},
+
+	// Email→subscriber resolution for manual offer-suppression uploads
+	// (offer_suppression_upload_handlers.go) and the various
+	// LOWER(email)-keyed lookups (unsubscribe, automation enrolment).
+	// Without it each lookup seq-scans the full subscriber heap and dies on
+	// the 30s connection statement_timeout (observed 2026-06-10 on the
+	// offer-suppression upload endpoint). Expression must stay byte-identical
+	// to the handlers' LOWER(TRIM(email)) predicate.
+	{"idx_subscribers_lower_email", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_lower_email ON mailing_subscribers (LOWER(TRIM(email)))`},
 }
 
 const concurrentIndexIOWaitMax = 8

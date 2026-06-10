@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
@@ -98,37 +100,58 @@ func (h *OfferSuppressionUploadHandlers) HandleAddOfferSuppressions(w http.Respo
 		return
 	}
 
-	// Insert one row per matching subscriber. Already-suppressed pairs are
-	// no-ops via the (offer_id, subscriber_id) unique index.
-	res, err := h.db.ExecContext(r.Context(),
-		`INSERT INTO mailing_offer_suppressions
-			(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-		 SELECT $1, $2, s.id, MD5(LOWER(TRIM(s.email))), $3, $4, NOW()
-		 FROM mailing_subscribers s
-		 WHERE s.organization_id = $1 AND LOWER(TRIM(s.email)) = ANY($5)
-		 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-		orgID, offerID, input.Reason, input.Source, pq.Array(emails))
+	// Detached context: until idx_subscribers_lower_email is built this match
+	// is a seq scan that can outlive both the 30s connection-level
+	// statement_timeout and the load balancer — raise the budget for this
+	// transaction only and don't let a client disconnect roll back the work.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		http.Error(w, `{"error":"begin tx failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '280s'`); err != nil {
+		log.Printf("[OfferSupp] could not raise statement_timeout: %v", err)
+	}
+
+	// Single pass over mailing_subscribers: resolve matches and insert in one
+	// statement. Already-suppressed pairs are no-ops via the
+	// (offer_id, subscriber_id) unique index.
+	var added int64
+	var matchedEmails []string
+	err = tx.QueryRowContext(ctx,
+		`WITH matched AS (
+			SELECT s.id, LOWER(TRIM(s.email)) AS email
+			FROM mailing_subscribers s
+			WHERE s.organization_id = $1 AND LOWER(TRIM(s.email)) = ANY($5)
+		), ins AS (
+			INSERT INTO mailing_offer_suppressions
+				(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+			SELECT $1, $2, m.id, MD5(m.email), $3, $4, NOW()
+			FROM matched m
+			ON CONFLICT (offer_id, subscriber_id) DO NOTHING
+			RETURNING 1
+		)
+		SELECT (SELECT COUNT(*) FROM ins),
+		       COALESCE((SELECT array_agg(DISTINCT email) FROM matched), '{}')`,
+		orgID, offerID, input.Reason, input.Source, pq.Array(emails)).Scan(&added, pq.Array(&matchedEmails))
 	if err != nil {
 		log.Printf("[OfferSupp] manual add failed for offer %s: %v", offerID, err)
 		http.Error(w, `{"error":"insert failed"}`, http.StatusInternalServerError)
 		return
 	}
-	added, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		log.Printf("[OfferSupp] manual add commit failed for offer %s: %v", offerID, err)
+		http.Error(w, `{"error":"commit failed"}`, http.StatusInternalServerError)
+		return
+	}
 
-	// Which of the requested emails matched a subscriber at all.
-	matched := make(map[string]bool, len(emails))
-	rows, err := h.db.QueryContext(r.Context(),
-		`SELECT DISTINCT LOWER(TRIM(email)) FROM mailing_subscribers
-		 WHERE organization_id = $1 AND LOWER(TRIM(email)) = ANY($2)`,
-		orgID, pq.Array(emails))
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var e string
-			if rows.Scan(&e) == nil {
-				matched[e] = true
-			}
-		}
+	matched := make(map[string]bool, len(matchedEmails))
+	for _, e := range matchedEmails {
+		matched[e] = true
 	}
 	notFound := make([]string, 0)
 	for _, e := range emails {
@@ -255,19 +278,38 @@ func (h *OfferSuppressionUploadHandlers) HandleRemoveOfferSuppression(w http.Res
 	sum := md5.Sum([]byte(email))
 	emailHash := hex.EncodeToString(sum[:])
 
+	// Same seq-scan caveat as the add path until idx_subscribers_lower_email
+	// is built — raise the timeout for this transaction only.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		http.Error(w, `{"error":"begin tx failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '280s'`); err != nil {
+		log.Printf("[OfferSupp] could not raise statement_timeout: %v", err)
+	}
+
 	// email_hash is '' on some legacy rows (fatigue/conversion writers), so
 	// also match through the subscriber record.
-	res, err := h.db.ExecContext(r.Context(),
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM mailing_offer_suppressions
 		 WHERE offer_id = $1
 		   AND (email_hash = $2 OR subscriber_id IN (
 		       SELECT id FROM mailing_subscribers WHERE LOWER(TRIM(email)) = $3))`,
 		offerID, emailHash, email)
 	if err != nil {
+		log.Printf("[OfferSupp] manual remove failed for offer %s: %v", offerID, err)
 		http.Error(w, `{"error":"delete failed"}`, http.StatusInternalServerError)
 		return
 	}
 	removed, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		http.Error(w, `{"error":"commit failed"}`, http.StatusInternalServerError)
+		return
+	}
 
 	log.Printf("[OfferSupp] manual remove for offer %s: email=%s removed=%d", offerID, email, removed)
 
