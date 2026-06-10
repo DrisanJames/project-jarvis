@@ -8,7 +8,6 @@ import {
   faUpload,
   faChartBar,
   faArrowRight,
-  faArrowUp,
   faSearch,
   faPencilAlt,
   faTrash,
@@ -17,7 +16,7 @@ import {
   faSpinner,
   faUserPlus,
   faClock,
-  faChartLine,
+  faExclamationTriangle,
   faLayerGroup,
   faTimes,
   faSave,
@@ -26,9 +25,6 @@ import {
   faDownload,
   faFileAlt,
   faRocket,
-  faLock,
-  faRobot,
-  faEnvelope,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ChunkedUploader } from '../ChunkedUploader';
@@ -41,6 +37,7 @@ import {
   DEFAULT_EVENTS,
 } from '../../segments/SegmentBuilder';
 import { SegmentsCenter } from './SegmentsCenter';
+import { SEGMENT_CATEGORIES_BY_ID, SegmentCategoryMeta } from './segCategoryMetadata';
 import './ListPortal.css';
 
 // ============================================================================
@@ -119,20 +116,6 @@ interface Subscriber {
   last_click_at?: string;
 }
 
-interface DashboardStats {
-  total_lists: number;
-  total_subscribers: number;
-  total_segments: number;
-  active_subscribers: number;
-  new_subscribers_24h: number;
-  new_subscribers_7d: number;
-  unsubscribes_7d: number;
-  avg_engagement: number;
-  lists_by_status: { status: string; count: number }[];
-  top_lists: { id: string; name: string; subscriber_count: number; active_count: number; mailed_to_count: number; open_pct: number; click_pct: number; complaint_pct: number }[];
-  recent_activity: { action: string; details: string; timestamp: string }[];
-}
-
 type ViewMode = 'dashboard' | 'lists' | 'create-list' | 'edit-list' | 'subscribers' |
                 'segments' | 'create-segment' | 'edit-segment' |
                 'import' | 'export';
@@ -189,7 +172,6 @@ export const ListPortal: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
   const [selectedList, setSelectedList] = useState<List | null>(null);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
-  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [lists, setLists] = useState<List[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -207,51 +189,28 @@ export const ListPortal: React.FC = () => {
     return fetch(url, { ...options, headers, credentials: 'include' });
   }, [organization]);
 
-  // Fetch dashboard data
+  // Fetch portal data. The dashboard view is segments-only (v2 segments-ops
+  // dashboard); /api/mailing/lists is still fetched because the Lists view
+  // and the create/edit-segment forms consume the `lists` prop. The
+  // /lists/activity feed was dropped along with the list-flavored dashboard.
   const fetchDashboard = useCallback(async () => {
     try {
-      const [listsRes, segmentsRes, activityRes] = await Promise.all([
+      const [listsRes, segmentsRes] = await Promise.all([
         orgFetch('/api/mailing/lists'),
         // exclude_categories: ~31k machine-generated partner_wave_static
         // segments would otherwise ship here on every 60s poll just to feed
         // a dashboard tile. Response stays the legacy bare array (v2.4.0).
         orgFetch('/api/mailing/v2/segments?exclude_categories=partner_wave_static&limit=2000'),
-        orgFetch('/api/mailing/lists/activity').catch(() => null),
       ]);
 
       const listsData = await listsRes.json().catch(() => ({ lists: [] }));
       const segmentsRaw = await segmentsRes.json().catch(() => []);
-      const activityData = activityRes ? await activityRes.json().catch(() => ({})) : {};
 
       const allLists: List[] = listsData.lists || [];
       const allSegments: Segment[] = Array.isArray(segmentsRaw) ? segmentsRaw : (segmentsRaw?.segments || []);
 
       setLists(allLists);
       setSegments(allSegments);
-
-      // Calculate dashboard stats
-      const totalSubscribers = allLists.reduce((sum, l) => sum + (l.subscriber_count || 0), 0);
-      const activeSubscribers = allLists.reduce((sum, l) => sum + (l.active_count || 0), 0);
-
-      setStats({
-        total_lists: allLists.length,
-        total_subscribers: totalSubscribers,
-        total_segments: allSegments.length,
-        active_subscribers: activeSubscribers,
-        new_subscribers_24h: activityData?.new_subscribers_24h || 0,
-        new_subscribers_7d: activityData?.new_subscribers_7d || 0,
-        unsubscribes_7d: activityData?.unsubscribes_7d || 0,
-        avg_engagement: totalSubscribers > 0 ? Math.round((activeSubscribers / totalSubscribers) * 100) : 0,
-        lists_by_status: [
-          { status: 'active', count: allLists.filter(l => l.status === 'active').length },
-          { status: 'paused', count: allLists.filter(l => l.status === 'paused').length },
-          { status: 'archived', count: allLists.filter(l => l.status === 'archived').length },
-        ],
-        top_lists: allLists
-          .sort((a, b) => (b.subscriber_count || 0) - (a.subscriber_count || 0))
-          .slice(0, 5),
-        recent_activity: activityData?.recent_activity || [],
-      });
     } catch (err) {
       console.error('Failed to fetch dashboard:', err);
     } finally {
@@ -283,8 +242,6 @@ export const ListPortal: React.FC = () => {
       case 'dashboard':
         return (
           <ListDashboard
-            stats={stats}
-            lists={lists}
             segments={segments}
             onNavigate={navigateTo}
             animateIn={animateIn}
@@ -394,7 +351,7 @@ export const ListPortal: React.FC = () => {
       <div className="list-portal">
         <div className="loading-container">
           <div className="loading-spinner"></div>
-          <p>Loading list data...</p>
+          <p>Loading segment data...</p>
         </div>
       </div>
     );
@@ -466,64 +423,184 @@ export const ListPortal: React.FC = () => {
 };
 
 // ============================================================================
-// DASHBOARD COMPONENT
+// DASHBOARD COMPONENT — SEGMENTS OPERATIONS (v2.0, 2026-06-10)
+//
+// The dashboard view is segments-only by operator request ("I do NOT care
+// for insight about the lists"). List management stays reachable via the
+// Manage Lists quick action → 'lists' view; the dashboard itself renders no
+// list insight. All metrics are computed client-side from the operated
+// segment rows the portal already polls every 60s (machine
+// partner_wave_static rows are excluded server-side) — chosen over adding
+// include_counts=1 to the fetch because the rows are already in hand and
+// the by-category panel only needs counts over the operated set.
 // ============================================================================
 
 interface DashboardProps {
-  stats: DashboardStats | null;
-  lists: List[];
   segments: Segment[];
   onNavigate: (view: ViewMode, list?: List, segment?: Segment) => void;
   animateIn: boolean;
 }
 
-const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNavigate, animateIn }) => {
-  if (!stats) return null;
+/** Inline badge palette per category (the portal does not use Tailwind).
+ * Mirrors CATEGORY_COLORS in SegmentsCenter.tsx. */
+const DASH_CATEGORY_COLORS: Record<string, { bg: string; fg: string; border: string }> = {
+  engagement_brand: { bg: 'rgba(99,102,241,0.15)', fg: '#a5b4fc', border: 'rgba(129,140,248,0.4)' },
+  engagement_global: { bg: 'rgba(168,85,247,0.15)', fg: '#d8b4fe', border: 'rgba(192,132,252,0.4)' },
+  engagement_isp: { bg: 'rgba(59,130,246,0.15)', fg: '#93c5fd', border: 'rgba(96,165,250,0.4)' },
+  engagement_vertical: { bg: 'rgba(6,182,212,0.15)', fg: '#67e8f9', border: 'rgba(34,211,238,0.4)' },
+  framework: { bg: 'rgba(16,185,129,0.15)', fg: '#6ee7b7', border: 'rgba(52,211,153,0.4)' },
+  funnel: { bg: 'rgba(20,184,166,0.15)', fg: '#5eead4', border: 'rgba(45,212,191,0.4)' },
+  cohort_static: { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(251,191,36,0.4)' },
+  suppression_exclusion: { bg: 'rgba(244,63,94,0.15)', fg: '#fda4af', border: 'rgba(251,113,133,0.4)' },
+  partner_wave_static: { bg: 'rgba(100,116,139,0.18)', fg: '#94a3b8', border: 'rgba(148,163,184,0.35)' },
+  legacy_snapshot: { bg: 'rgba(113,113,122,0.18)', fg: '#a1a1aa', border: 'rgba(161,161,170,0.35)' },
+  uncategorized: { bg: 'rgba(82,82,91,0.25)', fg: '#a1a1aa', border: 'rgba(113,113,122,0.4)' },
+};
+
+const DASH_DEFAULT_CAT_COLOR = { bg: 'rgba(0,200,255,0.08)', fg: 'rgba(180,210,240,0.8)', border: 'rgba(0,200,255,0.25)' };
+
+/** Build ledger status → dot color (matches SegmentsCenter). */
+const DASH_BUILD_STATUS_COLORS: Record<string, string> = {
+  ok: '#10b981',
+  failed: '#ef4444',
+  running: '#3b82f6',
+  blocked_delta: '#f59e0b',
+};
+
+/** Build ledger pipeline → badge tint. */
+const DASH_BUILD_SOURCE_COLORS: Record<string, { fg: string; border: string }> = {
+  'lake-standard': { fg: '#a5b4fc', border: 'rgba(129,140,248,0.4)' },
+  'lake-engaged': { fg: '#d8b4fe', border: 'rgba(192,132,252,0.4)' },
+  'lake-builder': { fg: '#93c5fd', border: 'rgba(96,165,250,0.4)' },
+  materializer: { fg: '#6ee7b7', border: 'rgba(52,211,153,0.4)' },
+  recalculate: { fg: '#67e8f9', border: 'rgba(34,211,238,0.4)' },
+  backfill: { fg: '#fcd34d', border: 'rgba(251,191,36,0.4)' },
+};
+const DASH_DEFAULT_SOURCE_COLOR = { fg: '#94a3b8', border: 'rgba(148,163,184,0.35)' };
+
+/** Category metadata helpers — fall back to the raw id for categories not in
+ * the static enum (e.g. 'engaged-model', 'data-partner'). */
+const dashCatMeta = (cat: string): SegmentCategoryMeta | undefined =>
+  (SEGMENT_CATEGORIES_BY_ID as Record<string, SegmentCategoryMeta>)[cat];
+const dashCatShort = (cat: string): string => dashCatMeta(cat)?.shortLabel ?? cat;
+const dashCatTitle = (cat: string): string => {
+  const m = dashCatMeta(cat);
+  return m ? `${m.label} — ${m.description}` : cat;
+};
+
+/** Members per segment. Grain is LIST ROWS (a subscriber on N lists counts N
+ * times); audience_count is the materialized rollup the send engine mails. */
+const segMembers = (s: Segment): number => s.audience_count ?? s.subscriber_count ?? 0;
+
+const STALE_AFTER_MS = 48 * 3600_000;
+const ATTENTION_ROW_CAP = 12;
+
+type AttentionReason = 'failed' | 'blocked_delta' | 'stale';
+
+const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, animateIn }) => {
+  const now = Date.now();
+
+  // Operated set: machine rows are excluded server-side, but never count them
+  // here even if the fetch changes.
+  const operated = segments.filter(s => s.category !== 'partner_wave_static');
+  const activeSegs = operated.filter(s => s.status === 'active');
+  const totalMembers = activeSegs.reduce((sum, s) => sum + segMembers(s), 0);
+  const builtLast24h = operated.filter(
+    s => s.last_built_at && now - new Date(s.last_built_at).getTime() < 24 * 3600_000
+  ).length;
+
+  // Needs attention: failed / blocked_delta builds, plus ACTIVE static
+  // segments whose last build is older than 48h (or never recorded).
+  const attention: { seg: Segment; reason: AttentionReason }[] = [];
+  for (const s of operated) {
+    if (s.last_build_status === 'failed') {
+      attention.push({ seg: s, reason: 'failed' });
+    } else if (s.last_build_status === 'blocked_delta') {
+      attention.push({ seg: s, reason: 'blocked_delta' });
+    } else if (
+      s.status === 'active' &&
+      s.segment_type === 'static' &&
+      (!s.last_built_at || now - new Date(s.last_built_at).getTime() > STALE_AFTER_MS)
+    ) {
+      attention.push({ seg: s, reason: 'stale' });
+    }
+  }
+  const reasonRank: Record<AttentionReason, number> = { failed: 0, blocked_delta: 1, stale: 2 };
+  attention.sort(
+    (a, b) =>
+      reasonRank[a.reason] - reasonRank[b.reason] ||
+      new Date(a.seg.last_built_at || 0).getTime() - new Date(b.seg.last_built_at || 0).getTime()
+  );
+  const failedCount = attention.filter(a => a.reason === 'failed').length;
+  const blockedCount = attention.filter(a => a.reason === 'blocked_delta').length;
+  const staleCount = attention.filter(a => a.reason === 'stale').length;
+
+  // Recent builds: 10 most recent ledger entries.
+  const recentBuilds = operated
+    .filter(s => s.last_built_at)
+    .sort((a, b) => new Date(b.last_built_at!).getTime() - new Date(a.last_built_at!).getTime())
+    .slice(0, 10);
+
+  // By category: counts over the fetched operated rows.
+  const byCategory = new Map<string, number>();
+  for (const s of operated) {
+    const cat = s.category || 'uncategorized';
+    byCategory.set(cat, (byCategory.get(cat) || 0) + 1);
+  }
+  const categoryRows = [...byCategory.entries()].sort((a, b) => b[1] - a[1]);
+  const maxCategoryCount = categoryRows.length > 0 ? categoryRows[0][1] : 1;
 
   return (
     <div className={`list-dashboard ${animateIn ? 'animate-in' : ''}`}>
-      {/* Hero Stats */}
+      {/* Hero Stats — segment KPIs */}
       <div className="hero-stats">
         <div className="hero-stat-card primary" style={{ animationDelay: '0ms' }}>
-          <div className="hero-stat-icon"><FontAwesomeIcon icon={faUsers} /></div>
+          <div className="hero-stat-icon"><FontAwesomeIcon icon={faCrosshairs} /></div>
           <div className="hero-stat-content">
             <div className="hero-stat-value">
-              <AnimatedNumber value={stats.total_subscribers} />
+              <AnimatedNumber value={operated.length} />
             </div>
-            <div className="hero-stat-label">Total Subscribers</div>
-            {stats.new_subscribers_7d > 0 && (
-              <div className="hero-stat-trend positive">
-                <FontAwesomeIcon icon={faArrowUp} /> +{stats.new_subscribers_7d} this week
-              </div>
-            )}
+            <div className="hero-stat-label">Operated Segments</div>
+            <div className="hero-stat-trend">{activeSegs.length} active · machine segments excluded</div>
           </div>
         </div>
 
         <div className="hero-stat-card" style={{ animationDelay: '50ms' }}>
-          <div className="hero-stat-icon"><FontAwesomeIcon icon={faListUl} /></div>
+          <div className="hero-stat-icon"><FontAwesomeIcon icon={faUsers} /></div>
           <div className="hero-stat-content">
-            <div className="hero-stat-value">{stats.total_lists}</div>
-            <div className="hero-stat-label">Mailing Lists</div>
-            <div className="hero-stat-trend">{stats.lists_by_status.find(s => s.status === 'active')?.count || 0} active</div>
+            <div className="hero-stat-value">
+              <AnimatedNumber value={totalMembers} />
+            </div>
+            <div className="hero-stat-label">Total Members</div>
+            <div className="hero-stat-trend">list rows · active segments only</div>
           </div>
         </div>
 
-        <div className="hero-stat-card" style={{ animationDelay: '100ms' }}>
-          <div className="hero-stat-icon"><FontAwesomeIcon icon={faCrosshairs} /></div>
+        <div className="hero-stat-card engagement" style={{ animationDelay: '100ms' }}>
+          <div className="hero-stat-icon"><FontAwesomeIcon icon={faBolt} /></div>
           <div className="hero-stat-content">
-            <div className="hero-stat-value">{stats.total_segments}</div>
-            <div className="hero-stat-label">Segments</div>
-            <div className="hero-stat-trend">Target specific groups</div>
+            <div className="hero-stat-value">
+              <AnimatedNumber value={builtLast24h} />
+            </div>
+            <div className="hero-stat-label">Built Last 24h</div>
+            <div className="hero-stat-trend">of {operated.length} operated segments</div>
           </div>
         </div>
 
-        <div className="hero-stat-card engagement" style={{ animationDelay: '150ms' }}>
-          <div className="hero-stat-icon"><FontAwesomeIcon icon={faChartLine} /></div>
+        <div
+          className={`hero-stat-card ${attention.length > 0 ? 'attention' : ''}`}
+          style={{ animationDelay: '150ms' }}
+        >
+          <div className="hero-stat-icon">
+            <FontAwesomeIcon icon={attention.length > 0 ? faExclamationTriangle : faCheckCircle} />
+          </div>
           <div className="hero-stat-content">
-            <div className="hero-stat-value">{stats.avg_engagement}%</div>
-            <div className="hero-stat-label">Active Rate</div>
+            <div className="hero-stat-value">{attention.length}</div>
+            <div className="hero-stat-label">Needs Attention</div>
             <div className="hero-stat-trend">
-              {stats.active_subscribers.toLocaleString()} engaged subscribers
+              {attention.length === 0
+                ? 'all builds healthy'
+                : `${failedCount} failed · ${blockedCount} blocked · ${staleCount} stale`}
             </div>
           </div>
         </div>
@@ -533,29 +610,20 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
       <div className="dashboard-section" style={{ animationDelay: '200ms' }}>
         <h3><FontAwesomeIcon icon={faBolt} /> Quick Actions</h3>
         <div className="quick-actions-grid">
-          <button className="quick-action-btn primary" onClick={() => onNavigate('create-list')}>
-            <span className="qa-icon"><FontAwesomeIcon icon={faPlus} /></span>
-            <div className="qa-content">
-              <strong>Create New List</strong>
-              <small>Add a new mailing list</small>
-            </div>
-            <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
-          </button>
-
-          <button className="quick-action-btn" onClick={() => onNavigate('import')}>
-            <span className="qa-icon"><FontAwesomeIcon icon={faUpload} /></span>
-            <div className="qa-content">
-              <strong>Import Subscribers</strong>
-              <small>Upload from CSV file</small>
-            </div>
-            <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
-          </button>
-
           <button className="quick-action-btn segment" onClick={() => onNavigate('create-segment')}>
-            <span className="qa-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
+            <span className="qa-icon"><FontAwesomeIcon icon={faPlus} /></span>
             <div className="qa-content">
               <strong>Create Segment</strong>
               <small>Target specific subscribers</small>
+            </div>
+            <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
+          </button>
+
+          <button className="quick-action-btn primary" onClick={() => onNavigate('segments')}>
+            <span className="qa-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
+            <div className="qa-content">
+              <strong>Manage Segments</strong>
+              <small>Browse, filter, and rebuild</small>
             </div>
             <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
@@ -564,7 +632,7 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
             <span className="qa-icon"><FontAwesomeIcon icon={faListUl} /></span>
             <div className="qa-content">
               <strong>Manage Lists</strong>
-              <small>View and edit all lists</small>
+              <small>List management lives here</small>
             </div>
             <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
@@ -573,133 +641,157 @@ const ListDashboard: React.FC<DashboardProps> = ({ stats, lists, segments, onNav
 
       {/* Two Column Layout */}
       <div className="dashboard-grid">
-        {/* Top Lists */}
+        {/* Needs Attention */}
         <div className="dashboard-card" style={{ animationDelay: '250ms' }}>
           <div className="card-header">
-            <h3><FontAwesomeIcon icon={faListUl} /> Top Lists</h3>
-            <button className="view-all-btn" onClick={() => onNavigate('lists')}>
-              View All <FontAwesomeIcon icon={faArrowRight} />
+            <h3><FontAwesomeIcon icon={faExclamationTriangle} /> Needs Attention</h3>
+            <button className="view-all-btn" onClick={() => onNavigate('segments')}>
+              View in Segments <FontAwesomeIcon icon={faArrowRight} />
             </button>
           </div>
-          <div className="top-lists">
-            {stats.top_lists.length === 0 ? (
+          <div className="segments-overview">
+            {attention.length === 0 ? (
               <div className="empty-state">
-                <FontAwesomeIcon icon={faListUl} />
-                <p>No lists yet</p>
-                <button onClick={() => onNavigate('create-list')}>Create Your First List</button>
+                <FontAwesomeIcon icon={faCheckCircle} />
+                <p>All segments healthy ✓</p>
               </div>
             ) : (
-              stats.top_lists.map((list, idx) => {
-                const exhaustion = list.subscriber_count > 0 ? (list.mailed_to_count || 0) / list.subscriber_count : 0;
-                const cardBg = exhaustion >= 0.9 ? 'rgba(239,68,68,0.15)' : exhaustion >= 0.5 ? `rgba(234,179,8,${0.05 + (exhaustion - 0.5) * 0.25})` : undefined;
-                const borderTint = exhaustion >= 0.9 ? '1px solid rgba(239,68,68,0.3)' : exhaustion >= 0.5 ? `1px solid rgba(234,179,8,${0.15 + (exhaustion - 0.5) * 0.35})` : undefined;
-                return (
-                <div 
-                  key={list.id} 
-                  className="top-list-item"
-                  style={cardBg ? { background: cardBg, border: borderTint } : undefined}
-                  onClick={() => {
-                    const fullList = lists.find(l => l.id === list.id);
-                    if (fullList) onNavigate('subscribers', fullList);
-                  }}
-                >
-                  <div className="list-rank">#{idx + 1}</div>
-                  <div className="list-info">
-                    <div className="list-name">{list.name}</div>
-                    <div className="list-meta">
-                      <span><FontAwesomeIcon icon={faEnvelope} /> {(list.mailed_to_count || 0).toLocaleString()} / {(list.subscriber_count || 0).toLocaleString()}</span>
-                      <span>{(list.open_pct || 0).toFixed(1)}% opens</span>
-                      <span>{(list.click_pct || 0).toFixed(1)}% clicks</span>
-                      <span>{(list.complaint_pct || 0).toFixed(1)}% complaints</span>
+              <>
+                {attention.slice(0, ATTENTION_ROW_CAP).map(({ seg, reason }) => {
+                  const cat = seg.category || 'uncategorized';
+                  const catColor = DASH_CATEGORY_COLORS[cat] ?? DASH_DEFAULT_CAT_COLOR;
+                  const chip =
+                    reason === 'failed'
+                      ? { label: 'failed', color: '#ef4444' }
+                      : reason === 'blocked_delta'
+                        ? { label: 'blocked Δ', color: '#f59e0b' }
+                        : { label: 'stale', color: '#94a3b8' };
+                  return (
+                    <div key={seg.id} className="segment-item" onClick={() => onNavigate('segments')}>
+                      <div className="segment-info">
+                        <div className="segment-name">{seg.name}</div>
+                        <div className="segment-meta">
+                          <span
+                            className="seg-cat-badge"
+                            style={{ background: catColor.bg, color: catColor.fg, borderColor: catColor.border }}
+                            title={dashCatTitle(cat)}
+                          >
+                            {dashCatShort(cat)}
+                          </span>
+                          <span>
+                            <FontAwesomeIcon icon={faClock} />{' '}
+                            {seg.last_built_at ? `built ${formatTimeAgo(seg.last_built_at)}` : 'never built'}
+                          </span>
+                        </div>
+                      </div>
+                      <span
+                        className="segment-status"
+                        style={{ color: chip.color, border: `1px solid ${chip.color}55`, background: `${chip.color}1a` }}
+                      >
+                        {chip.label}
+                      </span>
+                      <span className="view-all-btn">
+                        View <FontAwesomeIcon icon={faArrowRight} />
+                      </span>
                     </div>
+                  );
+                })}
+                {attention.length > ATTENTION_ROW_CAP && (
+                  <div className="segment-meta" style={{ padding: '4px 12px' }}>
+                    +{attention.length - ATTENTION_ROW_CAP} more — open Segments for the full list
                   </div>
-                  <FontAwesomeIcon icon={faArrowRight} className="list-arrow" />
-                </div>
-                );
-              })
+                )}
+              </>
             )}
           </div>
         </div>
 
-        {/* Segments Overview */}
+        {/* Recent Builds */}
         <div className="dashboard-card" style={{ animationDelay: '300ms' }}>
           <div className="card-header">
-            <h3><FontAwesomeIcon icon={faCrosshairs} /> Segments</h3>
+            <h3><FontAwesomeIcon icon={faClock} /> Recent Builds</h3>
             <button className="view-all-btn" onClick={() => onNavigate('segments')}>
               View All <FontAwesomeIcon icon={faArrowRight} />
             </button>
           </div>
           <div className="segments-overview">
-            {segments.length === 0 ? (
+            {recentBuilds.length === 0 ? (
               <div className="empty-state">
-                <FontAwesomeIcon icon={faCrosshairs} />
-                <p>No segments yet</p>
-                <button onClick={() => onNavigate('create-segment')}>Create Your First Segment</button>
+                <FontAwesomeIcon icon={faClock} />
+                <p>No builds recorded yet</p>
               </div>
             ) : (
-              segments.slice(0, 5).map(segment => (
-                <div 
-                  key={segment.id} 
-                  className="segment-item"
-                  onClick={() => segment.is_system ? null : onNavigate('edit-segment', undefined, segment)}
-                  style={segment.is_system ? { cursor: 'default' } : undefined}
-                >
-                  <div className={`segment-type-badge ${segment.is_system ? 'system' : segment.segment_type}`}>
-                    {segment.is_system ? <FontAwesomeIcon icon={faRobot} /> : (segment.segment_type === 'dynamic' ? <FontAwesomeIcon icon={faBolt} /> : <FontAwesomeIcon icon={faLayerGroup} />)}
-                  </div>
-                  <div className="segment-info">
-                    <div className="segment-name" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      {segment.name}
-                      {segment.is_system && (
-                        <span style={{
-                          background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                          color: '#fff',
-                          fontSize: '0.55rem',
-                          padding: '1px 6px',
-                          borderRadius: '8px',
-                          fontWeight: 600,
-                        }}>
-                          <FontAwesomeIcon icon={faLock} style={{ fontSize: '0.5rem', marginRight: '3px' }} />SYSTEM
+              recentBuilds.map(seg => {
+                const dotColor = DASH_BUILD_STATUS_COLORS[seg.last_build_status || ''] || '#6b7280';
+                const src = seg.build_source || 'unknown';
+                const srcColor = DASH_BUILD_SOURCE_COLORS[src] ?? DASH_DEFAULT_SOURCE_COLOR;
+                return (
+                  <div key={seg.id} className="segment-item" onClick={() => onNavigate('segments')}>
+                    <span
+                      className="status-dot"
+                      style={{ background: dotColor, flexShrink: 0 }}
+                      title={seg.last_build_status || 'unknown'}
+                    />
+                    <div className="segment-info">
+                      <div className="segment-name">{seg.name}</div>
+                      <div className="segment-meta">
+                        <span
+                          className="build-source-badge"
+                          style={{ color: srcColor.fg, borderColor: srcColor.border }}
+                        >
+                          {src}
                         </span>
-                      )}
-                    </div>
-                    <div className="segment-meta">
-                      <span><FontAwesomeIcon icon={faUsers} /> {segment.subscriber_count?.toLocaleString() || 0}</span>
-                      {segment.list_name && <span>{segment.list_name}</span>}
+                        <span><FontAwesomeIcon icon={faUsers} /> {segMembers(seg).toLocaleString()}</span>
+                        <span><FontAwesomeIcon icon={faClock} /> {formatTimeAgo(seg.last_built_at!)}</span>
+                      </div>
                     </div>
                   </div>
-                  <span className={`segment-status status-${segment.status}`}>{segment.status}</span>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
       </div>
 
-      {/* How It Works */}
-      <div className="how-it-works" style={{ animationDelay: '350ms' }}>
-        <h3>How Lists & Segments Work</h3>
-        <div className="how-it-works-grid">
-          <div className="how-step">
-            <div className="step-number">1</div>
-            <h4>Create Lists</h4>
-            <p>Organize subscribers into lists based on source, topic, or any criteria you choose.</p>
-          </div>
-          <div className="how-step">
-            <div className="step-number">2</div>
-            <h4>Import Subscribers</h4>
-            <p>Upload subscribers via CSV or add them individually. Data is validated automatically.</p>
-          </div>
-          <div className="how-step">
-            <div className="step-number">3</div>
-            <h4>Create Segments</h4>
-            <p>Build dynamic or static segments to target specific groups across all your lists.</p>
-          </div>
-          <div className="how-step">
-            <div className="step-number">4</div>
-            <h4>Send Campaigns</h4>
-            <p>Use segments in your campaigns to reach the right audience at the right time.</p>
-          </div>
+      {/* By Category */}
+      <div className="dashboard-card" style={{ animationDelay: '350ms' }}>
+        <div className="card-header">
+          <h3><FontAwesomeIcon icon={faLayerGroup} /> Segments by Category</h3>
+          <button className="view-all-btn" onClick={() => onNavigate('segments')}>
+            Open Segments <FontAwesomeIcon icon={faArrowRight} />
+          </button>
+        </div>
+        <div>
+          {categoryRows.length === 0 ? (
+            <div className="empty-state">
+              <FontAwesomeIcon icon={faLayerGroup} />
+              <p>No segments yet</p>
+            </div>
+          ) : (
+            categoryRows.map(([cat, count]) => {
+              const color = DASH_CATEGORY_COLORS[cat] ?? DASH_DEFAULT_CAT_COLOR;
+              return (
+                <div
+                  key={cat}
+                  className="cat-bar-row"
+                  onClick={() => onNavigate('segments')}
+                  title={dashCatTitle(cat)}
+                >
+                  <span className="cat-bar-label" style={{ color: color.fg }}>{dashCatShort(cat)}</span>
+                  <div className="cat-bar-track">
+                    <div
+                      className="cat-bar-fill"
+                      style={{
+                        width: `${Math.max(2, Math.round((count / maxCategoryCount) * 100))}%`,
+                        background: color.fg,
+                      }}
+                    />
+                  </div>
+                  <span className="cat-bar-count">{count}</span>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

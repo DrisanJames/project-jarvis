@@ -48,6 +48,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faCrosshairs,
@@ -991,8 +992,12 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         </>
       )}
 
-      {/* 4 — Detail drawer */}
-      {drawerRow && (
+      {/* 4 — Detail drawer. Rendered through a PORTAL: the portal's view
+          containers animate with transform/opacity (.animate-in), which turns
+          them into CSS containing blocks — position:fixed children get clipped
+          to the card area and vanish on poll re-renders. document.body is
+          immune to all of that. */}
+      {drawerRow && createPortal(
         <>
           <div
             onClick={() => setDrawerId(null)}
@@ -1151,11 +1156,15 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               )}
             </div>
           </aside>
-        </>
+        </>,
+        document.body,
       )}
 
-      {/* 5 — Request Segment modal (POST /v2/segments/build-request) */}
-      {showRequestModal && (
+      {/* 5 — Request Segment modal (POST /v2/segments/build-request).
+          Portaled to document.body (see drawer note); the .list-portal wrapper
+          keeps the scoped .modal-overlay/.modal-content CSS matching. */}
+      {showRequestModal && createPortal(
+        <div className="list-portal">
         <div className="modal-overlay" onClick={() => !reqSubmitting && setShowRequestModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
@@ -1306,10 +1315,12 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
             </form>
           </div>
         </div>
+        </div>,
+        document.body,
       )}
 
-      {/* 7 — Minimal local toast stack */}
-      {toasts.length > 0 && (
+      {/* 7 — Minimal local toast stack (portaled — see drawer note) */}
+      {toasts.length > 0 && createPortal(
         <div style={{ position: 'fixed', bottom: 24, right: 24, display: 'flex', flexDirection: 'column', gap: 8, zIndex: 1100 }}>
           {toasts.map(t => (
             <div
@@ -1332,7 +1343,8 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               {t.msg}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
