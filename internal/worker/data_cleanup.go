@@ -93,6 +93,7 @@ func (dc *DataCleanupWorker) cleanup(ctx context.Context) {
 	dc.slimAcceptedQueueHTML(ctx)
 	dc.cleanupPlanRecipients(ctx)
 	dc.cleanupContentSnapshots(ctx)
+	dc.cleanupESPMetricSnapshots(ctx)
 	dc.cleanupProcessedAcctRaw(ctx)
 	dc.cleanupTrackingEvents(ctx)
 	dc.cleanupAgentDecisions(ctx)
@@ -373,6 +374,25 @@ func (dc *DataCleanupWorker) cleanupContentSnapshots(ctx context.Context) {
 	`)
 	if total > 0 {
 		log.Printf("[DataCleanup] Removed %d unreferenced content snapshots older than 30 days", total)
+	}
+}
+
+// cleanupESPMetricSnapshots bounds the PMTACollector's status/ip/domain
+// snapshot history (esp_metric_snapshots, created 2026-06-10) to 30 days —
+// the collector writes three rows per interval per server, forever.
+func (dc *DataCleanupWorker) cleanupESPMetricSnapshots(ctx context.Context) {
+	total := dc.batchDelete(ctx, "esp_metric_snapshots", `
+		WITH doomed AS (
+			SELECT id FROM esp_metric_snapshots
+			WHERE collected_at < NOW() - INTERVAL '30 days'
+			LIMIT $1
+		)
+		DELETE FROM esp_metric_snapshots s
+		USING doomed
+		WHERE s.id = doomed.id
+	`)
+	if total > 0 {
+		log.Printf("[DataCleanup] Removed %d ESP metric snapshots older than 30 days", total)
 	}
 }
 

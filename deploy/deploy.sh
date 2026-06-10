@@ -23,6 +23,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Refuse to build from a dirty tree (2026-06-10 AAR action item 2): the Docker
+# build copies the working tree, so uncommitted changes ship silently under a
+# git_sha stamp that doesn't contain them. That is exactly how schema-coupled
+# code deployed ahead of its migrations on 2026-06-10 and took sending down.
+# Deliberate dirty deploys: DEPLOY_ALLOW_DIRTY=1 bash deploy/deploy.sh
+if [ "${DEPLOY_ALLOW_DIRTY:-0}" != "1" ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  echo "ERROR: working tree has uncommitted changes — the image would ship them under git_sha $GIT_SHA, which does not contain them." >&2
+  git status --short | head -20 >&2
+  echo "" >&2
+  echo "Commit first (schema-coupled changes MUST ship committed), or override with DEPLOY_ALLOW_DIRTY=1." >&2
+  exit 1
+fi
+
 # shellcheck source=deploy/_guardrails.sh
 source "$SCRIPT_DIR/_guardrails.sh"
 

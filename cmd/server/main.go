@@ -425,6 +425,11 @@ func main() {
 			// Migrations can include multi-minute CREATE INDEX CONCURRENTLY on
 			// million-row tables. Run them in the background so worker startup
 			// (send path, wave dispatcher) is not blocked during deploys.
+			// Send-path-critical schema lands SYNCHRONOUSLY, before any
+			// worker goroutine exists — the claim SQL references it
+			// unconditionally, so the binary must never outrun it
+			// (2026-06-10 AAR action item 4).
+			ensureSendPathSchema(mailingDB)
 			go func() {
 				runAdminMigrations()
 				runStartupMigrations(mailingDB)
@@ -1740,6 +1745,73 @@ func seedProcessDefaultOrgID(db *sql.DB) {
 	log.Printf("[OrgContext] process default org_id auto-discovered (single tenant): %s", id)
 }
 
+// criticalSendPathDDL is schema the send path cannot run without: the send
+// workers' claim SQL and the wave dispatcher reference these objects
+// UNCONDITIONALLY (not behind any env kill switch), so the binary must never
+// come up ahead of them. Applied synchronously at boot, BEFORE any worker
+// starts, by ensureSendPathSchema — the deep fix for the 2026-06-10 outage,
+// where the new binary went live while these two statements sat unexecuted
+// at the back of the migration slice behind a lock storm (AAR action item 4).
+// Statements must be idempotent; with the migrationSkipProbe fast path they
+// cost ~1ms on every boot after the first.
+var criticalSendPathDDL = []struct {
+	name string
+	sql  string
+}{
+	{"create_content_snapshots", `CREATE TABLE IF NOT EXISTS mailing_content_snapshots (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		content_hash TEXT NOT NULL UNIQUE,
+		campaign_id UUID,
+		wave_id UUID,
+		html_content TEXT NOT NULL,
+		plain_content TEXT NOT NULL DEFAULT '',
+		content_locked BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`},
+	{"add_queue_content_snapshot_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS content_snapshot_id UUID`},
+}
+
+// ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
+// retries. Returns true when every statement is verified applied. On false,
+// workers still start (matching the platform's boot-resilience posture) but
+// the failure is logged at CRITICAL so the first triage glance explains any
+// claim/enqueue errors that follow.
+func ensureSendPathSchema(db *sql.DB) bool {
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		allApplied := true
+		for _, m := range criticalSendPathDDL {
+			if migrationSkipProbe(db, m.sql) {
+				continue
+			}
+			conn, err := db.Conn(context.Background())
+			if err != nil {
+				log.Printf("[SendPathSchema] %s: connection failed: %v", m.name, err)
+				allApplied = false
+				continue
+			}
+			// Bounded lock wait: long enough to slot between claim batches,
+			// short enough not to wedge boot behind a saturated primary.
+			if _, err := conn.ExecContext(context.Background(), `SET lock_timeout = '8s'; SET statement_timeout = '20s'`); err != nil {
+				log.Printf("[SendPathSchema] %s: session setup failed: %v", m.name, err)
+			}
+			if _, err := conn.ExecContext(context.Background(), m.sql); err != nil {
+				log.Printf("[SendPathSchema] %s: attempt %d/%d failed: %v", m.name, attempt, attempts, err)
+				allApplied = false
+			} else {
+				log.Printf("[SendPathSchema] %s: applied", m.name)
+			}
+			conn.Close()
+		}
+		if allApplied {
+			return true
+		}
+		time.Sleep(time.Duration(attempt) * 5 * time.Second)
+	}
+	log.Printf("[SendPathSchema] CRITICAL: send-path-critical schema could not be verified after %d attempts — claims/enqueues WILL fail until it lands (see CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §9)", attempts)
+	return false
+}
+
 // concurrentIndexSpecs are indexes too large to build inside the 5s-per-
 // statement migration runner. Each is built with CREATE INDEX CONCURRENTLY
 // (never blocks writes) on a dedicated connection with statement_timeout=0,
@@ -1763,6 +1835,20 @@ var concurrentIndexSpecs = []struct {
 	// build scans the full multi-GB queue heap — far beyond the runner's
 	// 5s statement budget.
 	{"idx_queue_content_snapshot_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_content_snapshot_id ON mailing_campaign_queue (content_snapshot_id) WHERE content_snapshot_id IS NOT NULL`},
+
+	// ── Repairs for the five INVALID leftovers from interrupted ad-hoc
+	// CONCURRENTLY builds (prod inventory 2026-06-10, AAR action item 5;
+	// ~3 GB of dead weight maintained on every write, the largest being
+	// idx_engine_signals_recorded_isp at 1.9 GB). Their original builders
+	// use IF NOT EXISTS, which no-ops against an invalid index forever —
+	// this path drops the invalid leftover and rebuilds. Ordered smallest
+	// first to bank wins between calm-window waits; definitions are
+	// byte-identical to the originals elsewhere in this file.
+	{"idx_mcq_dead_letter_recent", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_dead_letter_recent ON mailing_campaign_queue (COALESCE(last_attempt_at, created_at) DESC) WHERE status IN ('dead_letter','dead_letter_strict')`},
+	{"idx_sds_state_domain", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sds_state_domain ON mailing_subscriber_domain_state (sending_domain, state)`},
+	{"idx_mcq_accepted_html", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcq_accepted_html ON mailing_campaign_queue (id) WHERE status = 'accepted' AND html_content IS NOT NULL`},
+	{"idx_pmta_acct_raw_unprocessed", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pmta_acct_raw_unprocessed ON pmta_acct_raw (processed, received_at, id) WHERE processed = FALSE`},
+	{"idx_engine_signals_recorded_isp", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_engine_signals_recorded_isp ON mailing_engine_signals (recorded_at, isp)`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -1847,16 +1933,34 @@ func ensureConcurrentIndexes(db *sql.DB) {
 // task runs migrations at a time during rolling deployments.
 func runStartupMigrations(db *sql.DB) {
 	const migrationLockID = 8675309 // arbitrary but stable
-	var acquired bool
-	if err := db.QueryRow("SELECT pg_try_advisory_lock($1)", migrationLockID).Scan(&acquired); err != nil {
-		log.Printf("[StartupMigration] advisory lock query failed: %v — running migrations anyway", err)
-		acquired = true
+	// Hold the advisory lock on a DEDICATED connection pinned for the entire
+	// run. The previous implementation took the lock through the pool: the
+	// lock bound to whichever backend session served that one query, and the
+	// connection went straight back to the pool (and could be closed —
+	// silently releasing the lock). That is how two ECS tasks ran this slice
+	// concurrently during the 2026-06-10 deploy and compounded the boot lock
+	// storm; the deferred unlock also ran on a different pooled session and
+	// leaked the lock. (AAR action item 1.)
+	lockConn, lockConnErr := db.Conn(context.Background())
+	acquired := true
+	if lockConnErr != nil {
+		log.Printf("[StartupMigration] dedicated lock connection failed: %v — running migrations anyway", lockConnErr)
+		lockConn = nil
+	} else {
+		defer lockConn.Close()
+		if err := lockConn.QueryRowContext(context.Background(),
+			"SELECT pg_try_advisory_lock($1)", migrationLockID).Scan(&acquired); err != nil {
+			log.Printf("[StartupMigration] advisory lock query failed: %v — running migrations anyway", err)
+			acquired = true
+		}
 	}
 	if !acquired {
 		log.Println("[StartupMigration] Another instance holds the migration lock — skipping")
 		return
 	}
-	defer db.Exec("SELECT pg_advisory_unlock($1)", migrationLockID)
+	if lockConn != nil {
+		defer lockConn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockID)
+	}
 	migrations := []struct {
 		name string
 		sql  string
@@ -6833,6 +6937,26 @@ END $$`},
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"add_queue_content_snapshot_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS content_snapshot_id UUID`},
+
+		// PMTACollector (internal/pmta/collector.go persistMetrics) has been
+		// INSERTing status/ip/domain snapshots into this table since the
+		// SparkPost-era schema was retired — every write failed with
+		// "relation does not exist" (log spam confirmed back ≥24h on
+		// 2026-06-10, AAR action item 5). Creating it both silences the
+		// errors and starts retaining PMTA metric history. Retention:
+		// data_cleanup.go cleanupESPMetricSnapshots (30 days).
+		{"create_esp_metric_snapshots", `CREATE TABLE IF NOT EXISTS esp_metric_snapshots (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID,
+			esp VARCHAR(50) NOT NULL,
+			snapshot_type VARCHAR(50) NOT NULL,
+			collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			period_start TIMESTAMPTZ,
+			period_end TIMESTAMPTZ,
+			metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+			source_hash TEXT NOT NULL DEFAULT ''
+		)`},
+		{"idx_esp_metric_snapshots_collected", `CREATE INDEX IF NOT EXISTS idx_esp_metric_snapshots_collected ON esp_metric_snapshots (collected_at)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -6864,8 +6988,16 @@ END $$`},
 		execSQL("SET statement_timeout = '5s'")
 	}
 
-	var ok, fail, skip int
+	var ok, fail, skip, alreadyApplied int
 	for _, m := range migrations {
+		// Catalog probe: skip recognized idempotent DDL whose effect already
+		// exists, so a boot does not replay hundreds of lock-taking no-ops
+		// against hot tables (the 2026-06-10 brownout mechanism). Probe
+		// errors fail open into normal execution. See migration_skip.go.
+		if migrationSkipProbe(db, m.sql) {
+			alreadyApplied++
+			continue
+		}
 		if err := execSQL(m.sql); err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "statement timeout") {
@@ -6879,7 +7011,7 @@ END $$`},
 			ok++
 		}
 	}
-	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts", ok, fail, skip)
+	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts, %d skipped (already applied)", ok, fail, skip, alreadyApplied)
 
 	// Diagnostic: check for invalid indexes (can happen if CREATE INDEX CONCURRENTLY fails mid-way)
 	var invalidCount int
