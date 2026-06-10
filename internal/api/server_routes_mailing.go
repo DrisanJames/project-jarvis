@@ -290,6 +290,20 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				c.Get("/{id}/preview", creativesRegistry.HandlePreview)
 			})
 
+			// Creative Studio v2 — ReviewForge engine sidecar orchestration +
+			// embedded creative agent (see creative_studio.go / creative_agent.go).
+			creativeStudio := NewCreativeStudioService(db)
+			creativeAgent := NewCreativeAgent(db, s.openAIConfig, creativeStudio)
+			r.Route("/creative-studio", func(c chi.Router) {
+				c.Get("/status", creativeStudio.HandleStatus)
+				c.Get("/brands", creativeStudio.HandleBrands)
+				c.Get("/subject-lines", creativeStudio.HandleSubjectLines)
+				c.Post("/generate", creativeStudio.HandleGenerate)
+				c.Post("/agent/chat", creativeAgent.HandleChat)
+				c.Get("/agent/conversations", creativeAgent.HandleListConversations)
+				c.Get("/agent/conversations/{id}", creativeAgent.HandleGetConversation)
+			})
+
 			// Data Partner Ingestion admin endpoints — authenticated via the
 			// session / X-Admin-Key auth that wraps the /api router. Mounted
 			// FIRST in this group because they're cheap and we want them up

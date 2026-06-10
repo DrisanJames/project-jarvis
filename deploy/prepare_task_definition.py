@@ -147,6 +147,36 @@ def main() -> int:
 
     env_list[:] = [e for e in env_list if e.get("name") not in REMOVE_ENV_VARS]
 
+    # ReviewForge engine sidecar (Creative Studio). awsvpc networking shares
+    # the namespace, so the Go server reaches it at localhost:3100. Set
+    # REVIEW_FORGE_IMAGE in the deploy shell to add/update the sidecar (built
+    # by review-forge/deploy/build-push.sh); when unset, an existing sidecar
+    # definition carries forward from the base task definition unchanged.
+    # essential=false: an engine crash degrades Creative Studio, not sending.
+    rf_image = os.environ.get("REVIEW_FORGE_IMAGE")
+    if rf_image:
+        upsert_env(env_list, "REVIEW_FORGE_INTERNAL_URL", "http://localhost:3100")
+        sidecar = None
+        for container in containers:
+            if container.get("name") == "review-forge-engine":
+                sidecar = container
+                break
+        if sidecar is None:
+            sidecar = {"name": "review-forge-engine"}
+            containers.append(sidecar)
+        sidecar["image"] = rf_image
+        sidecar["essential"] = False
+        sidecar["portMappings"] = [{"containerPort": 3100, "protocol": "tcp"}]
+        sidecar_env = sidecar.setdefault("environment", [])
+        upsert_env(sidecar_env, "PORT", "3100")
+        upsert_env(sidecar_env, "REVIEW_FORGE_DISABLE_LOCAL_FEEDS", "1")
+        if target.get("logConfiguration") and not sidecar.get("logConfiguration"):
+            log_cfg = json.loads(json.dumps(target["logConfiguration"]))
+            opts = log_cfg.get("options", {})
+            if "awslogs-stream-prefix" in opts:
+                opts["awslogs-stream-prefix"] = opts["awslogs-stream-prefix"] + "-rf"
+            sidecar["logConfiguration"] = log_cfg
+
     output_path.write_text(json.dumps(sanitized, indent=2) + "\n")
     return 0
 
