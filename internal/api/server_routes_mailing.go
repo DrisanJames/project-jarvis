@@ -96,6 +96,19 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			poolIsolationSvc.HandlePoolIsolationActivate(w, req)
 		})
 
+		// Admin: creative-registry sync (ReviewForge phase 2). The operator's
+		// laptop tooling (agents/scheduling/forge.py sync) POSTs pipeline-built
+		// creatives here; same X-Admin-Key gate as the other admin endpoints.
+		creativesSyncSvc := NewCreativesRegistry(db)
+		s.router.Post("/api/admin/creatives-sync", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			creativesSyncSvc.HandleSync(w, req)
+		})
+
 		// Admin: bulk-tag canonical CSV loader. Mirrors the local
 		// Python loader (scripts/import/load_eo_harvest_keepers.py and
 		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
@@ -268,6 +281,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 		})
 
 		s.apiRouter.Route("/mailing", func(r chi.Router) {
+			// Creative registry reads (ReviewForge phase 2) — cheap, mounted
+			// early like data-partners. Writes go through the admin-gated
+			// /api/admin/creatives-sync on the root router below.
+			creativesRegistry := NewCreativesRegistry(db)
+			r.Route("/creatives", func(c chi.Router) {
+				c.Get("/", creativesRegistry.HandleList)
+				c.Get("/{id}/preview", creativesRegistry.HandlePreview)
+			})
+
 			// Data Partner Ingestion admin endpoints — authenticated via the
 			// session / X-Admin-Key auth that wraps the /api router. Mounted
 			// FIRST in this group because they're cheap and we want them up

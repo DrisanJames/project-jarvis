@@ -1771,6 +1771,28 @@ func runStartupMigrations(db *sql.DB) {
 			last_alerted_at           TIMESTAMPTZ,
 			updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+		// Creative registry — browse/preview surface for the send-day creative
+		// archive (ReviewForge phase 2). Synced from operator tooling via
+		// /api/admin/creatives-sync; read by the portal Creative Studio tab.
+		{"create_mailing_creatives", `CREATE TABLE IF NOT EXISTS mailing_creatives (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			offer_key       TEXT NOT NULL DEFAULT '',
+			brand_code      TEXT NOT NULL,
+			filename        TEXT NOT NULL,
+			subject         TEXT NOT NULL DEFAULT '',
+			preheader       TEXT NOT NULL DEFAULT '',
+			html_content    TEXT NOT NULL,
+			money_urls      INTEGER NOT NULL DEFAULT 0,
+			tagged          BOOLEAN NOT NULL DEFAULT FALSE,
+			source          TEXT NOT NULL DEFAULT 'manual',
+			forge_brand_key TEXT NOT NULL DEFAULT '',
+			sha256          TEXT NOT NULL DEFAULT '',
+			generated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, filename)
+		)`},
+		{"idx_mailing_creatives_offer", `CREATE INDEX IF NOT EXISTS idx_mailing_creatives_org_offer_brand ON mailing_creatives (organization_id, offer_key, brand_code, generated_at DESC)`},
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},

@@ -5,7 +5,7 @@ import {
   faListUl, faCrosshairs, faBolt, faFileImport,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
-  faSpinner, faEye, faSeedling, faHeartPulse,
+  faSpinner, faEye, faSeedling, faHeartPulse, faWandMagicSparkles,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -49,6 +49,7 @@ const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashb
 const AudienceAnalytics = lazy(() => import('../components/AudienceAnalytics').then(m => ({ default: m.AudienceAnalytics })));
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
+const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m => ({ default: m.CreativeStudio })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const WorkerHealthDashboard = lazy(() => import('../components/WorkerHealthDashboard').then(m => ({ default: m.WorkerHealthDashboard })));
 const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
@@ -61,7 +62,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio';
 
 interface Tab {
   id: TabId;
@@ -81,6 +82,7 @@ const tabs: Tab[] = [
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
   { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'Per-domain agentic send planning & approval' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
+  { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'ReviewForge creative archive — browse & preview pipeline-built newsletters per offer × brand' },
   { id: 'event-lake', label: 'Analytics', icon: faChartPie, description: 'S3/Athena email-event lake — ISP, brand & campaign analytics' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Audience analytics — acquisition, churn, source performance, member lookup & welcome pool' },
   { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
@@ -181,6 +183,8 @@ export const MailingPortal: React.FC = () => {
       case 'analytics': // legacy id — AnalyticsCenter retired, alias to the lake explorer
       case 'event-lake':
         return <Suspense fallback={<ChunkLoader />}><EventLakeExplorer /></Suspense>;
+      case 'creative-studio':
+        return <Suspense fallback={<ChunkLoader />}><CreativeStudio /></Suspense>;
       case 'audience-health':
         return <Suspense fallback={<ChunkLoader />}><AudienceAnalytics /></Suspense>;
       case 'audience-cadence':
