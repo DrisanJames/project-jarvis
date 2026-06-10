@@ -77,15 +77,17 @@ func RollupDay(ctx context.Context, db *sql.DB, orgID string, day time.Time) err
 		return fmt.Errorf("scorecard set timeout: %w", err)
 	}
 
-	// (a) sends + delivered from the message log, joined to the sending
-	// profile for the sending domain.
+	// (a) sends + delivered from the message log. The sending domain comes
+	// from the campaign (PK lookup per row): message_log.sending_profile_id
+	// is NULL in production, so the profiles join silently matched nothing.
 	sendRows, err := tx.QueryContext(ctx, `
-		SELECT sp.sending_domain,
+		SELECT COALESCE(NULLIF(c.pmta_config->>'sending_domain', ''),
+		                SPLIT_PART(c.from_email, '@', 2), '') AS sdom,
 		       LOWER(SPLIT_PART(m.email, '@', 2)) AS rdom,
 		       COUNT(*),
 		       COUNT(*) FILTER (WHERE m.status = 'delivered' OR m.delivered_at IS NOT NULL)
 		FROM mailing_message_log m
-		JOIN mailing_sending_profiles sp ON sp.id = m.sending_profile_id
+		JOIN mailing_campaigns c ON c.id = m.campaign_id
 		WHERE m.organization_id = $1 AND m.sent_at >= $2 AND m.sent_at < $3
 		GROUP BY 1, 2
 	`, orgID, dayStart, dayEnd)
