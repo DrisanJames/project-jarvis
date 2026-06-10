@@ -47,6 +47,12 @@ const (
 	// cycle so it never piles WAL writes onto an active audience/segment IO
 	// storm. The drain resumes automatically the next cycle once IO eases.
 	slimMaxIOWaitBackends = 8
+
+	// planRecipMaxCampaignsPerCycle bounds how many terminal campaigns one
+	// hourly cycle purges from mailing_campaign_plan_recipients, so a large
+	// backlog drains over cycles instead of one marathon pass. Steady-state
+	// daily turnover is well under this.
+	planRecipMaxCampaignsPerCycle = 500
 )
 
 // DataCleanupWorker periodically removes old data from the mailing tables.
@@ -328,23 +334,73 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 		return
 	}
 
-	total := dc.batchDelete(ctx, "mailing_campaign_plan_recipients", `
-		WITH doomed AS (
-			SELECT pr.id
-			FROM mailing_campaign_plan_recipients pr
-			WHERE pr.campaign_id IN (
-				SELECT id FROM mailing_campaigns
-				WHERE status IN ('sent', 'cancelled', 'failed')
-				  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
-			)
-			LIMIT $1
-		)
-		DELETE FROM mailing_campaign_plan_recipients pr
-		USING doomed
-		WHERE pr.id = doomed.id
-	`)
+	// Campaign-driven delete: the old `pr.campaign_id IN (subquery) LIMIT n`
+	// shape planned as a Seq Scan over the whole heap; once the matching rows
+	// near the heap start were consumed, every batch re-scanned past the dead
+	// prefix, blew the 60s batch timeout, and the cycle aborted with the table
+	// still bloated (observed 13 GB / 29M rows on 2026-06-10, n_tup_del frozen
+	// at ~550k). Pinning each DELETE to one campaign_id forces
+	// idx_plan_recips_campaign regardless of table size.
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rows, err := dc.db.QueryContext(queryCtx, `
+		SELECT c.id
+		FROM mailing_campaigns c
+		WHERE c.status IN ('sent', 'cancelled', 'failed')
+		  AND COALESCE(c.updated_at, c.created_at) < NOW() - INTERVAL '14 days'
+		  AND EXISTS (
+			SELECT 1 FROM mailing_campaign_plan_recipients pr
+			WHERE pr.campaign_id = c.id
+		  )
+		LIMIT $1
+	`, planRecipMaxCampaignsPerCycle)
+	cancel()
+	if err != nil {
+		if !isTableNotExistsError(err) {
+			log.Printf("[DataCleanup] plan_recipients terminal-campaign scan failed: %v", err)
+		}
+		return
+	}
+	var campaignIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			campaignIDs = append(campaignIDs, id)
+		}
+	}
+	rows.Close()
+
+	var total int64
+	for _, id := range campaignIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		for {
+			queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			res, err := dc.db.ExecContext(queryCtx, `
+				WITH doomed AS (
+					SELECT id FROM mailing_campaign_plan_recipients
+					WHERE campaign_id = $1
+					LIMIT $2
+				)
+				DELETE FROM mailing_campaign_plan_recipients pr
+				USING doomed
+				WHERE pr.id = doomed.id
+			`, id, cleanupBatchSize)
+			cancel()
+			if err != nil {
+				log.Printf("[DataCleanup] plan_recipients delete for campaign %s failed: %v", id, err)
+				return
+			}
+			affected, _ := res.RowsAffected()
+			total += affected
+			if affected < int64(cleanupBatchSize) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	if total > 0 {
-		log.Printf("[DataCleanup] Removed %d plan-recipient rows for terminal campaigns older than 14 days (DELETE fallback)", total)
+		log.Printf("[DataCleanup] Removed %d plan-recipient rows across %d terminal campaigns older than 14 days (campaign-driven DELETE)", total, len(campaignIDs))
 	}
 }
 
