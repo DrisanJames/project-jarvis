@@ -1772,6 +1772,10 @@ var criticalSendPathDDL = []struct {
 	// Per-vertical partner-drip follow-up ladders (operator 2026-06-11):
 	// NULL vertical = the shared/global fallback chain.
 	{"add_followup_creatives_vertical", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS vertical TEXT`},
+	// The original PK (brand, touch_number) blocks per-vertical rows; replace
+	// with a vertical-aware unique index ('' = the NULL/global chain).
+	{"drop_followup_creatives_pk", `ALTER TABLE partner_drip_followup_creatives DROP CONSTRAINT IF EXISTS partner_drip_followup_creatives_pkey`},
+	{"followup_creatives_vertical_uq", `CREATE UNIQUE INDEX IF NOT EXISTS partner_drip_followup_creatives_uq ON partner_drip_followup_creatives (brand, touch_number, COALESCE(vertical,''))`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
