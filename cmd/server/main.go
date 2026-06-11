@@ -1769,6 +1769,9 @@ var criticalSendPathDDL = []struct {
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`},
 	{"add_queue_content_snapshot_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS content_snapshot_id UUID`},
+	// Per-vertical partner-drip follow-up ladders (operator 2026-06-11):
+	// NULL vertical = the shared/global fallback chain.
+	{"add_followup_creatives_vertical", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS vertical TEXT`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded

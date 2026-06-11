@@ -2215,7 +2215,7 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		return fmt.Errorf("invalid touch_number %d for vertical=%s", touchNum, v.vertical)
 	}
 
-	creative, err := po.resolveFollowupCreative(ctx, brand, touchNum)
+	creative, err := po.resolveFollowupCreative(ctx, v.vertical, brand, touchNum)
 	if err != nil {
 		_ = po.releaseClaim(ctx, claimed)
 		return fmt.Errorf("resolve_followup_creative: %w", err)
@@ -2409,19 +2409,25 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 	return out, nil
 }
 
-// resolveFollowupCreative looks up the (brand, touch_number) row in
-// partner_drip_followup_creatives and reads the HTML body from disk.
+// resolveFollowupCreative looks up the follow-up creative for
+// (vertical, brand, touch_number) in partner_drip_followup_creatives and
+// reads the HTML body from disk. Vertical-specific rows win; rows with
+// vertical IS NULL are the shared/global fallback chain (pre-2026-06-11
+// behavior), so funnels without a bespoke ladder keep working unchanged.
 // Errors out loud — the caller releases the claim if this fails so the
 // records get retried on the next tick.
-func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, brand string, touchNumber int) (creativeRec, error) {
+func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, vertical, brand string, touchNumber int) (creativeRec, error) {
 	var c creativeRec
 	err := po.db.QueryRowContext(ctx, `
 		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name
 		FROM partner_drip_followup_creatives
 		WHERE brand = $1 AND touch_number = $2 AND active = true
-	`, brand, touchNumber).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName)
+		  AND (vertical = $3 OR vertical IS NULL)
+		ORDER BY (vertical = $3) DESC NULLS LAST
+		LIMIT 1
+	`, brand, touchNumber, vertical).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName)
 	if err != nil {
-		return c, fmt.Errorf("followup_creative lookup (%s/t%d): %w", brand, touchNumber, err)
+		return c, fmt.Errorf("followup_creative lookup (%s/%s/t%d): %w", vertical, brand, touchNumber, err)
 	}
 	body, err := os.ReadFile(filepath.Join(po.cfg.CreativesDir, c.filename))
 	if err != nil {
