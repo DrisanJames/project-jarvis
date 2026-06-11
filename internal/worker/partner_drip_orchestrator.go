@@ -31,6 +31,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,18 @@ type PartnerDripOrchestratorConfig struct {
 	// live queue depth: cap = min(PerISPCapPerWave, ceil(ready / (wavesPerVerticalPerDay * N))).
 	// ISPs omitted from this map keep the static PerISPCapPerWave ceiling only.
 	PerISPDrainDays map[string]int
+	// NewRecordDailyISPCaps bounds how many NEW records (first touch) one
+	// brand may mail per ISP per calendar day (America/Denver). Applied on
+	// top of PerISPCapPerWave at claim time: wave cap = min(per-wave cap,
+	// daily cap - already mailed today). Follow-up touches are NOT counted
+	// or capped here ("everything else can flow as is" — operator
+	// 2026-06-10). Override: PARTNER_DRIP_DAILY_ISP_CAPS="gmail=400,yahoo=100,aol=100".
+	NewRecordDailyISPCaps map[string]int
+	// NewRecordISPBrandAllow restricts which brands may receive NEW records
+	// for an ISP at all (caps[isp]=0 for brands not listed). Operator
+	// 2026-06-10: gmail new records only via db/ht/mh/qf.
+	// Override: PARTNER_DRIP_GMAIL_NEW_BRANDS="db,ht,mh,qf".
+	NewRecordISPBrandAllow map[string]map[string]bool
 	// ThrottledISPRateThreshold (msgs_per_hour) below which an ISP is considered
 	// in active backoff and that ISP's portion of the wave is deferred. Default 50.
 	ThrottledISPRateThreshold float64
@@ -252,6 +265,40 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			"verizon":   20,
 			"other":     40,
 		}
+	}
+	if cfg.NewRecordDailyISPCaps == nil {
+		// Operator 2026-06-10: gmail 400/day (allow-listed brands only),
+		// yahoo 100/day and aol 100/day across all brands. ISPs not listed
+		// here have no daily new-record budget (per-wave caps only).
+		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 400, "yahoo": 100, "aol": 100}
+		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
+			parsed := map[string]int{}
+			for _, pair := range strings.Split(v, ",") {
+				kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil {
+					parsed[strings.ToLower(strings.TrimSpace(kv[0]))] = n
+				}
+			}
+			if len(parsed) > 0 {
+				cfg.NewRecordDailyISPCaps = parsed
+			}
+		}
+	}
+	if cfg.NewRecordISPBrandAllow == nil {
+		gmailBrands := "db,ht,mh,qf"
+		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_GMAIL_NEW_BRANDS")); v != "" {
+			gmailBrands = v
+		}
+		allow := map[string]bool{}
+		for _, b := range strings.Split(gmailBrands, ",") {
+			if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
+				allow[b] = true
+			}
+		}
+		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{"gmail": allow}
 	}
 	if cfg.PerISPDrainDays == nil {
 		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
@@ -661,6 +708,10 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
+	// Per-brand daily new-record budget (operator 2026-06-10): clamp the
+	// wave's per-ISP caps to what this brand may still mail TODAY. Gmail is
+	// additionally brand-gated. Follow-ups bypass this (separate loop).
+	perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, perISPCaps)
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
@@ -1078,6 +1129,48 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// applyNewRecordDailyBudget clamps a wave's per-ISP caps to the brand's
+// remaining daily new-record budget (NewRecordDailyISPCaps, America/Denver
+// day). mailed_at is written exactly once (first touch), so counting rows
+// with mailed_brand=brand AND mailed_at >= local midnight counts NEW records
+// only — follow-up touches never move mailed_at. Best-effort: on count error
+// the static caps stand (consistent with resolvePerISPCaps degradation).
+func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context, brand string, caps map[string]int) map[string]int {
+	if len(po.cfg.NewRecordDailyISPCaps) == 0 {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	for isp, daily := range po.cfg.NewRecordDailyISPCaps {
+		isp = strings.ToLower(strings.TrimSpace(isp))
+		if allow, gated := po.cfg.NewRecordISPBrandAllow[isp]; gated && !allow[lb] {
+			out[isp] = 0
+			continue
+		}
+		var used int
+		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM partner_clean_queue
+				WHERE mailed_brand = $1
+				  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+				  AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
+			`, lb, isp).Scan(&used)
+		})
+		if err != nil {
+			log.Printf("[PartnerDripOrchestrator] daily-budget count failed brand=%s isp=%s (%v) — keeping static cap", lb, isp, err)
+			continue
+		}
+		remaining := daily - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		if out[isp] > remaining {
+			out[isp] = remaining
+		}
+	}
+	return out
 }
 
 // claimRecordsByISPCaps claims oldest-first records from partner_clean_queue

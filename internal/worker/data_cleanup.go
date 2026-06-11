@@ -147,21 +147,71 @@ func (dc *DataCleanupWorker) cleanupQueueItems(ctx context.Context) {
 // not final delivery state. Handoff metadata (campaign/subscriber/message_id)
 // is retained until this TTL; HTML is nulled on send via markSent.
 func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
-	total := dc.batchDelete(ctx, "mailing_campaign_queue", `
-		WITH doomed AS (
-			SELECT id
-			FROM mailing_campaign_queue
-			WHERE status IN ('accepted', 'cancelled', 'failed', 'dead_letter', 'dead_letter_strict')
-			  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
-			ORDER BY id
-			LIMIT $1
-		)
-		DELETE FROM mailing_campaign_queue q
-		USING doomed
-		WHERE q.id = doomed.id
-	`)
+	// Campaign-driven delete (same fix as cleanupPlanRecipients/04a3044): the
+	// old `id IN (SELECT ... WHERE status ... LIMIT n)` shape has no
+	// (status, updated_at) index, so it planned as a Seq Scan over the heap —
+	// at 69 GB the subquery blew the batch timeout every cycle and the cleaner
+	// silently deleted nothing (observed 2026-06-10: 4.3M 'accepted' rows past
+	// the 14d TTL still present). Pinning each DELETE to one campaign_id
+	// forces idx_queue_campaign regardless of table size.
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rows, err := dc.db.QueryContext(queryCtx, `
+		SELECT c.id
+		FROM mailing_campaigns c
+		WHERE c.status IN ('sent', 'cancelled', 'failed', 'completed')
+		  AND COALESCE(c.updated_at, c.created_at) < NOW() - INTERVAL '14 days'
+		  AND EXISTS (
+			SELECT 1 FROM mailing_campaign_queue q
+			WHERE q.campaign_id = c.id
+		  )
+		LIMIT $1
+	`, planRecipMaxCampaignsPerCycle)
+	cancel()
+	if err != nil {
+		log.Printf("[DataCleanup] queue terminal-campaign scan failed: %v", err)
+		return
+	}
+	var campaignIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			campaignIDs = append(campaignIDs, id)
+		}
+	}
+	rows.Close()
+
+	var total int64
+	for _, id := range campaignIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		for {
+			queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			res, err := dc.db.ExecContext(queryCtx, `
+				WITH doomed AS (
+					SELECT id FROM mailing_campaign_queue
+					WHERE campaign_id = $1
+					LIMIT $2
+				)
+				DELETE FROM mailing_campaign_queue q
+				USING doomed
+				WHERE q.id = doomed.id
+			`, id, cleanupBatchSize)
+			cancel()
+			if err != nil {
+				log.Printf("[DataCleanup] queue delete for campaign %s failed: %v", id, err)
+				return
+			}
+			affected, _ := res.RowsAffected()
+			total += affected
+			if affected < int64(cleanupBatchSize) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	if total > 0 {
-		log.Printf("[DataCleanup] Removed %d operationally-terminal items from mailing_campaign_queue (14d TTL)", total)
+		log.Printf("[DataCleanup] Removed %d queue rows across %d terminal campaigns older than 14 days (campaign-driven DELETE)", total, len(campaignIDs))
 	}
 	dc.logTerminalQueueStats(ctx)
 }
