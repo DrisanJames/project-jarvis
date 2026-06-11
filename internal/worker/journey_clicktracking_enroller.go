@@ -26,7 +26,8 @@ package worker
 // Offer identity: mailing_tracking_events.offer_id is 100% NULL in production,
 // but the offer is encoded in link_url:
 //   - cratoolpro: https://www.cratoolpro.com/BJB4Q5BF/<SLUG>/
-//   - affiliate network (e.g. Sam's Club): https://www.eos57ytf.com/K4C5ZLC/PS8241/
+//   - eos57ytf (Sam's Club, NDR): https://www.eos57ytf.com/K4C5ZLC/<SLUG>/
+//   - xnonu (Empire Today): https://www.xnonu.com/TQ5MX18J/<SLUG>/
 // mailing_offer_slug_map is the verified slug → everflow_offer_id dictionary; a
 // click whose slug is not in the map (or maps to an offer with no journey) is
 // skipped.
@@ -66,8 +67,24 @@ const (
 // Example: https://www.cratoolpro.com/BJB4Q5BF/KW3Q1DJ/?source_id=email...
 var cratoolproSlugRe = regexp.MustCompile(`cratoolpro\.com/BJB4Q5BF/([A-Za-z0-9_-]+)`)
 
-// affiliateSlugRe extracts Everflow PS#### slugs from affiliate-network money URLs
-// that do not use cratoolpro. Example:
+// eos57ytfSlugRe extracts the trailing offer slug from an eos57ytf affiliate
+// money URL — both numeric PS#### slugs (Sam's Club PS8241) and alphanumeric
+// slugs (NDR 2HH43PB after the 2026-06-11 migration off cratoolpro GK847MZ).
+// Example: https://www.eos57ytf.com/K4C5ZLC/2HH43PB/?source_id=email...
+var eos57ytfSlugRe = regexp.MustCompile(`(?i)eos57ytf\.com/K4C5ZLC/([A-Za-z0-9_-]+)`)
+
+// xnonuSlugRe extracts the trailing offer slug from an xnonu affiliate money
+// URL (Empire Today Flooring, 2026-06-11).
+// Example: https://www.xnonu.com/TQ5MX18J/XF1SR2CS/?source_id=email...
+var xnonuSlugRe = regexp.MustCompile(`(?i)xnonu\.com/TQ5MX18J/([A-Za-z0-9_-]+)`)
+
+// moneySlugRes is the ordered list of per-network slug extractors. Each
+// captures the slug as submatch 1, already in the same form the
+// mailing_offer_slug_map dictionary keys use.
+var moneySlugRes = []*regexp.Regexp{cratoolproSlugRe, eos57ytfSlugRe, xnonuSlugRe}
+
+// affiliateSlugRe is the legacy PS#### extractor kept as a last-resort
+// fallback for affiliate URLs on hosts not covered by moneySlugRes. Example:
 // https://www.eos57ytf.com/K4C5ZLC/PS8241/?creative_id=4989&source_id=email...
 var affiliateSlugRe = regexp.MustCompile(`(?i)/PS([0-9]+)(?:/|\?|&|$)`)
 
@@ -262,6 +279,7 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		  AND (
 		        t.link_url ILIKE '%cratoolpro.com/BJB4Q5BF/%'
 		     OR t.link_url ILIKE '%eos57ytf.com/K4C5ZLC/%'
+		     OR t.link_url ILIKE '%xnonu.com/TQ5MX18J/%'
 		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM mailing_campaigns c
@@ -503,11 +521,14 @@ func (w *JourneyClickTrackingEnroller) loadBrandCampaignMap(ctx context.Context,
 }
 
 // extractMoneySlug pulls the normalized offer slug from a money URL, handling
-// both the cratoolpro publisher path and the eos57ytf affiliate PS#### form.
-// ok=false when the link carries no recognizable money slug.
+// the cratoolpro publisher path and the eos57ytf / xnonu affiliate paths
+// (plus the legacy PS#### fallback). ok=false when the link carries no
+// recognizable money slug.
 func extractMoneySlug(linkURL string) (string, bool) {
-	if m := cratoolproSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
-		return normalizeSlug(m[1]), true
+	for _, re := range moneySlugRes {
+		if m := re.FindStringSubmatch(linkURL); len(m) >= 2 {
+			return normalizeSlug(m[1]), true
+		}
 	}
 	if m := affiliateSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
 		return normalizeSlug("PS" + m[1]), true
@@ -519,9 +540,11 @@ func extractMoneySlug(linkURL string) (string, bool) {
 // offer id. ok=false when the link carries no recognizable slug or the slug is
 // not in the dictionary.
 func resolveOfferFromLink(linkURL string, slugToOffer map[string]string) (string, bool) {
-	if m := cratoolproSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {
-		if offer, ok := slugToOffer[normalizeSlug(m[1])]; ok {
-			return offer, true
+	for _, re := range moneySlugRes {
+		if m := re.FindStringSubmatch(linkURL); len(m) >= 2 {
+			if offer, ok := slugToOffer[normalizeSlug(m[1])]; ok {
+				return offer, true
+			}
 		}
 	}
 	if m := affiliateSlugRe.FindStringSubmatch(linkURL); len(m) >= 2 {

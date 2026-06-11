@@ -6925,6 +6925,74 @@ END $$`},
 			('BXPFT55', '420', '%sam%', 'TruGreen',     TRUE, 'cratoolpro slug BXPFT55 (trugreen newsletter creatives); consumer signal → Sam''s Club offer 420 drip')
 			ON CONFLICT (slug) DO NOTHING`},
 
+		// Click-drip lane updates (2026-06-11, operator brief):
+		//   - NDR migrated to the eos57ytf network (K4C5ZLC/2HH43PB) and becomes
+		//     CPA $85.00. The legacy cratoolpro GK847MZ row stays enabled so
+		//     clicks on in-flight mail still drip.
+		//   - Metal Roofing moves to a new cratoolpro slug (J78S2MD); legacy
+		//     KW3Q1DJ stays enabled for in-flight mail.
+		//   - New drip lanes: SBLI Quick Quote (9178, cratoolpro K86F3PC) and
+		//     Empire Today Flooring (417791, xnonu TQ5MX18J/XF1SR2CS — first
+		//     xnonu-network drip; journey_clicktracking_enroller learns the
+		//     xnonu host + eos57ytf alphanumeric slugs in this same build).
+		{"jun11_click_drip_slug_ndr_eos", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('2HH43PB', '7667', 'National Debt Relief', TRUE, 'eos57ytf.com/K4C5ZLC/2HH43PB — NDR migrated off cratoolpro GK847MZ 2026-06-11; CPA $85.00')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun11_click_drip_slug_metalroofing_new", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('J78S2MD', '9539', 'Get Metal Roofing', TRUE, 'new cratoolpro slug 2026-06-11; replaces KW3Q1DJ (legacy row kept enabled for in-flight mail)')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun11_click_drip_ndr_payout_cpa", `UPDATE mailing_offer_journey_map
+			SET payout_type='CPA',
+			    notes='National Debt Relief — eos57ytf K4C5ZLC/2HH43PB; CPA $85.00 (operator 2026-06-11)',
+			    updated_at=NOW()
+			WHERE everflow_offer_id='7667' AND payout_type<>'CPA'`},
+		{"jun11_click_drip_ndr_offer_payout", `UPDATE mailing_offers
+			SET payout=85.00, payout_type='CPA', updated_at=NOW()
+			WHERE everflow_offer_id='7667'
+			  AND (payout IS DISTINCT FROM 85.00 OR payout_type IS DISTINCT FROM 'CPA')`},
+		{"jun11_click_drip_slug_sbli", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('K86F3PC', '9178', 'SBLI Quick Quote', TRUE, 'cratoolpro.com/BJB4Q5BF/K86F3PC; term life lead-gen (provisioned 2026-06-09, drip lane 2026-06-11)')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun11_click_drip_slug_empire", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('XF1SR2CS', '417791', 'Empire Today Flooring', TRUE, 'xnonu.com/TQ5MX18J/XF1SR2CS; 60% off sale ends 6/29 (drip lane 2026-06-11)')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun11_click_drip_map_sbli", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('9178', 'click-drip-4touch-72h', 'CPL', TRUE, 'SBLI Quick Quote — term life lead-gen; drip lane added 2026-06-11')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+		{"jun11_click_drip_map_empire", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('417791', 'click-drip-4touch-72h', 'UNKNOWN', TRUE, 'Empire Today Flooring — xnonu network; 60% off ends 6/29; payout type TBC; drip lane added 2026-06-11')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+		{"jun11_click_drip_subjects_9178_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9178', 0, 'Your term life quote is ready to finish', 'Seeing your SBLI rate takes about 60 seconds.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_9178_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9178', 1, 'Did you finish your life insurance quote?', 'Your SBLI quick quote is still waiting — no pressure.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_9178_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9178', 2, 'Your SBLI rate is still available', 'Lock in your term life rate today.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_9178_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('9178', 3, 'Final reminder: your term life quote', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_417791_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('417791', 0, 'Your 60% off flooring estimate is reserved', 'Carpet, hardwood, laminate, and vinyl — free in-home estimate.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_417791_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('417791', 1, 'Did you schedule your free flooring estimate?', '60% off select styles ends June 29.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_417791_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('417791', 2, 'Last chance: 60% off Empire Today flooring', 'Sale pricing ends June 29 — book your free estimate.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11_click_drip_subjects_417791_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('417791', 3, 'Final reminder: your flooring estimate', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
 		// Domain Agent (2026-06-09): per-domain × ISP daily scorecard rolled up
 		// by domainagent.ScorecardWorker, plus the plan lifecycle table backing
 		// /api/mailing/domain-agent/plans (draft → compiled → approved →

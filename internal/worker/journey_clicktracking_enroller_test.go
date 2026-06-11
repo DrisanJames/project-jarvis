@@ -11,9 +11,13 @@ func testSlugDict() map[string]string {
 		"J876SLX": "8614", // AmeriSave HELOC
 		"J345SSD": "8511", // Optima Tax
 		"93W8N2N": "4575", // Quicken Loans
-		"GK847MZ": "7667", // NDR (mapped to journey 7667)
+		"GK847MZ": "7667", // NDR legacy cratoolpro slug (mapped to journey 7667)
 		"7N8NS1K": "3776", // Renewal by Andersen
 		"PS8241":  "420", // Sam's Club Membership — PS8241 is affiliate URL slug; Everflow offer 420
+		"2HH43PB": "7667",   // NDR eos57ytf slug (migrated off cratoolpro 2026-06-11)
+		"J78S2MD": "9539",   // Metal Roofing new cratoolpro slug (2026-06-11)
+		"K86F3PC": "9178",   // SBLI Quick Quote
+		"XF1SR2CS": "417791", // Empire Today Flooring — xnonu network
 	}
 }
 
@@ -90,6 +94,41 @@ func TestResolveOfferFromLink(t *testing.T) {
 			link:   "https://www.eos57ytf.com/K4C5ZLC/PS9999/?source_id=email",
 			wantOK: false,
 		},
+		{
+			name:   "ndr eos57ytf alphanumeric slug resolves (2026-06-11 migration)",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/2HH43PB/?source_id=email&sub1=abc&sub2=discountblog.com",
+			wantID: "7667", wantOK: true,
+		},
+		{
+			name:   "metal roofing new cratoolpro slug resolves",
+			link:   "https://www.cratoolpro.com/BJB4Q5BF/J78S2MD/?source_id=email",
+			wantID: "9539", wantOK: true,
+		},
+		{
+			name:   "sbli cratoolpro slug resolves",
+			link:   "https://www.cratoolpro.com/BJB4Q5BF/K86F3PC/?source_id=email&sub1=abc",
+			wantID: "9178", wantOK: true,
+		},
+		{
+			name:   "empire today xnonu slug resolves",
+			link:   "https://www.xnonu.com/TQ5MX18J/XF1SR2CS/?source_id=email&sub1=abc&sub2=quizfiesta.com",
+			wantID: "417791", wantOK: true,
+		},
+		{
+			name:   "lowercase xnonu slug still resolves",
+			link:   "https://www.xnonu.com/TQ5MX18J/xf1sr2cs/",
+			wantID: "417791", wantOK: true,
+		},
+		{
+			name:   "unmapped eos57ytf alphanumeric slug is skipped",
+			link:   "https://www.eos57ytf.com/K4C5ZLC/ZZZ999/?source_id=email",
+			wantOK: false,
+		},
+		{
+			name:   "wrong xnonu publisher path prefix is skipped",
+			link:   "https://www.xnonu.com/OTHERPUB/XF1SR2CS/",
+			wantOK: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -138,6 +177,8 @@ func TestExtractMoneySlug(t *testing.T) {
 		{"warby cratoolpro", "https://www.cratoolpro.com/BJB4Q5BF/K5C8PQQ/?source_id=email&sub1=x&sub2=quizfiesta.com", "K5C8PQQ", true},
 		{"trugreen cratoolpro lowercase", "https://www.cratoolpro.com/BJB4Q5BF/bxpft55/?creative_id=643433", "BXPFT55", true},
 		{"sams club affiliate PS slug", "https://www.eos57ytf.com/K4C5ZLC/PS8241/?source_id=email", "PS8241", true},
+		{"ndr eos57ytf alphanumeric slug", "https://www.eos57ytf.com/K4C5ZLC/2HH43PB/?source_id=email", "2HH43PB", true},
+		{"empire xnonu slug", "https://www.xnonu.com/TQ5MX18J/XF1SR2CS/?source_id=email", "XF1SR2CS", true},
 		{"non-money link", "https://discountblog.com/article", "", false},
 		{"empty", "", "", false},
 	}
