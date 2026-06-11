@@ -6966,7 +6966,7 @@ END $$`},
 			ON CONFLICT (everflow_offer_id) DO NOTHING`},
 		{"jun11_click_drip_map_empire", `INSERT INTO mailing_offer_journey_map
 			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
-			VALUES ('417791', 'click-drip-4touch-72h', 'UNKNOWN', TRUE, 'Empire Today Flooring — xnonu network; 60% off ends 6/29; payout type TBC; drip lane added 2026-06-11')
+			VALUES ('417791', 'click-drip-4touch-72h', 'CPA', TRUE, 'Empire Today Flooring — xnonu network; CPA $180.00 (operator 2026-06-11); 60% off ends 6/29')
 			ON CONFLICT (everflow_offer_id) DO NOTHING`},
 		{"jun11_click_drip_subjects_9178_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
 			VALUES ('9178', 0, 'Your term life quote is ready to finish', 'Seeing your SBLI rate takes about 60 seconds.', TRUE, '+1h reminder; operator-editable')
@@ -6991,6 +6991,43 @@ END $$`},
 			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
 		{"jun11_click_drip_subjects_417791_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
 			VALUES ('417791', 3, 'Final reminder: your flooring estimate', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
+		// Click-drip lane updates round 2 (2026-06-11, operator brief):
+		//   - Empire Today payout confirmed CPA $180.00 (guarded UPDATEs bring
+		//     the prod rows in line; the jun11 seed above carries the same
+		//     values for fresh DBs).
+		//   - New drip lane: Home Repairly Roofing (421060, muqes network
+		//     TQ5MX18J/XLRZDZ8K — the enroller learns the muqes host in this
+		//     same build). Payout amount TBC.
+		{"jun11b_click_drip_empire_payout_cpa", `UPDATE mailing_offer_journey_map
+			SET payout_type='CPA',
+			    notes='Empire Today Flooring — xnonu network; CPA $180.00 (operator 2026-06-11); 60% off ends 6/29',
+			    updated_at=NOW()
+			WHERE everflow_offer_id='417791' AND payout_type<>'CPA'`},
+		{"jun11b_click_drip_empire_offer_payout", `UPDATE mailing_offers
+			SET payout=180.00, payout_type='CPA', updated_at=NOW()
+			WHERE everflow_offer_id='417791'
+			  AND (payout IS DISTINCT FROM 180.00 OR payout_type IS DISTINCT FROM 'CPA')`},
+		{"jun11b_click_drip_slug_homerepairly", `INSERT INTO mailing_offer_slug_map
+			(cratoolpro_slug, everflow_offer_id, offer_name, enabled, notes) VALUES
+			('XLRZDZ8K', '421060', 'Home Repairly Roofing', TRUE, 'muqes.com/TQ5MX18J/XLRZDZ8K; roofing-quotes lead-gen (drip lane 2026-06-11)')
+			ON CONFLICT (cratoolpro_slug) DO NOTHING`},
+		{"jun11b_click_drip_map_homerepairly", `INSERT INTO mailing_offer_journey_map
+			(everflow_offer_id, click_journey_id, payout_type, enabled, notes)
+			VALUES ('421060', 'click-drip-4touch-72h', 'CPL', TRUE, 'Home Repairly Roofing — muqes network (TQ5MX18J/XLRZDZ8K); roofing-quotes lead-gen; payout amount TBC; drip lane added 2026-06-11')
+			ON CONFLICT (everflow_offer_id) DO NOTHING`},
+		{"jun11b_click_drip_subjects_421060_0", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('421060', 0, 'Your local roofing quotes are ready', 'Compare up to 3 local roofers — free, no obligation.', TRUE, '+1h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11b_click_drip_subjects_421060_1", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('421060', 1, 'Did you finish requesting your roofing quotes?', 'Storm season is here — local pros can quote this week.', TRUE, '+6h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11b_click_drip_subjects_421060_2", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('421060', 2, 'Your 3 free roofing quotes are still waiting', 'Compare local prices before scheduling repairs.', TRUE, '+24h reminder; operator-editable')
+			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+		{"jun11b_click_drip_subjects_421060_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
+			VALUES ('421060', 3, 'Final reminder: your roofing quotes', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
 			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
 
 		// Domain Agent (2026-06-09): per-domain × ISP daily scorecard rolled up

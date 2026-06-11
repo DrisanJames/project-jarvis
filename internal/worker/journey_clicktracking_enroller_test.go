@@ -18,6 +18,7 @@ func testSlugDict() map[string]string {
 		"J78S2MD": "9539",   // Metal Roofing new cratoolpro slug (2026-06-11)
 		"K86F3PC": "9178",   // SBLI Quick Quote
 		"XF1SR2CS": "417791", // Empire Today Flooring — xnonu network
+		"XLRZDZ8K": "421060", // Home Repairly Roofing — muqes network
 	}
 }
 
@@ -129,6 +130,21 @@ func TestResolveOfferFromLink(t *testing.T) {
 			link:   "https://www.xnonu.com/OTHERPUB/XF1SR2CS/",
 			wantOK: false,
 		},
+		{
+			name:   "home repairly muqes slug resolves",
+			link:   "https://www.muqes.com/TQ5MX18J/XLRZDZ8K/?source_id=email&sub1=abc&sub2=discountblog.com",
+			wantID: "421060", wantOK: true,
+		},
+		{
+			name:   "lowercase muqes slug still resolves",
+			link:   "https://www.muqes.com/TQ5MX18J/xlrzdz8k/",
+			wantID: "421060", wantOK: true,
+		},
+		{
+			name:   "wrong muqes publisher path prefix is skipped",
+			link:   "https://www.muqes.com/OTHERPUB/XLRZDZ8K/",
+			wantOK: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -179,6 +195,7 @@ func TestExtractMoneySlug(t *testing.T) {
 		{"sams club affiliate PS slug", "https://www.eos57ytf.com/K4C5ZLC/PS8241/?source_id=email", "PS8241", true},
 		{"ndr eos57ytf alphanumeric slug", "https://www.eos57ytf.com/K4C5ZLC/2HH43PB/?source_id=email", "2HH43PB", true},
 		{"empire xnonu slug", "https://www.xnonu.com/TQ5MX18J/XF1SR2CS/?source_id=email", "XF1SR2CS", true},
+		{"home repairly muqes slug", "https://www.muqes.com/TQ5MX18J/XLRZDZ8K/?source_id=email", "XLRZDZ8K", true},
 		{"non-money link", "https://discountblog.com/article", "", false},
 		{"empty", "", "", false},
 	}

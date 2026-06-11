@@ -28,6 +28,7 @@ package worker
 //   - cratoolpro: https://www.cratoolpro.com/BJB4Q5BF/<SLUG>/
 //   - eos57ytf (Sam's Club, NDR): https://www.eos57ytf.com/K4C5ZLC/<SLUG>/
 //   - xnonu (Empire Today): https://www.xnonu.com/TQ5MX18J/<SLUG>/
+//   - muqes (Home Repairly): https://www.muqes.com/TQ5MX18J/<SLUG>/
 // mailing_offer_slug_map is the verified slug → everflow_offer_id dictionary; a
 // click whose slug is not in the map (or maps to an offer with no journey) is
 // skipped.
@@ -78,10 +79,15 @@ var eos57ytfSlugRe = regexp.MustCompile(`(?i)eos57ytf\.com/K4C5ZLC/([A-Za-z0-9_-
 // Example: https://www.xnonu.com/TQ5MX18J/XF1SR2CS/?source_id=email...
 var xnonuSlugRe = regexp.MustCompile(`(?i)xnonu\.com/TQ5MX18J/([A-Za-z0-9_-]+)`)
 
+// muqesSlugRe extracts the trailing offer slug from a muqes affiliate money
+// URL (Home Repairly Roofing, 2026-06-11).
+// Example: https://www.muqes.com/TQ5MX18J/XLRZDZ8K/?source_id=email...
+var muqesSlugRe = regexp.MustCompile(`(?i)muqes\.com/TQ5MX18J/([A-Za-z0-9_-]+)`)
+
 // moneySlugRes is the ordered list of per-network slug extractors. Each
 // captures the slug as submatch 1, already in the same form the
 // mailing_offer_slug_map dictionary keys use.
-var moneySlugRes = []*regexp.Regexp{cratoolproSlugRe, eos57ytfSlugRe, xnonuSlugRe}
+var moneySlugRes = []*regexp.Regexp{cratoolproSlugRe, eos57ytfSlugRe, xnonuSlugRe, muqesSlugRe}
 
 // affiliateSlugRe is the legacy PS#### extractor kept as a last-resort
 // fallback for affiliate URLs on hosts not covered by moneySlugRes. Example:
@@ -280,6 +286,7 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		        t.link_url ILIKE '%cratoolpro.com/BJB4Q5BF/%'
 		     OR t.link_url ILIKE '%eos57ytf.com/K4C5ZLC/%'
 		     OR t.link_url ILIKE '%xnonu.com/TQ5MX18J/%'
+		     OR t.link_url ILIKE '%muqes.com/TQ5MX18J/%'
 		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM mailing_campaigns c
