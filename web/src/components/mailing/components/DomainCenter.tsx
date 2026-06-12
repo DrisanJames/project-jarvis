@@ -19,11 +19,14 @@ import {
   faTimes,
   faStethoscope,
   faSync,
+  faCopy,
+  faHistory,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { SendingProfiles } from './SendingProfiles';
 import { TrackingDomainManager } from './TrackingDomainManager';
 import { ImageDomainManager } from './ImageDomainManager';
+import { SideShelf } from './shared/SideShelf';
 import './DomainCenter.css';
 
 // ============================================================================
@@ -616,7 +619,8 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
       </div>
 
       {dnsHealthDomain && (
-        <DnsHealthModal
+        <DnsHealthShelf
+          key={dnsHealthDomain}
           domain={dnsHealthDomain}
           orgId={orgId}
           onClose={() => setDnsHealthDomain(null)}
@@ -627,7 +631,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
 };
 
 // ============================================================================
-// DNS HEALTH MODAL — live SPF / DKIM / DMARC / NS / blocklist check
+// DNS HEALTH SHELF — live SPF / DKIM / DMARC / NS / blocklist check
 // ============================================================================
 
 type ChipTone = 'ok' | 'warn' | 'bad' | 'muted';
@@ -737,16 +741,84 @@ const dnsSectionTitleStyle: React.CSSProperties = {
   letterSpacing: 0.5,
 };
 
-interface DnsHealthModalProps {
+interface DnsHealthShelfProps {
   domain: string;
   orgId: string;
   onClose: () => void;
 }
 
-const DnsHealthModal: React.FC<DnsHealthModalProps> = ({ domain, orgId, onClose }) => {
-  const [data, setData] = useState<DnsHealthData | null>(null);
+interface DnsHealthRun {
+  ts: string; // ISO timestamp of when the run completed (client-side)
+  data: DnsHealthData;
+}
+
+const MAX_DNS_RUNS = 5;
+
+// Session-scoped run history per domain — survives shelf close/reopen within
+// the page session (module-level, client-side only).
+const dnsRunHistory = new Map<string, DnsHealthRun[]>();
+
+function formatDnsReport(data: DnsHealthData): string {
+  const lines: string[] = [];
+  lines.push(`DNS Health Report — ${data.domain}`);
+  lines.push(`Apex: ${data.apex}`);
+  lines.push(`Checked: ${new Date(data.checked_at).toLocaleString()}`);
+  lines.push('');
+  lines.push(`SPF: ${data.spf.status}`);
+  if (data.spf.record) lines.push(`  Record: ${data.spf.record}`);
+  (data.spf.issues || []).forEach(iss => lines.push(`  Issue: ${iss}`));
+  lines.push('');
+  lines.push(`DKIM: ${data.dkim.status}`);
+  if (data.dkim.selectors_found.length > 0) {
+    lines.push(`  Selectors: ${data.dkim.selectors_found.map(s => `${s}._domainkey`).join(', ')}`);
+  }
+  if (data.dkim.note) lines.push(`  Note: ${data.dkim.note}`);
+  lines.push('');
+  lines.push(`DMARC (_dmarc.${data.apex}): ${data.dmarc.status}${data.dmarc.policy ? ` · p=${data.dmarc.policy}` : ''}`);
+  if (data.dmarc.record) lines.push(`  Record: ${data.dmarc.record}`);
+  (data.dmarc.issues || []).forEach(iss => lines.push(`  Issue: ${iss}`));
+  lines.push('');
+  lines.push(`NS: ${data.ns.provider || (data.ns.servers.length > 0 ? 'Unrecognized provider' : 'No NS records found')}`);
+  data.ns.servers.forEach(s => lines.push(`  ${s}`));
+  lines.push('');
+  lines.push(`MX records (${data.mx.length})${data.mx.length === 0 ? ': none' : ':'}`);
+  data.mx.forEach(m => lines.push(`  ${m}`));
+  lines.push('');
+  lines.push(`A records (${data.a.length})${data.a.length === 0 ? ': none' : ':'}`);
+  data.a.forEach(a => lines.push(`  ${a}`));
+  lines.push('');
+  lines.push(`Blocklists${data.ip_source ? ` (IP source: ${data.ip_source})` : ''}:`);
+  if (data.blocklists.length === 0) {
+    lines.push('  No blocklist targets resolved.');
+  } else {
+    data.blocklists.forEach(b =>
+      lines.push(`  ${b.target} [${b.list}]: ${b.status}${b.detail ? ` — ${b.detail}` : ''}`),
+    );
+  }
+  return lines.join('\n');
+}
+
+const dnsToolbarBtnStyle = (disabled: boolean): React.CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '5px 12px',
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#74b9ff',
+  background: 'rgba(116,185,255,0.10)',
+  border: '1px solid rgba(116,185,255,0.25)',
+  borderRadius: 6,
+  cursor: disabled ? 'not-allowed' : 'pointer',
+  opacity: disabled ? 0.5 : 1,
+});
+
+const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose }) => {
+  const [history, setHistory] = useState<DnsHealthRun[]>(() => dnsRunHistory.get(domain) || []);
+  const [selectedTs, setSelectedTs] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const runCheck = useCallback(async () => {
     setChecking(true);
@@ -760,7 +832,13 @@ const DnsHealthModal: React.FC<DnsHealthModalProps> = ({ domain, orgId, onClose 
       if (!res.ok) {
         throw new Error(body?.error || `DNS health check failed (HTTP ${res.status})`);
       }
-      setData(body as DnsHealthData);
+      const run: DnsHealthRun = { ts: new Date().toISOString(), data: body as DnsHealthData };
+      setHistory(prev => {
+        const next = [run, ...prev].slice(0, MAX_DNS_RUNS);
+        dnsRunHistory.set(domain, next);
+        return next;
+      });
+      setSelectedTs(null); // newest run becomes the displayed one
     } catch (err) {
       setError(err instanceof Error ? err.message : 'DNS health check failed');
     } finally {
@@ -772,89 +850,91 @@ const DnsHealthModal: React.FC<DnsHealthModalProps> = ({ domain, orgId, onClose 
     runCheck();
   }, [runCheck]);
 
+  const currentRun = (selectedTs ? history.find(h => h.ts === selectedTs) : undefined) || history[0] || null;
+  const data = currentRun?.data ?? null;
+
+  const copyReport = async () => {
+    if (!data) return;
+    try {
+      await navigator.clipboard.writeText(formatDnsReport(data));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable — ignore
+    }
+  };
+
   const listedCount = data?.blocklists?.filter(b => b.status === 'listed').length ?? 0;
   const unverifiableCount = data?.blocklists?.filter(b => b.status === 'unverifiable').length ?? 0;
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.65)',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 20,
-      }}
+    <SideShelf
+      title={(
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, maxWidth: '100%' }}>
+          <FontAwesomeIcon icon={faStethoscope} style={{ color: '#74b9ff', flexShrink: 0 }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            DNS Health — {domain}
+          </span>
+        </span>
+      )}
+      onClose={onClose}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 'min(760px, 94vw)',
-          maxHeight: '88vh',
-          overflowY: 'auto',
-          background: '#0d1526',
-          border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: 12,
-          padding: 20,
-          color: '#e0e0e0',
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            <FontAwesomeIcon icon={faStethoscope} style={{ color: '#74b9ff' }} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                DNS Health — {domain}
-              </div>
-              {data && (
-                <div style={{ fontSize: 11, color: '#888' }}>
-                  Apex: {data.apex} · Checked {new Date(data.checked_at).toLocaleTimeString()}
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <button
-              onClick={runCheck}
-              disabled={checking}
-              title="Re-run check (live DNS)"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '5px 12px',
-                fontSize: 11,
-                fontWeight: 600,
-                color: '#74b9ff',
-                background: 'rgba(116,185,255,0.10)',
-                border: '1px solid rgba(116,185,255,0.25)',
-                borderRadius: 6,
-                cursor: checking ? 'not-allowed' : 'pointer',
-                opacity: checking ? 0.5 : 1,
-              }}
-            >
-              <FontAwesomeIcon icon={faSync} spin={checking} /> Re-run
-            </button>
-            <button
-              onClick={onClose}
-              style={{
-                padding: '5px 10px',
-                fontSize: 12,
-                color: '#888',
-                background: 'transparent',
-                border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: 6,
-                cursor: 'pointer',
-              }}
-            >
-              <FontAwesomeIcon icon={faTimes} />
-            </button>
-          </div>
+      <div style={{ padding: '14px 20px 20px', color: '#e0e0e0' }}>
+        {/* Toolbar: re-run, copy report, checked-at */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button
+            onClick={runCheck}
+            disabled={checking}
+            title="Re-run check (live DNS)"
+            style={dnsToolbarBtnStyle(checking)}
+          >
+            <FontAwesomeIcon icon={faSync} spin={checking} /> Re-run
+          </button>
+          <button
+            onClick={copyReport}
+            disabled={!data}
+            title="Copy this report as readable text"
+            style={dnsToolbarBtnStyle(!data)}
+          >
+            <FontAwesomeIcon icon={copied ? faCheck : faCopy} /> {copied ? 'Copied' : 'Copy report'}
+          </button>
+          {data && (
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: '#888' }}>
+              Apex: {data.apex} · Checked {new Date(data.checked_at).toLocaleTimeString()}
+            </span>
+          )}
         </div>
+
+        {/* Check history — last 5 runs of this session, selectable */}
+        {history.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              <FontAwesomeIcon icon={faHistory} /> Runs
+            </span>
+            {history.map((run, i) => {
+              const isCurrent = currentRun?.ts === run.ts;
+              return (
+                <button
+                  key={run.ts}
+                  onClick={() => setSelectedTs(run.ts)}
+                  title={new Date(run.ts).toLocaleString()}
+                  style={{
+                    padding: '3px 9px',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    borderRadius: 999,
+                    cursor: 'pointer',
+                    color: isCurrent ? '#74b9ff' : '#888',
+                    background: isCurrent ? 'rgba(116,185,255,0.12)' : 'rgba(255,255,255,0.04)',
+                    border: `1px solid ${isCurrent ? 'rgba(116,185,255,0.35)' : 'rgba(255,255,255,0.10)'}`,
+                  }}
+                >
+                  {new Date(run.ts).toLocaleTimeString()}{i === 0 ? ' · latest' : ''}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Loading */}
         {checking && !data && (
@@ -1033,6 +1113,6 @@ const DnsHealthModal: React.FC<DnsHealthModalProps> = ({ domain, orgId, onClose 
           </div>
         )}
       </div>
-    </div>
+    </SideShelf>
   );
 };
