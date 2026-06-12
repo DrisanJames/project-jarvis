@@ -279,9 +279,10 @@ func (c *Consciousness) runAssessmentCycle(ctx context.Context) {
 	dsnClass := queryTopDSNClass(qctx, db, windowMin)
 	domainStats := queryDomainDeferrals(qctx, db, windowMin)
 	baseline := queryBaselineAttempted(qctx, db, windowMin)
+	famCtx := queryFamilyVolumeContexts(qctx, db, orgID)
 
 	now := time.Now().UTC()
-	recs := buildAssessmentRecommendations(now, pipes, dsnClass, domainStats, baseline)
+	recs := buildAssessmentRecommendations(now, pipes, dsnClass, domainStats, baseline, famCtx)
 
 	// Group pipes + recommendations by ISP scope.
 	pipesByScope := make(map[string][]AssessmentPipe)
@@ -541,6 +542,208 @@ func queryDomainDeferrals(ctx context.Context, db *sql.DB, windowMin int) []doma
 	return out
 }
 
+// ----------------------------------------------------------------------------
+// Established daily-send baselines per ISP family (send-baselines semantics)
+// ----------------------------------------------------------------------------
+//
+// PROVENANCE: these queries are a compact, family-rolled-up copy of the
+// send-baselines engine in internal/api/send_baselines.go (computeBaselines +
+// HandleSendBaselinesToday). The engine package cannot import internal/api, so
+// the minimal shared semantics are reproduced here — keep them aligned:
+//   - baseline_daily_sends = trimmed mean (drop single min+max at ≥5 samples)
+//     of daily sends over days WITH sends in the trailing 28 full days from
+//     mailing_domain_agent_scorecard, TODAY EXCLUDED (partial day skews it).
+//   - today_sends = MAX(scorecard today row, live count of today's 'sent'
+//     mailing_tracking_events) — the scorecard worker rebuilds every 6h and
+//     can lag; live events cover the gap.
+//   - open quality = recent-7d human-open rate vs prior-window rate;
+//     "collapsed" when recent < 60% of prior (openCollapseFraction).
+// Both mailing_domain_agent_scorecard.isp and pmta_acct_raw.recipient_isp are
+// stamped via isp.GroupFromDomain, so family keys join directly.
+
+const (
+	recPacingOverBaselinePct = 150.0 // today > 150% of baseline ⇒ pacing problem, not reputation
+	recOpenCollapseFraction  = 0.60  // mirrors openCollapseFraction in internal/api/send_baselines.go
+	recBaselineWindowDays    = 28    // mirrors the send-baselines default window
+	recRecentWindowDays      = 7     // mirrors recentWindowDays in internal/api/send_baselines.go
+)
+
+// Open-quality states carried on deferral-storm evidence lines.
+const (
+	openQualityHeld      = "held"
+	openQualityCollapsed = "collapsed"
+	openQualityUnknown   = "unknown"
+)
+
+// familyVolumeContext is the per-ISP-family volume + engagement context used
+// to attribute a deferral storm to pacing vs ISP rate limiting vs reputation.
+type familyVolumeContext struct {
+	BaselineDailySends float64 // trimmed-mean daily sends, today excluded
+	HasBaseline        bool
+	TodaySends         int64
+	RecentOpenRate     float64 // recent-7d human_opens / sends
+	PriorOpenRate      float64 // prior-window human_opens / sends
+	OpenQuality        string  // held | collapsed | unknown
+}
+
+// trimmedMeanDaily mirrors trimmedMean in internal/api/send_baselines.go:
+// mean of days-with-sends, dropping the single min and max when there are at
+// least 5 samples (robust against one blowout / one trickle day).
+func trimmedMeanDaily(vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), vals...)
+	sort.Float64s(sorted)
+	if len(sorted) >= 5 {
+		sorted = sorted[1 : len(sorted)-1]
+	}
+	var sum float64
+	for _, v := range sorted {
+		sum += v
+	}
+	return round1(sum / float64(len(sorted)))
+}
+
+// queryFamilyVolumeContexts builds the baseline/today/open-quality context for
+// every ISP family with scorecard history or sends today. One bulk pass per
+// assessment cycle (NOT the hot path). Errors degrade to an empty map — the
+// recommendation builder then falls back to the pre-baseline behavior.
+func queryFamilyVolumeContexts(ctx context.Context, db *sql.DB, orgID string) map[string]familyVolumeContext {
+	out := make(map[string]familyVolumeContext)
+	if orgID == "" {
+		return out
+	}
+
+	// 1) Trailing 28 full days (today excluded): daily sends + human opens per
+	//    family, split recent-7d vs prior for the open-quality comparison.
+	type dailyAgg struct {
+		sends, humanOpens int64
+		recent            bool
+	}
+	perFamily := make(map[string][]dailyAgg)
+	rows, err := db.QueryContext(ctx, `
+		SELECT LOWER(isp),
+		       SUM(sends), SUM(human_opens),
+		       (day >= CURRENT_DATE - $2::int) AS recent
+		FROM mailing_domain_agent_scorecard
+		WHERE organization_id = $1
+		  AND day >= CURRENT_DATE - $3::int
+		  AND day <  CURRENT_DATE
+		GROUP BY LOWER(isp), day`,
+		orgID, recRecentWindowDays, recBaselineWindowDays)
+	if err != nil {
+		log.Printf("[consciousness] family baseline query failed: %v", err)
+		return out
+	}
+	for rows.Next() {
+		var fam string
+		var d dailyAgg
+		if rows.Scan(&fam, &d.sends, &d.humanOpens, &d.recent) == nil {
+			perFamily[fam] = append(perFamily[fam], d)
+		}
+	}
+	rows.Close()
+
+	for fam, days := range perFamily {
+		var fc familyVolumeContext
+		var active []float64
+		var recentSends, recentOpens, priorSends, priorOpens int64
+		for _, d := range days {
+			if d.sends > 0 {
+				active = append(active, float64(d.sends))
+			}
+			if d.recent {
+				recentSends += d.sends
+				recentOpens += d.humanOpens
+			} else {
+				priorSends += d.sends
+				priorOpens += d.humanOpens
+			}
+		}
+		fc.BaselineDailySends = trimmedMeanDaily(active)
+		fc.HasBaseline = fc.BaselineDailySends > 0
+		if recentSends > 0 {
+			fc.RecentOpenRate = float64(recentOpens) / float64(recentSends)
+		}
+		if priorSends > 0 {
+			fc.PriorOpenRate = float64(priorOpens) / float64(priorSends)
+		}
+		switch {
+		case recentSends == 0 || priorSends == 0 || fc.PriorOpenRate == 0:
+			fc.OpenQuality = openQualityUnknown
+		case fc.RecentOpenRate >= recOpenCollapseFraction*fc.PriorOpenRate:
+			fc.OpenQuality = openQualityHeld
+		default:
+			fc.OpenQuality = openQualityCollapsed
+		}
+		out[fam] = fc
+	}
+
+	// 2) Today's sends per family: MAX(scorecard today, live tracking events).
+	todaySC := make(map[string]int64)
+	scRows, err := db.QueryContext(ctx, `
+		SELECT LOWER(isp), SUM(sends)
+		FROM mailing_domain_agent_scorecard
+		WHERE organization_id = $1 AND day = CURRENT_DATE
+		GROUP BY 1`, orgID)
+	if err == nil {
+		for scRows.Next() {
+			var fam string
+			var n int64
+			if scRows.Scan(&fam, &n) == nil {
+				todaySC[fam] += n
+			}
+		}
+		scRows.Close()
+	} else {
+		log.Printf("[consciousness] family today-scorecard query failed: %v", err)
+	}
+
+	todayLive := make(map[string]int64)
+	liveRows, err := db.QueryContext(ctx, `
+		SELECT COALESCE(LOWER(recipient_domain), ''), COUNT(*)
+		FROM mailing_tracking_events
+		WHERE organization_id = $1
+		  AND event_at >= CURRENT_DATE
+		  AND event_type = 'sent'
+		GROUP BY 1`, orgID)
+	if err == nil {
+		for liveRows.Next() {
+			var rdom string
+			var n int64
+			if liveRows.Scan(&rdom, &n) == nil {
+				todayLive[isppkg.GroupFromDomain(rdom)] += n
+			}
+		}
+		liveRows.Close()
+	} else {
+		log.Printf("[consciousness] family today-live query failed: %v", err)
+	}
+
+	for fam, n := range todaySC {
+		fc := out[fam]
+		if fc.OpenQuality == "" {
+			fc.OpenQuality = openQualityUnknown
+		}
+		if n > fc.TodaySends {
+			fc.TodaySends = n
+		}
+		out[fam] = fc
+	}
+	for fam, n := range todayLive {
+		fc := out[fam]
+		if fc.OpenQuality == "" {
+			fc.OpenQuality = openQualityUnknown
+		}
+		if n > fc.TodaySends {
+			fc.TodaySends = n
+		}
+		out[fam] = fc
+	}
+	return out
+}
+
 // queryBaselineAttempted returns the trailing-7-day per-window average
 // attempted count per ISP (excluding the current window) for the warmup
 // pacing recommendation.
@@ -673,8 +876,14 @@ func buildAssessmentRecommendations(
 	dsnClass map[string]string,
 	domainStats []domainDeferralStat,
 	baseline map[string]float64,
+	famCtx map[string]familyVolumeContext,
 ) []AssessmentRecommendation {
 	recs := []AssessmentRecommendation{}
+
+	// Families whose family-wide deferral storm already got an attribution rec
+	// (pacing / rate-limit / reputation) — domain-scoped storm recs for the
+	// same family are suppressed so one condition yields one attribution.
+	stormHandled := map[string]bool{}
 
 	byISP := make(map[string][]AssessmentPipe)
 	totalsByISP := make(map[string]AssessmentTotals)
@@ -727,7 +936,16 @@ func buildAssessmentRecommendations(
 		sort.Slice(qualified, func(i, j int) bool { return qualified[i].DeferralPct < qualified[j].DeferralPct })
 		best := qualified[0]
 
-		// (b) throttle — every qualified pipe storming ⇒ reputation, not routing.
+		// (b) family-wide deferral storm — every qualified pipe storming.
+		// Attribution consults the ESTABLISHED daily baseline + open quality
+		// (send-baselines semantics, see queryFamilyVolumeContexts) before
+		// blaming reputation:
+		//   (2a) today > 150% of baseline           ⇒ PACING (warmup), not reputation
+		//   (2b) within baseline + opens held        ⇒ ISP-side rate limiting (soft throttle)
+		//   (2c) within baseline + opens collapsed,
+		//        unknown opens, or no baseline       ⇒ reputation throttle (legacy wording)
+		// Per-pipe asymmetry (one bad pipe, healthy siblings) never reaches
+		// here — that stays the reroute path below.
 		allStorming := true
 		for _, p := range qualified {
 			if p.DeferralPct <= recStormDeferralPct {
@@ -736,17 +954,71 @@ func buildAssessmentRecommendations(
 			}
 		}
 		if allStorming {
-			recs = append(recs, AssessmentRecommendation{
-				Severity: "critical",
-				Scope:    "isp:" + ispName,
-				ISP:      ispName,
-				Type:     RecommendationThrottle,
-				Evidence: fmt.Sprintf("every pipe deferring >%.0f%% (%d attempted, %d deferred, %.1f%%); dominant DSN class: %s",
-					recStormDeferralPct, t.Attempted, t.Deferred, t.DeferralPct, klass),
-				Action: fmt.Sprintf("%s-family deferral storm across all pipes — throttle down %s volume; this is reputation, not routing.",
-					ispName, ispName),
-				CreatedAt: now,
-			})
+			stormHandled[ispName] = true
+			fv, hasCtx := famCtx[ispName]
+
+			// Evidence always carries: today-vs-baseline volume, deferral %,
+			// open-quality status — so the operator can audit the attribution.
+			deferralEv := fmt.Sprintf("every pipe deferring >%.0f%% (%d attempted, %d deferred, %.1f%%)",
+				recStormDeferralPct, t.Attempted, t.Deferred, t.DeferralPct)
+			volumeEv := "volume today vs baseline unavailable (no scorecard history)"
+			openEv := "open quality: " + openQualityUnknown
+			pacePct := 0.0
+			if hasCtx {
+				openEv = fmt.Sprintf("open quality: %s (recent human-open rate %.2f%% vs prior %.2f%%)",
+					fv.OpenQuality, 100*fv.RecentOpenRate, 100*fv.PriorOpenRate)
+				if fv.HasBaseline {
+					pacePct = 100 * float64(fv.TodaySends) / fv.BaselineDailySends
+					volumeEv = fmt.Sprintf("volume today %d vs established baseline %.0f/day (%.0f%% of baseline)",
+						fv.TodaySends, fv.BaselineDailySends, pacePct)
+				}
+			}
+			evidence := fmt.Sprintf("%s; %s; %s; dominant DSN class: %s", volumeEv, deferralEv, openEv, klass)
+
+			switch {
+			case hasCtx && fv.HasBaseline && pacePct > recPacingOverBaselinePct:
+				// (2a) Pacing: the storm coincides with a volume spike well over
+				// the established baseline. Severity "high" per spec maps to
+				// "critical" in the info|warn|critical taxonomy. The generic
+				// window-spike warmup rec (d) is skipped via `continue` below —
+				// one family never gets both for the same condition.
+				recs = append(recs, AssessmentRecommendation{
+					Severity: "critical",
+					Scope:    "isp:" + ispName,
+					ISP:      ispName,
+					Type:     RecommendationWarmup,
+					Evidence: evidence,
+					Action: fmt.Sprintf("%s-family deferral storm driven by volume %.0f%% over baseline (%d vs %.0f/day) — return to baseline pace; deferrals should clear as volume normalizes.",
+						ispName, pacePct, fv.TodaySends, fv.BaselineDailySends),
+					CreatedAt: now,
+				})
+			case hasCtx && fv.HasBaseline && fv.OpenQuality == openQualityHeld:
+				// (2b) Normal volume, healthy engagement ⇒ ISP-side rate
+				// limiting, not reputation damage. Soft hold, not a cut.
+				recs = append(recs, AssessmentRecommendation{
+					Severity: "warn",
+					Scope:    "isp:" + ispName,
+					ISP:      ispName,
+					Type:     RecommendationThrottle,
+					Evidence: evidence,
+					Action: fmt.Sprintf("%s-family deferral storm at normal volume with healthy engagement — likely ISP-side rate limiting; hold %s volume flat, do not grow.",
+						ispName, ispName),
+					CreatedAt: now,
+				})
+			default:
+				// (2c) Normal volume + collapsed (or unknowable) open quality ⇒
+				// the existing reputation throttle.
+				recs = append(recs, AssessmentRecommendation{
+					Severity: "critical",
+					Scope:    "isp:" + ispName,
+					ISP:      ispName,
+					Type:     RecommendationThrottle,
+					Evidence: evidence,
+					Action: fmt.Sprintf("%s-family deferral storm across all pipes — throttle down %s volume; this is reputation, not routing.",
+						ispName, ispName),
+					CreatedAt: now,
+				})
+			}
 			continue
 		}
 
@@ -799,15 +1071,10 @@ func buildAssessmentRecommendations(
 		if ds.Attempted < recMinAttempts || ds.DeferralPct <= recStormDeferralPct {
 			continue
 		}
-		// Skip if the whole family already got a critical throttle above.
-		alreadyStorming := false
-		for _, r := range recs {
-			if r.ISP == ds.ISP && r.Type == RecommendationThrottle && r.Domain == "" {
-				alreadyStorming = true
-				break
-			}
-		}
-		if alreadyStorming {
+		// Skip if the whole family already got a storm attribution above
+		// (pacing warmup, rate-limit hold, or reputation throttle) — one
+		// condition, one attribution.
+		if stormHandled[ds.ISP] {
 			continue
 		}
 		klass := dsnClass[ds.ISP]
