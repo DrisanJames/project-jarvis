@@ -1,14 +1,19 @@
 // Domain Agents — per-domain agentic send planning & approval.
 //
-// Left rail: sending domains with worst-ISP posture, 7d sends/open%, and a
-// plan-today indicator. Main pane (selected domain): SCORECARD (per-ISP
-// window aggregates + daily trend), BRIEFING & PLAN (generate / review /
-// edit slot copy), APPROVE & DEPLOY (typed-domain confirm gate → live
-// PMTA deploy → 10s campaign QA polling).
+// Left rail: sending domains with worst-ISP posture, volume verdict chip
+// (INCREASE/MAINTAIN/DECREASE from send-baselines), 7d sends/open%, and a
+// plan-today indicator. Main pane (selected domain): VOLUME VERDICT banner,
+// TODAY-VS-BASELINE pace meter, SCORECARD (per-ISP window aggregates + daily
+// trend), OFFER × ISP historical scorecards, BRIEFING & PLAN (generate /
+// review / edit slot copy), APPROVE & DEPLOY (typed-domain confirm gate →
+// live PMTA deploy → 10s campaign QA polling). With NO domain selected the
+// pane shows the cross-domain baselines comparison (absorbed from the old
+// standalone Score Cards tab).
 //
-// Backend contract: /api/mailing/domain-agent (see domain-agents/types.ts).
+// Backend contracts: /api/mailing/domain-agent (domain-agents/types.ts) and
+// /api/mailing/send-baselines* (domain-agents/BaselinesSection.tsx).
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faRotateRight, faSpinner, faRobot } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
@@ -23,6 +28,10 @@ import { ScorecardSection } from './domain-agents/ScorecardSection';
 import { UpcomingSendsSection } from './domain-agents/UpcomingSendsSection';
 import { BriefingPlanSection } from './domain-agents/BriefingPlanSection';
 import { ApproveDeploySection } from './domain-agents/ApproveDeploySection';
+import {
+  BaselinesResponse, BaselineVerdictBanner, TodayPaceSection, DomainScorecardHistory,
+  AllDomainsBaselines, VerdictChip, verdictByCanonicalDomain, canonicalDomain,
+} from './domain-agents/BaselinesSection';
 
 // Local YYYY-MM-DD (operator timezone) — plan_date is a calendar day, not UTC.
 const todayLocalISO = (): string => new Date().toLocaleDateString('en-CA');
@@ -43,6 +52,12 @@ export const DomainAgents: React.FC = () => {
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
 
+  // ── Send baselines (one fetch for all domains: rail chips, verdict
+  //    banner on the selected domain, and the all-domains comparison view) ─
+  const [baselines, setBaselines] = useState<BaselinesResponse | null>(null);
+  const [baselinesLoading, setBaselinesLoading] = useState(true);
+  const [baselinesError, setBaselinesError] = useState<string | null>(null);
+
   const fetchDomains = useCallback(async () => {
     setDomainsLoading(true);
     setDomainsError(null);
@@ -52,7 +67,9 @@ export const DomainAgents: React.FC = () => {
       const data: DomainSummary[] = await res.json();
       const list = Array.isArray(data) ? data : [];
       setDomains(list);
-      setSelected(prev => prev && list.some(d => d.domain === prev) ? prev : (list[0]?.domain ?? null));
+      // No auto-select: with nothing selected the main pane shows the
+      // all-domains baselines comparison (old Score Cards tab main view).
+      setSelected(prev => prev && list.some(d => d.domain === prev) ? prev : null);
     } catch (e) {
       setDomainsError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -61,6 +78,28 @@ export const DomainAgents: React.FC = () => {
   }, []);
 
   useEffect(() => { fetchDomains(); }, [fetchDomains]);
+
+  const fetchBaselines = useCallback(async () => {
+    setBaselinesLoading(true);
+    setBaselinesError(null);
+    try {
+      const res = await apiFetch('/api/mailing/send-baselines?days=28');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBaselines(await res.json() as BaselinesResponse);
+    } catch (e) {
+      setBaselinesError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBaselinesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchBaselines(); }, [fetchBaselines]);
+
+  // canonical domain (em.<apex>) → worst verdict across its em.+m. × ISP rows.
+  const railVerdicts = useMemo(
+    () => verdictByCanonicalDomain(baselines?.rows ?? []),
+    [baselines],
+  );
 
   const fetchPlan = useCallback(async (domain: string) => {
     setPlanLoading(true);
@@ -145,6 +184,25 @@ export const DomainAgents: React.FC = () => {
           <div style={{ color: C.muted, fontSize: 13, padding: '8px 2px' }}>No sending domains found.</div>
         )}
 
+        {!domainsLoading && !domainsError && domains.length > 0 && (
+          <div
+            onClick={() => setSelected(null)}
+            style={{
+              padding: '10px 10px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              marginBottom: 6,
+              background: selected === null ? 'rgba(0,229,255,0.08)' : 'transparent',
+              border: selected === null ? '1px solid rgba(0,229,255,0.35)' : '1px solid transparent',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, color: selected === null ? C.accent : C.text }}>
+              All domains
+            </div>
+            <div style={{ fontSize: 11.5, color: C.muted }}>Cross-domain baselines &amp; verdicts</div>
+          </div>
+        )}
+
         {!domainsLoading && !domainsError && domains.map(d => {
           const active = d.domain === selected;
           return (
@@ -182,7 +240,13 @@ export const DomainAgents: React.FC = () => {
                   )}
                   {d.domain}
                 </span>
-                <StatusBadge status={postureToBadge(d.posture_worst)} label={d.posture_worst} showIcon={false} />
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                  {(() => {
+                    const v = railVerdicts.get(canonicalDomain(d.domain));
+                    return v ? <VerdictChip verdict={v} compact /> : null;
+                  })()}
+                  <StatusBadge status={postureToBadge(d.posture_worst)} label={d.posture_worst} showIcon={false} />
+                </span>
               </div>
               <div style={{ fontSize: 11.5, color: C.muted }}>
                 {fmtInt(d.sends_7d)} sends 7d · open {fmtPct100(d.human_open_pct_7d)}
@@ -200,9 +264,16 @@ export const DomainAgents: React.FC = () => {
         <AgentChatSection domain={selected} />
 
         {!selected && !domainsLoading && (
-          <div style={{ ...panelStyle, color: C.muted, fontSize: 13 }}>
-            Select a domain on the left to view its scorecard and plan.
-          </div>
+          <AllDomainsBaselines
+            data={baselines}
+            loading={baselinesLoading}
+            error={baselinesError}
+            onRetry={fetchBaselines}
+            onSelectDomain={canonical => {
+              const match = domains.find(d => canonicalDomain(d.domain) === canonical);
+              if (match) setSelected(match.domain);
+            }}
+          />
         )}
 
         {selected && (
@@ -216,7 +287,19 @@ export const DomainAgents: React.FC = () => {
               )}
             </div>
 
+            <BaselineVerdictBanner
+              domain={selected}
+              data={baselines}
+              loading={baselinesLoading}
+              error={baselinesError}
+              onRetry={fetchBaselines}
+            />
+
+            <TodayPaceSection domain={selected} />
+
             <ScorecardSection domain={selected} />
+
+            <DomainScorecardHistory domain={selected} />
 
             <UpcomingSendsSection domain={selected} />
 

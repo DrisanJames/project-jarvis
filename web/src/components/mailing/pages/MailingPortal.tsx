@@ -50,7 +50,6 @@ const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m 
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
-const SendScorecards = lazy(() => import('../components/SendScorecards').then(m => ({ default: m.SendScorecards })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -59,7 +58,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'scorecards';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner';
 
 interface Tab {
   id: TabId;
@@ -76,8 +75,7 @@ const tabs: Tab[] = [
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
-  { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'Per-domain agentic send planning & approval' },
-  { id: 'scorecards', label: 'Scorecards', icon: faChartLine, description: 'Send baselines & verdicts per domain × ISP — increase/decrease/maintain — plus historical domain × offer × ISP scorecards' },
+  { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'Per-domain agentic send planning & approval — baselines, verdicts & scorecards' },
   { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price CPM deals — planned volume, pace, capacity risk & live earnings vs goal' },
   { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
   { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'ReviewForge creative archive — browse & preview pipeline-built newsletters per offer × brand' },
@@ -117,6 +115,22 @@ export const MailingPortal: React.FC = () => {
     }
     setActiveTab(tab);
   };
+
+  // Cross-tab deep links — components rendered without portal props (e.g.
+  // Offer Center → CPM Planner) navigate by dispatching a 'jarvis:navigate'
+  // CustomEvent with { tab }. Hash changes are not observed anywhere in the
+  // portal, so this event is the lightest working mechanism.
+  useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const tab = (e as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (tab) {
+        if (tab !== 'campaign-center') setPendingOffer(null);
+        setActiveTab(tab as TabId);
+      }
+    };
+    window.addEventListener('jarvis:navigate', onNavigate);
+    return () => window.removeEventListener('jarvis:navigate', onNavigate);
+  }, []);
 
   // Fetch real-time stats for sidebar
   useEffect(() => {
@@ -199,8 +213,6 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
       case 'cpm-planner':
         return <Suspense fallback={<ChunkLoader />}><CpmPlanner /></Suspense>;
-      case 'scorecards':
-        return <Suspense fallback={<ChunkLoader />}><SendScorecards /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
