@@ -75,7 +75,7 @@ import {
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
 
-const PAGE_VERSION = '2.1';
+const PAGE_VERSION = '2.2';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES (match backend JSON keys exactly)
@@ -199,14 +199,20 @@ interface EventCounts {
   complaints: number;
   opens: number;
   clicks: number;
+  bouncedUntyped: number; // ses-source 'bounced' (no hard/soft split)
+  unsubs: number;
   other: number;         // unknown event types (rendered, never dropped)
   total: number;
 }
 
 // Computed rates with explicit denominator provenance.
+// v2.2: 'attempted' is emitted by the SES pipe ONLY (PMTA emits no attempted
+// event yet), so raw attempted can never be a blended denominator — it
+// produced the infamous 229% delivery rate. The honest blended denominator is
+// derived: delivered + hard + soft + untyped bounces (= attempt outcomes).
 interface Rates {
   denom: number;
-  denomLabel: 'attempted' | 'delivered+bounces';
+  denomLabel: 'attempted (derived: delivered+bounces)' | 'delivered+bounces';
   delivery: number | null;
   hard: number | null;
   soft: number | null;
@@ -474,7 +480,7 @@ const eventTypeColor = (t: string): string => {
 
 const KNOWN_TYPES = new Set([
   'attempted', 'delivered', 'relayed_to_ses', 'hard_bounce', 'soft_bounce',
-  'delivery_delay', 'complaint', 'open', 'click',
+  'delivery_delay', 'complaint', 'open', 'click', 'bounced', 'unsubscribe',
 ]);
 
 function countsFromTypeMap(m: Record<string, number>): EventCounts {
@@ -495,18 +501,21 @@ function countsFromTypeMap(m: Record<string, number>): EventCounts {
     complaints: g('complaint'),
     opens: g('open'),
     clicks: g('click'),
+    bouncedUntyped: g('bounced'),
+    unsubs: g('unsubscribe'),
     other,
     total,
   };
 }
 
-// Rate convention: denominator = attempted when attempted>0, else
-// delivered+hard+soft. The label records which was used so every rendered
-// rate can disclose its denominator.
+// Rate convention (v2.2): denominator = DERIVED attempted =
+// delivered + hard + soft + untyped bounces. Raw 'attempted' events exist
+// only on the SES pipe (PMTA emits none), so using them blended produced
+// >200% delivery rates. Every attempt has exactly one terminal outcome, so
+// outcomes ARE attempts — per route AND blended.
 function computeRates(c: EventCounts): Rates {
-  const useAttempted = c.attempted > 0;
-  const denom = useAttempted ? c.attempted : c.delivered + c.hard + c.soft;
-  const denomLabel: Rates['denomLabel'] = useAttempted ? 'attempted' : 'delivered+bounces';
+  const denom = c.delivered + c.hard + c.soft + c.bouncedUntyped;
+  const denomLabel: Rates['denomLabel'] = 'attempted (derived: delivered+bounces)';
   const r = (n: number): number | null => (denom > 0 ? (n / denom) * 100 : null);
   return {
     denom,
@@ -524,6 +533,83 @@ function computeRates(c: EventCounts): Rates {
 function makeMetricRow(key: string, typeMap: Record<string, number>): MetricRow {
   const counts = countsFromTypeMap(typeMap);
   return { key, counts, rates: computeRates(counts) };
+}
+
+// ── Route funnel (v2.2) ─────────────────────────────────────────────────────
+// Pivots the group_by=source,route_type,event_type companion query into the
+// per-route funnel: PMTA-direct (attempted derived) vs SES relay (attempted
+// native). Bounce figures here come from pmta+ses sources only by
+// construction — the 'app' source never enters this pivot's funnel rows.
+function RouteFunnelPanel({ rows }: { rows: BreakdownRow[] }) {
+  const get = (src: string, rt: string | null, et: string): number =>
+    rows.reduce((a, r) => {
+      if ((r.keys['source'] ?? '') !== src) return a;
+      if (rt !== null && (r.keys['route_type'] ?? '') !== rt) return a;
+      return (r.keys['event_type'] ?? '') === et ? a + r.count : a;
+    }, 0);
+
+  const pmtaDelivered = get('pmta', 'pmta_direct', 'delivered');
+  const pmtaHard = get('pmta', 'pmta_direct', 'hard_bounce');
+  const pmtaSoft = get('pmta', 'pmta_direct', 'soft_bounce');
+  const pmtaAttempted = pmtaDelivered + pmtaHard + pmtaSoft;
+  const handoffs = get('pmta', null, 'relayed_to_ses');
+  const sesAttempted = get('ses', null, 'attempted');
+  const sesDelivered = get('ses', null, 'delivered');
+  const sesBounced = get('ses', null, 'bounced') + get('ses', null, 'hard_bounce') + get('ses', null, 'soft_bounce');
+  if (pmtaAttempted === 0 && sesAttempted === 0) return null;
+
+  const pct = (n: number, d: number) => (d > 0 ? `${((n / d) * 100).toFixed(1)}%` : '—');
+  const cell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+  const head: React.CSSProperties = { ...cell, color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 };
+  const rowLabel: React.CSSProperties = { ...cell, textAlign: 'left', fontWeight: 600 };
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={styles.subPanelTitle}>
+        Route funnel — performance coupled per route (bounces: pmta+ses sources only)
+      </div>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+        <thead>
+          <tr>
+            <th style={{ ...head, textAlign: 'left' }}>Route</th>
+            <th style={head}>Attempted</th>
+            <th style={head}>Delivered</th>
+            <th style={head}>Hard</th>
+            <th style={head}>Soft / Bounced</th>
+            <th style={head}>Accept rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={rowLabel}>PMTA-direct</td>
+            <td style={cell} title="derived: delivered + bounces (PMTA emits no attempted event)">{fmt(pmtaAttempted)}*</td>
+            <td style={cell}>{fmt(pmtaDelivered)}</td>
+            <td style={cell}>{fmt(pmtaHard)}</td>
+            <td style={cell}>{fmt(pmtaSoft)}</td>
+            <td style={cell}>{pct(pmtaDelivered, pmtaAttempted)}</td>
+          </tr>
+          <tr>
+            <td style={rowLabel}>SES relay</td>
+            <td style={cell} title={`native attempted; cross-check: ${fmt(handoffs)} PMTA→SES handoffs`}>{fmt(sesAttempted)}</td>
+            <td style={cell}>{fmt(sesDelivered)}</td>
+            <td style={cell} colSpan={2}>{fmt(sesBounced)}</td>
+            <td style={cell}>{pct(sesDelivered, sesAttempted)}</td>
+          </tr>
+          <tr>
+            <td style={{ ...rowLabel, borderTop: '1px solid #374151' }}>TOTAL</td>
+            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{fmt(pmtaAttempted + sesAttempted)}</td>
+            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{fmt(pmtaDelivered + sesDelivered)}</td>
+            <td style={{ ...cell, borderTop: '1px solid #374151' }} colSpan={2}>{fmt(pmtaHard + pmtaSoft + sesBounced)}</td>
+            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{pct(pmtaDelivered + sesDelivered, pmtaAttempted + sesAttempted)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+        * PMTA attempted is derived (delivered+bounces) until the ingestor emits native attempted events.
+        {' '}SES attempted ≈ handoffs ({fmt(handoffs)}) is the pipeline-consistency check.
+      </div>
+    </div>
+  );
 }
 
 const denomTitle = (r: Rates): string => `denominator: ${r.denomLabel} (${fmt(r.denom)})`;
@@ -558,11 +644,13 @@ function pivotByDim(rows: BreakdownRow[], dim: string): { rows: MetricRow[]; tot
   return { rows: out, totals: makeMetricRow('TOTAL', totalMap) };
 }
 
-// Pivot group_by=dt,event_type rows into a sorted daily series for charting.
+// Pivot group_by=local_dt,event_type rows into a sorted daily series for
+// charting. Days are America/Denver (v2.2); falls back to the UTC dt key for
+// older callers.
 function dailySeries(rows: BreakdownRow[]): DailyPoint[] {
   const byDt = new Map<string, Record<string, number>>();
   for (const r of rows) {
-    const dtKey = r.keys['dt'] ?? '';
+    const dtKey = r.keys['local_dt'] ?? r.keys['dt'] ?? '';
     const et = (r.keys['event_type'] ?? '').toLowerCase();
     let m = byDt.get(dtKey);
     if (!m) { m = {}; byDt.set(dtKey, m); }
@@ -1131,6 +1219,8 @@ const Toolbar: React.FC<{
 const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
   const [rows, setRows] = useState<BreakdownRow[]>([]);
+  const [routeRows, setRouteRows] = useState<BreakdownRow[]>([]);
+  const [humanClicks, setHumanClicks] = useState<number>(0);
   const [meta, setMeta] = useState<FetchMeta | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1148,12 +1238,32 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetchBreakdown(
-        { from: applied.from, to: applied.to, groupBy: ['dt', 'event_type'], limit: 5000, filters: filterParams(applied) },
-        applied.nonce,
-        { signal: ctl.signal, bypass }
-      );
+      // v2.2: days are America/Denver (local_dt); two companion queries power
+      // the per-route funnel (source,route_type) and the human-verdict click
+      // count (is_machine_click=false). They share the abort signal.
+      const [res, routeRes, humanRes] = await Promise.all([
+        fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: filterParams(applied) },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
+        fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: ['source', 'route_type', 'event_type'], limit: 500, filters: filterParams(applied) },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
+        fetchBreakdown(
+          {
+            from: applied.from, to: applied.to, groupBy: ['event_type'], limit: 10,
+            filters: { ...filterParams(applied), event_type: 'click', is_machine_click: 'false' },
+          },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
+      ]);
       setRows(res.data.rows);
+      setRouteRows(routeRes.data.rows);
+      setHumanClicks(humanRes.data.rows.reduce((a, x) => a + x.count, 0));
       setTruncated(!!res.data.truncated);
       setMeta(res.meta);
       setLoaded(true);
@@ -1163,6 +1273,8 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // Clear stale data — old numbers must never render under the
       // newly-applied range/filter labels after the toast fades.
       setRows([]);
+      setRouteRows([]);
+      setHumanClicks(0);
       setMeta(null);
       setTruncated(false);
       setLoaded(false);
@@ -1203,8 +1315,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               Range Overview
             </h2>
             <p style={styles.panelSubtitle}>
-              group_by=dt,event_type over {applied.from} → {applied.to}. Counts are COUNT(DISTINCT event_uid).
-              relayed_to_ses is a PMTA→SES handoff, not a recipient delivery. <TimingNote meta={meta} />
+              Days are <b>America/Denver</b> over {applied.from} → {applied.to}. Counts are COUNT(DISTINCT event_uid).
+              Attempted is DERIVED (delivered+bounces) — the PMTA pipe emits no attempted event;
+              raw attempted events exist on the SES pipe only. relayed_to_ses is a PMTA→SES handoff,
+              not a recipient delivery. <TimingNote meta={meta} />
             </p>
           </div>
           <button style={styles.refreshBtn} onClick={() => load(true)} disabled={loading}>
@@ -1224,24 +1338,34 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           <>
             {/* KPI strip */}
             <div style={styles.kpiGrid}>
-              <KpiCard label="Attempted" value={c.attempted} color={COLORS.accent} />
+              <KpiCard label="Attempted (derived)" value={r.denom} color={COLORS.accent}
+                extra="delivered + bounces; PMTA emits no attempted event" />
               <KpiCard label="Delivered" value={c.delivered} color={COLORS.good}
                 rate={r.delivery} rateLabel="delivery" denomNote={dn} />
               <KpiCard label="Hard Bounce" value={c.hard} color={HARD_RED}
                 rate={r.hard} rateLabel="hard" denomNote={dn} />
               <KpiCard label="Soft Bounce" value={c.soft} color={SOFT_AMBER}
                 rate={r.soft} rateLabel="soft" denomNote={dn} />
-              <KpiCard label="Delivery Delays" value={c.delays} color={COLORS.warn} />
+              <KpiCard label="Deferral Retry Events" value={c.delays} color={COLORS.warn}
+                extra="per-RETRY events, not unique messages — throttle ISPs emit dozens per message" />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
-              <KpiCard label="Opens" value={c.opens} color={OPEN_CYAN}
-                rate={r.open} rateLabel="open" denomNote={deliveredTitle(c)} />
-              <KpiCard label="Clicks" value={c.clicks} color={CLICK_VIOLET}
+              <KpiCard label="Opens (raw)" value={c.opens} color={OPEN_CYAN}
+                rate={r.open} rateLabel="open" denomNote={deliveredTitle(c)}
+                extra="raw events — machine traffic included" />
+              <KpiCard label="Clicks (raw)" value={c.clicks} color={CLICK_VIOLET}
                 rate={r.click} rateLabel="click" denomNote={deliveredTitle(c)}
-                extra={`CTOR: ${fmtPct(r.ctor)} (of ${fmt(c.opens)} opens)`} />
+                extra={`human-flagged: ${fmt(humanClicks)} · CTOR(raw): ${fmtPct(r.ctor)}`} />
               <KpiCard label="Relayed → SES" value={c.relayed} color={INFO_BLUE}
                 extra="relay handoff — not a delivery" />
             </div>
+
+            {/* Route funnel — attempted/delivered/bounces with route as a
+                dimension; bounce numbers read pmta+ses sources ONLY (the
+                'app' source carries engagement; its 2026-06-11 bounce rows
+                are known duplicates). */}
+            <RouteFunnelPanel rows={routeRows} />
+
 
             {/* Daily trend */}
             <div style={{ marginTop: 20 }}>

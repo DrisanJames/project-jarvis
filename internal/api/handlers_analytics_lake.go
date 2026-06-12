@@ -170,6 +170,7 @@ func (s *Server) HandleLakeBreakdown(w http.ResponseWriter, r *http.Request) {
 	for _, col := range []string{
 		"campaign_id", "isp_group", "event_type", "brand", "email_domain",
 		"route_type", "source", "bounce_cat", "vmta", "pool", "variant",
+		"is_machine_click", "local_dt", // v2.2: human-click split + Denver days
 	} {
 		if v := q.Get(col); v != "" {
 			eq[col] = v

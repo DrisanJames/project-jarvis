@@ -120,6 +120,43 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"dsn_code":           tokenRe,
 	"variant":            tokenRe,
 	"campaign_id":        uuidRe,
+	// v2.2 (2026-06-12): operating-day buckets + human/machine click split.
+	"local_dt":         dtRe,  // America/Denver calendar day (computed)
+	"is_machine_click": boolRe, // boolean column — rendered unquoted in SQL
+}
+
+var boolRe = regexp.MustCompile(`^(true|false)$`)
+
+// localDtExpr converts event_epoch_ms to the America/Denver calendar day.
+// The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
+const localDtExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE 'America/Denver', '%Y-%m-%d')"
+
+// dimSelect / dimGroup render a dimension for the SELECT and GROUP BY lists.
+// Plain columns pass through; local_dt is computed (aliased in SELECT, raw
+// expression in GROUP BY — Athena does not allow grouping by the alias when
+// it shadows nothing).
+func dimSelect(d string) string {
+	if d == "local_dt" {
+		return localDtExpr + " AS local_dt"
+	}
+	return d
+}
+
+func dimGroup(d string) string {
+	if d == "local_dt" {
+		return localDtExpr
+	}
+	return d
+}
+
+// shiftDt moves a YYYY-MM-DD string by days; on parse failure returns the
+// input unchanged (validation upstream makes that unreachable in practice).
+func shiftDt(s string, days int) string {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return s
+	}
+	return t.AddDate(0, 0, days).Format("2006-01-02")
 }
 
 // InitReader wires the global reader. output == "" leaves the reader DISABLED
@@ -460,18 +497,49 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		return "", err
 	}
 
+	// local_dt semantics: From/To are AMERICA/DENVER days. Widen the UTC dt
+	// partition bound by ±1 day (a Denver day spans two UTC partitions) and
+	// add the precise local-day predicate.
+	usesLocal := f.Eq["local_dt"] != ""
+	for _, d := range dims {
+		if d == "local_dt" {
+			usesLocal = true
+		}
+	}
+	dtFrom, dtTo := f.From, f.To
+	if usesLocal {
+		dtFrom, dtTo = shiftDt(f.From, -1), shiftDt(f.To, 1)
+	}
+
+	selects := make([]string, len(dims))
+	groups := make([]string, len(dims))
+	for i, d := range dims {
+		selects[i] = dimSelect(d)
+		groups[i] = dimGroup(d)
+	}
+
 	var b strings.Builder
 	b.WriteString("SELECT ")
-	b.WriteString(strings.Join(dims, ", "))
+	b.WriteString(strings.Join(selects, ", "))
 	b.WriteString(", COUNT(DISTINCT event_uid) c FROM ")
 	b.WriteString(lakeTable)
 	b.WriteString(" WHERE dt BETWEEN ")
-	b.WriteString(sqlStr(f.From))
+	b.WriteString(sqlStr(dtFrom))
 	b.WriteString(" AND ")
-	b.WriteString(sqlStr(f.To))
+	b.WriteString(sqlStr(dtTo))
+	if usesLocal {
+		b.WriteString(" AND ")
+		b.WriteString(localDtExpr)
+		b.WriteString(" BETWEEN ")
+		b.WriteString(sqlStr(f.From))
+		b.WriteString(" AND ")
+		b.WriteString(sqlStr(f.To))
+	}
 
 	// Equality predicates: validated above, rendered as quoted literals in
 	// sorted column order (map iteration is random; tests assert exact SQL).
+	// is_machine_click is a boolean column (unquoted); local_dt is the
+	// computed Denver-day expression.
 	cols := make([]string, 0, len(f.Eq))
 	for col, val := range f.Eq {
 		if val == "" {
@@ -482,13 +550,24 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 	sort.Strings(cols)
 	for _, col := range cols {
 		b.WriteString(" AND ")
-		b.WriteString(col)
-		b.WriteString(" = ")
-		b.WriteString(sqlStr(f.Eq[col]))
+		switch col {
+		case "is_machine_click":
+			b.WriteString(col)
+			b.WriteString(" = ")
+			b.WriteString(f.Eq[col]) // validated true|false — unquoted boolean
+		case "local_dt":
+			b.WriteString(localDtExpr)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		default:
+			b.WriteString(col)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		}
 	}
 
 	b.WriteString(" GROUP BY ")
-	b.WriteString(strings.Join(dims, ", "))
+	b.WriteString(strings.Join(groups, ", "))
 	b.WriteString(" ORDER BY c DESC LIMIT ")
 	b.WriteString(strconv.Itoa(clampBreakdownLimit(f.Limit)))
 	return b.String(), nil
