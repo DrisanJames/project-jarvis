@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { PersonalizedInput } from './PersonalizedInput';
 import {
@@ -14,7 +14,6 @@ import {
   faEye,
   faEdit,
   faCopy,
-  faSearch,
   faSync,
   faCheckCircle,
   faTimesCircle,
@@ -42,11 +41,10 @@ import {
   faCode,
   faChevronDown,
   faChevronUp,
-  faLayerGroup,
-  faArrowLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import CampaignCenterList, { ListStatusFilter } from './campaign-center/CampaignCenterList';
 import './CampaignPortal.css';
 
 // ============================================================================
@@ -348,8 +346,7 @@ interface CampaignStats {
   api_version?: string;
 }
 
-type ViewType = 'dashboard' | 'campaigns' | 'scheduled' | 'details' | 'create' | 'edit';
-type StatusFilter = 'all' | 'draft' | 'scheduled' | 'sending' | 'completed' | 'paused' | 'failed';
+type ViewType = 'campaigns' | 'details' | 'create' | 'edit';
 
 const API_BASE = '/api/mailing';
 
@@ -405,7 +402,24 @@ const API_BASE = '/api/mailing';
 //       sent count shown alongside rates
 //     * Recent Campaigns excludes rollups + '[partner-drip]' waves — the
 //       drip program has its own screen
-const PAGE_VERSION_CAMPAIGN_PORTAL = '1.4';
+//   2.0 (2026-06-12) — Campaign Center rebuild (Round-3 §1):
+//     * The card/hero Dashboard + card-grid All Campaigns are REPLACED by one
+//       dense sortable/filterable LIST (campaign-center/CampaignCenterList)
+//       with inline accordion analytics per row (campaign-center/
+//       CampaignExpand): recharts send-pace graph with wave markers, KPI
+//       strip, per-ISP mini-table, top links, content/segment/throttle facts
+//     * Metric columns now come from /campaigns/list-metrics — ONE grouped
+//       mailing_tracking_events scan per visible page (≤50 ids); the
+//       campaign-summary endpoint is consumed for IDENTITY/STATUS ONLY
+//       (its counter-derived metrics are no longer rendered anywhere here)
+//     * Filters: date range (default today, Denver), status, sending domain,
+//       offer text, drip toggle (default OFF; ON = one rollup row per
+//       partner_drip vertical tag), group-by-offer mode with top subject
+//       lines ranked by human CTR
+//     * The legacy detail modal is KEPT (reachable via "Full record" in the
+//       inline expand) because it still owns creative variants, the audience
+//       funnel, queue depth and pause/cancel/edit actions — not yet at parity
+const PAGE_VERSION_CAMPAIGN_PORTAL = '2.0';
 
 // ============================================================================
 // API HELPER WITH ORGANIZATION CONTEXT
@@ -468,764 +482,6 @@ const StatusBadge: React.FC<{ status: Campaign['status'] }> = ({ status }) => {
       <FontAwesomeIcon icon={config.icon} spin={status === 'sending' || status === 'preparing'} />
       {config.label}
     </span>
-  );
-};
-
-const MetricCard: React.FC<{
-  icon: any;
-  label: string;
-  value: number | string;
-  subValue?: string;
-  trend?: 'up' | 'down' | 'neutral';
-  color?: string;
-  // Optional inline color for the value itself (e.g. hard bounce red #ef4444 /
-  // soft bounce amber #f59e0b, which have no metric-{color} CSS class).
-  valueColor?: string;
-}> = ({ icon, label, value, subValue, trend, color = 'primary', valueColor }) => (
-  <div className={`metric-card metric-${color}`}>
-    <div className="metric-icon" style={valueColor ? { color: valueColor } : undefined}>
-      <FontAwesomeIcon icon={icon} />
-    </div>
-    <div className="metric-content">
-      <div className="metric-value" style={valueColor ? { color: valueColor } : undefined}>
-        {typeof value === 'number' ? <AnimatedCounter value={value} formatFn={(n) => Math.round(n).toLocaleString()} /> : value}
-        {trend && (
-          <span className={`metric-trend trend-${trend}`}>
-            <FontAwesomeIcon icon={trend === 'up' ? faArrowUp : trend === 'down' ? faArrowDown : faArrowRight} />
-          </span>
-        )}
-      </div>
-      <div className="metric-label">{label}</div>
-      {subValue && <div className="metric-sub">{subValue}</div>}
-    </div>
-  </div>
-);
-
-const ProgressBar: React.FC<{ value: number; max: number; color?: string }> = ({ value, max, color = 'primary' }) => {
-  const percentage = max > 0 ? (value / max) * 100 : 0;
-  return (
-    <div className="progress-bar-container">
-      <div className={`progress-bar-fill progress-${color} ig-progress-fill`} style={{ width: `${Math.min(percentage, 100)}%` }} />
-    </div>
-  );
-};
-
-// ============================================================================
-// DASHBOARD VIEW
-// ============================================================================
-
-// True when a summary row belongs to the partner-drip program (the rollup
-// rows themselves, or any stray flat '[partner-drip]' wave that leaked into
-// the individual rows). The drip program has its own screen — the Campaign
-// Center dashboard is for real operator campaigns.
-const isDripSummaryRow = (r: CampaignSummaryRow): boolean =>
-  !!r.is_rollup || (r.name || '').startsWith('[partner-drip]');
-
-const CampaignDashboard: React.FC<{
-  rows: CampaignSummaryRow[];
-  loading: boolean;
-  dataAsOf: string | null;
-  onViewCampaign: (id: string) => void;
-  onViewByStatus: (status: StatusFilter) => void;
-}> = ({ rows, loading, dataAsOf, onViewCampaign, onViewByStatus }) => {
-  if (loading) {
-    return (
-      <div className="loading-state">
-        <FontAwesomeIcon icon={faSpinner} spin size="2x" />
-        <p>Loading campaign analytics...</p>
-      </div>
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <div className="empty-state">
-        <FontAwesomeIcon icon={faEnvelope} size="3x" />
-        <h3>No Campaign Data</h3>
-        <p>Create your first campaign to see analytics here</p>
-      </div>
-    );
-  }
-
-  // Real operator campaigns (drip rollups + '[partner-drip]' waves excluded).
-  const realRows = rows.filter(r => !isDripSummaryRow(r));
-  const dripPrograms = rows.filter(r => r.is_rollup).length;
-
-  // Hero totals sum EVERY loaded row (rollups carry real drip volume), so the
-  // platform numbers are complete; lists below are operator-campaign-only.
-  const tot = rows.reduce(
-    (acc, r) => {
-      acc.sent += r.sent || 0;
-      acc.delivered += r.delivered || 0;
-      acc.hard += r.hard_bounce || 0;
-      acc.soft += r.soft_bounce || 0;
-      acc.opens += r.opens || 0;
-      acc.clicks += r.clicks || 0;
-      return acc;
-    },
-    { sent: 0, delivered: 0, hard: 0, soft: 0, opens: 0, clicks: 0 },
-  );
-  // Processed-aware denominator (matches the backend campaign-summary
-  // convention): SES sent_count under-reports, so delivery/bounce rates use
-  // max(sent, delivered+hard+soft) to stay <=100%.
-  const denom = Math.max(tot.sent, tot.delivered + tot.hard + tot.soft);
-  const pct = (num: number, den: number): number => (den > 0 ? (num / den) * 100 : 0);
-
-  const scopeLabel = dripPrograms > 0
-    ? `last 90 days · ${dripPrograms} drip program${dripPrograms === 1 ? '' : 's'} rolled up`
-    : 'last 90 days';
-
-  const draftCount = realRows.filter(r => r.status === 'draft').length;
-  const scheduledRows = realRows
-    .filter(r => r.status === 'scheduled')
-    .sort((a, b) => {
-      const aT = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0;
-      const bT = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
-      return aT - bT;
-    });
-  const sendingCount = realRows.filter(r => r.status === 'sending').length;
-  const completedCount = realRows.filter(r => COMPLETED_STATUSES.includes(r.status)).length;
-
-  // Top performers: real, finished, MEANINGFUL-volume campaigns only — a
-  // 6-recipient wave at 100% opens must never rank, hence sent >= 500.
-  const topPerformers = realRows
-    .filter(r => COMPLETED_STATUSES.includes(r.status) && (r.sent || 0) >= 500)
-    .sort((a, b) => pct(b.opens, b.delivered) - pct(a.opens, a.delivered))
-    .slice(0, 5);
-
-  // Recent: backend already sorts newest-activity-first.
-  const recentRows = realRows.slice(0, 10);
-
-  return (
-    <div className="campaign-dashboard">
-      {/* Hero — ONE coherent block, every number from the same summary rows,
-          scope labeled explicitly. */}
-      <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.5rem' }}>
-        <FontAwesomeIcon icon={faChartBar} /> Scope: {scopeLabel}
-        {dataAsOf && <span style={{ marginLeft: 8 }}>· data as of {new Date(dataAsOf).toLocaleString()}</span>}
-      </div>
-      <div className="hero-stats ig-stagger">
-        <MetricCard
-          icon={faEnvelope}
-          label="Campaigns"
-          value={realRows.length}
-          subValue={`${completedCount} completed · ${scopeLabel}`}
-          color="primary"
-        />
-        <MetricCard
-          icon={faPaperPlane}
-          label="Sent"
-          value={tot.sent}
-          subValue={scopeLabel}
-          color="blue"
-        />
-        <MetricCard
-          icon={faCheckCircle}
-          label="Delivered"
-          value={`${pct(tot.delivered, denom).toFixed(1)}%`}
-          subValue={`${tot.delivered.toLocaleString()} of ${denom.toLocaleString()} sent`}
-          color="green"
-        />
-        <MetricCard
-          icon={faEnvelopeOpen}
-          label="Opens"
-          value={tot.opens}
-          subValue={`${pct(tot.opens, tot.delivered).toFixed(1)}% of delivered`}
-          color="green"
-        />
-        <MetricCard
-          icon={faMousePointer}
-          label="Clicks"
-          value={tot.clicks}
-          subValue={`${pct(tot.clicks, tot.delivered).toFixed(1)}% of delivered`}
-          color="purple"
-        />
-        <MetricCard
-          icon={faBan}
-          label="Hard Bounce"
-          value={`${pct(tot.hard, denom).toFixed(2)}%`}
-          subValue={`${tot.hard.toLocaleString()} hard`}
-          color="primary"
-          valueColor="#ef4444"
-        />
-        <MetricCard
-          icon={faExclamationTriangle}
-          label="Soft Bounce"
-          value={`${pct(tot.soft, denom).toFixed(2)}%`}
-          subValue={`${tot.soft.toLocaleString()} soft`}
-          color="primary"
-          valueColor="#f59e0b"
-        />
-      </div>
-
-      {/* Campaign Status Overview (real operator campaigns only) */}
-      <div className="status-overview">
-        <div className="section-header">
-          <h3><FontAwesomeIcon icon={faChartPie} /> Campaign Status</h3>
-        </div>
-        <div className="status-grid ig-stagger">
-          <div className="status-item status-draft" onClick={() => onViewByStatus('draft')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={draftCount} /></div>
-            <div className="status-label">Drafts</div>
-          </div>
-          <div className="status-item status-scheduled" onClick={() => onViewByStatus('scheduled')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={scheduledRows.length} /></div>
-            <div className="status-label">Scheduled</div>
-          </div>
-          <div className="status-item status-sending" onClick={() => onViewByStatus('sending')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={sendingCount} /></div>
-            <div className="status-label"><span className="ig-pulse-dot" /> Sending</div>
-          </div>
-          <div className="status-item status-completed" onClick={() => onViewByStatus('completed')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={completedCount} /></div>
-            <div className="status-label">Completed</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Two Column Layout */}
-      <div className="dashboard-columns">
-        {/* Scheduled Campaigns */}
-        <div className="dashboard-section">
-          <div className="section-header">
-            <h3><FontAwesomeIcon icon={faCalendarCheck} /> Upcoming Scheduled</h3>
-            <button className="section-action" onClick={() => onViewByStatus('scheduled')}>
-              View All <FontAwesomeIcon icon={faArrowRight} />
-            </button>
-          </div>
-          <div className="campaign-list-mini">
-            {scheduledRows.length === 0 ? (
-              <div className="empty-list">
-                <FontAwesomeIcon icon={faCalendarAlt} />
-                <span>No scheduled campaigns</span>
-              </div>
-            ) : (
-              scheduledRows.slice(0, 5).map(campaign => (
-                <div key={campaign.id} className="campaign-mini-card" onClick={() => onViewCampaign(campaign.id)}>
-                  <div className="mini-card-info">
-                    <div className="mini-card-name">{campaign.name}</div>
-                    <div className="mini-card-meta">
-                      <FontAwesomeIcon icon={faClock} />
-                      {campaign.scheduled_at ? new Date(campaign.scheduled_at).toLocaleString() : 'Not set'}
-                    </div>
-                  </div>
-                  <div className="mini-card-recipients">
-                    <FontAwesomeIcon icon={faUsers} />
-                    {campaign.targeted?.toLocaleString() || 0}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Top Performing Campaigns — real, finished, >=500 sent only */}
-        <div className="dashboard-section">
-          <div className="section-header">
-            <h3><FontAwesomeIcon icon={faTrophy} /> Top Performers</h3>
-            <span style={{ fontSize: '0.7rem', color: '#64748b' }}>min 500 sent</span>
-            <button className="section-action" onClick={() => onViewByStatus('completed')}>
-              View All <FontAwesomeIcon icon={faArrowRight} />
-            </button>
-          </div>
-          <div className="campaign-list-mini">
-            {topPerformers.length === 0 ? (
-              <div className="empty-list">
-                <FontAwesomeIcon icon={faChartBar} />
-                <span>No completed campaigns with 500+ sent yet</span>
-              </div>
-            ) : (
-              topPerformers.map((campaign, index) => (
-                <div key={campaign.id} className="campaign-mini-card" onClick={() => onViewCampaign(campaign.id)}>
-                  <div className="rank-badge">#{index + 1}</div>
-                  <div className="mini-card-info">
-                    <div className="mini-card-name">{campaign.name}</div>
-                    <div className="mini-card-stats">
-                      <span className="stat-open" title="Opens / delivered">
-                        <FontAwesomeIcon icon={faEnvelopeOpen} />
-                        {pct(campaign.opens, campaign.delivered).toFixed(1)}%
-                      </span>
-                      <span className="stat-click" title="Clicks / delivered">
-                        <FontAwesomeIcon icon={faMousePointer} />
-                        {pct(campaign.clicks, campaign.delivered).toFixed(1)}%
-                      </span>
-                      <span style={{ color: '#64748b' }}>
-                        <FontAwesomeIcon icon={faPaperPlane} /> {campaign.sent.toLocaleString()} sent
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Recent Campaigns — operator campaigns only; the drip program has its
-          own screen (and its rollups still count in the hero totals above). */}
-      <div className="recent-section">
-        <div className="section-header">
-          <h3><FontAwesomeIcon icon={faClock} /> Recent Campaigns</h3>
-          <button className="section-action" onClick={() => onViewByStatus('all')}>
-            View All <FontAwesomeIcon icon={faArrowRight} />
-          </button>
-        </div>
-        <div className="recent-campaigns-table">
-          <table>
-            <thead>
-              <tr>
-                <th>Campaign</th>
-                <th>Status</th>
-                <th>Sent</th>
-                <th>Opens</th>
-                <th>Clicks</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentRows.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="empty-row">
-                    <FontAwesomeIcon icon={faEnvelope} /> No recent campaigns
-                  </td>
-                </tr>
-              ) : (
-                recentRows.map(campaign => (
-                  <tr key={campaign.id} onClick={() => onViewCampaign(campaign.id)}>
-                    <td className="campaign-name-cell">
-                      <div className="campaign-name">{campaign.name}</div>
-                    </td>
-                    <td><StatusBadge status={campaign.status} /></td>
-                    <td>{campaign.sent?.toLocaleString() || 0}</td>
-                    <td>
-                      {campaign.opens?.toLocaleString() || 0}
-                      <span className="cell-rate" title="Opens / delivered">
-                        ({pct(campaign.opens, campaign.delivered).toFixed(1)}%)
-                      </span>
-                    </td>
-                    <td>
-                      {campaign.clicks?.toLocaleString() || 0}
-                      <span className="cell-rate" title="Clicks / delivered">
-                        ({pct(campaign.clicks, campaign.delivered).toFixed(1)}%)
-                      </span>
-                    </td>
-                    <td>
-                      {campaign.scheduled_at
-                        ? new Date(campaign.scheduled_at).toLocaleDateString()
-                        : campaign.updated_at
-                          ? new Date(campaign.updated_at).toLocaleDateString()
-                          : '—'}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div style={{ textAlign: 'right', fontSize: 10, color: '#374151', marginTop: 8 }}>
-        v{PAGE_VERSION_CAMPAIGN_PORTAL}
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// ANALYTICS LIST HELPERS (Phase 0 — campaign-summary repoint)
-// ============================================================================
-
-// Compute a display percentage from explicit numerator/denominator. We derive
-// rates client-side from the raw counts (rather than trusting the payload's
-// pre-scaled *_rate floats) so the denominator is always unambiguous and the
-// number on screen is verifiable against the counts shown next to it.
-const pctOf = (num: number, den: number): string =>
-  den > 0 ? ((num / den) * 100).toFixed(1) + '%' : '—';
-
-// Short relative-time string for the freshness indicator (e.g. "5m", "2h").
-const relativeAge = (iso?: string, fallbackSeconds?: number | null): string | null => {
-  let seconds: number | null = null;
-  if (iso) {
-    const t = new Date(iso).getTime();
-    if (!Number.isNaN(t)) seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  }
-  if (seconds === null && typeof fallbackSeconds === 'number' && fallbackSeconds >= 0) {
-    seconds = Math.floor(fallbackSeconds);
-  }
-  if (seconds === null) return null;
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-};
-
-const RouteBadge: React.FC<{ route: string }> = ({ route }) => {
-  const r = (route || '').toLowerCase();
-  const label = r === 'ses' ? 'SES' : r === 'pmta' ? 'PMTA' : (route || 'UNKNOWN').toUpperCase();
-  const color = r === 'ses' ? '#38bdf8' : r === 'pmta' ? '#a78bfa' : '#94a3b8';
-  return (
-    <span
-      title={`Delivery basis: ${label}`}
-      style={{
-        fontSize: '0.65rem',
-        fontWeight: 700,
-        letterSpacing: '0.4px',
-        padding: '2px 7px',
-        borderRadius: 6,
-        border: `1px solid ${color}55`,
-        background: `${color}1a`,
-        color,
-      }}
-    >
-      {label}
-    </span>
-  );
-};
-
-// Badge shown in place of the status pill on a partner-drip rollup row. Signals
-// the row aggregates many mini-campaigns rather than being a single campaign.
-const RollupBadge: React.FC<{ waveCount: number }> = ({ waveCount }) => (
-  <span
-    title={`Partner-drip feed — ${waveCount.toLocaleString()} mini-campaign waves rolled up. Click to drill into the individual waves.`}
-    style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 4,
-      fontSize: '0.65rem',
-      fontWeight: 700,
-      letterSpacing: '0.4px',
-      padding: '2px 7px',
-      borderRadius: 6,
-      border: '1px solid #f59e0b55',
-      background: '#f59e0b1a',
-      color: '#f59e0b',
-    }}
-  >
-    <FontAwesomeIcon icon={faLayerGroup} /> ROLLUP
-  </span>
-);
-
-// ============================================================================
-// CAMPAIGN CARD (summary row — fast list, no creative body)
-// ============================================================================
-
-const CampaignCard: React.FC<{
-  campaign: CampaignSummaryRow;
-  onViewCampaign: (id: string) => void;
-  onAction: (id: string, action: string) => void;
-}> = ({ campaign, onViewCampaign, onAction }) => {
-  const isRollup = !!campaign.is_rollup;
-  return (
-    <div className={`campaign-card ig-card-hover${!isRollup && campaign.status === 'sending' ? ' ig-breathe-border' : ''}`}>
-      <div className="card-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {isRollup ? <RollupBadge waveCount={campaign.wave_count || 0} /> : <StatusBadge status={campaign.status} />}
-          <RouteBadge route={campaign.route_type} />
-        </div>
-        <div className="card-actions">
-          <button
-            onClick={() => onViewCampaign(campaign.id)}
-            title={isRollup ? 'View individual waves' : 'View Details'}
-          >
-            <FontAwesomeIcon icon={isRollup ? faLayerGroup : faEye} />
-          </button>
-          {/* Rollups aggregate thousands of mini-campaigns — per-campaign
-              mutations (edit/duplicate/pause/cancel) don't apply. Drill in
-              first to act on a specific wave. */}
-          {!isRollup && (
-            <>
-              {canEditCampaign(campaign) && (
-                <button onClick={() => onAction(campaign.id, 'edit')} title="Edit Campaign">
-                  <FontAwesomeIcon icon={faEdit} />
-                </button>
-              )}
-              <button onClick={() => onAction(campaign.id, 'duplicate')} title="Duplicate">
-                <FontAwesomeIcon icon={faCopy} />
-              </button>
-              {['scheduled', 'preparing', 'sending'].includes(campaign.status) && (
-                <button onClick={() => onAction(campaign.id, 'pause')} title="Pause">
-                  <FontAwesomeIcon icon={faPause} />
-                </button>
-              )}
-              {campaign.status === 'paused' && (
-                <button onClick={() => onAction(campaign.id, 'resume')} title="Resume">
-                  <FontAwesomeIcon icon={faPlay} />
-                </button>
-              )}
-              {['scheduled', 'preparing', 'sending', 'paused'].includes(campaign.status) && (
-                <button onClick={() => onAction(campaign.id, 'cancel')} title="Cancel" className="danger">
-                  <FontAwesomeIcon icon={faStop} />
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="card-body" onClick={() => onViewCampaign(campaign.id)}>
-        <h4 className="campaign-name">{campaign.name}</h4>
-
-        <div className="campaign-meta">
-          {isRollup && (
-            <span className="meta-item" title="Partner-drip mini-campaigns aggregated into this row">
-              <FontAwesomeIcon icon={faLayerGroup} /> {(campaign.wave_count || 0).toLocaleString()} waves
-            </span>
-          )}
-          <span className="meta-item" title="Planned audience (targeted)">
-            <FontAwesomeIcon icon={faBullseye} /> {(campaign.targeted || 0).toLocaleString()} targeted
-          </span>
-          {campaign.scheduled_at && (
-            <span className="meta-item" title={isRollup ? 'Most recent wave' : undefined}>
-              <FontAwesomeIcon icon={faCalendarAlt} /> {new Date(campaign.scheduled_at).toLocaleString()}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Counts — each rate carries an explicit denominator label/tooltip. */}
-      <div className="card-stats ig-stagger">
-        <div className="stat" title="Attempted / injected">
-          <span className="stat-value"><AnimatedCounter value={campaign.sent || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Sent</span>
-        </div>
-        <div className="stat" title="Delivery Rate (delivered / sent)">
-          <span className="stat-value"><AnimatedCounter value={campaign.delivered || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Delivered ({pctOf(campaign.delivered, campaign.sent)})</span>
-        </div>
-        <div className="stat" title="Open Rate (of delivered)">
-          <span className="stat-value"><AnimatedCounter value={campaign.opens || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Opens ({pctOf(campaign.opens, campaign.delivered)})</span>
-        </div>
-        <div className="stat" title="Click Rate (of delivered)">
-          <span className="stat-value"><AnimatedCounter value={campaign.clicks || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Clicks ({pctOf(campaign.clicks, campaign.delivered)})</span>
-        </div>
-      </div>
-
-      {/* Bounces — ALWAYS split hard (red) vs soft (amber); never combined. */}
-      <div className="card-stats ig-stagger" style={{ marginTop: 6 }}>
-        <div className="stat" title="Hard Bounce Rate (of sent) — permanent failure, reputation risk">
-          <span className="stat-value" style={{ color: campaign.hard_bounce > 0 ? '#ef4444' : undefined }}>
-            <AnimatedCounter value={campaign.hard_bounce || 0} formatFn={(n) => Math.round(n).toLocaleString()} />
-          </span>
-          <span className="stat-label" style={{ color: '#ef4444' }}>Hard Bounce ({pctOf(campaign.hard_bounce, campaign.sent)})</span>
-        </div>
-        <div className="stat" title="Soft Bounce Rate (of sent) — transient, usually clears on retry">
-          <span className="stat-value" style={{ color: campaign.soft_bounce > 0 ? '#f59e0b' : undefined }}>
-            <AnimatedCounter value={campaign.soft_bounce || 0} formatFn={(n) => Math.round(n).toLocaleString()} />
-          </span>
-          <span className="stat-label" style={{ color: '#f59e0b' }}>Soft Bounce ({pctOf(campaign.soft_bounce, campaign.sent)})</span>
-        </div>
-        <div className="stat" title="Complaint Rate (of sent)">
-          <span className="stat-value"><AnimatedCounter value={campaign.complaints || 0} formatFn={(n) => Math.round(n).toLocaleString()} /></span>
-          <span className="stat-label">Complaints ({pctOf(campaign.complaints, campaign.sent)})</span>
-        </div>
-      </div>
-
-      {campaign.status === 'sending' && campaign.targeted > 0 && (
-        <div className="sending-progress">
-          <ProgressBar value={campaign.sent} max={campaign.targeted} color="primary" />
-          <span className="progress-text">
-            {(campaign.sent || 0).toLocaleString()} / {(campaign.targeted || 0).toLocaleString()}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ============================================================================
-// CAMPAIGNS LIST VIEW
-// ============================================================================
-
-// Statuses that count as "the campaign actually finished sending" — source
-// of truth matches the DB CHECK constraint in ensureCampaignColumns().
-// Used by both the status filter and the Top Performers tile (Phase B fix).
-const COMPLETED_STATUSES = ['sent', 'completed', 'completed_with_errors'];
-
-const matchesStatusFilter = (status: string, filter: StatusFilter): boolean => {
-  if (filter === 'all') return true;
-  if (filter === 'completed') return COMPLETED_STATUSES.includes(status);
-  return status === filter;
-};
-
-const CampaignsList: React.FC<{
-  campaigns: CampaignSummaryRow[];
-  loading: boolean;
-  filter: StatusFilter;
-  search: string;
-  error?: string | null;
-  dataAsOf?: string | null;
-  cacheAgeSeconds?: number | null;
-  denominators?: Record<string, string>;
-  partnerDrillLabel?: string | null;
-  onClearDrill?: () => void;
-  onFilterChange: (filter: StatusFilter) => void;
-  onSearchChange: (search: string) => void;
-  onViewCampaign: (id: string) => void;
-  onAction: (id: string, action: string) => void;
-  onRefresh: () => void;
-}> = ({ campaigns, loading, filter, search, error, dataAsOf, cacheAgeSeconds, denominators, partnerDrillLabel, onClearDrill, onFilterChange, onSearchChange, onViewCampaign, onAction, onRefresh }) => {
-  const filteredCampaigns = campaigns.filter(c => {
-    const matchesFilter = matchesStatusFilter(c.status, filter);
-    // Match by name OR id so pasting a campaign UUID (or its prefix) into the
-    // search box quick-finds the campaign — the same id used by the Event Lake
-    // campaign lookup and /analytics/campaign-summary/{id}.
-    const q = search.toLowerCase();
-    const matchesSearch = search === '' ||
-      c.name.toLowerCase().includes(q) ||
-      c.id.toLowerCase().includes(q);
-    return matchesFilter && matchesSearch;
-  });
-
-  const age = relativeAge(dataAsOf || undefined, cacheAgeSeconds);
-  const denomKeys = denominators ? Object.keys(denominators) : [];
-
-  return (
-    <div className="campaigns-list-view">
-      {/* Partner-drip drill banner — only present when viewing one feed's waves */}
-      {partnerDrillLabel && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '8px 12px',
-            marginBottom: 8,
-            borderRadius: 8,
-            border: '1px solid #f59e0b55',
-            background: '#f59e0b14',
-            color: '#fbbf24',
-            fontSize: '0.8rem',
-          }}
-        >
-          <button
-            className="refresh-btn"
-            onClick={onClearDrill}
-            title="Back to rolled-up campaign list"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-          >
-            <FontAwesomeIcon icon={faArrowLeft} /> Back to rollups
-          </button>
-          <span>
-            <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 6 }} />
-            Showing individual waves for <strong>{partnerDrillLabel}</strong> (newest 200)
-          </span>
-        </div>
-      )}
-
-      {/* Freshness + denominator legend */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 8,
-          padding: '6px 10px',
-          marginBottom: 8,
-          fontSize: '0.72rem',
-          color: '#94a3b8',
-        }}
-      >
-        <span title={dataAsOf ? `Metrics as of ${new Date(dataAsOf).toLocaleString()}` : 'Freshness from cache age'}>
-          <FontAwesomeIcon icon={faClock} style={{ marginRight: 6 }} />
-          {age ? <>Updated {age} ago</> : 'Updated just now'}
-          {dataAsOf && <span style={{ color: '#64748b', marginLeft: 6 }}>(as of {new Date(dataAsOf).toLocaleTimeString()})</span>}
-        </span>
-        {denomKeys.length > 0 && denominators && (
-          <span style={{ color: '#64748b' }} title={denomKeys.map(k => `${k}: ${denominators[k]}`).join('  ·  ')}>
-            <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 6 }} />
-            Rates: Delivery = delivered/sent · Opens &amp; Clicks of delivered · Bounces of sent
-          </span>
-        )}
-      </div>
-
-      {/* Error banner — never render silent zeros */}
-      {error && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '12px 14px',
-            marginBottom: 10,
-            borderRadius: 8,
-            border: '1px solid #ef444455',
-            background: '#ef44441a',
-            color: '#fca5a5',
-          }}
-        >
-          <span>
-            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8, color: '#ef4444' }} />
-            Failed to load campaign metrics: {error}
-          </span>
-          <button className="refresh-btn" onClick={onRefresh}>
-            <FontAwesomeIcon icon={faSync} spin={loading} /> Retry
-          </button>
-        </div>
-      )}
-
-      {/* Filters and Search */}
-      <div className="list-controls">
-        <div className="filter-tabs">
-          {(['all', 'draft', 'scheduled', 'sending', 'completed', 'paused', 'failed'] as StatusFilter[]).map(f => (
-            <button
-              key={f}
-              className={`filter-tab ${filter === f ? 'active' : ''}`}
-              onClick={() => onFilterChange(f)}
-            >
-              {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
-              {f !== 'all' && (
-                <span className="filter-count">
-                  {campaigns.filter(c => matchesStatusFilter(c.status, f)).length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-        <div className="search-controls">
-          <div className="search-input-wrapper">
-            <FontAwesomeIcon icon={faSearch} className="search-icon" />
-            <input
-              type="text"
-              placeholder="Search campaigns..."
-              value={search}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
-          </div>
-          <button className="refresh-btn" onClick={onRefresh}>
-            <FontAwesomeIcon icon={faSync} spin={loading} />
-          </button>
-        </div>
-      </div>
-
-      {/* Campaign Cards */}
-      {loading ? (
-        <div className="loading-state">
-          <FontAwesomeIcon icon={faSpinner} spin size="2x" />
-          <p>Loading campaigns...</p>
-        </div>
-      ) : filteredCampaigns.length === 0 ? (
-        <div className="empty-state">
-          <FontAwesomeIcon icon={faEnvelope} size="3x" />
-          <h3>No Campaigns Found</h3>
-          <p>{filter !== 'all' ? `No ${filter} campaigns` : 'Create your first campaign to get started'}</p>
-        </div>
-      ) : (
-        <div className="campaigns-grid">
-          {filteredCampaigns.map(campaign => (
-            <CampaignCard
-              key={campaign.id}
-              campaign={campaign}
-              onViewCampaign={onViewCampaign}
-              onAction={onAction}
-            />
-          ))}
-        </div>
-      )}
-    </div>
   );
 };
 
@@ -3333,7 +2589,7 @@ export const CampaignPortal: React.FC<{
   onEditInWizard?: (campaignId: string) => void;
 }> = ({ initialOffer, onOfferConsumed, onEditInWizard }) => {
   const { organization } = useAuth();
-  const [view, setView] = useState<ViewType>(initialOffer ? 'create' : 'dashboard');
+  const [view, setView] = useState<ViewType>(initialOffer ? 'create' : 'campaigns');
 
   // When initialOffer changes externally, switch to create view
   useEffect(() => {
@@ -3345,35 +2601,26 @@ export const CampaignPortal: React.FC<{
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [selectedCampaignStats, setSelectedCampaignStats] = useState<CampaignStats | null>(null);
   const [campaignVariants, setCampaignVariants] = useState<CampaignVariant[]>([]);
-  // Phase 1 detail analytics (additive): accurate per-campaign summary + audience
-  // funnel from /analytics/campaign-summary/{id}. Null + an error string when the
-  // fetch fails, so the modal degrades to an inline notice instead of crashing.
+  // Legacy full-record modal (kept until the inline expand reaches full parity
+  // — it still owns creative variants, the audience funnel, queue depth and
+  // pause/cancel/edit actions). Opened via "Full record" in the inline expand.
+  const [modalOpen, setModalOpen] = useState(false);
   const [summaryDetail, setSummaryDetail] = useState<CampaignSummaryDetail | null>(null);
   const [summaryDetailError, setSummaryDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
-  const [filter, setFilter] = useState<StatusFilter>('all');
-  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<ListStatusFilter>('all');
 
-  // Phase 0 analytics repoint: the LIST view reads from the fast, accurate
-  // /analytics/campaign-summary endpoint (pre-aggregated counts, no creative
-  // bodies) instead of /campaigns. Dashboard aggregates still use /campaigns.
+  // v2.0: /analytics/campaign-summary is consumed for IDENTITY/STATUS ONLY —
+  // its counter-derived metric fields are never rendered. Per-row metrics come
+  // from /campaigns/list-metrics inside CampaignCenterList (tracking events).
   const [summaryRows, setSummaryRows] = useState<CampaignSummaryRow[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summaryDataAsOf, setSummaryDataAsOf] = useState<string | null>(null);
-  const [summaryCacheAge, setSummaryCacheAge] = useState<number | null>(null);
-  const [summaryDenominators, setSummaryDenominators] = useState<Record<string, string>>({});
-  // Partner-drip drill: when a rollup card is opened we re-fetch the list
-  // scoped to that partner_tag (flat waves). A ref mirrors the state so the
-  // background poller preserves the drill instead of snapping back to rollups.
-  const [partnerDrill, setPartnerDrill] = useState<{ tag: string; label: string } | null>(null);
-  const partnerDrillRef = useRef<string | null>(null);
 
-  // Fetch the raw campaign page. v1.4: the Dashboard subtab no longer
-  // aggregates this drip-wave-polluted page — it reads the campaign-summary
-  // rows instead (see CampaignDashboard). The page is still needed for the
-  // nav-tab counts and the sending/scheduled auto-refresh trigger.
+  // Fetch the raw campaign page — still needed for the nav-tab counts and the
+  // sending/scheduled auto-refresh trigger (identity only, no metrics use).
   const fetchDashboardStats = useCallback(async (background = false) => {
     if (!background) setLoading(true);
     try {
@@ -3388,18 +2635,12 @@ export const CampaignPortal: React.FC<{
     }
   }, [organization?.id]);
 
-  // Fetch the campaign LIST from the fast analytics summary endpoint.
-  // background=true keeps the existing rows on screen during polling refresh.
+  // Fetch the campaign LIST identity rows (rollup mode keeps partner-drip
+  // programs as one row per vertical tag — exactly what the drip toggle needs).
   const fetchCampaignSummary = useCallback(async (background = false) => {
     if (!background) setSummaryLoading(true);
     try {
-      const drillTag = partnerDrillRef.current;
-      const url = drillTag
-        ? `${API_BASE}/analytics/campaign-summary?limit=200&partner_tag=${encodeURIComponent(drillTag)}`
-        : `${API_BASE}/analytics/campaign-summary?limit=200`;
-      const res = await orgFetch(url, organization?.id);
-      const cacheAgeHeader = res.headers.get('X-Cache-Age-Seconds');
-      const cacheAge = cacheAgeHeader !== null ? parseInt(cacheAgeHeader, 10) : null;
+      const res = await orgFetch(`${API_BASE}/analytics/campaign-summary?limit=200`, organization?.id);
       let data: CampaignSummaryResponse;
       try {
         data = await res.json();
@@ -3411,8 +2652,6 @@ export const CampaignPortal: React.FC<{
       }
       setSummaryRows(Array.isArray(data.campaigns) ? data.campaigns : []);
       setSummaryDataAsOf(data.data_as_of || data.generated_at || null);
-      setSummaryCacheAge(cacheAge !== null && !Number.isNaN(cacheAge) ? cacheAge : null);
-      setSummaryDenominators(data.denominators || {});
       setSummaryError(null);
     } catch (err) {
       console.error('Failed to fetch campaign summary:', err);
@@ -3422,7 +2661,7 @@ export const CampaignPortal: React.FC<{
     }
   }, [organization?.id]);
 
-  // Fetch campaign details
+  // Fetch campaign details (legacy full-record modal)
   const fetchCampaignDetails = useCallback(async (id: string) => {
     setDetailsLoading(true);
     // Reset the additive summary panel state so a stale campaign's funnel never
@@ -3448,10 +2687,8 @@ export const CampaignPortal: React.FC<{
       setDetailsLoading(false);
     }
 
-    // Phase 1 detail analytics: fetch the accurate per-campaign summary + funnel
-    // independently. This is intentionally NOT bundled into the Promise.all
-    // above — a failure or slowness here must never block or break the legacy
-    // /stats-based detail rendering. Errors degrade to an inline notice.
+    // Accurate per-campaign summary + funnel, fetched independently so a
+    // failure here never blocks the legacy /stats-based modal rendering.
     try {
       const res = await orgFetch(`${API_BASE}/analytics/campaign-summary/${id}`, organization?.id);
       let data: CampaignSummaryDetail;
@@ -3483,6 +2720,7 @@ export const CampaignPortal: React.FC<{
         const res = await orgFetch(`${API_BASE}/campaigns/${id}`, organization?.id);
         const campaign = await res.json();
         setSelectedCampaign(campaign);
+        setModalOpen(false);
         setView('edit');
         return;
       } else if (action === 'duplicate') {
@@ -3512,43 +2750,25 @@ export const CampaignPortal: React.FC<{
     fetchDashboardStats();
     fetchCampaignSummary();
   }, [fetchDashboardStats, fetchCampaignSummary]);
-  
+
   // Auto-refresh for sending/scheduled campaigns — background mode preserves UI state
   useEffect(() => {
     const hasSendingCampaigns = campaigns.some(c => c.status === 'sending' || c.status === 'scheduled');
     if (!hasSendingCampaigns) return;
-    
+
     const interval = setInterval(() => {
       fetchDashboardStats(true);
       fetchCampaignSummary(true);
     }, 15000);
-    
+
     return () => clearInterval(interval);
   }, [campaigns.length, fetchDashboardStats, fetchCampaignSummary]);
 
-  // Handle view campaign
-  const handleViewCampaign = (id: string) => {
-    // Rollup rows carry a synthetic "drip-rollup:<tag>" id (not a campaign
-    // uuid). Opening one drills the LIST into that partner feed's individual
-    // waves instead of trying to fetch a non-existent campaign detail.
-    if (id.startsWith('drip-rollup:')) {
-      const tag = id.slice('drip-rollup:'.length);
-      const row = summaryRows.find(r => r.id === id);
-      partnerDrillRef.current = tag;
-      setPartnerDrill({ tag, label: row?.name || tag });
-      setSearch('');
-      setFilter('all');
-      fetchCampaignSummary(false);
-      return;
-    }
+  // Open the legacy full-record modal (from the inline expand's "Full record").
+  // The list stays mounted underneath so expanded rows are preserved.
+  const openCampaignModal = (id: string) => {
     fetchCampaignDetails(id);
-    setView('details');
-  };
-
-  const clearPartnerDrill = () => {
-    partnerDrillRef.current = null;
-    setPartnerDrill(null);
-    fetchCampaignSummary(false);
+    setModalOpen(true);
   };
 
   return (
@@ -3559,10 +2779,13 @@ export const CampaignPortal: React.FC<{
           <FontAwesomeIcon icon={faEnvelope} className="header-icon" />
           <div>
             <h1>Campaign Center</h1>
-            <p>Create, manage and monitor your email campaigns</p>
+            <p>One list, inline analytics — expand any row for its send pace &amp; KPIs</p>
           </div>
         </div>
         <div className="header-actions">
+          <span style={{ fontSize: 10, color: '#374151', alignSelf: 'center', marginRight: 8 }}>
+            v{PAGE_VERSION_CAMPAIGN_PORTAL}
+          </span>
           <button
             className="refresh-btn"
             onClick={() => { fetchDashboardStats(false); fetchCampaignSummary(false); }}
@@ -3575,21 +2798,15 @@ export const CampaignPortal: React.FC<{
 
       {/* Navigation Tabs */}
       <div className="portal-nav">
-        <button 
-          className={`nav-tab ${view === 'dashboard' ? 'active' : ''}`}
-          onClick={() => setView('dashboard')}
-        >
-          <FontAwesomeIcon icon={faTachometerAlt} /> Dashboard
-        </button>
-        <button 
-          className={`nav-tab ${view === 'campaigns' ? 'active' : ''}`}
-          onClick={() => setView('campaigns')}
+        <button
+          className={`nav-tab ${view === 'campaigns' && filter !== 'scheduled' ? 'active' : ''}`}
+          onClick={() => { setView('campaigns'); setFilter('all'); }}
         >
           <FontAwesomeIcon icon={faList} /> All Campaigns
           <span className="nav-count">{campaigns.length}</span>
         </button>
-        <button 
-          className={`nav-tab ${view === 'scheduled' ? 'active' : ''}`}
+        <button
+          className={`nav-tab ${view === 'campaigns' && filter === 'scheduled' ? 'active' : ''}`}
           onClick={() => { setView('campaigns'); setFilter('scheduled'); }}
         >
           <FontAwesomeIcon icon={faCalendarCheck} /> Scheduled
@@ -3599,32 +2816,15 @@ export const CampaignPortal: React.FC<{
 
       {/* Main Content */}
       <div className="portal-content ig-fade-in">
-        {view === 'dashboard' && (
-          <CampaignDashboard
+        {view === 'campaigns' && (
+          <CampaignCenterList
             rows={summaryRows}
             loading={summaryLoading}
-            dataAsOf={summaryDataAsOf}
-            onViewCampaign={handleViewCampaign}
-            onViewByStatus={(status) => { setView('campaigns'); setFilter(status); }}
-          />
-        )}
-
-        {(view === 'campaigns' || view === 'scheduled') && (
-          <CampaignsList
-            campaigns={summaryRows}
-            loading={summaryLoading}
-            filter={filter}
-            search={search}
             error={summaryError}
             dataAsOf={summaryDataAsOf}
-            cacheAgeSeconds={summaryCacheAge}
-            denominators={summaryDenominators}
-            partnerDrillLabel={partnerDrill?.label || null}
-            onClearDrill={clearPartnerDrill}
-            onFilterChange={setFilter}
-            onSearchChange={setSearch}
-            onViewCampaign={handleViewCampaign}
-            onAction={handleAction}
+            statusFilter={filter}
+            onStatusFilterChange={setFilter}
+            onOpenModal={openCampaignModal}
             onRefresh={() => fetchCampaignSummary(false)}
           />
         )}
@@ -3638,13 +2838,14 @@ export const CampaignPortal: React.FC<{
               fetchDashboardStats();
               setView('campaigns');
             }}
-            onCancel={() => setView('dashboard')}
+            onCancel={() => setView('campaigns')}
           />
         )}
       </div>
 
-      {/* Campaign Details Modal */}
-      {view === 'details' && selectedCampaign && (
+      {/* Legacy full-record modal — variants / audience funnel / queue depth /
+          actions. Retired only once the inline expand reaches full parity. */}
+      {modalOpen && selectedCampaign && (
         <CampaignDetailsModal
           campaign={selectedCampaign}
           stats={selectedCampaignStats}
@@ -3652,7 +2853,7 @@ export const CampaignPortal: React.FC<{
           loading={detailsLoading}
           summaryDetail={summaryDetail}
           summaryError={summaryDetailError}
-          onClose={() => setView('dashboard')}
+          onClose={() => setModalOpen(false)}
           onAction={handleAction}
         />
       )}
