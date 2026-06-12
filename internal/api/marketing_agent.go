@@ -98,7 +98,8 @@ type EmailMarketingAgent struct {
 	db            *sql.DB
 	openAIKey     string
 	anthropicKey  string
-	model         string
+	model         string // active model: Anthropic id when useAnthropic, else openAIModel
+	openAIModel   string // configured OpenAI model (cfg.Model, default gpt-4.1) — survives the Anthropic override; used by OpenAI fallback paths
 	useAnthropic  bool
 	httpClient    *http.Client
 	pmtaSvc       *PMTACampaignService
@@ -110,12 +111,14 @@ func NewEmailMarketingAgent(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACa
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	useAnthropic := anthropicKey != ""
 
-	model := cfg.Model
+	openAIModel := cfg.Model
+	if openAIModel == "" {
+		openAIModel = "gpt-4.1"
+	}
+	model := openAIModel
 	if useAnthropic {
 		model = "claude-opus-4-20250514"
 		log.Printf("[MarketingAgent] Using Anthropic Claude Opus 4 (%s)", model)
-	} else if model == "" {
-		model = "gpt-4.1"
 	}
 
 	return &EmailMarketingAgent{
@@ -123,6 +126,7 @@ func NewEmailMarketingAgent(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACa
 		openAIKey:    cfg.APIKey,
 		anthropicKey: anthropicKey,
 		model:        model,
+		openAIModel:  openAIModel,
 		useAnthropic: useAnthropic,
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second,

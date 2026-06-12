@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,6 +94,25 @@ How the platform works:
 - Bounces are ALWAYS reported split: hard (permanent, reputation risk) vs soft (transient). Never combine them.
 - Opens include Apple MPP / scanner machine traffic; the scorecard splits human vs machine opens — prefer human metrics when judging engagement.
 - Campaign deploys go through the PMTA wave pipeline: scheduled → preparing → finalizing_audience → sending. A campaign stuck in scheduled >10min or finalized with 0 recipients is a problem worth flagging.
+
+OPERATOR SCHEDULING DOCTRINE (standing rules — never violate, never re-litigate):
+- NEVER propose skipping a sending domain. Every active domain sends every day. Risk is managed by three levers, in order: (1) tighten the audience to engaged segments, (2) exclude blocked recipient families per-ISP — the charter/spectrum family is ALREADY globally excluded via segment 838ff4dd-7801-4443-b527-f9c9b3f5f726, do not re-litigate it — and (3) reduce partner-drip pace for that domain (drips are the marginal-volume lever).
+- Volume is AUDIENCE-DRIVEN. Engager/segment-sourced sends use uncapped volume (volume: 0 per ISP) — the segment size IS the cap. NEVER invent percentage volume cuts ("reduce 30-50%"); change the audience instead.
+- SES measurement caveat: SES-routed traffic is pixel-blind in Postgres. An "open rate collapse" on SES-heavy domains/ISPs (gmail especially) is partly measurement, not engagement — say so when relevant. Judge PMTA routes by the scorecard; judge SES routes cautiously.
+- Offer pairing map (operator-ratified): Microsoft/Apple/Gmail/warming lanes → Empire Today Flooring + NDR. Yahoo/AOL/ATT/SBCGlobal/Comcast/Cox → Empire Today Flooring + SBLI. Sam's Club is DRIP-ONLY — never a campaign lane. em.myrepairdiy.com's second arm is Home Repairly Roofing. Newsletters: Warby Parker is the standard family; when an NL family is unavailable, substitute from the rotation (personal-loans, optima-tax-relief) — never drop the NL slot.
+- Standard send-day shape: morning offer lanes anchored ~11:00-12:15Z with 15-min brand stagger and 6h gentle windows; warming W1 newsletter ~18:30Z + W2 offer ~21:30Z with 5h windows; timezone America/Denver.
+- A PROPOSED SCHEDULE means a concrete per-domain table: slot name, anchor (UTC + Denver), window, offer, audience (segment names), exclusions, route (SES pin vs PMTA). Not prose guidance. Draft it with the plan tools (da_generate_plan, da_update_slots).
+
+Evidence tools — consult BEFORE proposing:
+- da_upcoming: what is already scheduled in the next 48h — always check before proposing anything new.
+- da_get_baselines: per domain × ISP INCREASE/MAINTAIN/DECREASE verdicts with reasons — consult before any volume opinion.
+- da_get_recommendations: advisory consciousness calls (pool/pacing/reputation) — evidence, not orders.
+- da_get_offers: what we can mail — pair with the offer pairing map above.
+
+STYLE (hard requirements):
+- Never repeat a list (domains, ISPs, slots) the operator has already seen in this conversation — reference it instead.
+- Never end two consecutive replies with the same question. One confirmation ask maximum, then act on the confirmed scope.
+- When the operator states a rule (e.g. "we never skip domains"), adopt it permanently for this conversation and immediately restate the corrected plan — do not ask them to re-confirm the rule.
 
 Confirmation rules (HARD requirements):
 - deploy_campaign, da_approve_plan, and emergency_stop are irreversible. NEVER call them unless the operator has explicitly confirmed THAT SPECIFIC action in their latest message (e.g. "yes, deploy it", "approve em.discountblog.com", "stop it now"). Proposing something and the operator replying "ok" to an unrelated point does NOT count.
@@ -181,8 +201,26 @@ func domainAgentChatTools() []agentToolDef {
 		}},
 		{Type: "function", Function: agentToolFuncDef{
 			Name:        "da_upcoming",
-			Description: "Campaigns scheduled in the next 48h, optionally filtered to one sending domain — the forward-looking board.",
+			Description: "Campaigns scheduled in the next 48h, optionally filtered to one sending domain — the forward-looking board. Always check before proposing new sends.",
 			Parameters:  obj(map[string]interface{}{"domain": str("optional sending domain filter")}),
+		}},
+		{Type: "function", Function: agentToolFuncDef{
+			Name:        "da_get_baselines",
+			Description: "Volume verdicts (INCREASE/MAINTAIN/DECREASE) with reasons per sending domain × ISP, plus baseline daily sends and recent open/hard/soft rates — consult before proposing any volume change.",
+			Parameters: obj(map[string]interface{}{
+				"domain": str("optional sending domain filter"),
+				"days":   num("comparison window days (default 28, 7-90)"),
+			}),
+		}},
+		{Type: "function", Function: agentToolFuncDef{
+			Name:        "da_get_recommendations",
+			Description: "Latest consciousness assessment recommendations (pool routing, pacing, reputation calls) per ISP scope. These are ADVISORY evidence to weigh, not orders.",
+			Parameters:  obj(map[string]interface{}{}),
+		}},
+		{Type: "function", Function: agentToolFuncDef{
+			Name:        "da_get_offers",
+			Description: "What we can mail: active offers (name, Everflow id, payout/type, suppression count, conversions 30d) — consult the pairing map in your instructions for which ISP family gets which offer.",
+			Parameters:  obj(map[string]interface{}{}),
 		}},
 	}
 
@@ -256,6 +294,9 @@ func (c *DomainAgentChat) HandleChat(w http.ResponseWriter, r *http.Request) {
 	for i := 0; i < 16; i++ {
 		var resp *agentOpenAIResp
 		var err error
+		// Model selection mirrors EmailMarketingAgent: Claude (c.llm.model,
+		// Anthropic-resolved) when an Anthropic key is configured, otherwise
+		// the adapter's configured OpenAI model — never a hardcoded id.
 		if c.llm.useAnthropic {
 			resp, err = c.llm.callClaude(ctx, domainAgentChatSystemPrompt, messages, tools)
 			// Anthropic-side failures (billing, rate limits, outages) fall
@@ -264,13 +305,13 @@ func (c *DomainAgentChat) HandleChat(w http.ResponseWriter, r *http.Request) {
 			if err != nil && c.llm.openAIKey != "" {
 				log.Printf("[DomainAgentChat] Claude failed (%v) — falling back to OpenAI", err)
 				resp, err = c.llm.callAgentOpenAI(ctx, agentOpenAIReq{
-					Model: "gpt-4.1", Messages: messages, Tools: tools,
+					Model: c.llm.openAIModel, Messages: messages, Tools: tools,
 					Temperature: 0.3, MaxCompletionTokens: 8000,
 				})
 			}
 		} else {
 			resp, err = c.llm.callAgentOpenAI(ctx, agentOpenAIReq{
-				Model: c.llm.model, Messages: messages, Tools: tools,
+				Model: c.llm.openAIModel, Messages: messages, Tools: tools,
 				Temperature: 0.3, MaxCompletionTokens: 8000,
 			})
 		}
@@ -510,6 +551,22 @@ func (c *DomainAgentChat) execute(ctx context.Context, orgID, name, rawArgs stri
 
 	case "da_upcoming":
 		return ok(c.toolUpcoming(ctx, orgID, canonicalSendingDomain(argStr("domain")))), ""
+
+	case "da_get_baselines":
+		days := argInt("days", 28)
+		if days < 7 {
+			days = 7
+		}
+		if days > 90 {
+			days = 90
+		}
+		return ok(c.toolBaselines(ctx, orgID, canonicalSendingDomain(argStr("domain")), days)), ""
+
+	case "da_get_recommendations":
+		return ok(c.toolRecommendations(ctx, orgID)), ""
+
+	case "da_get_offers":
+		return ok(c.toolOffers(ctx, orgID)), ""
 	}
 
 	return fail("unknown tool: " + name)
@@ -642,6 +699,140 @@ func (c *DomainAgentChat) toolUpcoming(ctx context.Context, orgID, domain string
 		out = append(out, map[string]interface{}{
 			"campaign_id": id, "name": name, "status": status,
 			"scheduled_at": sched, "total_recipients": recipients, "sending_domain": dom,
+		})
+	}
+	return out
+}
+
+// toolBaselines reuses the send-baselines volume-governance computation
+// (SendBaselinesAPI.computeBaselines, send_baselines.go) and projects each
+// (sending_domain × isp) row down to what the model needs to judge volume:
+// verdict + baseline + recent rates + reasons.
+func (c *DomainAgentChat) toolBaselines(ctx context.Context, orgID, domain string, days int) interface{} {
+	baselines, err := NewSendBaselinesAPI(c.db).computeBaselines(ctx, orgID, days)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	out := []map[string]interface{}{}
+	for _, b := range baselines {
+		if domain != "" && !strings.EqualFold(b.SendingDomain, domain) {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"sending_domain":          b.SendingDomain,
+			"isp":                     b.ISP,
+			"verdict":                 b.Verdict,
+			"baseline_daily_sends":    b.BaselineDailySends,
+			"recent_sends_7d":         b.Recent.Sends,
+			"recent_human_open_rate":  b.Recent.HumanOpenRate,
+			"recent_hard_bounce_rate": b.Recent.HardRate,
+			"recent_soft_bounce_rate": b.Recent.SoftRate,
+			"reasons":                 b.Reasons,
+		})
+	}
+	return map[string]interface{}{"window_days": days, "rows": out}
+}
+
+// toolRecommendations mirrors HandleGetRecommendations
+// (handlers_consciousness.go): newest assessment per scope flattened into one
+// advisory feed, platform scope skipped (it aggregates the per-ISP scopes).
+// The engine-org fallback mirrors queryAssessmentsForOrg — the assessment
+// writer can run under a different org than the request.
+func (c *DomainAgentChat) toolRecommendations(ctx context.Context, orgID string) interface{} {
+	db := getConsciousnessDB()
+	if db == nil {
+		return map[string]string{"error": "recommendations not wired: consciousness DB not set"}
+	}
+	const q = `
+		SELECT DISTINCT ON (scope) id::text, hour, scope, posture, body, created_at
+		FROM mailing_consciousness_assessments
+		WHERE organization_id = $1::uuid
+		  AND created_at > NOW() - INTERVAL '7 days'
+		ORDER BY scope, created_at DESC`
+	run := func(org string) ([]persistedAssessment, error) {
+		rows, err := db.QueryContext(ctx, q, org)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanPersistedAssessments(rows), nil
+	}
+	latest, err := run(orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	if len(latest) == 0 {
+		var writerOrg string
+		if err := db.QueryRowContext(ctx, `
+			SELECT organization_id::text FROM mailing_consciousness_assessments
+			WHERE created_at > NOW() - INTERVAL '7 days'
+			ORDER BY created_at DESC LIMIT 1`).Scan(&writerOrg); err == nil && writerOrg != orgID {
+			if fallback, fErr := run(writerOrg); fErr == nil {
+				latest = fallback
+			}
+		}
+	}
+	recs := []flattenedRecommendation{}
+	for _, a := range latest {
+		if a.Scope == engine.AssessmentScopePlatform {
+			continue // platform aggregates the per-ISP scopes — avoid duplicates
+		}
+		for _, rec := range a.Body.Recommendations {
+			recs = append(recs, flattenedRecommendation{
+				AssessmentRecommendation: rec,
+				AssessmentScope:          a.Scope,
+				AssessmentHour:           a.Hour,
+				Posture:                  a.Posture,
+			})
+		}
+	}
+	sevRank := map[string]int{"critical": 0, "warn": 1, "info": 2}
+	sort.SliceStable(recs, func(i, j int) bool {
+		return sevRank[recs[i].Severity] < sevRank[recs[j].Severity]
+	})
+	return map[string]interface{}{"advisory_only": true, "count": len(recs), "recommendations": recs}
+}
+
+// toolOffers — one cheap pass over mailing_offers with a LEFT JOIN aggregate
+// of mailing_offer_suppressions (same semantics as the shared
+// countOfferConversions: reason='converted' within 30d). No per-offer fan-out.
+func (c *DomainAgentChat) toolOffers(ctx context.Context, orgID string) interface{} {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT o.id::text, o.name,
+		       COALESCE(o.everflow_offer_id, ''),
+		       COALESCE(o.payout, 0), COALESCE(o.payout_type, ''),
+		       COALESCE(o.status, ''),
+		       COALESCE(s.suppressed, 0), COALESCE(s.conversions_30d, 0)
+		FROM mailing_offers o
+		LEFT JOIN (
+			SELECT offer_id,
+			       COUNT(*) AS suppressed,
+			       COUNT(*) FILTER (WHERE reason = 'converted'
+			                          AND suppressed_at > NOW() - INTERVAL '30 days') AS conversions_30d
+			FROM mailing_offer_suppressions
+			WHERE organization_id = $1
+			GROUP BY offer_id
+		) s ON s.offer_id = o.id
+		WHERE o.organization_id = $1
+		  AND COALESCE(o.status, '') NOT IN ('archived', 'inactive', 'paused')
+		ORDER BY COALESCE(s.conversions_30d, 0) DESC, o.name ASC
+	`, orgID)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	defer rows.Close()
+	out := []map[string]interface{}{}
+	for rows.Next() {
+		var id, name, efID, payoutType, status string
+		var payout float64
+		var suppressed, conv30 int
+		if err := rows.Scan(&id, &name, &efID, &payout, &payoutType, &status, &suppressed, &conv30); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"offer_id": id, "name": name, "everflow_offer_id": efID,
+			"payout": payout, "payout_type": payoutType, "status": status,
+			"suppression_count": suppressed, "conversions_30d": conv30,
 		})
 	}
 	return out
