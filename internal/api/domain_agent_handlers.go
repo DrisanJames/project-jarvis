@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,6 +109,11 @@ func (a *DomainAgentAPI) HandleDomains(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// A brand's PMTA route (em.<apex>) and SES tenant (m.<apex>) are one
+	// property to the operator: collapse both spellings into one canonical
+	// card (em.<apex>) and merge their rollups, so the rail shows 16 brands,
+	// not up to 32 route variants with split numbers.
+	seen := map[string]bool{}
 	var domains []string
 	for domRows.Next() {
 		var d string
@@ -116,9 +122,14 @@ func (a *DomainAgentAPI) HandleDomains(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		domains = append(domains, strings.ToLower(d))
+		c := canonicalSendingDomain(strings.ToLower(d))
+		if !seen[c] {
+			seen[c] = true
+			domains = append(domains, c)
+		}
 	}
 	domRows.Close()
+	sort.Strings(domains)
 
 	type ispAgg struct{ sends, humanOpens, machineOpens, bounces int }
 	perDomainISP := map[string]map[string]*ispAgg{}
@@ -141,10 +152,19 @@ func (a *DomainAgentAPI) HandleDomains(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		domain = canonicalSendingDomain(strings.ToLower(domain))
 		if perDomainISP[domain] == nil {
 			perDomainISP[domain] = map[string]*ispAgg{}
 		}
-		perDomainISP[domain][ispName] = agg
+		// em.* and m.* rows for the same brand×ISP merge into one aggregate.
+		if prev := perDomainISP[domain][ispName]; prev != nil {
+			prev.sends += agg.sends
+			prev.humanOpens += agg.humanOpens
+			prev.machineOpens += agg.machineOpens
+			prev.bounces += agg.bounces
+		} else {
+			perDomainISP[domain][ispName] = agg
+		}
 	}
 	aggRows.Close()
 
@@ -160,10 +180,49 @@ func (a *DomainAgentAPI) HandleDomains(w http.ResponseWriter, r *http.Request) {
 	for planRows.Next() {
 		var d string
 		if err := planRows.Scan(&d); err == nil {
-			hasPlanToday[strings.ToLower(d)] = true
+			hasPlanToday[canonicalSendingDomain(strings.ToLower(d))] = true
 		}
 	}
 	planRows.Close()
+
+	// Scheduled-board indicator: per-domain count of REAL upcoming lane
+	// campaigns (next 48h of planned waves; partner-drip micro-campaigns
+	// excluded so the dot means "a send day is committed", not "drips exist").
+	type upcAgg struct{ campaigns, recipients int }
+	upcoming := map[string]*upcAgg{}
+	upcRows, err := a.db.QueryContext(ctx, `
+		SELECT dom, COUNT(*), COALESCE(SUM(recip), 0) FROM (
+			SELECT DISTINCT c.id,
+			       LOWER(COALESCE(ip.sending_domain, sp.sending_domain)) AS dom,
+			       COALESCE(c.total_recipients, 0) AS recip
+			FROM mailing_campaigns c
+			LEFT JOIN mailing_campaign_isp_plans ip ON ip.campaign_id = c.id
+			LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+			JOIN mailing_campaign_waves w ON w.campaign_id = c.id
+			  AND w.status = 'planned'
+			  AND w.scheduled_at >= NOW() AND w.scheduled_at < NOW() + INTERVAL '48 hours'
+			WHERE c.organization_id = $1
+			  AND c.status IN ('scheduled', 'sending', 'preparing', 'finalizing_audience')
+			  AND c.name NOT LIKE '[partner-drip]%'
+		) u WHERE dom IS NOT NULL GROUP BY dom
+	`, orgID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for upcRows.Next() {
+		var d string
+		var n, recip int
+		if err := upcRows.Scan(&d, &n, &recip); err == nil {
+			c := canonicalSendingDomain(d)
+			if upcoming[c] == nil {
+				upcoming[c] = &upcAgg{}
+			}
+			upcoming[c].campaigns += n
+			upcoming[c].recipients += recip
+		}
+	}
+	upcRows.Close()
 
 	out := make([]map[string]interface{}, 0, len(domains))
 	for _, domain := range domains {
@@ -182,15 +241,30 @@ func (a *DomainAgentAPI) HandleDomains(w http.ResponseWriter, r *http.Request) {
 		if sends > 0 {
 			openPct = 100 * float64(humanOpens) / float64(sends)
 		}
+		upcCampaigns, upcRecipients := 0, 0
+		if u := upcoming[domain]; u != nil {
+			upcCampaigns, upcRecipients = u.campaigns, u.recipients
+		}
 		out = append(out, map[string]interface{}{
-			"domain":            domain,
-			"sends_7d":          sends,
-			"human_open_pct_7d": openPct,
-			"posture_worst":     posture,
-			"has_plan_today":    hasPlanToday[domain],
+			"domain":                  domain,
+			"sends_7d":                sends,
+			"human_open_pct_7d":       openPct,
+			"posture_worst":           posture,
+			"has_plan_today":          hasPlanToday[domain],
+			"upcoming_campaigns_48h":  upcCampaigns,
+			"upcoming_recipients_48h": upcRecipients,
 		})
 	}
 	respondJSON(w, http.StatusOK, out)
+}
+
+// canonicalSendingDomain folds a brand's SES tenant spelling (m.<apex>) into
+// its canonical property key (em.<apex>) so both routes roll up together.
+func canonicalSendingDomain(d string) string {
+	if strings.HasPrefix(d, "m.") && !strings.HasPrefix(d, "em.") {
+		return "em." + strings.TrimPrefix(d, "m.")
+	}
+	return d
 }
 
 // HandleScorecard returns the raw scorecard rows for one domain, day asc.
@@ -212,14 +286,17 @@ func (a *DomainAgentAPI) HandleScorecard(w http.ResponseWriter, r *http.Request)
 		days = 45
 	}
 
+	// Both route spellings of the property roll up together (em.<apex> PMTA +
+	// m.<apex> SES tenant) — whichever one was clicked.
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT day, sending_domain, isp, sends, delivered,
 		       human_opens, machine_opens, human_clicks, machine_clicks,
 		       hard_bounces, soft_bounces, other_bounces, complaints, unsubscribes
 		FROM mailing_domain_agent_scorecard
-		WHERE organization_id = $1 AND sending_domain = $2 AND day >= CURRENT_DATE - ($3 - 1)::int
+		WHERE organization_id = $1 AND LOWER(sending_domain) IN ($2, $3)
+		  AND day >= CURRENT_DATE - ($4 - 1)::int
 		ORDER BY day ASC, isp ASC
-	`, orgID, domain, days)
+	`, orgID, domain, altSendingDomain(domain), days)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -667,7 +744,9 @@ func (a *DomainAgentAPI) HandlePlanStatus(w http.ResponseWriter, r *http.Request
 
 // HandleUpcoming returns the domain's SCHEDULED sending board — every campaign
 // (regardless of which tool deployed it) whose planned waves fire from now
-// through the next N days, grouped by calendar day. This is the forward-looking
+// through the next N days, grouped by OPERATOR-LOCAL (America/Denver) calendar
+// day. Campaigns still in async planning (no waves yet) appear under a
+// "planning" bucket rather than vanishing. This is the forward-looking
 // counterpart to the scorecard: the scorecard reads what happened, /upcoming
 // reads what is committed to happen (mailing_campaigns + isp plans + waves).
 func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) {
@@ -687,34 +766,33 @@ func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) 
 	if days > 30 {
 		days = 30
 	}
-	// A brand's PMTA route (em.<apex>) and SES tenant (m.<apex>) are the same
-	// property to the operator — show both under either spelling.
-	alt := domain
-	switch {
-	case strings.HasPrefix(domain, "em."):
-		alt = "m." + strings.TrimPrefix(domain, "em.")
-	case strings.HasPrefix(domain, "m."):
-		alt = "em." + strings.TrimPrefix(domain, "m.")
-	}
+	alt := altSendingDomain(domain)
 
+	// Wave time filter lives in the JOIN so a campaign mid-flight (earlier
+	// waves already sent) still surfaces with its remaining in-window waves;
+	// LEFT JOINs keep still-planning campaigns (no isp plans / waves yet),
+	// with the sending-profile as the fallback domain linkage.
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT c.id::text, c.name, c.status, COALESCE(c.subject, ''),
 		       COALESCE(c.total_recipients, 0),
 		       ARRAY_AGG(DISTINCT ip.isp) FILTER (WHERE ip.isp IS NOT NULL),
-		       ARRAY_AGG(DISTINCT ip.sending_domain),
+		       ARRAY_AGG(DISTINCT ip.sending_domain) FILTER (WHERE ip.sending_domain IS NOT NULL),
 		       MIN(w.scheduled_at), MAX(w.window_end_at),
 		       COUNT(DISTINCT w.id),
 		       COUNT(DISTINCT w.id) FILTER (WHERE w.status = 'planned')
 		FROM mailing_campaigns c
-		JOIN mailing_campaign_isp_plans ip ON ip.campaign_id = c.id
-		JOIN mailing_campaign_waves w ON w.campaign_id = c.id
-		WHERE c.organization_id = $1
-		  AND LOWER(ip.sending_domain) IN ($2, $3)
-		  AND c.status IN ('scheduled', 'sending', 'preparing', 'finalizing_audience')
+		LEFT JOIN mailing_campaign_isp_plans ip ON ip.campaign_id = c.id
+		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+		LEFT JOIN mailing_campaign_waves w ON w.campaign_id = c.id
 		  AND w.scheduled_at >= NOW() - INTERVAL '6 hours'
 		  AND w.scheduled_at < CURRENT_DATE + ($4 + 1) * INTERVAL '1 day'
+		WHERE c.organization_id = $1
+		  AND (LOWER(ip.sending_domain) IN ($2, $3) OR LOWER(sp.sending_domain) IN ($2, $3))
+		  AND c.status IN ('scheduled', 'sending', 'preparing', 'finalizing_audience')
 		GROUP BY c.id
-		ORDER BY MIN(w.scheduled_at)
+		HAVING MIN(w.scheduled_at) IS NOT NULL
+		    OR c.status IN ('preparing', 'finalizing_audience')
+		ORDER BY MIN(w.scheduled_at) NULLS FIRST
 	`, orgID, domain, alt, days)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -723,17 +801,17 @@ func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) 
 	defer rows.Close()
 
 	type upcomingCampaign struct {
-		ID            string    `json:"id"`
-		Name          string    `json:"name"`
-		Status        string    `json:"status"`
-		Subject       string    `json:"subject"`
-		Recipients    int       `json:"recipients"`
-		ISPs          []string  `json:"isps"`
-		Domains       []string  `json:"sending_domains"`
-		FirstWaveAt   time.Time `json:"first_wave_at"`
-		WindowEndAt   time.Time `json:"window_end_at"`
-		Waves         int       `json:"waves"`
-		WavesPending  int       `json:"waves_pending"`
+		ID           string     `json:"id"`
+		Name         string     `json:"name"`
+		Status       string     `json:"status"`
+		Subject      string     `json:"subject"`
+		Recipients   int        `json:"recipients"`
+		ISPs         []string   `json:"isps"`
+		Domains      []string   `json:"sending_domains"`
+		FirstWaveAt  *time.Time `json:"first_wave_at"`
+		WindowEndAt  *time.Time `json:"window_end_at"`
+		Waves        int        `json:"waves"`
+		WavesPending int        `json:"waves_pending"`
 	}
 	type upcomingDay struct {
 		Date           string             `json:"date"`
@@ -742,19 +820,33 @@ func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) 
 		DripCampaigns  int                `json:"drip_campaigns"`
 		DripRecipients int                `json:"drip_recipients"`
 	}
+	loc, locErr := time.LoadLocation("America/Denver")
+	if locErr != nil {
+		loc = time.UTC
+	}
 	dayIdx := map[string]int{}
 	var out []upcomingDay
 	for rows.Next() {
 		var uc upcomingCampaign
 		var isps, doms pq.StringArray
+		var firstWave, windowEnd sql.NullTime
 		if err := rows.Scan(&uc.ID, &uc.Name, &uc.Status, &uc.Subject, &uc.Recipients,
-			&isps, &doms, &uc.FirstWaveAt, &uc.WindowEndAt, &uc.Waves, &uc.WavesPending); err != nil {
+			&isps, &doms, &firstWave, &windowEnd, &uc.Waves, &uc.WavesPending); err != nil {
 			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		uc.ISPs = isps
 		uc.Domains = doms
-		day := uc.FirstWaveAt.UTC().Format("2006-01-02")
+		day := "planning"
+		if firstWave.Valid {
+			t := firstWave.Time
+			uc.FirstWaveAt = &t
+			day = t.In(loc).Format("2006-01-02")
+		}
+		if windowEnd.Valid {
+			t := windowEnd.Time
+			uc.WindowEndAt = &t
+		}
 		i, ok := dayIdx[day]
 		if !ok {
 			i = len(out)
@@ -775,6 +867,15 @@ func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) 
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Drop day buckets that ended up empty after the drip rollup (pure-drip
+	// days carry only the summary counters and stay).
+	filtered := out[:0]
+	for _, d := range out {
+		if len(d.Campaigns) > 0 || d.DripCampaigns > 0 {
+			filtered = append(filtered, d)
+		}
+	}
+	out = filtered
 	if out == nil {
 		out = []upcomingDay{}
 	}
@@ -783,4 +884,16 @@ func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) 
 		"days":   days,
 		"dates":  out,
 	})
+}
+
+// altSendingDomain returns the sibling route spelling of a property domain:
+// em.<apex> <-> m.<apex>. Unknown shapes return themselves.
+func altSendingDomain(domain string) string {
+	switch {
+	case strings.HasPrefix(domain, "em."):
+		return "m." + strings.TrimPrefix(domain, "em.")
+	case strings.HasPrefix(domain, "m."):
+		return "em." + strings.TrimPrefix(domain, "m.")
+	}
+	return domain
 }

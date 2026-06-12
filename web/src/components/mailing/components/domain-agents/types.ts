@@ -18,6 +18,10 @@ export interface DomainSummary {
   human_open_pct_7d: number;
   posture_worst: Posture;
   has_plan_today: boolean;
+  // Scheduled board (next 48h of planned waves, partner-drips excluded) —
+  // drives the green "sends committed" dot on the domain card.
+  upcoming_campaigns_48h: number;
+  upcoming_recipients_48h: number;
 }
 
 // GET /scorecard?domain=X&days=N

@@ -161,12 +161,21 @@ export const DomainAgents: React.FC = () => {
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text }}>
-                  {d.has_plan_today && (
+                  {(d.upcoming_campaigns_48h ?? 0) > 0 && (
                     <span
-                      title="Plan exists for today"
+                      title={`${fmtInt(d.upcoming_campaigns_48h)} campaign${d.upcoming_campaigns_48h === 1 ? '' : 's'} scheduled (next 48h) · ${fmtInt(d.upcoming_recipients_48h)} recipients`}
                       style={{
                         display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
-                        background: C.success, marginRight: 7, verticalAlign: 'middle',
+                        background: C.success, marginRight: 5, verticalAlign: 'middle',
+                      }}
+                    />
+                  )}
+                  {d.has_plan_today && (
+                    <span
+                      title="Domain-agent plan exists for today"
+                      style={{
+                        display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+                        background: C.accent, marginRight: 7, verticalAlign: 'middle',
                       }}
                     />
                   )}
@@ -176,6 +185,9 @@ export const DomainAgents: React.FC = () => {
               </div>
               <div style={{ fontSize: 11.5, color: C.muted }}>
                 {fmtInt(d.sends_7d)} sends 7d · open {fmtPct100(d.human_open_pct_7d)}
+                {(d.upcoming_campaigns_48h ?? 0) > 0 && (
+                  <> · {fmtInt(d.upcoming_campaigns_48h)} sched 48h</>
+                )}
               </div>
             </div>
           );

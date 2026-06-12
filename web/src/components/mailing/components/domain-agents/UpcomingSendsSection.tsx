@@ -22,8 +22,8 @@ interface UpcomingCampaign {
   recipients: number;
   isps: string[] | null;
   sending_domains: string[] | null;
-  first_wave_at: string;
-  window_end_at: string;
+  first_wave_at: string | null; // null while async planning hasn't built waves yet
+  window_end_at: string | null;
   waves: number;
   waves_pending: number;
 }
@@ -42,11 +42,15 @@ interface UpcomingResponse {
   dates: UpcomingDay[];
 }
 
-const fmtTime = (iso: string): string => {
+const fmtTime = (iso: string | null): string => {
+  if (!iso) return 'planning…';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 };
+
+const dayLabel = (date: string): string =>
+  date === 'planning' ? 'Audience planning in progress' : date;
 
 const statusColor = (status: string): string => {
   if (status === 'sending') return '#34d399';
@@ -112,7 +116,7 @@ export const UpcomingSendsSection: React.FC<{ domain: string }> = ({ domain }) =
       {!loading && !error && data && data.dates.map((day) => (
         <div key={day.date} style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: C.text, fontWeight: 600, margin: '6px 0' }}>
-            {day.date}
+            {dayLabel(day.date)}
             <span style={{ color: C.muted, fontWeight: 400 }}>
               {' '}· {day.campaigns.length} campaign{day.campaigns.length === 1 ? '' : 's'} · {fmtInt(day.recipients)} planned recipients
               {day.drip_campaigns > 0 && (
