@@ -113,6 +113,13 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 	html := p.HTMLContent
 
 	// Merge tags + tracking rewrite, mirroring send_worker's ordering.
+	// replaceMoneyMergeTags FIRST: the scheduler bakes lowercase
+	// {{subscriber.id}}/{{brand.domain}} into every money URL
+	// (&sub1=...&sub2=...) and ReplaceTrackingMergeTags only covers the
+	// UPPERCASE family — without this, every journey reminder shipped the
+	// literal tags and its Everflow postbacks arrived unattributable
+	// (sub1="{{subscriber.id}}"). Found 2026-06-12 via operator postback audit.
+	html = replaceMoneyMergeTags(html, p.SubscriberID, p.FromEmail)
 	html = ReplaceTrackingMergeTags(html, campaignID, p.SubscriberID)
 	trackBase := s.resolveTrackingURL(ctx, p.ProfileID)
 	if trackBase != "" {
@@ -150,6 +157,29 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 	log.Printf("JourneyClickDripSender: sent reminder step=%d offer=%s to %s via profile=%s (vmta=%s, campaign=%s)",
 		p.ReminderSeq, p.EverflowOfferID, p.SubscriberEmail, p.ProfileID, result.VMTA, campaignID)
 	return nil
+}
+
+// replaceMoneyMergeTags substitutes the scheduler-pipeline lowercase merge
+// tags that ReplaceTrackingMergeTags (UPPERCASE family) does not cover:
+// {{subscriber.id}} (Everflow sub1) and {{brand.domain}} (sub2), including
+// whitespace and URL-encoded variants. Brand root derives from the sending
+// address (…@em.<apex> → <apex>), matching send_worker's
+// rc["brand"]["domain"] semantics.
+func replaceMoneyMergeTags(html, subscriberID, fromEmail string) string {
+	for _, tag := range []string{"{{subscriber.id}}", "{{ subscriber.id }}"} {
+		html = strings.ReplaceAll(html, tag, subscriberID)
+	}
+	html = strings.ReplaceAll(html, "%7B%7Bsubscriber.id%7D%7D", subscriberID)
+	if i := strings.LastIndex(fromEmail, "@"); i >= 0 {
+		brand := strings.TrimPrefix(fromEmail[i+1:], "em.")
+		if brand != "" {
+			for _, tag := range []string{"{{brand.domain}}", "{{ brand.domain }}"} {
+				html = strings.ReplaceAll(html, tag, brand)
+			}
+			html = strings.ReplaceAll(html, "%7B%7Bbrand.domain%7D%7D", brand)
+		}
+	}
+	return html
 }
 
 // resolveOrgID returns the subscriber's organization, falling back to the

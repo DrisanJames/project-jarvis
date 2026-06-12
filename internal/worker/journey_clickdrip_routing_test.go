@@ -10,6 +10,7 @@ package worker
 // decides WHETHER to take the PMTA path and HOW LONG to wait.
 
 import (
+	"strings"
 	"os"
 	"testing"
 	"time"
@@ -122,4 +123,24 @@ func TestShadowCampaignID(t *testing.T) {
 	require.Len(t, a1, 36, "must be a canonical UUID string")
 	// Pin the exact value so a namespace/derivation change is caught.
 	require.Equal(t, "55f62e3e-dccc-5181-812c-c5459661d5ef", a1)
+}
+
+func TestReplaceMoneyMergeTags(t *testing.T) {
+	html := `<a href="https://www.eos57ytf.com/K4C5ZLC/PS8241/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}">x</a>` +
+		`<a href="https://x.com/?s=%7B%7Bsubscriber.id%7D%7D">y</a>` +
+		`<span>{{ subscriber.id }}</span>`
+	out := replaceMoneyMergeTags(html, "abc-123", "deals@em.myownhealth.net")
+	for _, bad := range []string{"{{subscriber.id}}", "{{ subscriber.id }}", "{{brand.domain}}", "%7B%7Bsubscriber.id%7D%7D"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("unrendered tag %q survived: %s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "sub1=abc-123") || !strings.Contains(out, "sub2=myownhealth.net") {
+		t.Fatalf("substitution wrong: %s", out)
+	}
+	// em. prefix stripping must not mangle apexes that merely start with 'm'
+	out2 := replaceMoneyMergeTags(`{{brand.domain}}`, "x", "a@em.myrepairdiy.com")
+	if out2 != "myrepairdiy.com" {
+		t.Fatalf("brand derivation wrong: %s", out2)
+	}
 }
