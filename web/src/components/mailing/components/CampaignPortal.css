@@ -4,8 +4,11 @@
 
 .campaign-portal {
   padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
+  /* Full-pane width (2026-06-12): the old max-width:1400px + margin:auto
+     wrapper condensed the 15-column campaign list and forced horizontal
+     scrolling on normal desktops. The list keeps its own overflow-x:auto
+     fallback for narrow windows. */
+  width: 100%;
   animation: fadeSlideIn 0.3s ease-out;
 }
 

@@ -68,8 +68,10 @@
 
 .domain-content {
   padding: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
+  /* Full-pane width (2026-06-12): the old max-width:1200px + margin:auto
+     wrapper wasted the pane real-estate; Domain Center now spans the
+     entire content area. */
+  width: 100%;
 }
 
 /* ============================================================================

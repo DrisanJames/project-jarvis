@@ -259,10 +259,17 @@ export const DomainAgents: React.FC = () => {
         })}
       </div>
 
-      {/* ── Main pane ──────────────────────────────────────────────────── */}
+      {/* ── Main pane ──────────────────────────────────────────────────────
+           Layout (2026-06-12 restructure): data first. Verdict banner stays
+           full-width at the top; below it a responsive 2-column grid puts the
+           metrics stack (pace / scorecard / history) on the left and the
+           action stack (upcoming sends / briefing-plan / approve-deploy) on
+           the right. auto-fit + minmax(480px,1fr) collapses to a single
+           column when the pane is too narrow for two 480px tracks (roughly
+           <1200px viewports with the 300px rail). AgentChat moved to the
+           bottom, full-width — it used to sit on top and push every data
+           section below the fold. ─────────────────────────────────────── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <AgentChatSection domain={selected} />
-
         {!selected && !domainsLoading && (
           <AllDomainsBaselines
             data={baselines}
@@ -295,29 +302,48 @@ export const DomainAgents: React.FC = () => {
               onRetry={fetchBaselines}
             />
 
-            <TodayPaceSection domain={selected} />
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(480px, 1fr))',
+                gap: 16,
+                alignItems: 'start',
+              }}
+            >
+              {/* Left column — metrics stack */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+                <TodayPaceSection domain={selected} />
 
-            <ScorecardSection domain={selected} />
+                <ScorecardSection domain={selected} />
 
-            <DomainScorecardHistory domain={selected} />
+                <DomainScorecardHistory domain={selected} />
+              </div>
 
-            <UpcomingSendsSection domain={selected} />
+              {/* Right column — sends & plan actions */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+                <UpcomingSendsSection domain={selected} />
 
-            <BriefingPlanSection
-              domain={selected}
-              plan={plan}
-              planMissing={planMissing}
-              loading={planLoading}
-              error={planError}
-              onRetry={() => fetchPlan(selected)}
-              onPlanChange={handlePlanChange}
-            />
+                <BriefingPlanSection
+                  domain={selected}
+                  plan={plan}
+                  planMissing={planMissing}
+                  loading={planLoading}
+                  error={planError}
+                  onRetry={() => fetchPlan(selected)}
+                  onPlanChange={handlePlanChange}
+                />
 
-            {!planLoading && !planError && (
-              <ApproveDeploySection plan={plan} onPlanChange={handlePlanChange} />
-            )}
+                {!planLoading && !planError && (
+                  <ApproveDeploySection plan={plan} onPlanChange={handlePlanChange} />
+                )}
+              </div>
+            </div>
           </>
         )}
+
+        {/* Agent chat — full-width at the bottom so the data sections above
+            stay above the fold. */}
+        <AgentChatSection domain={selected} />
       </div>
     </div>
   );
