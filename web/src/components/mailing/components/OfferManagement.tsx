@@ -112,6 +112,18 @@ interface OfferStats {
   campaign_count: number;
   campaigns: OfferStatsCampaign[];
   daily: OfferStatsDaily[];
+  dnm_list_size: number;     // latest completed Optizmo scrub file_count (0 = never scrubbed)
+  audience_size: number;     // audience_count of that scrub (0 = unknown)
+  suppression_weekly: { week_start: string; count: number }[];
+}
+
+// Slim CPM deal shape from GET /api/mailing/cpm-planner/deals — used only to
+// decide between "View in CPM Planner" and "Create deal from this offer".
+interface CpmDealLite {
+  id: string;
+  name: string;
+  offer_id: string; // effective offer id (resolves everflow mapping server-side)
+  status: string;
 }
 
 interface SubjectLine {
@@ -726,6 +738,7 @@ export const OfferManagement: React.FC = () => {
         {activeTab === 'performance' && (
           <PerformanceTab
             offerId={offer.id}
+            offer={offer}
             performance={performance}
             deployments={deployments}
             onViewSuppressions={() => setActiveTab('compliance')}
@@ -2460,14 +2473,55 @@ const STATS_WINDOWS = [7, 30, 90] as const;
 
 const PerformanceTab: React.FC<{
   offerId: string;
+  offer: Offer;
   performance: OfferPerformance | null;
   deployments: Deployment[];
   onViewSuppressions: () => void;
-}> = ({ offerId, performance, deployments, onViewSuppressions }) => {
+}> = ({ offerId, offer, performance, deployments, onViewSuppressions }) => {
   const [days, setDays] = useState<number>(30);
   const [stats, setStats] = useState<OfferStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState('');
+  // CPM Planner linkage — does a deal exist for this offer?
+  const [cpmDeal, setCpmDeal] = useState<CpmDealLite | null>(null);
+  const [cpmDealsLoaded, setCpmDealsLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCpmDealsLoaded(false);
+    setCpmDeal(null);
+    (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/cpm-planner/deals', { credentials: 'include' });
+        if (cancelled || !res.ok) return;
+        const data = await res.json().catch(() => ({ deals: [] }));
+        const deals: CpmDealLite[] = data.deals || [];
+        // deal.offer_id is the EFFECTIVE offer id (server resolves
+        // everflow_offer_id → mailing_offers), so a uuid compare suffices.
+        if (!cancelled) setCpmDeal(deals.find(d => d.offer_id === offerId) || null);
+      } catch { /* planner unreachable — hide the linkage UI */ }
+      if (!cancelled) setCpmDealsLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [offerId]);
+
+  // Deep-link navigation: the portal listens for the 'jarvis:navigate'
+  // CustomEvent (MailingPortal.tsx) — components here receive no portal
+  // props and hash changes aren't observed, so the event is the mechanism.
+  // State handoff to CpmPlanner goes through sessionStorage (read-once).
+  const goToPlanner = () => {
+    if (cpmDeal) {
+      sessionStorage.setItem('cpmPlannerFocusDeal', cpmDeal.id);
+    } else {
+      sessionStorage.setItem('cpmPlannerPrefill', JSON.stringify({
+        offer_id: offer.id,
+        everflow_offer_id: offer.everflow_offer_id || '',
+        payout: offer.payout || 0,
+        name: offer.name,
+      }));
+    }
+    window.dispatchEvent(new CustomEvent('jarvis:navigate', { detail: { tab: 'cpm-planner' } }));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2495,12 +2549,16 @@ const PerformanceTab: React.FC<{
   const tiles = t ? [
     { label: 'Sent', value: t.sent.toLocaleString(), sub: `${stats?.campaign_count ?? 0} campaigns`, color: '#818cf8' },
     { label: 'Delivered', value: t.delivered.toLocaleString(), sub: `${fmtRate(t.delivered, t.sent)} of sent`, color: '#22c55e' },
-    { label: 'Opens', value: t.opened.toLocaleString(), sub: `${fmtRate(t.opened, t.sent)} of sent`, color: '#22c55e' },
-    { label: 'Clicks', value: t.clicked.toLocaleString(), sub: `${fmtRate(t.clicked, t.sent)} of sent`, color: '#f59e0b' },
+    { label: 'Human Opens', value: t.opened.toLocaleString(), sub: `${fmtRate(t.opened, t.sent)} of sent`, color: '#22c55e' },
+    { label: 'Human Clicks', value: t.clicked.toLocaleString(), sub: `${fmtRate(t.clicked, t.sent)} of sent`, color: '#f59e0b' },
     { label: 'Hard Bounces', value: t.hard_bounces.toLocaleString(), sub: `${fmtRate(t.hard_bounces, t.sent)} of sent`, color: '#ef4444' },
     { label: 'Soft Bounces', value: t.soft_bounces.toLocaleString(), sub: `${fmtRate(t.soft_bounces, t.sent)} of sent`, color: '#f59e0b' },
     { label: 'Conversions', value: t.conversions.toLocaleString(), sub: `last ${days}d`, color: '#3b82f6' },
-    { label: 'Suppressed', value: t.suppression_total.toLocaleString(), sub: 'all time, all reasons', color: '#94a3b8' },
+    {
+      label: 'Suppressed', value: t.suppression_total.toLocaleString(),
+      sub: stats && stats.dnm_list_size > 0 ? `DNM list ${stats.dnm_list_size.toLocaleString()}` : 'all time, all reasons',
+      color: '#94a3b8',
+    },
   ] : [];
 
   const chartData = (stats?.daily ?? []).map(d => ({
@@ -2528,8 +2586,27 @@ const PerformanceTab: React.FC<{
             {d}d
           </button>
         ))}
+        {cpmDealsLoaded && (
+          cpmDeal ? (
+            <button
+              style={{ ...btnGhost, marginLeft: 'auto', color: '#818cf8', borderColor: 'rgba(129,140,248,0.4)' }}
+              onClick={goToPlanner}
+              title={`Open deal "${cpmDeal.name}" in the CPM Planner — offer economics live with the deal math`}
+            >
+              View in CPM Planner →
+            </button>
+          ) : (
+            <button
+              style={{ ...btnGhost, marginLeft: 'auto', color: '#22c55e', borderColor: 'rgba(34,197,94,0.4)' }}
+              onClick={goToPlanner}
+              title="No CPM deal exists for this offer — open the planner with a pre-filled New Deal form (offer + payout)"
+            >
+              + Create deal from this offer
+            </button>
+          )
+        )}
         <button
-          style={{ ...btnGhost, marginLeft: 'auto' }}
+          style={{ ...btnGhost, ...(cpmDealsLoaded ? {} : { marginLeft: 'auto' }) }}
           onClick={onViewSuppressions}
           title="Open the Compliance tab — manual suppression upload + recent entries"
         >
@@ -2586,8 +2663,8 @@ const PerformanceTab: React.FC<{
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="rgba(129,140,248,0.45)" radius={[2, 2, 0, 0]} />
                   <Bar yAxisId="vol" dataKey="delivered" name="Delivered" fill="rgba(34,197,94,0.45)" radius={[2, 2, 0, 0]} />
-                  <Line yAxisId="eng" type="monotone" dataKey="opened" name="Opens" stroke="#22c55e" strokeWidth={2} dot={false} />
-                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Clicks" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="opened" name="Human Opens" stroke="#22c55e" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Human Clicks" stroke="#f59e0b" strokeWidth={2} dot={false} />
                   <Line yAxisId="eng" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>
@@ -2610,8 +2687,8 @@ const PerformanceTab: React.FC<{
                 <th>Scheduled</th>
                 <th>Sent</th>
                 <th>Delivered</th>
-                <th>Opens</th>
-                <th>Clicks</th>
+                <th>Human Opens</th>
+                <th>Human Clicks</th>
               </tr>
             </thead>
             <tbody>

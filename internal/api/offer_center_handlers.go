@@ -1149,7 +1149,16 @@ type OfferStatsDaily struct {
 	Conversions int64  `json:"conversions"`
 }
 
-// OfferStatsResponse is the response for HandleGetOfferStats.
+// OfferSuppressionWeek is one week of the suppressed-count trend
+// (mailing_offer_suppressions.suppressed_at bucketed by ISO week start).
+type OfferSuppressionWeek struct {
+	WeekStart string `json:"week_start"` // YYYY-MM-DD (Monday)
+	Count     int64  `json:"count"`
+}
+
+// OfferStatsResponse is the response for HandleGetOfferStats and the payload
+// embedded in the CPM Planner's /deals/{id}/offer-performance endpoint —
+// ONE shared implementation (loadOfferStats), two endpoints.
 type OfferStatsResponse struct {
 	OfferID       string               `json:"offer_id"`
 	Days          int                  `json:"days"`
@@ -1157,45 +1166,66 @@ type OfferStatsResponse struct {
 	CampaignCount int                  `json:"campaign_count"`
 	Campaigns     []OfferStatsCampaign `json:"campaigns"`
 	Daily         []OfferStatsDaily    `json:"daily"`
+	// DNM list size = file_count of the latest completed Optizmo scrub job
+	// for the offer (0 when the offer has never been scrubbed).
+	DnmListSize int64 `json:"dnm_list_size"`
+	// AudienceSize = audience_count of that same scrub job — the cheapest
+	// honest audience denominator we have. 0 = unknown (no scrub yet);
+	// consumers must skip the suppressed-share figure in that case.
+	AudienceSize int64 `json:"audience_size"`
+	// Suppressed-count trend, last 8 weeks (dense — zero-count weeks emitted).
+	SuppressionWeekly []OfferSuppressionWeek `json:"suppression_weekly"`
 }
 
-// HandleGetOfferStats — GET /offer-center/offers/{id}/stats?days=30
-func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *http.Request) {
-	offerID := chi.URLParam(r, "id")
-	if offerID == "" {
-		respondError(w, http.StatusBadRequest, "offer id is required")
-		return
-	}
-	if och.db == nil {
-		respondError(w, http.StatusServiceUnavailable, "Database not available")
-		return
-	}
+// countOfferConversions is THE conversion-attribution query — Everflow
+// postbacks write reason='converted' rows into mailing_offer_suppressions,
+// and every surface (Offers tab stats, CPM Planner deal progress, deal
+// offer-performance panel) counts conversions through this one function so
+// the numbers can never drift apart. orgID == "" skips the org filter
+// (offer ids are globally-unique UUIDs; the offer-center endpoints predate
+// org plumbing and pass "").
+func countOfferConversions(ctx context.Context, db *sql.DB, orgID, offerID string, since time.Time) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_offer_suppressions
+		 WHERE offer_id = $1 AND reason = 'converted' AND suppressed_at > $2
+		   AND ($3 = '' OR organization_id::text = $3)`,
+		offerID, since, orgID).Scan(&n)
+	return n, err
+}
 
-	days := 30
-	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
-		days = d
-	}
+// loadOfferStats is the shared per-offer performance aggregation used by
+// BOTH GET /offer-center/offers/{id}/stats and
+// GET /cpm-planner/deals/{id}/offer-performance (requirement: single
+// implementation, two endpoints).
+//
+// Ground truth: mailing_tracking_events for the offer's campaigns (campaign
+// counter columns are STALE and never used); opens/clicks are HUMAN counts
+// (machine/MPP events excluded via is_machine_open / is_machine_click);
+// conversions come from countOfferConversions; suppression totals + weekly
+// trend from mailing_offer_suppressions; DNM list size + audience size from
+// the latest completed Optizmo scrub job.
+func loadOfferStats(ctx context.Context, db *sql.DB, orgID, offerID string, days int) (*OfferStatsResponse, error) {
 	windowStart := time.Now().AddDate(0, 0, -days)
 
-	ctx := r.Context()
-	resp := OfferStatsResponse{
-		OfferID:   offerID,
-		Days:      days,
-		Campaigns: []OfferStatsCampaign{},
-		Daily:     []OfferStatsDaily{},
+	resp := &OfferStatsResponse{
+		OfferID:           offerID,
+		Days:              days,
+		Campaigns:         []OfferStatsCampaign{},
+		Daily:             []OfferStatsDaily{},
+		SuppressionWeekly: []OfferSuppressionWeek{},
 	}
 
 	// 1) Bound campaign ids first — mailing_tracking_events is huge but
 	// indexed on campaign_id, so everything else fans out from this list.
-	campRows, err := och.db.QueryContext(ctx,
+	campRows, err := db.QueryContext(ctx,
 		`SELECT id::text, COALESCE(name,''), COALESCE(status,''), scheduled_at
 		 FROM mailing_campaigns
 		 WHERE offer_id = $1 AND created_at > $2
-		 ORDER BY created_at DESC`, offerID, windowStart)
+		   AND ($3 = '' OR organization_id::text = $3)
+		 ORDER BY created_at DESC`, offerID, windowStart, orgID)
 	if err != nil {
-		log.Printf("ERROR: offer stats campaigns for %s: %v", offerID, err)
-		respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
-		return
+		return nil, fmt.Errorf("offer stats campaigns: %w", err)
 	}
 	var campaignIDs []string
 	campaignIdx := make(map[string]int) // campaign id -> index in resp.Campaigns
@@ -1204,9 +1234,7 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		var scheduledAt sql.NullTime
 		if err := campRows.Scan(&c.ID, &c.Name, &c.Status, &scheduledAt); err != nil {
 			campRows.Close()
-			log.Printf("ERROR: offer stats scan campaign: %v", err)
-			respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
-			return
+			return nil, fmt.Errorf("offer stats scan campaign: %w", err)
 		}
 		if scheduledAt.Valid {
 			t := scheduledAt.Time
@@ -1220,13 +1248,15 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 	}
 	campRows.Close()
 	if err := campRows.Err(); err != nil {
-		log.Printf("ERROR: offer stats campaign rows: %v", err)
-		respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
-		return
+		return nil, fmt.Errorf("offer stats campaign rows: %w", err)
 	}
 	resp.CampaignCount = len(campaignIDs)
 
 	hb := HardBounceSQL("t")
+	// Human engagement only: machine/MPP fetches and scanner clicks are
+	// flagged at ingest and excluded here on every surface.
+	const humanOpen = `t.event_type = 'opened' AND NOT COALESCE(t.is_machine_open, FALSE)`
+	const humanClick = `t.event_type = 'clicked' AND NOT COALESCE(t.is_machine_click, FALSE)`
 
 	// Maps for the per-day series (filled below, emitted as a dense range).
 	dailyEvents := make(map[string]*OfferStatsDaily)
@@ -1238,8 +1268,8 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		totalsQ := fmt.Sprintf(`SELECT
 			COUNT(*) FILTER (WHERE t.event_type = 'sent'),
 			COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
-			COUNT(*) FILTER (WHERE t.event_type = 'opened'),
-			COUNT(*) FILTER (WHERE t.event_type = 'clicked'),
+			COUNT(*) FILTER (WHERE %s),
+			COUNT(*) FILTER (WHERE %s),
 			COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND %s),
 			COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND NOT (%s)),
 			COUNT(*) FILTER (WHERE t.event_type IN ('deferred','deferral')),
@@ -1247,14 +1277,13 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		 FROM mailing_tracking_events t
 		 WHERE t.campaign_id = ANY($1::uuid[])
 		   AND t.event_at > $2
-		   AND t.event_type IN ('sent','delivered','opened','clicked','bounced','deferred','deferral','complained')`, hb, hb)
-		if err := och.db.QueryRowContext(ctx, totalsQ, pq.Array(campaignIDs), windowStart).Scan(
+		   AND t.event_type IN ('sent','delivered','opened','clicked','bounced','deferred','deferral','complained')`,
+			humanOpen, humanClick, hb, hb)
+		if err := db.QueryRowContext(ctx, totalsQ, pq.Array(campaignIDs), windowStart).Scan(
 			&resp.Totals.Sent, &resp.Totals.Delivered, &resp.Totals.Opened, &resp.Totals.Clicked,
 			&resp.Totals.HardBounces, &resp.Totals.SoftBounces, &resp.Totals.Deferred, &resp.Totals.Complaints,
 		); err != nil {
-			log.Printf("ERROR: offer stats totals for %s: %v", offerID, err)
-			respondError(w, http.StatusInternalServerError, "Failed to aggregate offer events")
-			return
+			return nil, fmt.Errorf("offer stats totals: %w", err)
 		}
 
 		// 3) Per-campaign breakdown for the recent list.
@@ -1262,21 +1291,19 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		for id := range campaignIdx {
 			recentIDs = append(recentIDs, id)
 		}
-		perCampRows, err := och.db.QueryContext(ctx,
-			`SELECT t.campaign_id::text,
+		perCampQ := fmt.Sprintf(`SELECT t.campaign_id::text,
 				COUNT(*) FILTER (WHERE t.event_type = 'sent'),
 				COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
-				COUNT(*) FILTER (WHERE t.event_type = 'opened'),
-				COUNT(*) FILTER (WHERE t.event_type = 'clicked')
+				COUNT(*) FILTER (WHERE %s),
+				COUNT(*) FILTER (WHERE %s)
 			 FROM mailing_tracking_events t
 			 WHERE t.campaign_id = ANY($1::uuid[])
 			   AND t.event_at > $2
 			   AND t.event_type IN ('sent','delivered','opened','clicked')
-			 GROUP BY t.campaign_id`, pq.Array(recentIDs), windowStart)
+			 GROUP BY t.campaign_id`, humanOpen, humanClick)
+		perCampRows, err := db.QueryContext(ctx, perCampQ, pq.Array(recentIDs), windowStart)
 		if err != nil {
-			log.Printf("ERROR: offer stats per-campaign for %s: %v", offerID, err)
-			respondError(w, http.StatusInternalServerError, "Failed to aggregate campaign events")
-			return
+			return nil, fmt.Errorf("offer stats per-campaign: %w", err)
 		}
 		for perCampRows.Next() {
 			var id string
@@ -1292,21 +1319,19 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		perCampRows.Close()
 
 		// 4) Daily event series.
-		dailyRows, err := och.db.QueryContext(ctx,
-			`SELECT to_char(t.event_at::date, 'YYYY-MM-DD'),
+		dailyQ := fmt.Sprintf(`SELECT to_char(t.event_at::date, 'YYYY-MM-DD'),
 				COUNT(*) FILTER (WHERE t.event_type = 'sent'),
 				COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
-				COUNT(*) FILTER (WHERE t.event_type = 'opened'),
-				COUNT(*) FILTER (WHERE t.event_type = 'clicked')
+				COUNT(*) FILTER (WHERE %s),
+				COUNT(*) FILTER (WHERE %s)
 			 FROM mailing_tracking_events t
 			 WHERE t.campaign_id = ANY($1::uuid[])
 			   AND t.event_at > $2
 			   AND t.event_type IN ('sent','delivered','opened','clicked')
-			 GROUP BY 1`, pq.Array(campaignIDs), windowStart)
+			 GROUP BY 1`, humanOpen, humanClick)
+		dailyRows, err := db.QueryContext(ctx, dailyQ, pq.Array(campaignIDs), windowStart)
 		if err != nil {
-			log.Printf("ERROR: offer stats daily for %s: %v", offerID, err)
-			respondError(w, http.StatusInternalServerError, "Failed to aggregate daily events")
-			return
+			return nil, fmt.Errorf("offer stats daily: %w", err)
 		}
 		for dailyRows.Next() {
 			var d OfferStatsDaily
@@ -1319,24 +1344,25 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		dailyRows.Close()
 	}
 
-	// 5) Conversions (30d-window count) + all-time suppression total.
-	if err := och.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FILTER (WHERE reason = 'converted' AND suppressed_at > $2),
-		        COUNT(*)
-		 FROM mailing_offer_suppressions WHERE offer_id = $1`, offerID, windowStart).Scan(
-		&resp.Totals.Conversions, &resp.Totals.SuppressionTotal,
-	); err != nil {
-		log.Printf("ERROR: offer stats suppressions for %s: %v", offerID, err)
-		respondError(w, http.StatusInternalServerError, "Failed to count offer suppressions")
-		return
+	// 5) Conversions (window count, shared attribution query) + all-time
+	// suppression total.
+	if resp.Totals.Conversions, err = countOfferConversions(ctx, db, orgID, offerID, windowStart); err != nil {
+		return nil, fmt.Errorf("offer stats conversions: %w", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_offer_suppressions
+		 WHERE offer_id = $1 AND ($2 = '' OR organization_id::text = $2)`,
+		offerID, orgID).Scan(&resp.Totals.SuppressionTotal); err != nil {
+		return nil, fmt.Errorf("offer stats suppression total: %w", err)
 	}
 
 	// 6) Daily conversion series.
-	convRows, err := och.db.QueryContext(ctx,
+	convRows, err := db.QueryContext(ctx,
 		`SELECT to_char(suppressed_at::date, 'YYYY-MM-DD'), COUNT(*)
 		 FROM mailing_offer_suppressions
 		 WHERE offer_id = $1 AND reason = 'converted' AND suppressed_at > $2
-		 GROUP BY 1`, offerID, windowStart)
+		   AND ($3 = '' OR organization_id::text = $3)
+		 GROUP BY 1`, offerID, windowStart, orgID)
 	if err == nil {
 		for convRows.Next() {
 			var date string
@@ -1359,6 +1385,83 @@ func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *ht
 		}
 		entry.Conversions = dailyConversions[key]
 		resp.Daily = append(resp.Daily, entry)
+	}
+
+	// 8) Suppressed-count trend — weekly buckets, last 8 ISO weeks (dense).
+	// Best-effort: a failure leaves an empty trend rather than failing stats.
+	weeklyCounts := make(map[string]int64)
+	wkRows, err := db.QueryContext(ctx,
+		`SELECT to_char(date_trunc('week', suppressed_at)::date, 'YYYY-MM-DD'), COUNT(*)
+		 FROM mailing_offer_suppressions
+		 WHERE offer_id = $1
+		   AND suppressed_at >= date_trunc('week', NOW()) - INTERVAL '7 weeks'
+		   AND ($2 = '' OR organization_id::text = $2)
+		 GROUP BY 1`, offerID, orgID)
+	if err != nil {
+		log.Printf("WARN: offer stats weekly suppression trend for %s: %v", offerID, err)
+	} else {
+		for wkRows.Next() {
+			var wk string
+			var n int64
+			if err := wkRows.Scan(&wk, &n); err == nil {
+				weeklyCounts[wk] = n
+			}
+		}
+		wkRows.Close()
+	}
+	// Dense 8-week emission anchored on the current ISO week's Monday.
+	monday := time.Now()
+	for monday.Weekday() != time.Monday {
+		monday = monday.AddDate(0, 0, -1)
+	}
+	for i := 7; i >= 0; i-- {
+		wk := monday.AddDate(0, 0, -7*i).Format("2006-01-02")
+		resp.SuppressionWeekly = append(resp.SuppressionWeekly, OfferSuppressionWeek{
+			WeekStart: wk,
+			Count:     weeklyCounts[wk],
+		})
+	}
+
+	// 9) DNM list size + audience size from the latest completed Optizmo
+	// scrub job ("where applicable" — zeros when never scrubbed).
+	if err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(file_count, 0), COALESCE(audience_count, 0)
+		 FROM mailing_optizmo_scrub_jobs
+		 WHERE offer_id = $1 AND status = 'completed'
+		 ORDER BY completed_at DESC NULLS LAST LIMIT 1`, offerID).Scan(
+		&resp.DnmListSize, &resp.AudienceSize,
+	); err != nil && err != sql.ErrNoRows {
+		log.Printf("WARN: offer stats DNM size for %s: %v", offerID, err)
+	}
+
+	return resp, nil
+}
+
+// HandleGetOfferStats — GET /offer-center/offers/{id}/stats?days=30
+//
+// Thin wrapper over loadOfferStats (shared with the CPM Planner's
+// deal offer-performance endpoint).
+func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+	if och.db == nil {
+		respondError(w, http.StatusServiceUnavailable, "Database not available")
+		return
+	}
+
+	days := 30
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+
+	resp, err := loadOfferStats(r.Context(), och.db, "", offerID, days)
+	if err != nil {
+		log.Printf("ERROR: offer stats for %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to load offer stats")
+		return
 	}
 
 	respondJSON(w, http.StatusOK, resp)

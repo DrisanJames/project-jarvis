@@ -568,6 +568,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/campaign-summary/{id}", advSvc.HandleCampaignSummaryByID)
 			r.Get("/analytics/campaign-summary/{id}/reconcile", advSvc.HandleCampaignSummaryReconcile)
 
+			// Campaign Center inline analytics (Round-3 §1) — tracking-event
+			// derived (campaign counters never used). timeseries/detail are
+			// fetched lazily on row expand; list-metrics is ONE grouped event
+			// scan per visible list page (≤50 ids) plus per-drip-tag rollups
+			// for the drip-visibility toggle. See campaign_timeseries.go.
+			r.Get("/campaigns/{id}/timeseries", advSvc.HandleCampaignTimeseries)
+			r.Get("/campaigns/{id}/detail", advSvc.HandleCampaignInlineDetail)
+			r.Get("/campaigns/list-metrics", advSvc.HandleCampaignListMetrics)
+
 			// Analytics event lake READ layer (Athena-backed) — read-only
 			// query surface over s3://ignite-analytics-lake. Disabled by
 			// default (ANALYTICS_ATHENA_OUTPUT unset); status always works,
@@ -1197,6 +1206,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Put("/deals/{id}", cpmPlanner.HandleUpdateDeal)
 				cp.Delete("/deals/{id}", cpmPlanner.HandleDeleteDeal)
 				cp.Get("/deals/{id}/insights", cpmPlanner.HandleDealInsights)
+				cp.Get("/deals/{id}/offer-performance", cpmPlanner.HandleDealOfferPerformance)
 				cp.Get("/capacity", cpmPlanner.HandleCapacity)
 				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
 			})

@@ -6,7 +6,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip as RechartsTooltip, ReferenceLine,
+  Tooltip as RechartsTooltip, ReferenceLine, ComposedChart, Line, Legend,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 
@@ -101,6 +101,69 @@ interface OfferLite {
   everflow_offer_id: string;
   payout: number;
 }
+
+// ── Offer performance (deal detail embed) — mirrors OfferStatsResponse from
+// offer_center_handlers.go, served by /cpm-planner/deals/{id}/offer-performance.
+// Same shared backend aggregation the Offers tab Performance view uses.
+interface OfferPerfTotals {
+  sent: number;
+  delivered: number;
+  opened: number;   // HUMAN opens (machine/MPP excluded server-side)
+  clicked: number;  // HUMAN clicks
+  hard_bounces: number;
+  soft_bounces: number;
+  deferred: number;
+  complaints: number;
+  conversions: number;
+  suppression_total: number;
+}
+
+interface OfferPerfCampaign {
+  id: string;
+  name: string;
+  status: string;
+  scheduled_at: string | null;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+}
+
+interface OfferPerfDaily {
+  date: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  conversions: number;
+}
+
+interface SuppressionWeek { week_start: string; count: number; }
+
+interface OfferPerfStats {
+  offer_id: string;
+  days: number;
+  totals: OfferPerfTotals;
+  campaign_count: number;
+  campaigns: OfferPerfCampaign[];
+  daily: OfferPerfDaily[];
+  dnm_list_size: number;
+  audience_size: number; // 0 = unknown (no completed DNM scrub) → skip share
+  suppression_weekly: SuppressionWeek[];
+}
+
+interface DealOfferPerformance {
+  deal_id: string;
+  offer_id: string;
+  offer_name: string;
+  performance: OfferPerfStats | null;
+  note?: string;
+}
+
+// sessionStorage handoff keys written by OfferManagement (Offers tab →
+// CPM Planner deep links). Read-once on mount, then removed.
+const PREFILL_KEY = 'cpmPlannerPrefill';     // JSON {offer_id, everflow_offer_id, payout, name}
+const FOCUS_DEAL_KEY = 'cpmPlannerFocusDeal'; // deal id to auto-expand
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const fmtMoney = (n: number): string =>
@@ -206,6 +269,13 @@ export const CpmPlanner: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [insights, setInsights] = useState<Record<string, Insights>>({});
   const [insightsLoading, setInsightsLoading] = useState<string | null>(null);
+  const [offerPerf, setOfferPerf] = useState<Record<string, DealOfferPerformance>>({});
+  const [offerPerfLoading, setOfferPerfLoading] = useState<string | null>(null);
+  // Deal id handed off from the Offers tab ("View in CPM Planner") —
+  // auto-expanded once the deal list loads.
+  const [focusDealId, setFocusDealId] = useState<string | null>(
+    () => sessionStorage.getItem(FOCUS_DEAL_KEY),
+  );
 
   const loadAll = useCallback(async () => {
     try {
@@ -308,6 +378,7 @@ export const CpmPlanner: React.FC = () => {
       }
       setShowModal(false);
       setInsights({}); // invalidate cached insights
+      setOfferPerf({}); // offer mapping may have changed — refetch performance
       await loadAll();
     } catch (e) {
       setFormError(e instanceof Error ? e.message : 'save failed');
@@ -328,22 +399,77 @@ export const CpmPlanner: React.FC = () => {
     }
   };
 
-  const toggleExpand = async (d: Deal) => {
-    if (expandedId === d.id) { setExpandedId(null); return; }
-    setExpandedId(d.id);
-    if (!insights[d.id]) {
-      setInsightsLoading(d.id);
-      try {
-        const res = await apiFetch(`${API}/deals/${d.id}/insights`);
-        if (res.ok) {
-          const j: Insights = await res.json();
-          setInsights(prev => ({ ...prev, [d.id]: j }));
+  const expandDeal = useCallback(async (dealId: string, hasInsights: boolean, hasPerf: boolean) => {
+    setExpandedId(dealId);
+    const tasks: Promise<void>[] = [];
+    if (!hasInsights) {
+      setInsightsLoading(dealId);
+      tasks.push((async () => {
+        try {
+          const res = await apiFetch(`${API}/deals/${dealId}/insights`);
+          if (res.ok) {
+            const j: Insights = await res.json();
+            setInsights(prev => ({ ...prev, [dealId]: j }));
+          }
+        } finally {
+          setInsightsLoading(null);
         }
-      } finally {
-        setInsightsLoading(null);
-      }
+      })());
     }
+    if (!hasPerf) {
+      setOfferPerfLoading(dealId);
+      tasks.push((async () => {
+        try {
+          const res = await apiFetch(`${API}/deals/${dealId}/offer-performance?days=30`);
+          if (res.ok) {
+            const j: DealOfferPerformance = await res.json();
+            setOfferPerf(prev => ({ ...prev, [dealId]: j }));
+          }
+        } finally {
+          setOfferPerfLoading(null);
+        }
+      })());
+    }
+    await Promise.all(tasks);
+  }, []);
+
+  const toggleExpand = (d: Deal) => {
+    if (expandedId === d.id) { setExpandedId(null); return; }
+    expandDeal(d.id, !!insights[d.id], !!offerPerf[d.id]);
   };
+
+  // Offers tab → "Create deal from this offer" handoff: prefill the New Deal
+  // modal from sessionStorage (offer id + everflow id + payout-as-eCPA-anchor).
+  useEffect(() => {
+    const raw = sessionStorage.getItem(PREFILL_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(PREFILL_KEY);
+    try {
+      const p = JSON.parse(raw) as { offer_id?: string; everflow_offer_id?: string; payout?: number; name?: string };
+      setEditingId(null);
+      setForm({
+        ...emptyForm(),
+        name: p.name ? `${p.name} — CPM deal` : '',
+        offer_id: p.offer_id || '',
+        everflow_offer_id: p.everflow_offer_id || '',
+        // Offer payout = $ per conversion → natural eCPA-goal anchor.
+        ecpa_goal: p.payout && p.payout > 0 ? String(p.payout) : '',
+      });
+      setFormError(null);
+      setShowModal(true);
+    } catch { /* malformed handoff — ignore */ }
+  }, []);
+
+  // Offers tab → "View in CPM Planner" handoff: auto-expand the linked deal
+  // once the list arrives.
+  useEffect(() => {
+    if (!focusDealId || loading) return;
+    sessionStorage.removeItem(FOCUS_DEAL_KEY);
+    const d = deals.find(x => x.id === focusDealId);
+    setFocusDealId(null);
+    if (d) expandDeal(d.id, !!insights[d.id], !!offerPerf[d.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusDealId, loading, deals]);
 
   // ─── Render pieces ─────────────────────────────────────────────────────────
   const renderCapacityStrip = () => {
@@ -399,6 +525,172 @@ export const CpmPlanner: React.FC = () => {
         <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
           {fmtInt(d.progress.sent)} / {fmtInt(d.planned_volume)} ({(d.progress.pct_volume_delivered * 100).toFixed(1)}%)
         </div>
+      </div>
+    );
+  };
+
+  // Offer performance panel embedded in the deal detail — same numbers as the
+  // Offers tab Performance view (shared loadOfferStats aggregation server-side).
+  const renderOfferPerformance = (d: Deal) => {
+    const perf = offerPerf[d.id];
+    if (offerPerfLoading === d.id && !perf) {
+      return (
+        <div style={{ padding: '12px 0', color: C.muted, fontSize: 13 }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading offer performance…
+        </div>
+      );
+    }
+    if (!perf) return null;
+    if (!perf.performance) {
+      return (
+        <div style={{ padding: '10px 14px', borderRadius: 8, fontSize: 13, color: C.amber, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
+          {perf.note || 'No offer mapped to this deal — offer performance unavailable.'}
+        </div>
+      );
+    }
+    const p = perf.performance;
+    const t = p.totals;
+    const tiles = [
+      { label: 'Sent', value: fmtInt(t.sent), sub: `${p.campaign_count} campaigns`, color: C.indigo },
+      { label: 'Delivered', value: fmtInt(t.delivered), sub: t.sent > 0 ? `${((t.delivered / t.sent) * 100).toFixed(1)}% of sent` : '—', color: C.green },
+      { label: 'Human Opens', value: fmtInt(t.opened), sub: 'machine opens excluded', color: C.green },
+      { label: 'Human Clicks', value: fmtInt(t.clicked), sub: 'machine clicks excluded', color: C.amber },
+      // Bounce split is ALWAYS hard vs soft — never a combined number.
+      { label: 'Hard Bounces', value: fmtInt(t.hard_bounces), sub: 'reputation risk', color: C.red },
+      { label: 'Soft Bounces', value: fmtInt(t.soft_bounces), sub: 'usually transient', color: C.amber },
+      { label: 'Conversions', value: fmtInt(t.conversions), sub: `conv / ${p.days}d`, color: '#3b82f6' },
+      {
+        label: 'Suppressed', value: fmtInt(t.suppression_total),
+        sub: p.dnm_list_size > 0 ? `DNM list ${fmtInt(p.dnm_list_size)}` : 'all time, all reasons',
+        color: C.muted,
+      },
+    ];
+    const dailyData = p.daily.map(x => ({ date: x.date.slice(5), sent: x.sent, conversions: x.conversions }));
+    const weeklyData = p.suppression_weekly.map(w => ({ week: w.week_start.slice(5), count: w.count }));
+    const suppressedShare = p.audience_size > 0 ? (t.suppression_total / p.audience_size) * 100 : null;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.heading, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Offer performance — {perf.offer_name || perf.offer_id} (last {p.days}d)
+        </div>
+
+        {/* Stat tiles */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+          {tiles.map(m => (
+            <div key={m.label} style={{ background: 'rgba(10,20,45,0.5)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: m.color }}>{m.value}</div>
+              <div style={{ fontSize: 11, color: C.heading, marginTop: 2 }}>{m.label}</div>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{m.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Suppression ceiling: share of scrub-time audience already suppressed */}
+        {suppressedShare !== null ? (
+          <div style={{
+            padding: '8px 14px', borderRadius: 8, fontSize: 12,
+            background: suppressedShare > 50 ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.08)',
+            border: `1px solid ${suppressedShare > 50 ? 'rgba(239,68,68,0.4)' : C.border}`,
+            color: suppressedShare > 50 ? C.red : C.heading,
+          }}>
+            Deal ceiling: {suppressedShare.toFixed(1)}% of the last scrub audience ({fmtInt(p.audience_size)}) is already suppressed for this offer.
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: C.muted }}>
+            Suppressed share vs audience not shown — no completed DNM scrub provides an audience size for this offer.
+          </div>
+        )}
+
+        {/* Daily sent + conversions */}
+        {dailyData.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Daily sent &amp; conversions
+            </div>
+            <div style={{ height: 200, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={dailyData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
+                  <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} interval="preserveStartEnd" />
+                  <YAxis yAxisId="vol" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
+                  <YAxis yAxisId="conv" orientation="right" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} allowDecimals={false} />
+                  <RechartsTooltip
+                    contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
+                    formatter={(v: number | string) => (typeof v === 'number' ? fmtInt(v) : v)}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="rgba(99,102,241,0.55)" radius={[2, 2, 0, 0]} />
+                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Suppressed-count trend (8 weeks) — deal ceiling awareness */}
+        {weeklyData.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Suppressed per week (last 8 weeks, all reasons)
+            </div>
+            <div style={{ height: 140, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={weeklyData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
+                  <XAxis dataKey="week" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} />
+                  <YAxis tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
+                  <RechartsTooltip
+                    contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
+                    formatter={(v: number) => [fmtInt(v), 'Suppressed']}
+                  />
+                  <Bar dataKey="count" fill="rgba(239,68,68,0.55)" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Recent campaigns for the offer */}
+        {p.campaigns.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Recent campaigns {p.campaign_count > p.campaigns.length ? `(${p.campaigns.length} of ${p.campaign_count})` : ''}
+            </div>
+            <div style={{ background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Campaign</th>
+                    <th style={thStyle}>Status</th>
+                    <th style={thStyle}>Scheduled</th>
+                    <th style={thStyle}>Sent</th>
+                    <th style={thStyle}>Delivered</th>
+                    <th style={thStyle}>Human Opens</th>
+                    <th style={thStyle}>Human Clicks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {p.campaigns.map(c => (
+                    <tr key={c.id}>
+                      <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name || c.id}</td>
+                      <td style={tdStyle}>
+                        <span style={{ padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, color: statusColor(c.status === 'sending' || c.status === 'sent' || c.status === 'completed' ? 'active' : c.status), border: `1px solid ${C.border}` }}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td style={tdStyle}>{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : '—'}</td>
+                      <td style={tdStyle}>{fmtInt(c.sent)}</td>
+                      <td style={tdStyle}>{fmtInt(c.delivered)}</td>
+                      <td style={tdStyle}>{fmtInt(c.opens)}</td>
+                      <td style={tdStyle}>{fmtInt(c.clicks)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -480,6 +772,11 @@ export const CpmPlanner: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Offer performance — same shared aggregation as the Offers tab */}
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+          {renderOfferPerformance(d)}
+        </div>
       </div>
     );
   };

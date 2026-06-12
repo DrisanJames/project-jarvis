@@ -21,12 +21,14 @@ package api
 // against the platform's 14-day average daily 'sent' trend.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,12 +247,13 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 		}
 
 		// Conversion ground truth: everflow postbacks → offer suppressions.
-		convQ := `
-			SELECT COUNT(*) FROM mailing_offer_suppressions
-			WHERE organization_id = $1 AND offer_id = $2
-			  AND reason = 'converted' AND suppressed_at >= $3`
-		if err := h.db.QueryRow(convQ, orgID, d.OfferID, d.startDate).Scan(&p.Conversions); err != nil {
+		// countOfferConversions (offer_center_handlers.go) is THE shared
+		// attribution query — same implementation the Offers tab uses, so
+		// the two surfaces can never disagree.
+		if n, err := countOfferConversions(context.Background(), h.db, orgID, d.OfferID, d.startDate); err != nil {
 			log.Printf("[CpmPlanner] progress conversions for deal %s: %v", d.ID, err)
+		} else {
+			p.Conversions = n
 		}
 	}
 
@@ -570,6 +573,61 @@ func (h *CpmPlannerHandlers) HandleDealInsights(w http.ResponseWriter, r *http.R
 		"daily_series":    daily,
 		"top_domains":     topDomains,
 		"recommendations": recs,
+	})
+}
+
+// HandleDealOfferPerformance GET /cpm-planner/deals/{id}/offer-performance?days=30
+//
+// Embeds the offer performance panel in the deal detail (doc §6.1/§6.3):
+// resolves the deal's effective offer (offer_id, or everflow_offer_id
+// mapping) and returns the SAME aggregation the Offers tab Performance view
+// uses — loadOfferStats in offer_center_handlers.go (single implementation,
+// two endpoints) — including human opens/clicks, hard/soft bounce split,
+// conversions (shared attribution query), suppression total + DNM list size,
+// daily sent/conversion series, recent campaigns, and the 8-week
+// suppressed-count trend with audience size for ceiling awareness.
+func (h *CpmPlannerHandlers) HandleDealOfferPerformance(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	id := chi.URLParam(r, "id")
+	deals, err := h.loadDeals(orgID, id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deal: %v", err))
+		return
+	}
+	if len(deals) == 0 {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+	deal := deals[0]
+
+	if deal.OfferID == "" {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"deal_id":     deal.ID,
+			"offer_id":    "",
+			"offer_name":  "",
+			"performance": nil,
+			"note":        "deal is not mapped to a platform offer — set offer_id or everflow_offer_id to see live offer performance",
+		})
+		return
+	}
+
+	days := 30
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+
+	perf, err := loadOfferStats(r.Context(), h.db, orgID, deal.OfferID, days)
+	if err != nil {
+		log.Printf("[CpmPlanner] offer performance for deal %s (offer %s): %v", deal.ID, deal.OfferID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to load offer performance")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"deal_id":     deal.ID,
+		"offer_id":    deal.OfferID,
+		"offer_name":  deal.OfferName,
+		"performance": perf,
 	})
 }
 
