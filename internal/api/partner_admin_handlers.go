@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1356,6 +1357,217 @@ func parsePartnerDripBrand(name string) string {
 		return fields[2]
 	}
 	return ""
+}
+
+// ============ GET /api/mailing/data-partners/datasets/{id}/quality-report ============
+
+// HandleDatasetQualityReport returns the partner-reportable quality funnel for
+// one dataset over a window: what they sent us → what survived intake
+// (slicer-level suppression/dedup) → EmailOversight verdicts (with named
+// rejection reasons) → mailed → engaged. This is the view the operator hands
+// back to the partner ("X% of your leads were invalid mailboxes"), replacing
+// the useless one-row-per-POST batch list.
+func (h *PartnerAdminHandler) HandleDatasetQualityReport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	datasetID := chi.URLParam(r, "id")
+	if _, err := uuid.Parse(datasetID); err != nil {
+		writeJSONError(w, "invalid dataset id", http.StatusBadRequest)
+		return
+	}
+	days := 14
+	if v, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && v > 0 && v <= 90 {
+		days = v
+	}
+
+	// Dataset identity.
+	var dsName, partnerName, vertical string
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT d.name, p.name, d.vertical
+		FROM partner_datasets d JOIN data_partners p ON p.id = d.partner_id
+		WHERE d.id = $1
+	`, datasetID).Scan(&dsName, &partnerName, &vertical); err != nil {
+		writeJSONError(w, "dataset not found", http.StatusNotFound)
+		return
+	}
+
+	// Intake side: posts + records the partner actually sent us.
+	var posts, recordsReceived int
+	_ = h.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(record_count), 0)
+		FROM partner_inbound_batches
+		WHERE dataset_id = $1 AND received_at > NOW() - ($2 * INTERVAL '1 day')
+	`, datasetID, days).Scan(&posts, &recordsReceived)
+
+	// Queue side: lifecycle + EO verdicts + engagement.
+	var queued, eoPending, eoPassed, eoRejected, deadLetter, ready, mailed, engaged, completed int
+	_ = h.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE status = 'pending_eo'),
+		       COUNT(*) FILTER (WHERE eo_result_code IN (1, 7)),
+		       COUNT(*) FILTER (WHERE status = 'suppressed_eo'),
+		       COUNT(*) FILTER (WHERE status = 'dead_letter'),
+		       COUNT(*) FILTER (WHERE status = 'ready'),
+		       COUNT(*) FILTER (WHERE status = 'mailed'),
+		       COUNT(*) FILTER (WHERE engaged_at IS NOT NULL),
+		       COUNT(*) FILTER (WHERE terminal_reason = 'completed')
+		FROM partner_clean_queue
+		WHERE dataset_id = $1 AND ingested_at > NOW() - ($2 * INTERVAL '1 day')
+	`, datasetID, days).Scan(&queued, &eoPending, &eoPassed, &eoRejected, &deadLetter, &ready, &mailed, &engaged, &completed)
+
+	intakeDropped := recordsReceived - queued
+	if intakeDropped < 0 {
+		intakeDropped = 0 // queue rows can outlive the batch window edge
+	}
+
+	// Named rejection reasons — the partner-reportable part.
+	reasons := []map[string]interface{}{}
+	if rows, err := h.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(eo_result, ''), 'unknown'), COALESCE(eo_result_code, -1), COUNT(*)
+		FROM partner_clean_queue
+		WHERE dataset_id = $1 AND ingested_at > NOW() - ($2 * INTERVAL '1 day')
+		  AND status IN ('suppressed_eo', 'dead_letter')
+		GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15
+	`, datasetID, days); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var reason string
+			var code, count int
+			if err := rows.Scan(&reason, &code, &count); err == nil {
+				reasons = append(reasons, map[string]interface{}{"reason": reason, "code": code, "count": count})
+			}
+		}
+	}
+
+	// ISP mix of what survived.
+	ispMix := []map[string]interface{}{}
+	if rows, err := h.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(isp_family, ''), 'other'),
+		       COUNT(*),
+		       COUNT(*) FILTER (WHERE status = 'ready'),
+		       COUNT(*) FILTER (WHERE status = 'mailed'),
+		       COUNT(*) FILTER (WHERE engaged_at IS NOT NULL)
+		FROM partner_clean_queue
+		WHERE dataset_id = $1 AND ingested_at > NOW() - ($2 * INTERVAL '1 day')
+		GROUP BY 1 ORDER BY 2 DESC
+	`, datasetID, days); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var total, rdy, mld, eng int
+			if err := rows.Scan(&isp, &total, &rdy, &mld, &eng); err == nil {
+				ispMix = append(ispMix, map[string]interface{}{
+					"isp": isp, "queued": total, "ready": rdy, "mailed": mld, "engaged": eng,
+				})
+			}
+		}
+	}
+
+	// Daily trend: received (batch side) vs passed/rejected (queue side, by
+	// ingest day) vs mailed (by mailed day). Merged on day in Go.
+	type dayAgg struct {
+		posts, records, passed, rejected, mailedN, engagedN int
+	}
+	daysMap := map[string]*dayAgg{}
+	getDay := func(k string) *dayAgg {
+		if d, ok := daysMap[k]; ok {
+			return d
+		}
+		d := &dayAgg{}
+		daysMap[k] = d
+		return d
+	}
+	if rows, err := h.db.QueryContext(ctx, `
+		SELECT date_trunc('day', received_at)::date::text, COUNT(*), COALESCE(SUM(record_count), 0)
+		FROM partner_inbound_batches
+		WHERE dataset_id = $1 AND received_at > NOW() - ($2 * INTERVAL '1 day')
+		GROUP BY 1
+	`, datasetID, days); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var p, rec int
+			if err := rows.Scan(&day, &p, &rec); err == nil {
+				d := getDay(day)
+				d.posts, d.records = p, rec
+			}
+		}
+	}
+	if rows, err := h.db.QueryContext(ctx, `
+		SELECT date_trunc('day', ingested_at)::date::text,
+		       COUNT(*) FILTER (WHERE eo_result_code IN (1, 7)),
+		       COUNT(*) FILTER (WHERE status IN ('suppressed_eo', 'dead_letter'))
+		FROM partner_clean_queue
+		WHERE dataset_id = $1 AND ingested_at > NOW() - ($2 * INTERVAL '1 day')
+		GROUP BY 1
+	`, datasetID, days); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var passed, rejected int
+			if err := rows.Scan(&day, &passed, &rejected); err == nil {
+				d := getDay(day)
+				d.passed, d.rejected = passed, rejected
+			}
+		}
+	}
+	if rows, err := h.db.QueryContext(ctx, `
+		SELECT date_trunc('day', mailed_at)::date::text,
+		       COUNT(*),
+		       COUNT(*) FILTER (WHERE engaged_at IS NOT NULL)
+		FROM partner_clean_queue
+		WHERE dataset_id = $1 AND mailed_at IS NOT NULL
+		  AND mailed_at > NOW() - ($2 * INTERVAL '1 day')
+		GROUP BY 1
+	`, datasetID, days); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var m, e int
+			if err := rows.Scan(&day, &m, &e); err == nil {
+				d := getDay(day)
+				d.mailedN, d.engagedN = m, e
+			}
+		}
+	}
+	dayKeys := make([]string, 0, len(daysMap))
+	for k := range daysMap {
+		dayKeys = append(dayKeys, k)
+	}
+	sort.Strings(dayKeys)
+	daily := make([]map[string]interface{}, 0, len(dayKeys))
+	for _, k := range dayKeys {
+		d := daysMap[k]
+		daily = append(daily, map[string]interface{}{
+			"day": k, "posts": d.posts, "records": d.records,
+			"eo_passed": d.passed, "eo_rejected": d.rejected,
+			"mailed": d.mailedN, "engaged": d.engagedN,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"dataset_id":   datasetID,
+		"dataset_name": dsName,
+		"partner_name": partnerName,
+		"vertical":     vertical,
+		"days":         days,
+		"totals": map[string]interface{}{
+			"posts":            posts,
+			"records_received": recordsReceived,
+			"queued":           queued,
+			"intake_dropped":   intakeDropped,
+			"eo_pending":       eoPending,
+			"eo_passed":        eoPassed,
+			"eo_rejected":      eoRejected,
+			"dead_letter":      deadLetter,
+			"ready":            ready,
+			"mailed":           mailed,
+			"engaged":          engaged,
+			"completed":        completed,
+		},
+		"rejection_reasons": reasons,
+		"isp_mix":           ispMix,
+		"daily":             daily,
+	})
 }
 
 // ============ GET /api/mailing/data-partners/audit-log ============

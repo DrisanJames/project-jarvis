@@ -317,6 +317,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/datasets", partnerAdmin.HandleListDatasets)
 				dp.Post("/{id}/datasets", partnerAdmin.HandleCreateDataset)
 				dp.Get("/datasets/{id}/throughput", partnerAdmin.HandleGetDatasetThroughput)
+				dp.Get("/datasets/{id}/quality-report", partnerAdmin.HandleDatasetQualityReport)
 				dp.Put("/datasets/{id}/isp-distribution", partnerAdmin.HandleUpdateISPDistribution)
 				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
 				dp.Post("/datasets/{id}/resume", partnerAdmin.HandleResumeDataset)

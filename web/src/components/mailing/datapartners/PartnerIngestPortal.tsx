@@ -8,11 +8,12 @@ import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
 import { DripPerformancePanel } from './DripPerformancePanel';
+import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { apiFetch } from '../shared/apiFetch';
 
-const PAGE_VERSION = '1.1';
+const PAGE_VERSION = '1.2';
 
 const VERTICAL_LABEL: Record<string, string> = {
   refi_heloc: 'Refi / HELOC',
@@ -80,6 +81,8 @@ export const PartnerIngestPortal: React.FC = () => {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [inspectingBatchId, setInspectingBatchId] = useState<string | null>(null);
   const [distributionDataset, setDistributionDataset] = useState<{ id: string; name: string } | null>(null);
+  const [reportDatasetId, setReportDatasetId] = useState<string>('');
+  const [showRawPosts, setShowRawPosts] = useState(false);
 
   const fetchAll = useCallback(() => {
     setLoading(true);
@@ -270,36 +273,64 @@ export const PartnerIngestPortal: React.FC = () => {
         </div>
       )}
 
-      {activeTab === 'batches' && dashboard && (
+      {activeTab === 'batches' && (
         <div>
-          <table style={tableStyle}>
-            <thead>
-              <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-                <th style={th}>Batch ID</th>
-                <th style={th}>Partner / Dataset</th>
-                <th style={th}>Vertical</th>
-                <th style={th}>Status</th>
-                <th style={th}>Records</th>
-                <th style={th}>Received</th>
-                <th style={th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {dashboard.recent_batches.map(b => (
-                <tr key={b.id} style={tr}>
-                  <td style={tdMono}>{b.id.slice(0, 8)}…</td>
-                  <td style={td}>{b.partner_name} / {b.dataset_name}</td>
-                  <td style={td}>{VERTICAL_LABEL[b.vertical] ?? b.vertical}</td>
-                  <td style={td}><StatusBadge status={b.status} emergencyStopped={b.emergency_stopped} /></td>
-                  <td style={tdNum}>{b.record_count.toLocaleString()}</td>
-                  <td style={td}>{new Date(b.received_at).toLocaleString()}</td>
-                  <td style={td}>
-                    <button onClick={() => setInspectingBatchId(b.id)} style={ghostBtn}>Inspect</button>
-                  </td>
-                </tr>
+          {/* Feed picker → quality report (the partner-reportable view) */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Feed:</span>
+            <select
+              value={reportDatasetId || (datasets[0]?.id ?? '')}
+              onChange={e => setReportDatasetId(e.target.value)}
+              style={selectInput}
+            >
+              {datasets.map(d => (
+                <option key={d.id} value={d.id}>{d.partner_name} / {d.name} ({VERTICAL_LABEL[d.vertical] ?? d.vertical})</option>
               ))}
-            </tbody>
-          </table>
+            </select>
+          </div>
+
+          {(reportDatasetId || datasets[0]?.id) ? (
+            <PartnerQualityReport datasetId={reportDatasetId || datasets[0].id} />
+          ) : (
+            <div style={{ color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>No datasets onboarded yet.</div>
+          )}
+
+          {/* Raw per-POST stream, collapsed by default — debugging only */}
+          <div style={{ marginTop: 22 }}>
+            <button onClick={() => setShowRawPosts(v => !v)} style={ghostBtn}>
+              {showRawPosts ? 'Hide' : 'Show'} raw inbound posts (one row per partner API call — debugging)
+            </button>
+            {showRawPosts && dashboard && (
+              <table style={{ ...tableStyle, marginTop: 10 }}>
+                <thead>
+                  <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+                    <th style={th}>Batch ID</th>
+                    <th style={th}>Partner / Dataset</th>
+                    <th style={th}>Vertical</th>
+                    <th style={th}>Status</th>
+                    <th style={th}>Records</th>
+                    <th style={th}>Received</th>
+                    <th style={th}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboard.recent_batches.map(b => (
+                    <tr key={b.id} style={tr}>
+                      <td style={tdMono}>{b.id.slice(0, 8)}…</td>
+                      <td style={td}>{b.partner_name} / {b.dataset_name}</td>
+                      <td style={td}>{VERTICAL_LABEL[b.vertical] ?? b.vertical}</td>
+                      <td style={td}><StatusBadge status={b.status} emergencyStopped={b.emergency_stopped} /></td>
+                      <td style={tdNum}>{b.record_count.toLocaleString()}</td>
+                      <td style={td}>{new Date(b.received_at).toLocaleString()}</td>
+                      <td style={td}>
+                        <button onClick={() => setInspectingBatchId(b.id)} style={ghostBtn}>Inspect</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       )}
 
@@ -523,6 +554,11 @@ const dangerBtn: React.CSSProperties = {
 const tabBtn: React.CSSProperties = {
   background: 'transparent', border: 'none', padding: '10px 16px',
   cursor: 'pointer', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8,
+};
+const selectInput: React.CSSProperties = {
+  background: 'rgba(0,0,0,0.25)', color: 'rgba(220,235,250,0.9)',
+  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
+  minWidth: 320,
 };
 const tableStyle: React.CSSProperties = {
   width: '100%', borderCollapse: 'collapse', background: 'rgba(15,30,60,0.35)',

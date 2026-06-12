@@ -258,6 +258,16 @@ func (c *DomainAgentChat) HandleChat(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if c.llm.useAnthropic {
 			resp, err = c.llm.callClaude(ctx, domainAgentChatSystemPrompt, messages, tools)
+			// Anthropic-side failures (billing, rate limits, outages) fall
+			// back to OpenAI at call time so the operator's chat keeps
+			// working — observed live 2026-06-12 ("credit balance too low").
+			if err != nil && c.llm.openAIKey != "" {
+				log.Printf("[DomainAgentChat] Claude failed (%v) — falling back to OpenAI", err)
+				resp, err = c.llm.callAgentOpenAI(ctx, agentOpenAIReq{
+					Model: "gpt-4.1", Messages: messages, Tools: tools,
+					Temperature: 0.3, MaxCompletionTokens: 8000,
+				})
+			}
 		} else {
 			resp, err = c.llm.callAgentOpenAI(ctx, agentOpenAIReq{
 				Model: c.llm.model, Messages: messages, Tools: tools,
