@@ -1,20 +1,24 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faCircle, faFilter, faPaperPlane, faExclamationTriangle, faInbox,
+  faCircle, faPaperPlane, faExclamationTriangle, faInbox,
+  faChevronRight, faChevronDown,
 } from '@fortawesome/free-solid-svg-icons';
+import {
+  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
+  Tooltip, Legend, CartesianGrid,
+} from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 
 // DripPerformancePanel — the live "how are the drips actually doing" view on
-// the Data Partners screen. Two cadences against one endpoint:
-//   - funnel + inbound-flow roll-up every 30s — whole-queue scan
-//   - waves + 24h totals every 10s — re-aggregated server-side from tracking
-//     events on each poll, so numbers move as PMTA accounting events are
-//     ingested ("stats as they are received")
+// the Data Partners screen. Polling cadences against one endpoint:
+//   - funnel + inbound roll-up + (vertical×brand) wave rollup + hourly series
+//     every 30s — the heavier grouped scans
+//   - 24h totals + the expanded group's individual waves every 10s — these
+//     re-aggregate server-side from tracking events on each poll, so numbers
+//     move as PMTA accounting events are ingested ("stats as they are received")
 // Bounces are ALWAYS split hard (red) vs soft (amber) — never combined.
-// Rates are computed against SENT (mail actually dispatched), never against
-// planned recipients — a wave mid-send shows honest progress, not a fake
-// low delivery rate.
+// Rates are computed against SENT (mail actually dispatched), never planned.
 
 const VERTICAL_LABEL: Record<string, string> = {
   refi_heloc: 'Refi / HELOC',
@@ -27,8 +31,9 @@ const VERTICAL_LABEL: Record<string, string> = {
   metal_roofing_signal: 'Metal Roofing (signal)',
 };
 
-const WAVE_POLL_MS = 10_000;
-const FUNNEL_POLL_MS = 30_000;
+const FAST_POLL_MS = 10_000;
+const SLOW_POLL_MS = 30_000;
+const WINDOW_HOURS = 48;
 
 interface FunnelVertical {
   vertical: string;
@@ -79,6 +84,35 @@ interface Ingest24h {
   stopped: number;
 }
 
+interface RollupGroup {
+  vertical: string;
+  brand: string;
+  partner_slug: string;
+  waves: number;
+  recipients: number;
+  active: number;
+  last_wave_at: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  deferred: number;
+}
+
+interface SeriesPoint {
+  hour: string;
+  vertical: string;
+  brand: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard_bounces: number;
+  soft_bounces: number;
+}
+
 interface Wave {
   campaign_id: string;
   name: string;
@@ -100,72 +134,80 @@ interface Wave {
   deferred: number;
 }
 
+const groupKey = (vertical: string, brand: string) => `${vertical}|${brand}`;
+
 export const DripPerformancePanel: React.FC = () => {
   const [funnel, setFunnel] = useState<FunnelVertical[]>([]);
   const [funnelISP, setFunnelISP] = useState<FunnelISP[]>([]);
   const [ingest, setIngest] = useState<Ingest24h[]>([]);
-  const [waves, setWaves] = useState<Wave[]>([]);
+  const [rollup, setRollup] = useState<RollupGroup[]>([]);
+  const [series, setSeries] = useState<SeriesPoint[]>([]);
   const [totals, setTotals] = useState<Totals24h | null>(null);
-  const [lastWaveFetch, setLastWaveFetch] = useState<Date | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [groupWaves, setGroupWaves] = useState<Wave[]>([]);
+  const [lastLiveFetch, setLastLiveFetch] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [verticalFilter, setVerticalFilter] = useState<string>('all');
   // Tick state so the "updated Xs ago" label re-renders between polls.
   const [, setTick] = useState(0);
-  const prevWaves = useRef<Map<string, Wave>>(new Map());
-  const [changedIds, setChangedIds] = useState<Set<string>>(new Set());
+  const expandedRef = useRef<string | null>(null);
+  expandedRef.current = expanded;
 
-  const fetchWaves = useCallback(() => {
-    apiFetch('/api/mailing/data-partners/drip-performance?include=waves&hours=48&limit=40', { credentials: 'include' })
+  // Fast poll: 24h totals always; the expanded group's individual waves too.
+  const fetchLive = useCallback(() => {
+    const exp = expandedRef.current;
+    let url = '/api/mailing/data-partners/drip-performance?include=totals';
+    if (exp) {
+      const [v, b] = exp.split('|');
+      url = `/api/mailing/data-partners/drip-performance?include=totals,waves&hours=${WINDOW_HOURS}&limit=20&vertical=${encodeURIComponent(v)}&brand=${encodeURIComponent(b)}`;
+    }
+    apiFetch(url, { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
-        if (data?.waves_error) { setError(`Waves: ${data.waves_error}`); return; }
         if (data?.totals_24h) setTotals(data.totals_24h);
-        if (!Array.isArray(data?.waves)) return;
-        const next: Wave[] = data.waves;
-        // Highlight rows whose live counters moved since the previous poll so
-        // the operator can SEE stats arriving.
-        const changed = new Set<string>();
-        next.forEach(wv => {
-          const prev = prevWaves.current.get(wv.campaign_id);
-          if (prev && (
-            prev.sent !== wv.sent || prev.delivered !== wv.delivered ||
-            prev.opens !== wv.opens || prev.clicks !== wv.clicks ||
-            prev.hard_bounces !== wv.hard_bounces || prev.soft_bounces !== wv.soft_bounces
-          )) changed.add(wv.campaign_id);
-        });
-        prevWaves.current = new Map(next.map(wv => [wv.campaign_id, wv]));
-        setChangedIds(changed);
-        setWaves(next);
-        setLastWaveFetch(new Date());
-        setError(null);
+        if (exp && Array.isArray(data?.waves) && expandedRef.current === exp) setGroupWaves(data.waves);
+        setLastLiveFetch(new Date());
+        if (data?.waves_error) setError(`Waves: ${data.waves_error}`); else setError(null);
       })
       .catch(err => setError(String(err)));
   }, []);
 
-  const fetchFunnel = useCallback(() => {
-    apiFetch('/api/mailing/data-partners/drip-performance?include=funnel', { credentials: 'include' })
+  // Slow poll: funnel + ingest roll-up + (vertical×brand) rollup + chart series.
+  const fetchSlow = useCallback(() => {
+    apiFetch(`/api/mailing/data-partners/drip-performance?include=funnel,rollup&hours=${WINDOW_HOURS}`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         if (data?.funnel_error) { setError(`Funnel: ${data.funnel_error}`); return; }
+        if (data?.rollup_error) { setError(`Rollup: ${data.rollup_error}`); return; }
         if (Array.isArray(data?.funnel)) setFunnel(data.funnel);
         if (Array.isArray(data?.funnel_isp)) setFunnelISP(data.funnel_isp);
         if (Array.isArray(data?.ingest_24h)) setIngest(data.ingest_24h);
+        if (Array.isArray(data?.rollup)) setRollup(data.rollup);
+        if (Array.isArray(data?.series)) setSeries(data.series);
       })
       .catch(err => setError(String(err)));
   }, []);
 
   useEffect(() => {
-    fetchWaves();
-    fetchFunnel();
-    const tw = setInterval(fetchWaves, WAVE_POLL_MS);
-    const tf = setInterval(fetchFunnel, FUNNEL_POLL_MS);
+    fetchLive();
+    fetchSlow();
+    const tl = setInterval(fetchLive, FAST_POLL_MS);
+    const ts = setInterval(fetchSlow, SLOW_POLL_MS);
     const tt = setInterval(() => setTick(t => t + 1), 1000);
-    return () => { clearInterval(tw); clearInterval(tf); clearInterval(tt); };
-  }, [fetchWaves, fetchFunnel]);
+    return () => { clearInterval(tl); clearInterval(ts); clearInterval(tt); };
+  }, [fetchLive, fetchSlow]);
 
-  const visibleWaves = verticalFilter === 'all' ? waves : waves.filter(wv => wv.vertical === verticalFilter);
-  const verticalOptions = ['all', ...Array.from(new Set(waves.map(wv => wv.vertical).filter(Boolean)))];
-  const secondsAgo = lastWaveFetch ? Math.max(0, Math.round((Date.now() - lastWaveFetch.getTime()) / 1000)) : null;
+  // Refresh the detail immediately when a group is expanded.
+  const toggleGroup = (key: string) => {
+    setGroupWaves([]);
+    setExpanded(prev => {
+      const next = prev === key ? null : key;
+      expandedRef.current = next;
+      if (next) setTimeout(fetchLive, 0);
+      return next;
+    });
+  };
+
+  const secondsAgo = lastLiveFetch ? Math.max(0, Math.round((Date.now() - lastLiveFetch.getTime()) / 1000)) : null;
 
   // Cross-vertical funnel roll-up for the overall strip.
   const sum = (f: (v: FunnelVertical) => number) => funnel.reduce((a, v) => a + f(v), 0);
@@ -176,6 +218,9 @@ export const DripPerformancePanel: React.FC = () => {
     dueNow: sum(v => v.followups_due),
   };
 
+  // Order groups by 24h-window send volume, biggest lanes first.
+  const sortedRollup = [...rollup].sort((a, b) => b.sent - a.sent || b.recipients - a.recipients);
+
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 6, marginBottom: 12 }}>
@@ -183,7 +228,7 @@ export const DripPerformancePanel: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
           <span style={{ color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faCircle} style={{ fontSize: 8 }} beat={secondsAgo !== null && secondsAgo < 3} />
-            LIVE — re-aggregated from tracking events every {WAVE_POLL_MS / 1000}s
+            LIVE — re-aggregated from tracking events every {FAST_POLL_MS / 1000}s
             {secondsAgo !== null && <span style={{ color: 'rgba(180,210,240,0.55)' }}>(updated {secondsAgo}s ago)</span>}
           </span>
         </div>
@@ -206,65 +251,64 @@ export const DripPerformancePanel: React.FC = () => {
         )}
       </div>
 
-      {/* ───── Live wave stream ───── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)' }}>
-          <FontAwesomeIcon icon={faPaperPlane} style={{ marginRight: 6 }} />
-          Waves — last 48h, newest first. <b>Sent</b> = mail dispatched so far (fills in while a wave sends); rates are against sent, not planned. Rows flash as new events land.
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-          <FontAwesomeIcon icon={faFilter} style={{ color: 'rgba(180,210,240,0.55)' }} />
-          <select value={verticalFilter} onChange={e => setVerticalFilter(e.target.value)} style={selectStyle}>
-            {verticalOptions.map(v => (
-              <option key={v} value={v}>{v === 'all' ? 'All verticals' : (VERTICAL_LABEL[v] ?? v)}</option>
-            ))}
-          </select>
-        </div>
+      {/* ───── Wave rollup by vertical × brand ───── */}
+      <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)', marginBottom: 8 }}>
+        <FontAwesomeIcon icon={faPaperPlane} style={{ marginRight: 6 }} />
+        Waves — last {WINDOW_HOURS}h, rolled up per <b>vertical × brand</b>, biggest senders first. Expand a lane for its
+        hourly delivery graph and individual waves. Rates are against sent, not planned.
       </div>
 
       <table style={tableStyle}>
         <thead>
           <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-            <th style={th}>Wave</th>
+            <th style={{ ...th, width: 26 }}></th>
             <th style={th}>Vertical / Brand</th>
+            <th style={thNum} title="Waves in window (currently queued/sending)">Waves</th>
             <th style={{ ...th, minWidth: 140 }} title="Mail dispatched so far / planned recipients">Sent Progress</th>
             <th style={thNum} title="Delivered, as % of sent">Delivered</th>
             <th style={thNum} title="Hard bounces — permanent failures, reputation risk (% of sent)">Hard</th>
             <th style={thNum} title="Soft bounces — usually transient">Soft</th>
-            <th style={thNum} title="Deferrals — ISP slow-walking">Defer</th>
             <th style={thNum} title="Raw opens — includes Apple MPP / scanner machine traffic">Opens</th>
             <th style={thNum}>Clicks</th>
-            <th style={th}>Status</th>
+            <th style={th}>Last wave</th>
           </tr>
         </thead>
         <tbody>
-          {visibleWaves.map(wv => {
-            const flash = changedIds.has(wv.campaign_id);
+          {sortedRollup.map(g => {
+            const key = groupKey(g.vertical, g.brand);
+            const isOpen = expanded === key;
             return (
-              <tr key={wv.campaign_id} style={{ background: flash ? 'rgba(16,185,129,0.08)' : undefined, transition: 'background 1.5s ease' }}>
-                <td style={td}>
-                  <div style={{ fontWeight: 600 }}>{relativeTime(wv.scheduled_at)}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
-                    {wv.partner_name || wv.partner_slug}{wv.dataset_name ? ` / ${wv.dataset_name}` : ''}
-                  </div>
-                </td>
-                <td style={td}>
-                  <div>{VERTICAL_LABEL[wv.vertical] ?? wv.vertical}</div>
-                  <div style={{ fontSize: 11, color: '#a5b4fc', fontFamily: 'ui-monospace, monospace' }}>{wv.brand.toUpperCase()}</div>
-                </td>
-                <td style={td}><SentProgress sent={wv.sent} planned={wv.total_recipients} status={wv.status} /></td>
-                <td style={tdNum}><RateCell count={wv.delivered} denom={wv.sent} color="#10b981" bold /></td>
-                <td style={tdNum}><RateCell count={wv.hard_bounces} denom={wv.sent} color="#ef4444" bold={wv.hard_bounces > 0} warnAt={1} /></td>
-                <td style={tdNum}><RateCell count={wv.soft_bounces} denom={wv.sent} color="#f59e0b" /></td>
-                <td style={tdNum}><span style={{ color: 'rgba(180,210,240,0.6)' }}>{wv.deferred.toLocaleString()}</span></td>
-                <td style={tdNum}>{wv.opens.toLocaleString()}</td>
-                <td style={tdNum}><span style={{ color: '#a78bfa', fontWeight: wv.clicks > 0 ? 600 : 400 }}>{wv.clicks.toLocaleString()}</span></td>
-                <td style={td}><WaveStatus status={wv.status} /></td>
-              </tr>
+              <React.Fragment key={key}>
+                <tr onClick={() => toggleGroup(key)} style={{ cursor: 'pointer', background: isOpen ? 'rgba(99,102,241,0.10)' : undefined }}>
+                  <td style={td}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ color: '#6366f1', fontSize: 12 }} /></td>
+                  <td style={td}>
+                    <div>{VERTICAL_LABEL[g.vertical] ?? g.vertical}</div>
+                    <div style={{ fontSize: 11, color: '#a5b4fc', fontFamily: 'ui-monospace, monospace' }}>{g.brand.toUpperCase()}</div>
+                  </td>
+                  <td style={tdNum}>
+                    {g.waves.toLocaleString()}
+                    {g.active > 0 && <span style={{ fontSize: 11, color: '#60a5fa', marginLeft: 5 }}>({g.active} live)</span>}
+                  </td>
+                  <td style={td}><SentProgress sent={g.sent} planned={g.recipients} status={g.active > 0 ? 'sending' : 'sent'} /></td>
+                  <td style={tdNum}><RateCell count={g.delivered} denom={g.sent} color="#10b981" bold /></td>
+                  <td style={tdNum}><RateCell count={g.hard_bounces} denom={g.sent} color="#ef4444" bold={g.hard_bounces > 0} warnAt={1} /></td>
+                  <td style={tdNum}><RateCell count={g.soft_bounces} denom={g.sent} color="#f59e0b" /></td>
+                  <td style={tdNum}>{g.opens.toLocaleString()}</td>
+                  <td style={tdNum}><span style={{ color: '#a78bfa', fontWeight: g.clicks > 0 ? 600 : 400 }}>{g.clicks.toLocaleString()}</span></td>
+                  <td style={td}>{relativeTime(g.last_wave_at)}</td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={10} style={{ padding: 0, borderTop: 'none' }}>
+                      <GroupDetail group={g} series={series.filter(s => s.vertical === g.vertical && s.brand === g.brand)} waves={groupWaves} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             );
           })}
-          {visibleWaves.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={10}>No waves in the last 48h.</td></tr>
+          {sortedRollup.length === 0 && (
+            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={10}>No waves in the last {WINDOW_HOURS}h.</td></tr>
           )}
         </tbody>
       </table>
@@ -314,6 +358,93 @@ export const DripPerformancePanel: React.FC = () => {
   );
 };
 
+// ───── Expanded group: chart + individual waves ─────
+
+const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: Wave[] }> = ({ group, series, waves }) => {
+  const chartData = series.map(s => ({
+    hour: new Date(s.hour).toLocaleTimeString([], { hour: 'numeric' }),
+    Sent: s.sent,
+    Delivered: s.delivered,
+    Hard: s.hard_bounces,
+    Soft: s.soft_bounces,
+    Opens: s.opens,
+    Clicks: s.clicks,
+  }));
+
+  return (
+    <div style={{ background: 'rgba(0,0,0,0.22)', borderTop: '1px solid rgba(99,102,241,0.25)', borderBottom: '1px solid rgba(99,102,241,0.25)', padding: '14px 16px' }}>
+      <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>
+        Hourly delivery & performance — {VERTICAL_LABEL[group.vertical] ?? group.vertical} / {group.brand.toUpperCase()} (events as received)
+      </div>
+      {chartData.length > 0 ? (
+        <ResponsiveContainer width="100%" height={210}>
+          <ComposedChart data={chartData} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(120,150,200,0.12)" vertical={false} />
+            <XAxis dataKey="hour" tick={{ fill: 'rgba(180,210,240,0.6)', fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
+            <YAxis yAxisId="vol" tick={{ fill: 'rgba(180,210,240,0.6)', fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
+            <YAxis yAxisId="eng" orientation="right" tick={{ fill: 'rgba(180,210,240,0.6)', fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
+            <Tooltip
+              contentStyle={{ background: '#0f1c33', border: '1px solid rgba(120,150,200,0.3)', borderRadius: 6, fontSize: 12 }}
+              labelStyle={{ color: '#dbeafe' }}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar yAxisId="vol" dataKey="Sent" fill="#6366f1" radius={[2, 2, 0, 0]} />
+            <Bar yAxisId="vol" dataKey="Delivered" fill="#10b981" radius={[2, 2, 0, 0]} />
+            <Line yAxisId="eng" type="monotone" dataKey="Hard" stroke="#ef4444" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Soft" stroke="#f59e0b" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Opens" stroke="#60a5fa" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Clicks" stroke="#a78bfa" strokeWidth={2} dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      ) : (
+        <div style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, padding: '18px 0' }}>No events recorded for this lane yet — the graph fills in as accounting events arrive.</div>
+      )}
+
+      <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '12px 0 6px' }}>
+        Individual waves (newest first, live)
+      </div>
+      <table style={{ ...tableStyle, background: 'rgba(15,30,60,0.5)' }}>
+        <thead>
+          <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+            <th style={th}>Wave</th>
+            <th style={{ ...th, minWidth: 130 }}>Sent Progress</th>
+            <th style={thNum}>Delivered</th>
+            <th style={thNum}>Hard</th>
+            <th style={thNum}>Soft</th>
+            <th style={thNum}>Defer</th>
+            <th style={thNum}>Opens</th>
+            <th style={thNum}>Clicks</th>
+            <th style={th}>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {waves.map(wv => (
+            <tr key={wv.campaign_id}>
+              <td style={td}>
+                <div style={{ fontWeight: 600 }}>{relativeTime(wv.scheduled_at)}</div>
+                <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                  {wv.partner_name || wv.partner_slug}{wv.dataset_name ? ` / ${wv.dataset_name}` : ''}
+                </div>
+              </td>
+              <td style={td}><SentProgress sent={wv.sent} planned={wv.total_recipients} status={wv.status} /></td>
+              <td style={tdNum}><RateCell count={wv.delivered} denom={wv.sent} color="#10b981" bold /></td>
+              <td style={tdNum}><RateCell count={wv.hard_bounces} denom={wv.sent} color="#ef4444" bold={wv.hard_bounces > 0} warnAt={1} /></td>
+              <td style={tdNum}><span style={{ color: '#f59e0b' }}>{wv.soft_bounces.toLocaleString()}</span></td>
+              <td style={tdNum}><span style={{ color: 'rgba(180,210,240,0.6)' }}>{wv.deferred.toLocaleString()}</span></td>
+              <td style={tdNum}>{wv.opens.toLocaleString()}</td>
+              <td style={tdNum}><span style={{ color: '#a78bfa', fontWeight: wv.clicks > 0 ? 600 : 400 }}>{wv.clicks.toLocaleString()}</span></td>
+              <td style={td}><WaveStatus status={wv.status} /></td>
+            </tr>
+          ))}
+          {waves.length === 0 && (
+            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={9}>Loading waves…</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 // ───── Overall strip ─────
 
 const OverallStrip: React.FC<{
@@ -350,11 +481,10 @@ const BigStat: React.FC<{ label: string; value: string; sub?: string; accent?: s
   </div>
 );
 
-// ───── Wave cells ─────
+// ───── Shared cells ─────
 
-// SentProgress renders "sent / planned" with a fill bar. While a wave is
-// sending the bar visibly grows poll over poll; a finished wave reads as a
-// plain complete count.
+// SentProgress renders "sent / planned" with a fill bar. While a lane is
+// actively sending the bar visibly grows poll over poll.
 const SentProgress: React.FC<{ sent: number; planned: number; status: string }> = ({ sent, planned, status }) => {
   const denom = Math.max(planned, sent);
   const pct = denom > 0 ? Math.min(100, (sent / denom) * 100) : 0;
@@ -377,7 +507,7 @@ const SentProgress: React.FC<{ sent: number; planned: number; status: string }> 
 };
 
 // RateCell shows a count with its rate against SENT. Shows "—" for the rate
-// until any mail has actually gone out, so a queued wave never reads as 0%.
+// until any mail has actually gone out, so a queued lane never reads as 0%.
 const RateCell: React.FC<{ count: number; denom: number; color: string; bold?: boolean; warnAt?: number }> = ({ count, denom, color, bold, warnAt }) => {
   const rate = denom > 0 ? (count / denom) * 100 : null;
   const hot = warnAt !== undefined && rate !== null && rate >= warnAt;
@@ -532,10 +662,6 @@ const th: React.CSSProperties = {
 const thNum: React.CSSProperties = { ...th, textAlign: 'right' };
 const td: React.CSSProperties = { padding: '8px 10px', borderTop: '1px solid rgba(120,150,200,0.1)' };
 const tdNum: React.CSSProperties = { ...td, fontVariantNumeric: 'tabular-nums', textAlign: 'right' };
-const selectStyle: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.25)', color: 'rgba(220,235,250,0.9)',
-  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 4, padding: '4px 8px', fontSize: 12,
-};
 const ispTh: React.CSSProperties = { textAlign: 'left', padding: '2px 4px', fontWeight: 500 };
 const ispThNum: React.CSSProperties = { textAlign: 'right', padding: '2px 4px', fontWeight: 500 };
 const ispTd: React.CSSProperties = { padding: '2px 4px' };

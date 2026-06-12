@@ -793,18 +793,24 @@ func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r 
 	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 200 {
 		limit = v
 	}
-	wantFunnel, wantWaves := true, true
+	wantFunnel, wantWaves, wantRollup, wantTotals := true, true, true, true
 	if inc := strings.TrimSpace(r.URL.Query().Get("include")); inc != "" {
-		wantFunnel, wantWaves = false, false
+		wantFunnel, wantWaves, wantRollup, wantTotals = false, false, false, false
 		for _, tok := range strings.Split(inc, ",") {
 			switch strings.TrimSpace(strings.ToLower(tok)) {
 			case "funnel":
 				wantFunnel = true
 			case "waves":
 				wantWaves = true
+			case "rollup":
+				wantRollup = true
+			case "totals":
+				wantTotals = true
 			}
 		}
 	}
+	filterVertical := strings.TrimSpace(r.URL.Query().Get("vertical"))
+	filterBrand := strings.TrimSpace(r.URL.Query().Get("brand"))
 
 	resp := map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
@@ -831,21 +837,195 @@ func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r 
 	}
 
 	if wantWaves {
-		waves, err := h.dripWaves(ctx, hours, limit)
+		waves, err := h.dripWaves(ctx, hours, limit, filterVertical, filterBrand)
 		if err != nil {
 			resp["waves_error"] = err.Error()
 		} else {
 			resp["waves"] = waves
 		}
-		// Overall 24h send performance across ALL partner-drip waves (not just
-		// the visible page of them) — one indexed aggregate, polled with waves
-		// so the headline numbers move as accounting events are ingested.
+	}
+
+	if wantRollup {
+		rollup, err := h.dripRollup(ctx, hours)
+		if err != nil {
+			resp["rollup_error"] = err.Error()
+		} else {
+			resp["rollup"] = rollup
+		}
+		if series, err := h.dripSeries(ctx, hours); err == nil {
+			resp["series"] = series
+		}
+	}
+
+	// Overall 24h send performance across ALL partner-drip waves — one
+	// indexed aggregate, cheap enough to ride along with the fast poll so
+	// the headline numbers move as accounting events are ingested.
+	if wantTotals || wantWaves {
 		if totals, err := h.dripTotals24h(ctx); err == nil {
 			resp["totals_24h"] = totals
 		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// dripRollup aggregates wave campaigns per (vertical, brand) over the window:
+// wave counts + recipients from the campaign side, delivery stats from the
+// events side (two queries merged in Go — a single LEFT JOIN would multiply
+// campaign rows per event and corrupt COUNT/SUM).
+func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[string]interface{}, error) {
+	type group struct {
+		vertical, brand, partnerSlug                          string
+		waves, recipients, active                             int
+		lastWaveAt                                            sql.NullTime
+		sent, delivered, opens, clicks, hard, soft, deferred  int
+	}
+	groups := map[string]*group{}
+	var order []string
+
+	campRows, err := h.db.QueryContext(ctx, `
+		SELECT COALESCE(partner_drip_tag, ''), split_part(name, ' ', 3),
+		       COUNT(*), COALESCE(SUM(COALESCE(total_recipients, 0)), 0),
+		       COUNT(*) FILTER (WHERE status IN ('scheduled','preparing','finalizing_audience','sending')),
+		       MAX(scheduled_at)
+		FROM mailing_campaigns
+		WHERE partner_drip_tag IS NOT NULL
+		  AND scheduled_at > NOW() - ($1 * INTERVAL '1 hour')
+		GROUP BY 1, 2
+	`, hours)
+	if err != nil {
+		return nil, err
+	}
+	defer campRows.Close()
+	for campRows.Next() {
+		var tag, brand string
+		var g group
+		if err := campRows.Scan(&tag, &brand, &g.waves, &g.recipients, &g.active, &g.lastWaveAt); err != nil {
+			continue
+		}
+		g.vertical, g.partnerSlug = parsePartnerDripTag(tag)
+		g.brand = brand
+		key := g.vertical + "|" + brand
+		groups[key] = &g
+		order = append(order, key)
+	}
+	if err := campRows.Err(); err != nil {
+		return nil, err
+	}
+
+	hb := HardBounceSQL("t")
+	evRows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(c.partner_drip_tag, ''), split_part(c.name, ' ', 3),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0)
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		WHERE c.partner_drip_tag IS NOT NULL
+		  AND c.scheduled_at > NOW() - ($1 * INTERVAL '1 hour')
+		GROUP BY 1, 2
+	`, hb, hb), hours)
+	if err != nil {
+		return nil, err
+	}
+	defer evRows.Close()
+	for evRows.Next() {
+		var tag, brand string
+		var sent, delivered, opens, clicks, hard, soft, deferred int
+		if err := evRows.Scan(&tag, &brand, &sent, &delivered, &opens, &clicks, &hard, &soft, &deferred); err != nil {
+			continue
+		}
+		vertical, _ := parsePartnerDripTag(tag)
+		if g := groups[vertical+"|"+brand]; g != nil {
+			g.sent += sent
+			g.delivered += delivered
+			g.opens += opens
+			g.clicks += clicks
+			g.hard += hard
+			g.soft += soft
+			g.deferred += deferred
+		}
+	}
+
+	out := make([]map[string]interface{}, 0, len(order))
+	for _, key := range order {
+		g := groups[key]
+		lastWave := ""
+		if g.lastWaveAt.Valid {
+			lastWave = g.lastWaveAt.Time.Format(time.RFC3339)
+		}
+		out = append(out, map[string]interface{}{
+			"vertical":     g.vertical,
+			"brand":        g.brand,
+			"partner_slug": g.partnerSlug,
+			"waves":        g.waves,
+			"recipients":   g.recipients,
+			"active":       g.active,
+			"last_wave_at": lastWave,
+			"sent":         g.sent,
+			"delivered":    g.delivered,
+			"opens":        g.opens,
+			"clicks":       g.clicks,
+			"hard_bounces": g.hard,
+			"soft_bounces": g.soft,
+			"deferred":     g.deferred,
+		})
+	}
+	return out, nil
+}
+
+// dripSeries returns hourly delivery/performance buckets per (vertical, brand)
+// over the window — the data behind the expandable groups' charts.
+func (h *PartnerAdminHandler) dripSeries(ctx context.Context, hours int) ([]map[string]interface{}, error) {
+	hb := HardBounceSQL("t")
+	rows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT date_trunc('hour', t.event_at),
+		       COALESCE(c.partner_drip_tag, ''), split_part(c.name, ' ', 3),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0)
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		WHERE c.partner_drip_tag IS NOT NULL
+		  AND c.scheduled_at > NOW() - ($1 * INTERVAL '1 hour')
+		  AND t.event_at > NOW() - ($1 * INTERVAL '1 hour')
+		GROUP BY 1, 2, 3
+		ORDER BY 1
+	`, hb, hb), hours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, 256)
+	for rows.Next() {
+		var hr time.Time
+		var tag, brand string
+		var sent, delivered, opens, clicks, hard, soft int
+		if err := rows.Scan(&hr, &tag, &brand, &sent, &delivered, &opens, &clicks, &hard, &soft); err != nil {
+			continue
+		}
+		vertical, _ := parsePartnerDripTag(tag)
+		out = append(out, map[string]interface{}{
+			"hour":         hr.Format(time.RFC3339),
+			"vertical":     vertical,
+			"brand":        brand,
+			"sent":         sent,
+			"delivered":    delivered,
+			"opens":        opens,
+			"clicks":       clicks,
+			"hard_bounces": hard,
+			"soft_bounces": soft,
+		})
+	}
+	return out, rows.Err()
 }
 
 // dripTotals24h aggregates delivery performance across every partner-drip
@@ -1041,8 +1221,9 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 }
 
 // dripWaves returns the most recent partner-drip wave campaigns with live
-// event-derived stats.
-func (h *PartnerAdminHandler) dripWaves(ctx context.Context, hours, limit int) ([]map[string]interface{}, error) {
+// event-derived stats. vertical/brand (both optional) narrow to one rollup
+// group — the expandable-group detail view.
+func (h *PartnerAdminHandler) dripWaves(ctx context.Context, hours, limit int, vertical, brand string) ([]map[string]interface{}, error) {
 	campRows, err := h.db.QueryContext(ctx, `
 		SELECT c.id::text, c.name, COALESCE(c.partner_drip_tag, ''),
 		       COALESCE(c.partner_dataset_id::text, ''), c.status,
@@ -1053,9 +1234,11 @@ func (h *PartnerAdminHandler) dripWaves(ctx context.Context, hours, limit int) (
 		LEFT JOIN data_partners p ON p.id = d.partner_id
 		WHERE c.partner_drip_tag IS NOT NULL
 		  AND c.scheduled_at > NOW() - ($1 * INTERVAL '1 hour')
+		  AND ($3 = '' OR c.partner_drip_tag LIKE '%/' || $3)
+		  AND ($4 = '' OR split_part(c.name, ' ', 3) = $4)
 		ORDER BY c.scheduled_at DESC
 		LIMIT $2
-	`, hours, limit)
+	`, hours, limit, vertical, brand)
 	if err != nil {
 		return nil, err
 	}
