@@ -7,11 +7,12 @@ import {
 import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
+import { DripPerformancePanel } from './DripPerformancePanel';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { apiFetch } from '../shared/apiFetch';
 
-const PAGE_VERSION = '1.0';
+const PAGE_VERSION = '1.1';
 
 const VERTICAL_LABEL: Record<string, string> = {
   refi_heloc: 'Refi / HELOC',
@@ -199,6 +200,8 @@ export const PartnerIngestPortal: React.FC = () => {
               />
             ))}
           </div>
+
+          <DripPerformancePanel />
 
           <h3 style={{ color: '#dbeafe', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 6 }}>Recent Batches</h3>
           <table style={tableStyle}>

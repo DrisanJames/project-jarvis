@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // PartnerAdminHandler holds the deps needed by the admin endpoints.
@@ -754,6 +756,319 @@ func (h *PartnerAdminHandler) HandleGetDashboard(w http.ResponseWriter, r *http.
 		"verticals":      verticals,
 		"recent_batches": batches,
 	})
+}
+
+// ============ GET /api/mailing/data-partners/drip-performance ============
+
+// HandleGetDripPerformance backs the Data Partners "drip performance" panel:
+// a live view of how the partner drip is actually performing, not just queue
+// depth. Two sections, individually selectable via ?include= so the UI can
+// poll them at different cadences:
+//
+//   - funnel (?include=funnel): one grouped scan over partner_clean_queue per
+//     (vertical, isp_family) — lifecycle counts (pending_eo → ready → mailed),
+//     the multi-touch state machine (T1..T4 distribution, engaged, completed,
+//     follow-ups due now), and sent-in-24h. Same cost class as the digest
+//     worker's queries; intended for ~30s polling.
+//
+//   - waves (?include=waves): the most recent wave campaigns (stamped with
+//     partner_drip_tag by the orchestrator, served by the partial index
+//     idx_mc_partner_drip_tag) with per-wave delivery stats aggregated LIVE
+//     from mailing_tracking_events. Campaign counter columns are NOT used —
+//     they are known-stale (dead since 2026-05-29); tracking events arrive
+//     continuously from the PMTA ingestor, so re-aggregating on each poll is
+//     what makes the panel "stats as they are received". Bounces are always
+//     split hard vs soft per bounce-metrics doctrine — never combined.
+//     Intended for ~10s polling (bounded: <=200 small campaigns, indexed).
+//
+// Default (no ?include=) returns both.
+func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	hours := 48
+	if v, err := strconv.Atoi(r.URL.Query().Get("hours")); err == nil && v > 0 && v <= 168 {
+		hours = v
+	}
+	limit := 40
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 200 {
+		limit = v
+	}
+	wantFunnel, wantWaves := true, true
+	if inc := strings.TrimSpace(r.URL.Query().Get("include")); inc != "" {
+		wantFunnel, wantWaves = false, false
+		for _, tok := range strings.Split(inc, ",") {
+			switch strings.TrimSpace(strings.ToLower(tok)) {
+			case "funnel":
+				wantFunnel = true
+			case "waves":
+				wantWaves = true
+			}
+		}
+	}
+
+	resp := map[string]interface{}{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if wantFunnel {
+		verticals, isps, err := h.dripFunnel(ctx)
+		if err != nil {
+			// Serve the waves section even if the funnel scan fails (e.g.
+			// statement timeout under IO pressure) — partial data beats a 500
+			// on an operator dashboard.
+			resp["funnel_error"] = err.Error()
+		} else {
+			resp["funnel"] = verticals
+			resp["funnel_isp"] = isps
+		}
+	}
+
+	if wantWaves {
+		waves, err := h.dripWaves(ctx, hours, limit)
+		if err != nil {
+			resp["waves_error"] = err.Error()
+		} else {
+			resp["waves"] = waves
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// dripFunnel runs the single grouped queue scan and returns the per-vertical
+// roll-up plus the per-(vertical, isp) slices.
+func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]interface{}, []map[string]interface{}, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT vertical,
+		       COALESCE(NULLIF(isp_family, ''), 'other')                         AS isp,
+		       COUNT(*) FILTER (WHERE status = 'pending_eo')                     AS pending_eo,
+		       COUNT(*) FILTER (WHERE status = 'hold')                           AS hold,
+		       COUNT(*) FILTER (WHERE status = 'ready')                          AS ready,
+		       COUNT(*) FILTER (WHERE status = 'claimed')                        AS claimed,
+		       COUNT(*) FILTER (WHERE status = 'mailed')                         AS mailed,
+		       COUNT(*) FILTER (WHERE status = 'mailed'
+		                          AND mailed_at > NOW() - INTERVAL '24 hours')   AS sent_24h,
+		       COUNT(*) FILTER (WHERE COALESCE(touch_count, 0) = 1)              AS touch_1,
+		       COUNT(*) FILTER (WHERE COALESCE(touch_count, 0) = 2)              AS touch_2,
+		       COUNT(*) FILTER (WHERE COALESCE(touch_count, 0) = 3)              AS touch_3,
+		       COUNT(*) FILTER (WHERE COALESCE(touch_count, 0) >= 4)             AS touch_4,
+		       COUNT(*) FILTER (WHERE engaged_at IS NOT NULL)                    AS engaged,
+		       COUNT(*) FILTER (WHERE terminal_reason = 'completed')             AS completed,
+		       COUNT(*) FILTER (WHERE status = 'mailed'
+		                          AND engaged_at IS NULL
+		                          AND terminal_reason IS NULL
+		                          AND next_touch_at IS NOT NULL
+		                          AND next_touch_at <= NOW())                    AS followups_due
+		FROM partner_clean_queue
+		GROUP BY 1, 2
+		ORDER BY 1, 7 DESC
+	`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	type vAgg struct {
+		pendingEO, hold, ready, claimed, mailed, sent24h          int
+		t1, t2, t3, t4, engaged, completed, followupsDue          int
+	}
+	vTotals := map[string]*vAgg{}
+	var vOrder []string
+	isps := make([]map[string]interface{}, 0, 32)
+
+	for rows.Next() {
+		var vertical, isp string
+		var pendingEO, hold, ready, claimed, mailed, sent24h int
+		var t1, t2, t3, t4, engaged, completed, followupsDue int
+		if err := rows.Scan(&vertical, &isp, &pendingEO, &hold, &ready, &claimed, &mailed, &sent24h,
+			&t1, &t2, &t3, &t4, &engaged, &completed, &followupsDue); err != nil {
+			continue
+		}
+		agg, ok := vTotals[vertical]
+		if !ok {
+			agg = &vAgg{}
+			vTotals[vertical] = agg
+			vOrder = append(vOrder, vertical)
+		}
+		agg.pendingEO += pendingEO
+		agg.hold += hold
+		agg.ready += ready
+		agg.claimed += claimed
+		agg.mailed += mailed
+		agg.sent24h += sent24h
+		agg.t1 += t1
+		agg.t2 += t2
+		agg.t3 += t3
+		agg.t4 += t4
+		agg.engaged += engaged
+		agg.completed += completed
+		agg.followupsDue += followupsDue
+
+		isps = append(isps, map[string]interface{}{
+			"vertical": vertical,
+			"isp":      isp,
+			"ready":    ready,
+			"mailed":   mailed,
+			"sent_24h": sent24h,
+		})
+	}
+
+	verticals := make([]map[string]interface{}, 0, len(vOrder))
+	for _, v := range vOrder {
+		a := vTotals[v]
+		verticals = append(verticals, map[string]interface{}{
+			"vertical":      v,
+			"pending_eo":    a.pendingEO,
+			"hold":          a.hold,
+			"ready":         a.ready,
+			"claimed":       a.claimed,
+			"mailed":        a.mailed,
+			"sent_24h":      a.sent24h,
+			"touch_1":       a.t1,
+			"touch_2":       a.t2,
+			"touch_3":       a.t3,
+			"touch_4":       a.t4,
+			"engaged":       a.engaged,
+			"completed":     a.completed,
+			"followups_due": a.followupsDue,
+		})
+	}
+	return verticals, isps, rows.Err()
+}
+
+// dripWaves returns the most recent partner-drip wave campaigns with live
+// event-derived stats.
+func (h *PartnerAdminHandler) dripWaves(ctx context.Context, hours, limit int) ([]map[string]interface{}, error) {
+	campRows, err := h.db.QueryContext(ctx, `
+		SELECT c.id::text, c.name, COALESCE(c.partner_drip_tag, ''),
+		       COALESCE(c.partner_dataset_id::text, ''), c.status,
+		       c.scheduled_at, COALESCE(c.total_recipients, 0),
+		       COALESCE(d.name, ''), COALESCE(p.name, '')
+		FROM mailing_campaigns c
+		LEFT JOIN partner_datasets d ON d.id = c.partner_dataset_id
+		LEFT JOIN data_partners p ON p.id = d.partner_id
+		WHERE c.partner_drip_tag IS NOT NULL
+		  AND c.scheduled_at > NOW() - ($1 * INTERVAL '1 hour')
+		ORDER BY c.scheduled_at DESC
+		LIMIT $2
+	`, hours, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer campRows.Close()
+
+	type waveRow struct {
+		id, name, tag, datasetID, status, datasetName, partnerName string
+		scheduledAt                                                sql.NullTime
+		totalRecipients                                            int
+	}
+	var ordered []waveRow
+	var ids []string
+	for campRows.Next() {
+		var wr waveRow
+		if err := campRows.Scan(&wr.id, &wr.name, &wr.tag, &wr.datasetID, &wr.status,
+			&wr.scheduledAt, &wr.totalRecipients, &wr.datasetName, &wr.partnerName); err != nil {
+			continue
+		}
+		ordered = append(ordered, wr)
+		ids = append(ids, wr.id)
+	}
+	if err := campRows.Err(); err != nil {
+		return nil, err
+	}
+
+	type evAgg struct {
+		sent, delivered, opens, clicks, hard, soft, deferred int
+	}
+	events := map[string]*evAgg{}
+	if len(ids) > 0 {
+		hb := HardBounceSQL("mailing_tracking_events")
+		evRows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT campaign_id::text,
+			       COALESCE(SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0)
+			FROM mailing_tracking_events
+			WHERE campaign_id = ANY($1::uuid[])
+			GROUP BY campaign_id
+		`, hb, hb), pq.Array(ids))
+		if err != nil {
+			return nil, err
+		}
+		defer evRows.Close()
+		for evRows.Next() {
+			var cid string
+			var a evAgg
+			if err := evRows.Scan(&cid, &a.sent, &a.delivered, &a.opens, &a.clicks, &a.hard, &a.soft, &a.deferred); err != nil {
+				continue
+			}
+			events[cid] = &a
+		}
+	}
+
+	waves := make([]map[string]interface{}, 0, len(ordered))
+	for _, wr := range ordered {
+		vertical, partnerSlug := parsePartnerDripTag(wr.tag)
+		brand := parsePartnerDripBrand(wr.name)
+		a := events[wr.id]
+		if a == nil {
+			a = &evAgg{}
+		}
+		scheduled := ""
+		if wr.scheduledAt.Valid {
+			scheduled = wr.scheduledAt.Time.Format(time.RFC3339)
+		}
+		waves = append(waves, map[string]interface{}{
+			"campaign_id":      wr.id,
+			"name":             wr.name,
+			"vertical":         vertical,
+			"brand":            brand,
+			"partner_slug":     partnerSlug,
+			"partner_name":     wr.partnerName,
+			"dataset_id":       wr.datasetID,
+			"dataset_name":     wr.datasetName,
+			"status":           wr.status,
+			"scheduled_at":     scheduled,
+			"total_recipients": wr.totalRecipients,
+			"sent":             a.sent,
+			"delivered":        a.delivered,
+			"opens":            a.opens,
+			"clicks":           a.clicks,
+			"hard_bounces":     a.hard,
+			"soft_bounces":     a.soft,
+			"deferred":         a.deferred,
+		})
+	}
+	return waves, nil
+}
+
+// parsePartnerDripTag splits the orchestrator's attribution tag
+// ("data_partner:{slug}/{vertical}") into (vertical, partnerSlug). Either may
+// come back empty on a malformed tag — callers render the campaign anyway.
+func parsePartnerDripTag(tag string) (vertical, partnerSlug string) {
+	rest, ok := strings.CutPrefix(tag, "data_partner:")
+	if !ok {
+		return "", ""
+	}
+	slug, vert, ok := strings.Cut(rest, "/")
+	if !ok {
+		return "", rest
+	}
+	return vert, slug
+}
+
+// parsePartnerDripBrand extracts the brand token from the orchestrator's wave
+// campaign name ("[partner-drip] {vertical} {brand} {YYYYMMDDTHHmm} {sha4}").
+func parsePartnerDripBrand(name string) string {
+	fields := strings.Fields(name)
+	if len(fields) >= 3 && fields[0] == "[partner-drip]" {
+		return fields[2]
+	}
+	return ""
 }
 
 // ============ GET /api/mailing/data-partners/audit-log ============

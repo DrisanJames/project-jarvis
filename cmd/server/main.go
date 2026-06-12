@@ -7037,6 +7037,20 @@ END $$`},
 			VALUES ('421060', 3, 'Final reminder: your roofing quotes', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
 			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
 
+		// Partner-drip multi-touch state columns (2026-06-11). The orchestrator's
+		// follow-up path and the idx_pcq_followup_isp concurrent index already
+		// reference these in production, but the ADD COLUMN DDL was never
+		// captured in startup migrations (schema drift — applied manually).
+		// Recorded here so fresh DBs and the drip-performance endpoint have
+		// them; IF NOT EXISTS makes this a no-op in prod.
+		{"jun11c_pcq_touch_count", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS touch_count INTEGER NOT NULL DEFAULT 0`},
+		{"jun11c_pcq_last_touch_brand", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS last_touch_brand TEXT`},
+		{"jun11c_pcq_last_touch_campaign_id", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS last_touch_campaign_id UUID`},
+		{"jun11c_pcq_next_touch_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS next_touch_at TIMESTAMPTZ`},
+		{"jun11c_pcq_engaged_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS engaged_at TIMESTAMPTZ`},
+		{"jun11c_pcq_terminal_reason", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS terminal_reason TEXT`},
+		{"jun11c_pcq_subscriber_id", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS subscriber_id UUID`},
+
 		// Domain Agent (2026-06-09): per-domain × ISP daily scorecard rolled up
 		// by domainagent.ScorecardWorker, plus the plan lifecycle table backing
 		// /api/mailing/domain-agent/plans (draft → compiled → approved →
