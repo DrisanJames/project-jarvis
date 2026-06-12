@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/everflow"
+	"github.com/lib/pq"
 )
 
 // =============================================================================
@@ -87,7 +88,10 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *Su
 	r.Get("/offer-center/offers/tree", och.HandleGetOfferTree)
 
 	// Offers CRUD
-	r.Get("/offer-center/offers", och.HandleListOffers)
+	// List is wrapped with cheap per-offer suppression/conversion counts
+	// (HandleListOffersWithCounts reuses the same query + filters as
+	// HandleListOffers and merges one grouped count query in Go).
+	r.Get("/offer-center/offers", och.HandleListOffersWithCounts)
 	r.Post("/offer-center/offers", och.HandleCreateOffer)
 	r.Get("/offer-center/offers/{id}", och.HandleGetOffer)
 	r.Put("/offer-center/offers/{id}", och.HandleUpdateOffer)
@@ -153,6 +157,7 @@ func RegisterOfferCenterRoutes(r chi.Router, db *sql.DB, h *Handlers, suppS3 *Su
 	r.Post("/offer-center/offers/{id}/deploy", proofHandler.HandleDeployOffer)
 
 	// Per-offer performance
+	r.Get("/offer-center/offers/{id}/stats", och.HandleGetOfferStats)
 	r.Get("/offer-center/offers/{id}/performance", och.HandleGetOfferDetailPerformance)
 	r.Get("/offer-center/offers/{id}/creatives/{cid}/performance", och.HandleGetCreativePerformance)
 	r.Get("/offer-center/offers/{id}/subjects/{sid}/performance", och.HandleGetSubjectPerformance)
@@ -1093,4 +1098,366 @@ func parsePgTextArray(s string) []string {
 		result = append(result, current.String())
 	}
 	return result
+}
+
+// =============================================================================
+// OFFER STATS — per-offer delivery/engagement aggregates
+//
+// GET /offer-center/offers/{id}/stats?days=30
+//
+// Aggregates are computed from mailing_tracking_events for the campaigns
+// linked to the offer (mailing_campaigns.offer_id). The campaign counter
+// columns (sent_count/open_count/…) are STALE and deliberately NOT used.
+// Conversions and the suppression total come from mailing_offer_suppressions
+// (Everflow postback writes reason='converted' rows there).
+// =============================================================================
+
+// OfferStatsTotals holds the window totals for an offer.
+type OfferStatsTotals struct {
+	Sent             int64 `json:"sent"`
+	Delivered        int64 `json:"delivered"`
+	Opened           int64 `json:"opened"`
+	Clicked          int64 `json:"clicked"`
+	HardBounces      int64 `json:"hard_bounces"`
+	SoftBounces      int64 `json:"soft_bounces"`
+	Deferred         int64 `json:"deferred"`
+	Complaints       int64 `json:"complaints"`
+	Conversions      int64 `json:"conversions"`
+	SuppressionTotal int64 `json:"suppression_total"`
+}
+
+// OfferStatsCampaign is one recent campaign linked to the offer with its
+// event-derived counts.
+type OfferStatsCampaign struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`
+	ScheduledAt *time.Time `json:"scheduled_at"`
+	Sent        int64      `json:"sent"`
+	Delivered   int64      `json:"delivered"`
+	Opens       int64      `json:"opens"`
+	Clicks      int64      `json:"clicks"`
+}
+
+// OfferStatsDaily is one day of the per-day series.
+type OfferStatsDaily struct {
+	Date        string `json:"date"`
+	Sent        int64  `json:"sent"`
+	Delivered   int64  `json:"delivered"`
+	Opened      int64  `json:"opened"`
+	Clicked     int64  `json:"clicked"`
+	Conversions int64  `json:"conversions"`
+}
+
+// OfferStatsResponse is the response for HandleGetOfferStats.
+type OfferStatsResponse struct {
+	OfferID       string               `json:"offer_id"`
+	Days          int                  `json:"days"`
+	Totals        OfferStatsTotals     `json:"totals"`
+	CampaignCount int                  `json:"campaign_count"`
+	Campaigns     []OfferStatsCampaign `json:"campaigns"`
+	Daily         []OfferStatsDaily    `json:"daily"`
+}
+
+// HandleGetOfferStats — GET /offer-center/offers/{id}/stats?days=30
+func (och *OfferCenterHandlers) HandleGetOfferStats(w http.ResponseWriter, r *http.Request) {
+	offerID := chi.URLParam(r, "id")
+	if offerID == "" {
+		respondError(w, http.StatusBadRequest, "offer id is required")
+		return
+	}
+	if och.db == nil {
+		respondError(w, http.StatusServiceUnavailable, "Database not available")
+		return
+	}
+
+	days := 30
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+	windowStart := time.Now().AddDate(0, 0, -days)
+
+	ctx := r.Context()
+	resp := OfferStatsResponse{
+		OfferID:   offerID,
+		Days:      days,
+		Campaigns: []OfferStatsCampaign{},
+		Daily:     []OfferStatsDaily{},
+	}
+
+	// 1) Bound campaign ids first — mailing_tracking_events is huge but
+	// indexed on campaign_id, so everything else fans out from this list.
+	campRows, err := och.db.QueryContext(ctx,
+		`SELECT id::text, COALESCE(name,''), COALESCE(status,''), scheduled_at
+		 FROM mailing_campaigns
+		 WHERE offer_id = $1 AND created_at > $2
+		 ORDER BY created_at DESC`, offerID, windowStart)
+	if err != nil {
+		log.Printf("ERROR: offer stats campaigns for %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
+		return
+	}
+	var campaignIDs []string
+	campaignIdx := make(map[string]int) // campaign id -> index in resp.Campaigns
+	for campRows.Next() {
+		var c OfferStatsCampaign
+		var scheduledAt sql.NullTime
+		if err := campRows.Scan(&c.ID, &c.Name, &c.Status, &scheduledAt); err != nil {
+			campRows.Close()
+			log.Printf("ERROR: offer stats scan campaign: %v", err)
+			respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
+			return
+		}
+		if scheduledAt.Valid {
+			t := scheduledAt.Time
+			c.ScheduledAt = &t
+		}
+		campaignIDs = append(campaignIDs, c.ID)
+		if len(resp.Campaigns) < 15 { // recent list: 15 newest (already ordered DESC)
+			campaignIdx[c.ID] = len(resp.Campaigns)
+			resp.Campaigns = append(resp.Campaigns, c)
+		}
+	}
+	campRows.Close()
+	if err := campRows.Err(); err != nil {
+		log.Printf("ERROR: offer stats campaign rows: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to load offer campaigns")
+		return
+	}
+	resp.CampaignCount = len(campaignIDs)
+
+	hb := HardBounceSQL("t")
+
+	// Maps for the per-day series (filled below, emitted as a dense range).
+	dailyEvents := make(map[string]*OfferStatsDaily)
+	dailyConversions := make(map[string]int64)
+
+	if len(campaignIDs) > 0 {
+		// 2) Window totals from tracking events. The event_at bound also
+		// gives the monthly partitions a pruning predicate.
+		totalsQ := fmt.Sprintf(`SELECT
+			COUNT(*) FILTER (WHERE t.event_type = 'sent'),
+			COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE t.event_type = 'opened'),
+			COUNT(*) FILTER (WHERE t.event_type = 'clicked'),
+			COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND %s),
+			COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND NOT (%s)),
+			COUNT(*) FILTER (WHERE t.event_type IN ('deferred','deferral')),
+			COUNT(*) FILTER (WHERE t.event_type = 'complained')
+		 FROM mailing_tracking_events t
+		 WHERE t.campaign_id = ANY($1::uuid[])
+		   AND t.event_at > $2
+		   AND t.event_type IN ('sent','delivered','opened','clicked','bounced','deferred','deferral','complained')`, hb, hb)
+		if err := och.db.QueryRowContext(ctx, totalsQ, pq.Array(campaignIDs), windowStart).Scan(
+			&resp.Totals.Sent, &resp.Totals.Delivered, &resp.Totals.Opened, &resp.Totals.Clicked,
+			&resp.Totals.HardBounces, &resp.Totals.SoftBounces, &resp.Totals.Deferred, &resp.Totals.Complaints,
+		); err != nil {
+			log.Printf("ERROR: offer stats totals for %s: %v", offerID, err)
+			respondError(w, http.StatusInternalServerError, "Failed to aggregate offer events")
+			return
+		}
+
+		// 3) Per-campaign breakdown for the recent list.
+		recentIDs := make([]string, 0, len(campaignIdx))
+		for id := range campaignIdx {
+			recentIDs = append(recentIDs, id)
+		}
+		perCampRows, err := och.db.QueryContext(ctx,
+			`SELECT t.campaign_id::text,
+				COUNT(*) FILTER (WHERE t.event_type = 'sent'),
+				COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
+				COUNT(*) FILTER (WHERE t.event_type = 'opened'),
+				COUNT(*) FILTER (WHERE t.event_type = 'clicked')
+			 FROM mailing_tracking_events t
+			 WHERE t.campaign_id = ANY($1::uuid[])
+			   AND t.event_at > $2
+			   AND t.event_type IN ('sent','delivered','opened','clicked')
+			 GROUP BY t.campaign_id`, pq.Array(recentIDs), windowStart)
+		if err != nil {
+			log.Printf("ERROR: offer stats per-campaign for %s: %v", offerID, err)
+			respondError(w, http.StatusInternalServerError, "Failed to aggregate campaign events")
+			return
+		}
+		for perCampRows.Next() {
+			var id string
+			var sent, delivered, opens, clicks int64
+			if err := perCampRows.Scan(&id, &sent, &delivered, &opens, &clicks); err != nil {
+				continue
+			}
+			if i, ok := campaignIdx[id]; ok {
+				c := &resp.Campaigns[i]
+				c.Sent, c.Delivered, c.Opens, c.Clicks = sent, delivered, opens, clicks
+			}
+		}
+		perCampRows.Close()
+
+		// 4) Daily event series.
+		dailyRows, err := och.db.QueryContext(ctx,
+			`SELECT to_char(t.event_at::date, 'YYYY-MM-DD'),
+				COUNT(*) FILTER (WHERE t.event_type = 'sent'),
+				COUNT(*) FILTER (WHERE t.event_type = 'delivered'),
+				COUNT(*) FILTER (WHERE t.event_type = 'opened'),
+				COUNT(*) FILTER (WHERE t.event_type = 'clicked')
+			 FROM mailing_tracking_events t
+			 WHERE t.campaign_id = ANY($1::uuid[])
+			   AND t.event_at > $2
+			   AND t.event_type IN ('sent','delivered','opened','clicked')
+			 GROUP BY 1`, pq.Array(campaignIDs), windowStart)
+		if err != nil {
+			log.Printf("ERROR: offer stats daily for %s: %v", offerID, err)
+			respondError(w, http.StatusInternalServerError, "Failed to aggregate daily events")
+			return
+		}
+		for dailyRows.Next() {
+			var d OfferStatsDaily
+			if err := dailyRows.Scan(&d.Date, &d.Sent, &d.Delivered, &d.Opened, &d.Clicked); err != nil {
+				continue
+			}
+			dd := d
+			dailyEvents[d.Date] = &dd
+		}
+		dailyRows.Close()
+	}
+
+	// 5) Conversions (30d-window count) + all-time suppression total.
+	if err := och.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FILTER (WHERE reason = 'converted' AND suppressed_at > $2),
+		        COUNT(*)
+		 FROM mailing_offer_suppressions WHERE offer_id = $1`, offerID, windowStart).Scan(
+		&resp.Totals.Conversions, &resp.Totals.SuppressionTotal,
+	); err != nil {
+		log.Printf("ERROR: offer stats suppressions for %s: %v", offerID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to count offer suppressions")
+		return
+	}
+
+	// 6) Daily conversion series.
+	convRows, err := och.db.QueryContext(ctx,
+		`SELECT to_char(suppressed_at::date, 'YYYY-MM-DD'), COUNT(*)
+		 FROM mailing_offer_suppressions
+		 WHERE offer_id = $1 AND reason = 'converted' AND suppressed_at > $2
+		 GROUP BY 1`, offerID, windowStart)
+	if err == nil {
+		for convRows.Next() {
+			var date string
+			var n int64
+			if err := convRows.Scan(&date, &n); err == nil {
+				dailyConversions[date] = n
+			}
+		}
+		convRows.Close()
+	}
+
+	// 7) Emit a dense day-by-day series across the window so the chart has
+	// continuous bars even on zero-volume days.
+	now := time.Now()
+	for d := windowStart; !d.After(now); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		entry := OfferStatsDaily{Date: key}
+		if ev, ok := dailyEvents[key]; ok {
+			entry.Sent, entry.Delivered, entry.Opened, entry.Clicked = ev.Sent, ev.Delivered, ev.Opened, ev.Clicked
+		}
+		entry.Conversions = dailyConversions[key]
+		resp.Daily = append(resp.Daily, entry)
+	}
+
+	respondJSON(w, http.StatusOK, resp)
+}
+
+// =============================================================================
+// OFFERS LIST WITH COUNTS
+// =============================================================================
+
+// offerListItemWithCounts decorates the standard OfferRecord (all existing
+// JSON fields preserved via embedding) with cheap per-offer counts.
+type offerListItemWithCounts struct {
+	OfferRecord
+	SuppressionCount int64 `json:"suppression_count"`
+	Conversions30d   int64 `json:"conversions_30d"`
+}
+
+// HandleListOffersWithCounts — GET /offer-center/offers
+//
+// Same query/filters as HandleListOffers (offer_center_lifecycle.go), plus
+// suppression_count (all reasons) and conversions_30d (reason='converted',
+// last 30 days) from ONE grouped query over mailing_offer_suppressions,
+// merged in Go — no correlated subqueries per row.
+func (och *OfferCenterHandlers) HandleListOffersWithCounts(w http.ResponseWriter, r *http.Request) {
+	verticalID := r.URL.Query().Get("vertical_id")
+	status := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("search")
+
+	query := fmt.Sprintf("SELECT %s FROM mailing_offers WHERE organization_id = $1", offerSelectCols)
+	args := []interface{}{defaultOrgID}
+
+	if verticalID != "" {
+		args = append(args, verticalID)
+		query += fmt.Sprintf(" AND vertical_id = $%d", len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		query += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	if search != "" {
+		args = append(args, "%"+search+"%")
+		query += fmt.Sprintf(" AND (name ILIKE $%d OR brand_name ILIKE $%d)", len(args), len(args))
+	}
+
+	query += " ORDER BY brand_name, name"
+
+	ctx := r.Context()
+	rows, err := och.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		log.Printf("ERROR: list offers (with counts): %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to list offers")
+		return
+	}
+
+	offers := []offerListItemWithCounts{}
+	idx := make(map[string]int)
+	for rows.Next() {
+		o, err := scanOfferRow(rows)
+		if err != nil {
+			rows.Close()
+			log.Printf("ERROR: scan offer row (with counts): %v", err)
+			respondError(w, http.StatusInternalServerError, "Failed to list offers")
+			return
+		}
+		idx[o.ID] = len(offers)
+		offers = append(offers, offerListItemWithCounts{OfferRecord: o})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Printf("ERROR: offer rows (with counts): %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to list offers")
+		return
+	}
+
+	if len(offers) > 0 {
+		countRows, err := och.db.QueryContext(ctx,
+			`SELECT offer_id::text,
+				COUNT(*),
+				COUNT(*) FILTER (WHERE reason = 'converted' AND suppressed_at > NOW() - INTERVAL '30 days')
+			 FROM mailing_offer_suppressions
+			 GROUP BY offer_id`)
+		if err != nil {
+			// Non-fatal: ship the list without counts rather than failing the screen.
+			log.Printf("WARN: offer suppression counts query failed: %v", err)
+		} else {
+			for countRows.Next() {
+				var offerID string
+				var total, conv30 int64
+				if err := countRows.Scan(&offerID, &total, &conv30); err != nil {
+					continue
+				}
+				if i, ok := idx[offerID]; ok {
+					offers[i].SuppressionCount = total
+					offers[i].Conversions30d = conv30
+				}
+			}
+			countRows.Close()
+		}
+	}
+
+	respondJSON(w, http.StatusOK, offers)
 }

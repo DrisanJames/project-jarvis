@@ -1,13 +1,21 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faBrain, faLightbulb, faCommentDots, faShieldAlt,
   faChartBar, faExclamationTriangle,
   faSyncAlt, faEye, faStream,
-  faBolt,
+  faBolt, faTowerBroadcast, faGears,
 } from '@fortawesome/free-solid-svg-icons';
+import {
+  ResponsiveContainer, LineChart, Line, AreaChart, Area,
+  XAxis, YAxis, Tooltip, CartesianGrid, Legend,
+} from 'recharts';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import { apiFetch } from '../shared/apiFetch';
+
+// ----------------------------------------------------------------------------
+//  Types — engine consciousness
+// ----------------------------------------------------------------------------
 
 interface Philosophy {
   id: string;
@@ -69,6 +77,110 @@ interface CampaignMetrics {
   variant_metrics?: Record<string, any>;
 }
 
+// ----------------------------------------------------------------------------
+//  Types — ISP operations (deliverability endpoints, pmta_acct_raw-backed)
+// ----------------------------------------------------------------------------
+
+interface MatrixCell {
+  isp: string;
+  sending_domain: string;
+  attempted: number;
+  delivered: number;
+  hard_bounce: number;
+  soft_bounce: number;
+  deferred: number;
+  complaint: number;
+  reputation_blocked: number;
+  accept_pct: number;
+  defer_pct: number;
+  hard_pct: number;
+  soft_pct: number;
+  complaint_pct: number;
+}
+
+interface ISPConfigEntry {
+  isp: string;
+  display_name: string;
+  max_msg_rate: number;
+  max_connections: number;
+  bounce_warn_pct: number;
+  bounce_action_pct: number;
+  complaint_warn_pct: number;
+  complaint_action_pct: number;
+  pool_name: string;
+  enabled: boolean;
+  current_rate: number;
+  rate_adjustment: number;
+  backoff_count: number;
+  in_recovery: boolean;
+  ip_count: number;
+  sent_1h: number;
+  delivered_1h: number;
+}
+
+interface TimeseriesBucket {
+  bucket: string;
+  series: Record<string, number>;
+}
+
+interface TimeseriesResp {
+  metric: string;
+  keys: string[];
+  buckets: TimeseriesBucket[];
+}
+
+/** Aggregated 24h row, one per recipient ISP. */
+interface ISPRow {
+  isp: string;
+  attempted: number;
+  delivered: number;
+  hardBounce: number;
+  softBounce: number;
+  deferred: number;
+  complaint: number;
+  repBlocked: number;
+  deliveredPct: number;
+  deferPct: number;
+  hardPct: number;
+  softPct: number;
+  complaintPct: number;
+}
+
+interface Suggestion {
+  text: string;
+  tone: 'good' | 'warn' | 'bad' | 'info';
+}
+
+const TS_METRICS = ['delivered', 'deferred', 'hard_bounce', 'soft_bounce'] as const;
+type TSMetric = typeof TS_METRICS[number];
+
+// Engine agents are keyed gmail/yahoo/aol/microsoft/apple/comcast/att/sbcglobal/cox/charter.
+// recipient_isp values occasionally use consumer-facing names — normalize for the join.
+const CONFIG_ALIASES: Record<string, string> = {
+  outlook: 'microsoft',
+  hotmail: 'microsoft',
+  live: 'microsoft',
+  msn: 'microsoft',
+  icloud: 'apple',
+  me: 'apple',
+  mac: 'apple',
+  verizon: 'aol',
+};
+
+const ISP_DISPLAY: Record<string, string> = {
+  gmail: 'Gmail',
+  microsoft: 'Microsoft / Outlook',
+  yahoo: 'Yahoo',
+  aol: 'AOL',
+  comcast: 'Comcast',
+  charter: 'Charter',
+  apple: 'Apple / iCloud',
+  att: 'AT&T',
+  sbcglobal: 'SBCGlobal',
+  cox: 'Cox',
+  other: 'Other',
+};
+
 const moodEmoji: Record<string, string> = {
   confident: '🟢',
   cautious: '🟡',
@@ -91,6 +203,13 @@ const severityColor: Record<string, string> = {
   critical: '#e94560',
 };
 
+const toneColor: Record<Suggestion['tone'], string> = {
+  good: '#10b981',
+  warn: '#f59e0b',
+  bad: '#ef4444',
+  info: '#93c5fd',
+};
+
 const thoughtTypeIcon: Record<string, any> = {
   observation: faEye,
   decision: faBolt,
@@ -100,15 +219,121 @@ const thoughtTypeIcon: Record<string, any> = {
   philosophy_update: faLightbulb,
 };
 
+function normalizeISP(isp: string): string {
+  const k = (isp || 'other').toLowerCase();
+  return CONFIG_ALIASES[k] || k;
+}
+
+function ispLabel(isp: string): string {
+  return ISP_DISPLAY[isp] || isp.charAt(0).toUpperCase() + isp.slice(1);
+}
+
+function pctOf(num: number, denom: number): number {
+  if (denom <= 0) return 0;
+  return Math.round((num / denom) * 10000) / 100;
+}
+
+// ----------------------------------------------------------------------------
+//  Suggestion engine — engine signals first, then the platform's own
+//  thresholds (deferral storm >10%, hard-bounce hygiene >2%, headroom rule).
+// ----------------------------------------------------------------------------
+
+function buildSuggestions(row: ISPRow, cfg: ISPConfigEntry | undefined, engineThought: Thought | undefined): Suggestion[] {
+  const out: Suggestion[] = [];
+
+  if (engineThought) {
+    const sev = engineThought.severity || 'info';
+    const tone: Suggestion['tone'] = sev === 'critical' ? 'bad' : (sev === 'warning' || sev === 'caution') ? 'warn' : 'info';
+    const content = engineThought.content.length > 110
+      ? engineThought.content.slice(0, 107) + '…'
+      : engineThought.content;
+    out.push({ text: `Engine: ${content}`, tone });
+  }
+
+  if (row.attempted === 0) {
+    out.push({ text: 'No traffic in last 24h', tone: 'info' });
+    return out.slice(0, 3);
+  }
+
+  if (row.deferPct > 10) {
+    out.push({ text: `Pace down — deferral storm watch (${row.deferPct.toFixed(1)}% deferred)`, tone: 'bad' });
+  } else if (row.deferPct > 5) {
+    out.push({ text: `Deferrals elevated (${row.deferPct.toFixed(1)}%) — watch pacing`, tone: 'warn' });
+  }
+
+  if (row.hardPct > 2) {
+    out.push({ text: `Cut volume — hard bounces ${row.hardPct.toFixed(2)}%, check list hygiene`, tone: 'bad' });
+  } else if (row.hardPct > 1) {
+    out.push({ text: `Hard bounces ${row.hardPct.toFixed(2)}% — tighten list hygiene`, tone: 'warn' });
+  }
+
+  const repPct = pctOf(row.repBlocked, row.attempted);
+  if (repPct > 1) {
+    out.push({ text: `Reputation blocks ${repPct.toFixed(1)}% — review content & IP reputation`, tone: 'bad' });
+  }
+
+  if (row.complaintPct > 0.3) {
+    out.push({ text: `Complaints ${row.complaintPct.toFixed(2)}% — suppress complainers, review targeting`, tone: 'bad' });
+  } else if (row.complaintPct > 0.1) {
+    out.push({ text: `Complaints ${row.complaintPct.toFixed(2)}% — keep an eye on FBL`, tone: 'warn' });
+  }
+
+  if (cfg) {
+    if (cfg.in_recovery) {
+      out.push({ text: 'Agent in recovery — hold volume steady, let it climb back', tone: 'warn' });
+    } else if (cfg.backoff_count > 0) {
+      out.push({ text: `Agent backing off (×${cfg.backoff_count}) — let pacing settle`, tone: 'warn' });
+    } else if (!cfg.enabled) {
+      out.push({ text: 'Agent disabled — sends are not rate-governed for this ISP', tone: 'warn' });
+    }
+  }
+
+  const onlyEngineNote = out.length === (engineThought ? 1 : 0);
+  if (onlyEngineNote) {
+    if (row.deliveredPct >= 92 && row.hardPct < 1 && row.deferPct < 5) {
+      out.push({ text: 'Healthy & stable — headroom to grow', tone: 'good' });
+    } else {
+      out.push({ text: 'Stable — monitor', tone: 'info' });
+    }
+  }
+
+  return out.slice(0, 3);
+}
+
+function posture(cfg: ISPConfigEntry | undefined): { label: string; color: string } {
+  if (!cfg) return { label: 'no agent', color: 'rgba(180,210,240,0.45)' };
+  if (!cfg.enabled) return { label: 'disabled', color: 'rgba(180,210,240,0.45)' };
+  if (cfg.in_recovery) return { label: 'recovering', color: '#f59e0b' };
+  if (cfg.backoff_count > 0) return { label: `backoff ×${cfg.backoff_count}`, color: '#f59e0b' };
+  if (cfg.rate_adjustment < 0.95) return { label: `throttled ${Math.round(cfg.rate_adjustment * 100)}%`, color: '#f59e0b' };
+  return { label: 'full rate', color: '#10b981' };
+}
+
+// ----------------------------------------------------------------------------
+//  Component
+// ----------------------------------------------------------------------------
+
+const REFRESH_MS = 20000;
+
 export const ConsciousnessDashboard: React.FC = () => {
+  const [mainTab, setMainTab] = useState<'operations' | 'engine'>('operations');
+
+  // Engine consciousness state
   const [state, setState] = useState<ConsciousnessState | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignMetrics[]>([]);
   const [liveThoughts, setLiveThoughts] = useState<Thought[]>([]);
-  const [activeSection, setActiveSection] = useState<'campaigns' | 'overview' | 'philosophies' | 'thoughts'>('campaigns');
+  const [activeSection, setActiveSection] = useState<'campaigns' | 'overview' | 'philosophies' | 'thoughts'>('overview');
   const [selectedISP, setSelectedISP] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // ISP operations state
+  const [matrixCells, setMatrixCells] = useState<MatrixCell[]>([]);
+  const [configs, setConfigs] = useState<ISPConfigEntry[]>([]);
+  const [series, setSeries] = useState<Partial<Record<TSMetric, TimeseriesResp>>>({});
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [opsISP, setOpsISP] = useState<string | null>(null);
 
   const fetchState = useCallback(async () => {
     try {
@@ -150,11 +375,48 @@ export const ConsciousnessDashboard: React.FC = () => {
     }
   }, []);
 
+  const fetchOps = useCallback(async () => {
+    try {
+      const [matrixRes, configRes, ...tsResults] = await Promise.all([
+        apiFetch('/api/mailing/deliverability/matrix?window=24h'),
+        apiFetch('/api/mailing/deliverability/config'),
+        ...TS_METRICS.map(m =>
+          apiFetch(`/api/mailing/deliverability/timeseries?metric=${m}&groupBy=isp&window=24h&bucket=1h`)
+        ),
+      ]);
+      if (matrixRes.ok) {
+        const data = await matrixRes.json();
+        setMatrixCells(Array.isArray(data.cells) ? data.cells : []);
+      }
+      if (configRes.ok) {
+        const data = await configRes.json();
+        setConfigs(Array.isArray(data.configs) ? data.configs : []);
+      }
+      const nextSeries: Partial<Record<TSMetric, TimeseriesResp>> = {};
+      for (let i = 0; i < TS_METRICS.length; i++) {
+        const res = tsResults[i];
+        if (res && res.ok) {
+          nextSeries[TS_METRICS[i]] = await res.json();
+        }
+      }
+      setSeries(prev => ({ ...prev, ...nextSeries }));
+      setLastUpdated(new Date());
+    } catch {
+      // silent — keep last good data on screen
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchState();
-    const interval = setInterval(fetchState, 15000);
+    fetchOps();
+    const interval = setInterval(() => {
+      fetchState();
+      fetchOps();
+    }, REFRESH_MS);
     return () => clearInterval(interval);
-  }, [fetchState]);
+  }, [fetchState, fetchOps]);
 
   useEffect(() => {
     const es = new EventSource('/api/mailing/consciousness/thoughts/stream');
@@ -175,14 +437,77 @@ export const ConsciousnessDashboard: React.FC = () => {
     }
   }, [liveThoughts, activeSection]);
 
-  const allThoughts = [
+  const allThoughts = useMemo(() => [
     ...(state?.recent_thoughts || []),
     ...liveThoughts,
-  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()), [state, liveThoughts]);
 
-  const filteredPhilosophies = state?.philosophies?.filter(
-    p => selectedISP === 'all' || p.isp === selectedISP
-  ) || [];
+  // ---- Aggregate the ISP × domain matrix into one row per ISP -------------
+  const ispRows = useMemo<ISPRow[]>(() => {
+    const byISP = new Map<string, ISPRow>();
+    for (const c of matrixCells) {
+      const key = (c.isp || 'other').toLowerCase();
+      let row = byISP.get(key);
+      if (!row) {
+        row = {
+          isp: key, attempted: 0, delivered: 0, hardBounce: 0, softBounce: 0,
+          deferred: 0, complaint: 0, repBlocked: 0,
+          deliveredPct: 0, deferPct: 0, hardPct: 0, softPct: 0, complaintPct: 0,
+        };
+        byISP.set(key, row);
+      }
+      row.attempted += c.attempted;
+      row.delivered += c.delivered;
+      row.hardBounce += c.hard_bounce;
+      row.softBounce += c.soft_bounce;
+      row.deferred += c.deferred;
+      row.complaint += c.complaint;
+      row.repBlocked += c.reputation_blocked;
+    }
+    // Include engine-governed ISPs that had no traffic in the window
+    for (const cfg of configs) {
+      const key = cfg.isp.toLowerCase();
+      if (!byISP.has(key) && cfg.enabled) {
+        byISP.set(key, {
+          isp: key, attempted: 0, delivered: 0, hardBounce: 0, softBounce: 0,
+          deferred: 0, complaint: 0, repBlocked: 0,
+          deliveredPct: 0, deferPct: 0, hardPct: 0, softPct: 0, complaintPct: 0,
+        });
+      }
+    }
+    const rows = Array.from(byISP.values());
+    for (const r of rows) {
+      r.deliveredPct = pctOf(r.delivered, r.attempted);
+      r.deferPct = pctOf(r.deferred, r.attempted);
+      r.hardPct = pctOf(r.hardBounce, r.attempted);
+      r.softPct = pctOf(r.softBounce, r.attempted);
+      r.complaintPct = pctOf(r.complaint, r.attempted);
+    }
+    rows.sort((a, b) => b.attempted - a.attempted);
+    return rows;
+  }, [matrixCells, configs]);
+
+  const configByISP = useMemo(() => {
+    const m = new Map<string, ISPConfigEntry>();
+    for (const c of configs) m.set(c.isp.toLowerCase(), c);
+    return m;
+  }, [configs]);
+
+  // Latest actionable engine thought per ISP (decision/warning, or any warn+ severity)
+  const engineNoteByISP = useMemo(() => {
+    const m = new Map<string, Thought>();
+    for (const t of allThoughts) {
+      if (!t.isp) continue;
+      const key = normalizeISP(t.isp);
+      if (m.has(key)) continue; // allThoughts is newest-first
+      const actionable = t.type === 'decision' || t.type === 'warning'
+        || t.severity === 'warning' || t.severity === 'critical' || t.severity === 'caution';
+      if (actionable) m.set(key, t);
+    }
+    return m;
+  }, [allThoughts]);
+
+  const selectedOpsISP = opsISP || (ispRows.length > 0 ? ispRows[0].isp : null);
 
   if (loading) {
     return (
@@ -192,6 +517,10 @@ export const ConsciousnessDashboard: React.FC = () => {
       </div>
     );
   }
+
+  const filteredPhilosophies = state?.philosophies?.filter(
+    p => selectedISP === 'all' || p.isp === selectedISP
+  ) || [];
 
   return (
     <div className="ig-scan-line" style={styles.container}>
@@ -205,11 +534,18 @@ export const ConsciousnessDashboard: React.FC = () => {
           <div>
             <h1 style={styles.title}>Consciousness</h1>
             <p style={styles.subtitle}>
-              {state?.summary || 'Initializing...'}
+              {state?.summary || 'All-ISP delivery operations, live'}
             </p>
           </div>
         </div>
         <div style={styles.headerRight}>
+          <div style={styles.liveBadge}>
+            <span style={styles.liveDot} />
+            <span style={{ color: '#10b981', fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>LIVE</span>
+            <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11 }}>
+              {lastUpdated ? `updated ${lastUpdated.toLocaleTimeString()}` : 'loading…'}
+            </span>
+          </div>
           <div className="ig-pulse-cyan" style={styles.moodBadge}>
             <span style={{ fontSize: 20 }}>{moodEmoji[state?.mood || 'observing']}</span>
             <span style={styles.moodLabel}>{state?.mood || 'observing'}</span>
@@ -218,55 +554,342 @@ export const ConsciousnessDashboard: React.FC = () => {
             <AnimatedCounter value={Math.round(state?.health_score || 0)} style={styles.healthValue} />
             <span style={styles.healthLabel}>Health</span>
           </div>
-          <div style={styles.statBadge}>
-            <AnimatedCounter value={state?.total_beliefs || 0} style={styles.statValue} />
-            <span style={styles.statLabel}>Beliefs</span>
-          </div>
-          <div style={styles.statBadge}>
-            <AnimatedCounter value={state?.active_isps || 0} style={styles.statValue} />
-            <span style={styles.statLabel}>ISPs</span>
-          </div>
-          <button onClick={fetchState} style={styles.refreshBtn}>
+          <button onClick={() => { fetchState(); fetchOps(); }} style={styles.refreshBtn}>
             <FontAwesomeIcon icon={faSyncAlt} />
           </button>
         </div>
       </div>
 
-      {/* Section Tabs — Campaigns (live mail flow) is primary */}
+      {/* Main tabs: Operations dashboard (primary) vs Engine Internals */}
       <div style={styles.sectionTabs}>
-        {(['campaigns', 'overview', 'philosophies', 'thoughts'] as const).map(section => (
-          <button
-            key={section}
-            onClick={() => setActiveSection(section)}
-            style={{
-              ...styles.sectionTab,
-              ...(activeSection === section ? styles.sectionTabActive : {}),
-            }}
-          >
-            <FontAwesomeIcon icon={
-              section === 'campaigns' ? faChartBar :
-              section === 'overview' ? faEye :
-              section === 'philosophies' ? faLightbulb :
-              faCommentDots
-            } style={{ marginRight: 6 }} />
-            {section === 'campaigns' ? 'Mail Flow' : section.charAt(0).toUpperCase() + section.slice(1)}
-            {section === 'thoughts' && liveThoughts.length > 0 && (
-              <span style={styles.liveDot} />
-            )}
-          </button>
-        ))}
+        <button
+          onClick={() => setMainTab('operations')}
+          style={{ ...styles.sectionTab, ...(mainTab === 'operations' ? styles.sectionTabActive : {}) }}
+        >
+          <FontAwesomeIcon icon={faTowerBroadcast} style={{ marginRight: 6 }} />
+          ISP Operations
+          <span style={styles.liveDot} />
+        </button>
+        <button
+          onClick={() => setMainTab('engine')}
+          style={{ ...styles.sectionTab, ...(mainTab === 'engine' ? styles.sectionTabActive : {}) }}
+        >
+          <FontAwesomeIcon icon={faGears} style={{ marginRight: 6 }} />
+          Engine Internals
+        </button>
       </div>
 
-      {/* Content */}
-      <div style={styles.content}>
-        {activeSection === 'campaigns' && renderCampaigns(campaigns)}
-        {activeSection === 'overview' && renderOverview(state, campaigns, allThoughts)}
-        {activeSection === 'philosophies' && renderPhilosophies(filteredPhilosophies, selectedISP, setSelectedISP)}
-        {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef)}
-      </div>
+      {mainTab === 'operations' && (
+        <OperationsBoard
+          rows={ispRows}
+          configByISP={configByISP}
+          engineNoteByISP={engineNoteByISP}
+          series={series}
+          selected={selectedOpsISP}
+          onSelect={setOpsISP}
+          thoughts={allThoughts}
+          philosophies={state?.philosophies || []}
+        />
+      )}
+
+      {mainTab === 'engine' && (
+        <>
+          <div style={styles.sectionTabs}>
+            {(['overview', 'campaigns', 'philosophies', 'thoughts'] as const).map(section => (
+              <button
+                key={section}
+                onClick={() => setActiveSection(section)}
+                style={{
+                  ...styles.sectionTab,
+                  ...(activeSection === section ? styles.sectionTabActive : {}),
+                }}
+              >
+                <FontAwesomeIcon icon={
+                  section === 'campaigns' ? faChartBar :
+                  section === 'overview' ? faEye :
+                  section === 'philosophies' ? faLightbulb :
+                  faCommentDots
+                } style={{ marginRight: 6 }} />
+                {section === 'campaigns' ? 'Mail Flow' : section.charAt(0).toUpperCase() + section.slice(1)}
+                {section === 'thoughts' && liveThoughts.length > 0 && (
+                  <span style={styles.liveDot} />
+                )}
+              </button>
+            ))}
+          </div>
+          <div style={styles.content}>
+            {activeSection === 'campaigns' && renderCampaigns(campaigns)}
+            {activeSection === 'overview' && renderOverview(state, campaigns, allThoughts)}
+            {activeSection === 'philosophies' && renderPhilosophies(filteredPhilosophies, selectedISP, setSelectedISP)}
+            {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef)}
+          </div>
+        </>
+      )}
     </div>
   );
 };
+
+// ----------------------------------------------------------------------------
+//  ISP Operations board — the running all-ISP dashboard
+// ----------------------------------------------------------------------------
+
+const OperationsBoard: React.FC<{
+  rows: ISPRow[];
+  configByISP: Map<string, ISPConfigEntry>;
+  engineNoteByISP: Map<string, Thought>;
+  series: Partial<Record<TSMetric, TimeseriesResp>>;
+  selected: string | null;
+  onSelect: (isp: string) => void;
+  thoughts: Thought[];
+  philosophies: Philosophy[];
+}> = ({ rows, configByISP, engineNoteByISP, series, selected, onSelect, thoughts, philosophies }) => {
+  const totals = rows.reduce((acc, r) => ({
+    attempted: acc.attempted + r.attempted,
+    delivered: acc.delivered + r.delivered,
+    deferred: acc.deferred + r.deferred,
+    hard: acc.hard + r.hardBounce,
+    soft: acc.soft + r.softBounce,
+    complaint: acc.complaint + r.complaint,
+    repBlocked: acc.repBlocked + r.repBlocked,
+  }), { attempted: 0, delivered: 0, deferred: 0, hard: 0, soft: 0, complaint: 0, repBlocked: 0 });
+
+  const sparkDataFor = (isp: string): { v: number }[] => {
+    const ts = series.delivered;
+    if (!ts) return [];
+    const key = normalizeISP(isp);
+    return ts.buckets.map(b => ({ v: b.series[isp] ?? b.series[key] ?? 0 }));
+  };
+
+  // Merge the 4 metric timeseries into one chart-friendly array for selected ISP
+  const detailData = useMemo(() => {
+    if (!selected) return [];
+    const key = normalizeISP(selected);
+    const byBucket = new Map<string, { time: string; ts: number; delivered: number; deferred: number; hard_bounce: number; soft_bounce: number }>();
+    for (const metric of TS_METRICS) {
+      const ts = series[metric];
+      if (!ts) continue;
+      for (const b of ts.buckets) {
+        let row = byBucket.get(b.bucket);
+        if (!row) {
+          const d = new Date(b.bucket);
+          row = {
+            time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            ts: d.getTime(),
+            delivered: 0, deferred: 0, hard_bounce: 0, soft_bounce: 0,
+          };
+          byBucket.set(b.bucket, row);
+        }
+        row[metric] = b.series[selected] ?? b.series[key] ?? 0;
+      }
+    }
+    return Array.from(byBucket.values()).sort((a, b) => a.ts - b.ts);
+  }, [series, selected]);
+
+  const selectedThoughts = useMemo(() => {
+    if (!selected) return [];
+    const key = normalizeISP(selected);
+    return thoughts.filter(t => t.isp && normalizeISP(t.isp) === key).slice(0, 5);
+  }, [thoughts, selected]);
+
+  const selectedBeliefs = useMemo(() => {
+    if (!selected) return [];
+    const key = normalizeISP(selected);
+    return philosophies.filter(p => normalizeISP(p.isp) === key).slice(0, 3);
+  }, [philosophies, selected]);
+
+  const selectedCfg = selected ? configByISP.get(normalizeISP(selected)) : undefined;
+
+  return (
+    <div>
+      {/* 24h KPI strip */}
+      <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 20 }}>
+        {[
+          { label: 'Sent 24h', value: totals.attempted, color: '#818cf8', fmt: (v: number) => v.toLocaleString() },
+          { label: 'Delivered %', value: pctOf(totals.delivered, totals.attempted), color: '#10b981', fmt: (v: number) => `${v.toFixed(1)}%` },
+          { label: 'Deferred %', value: pctOf(totals.deferred, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(1)}%` },
+          { label: 'Hard %', value: pctOf(totals.hard, totals.attempted), color: '#ef4444', fmt: (v: number) => `${v.toFixed(2)}%` },
+          { label: 'Soft %', value: pctOf(totals.soft, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(2)}%` },
+          { label: 'Rep. Blocked', value: totals.repBlocked, color: '#e94560', fmt: (v: number) => v.toLocaleString() },
+          { label: 'Complaints', value: totals.complaint, color: '#e94560', fmt: (v: number) => v.toLocaleString() },
+        ].map(m => (
+          <div key={m.label} className="ig-card-hover" style={styles.kpiCard}>
+            <div style={{ color: m.color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>{m.fmt(m.value)}</div>
+            <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* All-ISP table */}
+      <div style={styles.opsTableWrap}>
+        <table style={styles.opsTable}>
+          <thead>
+            <tr>
+              {['ISP', '24h Trend', 'Sent', 'Delivered %', 'Deferral %', 'Hard %', 'Soft %', 'Complaints', 'Engine Posture', 'Suggestions'].map(h => (
+                <th key={h} style={styles.opsTh}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={10} style={{ ...styles.opsTd, textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.5)' }}>
+                  No delivery events in the last 24h.
+                </td>
+              </tr>
+            )}
+            {rows.map(r => {
+              const cfg = configByISP.get(normalizeISP(r.isp));
+              const note = engineNoteByISP.get(normalizeISP(r.isp));
+              const suggestions = buildSuggestions(r, cfg, note);
+              const post = posture(cfg);
+              const isSelected = selected === r.isp;
+              return (
+                <tr
+                  key={r.isp}
+                  onClick={() => onSelect(r.isp)}
+                  style={{
+                    ...styles.opsTr,
+                    background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>
+                    {ispLabel(r.isp)}
+                  </td>
+                  <td style={styles.opsTd}>
+                    <AreaChart width={110} height={28} data={sparkDataFor(r.isp)} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+                      <Area type="monotone" dataKey="v" stroke="#818cf8" fill="rgba(129,140,248,0.18)" strokeWidth={1.5} isAnimationActive={false} dot={false} />
+                    </AreaChart>
+                  </td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{r.attempted.toLocaleString()}</td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deliveredPct >= 92 ? '#10b981' : r.deliveredPct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                    {r.attempted > 0 ? `${r.deliveredPct.toFixed(1)}%` : '—'}
+                  </td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deferPct > 10 ? '#ef4444' : r.deferPct > 5 ? '#f59e0b' : 'rgba(180,210,240,0.8)' }}>
+                    {r.attempted > 0 ? `${r.deferPct.toFixed(1)}%` : '—'}
+                  </td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.hardPct > 2 ? '#ef4444' : r.hardPct > 1 ? '#f87171' : 'rgba(180,210,240,0.8)' }}>
+                    {r.attempted > 0 ? `${r.hardPct.toFixed(2)}%` : '—'}
+                  </td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.softPct > 5 ? '#f59e0b' : 'rgba(180,210,240,0.8)' }}>
+                    {r.attempted > 0 ? `${r.softPct.toFixed(2)}%` : '—'}
+                  </td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.complaint > 0 ? '#e94560' : 'rgba(180,210,240,0.5)' }}>
+                    {r.complaint.toLocaleString()}
+                  </td>
+                  <td style={styles.opsTd}>
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700,
+                      textTransform: 'uppercase', letterSpacing: 0.5,
+                      background: post.color + '22', color: post.color, whiteSpace: 'nowrap',
+                    }}>{post.label}</span>
+                    {cfg && (
+                      <div style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}>
+                        {Math.round(cfg.current_rate)}/{cfg.max_msg_rate} msg/hr · {cfg.ip_count} IPs
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ ...styles.opsTd, maxWidth: 320 }}>
+                    {suggestions.map((s, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: i < suggestions.length - 1 ? 4 : 0 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneColor[s.tone], flexShrink: 0, marginTop: 5 }} />
+                        <span style={{ color: toneColor[s.tone], fontSize: 12, lineHeight: 1.35 }}>{s.text}</span>
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Selected ISP — 24h trend + engine context */}
+      {selected && (
+        <div style={{ marginTop: 20 }}>
+          <h3 style={{ color: '#dbeafe', fontSize: 15, fontWeight: 700, margin: '0 0 12px' }}>
+            {ispLabel(selected)} — last 24h
+            {selectedCfg && (
+              <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, fontWeight: 500, marginLeft: 10 }}>
+                pool {selectedCfg.pool_name} · {selectedCfg.ip_count} IPs · rate {Math.round(selectedCfg.current_rate)}/{selectedCfg.max_msg_rate}
+              </span>
+            )}
+          </h3>
+          <div style={styles.detailGrid}>
+            <div className="ig-card-hover" style={{ ...styles.card, gridColumn: 'span 2' }}>
+              {detailData.length === 0 ? (
+                <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 13 }}>No timeseries data for this ISP in the last 24h.</p>
+              ) : (
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={detailData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <CartesianGrid stroke="rgba(148,163,184,0.08)" />
+                    <XAxis dataKey="time" stroke="#64748b" fontSize={11} tickLine={false} />
+                    <YAxis stroke="#64748b" fontSize={11} tickLine={false} width={50} />
+                    <Tooltip
+                      contentStyle={{ background: '#0b1220', border: '1px solid rgba(99,102,241,0.35)', borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: '#dbeafe' }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Line type="monotone" dataKey="delivered" name="Delivered" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="deferred" name="Deferred" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="soft_bounce" name="Soft Bounce" stroke="#fbbf24" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 3" />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            <div className="ig-card-hover" style={styles.card}>
+              <h4 style={styles.cardTitle}>
+                <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
+                Engine Signals
+              </h4>
+              {selectedThoughts.length === 0 ? (
+                <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>No recent engine signals for this ISP.</p>
+              ) : (
+                selectedThoughts.map(t => (
+                  <div key={t.id} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                    <FontAwesomeIcon
+                      icon={thoughtTypeIcon[t.type] || faCommentDots}
+                      style={{ color: severityColor[t.severity || 'info'] || '#00b0ff', flexShrink: 0, marginTop: 2, fontSize: 12 }}
+                    />
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ color: '#e0e6f0', fontSize: 12, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
+                      <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10 }}>
+                        {new Date(t.timestamp).toLocaleTimeString()} · {t.type}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+              {selectedBeliefs.length > 0 && (
+                <>
+                  <h4 style={{ ...styles.cardTitle, marginTop: 16 }}>
+                    <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
+                    Beliefs
+                  </h4>
+                  {selectedBeliefs.map(p => (
+                    <div key={p.id} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: sentimentColor[p.sentiment] || 'rgba(180,210,240,0.65)', flexShrink: 0, marginTop: 5 }} />
+                      <p style={{ color: 'rgba(180,210,240,0.8)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>
+                        {p.belief}
+                        <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10 }}> · {Math.round(p.confidence * 100)}% conf</span>
+                      </p>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
+//  Engine Internals — preserved views
+// ----------------------------------------------------------------------------
 
 function renderOverview(
   state: ConsciousnessState | null,
@@ -704,6 +1327,15 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 12,
   },
+  liveBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 14px',
+    background: 'rgba(16,185,129,0.08)',
+    borderRadius: 12,
+    border: '1px solid rgba(16,185,129,0.25)',
+  },
   moodBadge: {
     display: 'flex',
     alignItems: 'center',
@@ -735,26 +1367,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
   },
   healthLabel: {
-    color: 'rgba(180,210,240,0.45)',
-    fontSize: 10,
-    textTransform: 'uppercase' as const,
-  },
-  statBadge: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    padding: '6px 14px',
-    background: 'rgba(0,200,255,0.08)',
-    borderRadius: 12,
-    border: '1px solid rgba(0,200,255,0.08)',
-  },
-  statValue: {
-    color: '#e0e6f0',
-    fontSize: 18,
-    fontWeight: 700,
-    fontFamily: 'monospace',
-  },
-  statLabel: {
     color: 'rgba(180,210,240,0.45)',
     fontSize: 10,
     textTransform: 'uppercase' as const,
@@ -807,6 +1419,51 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'pulse 1.5s ease-in-out infinite',
   },
   content: {},
+  // ---- ISP operations styles ----
+  kpiCard: {
+    background: 'rgba(15,30,60,0.35)',
+    borderRadius: 10,
+    padding: '14px 12px',
+    textAlign: 'center' as const,
+    border: '1px solid rgba(99,102,241,0.12)',
+  },
+  opsTableWrap: {
+    background: 'rgba(15,30,60,0.35)',
+    border: '1px solid rgba(99,102,241,0.15)',
+    borderRadius: 12,
+    overflow: 'auto' as const,
+  },
+  opsTable: {
+    width: '100%',
+    borderCollapse: 'collapse' as const,
+    fontSize: 13,
+  },
+  opsTh: {
+    textAlign: 'left' as const,
+    padding: '10px 12px',
+    color: '#dbeafe',
+    fontSize: 11,
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+    borderBottom: '1px solid rgba(99,102,241,0.2)',
+    whiteSpace: 'nowrap' as const,
+    background: 'rgba(15,30,60,0.5)',
+  },
+  opsTr: {
+    borderBottom: '1px solid rgba(99,102,241,0.08)',
+    transition: 'background 0.15s',
+  },
+  opsTd: {
+    padding: '10px 12px',
+    verticalAlign: 'top' as const,
+  },
+  detailGrid: {
+    display: 'grid',
+    gridTemplateColumns: '2fr 1fr',
+    gap: 16,
+  },
+  // ---- shared cards ----
   overviewGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, 1fr)',
@@ -819,7 +1476,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
   },
   cardTitle: {
-    color: '#e0e6f0',
+    color: '#dbeafe',
     fontSize: 14,
     fontWeight: 700,
     margin: '0 0 16px',

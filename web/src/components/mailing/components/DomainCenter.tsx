@@ -17,6 +17,8 @@ import {
   faSearch,
   faFilter,
   faTimes,
+  faStethoscope,
+  faSync,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { SendingProfiles } from './SendingProfiles';
@@ -49,6 +51,53 @@ interface DomainOverviewItem {
   status: string;
   verified: boolean;
   profile?: string;
+}
+
+// --- DNS Health (live check via /domain-center/dns-health) ---
+
+interface DnsSPF {
+  status: string;
+  record?: string;
+  issues?: string[];
+}
+
+interface DnsDMARC {
+  status: string;
+  record?: string;
+  policy?: string;
+  issues?: string[];
+}
+
+interface DnsDKIM {
+  selectors_found: string[];
+  status: string;
+  note?: string;
+}
+
+interface DnsNS {
+  servers: string[];
+  provider?: string;
+}
+
+interface DnsBlocklistEntry {
+  list: string;
+  target: string;
+  status: 'clean' | 'listed' | 'unverifiable';
+  detail?: string;
+}
+
+interface DnsHealthData {
+  domain: string;
+  apex: string;
+  checked_at: string;
+  spf: DnsSPF;
+  dmarc: DnsDMARC;
+  dkim: DnsDKIM;
+  mx: string[];
+  ns: DnsNS;
+  a: string[];
+  blocklists: DnsBlocklistEntry[];
+  ip_source?: string;
 }
 
 const API_BASE = '/api/mailing';
@@ -188,6 +237,7 @@ export const DomainCenter: React.FC = () => {
             onNavigate={navigateTo}
             animateIn={animateIn}
             loading={loading}
+            orgId={orgId}
           />
         );
       case 'sending':
@@ -243,12 +293,14 @@ interface DashboardProps {
   onNavigate: (view: ViewMode) => void;
   animateIn: boolean;
   loading: boolean;
+  orgId: string;
 }
 
-const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNavigate, animateIn, loading }) => {
+const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNavigate, animateIn, loading, orgId }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'sending' | 'tracking' | 'image'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'pending' | 'failed' | 'not-provisioned'>('all');
+  const [dnsHealthDomain, setDnsHealthDomain] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -534,8 +586,450 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
                     Profile: {item.profile}
                   </div>
                 )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDnsHealthDomain(item.domain);
+                  }}
+                  title="Run live DNS & blocklist health check"
+                  style={{
+                    marginTop: 8,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: '#74b9ff',
+                    background: 'rgba(116,185,255,0.10)',
+                    border: '1px solid rgba(116,185,255,0.25)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <FontAwesomeIcon icon={faStethoscope} /> DNS Health
+                </button>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {dnsHealthDomain && (
+        <DnsHealthModal
+          domain={dnsHealthDomain}
+          orgId={orgId}
+          onClose={() => setDnsHealthDomain(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+// ============================================================================
+// DNS HEALTH MODAL — live SPF / DKIM / DMARC / NS / blocklist check
+// ============================================================================
+
+type ChipTone = 'ok' | 'warn' | 'bad' | 'muted';
+
+const chipToneColors: Record<ChipTone, { fg: string; bg: string; border: string }> = {
+  ok: { fg: '#00b894', bg: 'rgba(0,184,148,0.12)', border: 'rgba(0,184,148,0.3)' },
+  warn: { fg: '#fdcb6e', bg: 'rgba(253,203,110,0.12)', border: 'rgba(253,203,110,0.3)' },
+  bad: { fg: '#e94560', bg: 'rgba(233,69,96,0.12)', border: 'rgba(233,69,96,0.3)' },
+  muted: { fg: '#888', bg: 'rgba(255,255,255,0.05)', border: 'rgba(255,255,255,0.12)' },
+};
+
+const StatusChip: React.FC<{ tone: ChipTone; children: React.ReactNode }> = ({ tone, children }) => {
+  const c = chipToneColors[tone];
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 10px',
+        fontSize: 11,
+        fontWeight: 600,
+        color: c.fg,
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        borderRadius: 999,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {children}
+    </span>
+  );
+};
+
+const authStatusTone = (status: string): ChipTone => {
+  if (status === 'pass' || status === 'found') return 'ok';
+  if (status === 'warn' || status === 'unknown') return 'warn';
+  if (status === 'fail' || status === 'missing') return 'bad';
+  return 'muted';
+};
+
+const blocklistTone = (status: string): ChipTone => {
+  if (status === 'clean') return 'ok';
+  if (status === 'listed') return 'bad';
+  return 'warn'; // unverifiable
+};
+
+const RecordBlock: React.FC<{ label: string; record: string }> = ({ label, record }) => (
+  <details style={{ marginTop: 6 }}>
+    <summary style={{ cursor: 'pointer', fontSize: 11, color: '#74b9ff' }}>{label}</summary>
+    <code
+      style={{
+        display: 'block',
+        marginTop: 6,
+        padding: '8px 10px',
+        fontSize: 11,
+        lineHeight: 1.5,
+        color: '#e0e0e0',
+        background: '#0a0f1a',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 6,
+        wordBreak: 'break-all',
+        whiteSpace: 'pre-wrap',
+      }}
+    >
+      {record}
+    </code>
+  </details>
+);
+
+const IssueList: React.FC<{ issues?: string[] }> = ({ issues }) => {
+  if (!issues || issues.length === 0) return null;
+  return (
+    <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+      {issues.map((iss, i) => (
+        <li
+          key={i}
+          style={{
+            fontSize: 11,
+            lineHeight: 1.5,
+            color: iss.startsWith('CRITICAL') ? '#e94560' : '#fdcb6e',
+          }}
+        >
+          {iss}
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+const dnsSectionStyle: React.CSSProperties = {
+  padding: '12px 14px',
+  background: 'rgba(255,255,255,0.02)',
+  border: '1px solid rgba(255,255,255,0.06)',
+  borderRadius: 8,
+};
+
+const dnsSectionTitleStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  margin: 0,
+  fontSize: 12,
+  fontWeight: 700,
+  color: '#e0e0e0',
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+};
+
+interface DnsHealthModalProps {
+  domain: string;
+  orgId: string;
+  onClose: () => void;
+}
+
+const DnsHealthModal: React.FC<DnsHealthModalProps> = ({ domain, orgId, onClose }) => {
+  const [data, setData] = useState<DnsHealthData | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const runCheck = useCallback(async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      const res = await orgFetch(
+        `${API_BASE}/domain-center/dns-health?domain=${encodeURIComponent(domain)}`,
+        orgId,
+      );
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(body?.error || `DNS health check failed (HTTP ${res.status})`);
+      }
+      setData(body as DnsHealthData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DNS health check failed');
+    } finally {
+      setChecking(false);
+    }
+  }, [domain, orgId]);
+
+  useEffect(() => {
+    runCheck();
+  }, [runCheck]);
+
+  const listedCount = data?.blocklists?.filter(b => b.status === 'listed').length ?? 0;
+  const unverifiableCount = data?.blocklists?.filter(b => b.status === 'unverifiable').length ?? 0;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.65)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 'min(760px, 94vw)',
+          maxHeight: '88vh',
+          overflowY: 'auto',
+          background: '#0d1526',
+          border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 12,
+          padding: 20,
+          color: '#e0e0e0',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <FontAwesomeIcon icon={faStethoscope} style={{ color: '#74b9ff' }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                DNS Health — {domain}
+              </div>
+              {data && (
+                <div style={{ fontSize: 11, color: '#888' }}>
+                  Apex: {data.apex} · Checked {new Date(data.checked_at).toLocaleTimeString()}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={runCheck}
+              disabled={checking}
+              title="Re-run check (live DNS)"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '5px 12px',
+                fontSize: 11,
+                fontWeight: 600,
+                color: '#74b9ff',
+                background: 'rgba(116,185,255,0.10)',
+                border: '1px solid rgba(116,185,255,0.25)',
+                borderRadius: 6,
+                cursor: checking ? 'not-allowed' : 'pointer',
+                opacity: checking ? 0.5 : 1,
+              }}
+            >
+              <FontAwesomeIcon icon={faSync} spin={checking} /> Re-run
+            </button>
+            <button
+              onClick={onClose}
+              style={{
+                padding: '5px 10px',
+                fontSize: 12,
+                color: '#888',
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 6,
+                cursor: 'pointer',
+              }}
+            >
+              <FontAwesomeIcon icon={faTimes} />
+            </button>
+          </div>
+        </div>
+
+        {/* Loading */}
+        {checking && !data && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 0', color: '#888' }}>
+            <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 24 }} />
+            <div style={{ fontSize: 13 }}>Running live DNS lookups (SPF, DKIM, DMARC, NS, blocklists)...</div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div
+            style={{
+              padding: '12px 14px',
+              fontSize: 13,
+              color: '#e94560',
+              background: 'rgba(233,69,96,0.08)',
+              border: '1px solid rgba(233,69,96,0.25)',
+              borderRadius: 8,
+            }}
+          >
+            <FontAwesomeIcon icon={faExclamationTriangle} /> {error}
+          </div>
+        )}
+
+        {data && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, opacity: checking ? 0.5 : 1 }}>
+            {/* Summary chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <StatusChip tone={authStatusTone(data.spf.status)}>
+                SPF {data.spf.status === 'pass' ? '✓' : data.spf.status === 'warn' ? '!' : '✗'}
+              </StatusChip>
+              <StatusChip tone={authStatusTone(data.dkim.status)}>
+                DKIM {data.dkim.status === 'found' ? `✓ (${data.dkim.selectors_found.join(', ')})` : '?'}
+              </StatusChip>
+              <StatusChip tone={authStatusTone(data.dmarc.status)}>
+                DMARC {data.dmarc.policy ? `p=${data.dmarc.policy}` : data.dmarc.status === 'missing' ? '✗ missing' : data.dmarc.status}
+              </StatusChip>
+              <StatusChip tone={data.mx.length > 0 ? 'ok' : 'warn'}>MX: {data.mx.length}</StatusChip>
+              <StatusChip tone={data.ns.servers.length > 0 ? 'ok' : 'bad'}>
+                NS: {data.ns.provider || (data.ns.servers.length > 0 ? `${data.ns.servers.length} servers` : 'none found')}
+              </StatusChip>
+              <StatusChip tone={listedCount > 0 ? 'bad' : unverifiableCount > 0 ? 'warn' : 'ok'}>
+                Blocklists:{' '}
+                {listedCount > 0
+                  ? `${listedCount} LISTED`
+                  : unverifiableCount > 0
+                    ? `clean (${unverifiableCount} unverifiable)`
+                    : 'all clean'}
+              </StatusChip>
+            </div>
+
+            {/* SPF */}
+            <div style={dnsSectionStyle}>
+              <h4 style={dnsSectionTitleStyle}>
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#74b9ff' }} /> SPF
+                <StatusChip tone={authStatusTone(data.spf.status)}>{data.spf.status}</StatusChip>
+              </h4>
+              {data.spf.record && <RecordBlock label="Show record" record={data.spf.record} />}
+              <IssueList issues={data.spf.issues} />
+            </div>
+
+            {/* DKIM */}
+            <div style={dnsSectionStyle}>
+              <h4 style={dnsSectionTitleStyle}>
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#a29bfe' }} /> DKIM
+                <StatusChip tone={authStatusTone(data.dkim.status)}>{data.dkim.status}</StatusChip>
+              </h4>
+              {data.dkim.selectors_found.length > 0 ? (
+                <div style={{ marginTop: 6, fontSize: 12, color: '#e0e0e0' }}>
+                  Selectors found:{' '}
+                  {data.dkim.selectors_found.map(sel => (
+                    <code
+                      key={sel}
+                      style={{
+                        margin: '0 4px 0 0',
+                        padding: '2px 6px',
+                        fontSize: 11,
+                        background: '#0a0f1a',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: 4,
+                      }}
+                    >
+                      {sel}._domainkey
+                    </code>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: 12, color: '#fdcb6e' }}>{data.dkim.note}</div>
+              )}
+            </div>
+
+            {/* DMARC */}
+            <div style={dnsSectionStyle}>
+              <h4 style={dnsSectionTitleStyle}>
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#00b894' }} /> DMARC ({'_dmarc.'}{data.apex})
+                <StatusChip tone={authStatusTone(data.dmarc.status)}>
+                  {data.dmarc.status}{data.dmarc.policy ? ` · p=${data.dmarc.policy}` : ''}
+                </StatusChip>
+              </h4>
+              {data.dmarc.record && <RecordBlock label="Show record" record={data.dmarc.record} />}
+              <IssueList issues={data.dmarc.issues} />
+            </div>
+
+            {/* Infrastructure: NS / MX / A */}
+            <div style={dnsSectionStyle}>
+              <h4 style={dnsSectionTitleStyle}>
+                <FontAwesomeIcon icon={faServer} style={{ color: '#74b9ff' }} /> Infrastructure
+              </h4>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
+                <div>
+                  <span style={{ color: '#888' }}>NS host: </span>
+                  <span style={{ color: '#fff', fontWeight: 600 }}>
+                    {data.ns.provider || (data.ns.servers.length > 0 ? 'Unrecognized provider' : 'No NS records found')}
+                  </span>
+                </div>
+                {data.ns.servers.length > 0 && (
+                  <RecordBlock label={`Nameservers (${data.ns.servers.length})`} record={data.ns.servers.join('\n')} />
+                )}
+                {data.mx.length > 0 ? (
+                  <RecordBlock label={`MX records (${data.mx.length})`} record={data.mx.join('\n')} />
+                ) : (
+                  <div style={{ color: '#fdcb6e' }}>No MX records on {data.domain}</div>
+                )}
+                {data.a.length > 0 ? (
+                  <RecordBlock label={`A records (${data.a.length})`} record={data.a.join('\n')} />
+                ) : (
+                  <div style={{ color: '#888' }}>No A record on {data.domain}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Blocklists */}
+            <div style={dnsSectionStyle}>
+              <h4 style={dnsSectionTitleStyle}>
+                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e' }} /> Blocklists (Spamhaus DBL/ZEN, SpamCop, Barracuda)
+              </h4>
+              {data.ip_source && (
+                <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>
+                  IP source: {data.ip_source === 'db-pool' ? 'sending profile IP pool' : data.ip_source === 'a-record' ? 'domain A record (no pool found)' : data.ip_source}
+                </div>
+              )}
+              {data.blocklists.length === 0 ? (
+                <div style={{ marginTop: 6, fontSize: 12, color: '#888' }}>No blocklist targets resolved.</div>
+              ) : (
+                <table style={{ width: '100%', marginTop: 8, borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ color: '#888', textAlign: 'left' }}>
+                      <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>Target</th>
+                      <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>List</th>
+                      <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>Status</th>
+                      <th style={{ padding: '4px 0', fontWeight: 600 }}>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.blocklists.map((b, i) => (
+                      <tr key={`${b.target}-${b.list}-${i}`} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <td style={{ padding: '5px 8px 5px 0', color: '#e0e0e0', fontFamily: 'monospace' }}>{b.target}</td>
+                        <td style={{ padding: '5px 8px 5px 0', color: '#888' }}>{b.list}</td>
+                        <td style={{ padding: '5px 8px 5px 0' }}>
+                          <StatusChip tone={blocklistTone(b.status)}>{b.status}</StatusChip>
+                        </td>
+                        <td style={{ padding: '5px 0', color: '#888', lineHeight: 1.4 }}>{b.detail || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {unverifiableCount > 0 && (
+                <div style={{ marginTop: 8, fontSize: 11, color: '#fdcb6e' }}>
+                  "Unverifiable" usually means Spamhaus rejected the query because it came from a
+                  public/open resolver — it does NOT mean listed. Verify via a dedicated resolver if needed.
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

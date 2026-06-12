@@ -1,51 +1,156 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faBoxes,
-  faCheck,
-  faClock,
+  faBolt,
   faExclamationTriangle,
-  faRotate,
+  faGaugeHigh,
+  faHeartPulse,
+  faLayerGroup,
   faSkullCrossbones,
   faSpinner,
   faSyncAlt,
+  faWater,
 } from '@fortawesome/free-solid-svg-icons';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 
-// OutboxDashboard — live observability for the durable injection outbox.
+// OutboxDashboard — the live sending-engine board.
 //
-// Mirrors the shape of GET /api/outbox/summary and /api/outbox/dead-letter
-// (defined in upside-down/internal/api/outbox_admin.go). Polls every 5s so
-// operators can watch a live wave dispatch. Zero new infra — the outbox
-// table is its own source of truth.
-//
-// Page is intentionally compact: a strip of state-depth cards, a stuck-age
-// bar with a red threshold, a rolling-5-minute throughput strip, and a
-// dead-letter table at the bottom. No charts, no graphs, no filters that
-// the operator does not immediately need during an incident.
+// Polls GET /api/mailing/outbox/engine-status (internal/api/outbox_engine_status.go)
+// every 10s. One glance answers: are we SENDING / IDLE / BACKLOGGED / in a
+// deferral STORM, how close to 24h-peak capacity we are, what the wave manager
+// is about to do, and which ISPs are deferring above their own baseline.
+// Sections render independently — a failed backend section shows an inline
+// error chip, never a blank page. The dead-letter table from the v1 page is
+// preserved at the bottom (still /api/outbox/dead-letter).
 
-const PAGE_VERSION = '1.0';
-const POLL_INTERVAL_MS = 5000;
-const STUCK_SUBMITTING_RED_THRESHOLD_SEC = 600;
-const STUCK_SUBMITTING_AMBER_THRESHOLD_SEC = 300;
+const PAGE_VERSION = '2.0';
+const POLL_INTERVAL_MS = 10_000;
+const DEAD_LETTER_POLL_EVERY_N_TICKS = 3; // every ~30s
+const BACKLOG_QUEUED_THRESHOLD = 1_000;
+const BACKLOG_AGE_THRESHOLD_SEC = 15 * 60;
 
-interface OutboxSummary {
+// ---------------------------------------------------------------------------
+// API types (mirror outbox_engine_status.go)
+// ---------------------------------------------------------------------------
+
+interface ISPQueueDepth {
+  isp: string;
+  queued: number;
+}
+
+interface QueueSection {
+  ok: boolean;
+  error?: string;
+  queued: number;
+  processing: number;
+  sent_24h: number;
+  failed_24h: number;
+  dead_letter_24h: number;
+  oldest_queued_seconds: number;
+  by_isp: ISPQueueDepth[];
+}
+
+interface UpcomingWave {
+  wave_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  wave_number: number;
+  scheduled_at: string;
+  planned_recipients: number;
+}
+
+interface WaveSection {
+  ok: boolean;
+  error?: string;
+  planned_due: number;
+  planned_future: number;
+  enqueuing: number;
+  sending: number;
+  completed_24h: number;
+  failed_24h: number;
+  cancelled_24h: number;
+  upcoming: UpcomingWave[];
+}
+
+interface MinutePoint {
+  minute: string;
+  sent: number;
+  deferred: number;
+}
+
+interface HourPoint {
+  hour: string;
+  sent: number;
+}
+
+interface ThroughputSection {
+  ok: boolean;
+  error?: string;
+  per_minute: MinutePoint[];
+  per_hour: HourPoint[];
+  current_rate_per_min: number;
+  peak_rate_per_min_24h: number;
+  utilization_pct: number;
+}
+
+interface ISPDeferral {
+  isp: string;
+  sent_60m: number;
+  deferred_60m: number;
+  recent_rate: number;
+  baseline_rate: number;
+  multiplier: number;
+  sent_24h: number;
+  storm: boolean;
+}
+
+interface StormSection {
+  ok: boolean;
+  error?: string;
+  active: boolean;
+  isps: ISPDeferral[];
+}
+
+interface WorkerBeat {
+  name: string;
+  last_beat_at: string;
+  seconds_since_beat: number;
+  expected_interval_seconds: number;
+  stalled: boolean;
+  last_status: string;
+  last_error?: string;
+}
+
+interface WorkerSection {
+  ok: boolean;
+  error?: string;
+  workers: WorkerBeat[];
+}
+
+interface EngineStatusResponse {
   generated_at: string;
   api_version: string;
-  depth_by_status: Record<string, number>;
-  oldest_queued_seconds: number;
-  oldest_sending_seconds: number;
-  oldest_submitting_seconds: number;
-  idempotency_keyed_rows: number;
-  idempotency_null_rows: number;
-  last_5min_inserted: number;
-  last_5min_sent: number;
-  last_5min_failed: number;
+  cache_age_seconds: number;
+  queue: QueueSection;
+  waves: WaveSection;
+  throughput: ThroughputSection;
+  storm: StormSection;
+  workers: WorkerSection;
 }
 
 interface DeadLetterRow {
   id: string;
-  idempotency_key?: string;
   campaign_id: string;
   subscriber_id: string;
   email: string;
@@ -53,313 +158,744 @@ interface DeadLetterRow {
   attempts: number;
   last_error?: string;
   last_attempt_at: string;
-  created_at: string;
 }
 
 interface DeadLetterResponse {
-  api_version: string;
   rows: DeadLetterRow[];
   count: number;
 }
 
-const fmt = (n: number | null | undefined): string => {
-  if (n == null || Number.isNaN(n)) return '0';
-  return n.toLocaleString();
-};
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
 
-const fmtSeconds = (s: number): string => {
+const fmt = (n: number | null | undefined): string =>
+  n == null || Number.isNaN(n) ? '0' : n.toLocaleString();
+
+const fmtRate = (n: number): string =>
+  n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1);
+
+const fmtPct = (frac: number): string => `${(frac * 100).toFixed(1)}%`;
+
+const fmtDuration = (s: number): string => {
   if (s <= 0) return '—';
-  if (s < 60) return `${s}s`;
+  if (s < 60) return `${Math.round(s)}s`;
   const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m < 60) return `${m}m ${r}s`;
+  if (m < 60) return `${m}m ${Math.round(s % 60)}s`;
   const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
 };
 
-const stateColor = (state: string): string => {
-  switch (state) {
-    case 'accepted':
-    case 'sent':
-      return '#22c55e';
-    case 'submitting':
-    case 'sending':
-    case 'claimed':
-    case 'processing':
-      return '#60a5fa';
-    case 'queued':
-    case 'pending':
-      return '#94a3b8';
-    case 'failed_retryable':
-    case 'failed':
-      return '#f59e0b';
-    case 'failed_permanent':
-    case 'dead_letter':
-    case 'dead_letter_strict':
-      return '#ef4444';
-    case 'skipped':
-      return '#64748b';
-    default:
-      return '#9ca3af';
+const fmtClock = (iso: string): string =>
+  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+const titleCase = (s: string): string =>
+  s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
+
+// ---------------------------------------------------------------------------
+// Engine state derivation
+// ---------------------------------------------------------------------------
+
+type EngineState = 'STORM' | 'BACKLOGGED' | 'SENDING' | 'IDLE';
+
+interface EngineSummary {
+  state: EngineState;
+  color: string;
+  sentence: string;
+}
+
+const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
+  const rate = d.throughput.ok ? d.throughput.current_rate_per_min : 0;
+  const util = d.throughput.ok ? d.throughput.utilization_pct : 0;
+  const queued = d.queue.ok ? d.queue.queued : 0;
+  const oldest = d.queue.ok ? d.queue.oldest_queued_seconds : 0;
+  const storms = d.storm.ok ? d.storm.isps.filter((i) => i.storm) : [];
+
+  const ratePhrase = `Sending ${fmtRate(rate)}/min, ${Math.round(util)}% of 24h peak.`;
+
+  if (d.storm.ok && d.storm.active && storms.length > 0) {
+    const worst = storms[0];
+    return {
+      state: 'STORM',
+      color: '#ef4444',
+      sentence: `${ratePhrase} ${titleCase(worst.isp)} deferring at ${fmtPct(worst.recent_rate)} (${worst.multiplier.toFixed(1)}× baseline) — storm governor likely pacing.${
+        storms.length > 1 ? ` ${storms.length - 1} more ISP${storms.length > 2 ? 's' : ''} storming.` : ''
+      }`,
+    };
   }
+  if (queued > BACKLOG_QUEUED_THRESHOLD && oldest > BACKLOG_AGE_THRESHOLD_SEC) {
+    return {
+      state: 'BACKLOGGED',
+      color: '#f59e0b',
+      sentence: `${fmt(queued)} queued with oldest waiting ${fmtDuration(oldest)} — workers are behind. ${ratePhrase}`,
+    };
+  }
+  if (rate >= 1 || (d.queue.ok && d.queue.processing > 0)) {
+    const eta = rate > 0 && queued > 0 ? ` Backlog drain ETA ${fmtDuration((queued / rate) * 60)}.` : '';
+    return {
+      state: 'SENDING',
+      color: '#22c55e',
+      sentence: `${ratePhrase} ${fmt(queued)} queued.${eta} Deferrals normal across ISPs.`,
+    };
+  }
+  const dueBit = d.waves.ok
+    ? ` ${fmt(d.waves.planned_due)} wave${d.waves.planned_due === 1 ? '' : 's'} due, ${fmt(d.waves.planned_future)} scheduled ahead.`
+    : '';
+  return {
+    state: 'IDLE',
+    color: '#94a3b8',
+    sentence: `No sends in the last 5 minutes. ${fmt(queued)} queued.${dueBit}`,
+  };
 };
 
-const stuckSubmittingColor = (ageSec: number): string => {
-  if (ageSec >= STUCK_SUBMITTING_RED_THRESHOLD_SEC) return '#ef4444';
-  if (ageSec >= STUCK_SUBMITTING_AMBER_THRESHOLD_SEC) return '#f59e0b';
-  return '#22c55e';
+// ---------------------------------------------------------------------------
+// Shared styles
+// ---------------------------------------------------------------------------
+
+const PANEL_BG = 'rgba(15,30,60,0.35)';
+const PANEL_BORDER = '1px solid rgba(99,102,241,0.18)';
+const HEADING_COLOR = '#dbeafe';
+
+const panelStyle: React.CSSProperties = {
+  background: PANEL_BG,
+  border: PANEL_BORDER,
+  borderRadius: 10,
+  padding: '14px 16px',
 };
+
+const panelTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 13,
+  fontWeight: 600,
+  color: HEADING_COLOR,
+  textTransform: 'uppercase',
+  letterSpacing: 0.6,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left',
+  padding: '7px 10px',
+  fontWeight: 600,
+  fontSize: 11,
+  textTransform: 'uppercase',
+  letterSpacing: 0.4,
+  color: '#94a3b8',
+  borderBottom: '1px solid rgba(99,102,241,0.15)',
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  fontSize: 12,
+  color: '#e5e7eb',
+  borderTop: '1px solid rgba(99,102,241,0.08)',
+};
+
+const numTd: React.CSSProperties = { ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+const numTh: React.CSSProperties = { ...thStyle, textAlign: 'right' };
+
+const SectionError: React.FC<{ label: string; error?: string }> = ({ label, error }) => (
+  <div
+    style={{
+      fontSize: 12,
+      color: '#fca5a5',
+      background: 'rgba(239,68,68,0.08)',
+      border: '1px solid rgba(239,68,68,0.25)',
+      borderRadius: 6,
+      padding: '8px 10px',
+    }}
+  >
+    <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
+    {label} unavailable{error ? `: ${error}` : ''}
+  </div>
+);
+
+const Stat: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
+  <div style={{ minWidth: 90 }}>
+    <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 20, fontWeight: 700, color: color ?? '#e5e7eb', fontVariantNumeric: 'tabular-nums' }}>
+      {value}
+    </div>
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export const OutboxDashboard: React.FC = () => {
-  const [summary, setSummary] = useState<OutboxSummary | null>(null);
+  const [data, setData] = useState<EngineStatusResponse | null>(null);
   const [deadLetter, setDeadLetter] = useState<DeadLetterRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastFetchAt, setLastFetchAt] = useState<Date | null>(null);
+  const [, setClockTick] = useState<number>(0);
+  const tickCount = useRef<number>(0);
 
-  const fetchAll = useCallback(async () => {
+  const fetchStatus = useCallback(async () => {
     try {
-      const [sumRes, dlRes] = await Promise.all([
-        apiFetch('/api/outbox/summary', { credentials: 'include' }),
-        apiFetch('/api/outbox/dead-letter?limit=200', { credentials: 'include' }),
-      ]);
-      if (!sumRes.ok) throw new Error(`summary HTTP ${sumRes.status}`);
-      if (!dlRes.ok) throw new Error(`dead-letter HTTP ${dlRes.status}`);
-      const sumJson = (await sumRes.json()) as OutboxSummary;
-      const dlJson = (await dlRes.json()) as DeadLetterResponse;
-      setSummary(sumJson);
-      setDeadLetter(dlJson.rows || []);
-      setError(null);
+      const res = await apiFetch('/api/mailing/outbox/engine-status', { credentials: 'include' });
+      if (!res.ok) throw new Error(`engine-status HTTP ${res.status}`);
+      const json = (await res.json()) as EngineStatusResponse;
+      setData(json);
+      setFetchError(null);
       setLastFetchAt(new Date());
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      setFetchError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+
+    // Dead-letter is heavier and changes slowly — refresh every 3rd tick.
+    if (tickCount.current % DEAD_LETTER_POLL_EVERY_N_TICKS === 0) {
+      try {
+        const res = await apiFetch('/api/outbox/dead-letter?limit=50', { credentials: 'include' });
+        if (res.ok) {
+          const json = (await res.json()) as DeadLetterResponse;
+          setDeadLetter(json.rows || []);
+        }
+      } catch {
+        // dead-letter is a bonus panel; never let it surface as a page error
+      }
+    }
+    tickCount.current += 1;
   }, []);
 
   useEffect(() => {
-    fetchAll();
-    const timer = setInterval(fetchAll, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [fetchAll]);
+    fetchStatus();
+    const poll = setInterval(fetchStatus, POLL_INTERVAL_MS);
+    const clock = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => {
+      clearInterval(poll);
+      clearInterval(clock);
+    };
+  }, [fetchStatus]);
 
-  const stateCards = useMemo(() => {
-    if (!summary) return [];
-    const preferredOrder = [
-      'queued',
-      'submitting',
-      'sending',
-      'accepted',
-      'sent',
-      'failed_retryable',
-      'failed',
-      'failed_permanent',
-      'dead_letter',
-      'dead_letter_strict',
-      'skipped',
-    ];
-    const known = new Set(preferredOrder);
-    const extras = Object.keys(summary.depth_by_status).filter((k) => !known.has(k));
-    const ordered = [...preferredOrder, ...extras].filter((k) => k in summary.depth_by_status);
-    return ordered.map((state) => ({
-      state,
-      count: summary.depth_by_status[state] || 0,
-      color: stateColor(state),
+  const engine = useMemo(() => (data ? deriveEngine(data) : null), [data]);
+
+  const chartData = useMemo(() => {
+    if (!data?.throughput.ok) return [];
+    return data.throughput.per_minute.map((p) => ({
+      label: fmtClock(p.minute),
+      sent: p.sent,
+      deferred: p.deferred,
     }));
-  }, [summary]);
+  }, [data]);
 
-  const stuckAge = summary?.oldest_submitting_seconds ?? 0;
-  const idempotencyCoverage = summary
-    ? summary.idempotency_keyed_rows + summary.idempotency_null_rows > 0
-      ? (summary.idempotency_keyed_rows /
-          (summary.idempotency_keyed_rows + summary.idempotency_null_rows)) *
-        100
-      : 0
-    : 0;
+  // Per-ISP merged view: storm rows (deferral + sent share) joined with
+  // queued depth; queue-only ISPs appended after.
+  const ispRows = useMemo(() => {
+    if (!data) return [];
+    const queuedByISP = new Map<string, number>();
+    if (data.queue.ok) data.queue.by_isp.forEach((q) => queuedByISP.set(q.isp, q.queued));
+    const totalSent24h = data.storm.ok ? data.storm.isps.reduce((acc, i) => acc + i.sent_24h, 0) : 0;
+    const rows = (data.storm.ok ? data.storm.isps : []).map((i) => ({
+      isp: i.isp,
+      queued: queuedByISP.get(i.isp) ?? 0,
+      sent24h: i.sent_24h,
+      sentShare: totalSent24h > 0 ? i.sent_24h / totalSent24h : 0,
+      recentRate: i.recent_rate,
+      baselineRate: i.baseline_rate,
+      multiplier: i.multiplier,
+      storm: i.storm,
+    }));
+    const seen = new Set(rows.map((r) => r.isp));
+    queuedByISP.forEach((queued, isp) => {
+      if (!seen.has(isp)) {
+        rows.push({ isp, queued, sent24h: 0, sentShare: 0, recentRate: 0, baselineRate: 0, multiplier: 0, storm: false });
+      }
+    });
+    return rows;
+  }, [data]);
+
+  const secondsSinceFetch = lastFetchAt ? Math.max(0, Math.round((Date.now() - lastFetchAt.getTime()) / 1000)) : null;
+
+  const drainEtaSec =
+    data?.queue.ok && data?.throughput.ok && data.throughput.current_rate_per_min > 0
+      ? (data.queue.queued / data.throughput.current_rate_per_min) * 60
+      : null;
 
   return (
-    <div style={{ padding: '24px', color: '#e5e7eb', minHeight: '100vh' }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 18,
-        }}
-      >
+    <div style={{ padding: 24, color: '#e5e7eb', minHeight: '100vh' }}>
+      <style>{`@keyframes outboxPulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }`}</style>
+
+      {/* ---- Header ---- */}
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faBoxes} style={{ color: '#60a5fa' }} />
-            Durable Injection Outbox
+          <h1 style={{ margin: 0, fontSize: 22, color: HEADING_COLOR, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FontAwesomeIcon icon={faBolt} style={{ color: '#818cf8' }} />
+            Sending Engine
           </h1>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-            Live view of <code>mailing_campaign_queue</code> — polls every 5s.
-            {' '}
-            Page v{PAGE_VERSION}
-            {summary && <> · API v{summary.api_version}</>}
-            {lastFetchAt && <> · Last fetch {lastFetchAt.toLocaleTimeString()}</>}
+            Live wave manager + outbox observability · polls every {POLL_INTERVAL_MS / 1000}s · Page v{PAGE_VERSION}
+            {data && <> · API v{data.api_version}</>}
           </div>
         </div>
-        <button
-          onClick={fetchAll}
-          disabled={loading}
-          style={{
-            background: '#1e293b',
-            color: '#e5e7eb',
-            border: '1px solid #334155',
-            padding: '6px 14px',
-            borderRadius: 6,
-            cursor: loading ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 13,
-          }}
-        >
-          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: '#94a3b8' }}>
+            <span
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: '50%',
+                background: fetchError ? '#ef4444' : '#22c55e',
+                animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
+                display: 'inline-block',
+              }}
+            />
+            <span style={{ color: fetchError ? '#fca5a5' : '#86efac', fontWeight: 600, letterSpacing: 1 }}>
+              {fetchError ? 'STALE' : 'LIVE'}
+            </span>
+            {secondsSinceFetch != null && <span>updated {secondsSinceFetch}s ago</span>}
+          </span>
+          <button
+            onClick={fetchStatus}
+            disabled={loading}
+            style={{
+              background: 'rgba(99,102,241,0.15)',
+              color: '#c7d2fe',
+              border: '1px solid rgba(99,102,241,0.4)',
+              padding: '6px 14px',
+              borderRadius: 6,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 13,
+            }}
+          >
+            <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} />
+            Refresh
+          </button>
+        </div>
       </header>
 
-      {error && (
+      {fetchError && (
         <div
           style={{
-            background: '#3f1d1d',
+            background: 'rgba(239,68,68,0.1)',
+            border: '1px solid rgba(239,68,68,0.35)',
             color: '#fecaca',
             padding: '10px 14px',
-            borderRadius: 6,
+            borderRadius: 8,
             marginBottom: 14,
             fontSize: 13,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
           }}
         >
-          <FontAwesomeIcon icon={faExclamationTriangle} />
-          Error loading outbox data: {error}
+          <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
+          Engine status fetch failing: {fetchError} — showing last known data.
         </div>
       )}
 
-      {loading && !summary ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>
-          <FontAwesomeIcon icon={faSpinner} spin /> Loading outbox state…
+      {loading && !data ? (
+        <div style={{ textAlign: 'center', padding: 80, color: '#94a3b8' }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading engine state…
         </div>
-      ) : summary ? (
+      ) : data && engine ? (
         <>
+          {/* ---- Status hero ---- */}
+          <section
+            style={{
+              ...panelStyle,
+              marginBottom: 14,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 20,
+              flexWrap: 'wrap',
+              borderLeft: `4px solid ${engine.color}`,
+            }}
+          >
+            <span
+              style={{
+                background: `${engine.color}22`,
+                border: `1px solid ${engine.color}66`,
+                color: engine.color,
+                fontWeight: 800,
+                fontSize: 16,
+                letterSpacing: 2,
+                padding: '8px 18px',
+                borderRadius: 999,
+              }}
+            >
+              {engine.state}
+            </span>
+            <div style={{ flex: 1, minWidth: 280, fontSize: 14, color: '#e5e7eb', lineHeight: 1.5 }}>
+              {engine.sentence}
+            </div>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+              <Stat
+                label="Rate /min"
+                value={data.throughput.ok ? fmtRate(data.throughput.current_rate_per_min) : '—'}
+                color="#86efac"
+              />
+              <Stat label="Queued" value={data.queue.ok ? fmt(data.queue.queued) : '—'} color="#c7d2fe" />
+              <Stat
+                label="Oldest queued"
+                value={data.queue.ok ? fmtDuration(data.queue.oldest_queued_seconds) : '—'}
+                color={
+                  data.queue.ok && data.queue.oldest_queued_seconds > BACKLOG_AGE_THRESHOLD_SEC ? '#f59e0b' : '#e5e7eb'
+                }
+              />
+              <Stat
+                label="Sent 24h"
+                value={data.queue.ok ? fmt(data.queue.sent_24h) : '—'}
+              />
+            </div>
+          </section>
+
+          {/* ---- Capacity gauge + wave manager ---- */}
           <section
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-              gap: 10,
-              marginBottom: 18,
+              gridTemplateColumns: 'repeat(auto-fit, minmax(330px, 1fr))',
+              gap: 14,
+              marginBottom: 14,
             }}
           >
-            {stateCards.map((card) => (
-              <div
-                key={card.state}
-                style={{
-                  background: '#0f172a',
-                  border: `1px solid ${card.color}33`,
-                  borderLeft: `4px solid ${card.color}`,
-                  borderRadius: 6,
-                  padding: '12px 14px',
-                }}
-              >
-                <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                  {card.state}
+            {/* Capacity */}
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faGaugeHigh} style={{ color: '#818cf8' }} />
+                Capacity
+              </h2>
+              {!data.throughput.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="Throughput" error={data.throughput.error} />
                 </div>
-                <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4, color: card.color }}>
-                  {fmt(card.count)}
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 12 }}>
+                    <span style={{ fontSize: 30, fontWeight: 800, color: '#c7d2fe', fontVariantNumeric: 'tabular-nums' }}>
+                      {fmtRate(data.throughput.current_rate_per_min)}
+                    </span>
+                    <span style={{ fontSize: 13, color: '#94a3b8' }}>
+                      / {fmtRate(data.throughput.peak_rate_per_min_24h)} per min (24h peak)
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 10,
+                      height: 12,
+                      borderRadius: 999,
+                      background: 'rgba(148,163,184,0.15)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, data.throughput.utilization_pct))}%`,
+                        height: '100%',
+                        borderRadius: 999,
+                        background:
+                          data.throughput.utilization_pct > 90
+                            ? 'linear-gradient(90deg,#f59e0b,#ef4444)'
+                            : 'linear-gradient(90deg,#6366f1,#22c55e)',
+                        transition: 'width 600ms ease',
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
+                    <span>{Math.round(data.throughput.utilization_pct)}% of 24h peak</span>
+                    <span>
+                      Backlog drain ETA:{' '}
+                      <span style={{ color: '#e5e7eb', fontWeight: 600 }}>
+                        {drainEtaSec != null ? fmtDuration(drainEtaSec) : data.queue.ok && data.queue.queued > 0 ? '∞ (idle)' : '—'}
+                      </span>
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 24, marginTop: 14, flexWrap: 'wrap' }}>
+                    <Stat label="Processing" value={data.queue.ok ? fmt(data.queue.processing) : '—'} color="#93c5fd" />
+                    <Stat
+                      label="Failed 24h"
+                      value={data.queue.ok ? fmt(data.queue.failed_24h) : '—'}
+                      color={data.queue.ok && data.queue.failed_24h > 0 ? '#f59e0b' : '#e5e7eb'}
+                    />
+                    <Stat
+                      label="Dead-letter 24h"
+                      value={data.queue.ok ? fmt(data.queue.dead_letter_24h) : '—'}
+                      color={data.queue.ok && data.queue.dead_letter_24h > 0 ? '#ef4444' : '#e5e7eb'}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Wave manager */}
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
+                Wave Manager
+              </h2>
+              {!data.waves.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="Waves" error={data.waves.error} />
                 </div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
+                    <Stat
+                      label="Due now"
+                      value={fmt(data.waves.planned_due)}
+                      color={data.waves.planned_due > 0 ? '#f59e0b' : '#e5e7eb'}
+                    />
+                    <Stat label="Scheduled" value={fmt(data.waves.planned_future)} color="#c7d2fe" />
+                    <Stat label="Enqueuing" value={fmt(data.waves.enqueuing)} color="#93c5fd" />
+                    <Stat label="Sending" value={fmt(data.waves.sending)} color="#86efac" />
+                    <Stat label="Done 24h" value={fmt(data.waves.completed_24h)} />
+                    <Stat
+                      label="Failed 24h"
+                      value={fmt(data.waves.failed_24h)}
+                      color={data.waves.failed_24h > 0 ? '#ef4444' : '#e5e7eb'}
+                    />
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                      Next 5 waves
+                    </div>
+                    {data.waves.upcoming.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No planned waves.</div>
+                    ) : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>Campaign</th>
+                            <th style={numTh}>Wave</th>
+                            <th style={thStyle}>Scheduled</th>
+                            <th style={numTh}>Recipients</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.waves.upcoming.map((u) => {
+                            const due = new Date(u.scheduled_at).getTime() <= Date.now();
+                            return (
+                              <tr key={u.wave_id}>
+                                <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.campaign_name}>
+                                  {u.campaign_name || u.campaign_id.slice(0, 8)}
+                                </td>
+                                <td style={numTd}>#{u.wave_number}</td>
+                                <td style={{ ...tdStyle, color: due ? '#f59e0b' : '#e5e7eb' }}>
+                                  {new Date(u.scheduled_at).toLocaleString([], {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                  {due ? ' · due' : ''}
+                                </td>
+                                <td style={numTd}>{fmt(u.planned_recipients)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+
+          {/* ---- Throughput chart ---- */}
+          <section style={{ ...panelStyle, marginBottom: 14 }}>
+            <h2 style={panelTitleStyle}>
+              <FontAwesomeIcon icon={faWater} style={{ color: '#818cf8' }} />
+              Throughput — last 60 minutes
+            </h2>
+            {!data.throughput.ok ? (
+              <div style={{ marginTop: 10 }}>
+                <SectionError label="Throughput" error={data.throughput.error} />
               </div>
-            ))}
+            ) : chartData.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#64748b', padding: '24px 0', textAlign: 'center' }}>
+                No send events in the last hour.
+              </div>
+            ) : (
+              <div style={{ width: '100%', height: 240, marginTop: 8 }}>
+                <ResponsiveContainer>
+                  <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="sentFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.55} />
+                        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} interval="preserveStartEnd" minTickGap={40} />
+                    <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} width={52} />
+                    <Tooltip
+                      contentStyle={{
+                        background: '#0f172a',
+                        border: '1px solid rgba(99,102,241,0.4)',
+                        borderRadius: 8,
+                        color: '#e5e7eb',
+                        fontSize: 12,
+                      }}
+                      labelStyle={{ color: '#dbeafe' }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
+                    <Area type="monotone" dataKey="sent" name="Sent /min" stroke="#818cf8" strokeWidth={2} fill="url(#sentFill)" />
+                    <Line type="monotone" dataKey="deferred" name="Deferred /min" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </section>
 
+          {/* ---- Per-ISP table + workers ---- */}
           <section
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: 10,
-              marginBottom: 18,
+              gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)',
+              gap: 14,
+              marginBottom: 14,
             }}
           >
-            <Card
-              title="Oldest submitting (stuck)"
-              icon={faClock}
-              iconColor={stuckSubmittingColor(stuckAge)}
-              value={fmtSeconds(stuckAge)}
-              note={
-                stuckAge >= STUCK_SUBMITTING_RED_THRESHOLD_SEC
-                  ? 'Reconciler should be recovering these; check logs.'
-                  : stuckAge >= STUCK_SUBMITTING_AMBER_THRESHOLD_SEC
-                  ? 'Approaching grace window.'
-                  : 'Healthy.'
-              }
-            />
-            <Card
-              title="Oldest queued"
-              icon={faClock}
-              iconColor="#94a3b8"
-              value={fmtSeconds(summary.oldest_queued_seconds)}
-              note="Time since earliest waiting row was scheduled."
-            />
-            <Card
-              title="Idempotency coverage"
-              icon={faCheck}
-              iconColor={idempotencyCoverage > 90 ? '#22c55e' : idempotencyCoverage > 50 ? '#f59e0b' : '#ef4444'}
-              value={`${idempotencyCoverage.toFixed(1)}%`}
-              note={`${fmt(summary.idempotency_keyed_rows)} keyed · ${fmt(summary.idempotency_null_rows)} legacy`}
-            />
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faWater} style={{ color: '#818cf8' }} />
+                Per-ISP — queue, share, deferral
+                {data.storm.ok && data.storm.active && (
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      background: 'rgba(239,68,68,0.15)',
+                      border: '1px solid rgba(239,68,68,0.45)',
+                      color: '#fca5a5',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: 1,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                    }}
+                  >
+                    STORM ACTIVE
+                  </span>
+                )}
+              </h2>
+              {!data.storm.ok && !data.queue.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="ISP breakdown" error={data.storm.error || data.queue.error} />
+                </div>
+              ) : ispRows.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#64748b', padding: '16px 0' }}>No ISP activity in the window.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>ISP</th>
+                      <th style={numTh}>Queued</th>
+                      <th style={numTh}>Sent 24h</th>
+                      <th style={numTh}>Share</th>
+                      <th style={numTh}>Deferral 60m</th>
+                      <th style={numTh}>Baseline</th>
+                      <th style={numTh}>× Base</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ispRows.map((r) => (
+                      <tr key={r.isp} style={r.storm ? { background: 'rgba(239,68,68,0.10)' } : undefined}>
+                        <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? '#fca5a5' : '#dbeafe' }}>
+                          {titleCase(r.isp)}
+                          {r.storm && (
+                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Deferral storm" />
+                          )}
+                        </td>
+                        <td style={numTd}>{fmt(r.queued)}</td>
+                        <td style={numTd}>{fmt(r.sent24h)}</td>
+                        <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
+                        <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : '#86efac', fontWeight: 600 }}>
+                          {fmtPct(r.recentRate)}
+                        </td>
+                        <td style={numTd}>{fmtPct(r.baselineRate)}</td>
+                        <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : '#94a3b8' }}>
+                          {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Workers */}
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
+                Worker heartbeats
+              </h2>
+              {!data.workers.ok ? (
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
+                  Heartbeat table not available in this environment.
+                </div>
+              ) : data.workers.workers.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>No heartbeats recorded yet.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                  {data.workers.workers.map((wkr) => {
+                    const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : '#22c55e';
+                    return (
+                      <div
+                        key={wkr.name}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          padding: '7px 10px',
+                          borderRadius: 6,
+                          background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'rgba(99,102,241,0.06)',
+                          border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'rgba(99,102,241,0.15)'}`,
+                        }}
+                        title={wkr.last_error || undefined}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#e5e7eb', minWidth: 0 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wkr.name}</span>
+                        </span>
+                        <span style={{ fontSize: 11, color: wkr.stalled ? '#fca5a5' : '#94a3b8', flexShrink: 0 }}>
+                          {wkr.stalled ? 'STALLED · ' : ''}
+                          {fmtDuration(wkr.seconds_since_beat)} ago
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </section>
 
-          <section
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: 10,
-              marginBottom: 18,
-            }}
-          >
-            <Card title="Inserted (last 5 min)" icon={faRotate} iconColor="#60a5fa" value={fmt(summary.last_5min_inserted)} />
-            <Card title="Sent (last 5 min)" icon={faCheck} iconColor="#22c55e" value={fmt(summary.last_5min_sent)} />
-            <Card
-              title="Failed (last 5 min)"
-              icon={faExclamationTriangle}
-              iconColor={summary.last_5min_failed > 0 ? '#ef4444' : '#64748b'}
-              value={fmt(summary.last_5min_failed)}
-            />
-          </section>
-
-          <section style={{ background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6 }}>
+          {/* ---- Dead-letter (preserved from v1) ---- */}
+          <section style={{ ...panelStyle, padding: 0 }}>
             <header
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '12px 14px',
-                borderBottom: '1px solid #1f2937',
+                padding: '12px 16px',
+                borderBottom: '1px solid rgba(99,102,241,0.15)',
               }}
             >
-              <h2 style={{ margin: 0, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: '#ef4444' }} />
-                Dead-letter queue ({fmt(deadLetter.length)})
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: deadLetter.length > 0 ? '#ef4444' : '#64748b' }} />
+                Dead-letter ({fmt(deadLetter.length)})
               </h2>
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>Most recent 200</span>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>Most recent 50</span>
             </header>
             {deadLetter.length === 0 ? (
-              <div style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+              <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
                 No dead-letter rows. Pipeline healthy.
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ background: '#1e293b', color: '#94a3b8' }}>
+                    <tr>
                       <th style={thStyle}>Email</th>
                       <th style={thStyle}>Status</th>
-                      <th style={thStyle}>Attempts</th>
+                      <th style={numTh}>Attempts</th>
                       <th style={thStyle}>Last error</th>
                       <th style={thStyle}>Last attempt</th>
                       <th style={thStyle}>Campaign</th>
@@ -367,11 +903,14 @@ export const OutboxDashboard: React.FC = () => {
                   </thead>
                   <tbody>
                     {deadLetter.map((r) => (
-                      <tr key={r.id} style={{ borderTop: '1px solid #1f2937' }}>
+                      <tr key={r.id}>
                         <td style={tdStyle}>{r.email || r.subscriber_id}</td>
-                        <td style={{ ...tdStyle, color: stateColor(r.status) }}>{r.status}</td>
-                        <td style={tdStyle}>{r.attempts}</td>
-                        <td style={{ ...tdStyle, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.last_error || ''}>
+                        <td style={{ ...tdStyle, color: '#ef4444' }}>{r.status}</td>
+                        <td style={numTd}>{r.attempts}</td>
+                        <td
+                          style={{ ...tdStyle, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={r.last_error || ''}
+                        >
                           {r.last_error || '—'}
                         </td>
                         <td style={tdStyle}>{r.last_attempt_at ? new Date(r.last_attempt_at).toLocaleString() : '—'}</td>
@@ -389,57 +928,6 @@ export const OutboxDashboard: React.FC = () => {
       ) : null}
     </div>
   );
-};
-
-interface CardProps {
-  title: string;
-  icon: typeof faClock;
-  iconColor: string;
-  value: string;
-  note?: string;
-}
-
-const Card: React.FC<CardProps> = ({ title, icon, iconColor, value, note }) => (
-  <div
-    style={{
-      background: '#0f172a',
-      border: '1px solid #1f2937',
-      borderRadius: 6,
-      padding: '12px 14px',
-    }}
-  >
-    <div
-      style={{
-        fontSize: 11,
-        color: '#94a3b8',
-        textTransform: 'uppercase',
-        letterSpacing: 0.4,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-      }}
-    >
-      <FontAwesomeIcon icon={icon} style={{ color: iconColor }} />
-      {title}
-    </div>
-    <div style={{ fontSize: 20, fontWeight: 600, marginTop: 6 }}>{value}</div>
-    {note && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{note}</div>}
-  </div>
-);
-
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '8px 12px',
-  fontWeight: 600,
-  fontSize: 11,
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: '8px 12px',
-  fontSize: 12,
-  color: '#e5e7eb',
 };
 
 export default OutboxDashboard;

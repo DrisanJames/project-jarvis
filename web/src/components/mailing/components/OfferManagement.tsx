@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import {
+  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
+  Tooltip as RechartsTooltip, Legend, CartesianGrid,
+} from 'recharts';
 import { useToast } from '../shared/ToastSystem';
 import './OfferManagement.css';
 import { apiFetch } from '../shared/apiFetch';
@@ -56,6 +60,58 @@ interface Offer {
   status: string;
   created_at: string;
   updated_at: string;
+  // Cheap counts merged by the offers list endpoint
+  suppression_count?: number;
+  conversions_30d?: number;
+}
+
+// Per-offer suppression/conversion counts surfaced on the tree + detail header
+interface OfferCounts {
+  suppression_count: number;
+  conversions_30d: number;
+}
+
+// GET /offer-center/offers/{id}/stats — event-derived delivery stats
+interface OfferStatsTotals {
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  deferred: number;
+  complaints: number;
+  conversions: number;
+  suppression_total: number;
+}
+
+interface OfferStatsCampaign {
+  id: string;
+  name: string;
+  status: string;
+  scheduled_at: string | null;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+}
+
+interface OfferStatsDaily {
+  date: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  conversions: number;
+}
+
+interface OfferStats {
+  offer_id: string;
+  days: number;
+  totals: OfferStatsTotals;
+  campaign_count: number;
+  campaigns: OfferStatsCampaign[];
+  daily: OfferStatsDaily[];
 }
 
 interface SubjectLine {
@@ -237,6 +293,19 @@ function statusBadgeClass(s: string): string {
   return `offer-mgmt-badge ${s}`;
 }
 
+// Compact number for tight tree rows: 25431 → "25.4k"
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+// Rate vs a base, rendered as "12.3%" (— when base is 0)
+function fmtRate(part: number, base: number): string {
+  if (!base) return '—';
+  return `${((part / base) * 100).toFixed(part / base < 0.01 ? 2 : 1)}%`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
@@ -255,6 +324,7 @@ export const OfferManagement: React.FC = () => {
   const [newVerticalName, setNewVerticalName] = useState('');
   const [treeLoading, setTreeLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [offerCounts, setOfferCounts] = useState<Record<string, OfferCounts>>({});
 
   // Sub-tab data
   const [subjects, setSubjects] = useState<SubjectLine[]>([]);
@@ -355,7 +425,25 @@ export const OfferManagement: React.FC = () => {
     }
   }, [addToast]);
 
-  useEffect(() => { fetchTree(); }, [fetchTree]);
+  // Per-offer suppression / 30d-conversion counts (cheap merged list endpoint)
+  const fetchOfferCounts = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API}/offers`, { credentials: 'include' });
+      if (res.ok) {
+        const data: Offer[] = await res.json();
+        const map: Record<string, OfferCounts> = {};
+        (data || []).forEach(o => {
+          map[o.id] = {
+            suppression_count: o.suppression_count ?? 0,
+            conversions_30d: o.conversions_30d ?? 0,
+          };
+        });
+        setOfferCounts(map);
+      }
+    } catch { /* non-fatal — badges just stay hidden */ }
+  }, []);
+
+  useEffect(() => { fetchTree(); fetchOfferCounts(); }, [fetchTree, fetchOfferCounts]);
 
   useEffect(() => {
     if (!selectedOfferId) return;
@@ -495,26 +583,49 @@ export const OfferManagement: React.FC = () => {
                       <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>{b.offers.length}</span>
                     </div>
 
-                    {brandExpanded && b.offers.map(o => (
-                      <div
-                        key={o.id}
-                        onClick={() => setSelectedOfferId(o.id)}
-                        style={{
-                          padding: '4px 12px 4px 48px', cursor: 'pointer', fontSize: 12,
-                          color: selectedOfferId === o.id ? '#818cf8' : 'rgba(255,255,255,0.55)',
-                          background: selectedOfferId === o.id ? 'rgba(129,140,248,0.08)' : 'transparent',
-                          display: 'flex', alignItems: 'center', gap: 6,
-                          borderLeft: selectedOfferId === o.id ? '2px solid #818cf8' : '2px solid transparent',
-                          transition: 'all 0.1s',
-                        }}
-                      >
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                          background: statusColor(o.status),
-                        }} />
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.name}</span>
-                      </div>
-                    ))}
+                    {brandExpanded && b.offers.map(o => {
+                      const counts = offerCounts[o.id];
+                      return (
+                        <div
+                          key={o.id}
+                          onClick={() => setSelectedOfferId(o.id)}
+                          style={{
+                            padding: '4px 12px 4px 48px', cursor: 'pointer', fontSize: 12,
+                            color: selectedOfferId === o.id ? '#818cf8' : 'rgba(255,255,255,0.55)',
+                            background: selectedOfferId === o.id ? 'rgba(129,140,248,0.08)' : 'transparent',
+                            display: 'flex', alignItems: 'center', gap: 6,
+                            borderLeft: selectedOfferId === o.id ? '2px solid #818cf8' : '2px solid transparent',
+                            transition: 'all 0.1s',
+                          }}
+                        >
+                          <span style={{
+                            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                            background: statusColor(o.status),
+                          }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.name}</span>
+                          {counts && (counts.suppression_count > 0 || counts.conversions_30d > 0) && (
+                            <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center' }}>
+                              {counts.conversions_30d > 0 && (
+                                <span
+                                  title={`${counts.conversions_30d.toLocaleString()} conversions in the last 30 days`}
+                                  style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34,197,94,0.12)', color: '#22c55e' }}
+                                >
+                                  {fmtCompact(counts.conversions_30d)} cv
+                                </span>
+                              )}
+                              {counts.suppression_count > 0 && (
+                                <span
+                                  title={`${counts.suppression_count.toLocaleString()} suppressed (includes Everflow conversion exits)`}
+                                  style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}
+                                >
+                                  {fmtCompact(counts.suppression_count)} sup
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -564,6 +675,23 @@ export const OfferManagement: React.FC = () => {
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#e0e6f0' }}>{offer.name}</h2>
             <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
               {offer.brand_name} · <span className={statusBadgeClass(offer.status)}>{offer.status}</span>
+              {(offerCounts[offer.id]?.suppression_count ?? 0) > 0 && (
+                <span
+                  onClick={() => setActiveTab('compliance')}
+                  title="Includes Everflow conversion exits — click to view the suppression list"
+                  style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.55)', cursor: 'pointer' }}
+                >
+                  {offerCounts[offer.id].suppression_count.toLocaleString()} suppressed
+                </span>
+              )}
+              {(offerCounts[offer.id]?.conversions_30d ?? 0) > 0 && (
+                <span
+                  title="Everflow conversions recorded in the last 30 days"
+                  style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
+                >
+                  {offerCounts[offer.id].conversions_30d.toLocaleString()} conv / 30d
+                </span>
+              )}
               {offer.suppression_sync_enabled && (
                 <span
                   style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(34,197,94,0.15)', color: '#22c55e', letterSpacing: 0.5 }}
@@ -595,7 +723,14 @@ export const OfferManagement: React.FC = () => {
         {activeTab === 'assets' && <AssetsTab offerId={offer.id} />}
         {activeTab === 'landing-page' && <LandingPageTab offer={offer} onRefresh={() => selectedOfferId && fetchOffer(selectedOfferId)} />}
         {activeTab === 'compliance' && <ComplianceTab offerId={offer.id} offer={offer} optizmoStatus={optizmoStatus} onRefresh={() => { fetchOptizmoStatus(offer.id); selectedOfferId && fetchOffer(selectedOfferId); }} />}
-        {activeTab === 'performance' && <PerformanceTab performance={performance} deployments={deployments} />}
+        {activeTab === 'performance' && (
+          <PerformanceTab
+            offerId={offer.id}
+            performance={performance}
+            deployments={deployments}
+            onViewSuppressions={() => setActiveTab('compliance')}
+          />
+        )}
         {activeTab === 'deploy' && <DeployTab offerId={offer.id} subjects={subjects} fromNames={fromNames} creatives={creatives} optizmoStatus={optizmoStatus} />}
       </div>
     );
@@ -2321,30 +2456,191 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
 // TAB: PERFORMANCE
 // ═══════════════════════════════════════════════════════════════════════════
 
-const PerformanceTab: React.FC<{ performance: OfferPerformance | null; deployments: Deployment[] }> = ({ performance, deployments }) => {
-  if (!performance) {
-    return <div style={{ padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.35)' }}>Loading performance data…</div>;
-  }
+const STATS_WINDOWS = [7, 30, 90] as const;
 
-  const metrics = [
-    { label: 'Sent', value: performance.total_sent.toLocaleString(), color: '#818cf8' },
-    { label: 'Opens', value: performance.total_opens.toLocaleString(), color: '#22c55e' },
-    { label: 'Clicks', value: performance.total_clicks.toLocaleString(), color: '#f59e0b' },
-    { label: 'Conversions', value: performance.total_conversions.toLocaleString(), color: '#3b82f6' },
-    { label: 'Revenue', value: `$${performance.revenue.toFixed(2)}`, color: '#22c55e' },
-    { label: 'EPC', value: `$${performance.epc.toFixed(2)}`, color: '#818cf8' },
-  ];
+const PerformanceTab: React.FC<{
+  offerId: string;
+  performance: OfferPerformance | null;
+  deployments: Deployment[];
+  onViewSuppressions: () => void;
+}> = ({ offerId, performance, deployments, onViewSuppressions }) => {
+  const [days, setDays] = useState<number>(30);
+  const [stats, setStats] = useState<OfferStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [statsError, setStatsError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatsLoading(true);
+    setStatsError('');
+    (async () => {
+      try {
+        const res = await apiFetch(`${API}/offers/${offerId}/stats?days=${days}`, { credentials: 'include' });
+        if (cancelled) return;
+        if (res.ok) {
+          setStats(await res.json());
+        } else {
+          const data = await res.json().catch(() => ({}));
+          setStatsError((data as { error?: string }).error || `Failed to load stats (${res.status})`);
+        }
+      } catch {
+        if (!cancelled) setStatsError('Network error loading offer stats');
+      }
+      if (!cancelled) setStatsLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [offerId, days]);
+
+  const t = stats?.totals;
+  const tiles = t ? [
+    { label: 'Sent', value: t.sent.toLocaleString(), sub: `${stats?.campaign_count ?? 0} campaigns`, color: '#818cf8' },
+    { label: 'Delivered', value: t.delivered.toLocaleString(), sub: `${fmtRate(t.delivered, t.sent)} of sent`, color: '#22c55e' },
+    { label: 'Opens', value: t.opened.toLocaleString(), sub: `${fmtRate(t.opened, t.sent)} of sent`, color: '#22c55e' },
+    { label: 'Clicks', value: t.clicked.toLocaleString(), sub: `${fmtRate(t.clicked, t.sent)} of sent`, color: '#f59e0b' },
+    { label: 'Hard Bounces', value: t.hard_bounces.toLocaleString(), sub: `${fmtRate(t.hard_bounces, t.sent)} of sent`, color: '#ef4444' },
+    { label: 'Soft Bounces', value: t.soft_bounces.toLocaleString(), sub: `${fmtRate(t.soft_bounces, t.sent)} of sent`, color: '#f59e0b' },
+    { label: 'Conversions', value: t.conversions.toLocaleString(), sub: `last ${days}d`, color: '#3b82f6' },
+    { label: 'Suppressed', value: t.suppression_total.toLocaleString(), sub: 'all time, all reasons', color: '#94a3b8' },
+  ] : [];
+
+  const chartData = (stats?.daily ?? []).map(d => ({
+    ...d,
+    label: d.date.slice(5), // MM-DD
+  }));
 
   return (
     <div>
-      <div className="offer-mgmt-metrics">
-        {metrics.map(m => (
-          <div key={m.label} className="offer-mgmt-metric">
-            <div className="offer-mgmt-metric-value" style={{ color: m.color }}>{m.value}</div>
-            <div className="offer-mgmt-metric-label">{m.label}</div>
-          </div>
+      {/* Window toggle + suppression list shortcut */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>Window:</span>
+        {STATS_WINDOWS.map(d => (
+          <button
+            key={d}
+            onClick={() => setDays(d)}
+            style={{
+              ...btnGhost,
+              padding: '4px 12px',
+              background: days === d ? 'rgba(129,140,248,0.15)' : 'transparent',
+              color: days === d ? '#818cf8' : 'rgba(255,255,255,0.5)',
+              borderColor: days === d ? 'rgba(129,140,248,0.4)' : 'rgba(255,255,255,0.1)',
+            }}
+          >
+            {d}d
+          </button>
         ))}
+        <button
+          style={{ ...btnGhost, marginLeft: 'auto' }}
+          onClick={onViewSuppressions}
+          title="Open the Compliance tab — manual suppression upload + recent entries"
+        >
+          View suppression list →
+        </button>
       </div>
+
+      {statsError && (
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+          {statsError}
+        </div>
+      )}
+
+      {statsLoading && !stats && (
+        <div style={{ padding: 30, textAlign: 'center', color: 'rgba(255,255,255,0.35)' }}>Loading delivery stats…</div>
+      )}
+
+      {t && (
+        <>
+          {/* Headline tiles */}
+          <div className="offer-mgmt-metrics" style={{ opacity: statsLoading ? 0.55 : 1, transition: 'opacity 0.15s' }}>
+            {tiles.map(m => (
+              <div key={m.label} className="offer-mgmt-metric">
+                <div className="offer-mgmt-metric-value" style={{ color: m.color }}>{m.value}</div>
+                <div className="offer-mgmt-metric-label">{m.label}</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{m.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Secondary line: deferrals + complaints */}
+          <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 16 }}>
+            <span>Deferred events: <strong style={{ color: 'rgba(255,255,255,0.7)' }}>{t.deferred.toLocaleString()}</strong></span>
+            <span>Complaints: <strong style={{ color: t.complaints > 0 ? '#ef4444' : 'rgba(255,255,255,0.7)' }}>{t.complaints.toLocaleString()}</strong></span>
+          </div>
+
+          {/* Daily chart */}
+          {chartData.length > 0 && (t.sent > 0 || t.conversions > 0) ? (
+            <div style={{ background: '#0d1526', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '16px 8px 8px', marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8, paddingLeft: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Daily Volume &amp; Engagement
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.4)' }} interval="preserveStartEnd" />
+                  <YAxis yAxisId="vol" tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.4)' }} tickFormatter={(v: number) => fmtCompact(v)} />
+                  <YAxis yAxisId="eng" orientation="right" tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.4)' }} tickFormatter={(v: number) => fmtCompact(v)} />
+                  <RechartsTooltip
+                    contentStyle={{ background: '#0a0f1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: '#e0e6f0' }}
+                    formatter={(value: number | string) => (typeof value === 'number' ? value.toLocaleString() : value)}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="rgba(129,140,248,0.45)" radius={[2, 2, 0, 0]} />
+                  <Bar yAxisId="vol" dataKey="delivered" name="Delivered" fill="rgba(34,197,94,0.45)" radius={[2, 2, 0, 0]} />
+                  <Line yAxisId="eng" type="monotone" dataKey="opened" name="Opens" stroke="#22c55e" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Clicks" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.3)', fontSize: 12, background: '#0d1526', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, marginBottom: 20 }}>
+              No send activity for this offer in the last {days} days
+            </div>
+          )}
+
+          {/* Recent campaigns */}
+          <h4 style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 8 }}>
+            Recent Campaigns {stats && stats.campaign_count > stats.campaigns.length ? `(${stats.campaigns.length} of ${stats.campaign_count})` : ''}
+          </h4>
+          <table className="offer-mgmt-table" style={{ marginBottom: 24 }}>
+            <thead>
+              <tr>
+                <th>Campaign</th>
+                <th>Status</th>
+                <th>Scheduled</th>
+                <th>Sent</th>
+                <th>Delivered</th>
+                <th>Opens</th>
+                <th>Clicks</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(stats?.campaigns ?? []).map(c => (
+                <tr key={c.id}>
+                  <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.name}>{c.name || c.id}</td>
+                  <td><span className={statusBadgeClass(c.status)}>{c.status}</span></td>
+                  <td>{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : '—'}</td>
+                  <td>{c.sent.toLocaleString()}</td>
+                  <td>{c.delivered.toLocaleString()}</td>
+                  <td>{c.opens.toLocaleString()}</td>
+                  <td>{c.clicks.toLocaleString()}</td>
+                </tr>
+              ))}
+              {(stats?.campaigns ?? []).length === 0 && (
+                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'rgba(255,255,255,0.35)', padding: 24 }}>No campaigns linked to this offer in the last {days} days</td></tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* Legacy revenue metrics (deployment-based) */}
+      {performance && (performance.revenue > 0 || performance.epc > 0) && (
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'rgba(255,255,255,0.55)', marginBottom: 16 }}>
+          <span>Revenue: <strong style={{ color: '#22c55e' }}>${performance.revenue.toFixed(2)}</strong></span>
+          <span>EPC: <strong style={{ color: '#818cf8' }}>${performance.epc.toFixed(2)}</strong></span>
+        </div>
+      )}
 
       <h4 style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 8 }}>Deployment History</h4>
       <table className="offer-mgmt-table">

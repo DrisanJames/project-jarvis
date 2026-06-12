@@ -58,6 +58,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// through the /api auth middleware dance when diagnosing a live send.
 		s.router.Get("/api/outbox/summary", HandleOutboxSummary(db))
 		s.router.Get("/api/outbox/dead-letter", HandleOutboxDeadLetter(db))
+		// Sending-engine live status (queue depth, wave manager, throughput,
+		// deferral storms, worker heartbeats). Cached snapshot — safe to poll
+		// every 10s; first call starts the background refresher.
+		s.router.Get("/api/mailing/outbox/engine-status", HandleOutboxEngineStatus(db))
 
 		// Wave processor pipeline observability (SA-7, 2026-05-09). Same
 		// reason as outbox/summary — register on root router BEFORE the
@@ -1109,6 +1113,22 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			domainAgentAPI := NewDomainAgentAPI(db, pmtaCampaignAPI)
 			domainAgentAPI.RegisterRoutes(r)
 
+			// === SEND BASELINES & SCORECARDS (volume governance per domain × ISP) ===
+			// GET /api/mailing/send-baselines, /send-baselines/today, /send-scorecards.
+			// Baselines read mailing_domain_agent_scorecard; see send_baselines.go.
+			sendBaselinesAPI := NewSendBaselinesAPI(db)
+			sendBaselinesAPI.RegisterRoutes(r)
+
+			// === AUDIENCE CADENCE v3 — messages-to-engage/convert KPIs per ISP +
+			// the ISP doctrine registry (audience_cadence_kpis.go).
+			cadenceKPISvc := NewAudienceCadenceKPIService(db)
+			r.Get("/audience-cadence/kpis", cadenceKPISvc.HandleAudienceCadenceKPIs)
+			r.Get("/audience-cadence/doctrines", cadenceKPISvc.HandleListISPDoctrines)
+			r.Put("/audience-cadence/doctrines/{isp}", cadenceKPISvc.HandleUpsertISPDoctrine)
+
+			// === DOMAIN CENTER: DNS / REPUTATION HEALTH (live SPF/DKIM/DMARC/NS/Spamhaus) ===
+			r.Get("/domain-center/dns-health", NewDomainDNSHealthHandler(db).Handle)
+
 			// === AUDIENCE ARCHITECTURE: Background workers ===
 			workerCtx := context.Background()
 			segMaterializer := NewSegmentMaterializer(db, "04:00")
@@ -1165,6 +1185,18 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// (clone/deploy/stop). See domain_agent_chat.go.
 			domainAgentChat := NewDomainAgentChat(db, s.openAIConfig, domainAgentAPI, campaignCopilot)
 			domainAgentChat.RegisterRoutes(r)
+
+			// === CPM PLANNER — deal pricing, pacing & capacity (cpm_planner_handlers.go) ===
+			cpmPlanner := NewCpmPlannerHandlers(db)
+			r.Route("/cpm-planner", func(cp chi.Router) {
+				cp.Get("/deals", cpmPlanner.HandleListDeals)
+				cp.Post("/deals", cpmPlanner.HandleCreateDeal)
+				cp.Put("/deals/{id}", cpmPlanner.HandleUpdateDeal)
+				cp.Delete("/deals/{id}", cpmPlanner.HandleDeleteDeal)
+				cp.Get("/deals/{id}/insights", cpmPlanner.HandleDealInsights)
+				cp.Get("/capacity", cpmPlanner.HandleCapacity)
+				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
+			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===
 			ensureAgentTables(db)
