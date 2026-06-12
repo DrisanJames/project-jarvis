@@ -200,13 +200,19 @@ func (c *outboxEngineCache) store(resp OutboxEngineStatusResponse) {
 	c.mu.Unlock()
 }
 
-// engineBaseline holds the slow-cadence per-ISP 24h deferral baseline.
+// engineBaseline holds the slow-cadence per-ISP 24h deferral baseline plus
+// the other 24h-window aggregates (sent_24h count, hourly series) so the
+// fast 12s tick never rescans a full day of tracking events (QA finding H1).
 type engineBaseline struct {
 	mu          sync.Mutex
 	refreshedAt time.Time
 	// per normalized ISP: events in the 25h→60m-ago window.
 	sentBase map[string]int64
 	defBase  map[string]int64
+	// slow-cadence 24h aggregates reused between fast ticks.
+	sent24h    int64
+	hourly     []EngineHourPoint
+	aggRefresh time.Time
 }
 
 var (
@@ -266,9 +272,10 @@ func refreshOutboxEngineStatus(ctx context.Context, db *sql.DB, cache *outboxEng
 		GeneratedAt: time.Now().UTC(),
 		APIVersion:  VersionOutboxEngineStatus,
 	}
-	resp.Queue = engineQueueSection(ctx, db)
+	refreshEngine24hAggregates(ctx, db, baseline)
+	resp.Queue = engineQueueSection(ctx, db, baseline)
 	resp.Waves = engineWaveSection(ctx, db)
-	resp.Throughput = engineThroughputSection(ctx, db)
+	resp.Throughput = engineThroughputSection(ctx, db, baseline)
 	resp.Storm = engineStormSection(ctx, db, baseline)
 	resp.Workers = engineWorkerSection(ctx, db)
 	cache.store(resp)
@@ -278,7 +285,7 @@ func refreshOutboxEngineStatus(ctx context.Context, db *sql.DB, cache *outboxEng
 // Section: queue
 // ---------------------------------------------------------------------------
 
-func engineQueueSection(ctx context.Context, db *sql.DB) EngineQueueSection {
+func engineQueueSection(ctx context.Context, db *sql.DB, baseline *engineBaseline) EngineQueueSection {
 	sec := EngineQueueSection{ByISP: []EngineISPQueueDepth{}}
 
 	qctx, cancel := context.WithTimeout(ctx, engineQueryTimeout)
@@ -353,22 +360,68 @@ func engineQueueSection(ctx context.Context, db *sql.DB) EngineQueueSection {
 		}
 	}
 
-	// sent_24h comes from the queue's own sent_at stamp would need a full
-	// scan (no index on sent_at); the tracking-events hourly series is
-	// indexed + partition-pruned, so the throughput section computes the 24h
-	// sent total and the dashboard reads it from there. Mirror it here too so
-	// the queue card is self-contained.
+	// sent_24h is a full-day event count — refreshed on the slow cadence by
+	// refreshEngine24hAggregates and read from the baseline cache here, so
+	// the fast tick never rescans 24h of tracking events (QA finding H1).
+	baseline.mu.Lock()
+	sec.Sent24h = baseline.sent24h
+	baseline.mu.Unlock()
+
+	sec.OK = true
+	return sec
+}
+
+// refreshEngine24hAggregates recomputes the 24h sent count + hourly series at
+// most every engineSlowRefreshInterval.
+func refreshEngine24hAggregates(ctx context.Context, db *sql.DB, baseline *engineBaseline) {
+	baseline.mu.Lock()
+	fresh := time.Since(baseline.aggRefresh) <= engineSlowRefreshInterval && baseline.hourly != nil
+	baseline.mu.Unlock()
+	if fresh {
+		return
+	}
+
+	var sent24h int64
 	sctx, scancel := context.WithTimeout(ctx, engineQueryTimeout)
 	defer scancel()
 	if err := db.QueryRowContext(sctx, `
 		SELECT COUNT(*) FROM mailing_tracking_events
 		WHERE event_type = 'sent' AND event_at > NOW() - INTERVAL '24 hours'
-	`).Scan(&sec.Sent24h); err != nil {
+	`).Scan(&sent24h); err != nil {
 		log.Printf("[EngineStatus] sent_24h probe: %v", err)
+		return
 	}
 
-	sec.OK = true
-	return sec
+	hourly := []EngineHourPoint{}
+	hctx, hcancel := context.WithTimeout(ctx, engineQueryTimeout)
+	defer hcancel()
+	hrows, err := db.QueryContext(hctx, `
+		SELECT DATE_TRUNC('hour', event_at) AS hour, COUNT(*)
+		FROM mailing_tracking_events
+		WHERE event_at > NOW() - INTERVAL '24 hours'
+		  AND event_type = 'sent'
+		GROUP BY 1
+		ORDER BY 1
+	`)
+	if err != nil {
+		log.Printf("[EngineStatus] per-hour probe: %v", err)
+		return
+	}
+	func() {
+		defer hrows.Close()
+		for hrows.Next() {
+			var p EngineHourPoint
+			if scanErr := hrows.Scan(&p.Hour, &p.Sent); scanErr == nil {
+				hourly = append(hourly, p)
+			}
+		}
+	}()
+
+	baseline.mu.Lock()
+	baseline.sent24h = sent24h
+	baseline.hourly = hourly
+	baseline.aggRefresh = time.Now()
+	baseline.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +486,7 @@ func engineWaveSection(ctx context.Context, db *sql.DB) EngineWaveSection {
 // Section: throughput
 // ---------------------------------------------------------------------------
 
-func engineThroughputSection(ctx context.Context, db *sql.DB) EngineThroughputSection {
+func engineThroughputSection(ctx context.Context, db *sql.DB, baseline *engineBaseline) EngineThroughputSection {
 	sec := EngineThroughputSection{PerMinute: []EngineMinutePoint{}, PerHour: []EngineHourPoint{}}
 
 	mctx, mcancel := context.WithTimeout(ctx, engineQueryTimeout)
@@ -462,29 +515,11 @@ func engineThroughputSection(ctx context.Context, db *sql.DB) EngineThroughputSe
 		}
 	}()
 
-	hctx, hcancel := context.WithTimeout(ctx, engineQueryTimeout)
-	defer hcancel()
-	hrows, err := db.QueryContext(hctx, `
-		SELECT DATE_TRUNC('hour', event_at) AS hour, COUNT(*)
-		FROM mailing_tracking_events
-		WHERE event_at > NOW() - INTERVAL '24 hours'
-		  AND event_type = 'sent'
-		GROUP BY 1
-		ORDER BY 1
-	`)
-	if err != nil {
-		log.Printf("[EngineStatus] per-hour probe: %v", err)
-	} else {
-		func() {
-			defer hrows.Close()
-			for hrows.Next() {
-				var p EngineHourPoint
-				if scanErr := hrows.Scan(&p.Hour, &p.Sent); scanErr == nil {
-					sec.PerHour = append(sec.PerHour, p)
-				}
-			}
-		}()
-	}
+	// 24h hourly buckets come from the slow-cadence cache (QA finding H1) —
+	// the fast tick only runs the 60m per-minute query above.
+	baseline.mu.Lock()
+	sec.PerHour = append(sec.PerHour, baseline.hourly...)
+	baseline.mu.Unlock()
 
 	sec.CurrentRatePerMin, sec.PeakRatePerMin24h = engineRates(sec.PerMinute, sec.PerHour, time.Now().UTC())
 	if sec.PeakRatePerMin24h > 0 {

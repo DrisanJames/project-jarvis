@@ -37,6 +37,7 @@ package api
 // LANE, and its doctrine row needs a matching KPI row.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -44,6 +45,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -181,6 +183,21 @@ type cadenceKPIResponse struct {
 // ─── KPI handler ────────────────────────────────────────────────────────────
 
 // HandleAudienceCadenceKPIs — GET /api/mailing/audience-cadence/kpis?days=60
+// cadenceKPICache memoizes the heavy KPI aggregation per (org, days) — the
+// first-engagement cohort scan is expensive and the answer evolves daily, not
+// per page load (QA finding C2, 2026-06-12).
+var cadenceKPICache = struct {
+	sync.Mutex
+	entries map[string]cadenceKPICacheEntry
+}{entries: map[string]cadenceKPICacheEntry{}}
+
+type cadenceKPICacheEntry struct {
+	body    []byte
+	expires time.Time
+}
+
+const cadenceKPICacheTTL = 15 * time.Minute
+
 func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
 
@@ -193,6 +210,22 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 	if days > cadenceMaxDays {
 		days = cadenceMaxDays
 	}
+
+	cacheKey := orgID + "|" + strconv.Itoa(days)
+	cadenceKPICache.Lock()
+	if e, ok := cadenceKPICache.entries[cacheKey]; ok && time.Now().Before(e.expires) {
+		cadenceKPICache.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(e.body)
+		return
+	}
+	cadenceKPICache.Unlock()
+
+	// Hard budget for the whole aggregation — never let cohort scans pile up.
+	ctxBudget, cancelBudget := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancelBudget()
+	r = r.WithContext(ctxBudget)
+
 	now := time.Now().UTC()
 	since := now.AddDate(0, 0, -days)
 	trendSince := now.AddDate(0, 0, -cadenceTrendDays)
@@ -212,7 +245,6 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 
 	ctx := r.Context()
 	subISP := ispFamilyCase(`SPLIT_PART(LOWER(s.email), '@', 2)`)
-	logISP := ispFamilyCase(`SPLIT_PART(LOWER(m.email), '@', 2)`)
 
 	// 1) messages-to-first-engagement (sampled cohort).
 	engagedTotal := 0
@@ -363,12 +395,15 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 	}
 	trend.Close()
 
-	// 4) window sends per ISP → conversion_per_10k_sends.
+	// 4) window sends per ISP → conversion_per_10k_sends. Sourced from the
+	// daily domain-agent scorecard rollup (already ISP-family-keyed), NOT raw
+	// mailing_message_log — a windowed GROUP BY over 60-90 days of message
+	// log was a minutes-long scan (QA finding C2, 2026-06-12).
 	qSends := `
-		SELECT ` + logISP + ` AS isp, COUNT(*)::bigint
-		FROM mailing_message_log m
-		WHERE m.organization_id = $1
-		  AND m.sent_at >= $2
+		SELECT LOWER(isp) AS isp, COALESCE(SUM(sends), 0)::bigint
+		FROM mailing_domain_agent_scorecard
+		WHERE organization_id = $1
+		  AND day >= $2::date
 		GROUP BY 1`
 	sends, err := s.db.QueryContext(ctx, qSends, orgID, since)
 	if err != nil {
@@ -398,7 +433,7 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 		}
 	}
 
-	respondJSON(w, http.StatusOK, cadenceKPIResponse{
+	resp := cadenceKPIResponse{
 		APIVersion:         VersionAudienceCadenceKPIs,
 		AsOf:               now,
 		Days:               days,
@@ -412,7 +447,17 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 			"SES-routed traffic (all of gmail + the SES-tenant brands) is pixel-blind in Postgres, so engaged samples undercount on those routes; " +
 			"AOL is reported as its own family per operator doctrine (not folded into yahoo).",
 		ISPs: out,
-	})
+	}
+
+	if body, err := json.Marshal(resp); err == nil {
+		cadenceKPICache.Lock()
+		cadenceKPICache.entries[cacheKey] = cadenceKPICacheEntry{body: body, expires: time.Now().Add(cadenceKPICacheTTL)}
+		cadenceKPICache.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+		return
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // ─── Doctrine endpoints ─────────────────────────────────────────────────────
@@ -508,52 +553,52 @@ type ispDoctrineSeed struct {
 
 var ispDoctrineSeeds = []ispDoctrineSeed{
 	{
-		ISP:   "apple",
-		Title: "Apple — The Conversion Engine",
-		DoctrineMD: "Apple is the platform's conversion engine: **6.2 true conversions per million delivered** vs Microsoft 1.3 and Gmail ~0.7 — every retail (purchase-class) conversion ever tracked is Apple (50+ homeowners on iPhones, image-rich creative, converting 16–35 min after a real click). **MPP is an instrument, not noise**: a fetch is liveness (45% of converters were MPP-LIVE pre-click), fetches ÷ delivered is an inbox-placement meter (junked mail is not prefetched), and no fetch across ~5 sends means nobody is home. For the engaged tier the single MPP fetch lands at the real open (±15 min) — open timing is learnable for clickers/MPP-LIVE, meaningless for the passive mass. The click is the only universal signal; hierarchy: **click > MPP-liveness > nothing > human open > machine open** (37% of converters never fired an open pixel). Reputation is per-domain and fast-moving; 5.3.2 is tempo pushback, not bad addresses — evenings clear (3–5%) vs mornings (8–11%). Deliverable ≠ alive: Apple data validates itself on the first drip touch.\n\nStrategy: CLICKER + MPP-LIVE rings anchor every Apple lane; purchase-class offers route Apple-first; weight lanes to afternoon/evening; MPP-silence ×5 → accelerated exit; grow via fresh-intent Apple acquisition (KPI: cost per MPP-LIVE record).",
-		NorthStars: "- Same-day MPP fetch rate (fetches ÷ delivered): green ≥50%, yellow 30–50%, red <30%\n- Conversions per million delivered: hold ≥6/M while volume grows\n- MPP-LIVE pool size per domain (the asset) + CLICKER pool growth\n- Converter-tier mix vs the 45/37/8 (MPP-LIVE / click-only / human-UA) baseline\n- 5.3.2 rate per domain (reputation)",
+		ISP:         "apple",
+		Title:       "Apple — The Conversion Engine",
+		DoctrineMD:  "Apple is the platform's conversion engine: **6.2 true conversions per million delivered** vs Microsoft 1.3 and Gmail ~0.7 — every retail (purchase-class) conversion ever tracked is Apple (50+ homeowners on iPhones, image-rich creative, converting 16–35 min after a real click). **MPP is an instrument, not noise**: a fetch is liveness (45% of converters were MPP-LIVE pre-click), fetches ÷ delivered is an inbox-placement meter (junked mail is not prefetched), and no fetch across ~5 sends means nobody is home. For the engaged tier the single MPP fetch lands at the real open (±15 min) — open timing is learnable for clickers/MPP-LIVE, meaningless for the passive mass. The click is the only universal signal; hierarchy: **click > MPP-liveness > nothing > human open > machine open** (37% of converters never fired an open pixel). Reputation is per-domain and fast-moving; 5.3.2 is tempo pushback, not bad addresses — evenings clear (3–5%) vs mornings (8–11%). Deliverable ≠ alive: Apple data validates itself on the first drip touch.\n\nStrategy: CLICKER + MPP-LIVE rings anchor every Apple lane; purchase-class offers route Apple-first; weight lanes to afternoon/evening; MPP-silence ×5 → accelerated exit; grow via fresh-intent Apple acquisition (KPI: cost per MPP-LIVE record).",
+		NorthStars:  "- Same-day MPP fetch rate (fetches ÷ delivered): green ≥50%, yellow 30–50%, red <30%\n- Conversions per million delivered: hold ≥6/M while volume grows\n- MPP-LIVE pool size per domain (the asset) + CLICKER pool growth\n- Converter-tier mix vs the 45/37/8 (MPP-LIVE / click-only / human-UA) baseline\n- 5.3.2 rate per domain (reputation)",
 		HealthBands: "Daily auto-tier on Apple bounce rate per domain: <2% uncapped · 5–10% push-through w/ watch · 10–20% capped at recent delivered · >20% clickers-only trickle. Intraday >8% → drop a band. 5.3.2 rate bands A+B: green <2%, red >5%. Deferrals: green <500 msgs, red >2,000. Evening bounce 3–5% vs morning 8–11% — weight PM. MPP silence ×5 consecutive sends → exit the lane.",
 	},
 	{
-		ISP:   "microsoft",
-		Title: "Microsoft — Two Fleets: Verified-Human Core + CPM Reach",
-		DoctrineMD: "Microsoft's visible engagement is ~99% synthetic — human share of the click stream is **0.4%** (Apple link-preview machinery, SafeLinks/datacenter scanners); scanner engagement is anti-targeting here more than anywhere else. Yet Microsoft holds the platform's largest verified-human reservoir: **162.7k MPP-LIVE** subscribers (hotmail/outlook/live/msn synced to real iPhones) + ~4.7k verified clickers — human-DILUTED, not human-poor (1 in 50 sends touches a verified human vs Apple ~1 in 1). An MPP fetch is per-recipient inbox proof; seeds only certify gateway acceptance. Microsoft humans convert on considered-decision lead-gen (Metal Roofing, NDR, CarShield, heloc; 8/11 converters were MPP-LIVE; conversion-per-human-click ≈ Apple) — the deficit is reach-to-humans, not persuasion. Complaint rate is the only reputation lever Microsoft documents.\n\n**Run two fleets**: Core lane = MSFT-MPP-LIVE + MSFT-CLICKERS rings (~167k), Apple-style morning cadence, lead-gen led, one offer touch/day, goal 1.3 → 4+ conv/M. Reach lane = broad opener bands under the 20k/day/domain caps, priced and reported as CPM reach — never as 'engagement' — with complaints ≈ 0.",
-		NorthStars: "- Same-day MPP fetch rate on the core: green ≥40%, yellow 25–40%, red <25%\n- Click-quality flip: ≥30% of core-lane clicks device-human (raw-pool baseline 0.4%)\n- Human click rate: ≥0.3% of delivered (red <0.05%)\n- Core conversions/M: 1.3 → 4+ within two weeks of daily core lane\n- Reach lane: complaint rate (the only number Microsoft cares about) + CPM revenue/M\n- Honesty metric: % of MSFT audience definitions still using unverdicted engagement → 0",
+		ISP:         "microsoft",
+		Title:       "Microsoft — Two Fleets: Verified-Human Core + CPM Reach",
+		DoctrineMD:  "Microsoft's visible engagement is ~99% synthetic — human share of the click stream is **0.4%** (Apple link-preview machinery, SafeLinks/datacenter scanners); scanner engagement is anti-targeting here more than anywhere else. Yet Microsoft holds the platform's largest verified-human reservoir: **162.7k MPP-LIVE** subscribers (hotmail/outlook/live/msn synced to real iPhones) + ~4.7k verified clickers — human-DILUTED, not human-poor (1 in 50 sends touches a verified human vs Apple ~1 in 1). An MPP fetch is per-recipient inbox proof; seeds only certify gateway acceptance. Microsoft humans convert on considered-decision lead-gen (Metal Roofing, NDR, CarShield, heloc; 8/11 converters were MPP-LIVE; conversion-per-human-click ≈ Apple) — the deficit is reach-to-humans, not persuasion. Complaint rate is the only reputation lever Microsoft documents.\n\n**Run two fleets**: Core lane = MSFT-MPP-LIVE + MSFT-CLICKERS rings (~167k), Apple-style morning cadence, lead-gen led, one offer touch/day, goal 1.3 → 4+ conv/M. Reach lane = broad opener bands under the 20k/day/domain caps, priced and reported as CPM reach — never as 'engagement' — with complaints ≈ 0.",
+		NorthStars:  "- Same-day MPP fetch rate on the core: green ≥40%, yellow 25–40%, red <25%\n- Click-quality flip: ≥30% of core-lane clicks device-human (raw-pool baseline 0.4%)\n- Human click rate: ≥0.3% of delivered (red <0.05%)\n- Core conversions/M: 1.3 → 4+ within two weeks of daily core lane\n- Reach lane: complaint rate (the only number Microsoft cares about) + CPM revenue/M\n- Honesty metric: % of MSFT audience definitions still using unverdicted engagement → 0",
 		HealthBands: "Acceptance: green ≥97%, red <93% (baseline ~96%). Complaints: green ≤2/day, red >10. Bounce: green <2%, red >5%. Reach lane hygiene: 20k/day/domain caps, complaints ≈ 0, bounce <2%, 14/21-day clocks retire non-responders. Tenure: clickers lifetime; MPP-LIVE while fetches continue; MPP-silence ×5 sends → exit.",
 	},
 	{
-		ISP:   "yahoo",
-		Title: "Yahoo — Ratio Rebuild (small instrumented garden)",
-		DoctrineMD: "Yahoo's visible engagement is ~99% manufactured by our own seed vendor: 10,884 of 10,889 'human Windows' clicks/30d came from one automation farm (egress **75.98.0.0/16**), which also contaminates regular campaigns via 71 accounts in the normal base — quarantine it from every measurement (the seedlist lane keeps running as reputation scaffolding). The true organic asset is **~600 people**: 524 MPP-LIVE + 74 proxy-viewers + ~15 verified clickers; ~1 in 129 sends touches a verified-alive account; conversions to date: 0. Acceptance ≠ placement — clean infrastructure is accepted and silently junked, and low complaints from the junk folder are the absence of signal, not health. Daily volume does not drive placement; **composition does** (ratio × consistency × time, at week scale). Two honest instruments only: the MPP panel meter (farm-immune, per-recipient inbox proof) and seed-excluded yahoo-proxy opens. All Yahoo lanes **PMTA-pinned** — SES strips pixels and a ratio rebuild cannot be flown blind. Fresh records are worthless without an expectation moment at capture ('your quote is in your email — check spam').\n\nStrategy: engaged-core rings on the best-meter mature domains, caps from meter bands not volume fear, ring-by-ring expansion gated on the meter. Falsification: 6 weeks of core concentration with zero conversions and no meter lift → demote to maintenance-only.",
-		NorthStars: "- MPP panel meter per sending domain (fetch rate on panel deliveries) — THE placement instrument\n- Seed-excluded proxy-open rate (true view-time reads)\n- Verified clicker count (~15/30d baseline)\n- Panel size per brand (the asset being grown)\n- First Yahoo conversion\n- Quarantine discipline: seed farm 75.98.0.0/16 excluded from every engagement read",
+		ISP:         "yahoo",
+		Title:       "Yahoo — Ratio Rebuild (small instrumented garden)",
+		DoctrineMD:  "Yahoo's visible engagement is ~99% manufactured by our own seed vendor: 10,884 of 10,889 'human Windows' clicks/30d came from one automation farm (egress **75.98.0.0/16**), which also contaminates regular campaigns via 71 accounts in the normal base — quarantine it from every measurement (the seedlist lane keeps running as reputation scaffolding). The true organic asset is **~600 people**: 524 MPP-LIVE + 74 proxy-viewers + ~15 verified clickers; ~1 in 129 sends touches a verified-alive account; conversions to date: 0. Acceptance ≠ placement — clean infrastructure is accepted and silently junked, and low complaints from the junk folder are the absence of signal, not health. Daily volume does not drive placement; **composition does** (ratio × consistency × time, at week scale). Two honest instruments only: the MPP panel meter (farm-immune, per-recipient inbox proof) and seed-excluded yahoo-proxy opens. All Yahoo lanes **PMTA-pinned** — SES strips pixels and a ratio rebuild cannot be flown blind. Fresh records are worthless without an expectation moment at capture ('your quote is in your email — check spam').\n\nStrategy: engaged-core rings on the best-meter mature domains, caps from meter bands not volume fear, ring-by-ring expansion gated on the meter. Falsification: 6 weeks of core concentration with zero conversions and no meter lift → demote to maintenance-only.",
+		NorthStars:  "- MPP panel meter per sending domain (fetch rate on panel deliveries) — THE placement instrument\n- Seed-excluded proxy-open rate (true view-time reads)\n- Verified clicker count (~15/30d baseline)\n- Panel size per brand (the asset being grown)\n- First Yahoo conversion\n- Quarantine discipline: seed farm 75.98.0.0/16 excluded from every engagement read",
 		HealthBands: "Meter bands per sending domain: ≥20% grow audience rings +10–20%/week · 10–20% hold and build · <10% engaged-core only until recovery. Baselines (clean PMTA days): HT 28.6% / DB 26.6% / MH 22.6% / QF 22.4% / BWP 24.2% / FC 20.3%; warming nine ~14–16%. One offer touch/day max; drip records terminal at touch 4 with no signal, never re-enrolled.",
 	},
 	{
-		ISP:   "comcast",
-		Title: "Comcast — Pace, Don't Prove",
-		DoctrineMD: "Comcast is traditional IP reputation, and it telegraphs: **deferrals climb before blocks land**; blocks are temporal and forgiving (~7 days once behavior changes). Reputation is scoped **per IP, not per domain** — within our own /24 on the same days/content/audiences, the clean cohort held 0% block share while the burned cohort sat at 34–60%. When accepted, Comcast inboxes generously: **66.9% panel inbox rate — the highest placement measured of any ISP**; there is no placement or engagement-personalization wall, the constraint is tempo at the gate, full stop. The population is disproportionately valuable: 7.5% alive density (~10× Yahoo), primary household addresses, heavily iPhone-hosted (~47% of comcast opens are Apple MPP) — an **Apple-doctrine satellite** for content, timing, and signal handling. The May block was bought by dormant-data volume at spike tempo; dormant data is permanently barred. PMTA-direct, pinned profiles, permanently (a pacing-governed lane cannot fly pixel-blind on SES).\n\nStrategy: COMCAST-MPP-LIVE + COMCAST-CLICKERS rings, clicker-first drain, clean-IP cohort only, the deferral governor as the single feedback loop, then a smooth flat ladder — same number every day. Cheapest incremental conversion lane after Apple; the only cost is patience.",
-		NorthStars: "- Acceptance rate (hold ≥99%)\n- Deferral rate — the governor and early-warning instrument\n- 5.3.2 spam-related count (hold 0)\n- Panel inbox rate vs the 66.9% baseline\n- MPP-LIVE pool growth (1,665 baseline) + clicker pool (68)\n- Conversions/M — 6 weeks of ring concentration at zero → demote to maintenance reach",
+		ISP:         "comcast",
+		Title:       "Comcast — Pace, Don't Prove",
+		DoctrineMD:  "Comcast is traditional IP reputation, and it telegraphs: **deferrals climb before blocks land**; blocks are temporal and forgiving (~7 days once behavior changes). Reputation is scoped **per IP, not per domain** — within our own /24 on the same days/content/audiences, the clean cohort held 0% block share while the burned cohort sat at 34–60%. When accepted, Comcast inboxes generously: **66.9% panel inbox rate — the highest placement measured of any ISP**; there is no placement or engagement-personalization wall, the constraint is tempo at the gate, full stop. The population is disproportionately valuable: 7.5% alive density (~10× Yahoo), primary household addresses, heavily iPhone-hosted (~47% of comcast opens are Apple MPP) — an **Apple-doctrine satellite** for content, timing, and signal handling. The May block was bought by dormant-data volume at spike tempo; dormant data is permanently barred. PMTA-direct, pinned profiles, permanently (a pacing-governed lane cannot fly pixel-blind on SES).\n\nStrategy: COMCAST-MPP-LIVE + COMCAST-CLICKERS rings, clicker-first drain, clean-IP cohort only, the deferral governor as the single feedback loop, then a smooth flat ladder — same number every day. Cheapest incremental conversion lane after Apple; the only cost is patience.",
+		NorthStars:  "- Acceptance rate (hold ≥99%)\n- Deferral rate — the governor and early-warning instrument\n- 5.3.2 spam-related count (hold 0)\n- Panel inbox rate vs the 66.9% baseline\n- MPP-LIVE pool growth (1,665 baseline) + clicker pool (68)\n- Conversions/M — 6 weeks of ring concentration at zero → demote to maintenance reach",
 		HealthBands: "Deferral rate >25–30% of attempts in a day → freeze the volume ladder. ANY 5.3.2 reappearance → halve volume, hold until zero for 3 consecutive days. Acceptance ≥99%. Placement baseline 66.9% (regression alarm). Growth: +10–15%/week from the engaged-core baseline, FLAT daily volume — no spike days, no double-days. Burned IPs rest ≥1 week, reintroduced one at a time at trickle.",
 	},
 	{
-		ISP:   "aol",
-		Title: "AOL — Consistency Repair (own lane, unseeded control)",
-		DoctrineMD: "AOL throttles; it does not block: acceptance never collapsed (worst day 47%), but **715k messages were deferred in 30 days against ~230k deliveries (3:1)** — a pacing-debt regime triggered by the May volume spike. Most AOL 'bounces' are queue-expiry casualties — **read bounce spikes as tempo signals, not list hygiene**. Consistency is the currency (the differentiator from Yahoo, despite shared Oath filtering): daily volume swung 19× in a month, and erratic volume reads as snowshoe — AOL has never seen a stable daily number from us, so it has never granted one. Where Yahoo's lever is WHO, **AOL's lever is HOW WE ARRIVE: same number, same hour, every day**. The live population is ~450 people (366 MPP-LIVE + 86 proxy-viewers + 15 clickers) and is the purest Apple-satellite demographic in the portfolio — 90% of AOL opens are Apple MPP. AOL receives zero manufactured engagement (the seed network mails yahoo-domain only), so its readings are honest: the clean control lane for the whole Yahoo stack. PMTA-direct only.\n\nStrategy: engaged-core rings (CLICKERS > MPP-LIVE > VIEWERS), ONE anchor (6:00 AM Denver), flat daily number for 2–3 weeks, dormant data barred permanently; earn the ladder only after the deferral debt clears.",
-		NorthStars: "- Deferral rate per sending domain — THE number; the repair works when it trends down week-over-week\n- Acceptance rate + queue-expiry bounce count\n- Panel inbox rate vs 21.9% baseline (expect rise as the throttle unwinds)\n- MPP-LIVE pool (366 baseline) · proxy-viewer pool (86 — the honest read signal)\n- First AOL conversion",
+		ISP:         "aol",
+		Title:       "AOL — Consistency Repair (own lane, unseeded control)",
+		DoctrineMD:  "AOL throttles; it does not block: acceptance never collapsed (worst day 47%), but **715k messages were deferred in 30 days against ~230k deliveries (3:1)** — a pacing-debt regime triggered by the May volume spike. Most AOL 'bounces' are queue-expiry casualties — **read bounce spikes as tempo signals, not list hygiene**. Consistency is the currency (the differentiator from Yahoo, despite shared Oath filtering): daily volume swung 19× in a month, and erratic volume reads as snowshoe — AOL has never seen a stable daily number from us, so it has never granted one. Where Yahoo's lever is WHO, **AOL's lever is HOW WE ARRIVE: same number, same hour, every day**. The live population is ~450 people (366 MPP-LIVE + 86 proxy-viewers + 15 clickers) and is the purest Apple-satellite demographic in the portfolio — 90% of AOL opens are Apple MPP. AOL receives zero manufactured engagement (the seed network mails yahoo-domain only), so its readings are honest: the clean control lane for the whole Yahoo stack. PMTA-direct only.\n\nStrategy: engaged-core rings (CLICKERS > MPP-LIVE > VIEWERS), ONE anchor (6:00 AM Denver), flat daily number for 2–3 weeks, dormant data barred permanently; earn the ladder only after the deferral debt clears.",
+		NorthStars:  "- Deferral rate per sending domain — THE number; the repair works when it trends down week-over-week\n- Acceptance rate + queue-expiry bounce count\n- Panel inbox rate vs 21.9% baseline (expect rise as the throttle unwinds)\n- MPP-LIVE pool (366 baseline) · proxy-viewer pool (86 — the honest read signal)\n- First AOL conversion",
 		HealthBands: "Target deferral rate <10% before any growth; any day >40% → hold the number and investigate. <10% sustained one full week → +10%/week, flat at the new number, expansion ring = recent engaged tiers only; any deferral-rate reversal → drop back one rung, hold 2 weeks. Falsification: 3 weeks of flat cadence with no material deferral improvement → demote to drip-intake-only.",
 	},
 	{
-		ISP:   "gmail",
-		Title: "Gmail — Viewer Cascade (SES-routed, lake-measured)",
-		DoctrineMD: "Gmail routes **SES-always**, and SES strips the open/click pixels — Gmail engagement records ~nothing in Postgres. Judge every Gmail lane from the event lake (`source='ses'`) Google-proxy opens only; PG-derived Gmail engagement segments are invalid. Trust per-recipient instruments (Google-proxy view, DSN class), never raw opens/clicks. The play is the **viewer cascade**: step-1 newsletter to the broad band → harvest same-day Google-proxy viewers into a TODAY-VIEWERS segment → step-2 offer send to viewers while the read is hours old → step-3 evening incremental to the day's clickers. Placement = performance; conversions are lagging bonus signal only (Gmail baseline ~0.7 conv/M). Routing audit must hold: zero non-SES gmail sends, zero seed-list recipients in lanes.",
-		NorthStars: "- Step-1 NL viewer rate (Google-proxy opens ÷ delivered, same-day): green ≥15%, yellow 8–15%, red <8%\n- Step-2 audience yield (TODAY-VIEWERS total): green ≥12,000, red <5,000\n- Step-2 offer view rate: green ≥25%, red <10%\n- View→click (device clicks ÷ step-2 delivered): green ≥0.5%, red <0.1%\n- Step-3 incremental device clicks: any >0 meaningful\n- Routing audit: non-SES gmail sends = 0 · seeds in lanes = 0",
+		ISP:         "gmail",
+		Title:       "Gmail — Viewer Cascade (SES-routed, lake-measured)",
+		DoctrineMD:  "Gmail routes **SES-always**, and SES strips the open/click pixels — Gmail engagement records ~nothing in Postgres. Judge every Gmail lane from the event lake (`source='ses'`) Google-proxy opens only; PG-derived Gmail engagement segments are invalid. Trust per-recipient instruments (Google-proxy view, DSN class), never raw opens/clicks. The play is the **viewer cascade**: step-1 newsletter to the broad band → harvest same-day Google-proxy viewers into a TODAY-VIEWERS segment → step-2 offer send to viewers while the read is hours old → step-3 evening incremental to the day's clickers. Placement = performance; conversions are lagging bonus signal only (Gmail baseline ~0.7 conv/M). Routing audit must hold: zero non-SES gmail sends, zero seed-list recipients in lanes.",
+		NorthStars:  "- Step-1 NL viewer rate (Google-proxy opens ÷ delivered, same-day): green ≥15%, yellow 8–15%, red <8%\n- Step-2 audience yield (TODAY-VIEWERS total): green ≥12,000, red <5,000\n- Step-2 offer view rate: green ≥25%, red <10%\n- View→click (device clicks ÷ step-2 delivered): green ≥0.5%, red <0.1%\n- Step-3 incremental device clicks: any >0 meaningful\n- Routing audit: non-SES gmail sends = 0 · seeds in lanes = 0",
 		HealthBands: "Viewer-rate bands: ≥15% green / 8–15% yellow / <8% red. KPI data source is the lake (source='ses') ONLY — PG tracking is blind for Gmail, and the MPP panel meter does not apply. Day-level volume showed no placement effect (Pearson +0.13) — composition over volume here too.",
 	},
 	{
-		ISP:   "att",
-		Title: "AT&T — Ring Discovery (yahoo-stack tempo, Apple-hosted)",
-		DoctrineMD: "The ATT family (att.net / sbcglobal / bellsouth / pacbell / ameritech…) rides the Yahoo filtering stack at the gateway — tempo and deferral discipline inherit from the Yahoo/AOL doctrines — but the population itself is heavily iPhone-hosted: **~50% of ATT-domain engagement is Apple MPP**, so liveness, placement, and timing read through the Apple instrument set (MPP fetch = per-recipient inbox proof). The engaged universe is small (~2.4k), so the lane's scaling job is **discovery**: surface NEW first-ever MPP fetchers and new device clickers and grow the rings, rather than mailing the legacy mass — legacy-address bounce risk is real. Content and timing inherit from the Apple doctrine (image-rich, over-50, morning-read anchor); measurement is per-recipient, never raw opens.",
-		NorthStars: "- New MPP-LIVE discoveries (first-ever fetchers surfaced by the lane): green ≥25, yellow 10–25, red <10\n- Same-day MPP fetch rate: green ≥30%, red <15%\n- Ring growth: new fetchers + new device clickers (scaling KPI)\n- Acceptance at yahoo-stack tempo (deferral count watched)",
+		ISP:         "att",
+		Title:       "AT&T — Ring Discovery (yahoo-stack tempo, Apple-hosted)",
+		DoctrineMD:  "The ATT family (att.net / sbcglobal / bellsouth / pacbell / ameritech…) rides the Yahoo filtering stack at the gateway — tempo and deferral discipline inherit from the Yahoo/AOL doctrines — but the population itself is heavily iPhone-hosted: **~50% of ATT-domain engagement is Apple MPP**, so liveness, placement, and timing read through the Apple instrument set (MPP fetch = per-recipient inbox proof). The engaged universe is small (~2.4k), so the lane's scaling job is **discovery**: surface NEW first-ever MPP fetchers and new device clickers and grow the rings, rather than mailing the legacy mass — legacy-address bounce risk is real. Content and timing inherit from the Apple doctrine (image-rich, over-50, morning-read anchor); measurement is per-recipient, never raw opens.",
+		NorthStars:  "- New MPP-LIVE discoveries (first-ever fetchers surfaced by the lane): green ≥25, yellow 10–25, red <10\n- Same-day MPP fetch rate: green ≥30%, red <15%\n- Ring growth: new fetchers + new device clickers (scaling KPI)\n- Acceptance at yahoo-stack tempo (deferral count watched)",
 		HealthBands: "Acceptance: green ≥93% with deferral msgs <300, red <85%. Bounce: green <5%, red >10% (legacy-address risk). Same-day MPP fetch: green ≥30%, red <15%. Engaged universe baseline: ~2.4k.",
 	},
 }

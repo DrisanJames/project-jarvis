@@ -1434,12 +1434,21 @@ func (och *OfferCenterHandlers) HandleListOffersWithCounts(w http.ResponseWriter
 	}
 
 	if len(offers) > 0 {
+		// Bound the grouped count to the offers actually being listed — the
+		// suppression table holds multi-million-row Optizmo syncs and an
+		// unbounded GROUP BY over it on every screen load is a prod hazard
+		// (QA finding C3, 2026-06-12).
+		offerIDs := make([]string, 0, len(offers))
+		for id := range idx {
+			offerIDs = append(offerIDs, id)
+		}
 		countRows, err := och.db.QueryContext(ctx,
 			`SELECT offer_id::text,
 				COUNT(*),
 				COUNT(*) FILTER (WHERE reason = 'converted' AND suppressed_at > NOW() - INTERVAL '30 days')
 			 FROM mailing_offer_suppressions
-			 GROUP BY offer_id`)
+			 WHERE offer_id = ANY($1::uuid[])
+			 GROUP BY offer_id`, pq.Array(offerIDs))
 		if err != nil {
 			// Non-fatal: ship the list without counts rather than failing the screen.
 			log.Printf("WARN: offer suppression counts query failed: %v", err)

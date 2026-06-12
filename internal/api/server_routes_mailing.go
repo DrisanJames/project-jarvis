@@ -58,10 +58,6 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// through the /api auth middleware dance when diagnosing a live send.
 		s.router.Get("/api/outbox/summary", HandleOutboxSummary(db))
 		s.router.Get("/api/outbox/dead-letter", HandleOutboxDeadLetter(db))
-		// Sending-engine live status (queue depth, wave manager, throughput,
-		// deferral storms, worker heartbeats). Cached snapshot — safe to poll
-		// every 10s; first call starts the background refresher.
-		s.router.Get("/api/mailing/outbox/engine-status", HandleOutboxEngineStatus(db))
 
 		// Wave processor pipeline observability (SA-7, 2026-05-09). Same
 		// reason as outbox/summary — register on root router BEFORE the
@@ -1118,6 +1114,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Baselines read mailing_domain_agent_scorecard; see send_baselines.go.
 			sendBaselinesAPI := NewSendBaselinesAPI(db)
 			sendBaselinesAPI.RegisterRoutes(r)
+
+			// Sending-engine live status (queue depth, wave manager, throughput,
+			// deferral storms, worker heartbeats). Cached snapshot — safe to poll
+			// every 10s. Authed: the payload carries campaign names + worker
+			// errors (QA finding H2).
+			r.Get("/outbox/engine-status", HandleOutboxEngineStatus(db))
 
 			// === AUDIENCE CADENCE v3 — messages-to-engage/convert KPIs per ISP +
 			// the ISP doctrine registry (audience_cadence_kpis.go).

@@ -229,7 +229,7 @@ export const CpmPlanner: React.FC = () => {
 
   useEffect(() => {
     loadAll();
-    const t = window.setInterval(loadAll, 30000); // 30s auto-refresh
+    const t = window.setInterval(loadAll, 300_000); // 5-min auto-refresh (heavy aggregates server-side)
     return () => window.clearInterval(t);
   }, [loadAll]);
 
@@ -754,7 +754,7 @@ export const CpmPlanner: React.FC = () => {
                 <th style={thStyle}>Planned Volume</th>
                 <th style={thStyle}>Conversions</th>
                 <th style={thStyle}>Days</th>
-                <th style={thStyle}>Delivered</th>
+                <th style={thStyle}>Volume Sent</th>
                 <th style={thStyle}>Actual eCPM</th>
                 <th style={thStyle}>eCPA Actual</th>
                 <th style={thStyle}>Status</th>

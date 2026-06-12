@@ -290,13 +290,14 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 func (h *CpmPlannerHandlers) loadCapacity(orgID string) cpmCapacity {
 	c := cpmCapacity{Risk: "LOW"}
 
-	// 14-day average daily 'sent' trend.
+	// 14-day average daily sends — from the daily domain-agent scorecard
+	// rollup, NOT raw tracking events (a 14-day event scan per poll was a
+	// prod hazard — QA finding C4, 2026-06-12).
 	trendQ := `
 		SELECT COALESCE(AVG(cnt), 0) FROM (
-			SELECT date_trunc('day', event_at) AS d, COUNT(*) AS cnt
-			FROM mailing_tracking_events
-			WHERE organization_id = $1 AND event_type = 'sent'
-			  AND event_at >= NOW() - INTERVAL '14 days'
+			SELECT day, SUM(sends) AS cnt
+			FROM mailing_domain_agent_scorecard
+			WHERE organization_id = $1 AND day >= CURRENT_DATE - 14 AND day < CURRENT_DATE
 			GROUP BY 1
 		) t`
 	if err := h.db.QueryRow(trendQ, orgID).Scan(&c.PlatformDaily); err != nil {

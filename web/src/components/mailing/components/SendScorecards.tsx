@@ -485,6 +485,11 @@ const ScorecardsTab: React.FC = () => {
 
       {error && <div style={{ color: C.red, marginBottom: 12 }}>Error: {error}</div>}
 
+      <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 10 }}>
+        Note: conversions are offer-level (Everflow postbacks) and credited to the day's highest-volume
+        sending domain for that offer × ISP — read them as offer performance, not domain attribution.
+      </div>
+
       <div style={{ ...cardStyle, height: 280 }}>
         <div style={{ color: C.heading, fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Daily totals for current filter</div>
         <ResponsiveContainer width="100%" height={230}>

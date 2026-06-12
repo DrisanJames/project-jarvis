@@ -509,6 +509,7 @@ func (a *SendBaselinesAPI) HandleSendScorecards(w http.ResponseWriter, r *http.R
 		LEFT JOIN mailing_offers o ON o.id = c.offer_id
 		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
 		WHERE c.organization_id = $1 AND c.created_at >= $2
+		ORDER BY c.created_at DESC
 		LIMIT 5000`, orgID, since)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "scorecard campaigns query: " + err.Error()})

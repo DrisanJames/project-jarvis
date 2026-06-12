@@ -179,6 +179,8 @@ func (h *DomainDNSHealthHandler) Handle(w http.ResponseWriter, r *http.Request) 
 	})
 
 	// --- NS on the apex + provider inference --------------------------------
+	// Servers must never marshal as null — the modal reads .servers.length.
+	resp.NS = dnsNSResult{Servers: []string{}}
 	run(func() {
 		lctx, lcancel := context.WithTimeout(ctx, 5*time.Second)
 		defer lcancel()
@@ -186,7 +188,7 @@ func (h *DomainDNSHealthHandler) Handle(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return
 		}
-		var servers []string
+		servers := []string{}
 		for _, ns := range nss {
 			servers = append(servers, strings.TrimSuffix(strings.ToLower(ns.Host), "."))
 		}
