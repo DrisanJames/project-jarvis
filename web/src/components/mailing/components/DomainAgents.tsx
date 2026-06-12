@@ -18,6 +18,7 @@ import { DOMAIN_AGENT_BASE, DomainSummary, Plan, postureToBadge } from './domain
 import {
   C, panelStyle, btnStyle, btnDisabledStyle, Loading, ErrorState, fmtInt, fmtPct100,
 } from './domain-agents/ui';
+import { AgentChatSection } from './domain-agents/AgentChatSection';
 import { ScorecardSection } from './domain-agents/ScorecardSection';
 import { UpcomingSendsSection } from './domain-agents/UpcomingSendsSection';
 import { BriefingPlanSection } from './domain-agents/BriefingPlanSection';
@@ -196,6 +197,8 @@ export const DomainAgents: React.FC = () => {
 
       {/* ── Main pane ──────────────────────────────────────────────────── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <AgentChatSection domain={selected} />
+
         {!selected && !domainsLoading && (
           <div style={{ ...panelStyle, color: C.muted, fontSize: 13 }}>
             Select a domain on the left to view its scorecard and plan.

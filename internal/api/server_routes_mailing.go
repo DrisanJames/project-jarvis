@@ -1158,6 +1158,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)
 
+			// === DOMAIN AGENT CHAT — conversational scheduling copilot ===
+			// Full-power chat over the Domain Agent lifecycle (scorecard →
+			// briefing → plan → approve-to-deploy) + the Copilot toolset
+			// (clone/deploy/stop). See domain_agent_chat.go.
+			domainAgentChat := NewDomainAgentChat(db, s.openAIConfig, domainAgentAPI, campaignCopilot)
+			domainAgentChat.RegisterRoutes(r)
+
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===
 			ensureAgentTables(db)
 			marketingAgent := NewEmailMarketingAgent(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
