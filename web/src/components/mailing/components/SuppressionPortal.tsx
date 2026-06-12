@@ -1642,6 +1642,9 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
   const [error, setError] = useState<string | null>(null);
   const [scheduledCampaigns, setScheduledCampaigns] = useState<ScheduledCampaign[]>([]);
   const [showCampaignWarning, setShowCampaignWarning] = useState(false);
+  // The scheduled-campaign list can be 1700+ rows — collapsed by default so
+  // the warning is a banner, not a wall (operator feedback 2026-06-12).
+  const [showScheduledList, setShowScheduledList] = useState(false);
   const [cancellingCampaigns, setCancellingCampaigns] = useState(false);
 
   // Check for scheduled campaigns on mount
@@ -1859,14 +1862,16 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
             Uploading a suppression list while campaigns are scheduled could affect sending. 
             It's recommended to cancel all scheduled campaigns before importing.
           </p>
-          <div style={{ fontSize: '12px', marginBottom: '12px' }}>
-            {scheduledCampaigns.map(c => (
-              <div key={c.id} style={{ padding: '4px 0', borderBottom: '1px solid rgba(253,203,110,0.2)', color: '#e0e6f0' }}>
-                <strong>{c.name}</strong> — {c.status}
-                {c.scheduled_at && <> (scheduled: {new Date(c.scheduled_at).toLocaleString()})</>}
-              </div>
-            ))}
-          </div>
+          {showScheduledList && (
+            <div style={{ fontSize: '12px', marginBottom: '12px', maxHeight: 220, overflowY: 'auto', border: '1px solid rgba(253,203,110,0.2)', borderRadius: 6, padding: '0 8px' }}>
+              {scheduledCampaigns.map(c => (
+                <div key={c.id} style={{ padding: '4px 0', borderBottom: '1px solid rgba(253,203,110,0.2)', color: '#e0e6f0' }}>
+                  <strong>{c.name}</strong> — {c.status}
+                  {c.scheduled_at && <> (scheduled: {new Date(c.scheduled_at).toLocaleString()})</>}
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
               className="btn-danger"
@@ -1879,6 +1884,13 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
               ) : (
                 <><FontAwesomeIcon icon={faBan} /> Cancel All Scheduled Campaigns</>
               )}
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: '13px', padding: '6px 16px' }}
+              onClick={() => setShowScheduledList(v => !v)}
+            >
+              {showScheduledList ? 'Hide' : 'Show'} campaign list ({scheduledCampaigns.length})
             </button>
             <button
               className="btn-secondary"

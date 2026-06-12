@@ -107,18 +107,19 @@ export const UpcomingSendsSection: React.FC<{ domain: string }> = ({ domain }) =
       {loading && <Loading label="Loading upcoming sends…" />}
       {!loading && error && <ErrorState message={error} onRetry={fetchUpcoming} />}
 
-      {!loading && !error && data && data.dates.length === 0 && (
+      {!loading && !error && data && (data.dates ?? []).length === 0 && (
         <div style={{ color: C.muted, fontSize: 13, padding: '10px 2px' }}>
           Nothing scheduled for this domain in the next {days} day{days === 1 ? '' : 's'}.
         </div>
       )}
 
-      {!loading && !error && data && data.dates.map((day) => (
+      {/* Go marshals empty slices as null — guard every array access. */}
+      {!loading && !error && data && (data.dates ?? []).map((day) => (
         <div key={day.date} style={{ marginTop: 10 }}>
           <div style={{ fontSize: 13, color: C.text, fontWeight: 600, margin: '6px 0' }}>
             {dayLabel(day.date)}
             <span style={{ color: C.muted, fontWeight: 400 }}>
-              {' '}· {day.campaigns.length} campaign{day.campaigns.length === 1 ? '' : 's'} · {fmtInt(day.recipients)} planned recipients
+              {' '}· {(day.campaigns ?? []).length} campaign{(day.campaigns ?? []).length === 1 ? '' : 's'} · {fmtInt(day.recipients)} planned recipients
               {day.drip_campaigns > 0 && (
                 <> · +{day.drip_campaigns} drip touch{day.drip_campaigns === 1 ? '' : 'es'} ({fmtInt(day.drip_recipients)} recipients)</>
               )}
@@ -137,7 +138,7 @@ export const UpcomingSendsSection: React.FC<{ domain: string }> = ({ domain }) =
               </tr>
             </thead>
             <tbody>
-              {day.campaigns.map((c) => (
+              {(day.campaigns ?? []).map((c) => (
                 <tr key={c.id}>
                   <td style={tdStyle}>{fmtTime(c.first_wave_at)}</td>
                   <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.name}>

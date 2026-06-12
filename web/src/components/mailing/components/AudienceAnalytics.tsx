@@ -50,12 +50,12 @@
 // ever issued by explicit submits, so they are not cached at all. Each panel
 // shows fetch timing and a truncation banner when the server clamps results.
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faSpinner, faSyncAlt, faExclamationTriangle, faUsers, faCircle,
   faSearch, faSeedling, faInfoCircle, faChartLine, faLayerGroup,
-  faChevronDown, faChevronRight, faUser, faHistory, faInbox, faMoon,
+  faChevronDown, faChevronRight, faUser, faHistory, faMoon,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
@@ -63,9 +63,6 @@ import {
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
-
-const WelcomeAudienceHealth = React.lazy(() =>
-  import('./WelcomeAudienceHealth').then((m) => ({ default: m.WelcomeAudienceHealth })));
 
 const PAGE_VERSION = '1.0';
 
@@ -256,7 +253,7 @@ interface RecentMember {
   at: string; // ISO timestamp of last lookup
 }
 
-type TabId = 'overview' | 'sources' | 'growth' | 'member' | 'welcome';
+type TabId = 'overview' | 'sources' | 'growth' | 'member';
 
 type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
@@ -2274,22 +2271,6 @@ const MemberTab: React.FC = () => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TAB 5 — WELCOME POOL (embedded operational gauge)
-// ═══════════════════════════════════════════════════════════════════════════
-
-const WelcomePoolTab: React.FC = () => (
-  <div>
-    <div style={{ ...styles.lakeOnlyNotice, marginBottom: 16 }}>
-      <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 8, color: COLORS.accentAlt }} />
-      This is the operational welcome-pool gauge (upload trigger) — embedded unchanged from Welcome Audience Health.
-    </div>
-    <Suspense fallback={<div style={styles.panel}><LoadingRow label="Loading Welcome Audience Health…" /></div>}>
-      <WelcomeAudienceHealth />
-    </Suspense>
-  </div>
-);
-
-// ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2298,7 +2279,6 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof faChartLine }> = [
   { id: 'sources', label: 'Sources', icon: faLayerGroup },
   { id: 'growth', label: 'Growth', icon: faSeedling },
   { id: 'member', label: 'Member Lookup', icon: faUser },
-  { id: 'welcome', label: 'Welcome Pool', icon: faInbox },
 ];
 
 export const AudienceAnalytics: React.FC = () => {
@@ -2485,11 +2465,6 @@ export const AudienceAnalytics: React.FC = () => {
           {visited.has('member') && (
             <div style={{ display: activeTab === 'member' ? 'block' : 'none' }}>
               <MemberTab />
-            </div>
-          )}
-          {visited.has('welcome') && (
-            <div style={{ display: activeTab === 'welcome' ? 'block' : 'none' }}>
-              <WelcomePoolTab />
             </div>
           )}
         </>

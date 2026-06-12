@@ -208,4 +208,50 @@ const tdStyle: React.CSSProperties = {
   padding: '10px 14px', fontSize: 13, color: '#e5e7eb',
 };
 
+// WorkerHealthWidget — the compact dashboard card that replaced the dedicated
+// Worker Health tab (retired 2026-06-12). Polls the same endpoint every 60s;
+// green when every worker beats on time, red with the stalled names when not.
+export const WorkerHealthWidget: React.FC = () => {
+  const [data, setData] = useState<HealthResponse | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const load = () => {
+      apiFetch('/api/worker-health', { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => { setData(d); setError(false); })
+        .catch(() => setError(true));
+    };
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const stalled = (data?.workers ?? []).filter(w => w.stalled || w.last_status === 'error');
+  const total = (data?.workers ?? []).length;
+  const healthy = !error && stalled.length === 0;
+
+  return (
+    <div className="system-card ig-card-hover" style={{ borderColor: healthy ? undefined : 'rgba(239,68,68,0.5)' }}>
+      <div className="system-header">
+        <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? '#22c55e' : '#ef4444' }} /></span>
+        <h3>Workers</h3>
+        <span className={`status-badge ${healthy ? 'active' : 'inactive'}`}>
+          {error ? 'unknown' : healthy ? `${total} healthy` : `${stalled.length} stalled`}
+        </span>
+      </div>
+      <div className="system-description">
+        {healthy && <p>All background workers beating on schedule.</p>}
+        {!healthy && !error && (
+          <p style={{ color: '#ef4444' }}>
+            {stalled.slice(0, 4).map(w => w.worker_name).join(', ')}
+            {stalled.length > 4 ? ` +${stalled.length - 4} more` : ''} — check heartbeats.
+          </p>
+        )}
+        {error && <p>Worker health endpoint unreachable.</p>}
+      </div>
+    </div>
+  );
+};
+
 export default WorkerHealthDashboard;

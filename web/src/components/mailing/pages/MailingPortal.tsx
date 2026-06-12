@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { 
-  faChartLine, faEnvelope, faBullhorn, faPaperPlane, faRoute,
-  faListUl, faCrosshairs, faBolt, faFileImport,
+  faChartLine, faEnvelope, faBullhorn, faPaperPlane,
+  faListUl, faCrosshairs, faBolt,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
-  faSpinner, faEye, faSeedling, faHeartPulse, faWandMagicSparkles,
+  faSpinner, faSeedling, faWandMagicSparkles,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -13,6 +13,7 @@ import './MailingPortal.css';
 import '../shared/animations.css';
 import { ToastProvider } from '../shared/ToastSystem';
 import { apiFetch } from '../shared/apiFetch';
+import { WorkerHealthWidget } from '../components/WorkerHealthDashboard';
 
 // ── Lazy-loaded heavy components (code-split into separate chunks) ──────────
 const ListPortal = lazy(() => import('../components/ListPortal').then(m => ({ default: m.ListPortal })));
@@ -21,7 +22,6 @@ const ISPAgentIntelligence = lazy(() => import('../components/ISPAgentIntelligen
 const SuppressionPortal = lazy(() => import('../components/SuppressionPortal').then(m => ({ default: m.SuppressionPortal })));
 const InboxProfiles = lazy(() => import('../components/InboxProfiles').then(m => ({ default: m.InboxProfiles })));
 const SendTestEmail = lazy(() => import('../components/SendTestEmail').then(m => ({ default: m.SendTestEmail })));
-const JourneyCenter = lazy(() => import('../components/JourneyCenter').then(m => ({ default: m.JourneyCenter })));
 const MissionControl = lazy(() => import('../components/MissionControl').then(m => ({ default: m.MissionControl })));
 const DomainCenter = lazy(() => import('../components/DomainCenter').then(m => ({ default: m.DomainCenter })));
 const DomainAgents = lazy(() => import('../components/DomainAgents').then(m => ({ default: m.DomainAgents })));
@@ -34,7 +34,6 @@ const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard')
 const SendDayPlanner = lazy(() => import('../components/SendDayPlanner').then(m => ({ default: m.SendDayPlanner })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
-const DataNormalizerPanel = lazy(() => import('../components/DataNormalizerPanel').then(m => ({ default: m.DataNormalizerPanel })));
 const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
 const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketingAgent').then(m => ({ default: m.EmailMarketingAgent })));
 // WarmupDashboard tab retired 2026-04-27. The IP Activity panel inside
@@ -42,8 +41,6 @@ const EmailMarketingAgentPanel = lazy(() => import('../components/EmailMarketing
 // (including never-mailed-on IPs) the operator needs. The component file
 // and /api/mailing/warmup/dashboard backend remain in place as a safety
 // follow-up; nothing else imports them and they cause no harm.
-const DeliverabilityControl = lazy(() => import('../components/DeliverabilityControl').then(m => ({ default: m.DeliverabilityControl })));
-const DataPipelineDashboard = lazy(() => import('../components/DataPipelineDashboard').then(m => ({ default: m.DataPipelineDashboard })));
 // AudienceAnalytics (2026-06-09) replaced WelcomeAudienceHealth as the
 // 'audience-health' tab; the welcome-pool gauge lives on as a sub-tab inside it.
 const AudienceAnalytics = lazy(() => import('../components/AudienceAnalytics').then(m => ({ default: m.AudienceAnalytics })));
@@ -51,8 +48,6 @@ const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceBy
 const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
 const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m => ({ default: m.CreativeStudio })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
-const WorkerHealthDashboard = lazy(() => import('../components/WorkerHealthDashboard').then(m => ({ default: m.WorkerHealthDashboard })));
-const AttributionMatchDashboard = lazy(() => import('../components/AttributionMatchDashboard').then(m => ({ default: m.AttributionMatchDashboard })));
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
@@ -62,7 +57,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'journey-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'deliverability' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'data-import' | 'content-library' | 'site-traffic' | 'marketing-agent' | 'ai-agents' | 'data-pipeline' | 'outbox' | 'worker-health' | 'attribution-match' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio';
 
 interface Tab {
   id: TabId;
@@ -75,8 +70,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'marketing-agent'] },
-  { id: 'journey-center', label: 'Journey Center', icon: faRoute, description: 'Monitor & manage automated journeys' },
-  { id: 'lists', label: 'Lists & Segments', icon: faListUl, description: 'Manage lists, segments & subscribers' },
+  { id: 'lists', label: 'Segments', icon: faListUl, description: 'Manage segments, lists & subscribers' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
@@ -88,15 +82,9 @@ const tabs: Tab[] = [
   { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
   { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
   { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
-  { id: 'deliverability', label: 'Deliverability', icon: faBolt, description: 'ISP Health Center — per-ISP delivery, deferrals, bounces, FBL, IP activity & rate controls' },
   { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
-  { id: 'data-import', label: 'Data Import', icon: faFileImport, description: 'S3 data normalization & import monitoring' },
-  { id: 'data-pipeline', label: 'Data Pipeline', icon: faDatabase, description: 'Automated S3 ingestion, validation & list replenishment' },
   { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Inbound data partner ingestion — API keys, batches, drip orchestrator, creatives' },
   { id: 'outbox', label: 'Outbox', icon: faPaperPlane, description: 'Durable injection outbox — live state, stuck rows & dead-letter queue' },
-  { id: 'worker-health', label: 'Worker Health', icon: faHeartPulse, description: 'Background-worker heartbeats & stall detection (cleanup, archiver, segments)' },
-  { id: 'attribution-match', label: 'Attribution Match', icon: faCrosshairs, description: 'Resolve Everflow click & conversion CSVs back to subscriber profiles' },
-  { id: 'site-traffic', label: 'Site Traffic', icon: faEye, description: 'Real-time visitor tracking from owned content sites' },
 ];
 
 interface VersionInfo {
@@ -164,8 +152,6 @@ export const MailingPortal: React.FC = () => {
       case 'send-day':
       case 'marketing-agent':
         return <CampaignCenterSection activeSubTab={activeTab} onSubTabChange={setActiveTab} pendingOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} copilotOpen={copilotOpen} setCopilotOpen={setCopilotOpen} />;
-      case 'journey-center':
-        return <JourneyCenter />;
       case 'sending-plans':
       case 'profiles':
       case 'jarvis':
@@ -193,8 +179,6 @@ export const MailingPortal: React.FC = () => {
         return <TemplatesManager />;
       case 'delivery-servers':
         return <DeliveryServersManager />;
-      case 'deliverability':
-        return <Suspense fallback={<ChunkLoader />}><DeliverabilityControl /></Suspense>;
       case 'offers':
         return <OfferManagement />;
       case 'automations':
@@ -205,20 +189,10 @@ export const MailingPortal: React.FC = () => {
         return <MissionControl />;
       case 'consciousness':
         return <ConsciousnessDashboard />;
-      case 'data-import':
-        return <DataNormalizerPanel />;
-      case 'data-pipeline':
-        return <Suspense fallback={<ChunkLoader />}><DataPipelineDashboard /></Suspense>;
       case 'data-partners':
         return <Suspense fallback={<ChunkLoader />}><PartnerIngestPortal /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
-      case 'worker-health':
-        return <Suspense fallback={<ChunkLoader />}><WorkerHealthDashboard /></Suspense>;
-      case 'attribution-match':
-        return <Suspense fallback={<ChunkLoader />}><AttributionMatchDashboard /></Suspense>;
-      case 'site-traffic':
-        return <SiteTrafficDashboard />;
       default:
         return <EnhancedDashboard />;
     }
@@ -368,6 +342,7 @@ const EnhancedDashboard: React.FC = () => {
     <div className="enhanced-dashboard ig-fade-in">
       {/* System Overview Cards */}
       <div className="system-overview ig-stagger">
+        <WorkerHealthWidget />
         <div className="system-card sending ig-card-hover ig-scan-line">
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
@@ -1495,414 +1470,6 @@ const AIAgentsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId
       <Suspense fallback={<ChunkLoader />}>
         {subTab === 'profiles' ? <InboxProfiles /> : subTab === 'jarvis' ? <JarvisDashboard /> : <ISPAgentIntelligence />}
       </Suspense>
-    </div>
-  );
-};
-
-// ─── Site Traffic Dashboard ────────────────────────────────────────────────
-const PAGE_VERSION_SITE_TRAFFIC = '3.0';
-const SiteTrafficDashboard: React.FC = () => {
-  const { organization } = useAuth();
-  const orgId = organization?.id || '';
-  const [traffic, setTraffic] = useState<any>(null);
-  const [domains, setDomains] = useState<any[]>([]);
-  const [visitors, setVisitors] = useState<any[]>([]);
-  const [selectedDomain, setSelectedDomain] = useState('');
-  const [timeRange, setTimeRange] = useState('24h');
-  const [snippet, setSnippet] = useState('');
-  const [snippetDomain, setSnippetDomain] = useState('discountblog.com');
-  const [showSnippet, setShowSnippet] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview'|'visitors'|'reconciliation'>('visitors');
-  const [reconData, setReconData] = useState<any>(null);
-  const [reconLoading, setReconLoading] = useState(false);
-
-  const fetchTraffic = React.useCallback(async () => {
-    try {
-      const params = new URLSearchParams({ range: timeRange });
-      if (selectedDomain) params.set('domain', selectedDomain);
-      const res = await apiFetch(`/api/mailing/site-pixel/traffic?${params}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
-      });
-      if (res.ok) setTraffic(await res.json());
-    } catch {}
-    setLoading(false);
-  }, [orgId, selectedDomain, timeRange]);
-
-  const fetchDomains = React.useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/mailing/site-pixel/domains', {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setDomains(d.domains || []);
-      }
-    } catch {}
-  }, [orgId]);
-
-  const fetchVisitors = React.useCallback(async () => {
-    try {
-      const params = new URLSearchParams({ range: timeRange });
-      if (selectedDomain) params.set('domain', selectedDomain);
-      const res = await apiFetch(`/api/mailing/site-pixel/visitors?${params}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setVisitors(d.visitors || []);
-      }
-    } catch {}
-  }, [orgId, selectedDomain, timeRange]);
-
-  useEffect(() => { fetchDomains(); }, [fetchDomains]);
-  useEffect(() => { fetchTraffic(); fetchVisitors(); const iv = setInterval(() => { fetchTraffic(); fetchVisitors(); }, 15000); return () => clearInterval(iv); }, [fetchTraffic, fetchVisitors]);
-
-  useEffect(() => {
-    const es = new EventSource('/api/mailing/site-pixel/traffic/stream');
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data);
-        if (evt.type === 'event') {
-          setLiveEvents(prev => [evt, ...prev].slice(0, 50));
-        }
-        if (evt.active_visitors !== undefined) {
-          setTraffic((prev: any) => prev ? { ...prev, active_visitors: evt.active_visitors } : prev);
-        }
-      } catch {}
-    };
-    return () => es.close();
-  }, []);
-
-  const fetchSnippet = async () => {
-    try {
-      const res = await apiFetch(`/api/mailing/site-pixel/snippet?domain=${encodeURIComponent(snippetDomain)}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setSnippet(d.snippet || '');
-      }
-    } catch {}
-  };
-
-  const fetchRecon = React.useCallback(async () => {
-    setReconLoading(true);
-    try {
-      const reconRange = timeRange === '1h' ? '1d' : timeRange;
-      const res = await apiFetch(`/api/mailing/site-pixel/isp-reconciliation?range=${reconRange}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': orgId },
-      });
-      if (res.ok) setReconData(await res.json());
-    } catch {}
-    setReconLoading(false);
-  }, [orgId, timeRange]);
-
-  const cardStyle: React.CSSProperties = { background: '#0d1526', borderRadius: 10, padding: '16px 20px', border: '1px solid rgba(0,200,255,0.08)' };
-  const statStyle: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#e0e6f0', lineHeight: 1 };
-  const labelStyle: React.CSSProperties = { fontSize: 11, color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginTop: 4 };
-  const tabBtnStyle = (active: boolean): React.CSSProperties => ({
-    background: active ? '#00b0ff' : 'transparent', color: active ? '#0a0f1a' : '#e0e6f0',
-    border: active ? 'none' : '1px solid rgba(0,200,255,0.15)', borderRadius: 8,
-    padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontWeight: active ? 700 : 500,
-  });
-
-  const parseUA = (ua: string) => {
-    if (!ua) return { browser: '—', os: '—' };
-    let browser = '—', os = '—';
-    if (ua.includes('Chrome') && !ua.includes('Edg')) browser = 'Chrome';
-    else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
-    else if (ua.includes('Firefox')) browser = 'Firefox';
-    else if (ua.includes('Edg')) browser = 'Edge';
-    if (ua.includes('Windows')) os = 'Windows';
-    else if (ua.includes('Mac OS')) os = 'macOS';
-    else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
-    else if (ua.includes('Android')) os = 'Android';
-    else if (ua.includes('Linux')) os = 'Linux';
-    return { browser, os };
-  };
-
-  const identifiedCount = visitors.length;
-  const uniqueEmails = new Set(visitors.map(v => v.email)).size;
-
-  return (
-    <div className="manager-page">
-      <div className="page-explanation">
-        <h3>Site Traffic Intelligence</h3>
-        <p>Track identified email subscribers as they browse your owned sites. See exactly who clicked through from email, what pages they viewed, and their device details.</p>
-      </div>
-
-      {/* Controls */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}
-          style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, color: '#e0e6f0', padding: '8px 12px', fontSize: 13 }}>
-          <option value="">All Domains</option>
-          {domains.map((d: any) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
-        </select>
-        {['1h','24h','7d','30d'].map(r => (
-          <button key={r} onClick={() => setTimeRange(r)}
-            style={{ background: timeRange === r ? '#00b0ff' : '#0a0f1a', color: timeRange === r ? '#0a0f1a' : '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontWeight: timeRange === r ? 700 : 400 }}>
-            {r === '1h' ? '1 Hour' : r === '24h' ? '24 Hours' : r === '7d' ? '7 Days' : '30 Days'}
-          </button>
-        ))}
-        <button onClick={() => { setShowSnippet(!showSnippet); if (!snippet) fetchSnippet(); }}
-          style={{ marginLeft: 'auto', background: '#00b894', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
-          {showSnippet ? 'Hide Pixel Code' : 'Get Pixel Code'}
-        </button>
-      </div>
-
-      {/* Pixel Snippet */}
-      {showSnippet && (
-        <div style={{ ...cardStyle, marginBottom: 16 }}>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'center' }}>
-            <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Domain:</label>
-            <input value={snippetDomain} onChange={e => setSnippetDomain(e.target.value)}
-              style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '6px 10px', fontSize: 13, width: 200 }} />
-            <button onClick={fetchSnippet} style={{ background: '#00b0ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
-              Generate
-            </button>
-          </div>
-          {snippet && (
-            <div>
-              <p style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '0 0 8px' }}>Paste this before the closing <code>&lt;/body&gt;</code> tag on every page of <strong>{snippetDomain}</strong>:</p>
-              <pre style={{ background: '#0a0f1a', borderRadius: 8, padding: 14, fontSize: 11, color: '#00e5ff', overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid rgba(0,200,255,0.08)' }}>
-                {snippet}
-              </pre>
-              <button onClick={() => navigator.clipboard.writeText(snippet)} style={{ marginTop: 8, background: '#00b0ff', color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
-                Copy to Clipboard
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin size="2x" /></div>
-      ) : (
-        <>
-          {/* Stats Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-            <div style={{ ...cardStyle, borderLeft: '3px solid #00b894' }}>
-              <div style={{ ...statStyle, color: '#00b894' }}>{traffic?.active_visitors ?? 0}</div>
-              <div style={labelStyle}>Active Now</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={statStyle}>{(traffic?.total_pageviews ?? 0).toLocaleString()}</div>
-              <div style={labelStyle}>Page Views</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={statStyle}>{(traffic?.unique_visitors ?? 0).toLocaleString()}</div>
-              <div style={labelStyle}>Unique Visitors</div>
-            </div>
-            <div style={{ ...cardStyle, borderLeft: '3px solid #f59e0b' }}>
-              <div style={{ ...statStyle, color: '#f59e0b' }}>{uniqueEmails}</div>
-              <div style={labelStyle}>Identified Subscribers</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={statStyle}>{domains.length}</div>
-              <div style={labelStyle}>Tracked Domains</div>
-            </div>
-          </div>
-
-          {/* Tab switcher */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            <button style={tabBtnStyle(activeTab === 'visitors')} onClick={() => setActiveTab('visitors')}>Identified Visitors</button>
-            <button style={tabBtnStyle(activeTab === 'overview')} onClick={() => setActiveTab('overview')}>Overview</button>
-            <button style={tabBtnStyle(activeTab === 'reconciliation')} onClick={() => { setActiveTab('reconciliation'); if (!reconData) fetchRecon(); }}>ISP Reconciliation</button>
-          </div>
-
-          {activeTab === 'visitors' && (
-            <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 14px', fontSize: 14, color: '#e0e6f0' }}>
-                Identified Email Subscribers ({identifiedCount} events)
-              </h4>
-              {visitors.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#64748b' }}>
-                  <p style={{ fontSize: 14, marginBottom: 8 }}>No identified visitors yet.</p>
-                  <p style={{ fontSize: 12 }}>When email subscribers click through to your sites, their visits will appear here with full identity — email, pages viewed, IP address, and device info.</p>
-                </div>
-              ) : (
-                <div style={{ overflow: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '2px solid rgba(0,200,255,0.12)' }}>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Subscriber</th>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Page Viewed</th>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Domain</th>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Device</th>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>IP</th>
-                        <th style={{ textAlign: 'left', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visitors.map((v: any, i: number) => {
-                        const { browser, os } = parseUA(v.user_agent);
-                        return (
-                          <tr key={i} style={{ borderBottom: '1px solid rgba(0,200,255,0.06)' }}>
-                            <td style={{ padding: '10px 8px' }}>
-                              <div style={{ color: '#00e5ff', fontWeight: 600, fontSize: 12 }}>{v.email}</div>
-                            </td>
-                            <td style={{ padding: '10px 8px' }}>
-                              <div style={{ color: '#e0e6f0', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.page_url}>
-                                {v.page_title || v.page_url || '/'}
-                              </div>
-                              {v.page_title && v.page_url && (
-                                <div style={{ color: '#4b5563', fontSize: 10, marginTop: 2 }}>{v.page_url}</div>
-                              )}
-                            </td>
-                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)' }}>{v.domain || '—'}</td>
-                            <td style={{ padding: '10px 8px' }}>
-                              <span style={{ color: '#e0e6f0' }}>{browser}</span>
-                              <span style={{ color: '#4b5563', marginLeft: 4 }}>/ {os}</span>
-                            </td>
-                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', fontSize: 11 }}>{v.ip_address || '—'}</td>
-                            <td style={{ padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontSize: 11, whiteSpace: 'nowrap' }}>
-                              {v.event_at ? new Date(v.event_at).toLocaleString() : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'overview' && (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-                {/* Top Pages */}
-                <div style={cardStyle}>
-                  <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Top Pages</h4>
-                  {(traffic?.top_pages || []).length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No page view data yet. Install the pixel to start tracking.</p>}
-                  {(traffic?.top_pages || []).slice(0, 10).map((p: any, i: number) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 12 }}>
-                      <span style={{ color: '#00e5ff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.path || '/'}</span>
-                      <span style={{ color: 'rgba(180,210,240,0.65)', marginLeft: 12, fontWeight: 600 }}>{p.count}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Live Event Feed */}
-                <div style={cardStyle}>
-                  <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>
-                    <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#00b894', marginRight: 8, animation: 'pulse 2s infinite' }}></span>
-                    Live Event Feed
-                  </h4>
-                  {liveEvents.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>Waiting for events... Install the pixel to see real-time traffic.</p>}
-                  <div style={{ maxHeight: 280, overflow: 'auto' }}>
-                    {liveEvents.map((evt, i) => (
-                      <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid rgba(0,200,255,0.08)', fontSize: 11 }}>
-                        <span style={{ color: '#00b0ff', marginRight: 8 }}>{evt.event_type}</span>
-                        <span style={{ color: '#e0e6f0' }}>{evt.page_url || evt.page_title || '/'}</span>
-                        <span style={{ color: '#4b5563', float: 'right' }}>{evt.domain}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Tracked Domains Table */}
-              <div style={cardStyle}>
-                <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#e0e6f0' }}>Tracked Domains (24h)</h4>
-                {domains.length === 0 && <p style={{ color: '#64748b', fontSize: 12 }}>No domains reporting yet.</p>}
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
-                      <th style={{ textAlign: 'left', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Domain</th>
-                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Page Views</th>
-                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Unique Visitors</th>
-                      <th style={{ textAlign: 'right', padding: 8, color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Last Seen</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {domains.map((d: any, i: number) => (
-                      <tr key={i} onClick={() => setSelectedDomain(d.domain)} style={{ cursor: 'pointer', borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
-                        <td style={{ padding: 8, color: '#00e5ff' }}>{d.domain}</td>
-                        <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.pageviews_24h?.toLocaleString()}</td>
-                        <td style={{ padding: 8, color: '#e0e6f0', textAlign: 'right' }}>{d.unique_visitors_24h?.toLocaleString()}</td>
-                        <td style={{ padding: 8, color: 'rgba(180,210,240,0.65)', textAlign: 'right', fontSize: 11 }}>{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-          {activeTab === 'reconciliation' && (
-            <div style={cardStyle}>
-              <h4 style={{ margin: '0 0 14px', fontSize: 14, color: '#e0e6f0' }}>ISP Engagement Reconciliation</h4>
-              <p style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '0 0 16px' }}>
-                Compares email-reported clicks with confirmed site visits by ISP. A <span style={{ color: '#ef4444' }}>low validation %</span> or <span style={{ color: '#f59e0b' }}>high ghost count</span> indicates ISP metric suppression.
-              </p>
-              {reconLoading ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>Loading reconciliation data...</div>
-              ) : reconData ? (
-                <>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
-                    <div style={{ ...cardStyle, borderLeft: '3px solid #00e5ff' }}>
-                      <div style={{ ...statStyle, fontSize: 22 }}>{reconData.total_email_clicked?.toLocaleString() ?? 0}</div>
-                      <div style={labelStyle}>Email Clicks (Reported)</div>
-                    </div>
-                    <div style={{ ...cardStyle, borderLeft: '3px solid #00b894' }}>
-                      <div style={{ ...statStyle, fontSize: 22, color: '#00b894' }}>{reconData.total_site_visitors?.toLocaleString() ?? 0}</div>
-                      <div style={labelStyle}>Site Visitors (Confirmed)</div>
-                    </div>
-                    <div style={{ ...cardStyle, borderLeft: '3px solid #f59e0b' }}>
-                      <div style={{ ...statStyle, fontSize: 22, color: '#f59e0b' }}>{reconData.total_ghost_visitors?.toLocaleString() ?? 0}</div>
-                      <div style={labelStyle}>Ghost Visitors</div>
-                    </div>
-                  </div>
-                  <div style={{ overflow: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ borderBottom: '2px solid rgba(0,200,255,0.12)' }}>
-                          {['ISP','Subscribers','Sent','Opened','Clicked','Site Visitors','Pageviews','Validation %','Ghost Visitors'].map(h => (
-                            <th key={h} style={{ textAlign: h === 'ISP' ? 'left' : 'right', padding: '10px 8px', color: 'rgba(180,210,240,0.65)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(reconData.isps || []).map((row: any, i: number) => {
-                          const suppressed = row.click_validation_pct > 120 || (row.ghost_visitors > 0 && row.email_clicked === 0);
-                          return (
-                            <tr key={i} style={{ borderBottom: '1px solid rgba(0,200,255,0.06)', background: suppressed ? 'rgba(239,68,68,0.06)' : 'transparent' }}>
-                              <td style={{ padding: '10px 8px', color: '#00e5ff', fontWeight: 600 }}>{row.isp}{suppressed && <span style={{ marginLeft: 6, color: '#ef4444', fontSize: 10, fontWeight: 700 }}>SUPPRESSED</span>}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.total_subscribers?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_sent?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_opened?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#e0e6f0' }}>{row.email_clicked?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: '#00b894', fontWeight: 600 }}>{row.site_unique_visitors?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: 'rgba(180,210,240,0.65)' }}>{row.site_total_pageviews?.toLocaleString()}</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: row.click_validation_pct > 120 ? '#ef4444' : row.click_validation_pct > 80 ? '#00b894' : '#f59e0b', fontWeight: 700 }}>{row.click_validation_pct}%</td>
-                              <td style={{ padding: '10px 8px', textAlign: 'right', color: row.ghost_visitors > 0 ? '#f59e0b' : '#475569', fontWeight: row.ghost_visitors > 0 ? 700 : 400 }}>{row.ghost_visitors?.toLocaleString()}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{ marginTop: 12, padding: 12, background: 'rgba(0,200,255,0.04)', borderRadius: 8, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
-                    <strong style={{ color: '#e0e6f0' }}>Reading this report:</strong> Validation % above 100% means more people visited the site than the ISP reported as clicks — direct evidence of metric suppression. Ghost visitors are subscribers who visited the site but had zero recorded email clicks. A high ghost count for a specific ISP (e.g., Yahoo) is the "smoking gun."
-                  </div>
-                </>
-              ) : (
-                <div style={{ textAlign: 'center', padding: 40, color: '#64748b' }}>Click "ISP Reconciliation" to load the report.</div>
-              )}
-            </div>
-          )}
-
-          <div style={{ textAlign: 'right', fontSize: 10, color: '#374151', marginTop: 8 }}>v{PAGE_VERSION_SITE_TRAFFIC}</div>
-        </>
-      )}
     </div>
   );
 };
