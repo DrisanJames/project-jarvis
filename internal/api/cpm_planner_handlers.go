@@ -23,11 +23,14 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,22 +78,28 @@ func (h *CpmPlannerHandlers) ensureTables() {
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type cpmDealProgress struct {
-	Sent         int64   `json:"sent"`
-	Delivered    int64   `json:"delivered"`
-	Opened       int64   `json:"opened"`
-	Clicked      int64   `json:"clicked"`
-	HardBounces  int64   `json:"hard_bounces"`
-	SoftBounces  int64   `json:"soft_bounces"`
-	Conversions  int64   `json:"conversions"`
-	Payout       float64 `json:"payout"`
-	PctDelivered float64 `json:"pct_volume_delivered"` // sent / planned_volume (0..1+)
-	Revenue      float64 `json:"revenue_earned"`
-	ActualEcpm   float64 `json:"actual_ecpm"`
-	ActualEcpa   float64 `json:"actual_ecpa"` // proportional budget spent / conversions; 0 when no conversions
-	DaysElapsed  int64   `json:"days_elapsed"`
-	RequiredDaily float64 `json:"required_daily"`
-	ActualDaily   float64 `json:"actual_daily"`
-	OnPace        bool    `json:"on_pace"`
+	Sent        int64 `json:"sent"`
+	Delivered   int64 `json:"delivered"`
+	Opened      int64 `json:"opened"`
+	Clicked     int64 `json:"clicked"`
+	HardBounces int64 `json:"hard_bounces"`
+	SoftBounces int64 `json:"soft_bounces"`
+	// Conversions is the TOTAL (tracked + manual) — the field name predates
+	// manual uploads, kept as the total for backward compat. The split is
+	// exposed alongside it.
+	Conversions        int64   `json:"conversions"`
+	ConversionsTracked int64   `json:"conversions_tracked"` // everflow postbacks (countOfferConversions)
+	ConversionsManual  int64   `json:"conversions_manual"`  // operator CSV uploads / quick-adds
+	ManualRevenue      float64 `json:"manual_revenue"`      // raw revenue reported on manual rows
+	Payout             float64 `json:"payout"`
+	PctDelivered       float64 `json:"pct_volume_delivered"` // sent / planned_volume (0..1+)
+	Revenue            float64 `json:"revenue_earned"`
+	ActualEcpm         float64 `json:"actual_ecpm"`
+	ActualEcpa         float64 `json:"actual_ecpa"` // proportional budget spent / conversions; 0 when no conversions
+	DaysElapsed        int64   `json:"days_elapsed"`
+	RequiredDaily      float64 `json:"required_daily"`
+	ActualDaily        float64 `json:"actual_daily"`
+	OnPace             bool    `json:"on_pace"`
 }
 
 type cpmDeal struct {
@@ -253,18 +262,39 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 		if n, err := countOfferConversions(context.Background(), h.db, orgID, d.OfferID, d.startDate); err != nil {
 			log.Printf("[CpmPlanner] progress conversions for deal %s: %v", d.ID, err)
 		} else {
-			p.Conversions = n
+			p.ConversionsTracked = n
 		}
 	}
+
+	// Revenue basis per conversion: offer payout, else eCPA goal as estimate
+	// (same precedence the pre-manual revenue logic used).
+	basis := payout
+	if basis == 0 && d.EcpaGoal > 0 {
+		basis = d.EcpaGoal
+	}
+
+	// Manual conversions (operator CSV uploads / quick-adds) — counted for
+	// EVERY deal, mapped or not: offers without postback wiring are exactly
+	// the manual-upload case. Window matches tracked: since deal start.
+	// manualRevEffective values each manual row at its reported revenue when
+	// present, else at the basis estimate — so a CSV with real revenue is
+	// authoritative and a count-only quick-add still earns the payout.
+	var manualRevEffective float64
+	if err := h.db.QueryRow(`
+		SELECT COALESCE(SUM(count), 0),
+		       COALESCE(SUM(revenue), 0),
+		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE count * $4 END), 0)
+		FROM mailing_cpm_manual_conversions
+		WHERE organization_id = $1 AND deal_id = $2 AND converted_at >= $3`,
+		orgID, d.ID, d.startDate, basis).Scan(&p.ConversionsManual, &p.ManualRevenue, &manualRevEffective); err != nil {
+		log.Printf("[CpmPlanner] progress manual conversions for deal %s: %v", d.ID, err)
+	}
+	p.Conversions = p.ConversionsTracked + p.ConversionsManual
 
 	if d.PlannedVolume > 0 {
 		p.PctDelivered = float64(p.Sent) / float64(d.PlannedVolume)
 	}
-	if payout > 0 {
-		p.Revenue = float64(p.Conversions) * payout
-	} else if d.EcpaGoal > 0 {
-		p.Revenue = float64(p.Conversions) * d.EcpaGoal // eCPA-goal-based estimate
-	}
+	p.Revenue = float64(p.ConversionsTracked)*basis + manualRevEffective
 	if p.Sent > 0 {
 		p.ActualEcpm = p.Revenue / float64(p.Sent) * 1000
 	}
@@ -666,39 +696,472 @@ func (h *CpmPlannerHandlers) HandleOffersLite(w http.ResponseWriter, r *http.Req
 	respondJSON(w, http.StatusOK, map[string]interface{}{"offers": offers})
 }
 
+// ─── Manual conversions ─────────────────────────────────────────────────────
+//
+// Most CPM offers have NO everflow postback wiring, so tracked conversions
+// (mailing_offer_suppressions reason='converted') under-count reality. The
+// operator gets conversion truth two ways: an Everflow conversion-report CSV
+// export, or just "N conversions happened on date D". Both land in
+// mailing_cpm_manual_conversions and blend into deal pacing as
+// conversions_manual (see loadProgress).
+
+type cpmManualConvEntry struct {
+	ID           string    `json:"id"`
+	ConvertedAt  time.Time `json:"converted_at"`
+	Count        int       `json:"count"`
+	Revenue      float64   `json:"revenue"`
+	Sub1         string    `json:"sub1"`
+	Sub2         string    `json:"sub2"`
+	ConversionID string    `json:"conversion_id"`
+	Source       string    `json:"source"` // 'csv' | 'manual'
+	Note         string    `json:"note"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type cpmManualConvInput struct {
+	Entries []struct {
+		ConvertedAt string  `json:"converted_at"` // YYYY-MM-DD or RFC3339
+		Count       int     `json:"count"`        // default 1
+		Revenue     float64 `json:"revenue"`
+		Note        string  `json:"note"`
+	} `json:"entries"`
+	CSV string `json:"csv"` // raw Everflow conversion-export text
+}
+
+// cpmManualConvRow is one row ready for insert (from either input shape).
+type cpmManualConvRow struct {
+	convertedAt  time.Time
+	count        int
+	revenue      float64
+	sub1         string
+	sub2         string
+	conversionID string
+	source       string
+	note         string
+}
+
+// cpmConvDateLayouts: Everflow exports vary by report/timezone setting;
+// tolerate the common shapes plus plain dates for quick-adds.
+var cpmConvDateLayouts = []string{
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02",
+	"01/02/2006 15:04:05",
+	"01/02/2006 15:04",
+	"01/02/2006",
+	"1/2/2006 15:04",
+	"1/2/2006",
+}
+
+func parseCpmConvDate(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range cpmConvDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	// Raw unix-seconds timestamps (some Everflow API-driven exports).
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 1_000_000_000 && n < 10_000_000_000 {
+		return time.Unix(n, 0).UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func parseCpmRevenue(s string) float64 {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "$", ""), ",", ""))
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+// parseEverflowConversionsCSV parses a raw Everflow conversion-report export.
+// Header-driven column lookup (extra/reordered columns tolerated): only
+// 'date' is required; 'revenue', 'sub1', 'sub2', 'conversion_id' are used
+// when present. One conversion per row (count=1). Ragged rows, lazy quotes
+// and a UTF-8 BOM are tolerated; unparseable rows are counted as parse
+// errors (first few reported back as samples) rather than failing the batch.
+func parseEverflowConversionsCSV(raw string) (rows []cpmManualConvRow, parseErrors int, samples []string) {
+	raw = strings.TrimPrefix(raw, "\ufeff")
+	r := csv.NewReader(strings.NewReader(raw))
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+	r.TrimLeadingSpace = true
+
+	header, err := r.Read()
+	if err != nil {
+		return nil, 1, []string{"unreadable CSV: " + err.Error()}
+	}
+	col := map[string]int{}
+	for i, name := range header {
+		col[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	if _, ok := col["date"]; !ok {
+		return nil, 1, []string{"CSV has no 'date' column — expected an Everflow conversions export"}
+	}
+	get := func(rec []string, name string) string {
+		if i, ok := col[name]; ok && i < len(rec) {
+			return strings.TrimSpace(rec[i])
+		}
+		return ""
+	}
+
+	line := 1
+	for {
+		rec, err := r.Read()
+		line++
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			parseErrors++
+			if len(samples) < 5 {
+				samples = append(samples, fmt.Sprintf("line %d: %v", line, err))
+			}
+			continue
+		}
+		blank := true
+		for _, f := range rec {
+			if strings.TrimSpace(f) != "" {
+				blank = false
+				break
+			}
+		}
+		if blank {
+			continue
+		}
+		when, ok := parseCpmConvDate(get(rec, "date"))
+		if !ok {
+			parseErrors++
+			if len(samples) < 5 {
+				samples = append(samples, fmt.Sprintf("line %d: unparseable date %q", line, get(rec, "date")))
+			}
+			continue
+		}
+		rows = append(rows, cpmManualConvRow{
+			convertedAt:  when,
+			count:        1,
+			revenue:      parseCpmRevenue(get(rec, "revenue")),
+			sub1:         get(rec, "sub1"),
+			sub2:         get(rec, "sub2"),
+			conversionID: get(rec, "conversion_id"),
+			source:       "csv",
+		})
+	}
+	return rows, parseErrors, samples
+}
+
+// dealExists scopes the conversions sub-resource to an org-owned deal.
+func (h *CpmPlannerHandlers) dealExists(orgID, dealID string) (bool, error) {
+	var one int
+	err := h.db.QueryRow(
+		`SELECT 1 FROM mailing_cpm_deals WHERE id = $1 AND organization_id = $2`,
+		dealID, orgID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HandleAddDealConversions POST /cpm-planner/deals/{id}/conversions
+//
+// Body is EITHER {entries:[{converted_at,count,revenue?,note?}]} (quick-add)
+// OR {csv:"<raw everflow export>"}. CSV rows dedupe on (deal_id,
+// conversion_id) via the partial unique index — re-uploading the same export
+// is safe and reports duplicates instead of double-counting.
+func (h *CpmPlannerHandlers) HandleAddDealConversions(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	ok, err := h.dealExists(orgID, dealID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deal: %v", err))
+		return
+	}
+	if !ok {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+
+	var in cpmManualConvInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	var rows []cpmManualConvRow
+	parseErrors := 0
+	var samples []string
+	switch {
+	case strings.TrimSpace(in.CSV) != "":
+		rows, parseErrors, samples = parseEverflowConversionsCSV(in.CSV)
+	case len(in.Entries) > 0:
+		for i, e := range in.Entries {
+			when, ok := parseCpmConvDate(e.ConvertedAt)
+			if !ok {
+				respondError(w, http.StatusBadRequest,
+					fmt.Sprintf("entries[%d].converted_at: use YYYY-MM-DD or RFC3339", i))
+				return
+			}
+			if e.Revenue < 0 {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("entries[%d].revenue must be >= 0", i))
+				return
+			}
+			count := e.Count
+			if count <= 0 {
+				count = 1
+			}
+			rows = append(rows, cpmManualConvRow{
+				convertedAt: when,
+				count:       count,
+				revenue:     e.Revenue,
+				source:      "manual",
+				note:        strings.TrimSpace(e.Note),
+			})
+		}
+	default:
+		respondError(w, http.StatusBadRequest, "body must include entries[] or csv")
+		return
+	}
+	if len(rows) > 50000 {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("too many rows (%d) — cap is 50,000 per upload", len(rows)))
+		return
+	}
+
+	inserted, duplicates := 0, 0
+	if len(rows) > 0 {
+		tx, err := h.db.Begin()
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("begin: %v", err))
+			return
+		}
+		defer tx.Rollback() //nolint:errcheck // no-op after commit
+		stmt, err := tx.Prepare(`
+			INSERT INTO mailing_cpm_manual_conversions
+				(organization_id, deal_id, converted_at, count, revenue,
+				 sub1, sub2, conversion_id, source, note)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (deal_id, conversion_id) WHERE conversion_id <> '' DO NOTHING`)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("prepare: %v", err))
+			return
+		}
+		defer stmt.Close()
+		for _, row := range rows {
+			res, err := stmt.Exec(orgID, dealID, row.convertedAt, row.count, row.revenue,
+				row.sub1, row.sub2, row.conversionID, row.source, row.note)
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, fmt.Sprintf("insert conversion: %v", err))
+				return
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				duplicates++
+			} else {
+				inserted++
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("commit: %v", err))
+			return
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"inserted":     inserted,
+		"duplicates":   duplicates,
+		"parse_errors": parseErrors,
+		"errors":       samples,
+	})
+}
+
+// HandleListDealConversions GET /cpm-planner/deals/{id}/conversions?days=N
+// Newest first, capped at 500 rows; totals are computed over the full
+// filtered set (not the capped page).
+func (h *CpmPlannerHandlers) HandleListDealConversions(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	ok, err := h.dealExists(orgID, dealID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deal: %v", err))
+		return
+	}
+	if !ok {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+
+	where := `organization_id = $1 AND deal_id = $2`
+	args := []interface{}{orgID, dealID}
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 3650 {
+		args = append(args, time.Now().AddDate(0, 0, -d))
+		where += fmt.Sprintf(" AND converted_at >= $%d", len(args))
+	}
+
+	var manualTotal int64
+	var manualRevenue float64
+	if err := h.db.QueryRow(
+		`SELECT COALESCE(SUM(count), 0), COALESCE(SUM(revenue), 0)
+		 FROM mailing_cpm_manual_conversions WHERE `+where, args...).Scan(&manualTotal, &manualRevenue); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("conversion totals: %v", err))
+		return
+	}
+
+	rows, err := h.db.Query(
+		`SELECT id, converted_at, count, revenue, sub1, sub2, conversion_id, source, note, created_at
+		 FROM mailing_cpm_manual_conversions WHERE `+where+`
+		 ORDER BY converted_at DESC, created_at DESC LIMIT 500`, args...)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("list conversions: %v", err))
+		return
+	}
+	defer rows.Close()
+	entries := []cpmManualConvEntry{}
+	for rows.Next() {
+		var e cpmManualConvEntry
+		if err := rows.Scan(&e.ID, &e.ConvertedAt, &e.Count, &e.Revenue,
+			&e.Sub1, &e.Sub2, &e.ConversionID, &e.Source, &e.Note, &e.CreatedAt); err != nil {
+			continue
+		}
+		entries = append(entries, e)
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+		"totals": map[string]interface{}{
+			"manual_total":   manualTotal,
+			"manual_revenue": manualRevenue,
+		},
+	})
+}
+
+// HandleDeleteDealConversion DELETE /cpm-planner/deals/{id}/conversions/{convID}
+func (h *CpmPlannerHandlers) HandleDeleteDealConversion(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	convID := chi.URLParam(r, "convID")
+	res, err := h.db.Exec(
+		`DELETE FROM mailing_cpm_manual_conversions
+		 WHERE id = $1 AND deal_id = $2 AND organization_id = $3`,
+		convID, dealID, orgID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("delete conversion: %v", err))
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		respondError(w, http.StatusNotFound, "conversion entry not found")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"id": convID, "status": "deleted"})
+}
+
 // ─── Insights helpers ───────────────────────────────────────────────────────
 
 type cpmDailyPoint struct {
-	Date string `json:"date"`
-	Sent int64  `json:"sent"`
+	Date        string `json:"date"`
+	Sent        int64  `json:"sent"`
+	Conversions int64  `json:"conversions"` // tracked (postback) + manual, by day
 }
 
 func (h *CpmPlannerHandlers) loadDailySeries(orgID string, d *cpmDeal) []cpmDailyPoint {
-	series := []cpmDailyPoint{}
-	if d.OfferID == "" {
-		return series
-	}
-	rows, err := h.db.Query(`
-		SELECT to_char(date_trunc('day', event_at), 'YYYY-MM-DD') AS day, COUNT(*)
-		FROM mailing_tracking_events
-		WHERE organization_id = $1 AND event_type = 'sent' AND event_at >= $2
-		  AND campaign_id IN (
-			SELECT id FROM mailing_campaigns
-			WHERE organization_id = $1 AND offer_id = $3 AND created_at >= $2
-		  )
-		GROUP BY 1 ORDER BY 1`, orgID, d.startDate, d.OfferID)
-	if err != nil {
-		log.Printf("[CpmPlanner] daily series for deal %s: %v", d.ID, err)
-		return series
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var p cpmDailyPoint
-		if err := rows.Scan(&p.Date, &p.Sent); err != nil {
-			continue
+	byDay := map[string]*cpmDailyPoint{}
+	point := func(day string) *cpmDailyPoint {
+		if p, ok := byDay[day]; ok {
+			return p
 		}
-		series = append(series, p)
+		p := &cpmDailyPoint{Date: day}
+		byDay[day] = p
+		return p
 	}
+
+	if d.OfferID != "" {
+		rows, err := h.db.Query(`
+			SELECT to_char(date_trunc('day', event_at), 'YYYY-MM-DD') AS day, COUNT(*)
+			FROM mailing_tracking_events
+			WHERE organization_id = $1 AND event_type = 'sent' AND event_at >= $2
+			  AND campaign_id IN (
+				SELECT id FROM mailing_campaigns
+				WHERE organization_id = $1 AND offer_id = $3 AND created_at >= $2
+			  )
+			GROUP BY 1`, orgID, d.startDate, d.OfferID)
+		if err != nil {
+			log.Printf("[CpmPlanner] daily series for deal %s: %v", d.ID, err)
+		} else {
+			func() {
+				defer rows.Close()
+				for rows.Next() {
+					var day string
+					var sent int64
+					if err := rows.Scan(&day, &sent); err != nil {
+						continue
+					}
+					point(day).Sent = sent
+				}
+			}()
+		}
+
+		// Tracked conversions by day (same source as countOfferConversions).
+		convRows, err := h.db.Query(`
+			SELECT to_char(date_trunc('day', suppressed_at), 'YYYY-MM-DD') AS day, COUNT(*)
+			FROM mailing_offer_suppressions
+			WHERE organization_id = $1 AND offer_id = $2
+			  AND reason = 'converted' AND suppressed_at >= $3
+			GROUP BY 1`, orgID, d.OfferID, d.startDate)
+		if err != nil {
+			log.Printf("[CpmPlanner] daily conversions for deal %s: %v", d.ID, err)
+		} else {
+			func() {
+				defer convRows.Close()
+				for convRows.Next() {
+					var day string
+					var n int64
+					if err := convRows.Scan(&day, &n); err != nil {
+						continue
+					}
+					point(day).Conversions += n
+				}
+			}()
+		}
+	}
+
+	// Manual conversions by day — union'd into the same series (charts for
+	// unmapped deals show manual conversions alone).
+	manRows, err := h.db.Query(`
+		SELECT to_char(date_trunc('day', converted_at), 'YYYY-MM-DD') AS day, SUM(count)
+		FROM mailing_cpm_manual_conversions
+		WHERE organization_id = $1 AND deal_id = $2 AND converted_at >= $3
+		GROUP BY 1`, orgID, d.ID, d.startDate)
+	if err != nil {
+		log.Printf("[CpmPlanner] daily manual conversions for deal %s: %v", d.ID, err)
+	} else {
+		func() {
+			defer manRows.Close()
+			for manRows.Next() {
+				var day string
+				var n int64
+				if err := manRows.Scan(&day, &n); err != nil {
+					continue
+				}
+				point(day).Conversions += n
+			}
+		}()
+	}
+
+	series := make([]cpmDailyPoint, 0, len(byDay))
+	for _, p := range byDay {
+		series = append(series, *p)
+	}
+	sort.Slice(series, func(i, j int) bool { return series[i].Date < series[j].Date })
 	return series
 }
 

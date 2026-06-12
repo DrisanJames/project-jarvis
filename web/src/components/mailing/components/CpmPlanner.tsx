@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faCalculator, faPlus, faTimes, faTrash, faPen, faSpinner,
-  faChevronDown, faChevronRight, faGaugeHigh,
+  faChevronDown, faChevronRight, faGaugeHigh, faUpload,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -44,7 +44,10 @@ interface DealProgress {
   clicked: number;
   hard_bounces: number;
   soft_bounces: number;
-  conversions: number;
+  conversions: number;          // TOTAL = tracked + manual (back-compat field name)
+  conversions_tracked: number;  // everflow postbacks
+  conversions_manual: number;   // operator CSV uploads / quick-adds
+  manual_revenue: number;       // raw revenue reported on manual rows
   payout: number;
   pct_volume_delivered: number;
   revenue_earned: number;
@@ -84,8 +87,26 @@ interface Capacity {
   active_deals: number;
 }
 
-interface DailyPoint { date: string; sent: number; }
+interface DailyPoint { date: string; sent: number; conversions: number; }
 interface DomainConv { domain: string; conversions: number; }
+
+// Manual conversions (mirror cpmManualConvEntry / HandleListDealConversions).
+interface ConvEntry {
+  id: string;
+  converted_at: string;
+  count: number;
+  revenue: number;
+  sub1: string;
+  sub2: string;
+  conversion_id: string;
+  source: string; // 'csv' | 'manual'
+  note: string;
+  created_at: string;
+}
+interface ConvList {
+  entries: ConvEntry[];
+  totals: { manual_total: number; manual_revenue: number };
+}
 
 interface Insights {
   deal: Deal;
@@ -271,6 +292,19 @@ export const CpmPlanner: React.FC = () => {
   const [insightsLoading, setInsightsLoading] = useState<string | null>(null);
   const [offerPerf, setOfferPerf] = useState<Record<string, DealOfferPerformance>>({});
   const [offerPerfLoading, setOfferPerfLoading] = useState<string | null>(null);
+  // Manual conversions per deal (recent entries + totals), refreshed on
+  // expand and after every add/upload/delete.
+  const [convData, setConvData] = useState<Record<string, ConvList>>({});
+  const [convForm, setConvForm] = useState({
+    date: new Date().toISOString().slice(0, 10),
+    count: '1',
+    revenue: '',
+    note: '',
+  });
+  const [convBusy, setConvBusy] = useState(false);
+  const [convMsg, setConvMsg] = useState<Record<string, { text: string; ok: boolean }>>({});
+  const [convListOpen, setConvListOpen] = useState<Record<string, boolean>>({});
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
   // Deal id handed off from the Offers tab ("View in CPM Planner") —
   // auto-expanded once the deal list loads.
   const [focusDealId, setFocusDealId] = useState<string | null>(
@@ -399,9 +433,104 @@ export const CpmPlanner: React.FC = () => {
     }
   };
 
+  const loadConversions = useCallback(async (dealId: string) => {
+    try {
+      const res = await apiFetch(`${API}/deals/${dealId}/conversions`);
+      if (res.ok) {
+        const j: ConvList = await res.json();
+        setConvData(prev => ({ ...prev, [dealId]: j }));
+      }
+    } catch { /* keep whatever we had */ }
+  }, []);
+
+  // After a conversions mutation the deal row (pacing tiles/totals), the
+  // entries list AND the cached insights (recommendations + daily series)
+  // are all stale — refresh the three together.
+  const refreshAfterConv = useCallback(async (dealId: string) => {
+    await Promise.all([
+      loadAll(),
+      loadConversions(dealId),
+      (async () => {
+        try {
+          const res = await apiFetch(`${API}/deals/${dealId}/insights`);
+          if (res.ok) {
+            const j: Insights = await res.json();
+            setInsights(prev => ({ ...prev, [dealId]: j }));
+          }
+        } catch { /* keep stale insights */ }
+      })(),
+    ]);
+  }, [loadAll, loadConversions]);
+
+  const postConversions = useCallback(async (dealId: string, body: Record<string, unknown>): Promise<boolean> => {
+    setConvBusy(true);
+    try {
+      const res = await apiFetch(`${API}/deals/${dealId}/conversions`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const j = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) throw new Error((j as { error?: string }).error || `HTTP ${res.status}`);
+      const result = j as { inserted: number; duplicates: number; parse_errors: number; errors?: string[] };
+      const extra = result.errors && result.errors.length > 0 ? ` — ${result.errors[0]}` : '';
+      setConvMsg(prev => ({
+        ...prev,
+        [dealId]: {
+          text: `${fmtInt(result.inserted)} inserted · ${fmtInt(result.duplicates)} duplicates · ${fmtInt(result.parse_errors)} parse errors${extra}`,
+          ok: result.parse_errors === 0,
+        },
+      }));
+      await refreshAfterConv(dealId);
+      return true;
+    } catch (e) {
+      setConvMsg(prev => ({
+        ...prev,
+        [dealId]: { text: e instanceof Error ? e.message : 'upload failed', ok: false },
+      }));
+      return false;
+    } finally {
+      setConvBusy(false);
+    }
+  }, [refreshAfterConv]);
+
+  const addManualConversions = async (d: Deal) => {
+    if (!convForm.date) {
+      setConvMsg(prev => ({ ...prev, [d.id]: { text: 'Pick a conversion date', ok: false } }));
+      return;
+    }
+    const ok = await postConversions(d.id, {
+      entries: [{
+        converted_at: convForm.date,
+        count: parseInt(convForm.count, 10) || 1,
+        revenue: parseFloat(convForm.revenue) || 0,
+        note: convForm.note.trim(),
+      }],
+    });
+    if (ok) setConvForm(f => ({ ...f, count: '1', revenue: '', note: '' }));
+  };
+
+  const uploadConversionsCsv = async (d: Deal, file: File) => {
+    const text = await file.text();
+    await postConversions(d.id, { csv: text });
+  };
+
+  const deleteConversion = async (d: Deal, entry: ConvEntry) => {
+    if (!window.confirm(`Delete this ${entry.source} entry (${entry.count} conversion${entry.count === 1 ? '' : 's'} on ${entry.converted_at.slice(0, 10)})?`)) return;
+    try {
+      const res = await apiFetch(`${API}/deals/${d.id}/conversions/${entry.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({} as { error?: string }));
+        throw new Error((j as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      await refreshAfterConv(d.id);
+    } catch (e) {
+      setConvMsg(prev => ({ ...prev, [d.id]: { text: e instanceof Error ? e.message : 'delete failed', ok: false } }));
+    }
+  };
+
   const expandDeal = useCallback(async (dealId: string, hasInsights: boolean, hasPerf: boolean) => {
     setExpandedId(dealId);
-    const tasks: Promise<void>[] = [];
+    const tasks: Promise<void>[] = [loadConversions(dealId)];
     if (!hasInsights) {
       setInsightsLoading(dealId);
       tasks.push((async () => {
@@ -431,7 +560,7 @@ export const CpmPlanner: React.FC = () => {
       })());
     }
     await Promise.all(tasks);
-  }, []);
+  }, [loadConversions]);
 
   const toggleExpand = (d: Deal) => {
     if (expandedId === d.id) { setExpandedId(null); return; }
@@ -695,6 +824,196 @@ export const CpmPlanner: React.FC = () => {
     );
   };
 
+  // Conversions block — pacing through conversions, not just volume. Tracked
+  // (everflow postback) vs manual (operator CSV/quick-add) split, quick-add
+  // form, Everflow CSV upload, and the recent manual entries with delete.
+  const renderConversions = (d: Deal) => {
+    const data = convData[d.id];
+    const msg = convMsg[d.id];
+    const listOpen = !!convListOpen[d.id];
+    const p = d.progress;
+    const chip = (label: string, value: number, color: string) => (
+      <span key={label} style={{
+        padding: '4px 12px', borderRadius: 999, fontSize: 12, fontWeight: 700,
+        color, border: `1px solid ${color}`, background: 'rgba(10,20,45,0.5)',
+      }}>
+        {label}: {fmtInt(value)}
+      </span>
+    );
+    const smallBtn: React.CSSProperties = {
+      padding: '8px 14px', borderRadius: 6, border: `1px solid ${C.border}`,
+      background: 'rgba(99,102,241,0.15)', color: C.heading, cursor: convBusy ? 'wait' : 'pointer',
+      fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
+    };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.heading, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Conversions
+        </div>
+
+        {/* Tracked / manual / total split */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {chip('Tracked (postback)', p.conversions_tracked, C.indigo)}
+          {chip('Manual', p.conversions_manual, C.amber)}
+          {chip('Total', p.conversions, C.green)}
+          <span style={{ fontSize: 11, color: C.muted }}>
+            of {fmtInt(d.conversions_needed)} needed
+            {p.manual_revenue > 0 ? ` · manual revenue ${fmtMoney(p.manual_revenue)}` : ''}
+          </span>
+        </div>
+
+        {/* Quick-add + CSV upload */}
+        <div style={{
+          display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end',
+          background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px',
+        }}>
+          <div>
+            <label style={labelStyle}>Date</label>
+            <input
+              style={{ ...inputStyle, width: 140 }} type="date" value={convForm.date}
+              onChange={e => setConvForm({ ...convForm, date: e.target.value })}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Count</label>
+            <input
+              style={{ ...inputStyle, width: 80 }} type="number" min="1" step="1" value={convForm.count}
+              onChange={e => setConvForm({ ...convForm, count: e.target.value })}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Revenue ($, optional)</label>
+            <input
+              style={{ ...inputStyle, width: 140 }} type="number" min="0" step="0.01" value={convForm.revenue}
+              placeholder="payout-estimated if 0"
+              onChange={e => setConvForm({ ...convForm, revenue: e.target.value })}
+            />
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <label style={labelStyle}>Note</label>
+            <input
+              style={inputStyle} value={convForm.note} placeholder="e.g. advertiser-reported, jun11"
+              onChange={e => setConvForm({ ...convForm, note: e.target.value })}
+            />
+          </div>
+          <button onClick={() => addManualConversions(d)} disabled={convBusy} style={smallBtn}>
+            {convBusy ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPlus} />} Add conversions
+          </button>
+          <button onClick={() => csvInputRef.current?.click()} disabled={convBusy} style={smallBtn} title="Everflow conversions export — deduped on conversion_id, re-upload safe">
+            <FontAwesomeIcon icon={faUpload} /> Upload Everflow CSV
+          </button>
+          <input
+            ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+            onChange={e => {
+              const f = e.target.files && e.target.files[0];
+              e.target.value = '';
+              if (f) uploadConversionsCsv(d, f);
+            }}
+          />
+        </div>
+
+        {/* Result toast */}
+        {msg && (
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
+            padding: '8px 12px', borderRadius: 8, fontSize: 12,
+            background: msg.ok ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+            border: `1px solid ${msg.ok ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}`,
+            color: msg.ok ? C.green : C.red,
+          }}>
+            <span>{msg.text}</span>
+            <button
+              onClick={() => setConvMsg(prev => { const next = { ...prev }; delete next[d.id]; return next; })}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}
+              title="Dismiss"
+            >
+              <FontAwesomeIcon icon={faTimes} />
+            </button>
+          </div>
+        )}
+
+        {/* Recent manual entries (collapsible) */}
+        <div>
+          <button
+            onClick={() => setConvListOpen(prev => ({ ...prev, [d.id]: !listOpen }))}
+            style={{
+              background: 'none', border: 'none', color: C.muted, cursor: 'pointer',
+              fontSize: 12, fontWeight: 700, padding: 0, display: 'flex', alignItems: 'center', gap: 6,
+              textTransform: 'uppercase', letterSpacing: 0.5,
+            }}
+          >
+            <FontAwesomeIcon icon={listOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
+            Recent manual entries
+            {data ? ` — ${fmtInt(data.totals.manual_total)} conversions · ${fmtMoney(data.totals.manual_revenue)} reported` : ''}
+          </button>
+          {listOpen && (
+            !data ? (
+              <div style={{ padding: '10px 0', color: C.muted, fontSize: 12 }}>
+                <FontAwesomeIcon icon={faSpinner} spin /> Loading…
+              </div>
+            ) : data.entries.length === 0 ? (
+              <div style={{ padding: '10px 0', color: C.muted, fontSize: 12 }}>
+                No manual conversions yet — quick-add a count or upload an Everflow CSV.
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Converted</th>
+                      <th style={thStyle}>Count</th>
+                      <th style={thStyle}>Revenue</th>
+                      <th style={thStyle}>Source</th>
+                      <th style={thStyle}>Conversion ID</th>
+                      <th style={thStyle}>Sub1 / Sub2</th>
+                      <th style={thStyle}>Note</th>
+                      <th style={thStyle}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.entries.map(e => (
+                      <tr key={e.id}>
+                        <td style={tdStyle}>{e.converted_at.slice(0, 10)}</td>
+                        <td style={tdStyle}>{fmtInt(e.count)}</td>
+                        <td style={tdStyle}>{e.revenue > 0 ? fmtMoney(e.revenue) : <span style={{ color: C.muted }}>—</span>}</td>
+                        <td style={tdStyle}>
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+                            color: e.source === 'csv' ? C.indigo : C.amber, border: `1px solid ${C.border}`,
+                          }}>
+                            {e.source}
+                          </span>
+                        </td>
+                        <td style={{ ...tdStyle, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', color: C.muted }} title={e.conversion_id}>
+                          {e.conversion_id || '—'}
+                        </td>
+                        <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', color: C.muted }} title={`${e.sub1} / ${e.sub2}`}>
+                          {e.sub1 || e.sub2 ? `${e.sub1 || '—'} / ${e.sub2 || '—'}` : '—'}
+                        </td>
+                        <td style={{ ...tdStyle, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={e.note}>
+                          {e.note || <span style={{ color: C.muted }}>—</span>}
+                        </td>
+                        <td style={{ ...tdStyle, width: 36 }}>
+                          <button
+                            onClick={() => deleteConversion(d, e)}
+                            title="Delete entry"
+                            style={{ background: 'none', border: 'none', color: C.red, cursor: 'pointer' }}
+                          >
+                            <FontAwesomeIcon icon={faTrash} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderInsights = (d: Deal) => {
     const ins = insights[d.id];
     if (insightsLoading === d.id && !ins) {
@@ -706,7 +1025,7 @@ export const CpmPlanner: React.FC = () => {
     }
     if (!ins) return <div style={{ padding: 24, color: C.muted }}>No insights available.</div>;
 
-    const chartData = ins.daily_series.map(p => ({ date: p.date.slice(5), sent: p.sent }));
+    const chartData = ins.daily_series.map(p => ({ date: p.date.slice(5), sent: p.sent, conversions: p.conversions || 0 }));
     return (
       <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Recommendations */}
@@ -725,30 +1044,40 @@ export const CpmPlanner: React.FC = () => {
           )}
         </div>
 
-        {/* Pace chart: daily sent bars vs required-daily reference */}
+        {/* Conversions: tracked/manual split, quick-add, CSV upload, entries */}
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+          {renderConversions(d)}
+        </div>
+
+        {/* Pace chart: daily sent bars vs required-daily reference, with the
+            conversion series (tracked + manual) on the right axis */}
         {chartData.length > 0 && (
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.heading, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Daily sent vs required pace ({fmtInt(d.progress.required_daily)}/day)
+              Daily sent vs required pace ({fmtInt(d.progress.required_daily)}/day) &amp; conversions
             </div>
             <div style={{ height: 220, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <ComposedChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
                   <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} />
-                  <YAxis tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
+                  <YAxis yAxisId="vol" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
+                  <YAxis yAxisId="conv" orientation="right" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} allowDecimals={false} />
                   <RechartsTooltip
                     contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
-                    formatter={(v: number) => [fmtInt(v), 'Sent']}
+                    formatter={(v: number | string) => (typeof v === 'number' ? fmtInt(v) : v)}
                   />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
                   <ReferenceLine
+                    yAxisId="vol"
                     y={d.progress.required_daily}
                     stroke={C.amber}
                     strokeDasharray="6 4"
                     label={{ value: 'required/day', fill: C.amber, fontSize: 11, position: 'insideTopRight' }}
                   />
-                  <Bar dataKey="sent" fill={C.indigo} radius={[3, 3, 0, 0]} />
-                </BarChart>
+                  <Bar yAxisId="vol" dataKey="sent" name="Sent" fill={C.indigo} radius={[3, 3, 0, 0]} />
+                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           </div>

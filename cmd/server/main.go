@@ -2033,6 +2033,30 @@ func runStartupMigrations(db *sql.DB) {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_consciousness_assessments_org_scope_time", `CREATE INDEX IF NOT EXISTS idx_consciousness_assessments_org_scope_time ON mailing_consciousness_assessments (organization_id, scope, created_at DESC)`},
+		// CPM Planner manual conversions — operator-uploaded conversion ground
+		// truth for deals whose offers have no Everflow postback wiring.
+		// source='csv' rows come from Everflow conversion-report exports
+		// (deduped on conversion_id via the partial unique index below);
+		// source='manual' rows are quick-adds ("N conversions on date D",
+		// conversion_id=''). Read by cpm_planner_handlers.go loadProgress /
+		// loadDailySeries to blend with tracked (postback) conversions.
+		// New table, no deps, fast.
+		{"create_cpm_manual_conversions", `CREATE TABLE IF NOT EXISTS mailing_cpm_manual_conversions (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			deal_id         UUID NOT NULL,
+			converted_at    TIMESTAMPTZ NOT NULL,
+			count           INTEGER NOT NULL DEFAULT 1,
+			revenue         NUMERIC(12,2) NOT NULL DEFAULT 0,
+			sub1            TEXT NOT NULL DEFAULT '',
+			sub2            TEXT NOT NULL DEFAULT '',
+			conversion_id   TEXT NOT NULL DEFAULT '',
+			source          TEXT NOT NULL DEFAULT 'manual',
+			note            TEXT NOT NULL DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_cpm_manual_conversions_org_deal_time", `CREATE INDEX IF NOT EXISTS idx_cpm_manual_conversions_org_deal_time ON mailing_cpm_manual_conversions (organization_id, deal_id, converted_at)`},
+		{"uniq_cpm_manual_conversions_dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cpm_manual_conversions_dedupe ON mailing_cpm_manual_conversions (deal_id, conversion_id) WHERE conversion_id <> ''`},
 		// Creative registry — browse/preview surface for the send-day creative
 		// archive (ReviewForge phase 2). Synced from operator tooling via
 		// /api/admin/creatives-sync; read by the portal Creative Studio tab.

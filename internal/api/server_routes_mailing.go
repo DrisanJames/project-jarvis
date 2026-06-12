@@ -1207,6 +1207,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Delete("/deals/{id}", cpmPlanner.HandleDeleteDeal)
 				cp.Get("/deals/{id}/insights", cpmPlanner.HandleDealInsights)
 				cp.Get("/deals/{id}/offer-performance", cpmPlanner.HandleDealOfferPerformance)
+				// Manual conversions — operator-uploaded conversion ground truth
+				// (Everflow CSV exports / quick-adds) blended into deal pacing.
+				cp.Post("/deals/{id}/conversions", cpmPlanner.HandleAddDealConversions)
+				cp.Get("/deals/{id}/conversions", cpmPlanner.HandleListDealConversions)
+				cp.Delete("/deals/{id}/conversions/{convID}", cpmPlanner.HandleDeleteDealConversion)
 				cp.Get("/capacity", cpmPlanner.HandleCapacity)
 				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
 			})
