@@ -203,38 +203,9 @@ export const PartnerIngestPortal: React.FC = () => {
 
           <DripPerformancePanel />
 
-          <h3 style={{ color: '#dbeafe', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 6 }}>Recent Batches</h3>
-          <table style={tableStyle}>
-            <thead>
-              <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-                <th style={th}>Received</th>
-                <th style={th}>Partner / Dataset</th>
-                <th style={th}>Vertical</th>
-                <th style={th}>Records</th>
-                <th style={th}>Status</th>
-                <th style={th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {dashboard.recent_batches.map(b => (
-                <tr key={b.id} style={tr}>
-                  <td style={td}>{new Date(b.received_at).toLocaleString()}</td>
-                  <td style={td}>
-                    <div style={{ fontWeight: 600 }}>{b.partner_name}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>{b.dataset_name}</div>
-                  </td>
-                  <td style={td}>{VERTICAL_LABEL[b.vertical] ?? b.vertical}</td>
-                  <td style={tdNum}>{b.record_count.toLocaleString()}</td>
-                  <td style={td}>
-                    <StatusBadge status={b.status} emergencyStopped={b.emergency_stopped} />
-                  </td>
-                  <td style={td}>
-                    <button onClick={() => setInspectingBatchId(b.id)} style={ghostBtn}>Inspect</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+            Per-post batch detail (one row per partner API call) lives in the <b>Inbound Batches</b> tab.
+          </div>
         </div>
       )}
 

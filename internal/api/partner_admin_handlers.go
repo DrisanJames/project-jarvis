@@ -821,6 +821,13 @@ func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r 
 			resp["funnel"] = verticals
 			resp["funnel_isp"] = isps
 		}
+		// Inbound-flow roll-up: partners post leads in real time (often one
+		// record per API call), so raw batch rows read as "you mailed 1
+		// contact". This per-dataset 24h aggregate is what the Overview
+		// renders instead; the Batches tab keeps per-post detail.
+		if ingest, err := h.dripIngest24h(ctx); err == nil {
+			resp["ingest_24h"] = ingest
+		}
 	}
 
 	if wantWaves {
@@ -830,9 +837,106 @@ func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r 
 		} else {
 			resp["waves"] = waves
 		}
+		// Overall 24h send performance across ALL partner-drip waves (not just
+		// the visible page of them) — one indexed aggregate, polled with waves
+		// so the headline numbers move as accounting events are ingested.
+		if totals, err := h.dripTotals24h(ctx); err == nil {
+			resp["totals_24h"] = totals
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// dripTotals24h aggregates delivery performance across every partner-drip
+// wave scheduled in the last 24h, straight from tracking events.
+func (h *PartnerAdminHandler) dripTotals24h(ctx context.Context) (map[string]interface{}, error) {
+	var waveCount, recipients int
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(COALESCE(total_recipients, 0)), 0)
+		FROM mailing_campaigns
+		WHERE partner_drip_tag IS NOT NULL
+		  AND scheduled_at > NOW() - INTERVAL '24 hours'
+	`).Scan(&waveCount, &recipients); err != nil {
+		return nil, err
+	}
+
+	hb := HardBounceSQL("mailing_tracking_events")
+	var sent, delivered, opens, clicks, hard, soft, deferred int
+	if err := h.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0)
+		FROM mailing_tracking_events
+		WHERE campaign_id IN (
+		    SELECT id FROM mailing_campaigns
+		    WHERE partner_drip_tag IS NOT NULL
+		      AND scheduled_at > NOW() - INTERVAL '24 hours'
+		)
+	`, hb, hb)).Scan(&sent, &delivered, &opens, &clicks, &hard, &soft, &deferred); err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"waves":        waveCount,
+		"recipients":   recipients,
+		"sent":         sent,
+		"delivered":    delivered,
+		"opens":        opens,
+		"clicks":       clicks,
+		"hard_bounces": hard,
+		"soft_bounces": soft,
+		"deferred":     deferred,
+	}, nil
+}
+
+// dripIngest24h rolls inbound batches up per dataset for the last 24h.
+func (h *PartnerAdminHandler) dripIngest24h(ctx context.Context) ([]map[string]interface{}, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT d.id::text, d.name, p.name, d.vertical,
+		       COUNT(*)                                   AS posts,
+		       COALESCE(SUM(b.record_count), 0)           AS records,
+		       MAX(b.received_at)                         AS last_received,
+		       COUNT(*) FILTER (WHERE b.status NOT IN ('slicing_complete', 'completed')) AS in_flight,
+		       COUNT(*) FILTER (WHERE b.emergency_stopped) AS stopped
+		FROM partner_inbound_batches b
+		JOIN partner_datasets d ON d.id = b.dataset_id
+		JOIN data_partners p ON p.id = b.partner_id
+		WHERE b.received_at > NOW() - INTERVAL '24 hours'
+		GROUP BY 1, 2, 3, 4
+		ORDER BY records DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, 8)
+	for rows.Next() {
+		var datasetID, datasetName, partnerName, vertical string
+		var posts, records, inFlight, stopped int
+		var lastReceived sql.NullTime
+		if err := rows.Scan(&datasetID, &datasetName, &partnerName, &vertical,
+			&posts, &records, &lastReceived, &inFlight, &stopped); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"dataset_id":    datasetID,
+			"dataset_name":  datasetName,
+			"partner_name":  partnerName,
+			"vertical":      vertical,
+			"posts":         posts,
+			"records":       records,
+			"last_received": formatNullTime(lastReceived),
+			"in_flight":     inFlight,
+			"stopped":       stopped,
+		})
+	}
+	return out, rows.Err()
 }
 
 // dripFunnel runs the single grouped queue scan and returns the per-vertical
