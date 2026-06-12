@@ -209,8 +209,17 @@ const tdStyle: React.CSSProperties = {
 };
 
 // WorkerHealthWidget — the compact dashboard card that replaced the dedicated
-// Worker Health tab (retired 2026-06-12). Polls the same endpoint every 60s;
-// green when every worker beats on time, red with the stalled names when not.
+// Worker Health tab (retired 2026-06-12). Polls the same endpoint every 60s.
+// Renders the full worker LIST (name + status dot + last-beat age) rather than
+// a single summary line: stalled/error workers sort first, the rest by name.
+// Dot colors: green ok / amber late / red stalled-or-error.
+const widgetDotColor: Record<ReturnType<typeof rowState>, string> = {
+  ok: '#22c55e',
+  late: '#f59e0b',
+  error: '#ef4444',
+  stalled: '#ef4444',
+};
+
 export const WorkerHealthWidget: React.FC = () => {
   const [data, setData] = useState<HealthResponse | null>(null);
   const [error, setError] = useState(false);
@@ -227,9 +236,19 @@ export const WorkerHealthWidget: React.FC = () => {
     return () => clearInterval(t);
   }, []);
 
-  const stalled = (data?.workers ?? []).filter(w => w.stalled || w.last_status === 'error');
-  const total = (data?.workers ?? []).length;
+  const workers = data?.workers ?? [];
+  const stalled = workers.filter(w => w.stalled || w.last_status === 'error');
+  const total = workers.length;
   const healthy = !error && stalled.length === 0;
+
+  // Stalled/error first, then alphabetical — bad news must be visible without
+  // scrolling (the list clamps to ~10 rows and scrolls past that).
+  const sorted = [...workers].sort((a, b) => {
+    const aBad = a.stalled || a.last_status === 'error' ? 0 : 1;
+    const bBad = b.stalled || b.last_status === 'error' ? 0 : 1;
+    if (aBad !== bBad) return aBad - bBad;
+    return a.worker_name.localeCompare(b.worker_name);
+  });
 
   return (
     <div className="system-card ig-card-hover" style={{ borderColor: healthy ? undefined : 'rgba(239,68,68,0.5)' }}>
@@ -241,14 +260,42 @@ export const WorkerHealthWidget: React.FC = () => {
         </span>
       </div>
       <div className="system-description">
-        {healthy && <p>All background workers beating on schedule.</p>}
-        {!healthy && !error && (
-          <p style={{ color: '#ef4444' }}>
-            {stalled.slice(0, 4).map(w => w.worker_name).join(', ')}
-            {stalled.length > 4 ? ` +${stalled.length - 4} more` : ''} — check heartbeats.
-          </p>
-        )}
         {error && <p>Worker health endpoint unreachable.</p>}
+        {!error && total === 0 && <p>No worker heartbeats recorded yet.</p>}
+        {!error && total > 0 && (
+          <div style={{ maxHeight: 230, overflowY: 'auto', marginTop: 2 }}>
+            {sorted.map(w => {
+              const st = rowState(w);
+              return (
+                <div
+                  key={w.worker_name}
+                  title={w.stalled && w.stalled_since
+                    ? `Stalled since ${new Date(w.stalled_since).toLocaleString()}`
+                    : w.last_error || `${stateMeta[st].label} · interval ${fmtInterval(w.expected_interval_seconds)}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '3px 0', fontSize: 12, lineHeight: '16px',
+                  }}
+                >
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                    background: widgetDotColor[st],
+                  }} />
+                  <span style={{
+                    fontFamily: 'monospace', flex: 1, minWidth: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    color: st === 'stalled' || st === 'error' ? '#fca5a5' : '#cbd5e1',
+                  }}>
+                    {w.worker_name}
+                  </span>
+                  <span style={{ color: st === 'ok' ? '#64748b' : widgetDotColor[st], flexShrink: 0 }}>
+                    last run {fmtSeconds(w.seconds_since_beat)} ago
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

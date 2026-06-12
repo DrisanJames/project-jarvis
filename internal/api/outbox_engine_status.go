@@ -31,11 +31,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
+
+	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
 // VersionOutboxEngineStatus is bumped on every behavior change so operators
 // can match the payload against deploy logs.
-const VersionOutboxEngineStatus = "1.0"
+//
+// 1.1: waves section gains completed_recipients_24h (SUM of planned_recipients
+//      over completed-24h waves) so "waves done" can be read next to a message
+//      figure; new /outbox/isp-pipes per-VMTA drill-down endpoint.
+const VersionOutboxEngineStatus = "1.1"
 
 const (
 	engineFastRefreshInterval = 12 * time.Second
@@ -66,10 +74,14 @@ type EngineISPQueueDepth struct {
 
 // EngineQueueSection summarizes mailing_campaign_queue for the live board.
 type EngineQueueSection struct {
-	OK                  bool                  `json:"ok"`
-	Error               string                `json:"error,omitempty"`
-	Queued              int64                 `json:"queued"`
-	Processing          int64                 `json:"processing"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	Queued     int64  `json:"queued"`
+	Processing int64  `json:"processing"`
+	// Sent24h counts per-recipient 'sent' tracking events over 24h. It
+	// includes click-drip direct sends and any other non-wave send paths, so
+	// it legitimately EXCEEDS the wave section's completed_recipients_24h —
+	// do not treat the two as a contradiction.
 	Sent24h             int64                 `json:"sent_24h"`
 	Failed24h           int64                 `json:"failed_24h"`
 	DeadLetter24h       int64                 `json:"dead_letter_24h"`
@@ -89,16 +101,23 @@ type EngineUpcomingWave struct {
 
 // EngineWaveSection summarizes mailing_campaign_waves.
 type EngineWaveSection struct {
-	OK            bool                 `json:"ok"`
-	Error         string               `json:"error,omitempty"`
-	PlannedDue    int64                `json:"planned_due"`
-	PlannedFuture int64                `json:"planned_future"`
-	Enqueuing     int64                `json:"enqueuing"`
-	Sending       int64                `json:"sending"`
-	Completed24h  int64                `json:"completed_24h"`
-	Failed24h     int64                `json:"failed_24h"`
-	Cancelled24h  int64                `json:"cancelled_24h"`
-	Upcoming      []EngineUpcomingWave `json:"upcoming"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	PlannedDue    int64  `json:"planned_due"`
+	PlannedFuture int64  `json:"planned_future"`
+	Enqueuing     int64  `json:"enqueuing"`
+	Sending       int64  `json:"sending"`
+	// Completed24h counts wave EXECUTIONS, not messages.
+	Completed24h int64 `json:"completed_24h"`
+	// CompletedRecipients24h is the SUM of planned_recipients across those
+	// completed waves — the message-scale companion to Completed24h. It is a
+	// *planned* figure and covers wave-path sends only; the queue section's
+	// Sent24h (per-recipient tracking events) also counts click-drip direct
+	// sends + other non-wave paths, so Sent24h exceeding this is expected.
+	CompletedRecipients24h int64                `json:"completed_recipients_24h"`
+	Failed24h              int64                `json:"failed_24h"`
+	Cancelled24h           int64                `json:"cancelled_24h"`
+	Upcoming               []EngineUpcomingWave `json:"upcoming"`
 }
 
 // EngineMinutePoint is one per-minute throughput bucket.
@@ -443,12 +462,13 @@ func engineWaveSection(ctx context.Context, db *sql.DB) EngineWaveSection {
 			COUNT(*) FILTER (WHERE status IN ('dispatched','enqueuing')),
 			COUNT(*) FILTER (WHERE status IN ('sending','running')),
 			COUNT(*) FILTER (WHERE status = 'completed' AND COALESCE(completed_at, updated_at) > NOW() - INTERVAL '24 hours'),
+			COALESCE(SUM(COALESCE(planned_recipients, 0)) FILTER (WHERE status = 'completed' AND COALESCE(completed_at, updated_at) > NOW() - INTERVAL '24 hours'), 0),
 			COUNT(*) FILTER (WHERE status = 'failed'    AND COALESCE(failed_at, updated_at)    > NOW() - INTERVAL '24 hours'),
 			COUNT(*) FILTER (WHERE status = 'cancelled' AND updated_at > NOW() - INTERVAL '24 hours')
 		FROM mailing_campaign_waves
 		WHERE created_at > NOW() - INTERVAL '14 days'
 	`).Scan(&sec.PlannedDue, &sec.PlannedFuture, &sec.Enqueuing, &sec.Sending,
-		&sec.Completed24h, &sec.Failed24h, &sec.Cancelled24h)
+		&sec.Completed24h, &sec.CompletedRecipients24h, &sec.Failed24h, &sec.Cancelled24h)
 	if err != nil {
 		sec.Error = "wave counts: " + err.Error()
 		return sec
@@ -786,4 +806,159 @@ func engineWorkerSection(ctx context.Context, db *sql.DB) EngineWorkerSection {
 	}
 	sec.OK = true
 	return sec
+}
+
+// ---------------------------------------------------------------------------
+// ISP → VMTA pipes drill-down — GET /api/mailing/outbox/isp-pipes?isp=<family>
+// ---------------------------------------------------------------------------
+// Per-VMTA delivery breakdown for one ISP family over the last 24h, sourced
+// from pmta_acct_raw (the raw PMTA accounting firehose — NOT
+// mailing_tracking_events, which has the multi-row-per-recipient grain bug).
+// Classification mirrors handlers_deliverability.go exactly by reusing its
+// centralized filter constants (attempted/delivered/deferred/hard-bounce), so
+// this drill-down can never disagree with the ISP Health Center on what a
+// hard bounce is.
+//
+// ISP matching: recipient_isp holds lowercase isppkg.GroupFromDomain values
+// (gmail/yahoo/aol/microsoft/...), but it is only stamped once the acct
+// summary builder processes a row — the freshest rows still have it NULL. So
+// we match recipient_isp first and fall back to recipient_domain ∈ the
+// family's canonical domain list for unstamped rows. NOTE: the engine-status
+// per-ISP table folds sbcglobal.net into 'att' (engineISPForDomain), while
+// recipient_isp keeps 'sbcglobal' separate — drill into both families if
+// reconciling AT&T totals exactly.
+//
+// The 24h scan can touch millions of rows (bounded by idx_acct_raw_received),
+// so responses are cached per-family for ispPipesCacheTTL in a package-level
+// map; on query failure a stale cached payload is served over a 500.
+
+const (
+	ispPipesCacheTTL     = 120 * time.Second
+	ispPipesQueryTimeout = 30 * time.Second
+	ispPipesMaxRows      = 50
+)
+
+// ISPPipeRow is one VMTA pipe's 24h scorecard within the requested family.
+type ISPPipeRow struct {
+	VMTA        string `json:"vmta"`
+	Attempted   int64  `json:"attempted"`
+	Delivered   int64  `json:"delivered"`
+	Deferred    int64  `json:"deferred"`
+	HardBounces int64  `json:"hard_bounces"`
+	// Rates are fractions of attempted (0–1); 0 when attempted is 0.
+	DeliveredRate  float64 `json:"delivered_rate"`
+	DeferralRate   float64 `json:"deferral_rate"`
+	HardBounceRate float64 `json:"hard_bounce_rate"`
+}
+
+// ISPPipesResponse is the full isp-pipes payload.
+type ISPPipesResponse struct {
+	ISP             string       `json:"isp"`
+	WindowHours     int          `json:"window_hours"`
+	GeneratedAt     time.Time    `json:"generated_at"`
+	CacheAgeSeconds int64        `json:"cache_age_seconds"`
+	Rows            []ISPPipeRow `json:"rows"`
+}
+
+var (
+	ispPipesMu    sync.Mutex
+	ispPipesCache = map[string]ISPPipesResponse{}
+)
+
+// HandleOutboxISPPipes serves GET /api/mailing/outbox/isp-pipes?isp=<family>.
+func HandleOutboxISPPipes(db *sql.DB) http.HandlerFunc {
+	// Valid families = every canonical recipient_isp value the summary
+	// builder can write (isppkg.GroupFromDomain output) plus 'other'.
+	valid := map[string]struct{}{isppkg.Other: {}}
+	for _, g := range isppkg.AllGroups() {
+		valid[g] = struct{}{}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+
+		family := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("isp")))
+		if _, ok := valid[family]; !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown isp family"})
+			return
+		}
+
+		ispPipesMu.Lock()
+		cached, hit := ispPipesCache[family]
+		ispPipesMu.Unlock()
+		if hit && time.Since(cached.GeneratedAt) < ispPipesCacheTTL {
+			cached.CacheAgeSeconds = int64(time.Since(cached.GeneratedAt).Seconds())
+			_ = json.NewEncoder(w).Encode(cached)
+			return
+		}
+
+		resp, err := queryISPPipes(r.Context(), db, family)
+		if err != nil {
+			log.Printf("[isp_pipes] query failed for %q: %v", family, err)
+			if hit {
+				// Serve stale over a 500 — operator boards prefer old data.
+				cached.CacheAgeSeconds = int64(time.Since(cached.GeneratedAt).Seconds())
+				_ = json.NewEncoder(w).Encode(cached)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "query failed"})
+			return
+		}
+
+		ispPipesMu.Lock()
+		ispPipesCache[family] = resp
+		ispPipesMu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// queryISPPipes runs the 24h per-VMTA aggregate for one ISP family.
+func queryISPPipes(ctx context.Context, db *sql.DB, family string) (ISPPipesResponse, error) {
+	resp := ISPPipesResponse{
+		ISP:         family,
+		WindowHours: 24,
+		GeneratedAt: time.Now().UTC(),
+		Rows:        []ISPPipeRow{},
+	}
+
+	qctx, cancel := context.WithTimeout(ctx, ispPipesQueryTimeout)
+	defer cancel()
+
+	// Filter fragments are the shared constants from handlers_deliverability.go.
+	rows, err := db.QueryContext(qctx, `
+		SELECT COALESCE(NULLIF(vmta, ''), 'unknown') AS vmta,
+		       COUNT(*) FILTER (WHERE `+attemptedFilterSQL+`)  AS attempted,
+		       COUNT(*) FILTER (WHERE `+deliveredFilterSQL+`)  AS delivered,
+		       COUNT(*) FILTER (WHERE `+deferredFilterSQL+`)   AS deferred,
+		       COUNT(*) FILTER (WHERE `+hardBounceFilterSQL+`) AS hard_bounces
+		FROM pmta_acct_raw
+		WHERE received_at > NOW() - INTERVAL '24 hours'
+		  AND (LOWER(COALESCE(NULLIF(recipient_isp, ''), 'other')) = $1
+		       OR (NULLIF(recipient_isp, '') IS NULL
+		           AND LOWER(COALESCE(recipient_domain, '')) = ANY($2)))
+		GROUP BY 1
+		ORDER BY 2 DESC
+		LIMIT $3
+	`, family, pq.Array(isppkg.DomainsForGroup(family)), ispPipesMaxRows)
+	if err != nil {
+		return resp, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var p ISPPipeRow
+		if scanErr := rows.Scan(&p.VMTA, &p.Attempted, &p.Delivered, &p.Deferred, &p.HardBounces); scanErr != nil {
+			continue
+		}
+		if p.Attempted > 0 {
+			p.DeliveredRate = float64(p.Delivered) / float64(p.Attempted)
+			p.DeferralRate = float64(p.Deferred) / float64(p.Attempted)
+			p.HardBounceRate = float64(p.HardBounces) / float64(p.Attempted)
+		}
+		resp.Rows = append(resp.Rows, p)
+	}
+	return resp, rows.Err()
 }

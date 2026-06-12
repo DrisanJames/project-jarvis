@@ -151,6 +151,42 @@ interface Suggestion {
   tone: 'good' | 'warn' | 'bad' | 'info';
 }
 
+// ----------------------------------------------------------------------------
+//  Types — Hourly Assessment (consciousness/hourly-assessment, 60-min window,
+//  cached 10 min server-side — poll on the same cadence, never faster)
+// ----------------------------------------------------------------------------
+
+interface HourlyPipe {
+  isp: string;
+  vmta: string;
+  attempted: number;
+  delivered: number;
+  deferred: number;
+  bounced: number;
+  delivered_pct: number;
+  deferral_pct: number;
+  bounce_pct: number;
+}
+
+interface HourlyRecommendation {
+  isp: string;
+  type: string; // 'reroute' | 'pace_down'
+  severity: string;
+  message: string;
+  bad_vmta?: string;
+  bad_deferral_pct?: number;
+  good_vmta?: string;
+  good_deferral_pct?: number;
+}
+
+interface HourlyAssessmentResp {
+  generated_at: string;
+  window_minutes: number;
+  cached: boolean;
+  recommendations: HourlyRecommendation[] | null;
+  pipes: HourlyPipe[] | null;
+}
+
 const TS_METRICS = ['delivered', 'deferred', 'hard_bounce', 'soft_bounce'] as const;
 type TSMetric = typeof TS_METRICS[number];
 
@@ -322,6 +358,9 @@ export const ConsciousnessDashboard: React.FC = () => {
   const [state, setState] = useState<ConsciousnessState | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignMetrics[]>([]);
   const [liveThoughts, setLiveThoughts] = useState<Thought[]>([]);
+  // Operator finds the thought firehose noisy — default to paused/snapshot;
+  // the SSE stream only opens when explicitly toggled on.
+  const [thoughtsLive, setThoughtsLive] = useState(false);
   const [activeSection, setActiveSection] = useState<'campaigns' | 'overview' | 'philosophies' | 'thoughts'>('overview');
   const [selectedISP, setSelectedISP] = useState<string>('all');
   const [loading, setLoading] = useState(true);
@@ -419,6 +458,11 @@ export const ConsciousnessDashboard: React.FC = () => {
   }, [fetchState, fetchOps]);
 
   useEffect(() => {
+    if (!thoughtsLive) {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      return;
+    }
     const es = new EventSource('/api/mailing/consciousness/thoughts/stream');
     es.addEventListener('thought', (e) => {
       const thought: Thought = JSON.parse(e.data);
@@ -428,14 +472,17 @@ export const ConsciousnessDashboard: React.FC = () => {
       });
     });
     eventSourceRef.current = es;
-    return () => es.close();
-  }, []);
+    return () => {
+      es.close();
+      eventSourceRef.current = null;
+    };
+  }, [thoughtsLive]);
 
   useEffect(() => {
-    if (activeSection === 'thoughts') {
+    if (activeSection === 'thoughts' && thoughtsLive) {
       thoughtsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [liveThoughts, activeSection]);
+  }, [liveThoughts, activeSection, thoughtsLive]);
 
   const allThoughts = useMemo(() => [
     ...(state?.recent_thoughts || []),
@@ -580,16 +627,19 @@ export const ConsciousnessDashboard: React.FC = () => {
       </div>
 
       {mainTab === 'operations' && (
-        <OperationsBoard
-          rows={ispRows}
-          configByISP={configByISP}
-          engineNoteByISP={engineNoteByISP}
-          series={series}
-          selected={selectedOpsISP}
-          onSelect={setOpsISP}
-          thoughts={allThoughts}
-          philosophies={state?.philosophies || []}
-        />
+        <>
+          <HourlyAssessmentPanel />
+          <OperationsBoard
+            rows={ispRows}
+            configByISP={configByISP}
+            engineNoteByISP={engineNoteByISP}
+            series={series}
+            selected={selectedOpsISP}
+            onSelect={setOpsISP}
+            thoughts={allThoughts}
+            philosophies={state?.philosophies || []}
+          />
+        </>
       )}
 
       {mainTab === 'engine' && (
@@ -621,8 +671,149 @@ export const ConsciousnessDashboard: React.FC = () => {
             {activeSection === 'campaigns' && renderCampaigns(campaigns)}
             {activeSection === 'overview' && renderOverview(state, campaigns, allThoughts)}
             {activeSection === 'philosophies' && renderPhilosophies(filteredPhilosophies, selectedISP, setSelectedISP)}
-            {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef)}
+            {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef, thoughtsLive, setThoughtsLive)}
           </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
+//  Hourly Assessment — last-60-min per-(ISP, VMTA) pipe health + routing
+//  recommendations. Server caches for 10 minutes; we poll on that cadence.
+// ----------------------------------------------------------------------------
+
+const HOURLY_ASSESS_POLL_MS = 10 * 60 * 1000;
+
+function deferralColor(pct: number): string {
+  if (pct > 50) return '#ef4444';
+  if (pct > 10) return '#f59e0b';
+  return 'rgba(180,210,240,0.8)';
+}
+
+const HourlyAssessmentPanel: React.FC = () => {
+  const [assessment, setAssessment] = useState<HourlyAssessmentResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/mailing/consciousness/hourly-assessment');
+        if (cancelled) return;
+        if (res.ok) {
+          setAssessment(await res.json());
+          setError(null);
+        } else {
+          const body = await res.json().catch(() => null);
+          setError(body?.error || `hourly assessment unavailable (${res.status})`);
+        }
+      } catch {
+        if (!cancelled) setError('hourly assessment unreachable');
+      }
+    };
+    load();
+    // Cached 10 min server-side — do NOT fast-poll.
+    const interval = setInterval(load, HOURLY_ASSESS_POLL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const recommendations = assessment?.recommendations || [];
+  const pipes = assessment?.pipes || [];
+
+  return (
+    <div className="ig-card-hover" style={{ ...styles.card, marginBottom: 20 }}>
+      <h3 style={styles.cardTitle}>
+        <FontAwesomeIcon icon={faBolt} style={{ marginRight: 8, color: '#fdcb6e' }} />
+        Hourly Assessment
+        <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+          last 60 min · per-pipe routing read
+          {assessment && ` · generated ${new Date(assessment.generated_at).toLocaleTimeString()}`}
+        </span>
+      </h3>
+
+      {error && (
+        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>{error}</p>
+      )}
+
+      {!error && !assessment && (
+        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>Assessing the last hour…</p>
+      )}
+
+      {assessment && (
+        <>
+          {/* Headline routing recommendations */}
+          {recommendations.length === 0 ? (
+            <p style={{ color: '#10b981', fontSize: 12, margin: '0 0 12px' }}>
+              No routing imbalances detected — all pipes within band for the last hour.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+              {recommendations.map((rec, i) => {
+                const color = rec.severity === 'critical' ? '#ef4444' : '#f59e0b';
+                return (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 8,
+                    padding: '8px 12px', borderRadius: 8,
+                    background: color + '14', borderLeft: `3px solid ${color}`,
+                  }}>
+                    <FontAwesomeIcon icon={faExclamationTriangle} style={{ color, fontSize: 12, marginTop: 2, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ color: '#e0e6f0', fontSize: 13, lineHeight: 1.4 }}>{rec.message}</span>
+                      {rec.type === 'reroute' && (
+                        <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11, display: 'block', fontFamily: 'monospace' }}>
+                          {rec.bad_vmta}: {rec.bad_deferral_pct?.toFixed(1)}% deferral vs {rec.good_vmta}: {rec.good_deferral_pct?.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Per-ISP → VMTA pipes table */}
+          {pipes.length === 0 ? (
+            <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>
+              No PMTA traffic in the last 60 minutes.
+            </p>
+          ) : (
+            <div style={{ ...styles.opsTableWrap, maxHeight: 320 }}>
+              <table style={styles.opsTable}>
+                <thead>
+                  <tr>
+                    {['ISP', 'VMTA', 'Attempted', 'Delivered %', 'Deferral %', 'Bounce %'].map(h => (
+                      <th key={h} style={styles.opsTh}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pipes.map((p, i) => {
+                    const firstOfISP = i === 0 || pipes[i - 1].isp !== p.isp;
+                    return (
+                      <tr key={`${p.isp}-${p.vmta}`} style={styles.opsTr}>
+                        <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>
+                          {firstOfISP ? ispLabel(p.isp) : ''}
+                        </td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0', whiteSpace: 'nowrap' }}>{p.vmta}</td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{p.attempted.toLocaleString()}</td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? '#10b981' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                          {p.delivered_pct.toFixed(1)}%
+                        </td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>
+                          {p.deferral_pct.toFixed(1)}%
+                        </td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.bounce_pct > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>
+                          {p.bounce_pct.toFixed(2)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -1096,9 +1287,35 @@ function renderPhilosophies(
   );
 }
 
-function renderThoughts(thoughts: Thought[], endRef: React.RefObject<HTMLDivElement>) {
+function renderThoughts(
+  thoughts: Thought[],
+  endRef: React.RefObject<HTMLDivElement>,
+  live: boolean,
+  setLive: (v: boolean) => void,
+) {
   return (
-    <div className="ig-data-stream" style={styles.thoughtsContainer}>
+    <div>
+      {/* Default is paused/snapshot — the firehose only runs when toggled on */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>
+          {live ? 'Streaming thoughts live' : 'Snapshot view (stream paused)'}
+        </span>
+        <button
+          onClick={() => setLive(!live)}
+          style={{
+            padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            background: live ? 'rgba(16,185,129,0.12)' : 'rgba(0,200,255,0.07)',
+            border: live ? '1px solid rgba(16,185,129,0.4)' : '1px solid rgba(0,200,255,0.15)',
+            color: live ? '#10b981' : 'rgba(180,210,240,0.8)',
+            display: 'flex', alignItems: 'center',
+          }}
+        >
+          <FontAwesomeIcon icon={faStream} style={{ marginRight: 6, fontSize: 11 }} />
+          Live stream {live ? 'ON' : 'OFF'}
+          {live && <span style={styles.liveDot} />}
+        </button>
+      </div>
+      <div className="ig-data-stream" style={styles.thoughtsContainer}>
       {thoughts.length === 0 ? (
         <div style={styles.emptyState}>
           <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
@@ -1139,6 +1356,7 @@ function renderThoughts(thoughts: Thought[], endRef: React.RefObject<HTMLDivElem
           <div ref={endRef as React.RefObject<HTMLDivElement>} />
         </>
       )}
+      </div>
     </div>
   );
 }

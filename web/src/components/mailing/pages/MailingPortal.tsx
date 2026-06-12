@@ -318,12 +318,81 @@ export const MailingPortal: React.FC = () => {
 //     dashboard.throttle_status, sends X-Organization-ID, surfaces Hard
 //     Bounce + Soft Bounce as separate tiles per bounce-metrics.mdc, splits
 //     the platform sending gauge into platform-wide vs org's contribution.
-const PAGE_VERSION_DASHBOARD = '1.0';
+//   1.1 (2026-06-12) — Today's Performance now prefers the analytics lake
+//     (Athena) for delivered/opens/clicks/hard/soft, with a "lake" source
+//     badge; falls back to the PG numbers (badge explains SES routes are
+//     pixel-blind in PG) when the lake reader is disabled or errors.
+//     Revenue stays from the PG dashboard payload.
+const PAGE_VERSION_DASHBOARD = '1.1';
+
+// Today's lake counts (event_type buckets from /analytics/lake/summary).
+interface LakeTodayCounts {
+  delivered: number;
+  opens: number;
+  clicks: number;
+  hard: number;
+  soft: number;
+}
+
+// Today's date (YYYY-MM-DD) in America/Denver — mirrors the dashboard
+// handler's "today" window (operator-local calendar day).
+const denverToday = (): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
+
+// dt partitions are UTC days; a Denver day spans dt and dt+1 (after 6pm MDT
+// events land in the next UTC partition), so the summary query covers both.
+const nextUTCDay = (ymd: string): string => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+};
 
 const EnhancedDashboard: React.FC = () => {
   const { organization } = useAuth();
   const [dashboard, setDashboard] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // null = lake disabled/unavailable/errored → render the PG fallback.
+  const [lakeToday, setLakeToday] = useState<LakeTodayCounts | null>(null);
+
+  // Lake fetch for Today's Performance. Independent of the PG dashboard fetch
+  // so a slow/failed Athena query never blocks the rest of the dashboard.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const statusRes = await apiFetch('/api/mailing/analytics/lake/status', { credentials: 'include' });
+        if (!statusRes.ok) return;
+        const status = await statusRes.json();
+        if (!status?.enabled_read) return;
+
+        const from = denverToday();
+        const to = nextUTCDay(from);
+        const sumRes = await apiFetch(
+          `/api/mailing/analytics/lake/summary?from=${from}&to=${to}`,
+          { credentials: 'include' },
+        );
+        if (!sumRes.ok) return;
+        const sum = await sumRes.json();
+        if (sum?.disabled || !Array.isArray(sum?.rows)) return;
+
+        const byType: Record<string, number> = {};
+        for (const row of sum.rows as Array<{ event_type: string; count: number }>) {
+          byType[row.event_type] = (byType[row.event_type] || 0) + (row.count || 0);
+        }
+        if (!cancelled) {
+          setLakeToday({
+            delivered: byType['delivered'] || 0,
+            opens: byType['open'] || 0,
+            clicks: byType['click'] || 0,
+            hard: byType['hard_bounce'] || 0,
+            soft: byType['soft_bounce'] || 0,
+          });
+        }
+      } catch {
+        // Lake unreachable → keep the PG fallback (lakeToday stays null).
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
@@ -345,6 +414,28 @@ const EnhancedDashboard: React.FC = () => {
   if (loading) return <div className="loading-state">Loading dashboard...</div>;
 
   const throttle = dashboard?.throttle_status || {};
+
+  // Today's Performance source selection: lake (Athena) when available, else
+  // the PG dashboard payload. Revenue ALWAYS comes from the PG payload.
+  const perf = dashboard?.performance || {};
+  const todayDelivered: number = lakeToday ? lakeToday.delivered : (perf.delivered || 0);
+  const todayOpenRate: number = lakeToday
+    ? (lakeToday.delivered > 0 ? (lakeToday.opens / lakeToday.delivered) * 100 : 0)
+    : (perf.open_rate ? perf.open_rate * 100 : 0);
+  const todayClickRate: number = lakeToday
+    ? (lakeToday.delivered > 0 ? (lakeToday.clicks / lakeToday.delivered) * 100 : 0)
+    : (perf.click_rate ? perf.click_rate * 100 : 0);
+  const todayHard: number = lakeToday ? lakeToday.hard : (perf.hard_bounces || 0);
+  const todaySoft: number = lakeToday ? lakeToday.soft : (perf.soft_bounces || 0);
+  // Bounce-rate denominator mirrors the campaign-summary convention:
+  // processed = delivered + hard + soft.
+  const todayProcessed = lakeToday ? (lakeToday.delivered + lakeToday.hard + lakeToday.soft) : 0;
+  const todayHardRate: number | null = lakeToday
+    ? (todayProcessed > 0 ? (todayHard / todayProcessed) * 100 : 0)
+    : (perf.hard_bounce_rate ?? null);
+  const todaySoftRate: number | null = lakeToday
+    ? (todayProcessed > 0 ? (todaySoft / todayProcessed) * 100 : 0)
+    : (perf.soft_bounce_rate ?? null);
 
   return (
     <div className="enhanced-dashboard ig-fade-in">
@@ -473,27 +564,44 @@ const EnhancedDashboard: React.FC = () => {
 
       {/* Performance Metrics */}
       <div className="metrics-section">
-        <h3><FontAwesomeIcon icon={faChartLine} /> Today's Performance</h3>
+        <h3>
+          <FontAwesomeIcon icon={faChartLine} /> Today's Performance
+          {' '}
+          <span
+            title={lakeToday
+              ? 'Source: analytics event lake (Athena) — covers PMTA and SES routes.'
+              : 'Source: Postgres tracking tables — SES routes are pixel-blind here (SES strips tracking pixels), so opens/clicks under-count on SES-routed mail.'}
+            style={{
+              fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+              padding: '2px 8px', borderRadius: 10, verticalAlign: 'middle', marginLeft: 6,
+              background: lakeToday ? 'rgba(99,102,241,0.18)' : 'rgba(148,163,184,0.15)',
+              color: lakeToday ? '#a5b4fc' : '#94a3b8',
+              border: `1px solid ${lakeToday ? 'rgba(99,102,241,0.4)' : 'rgba(148,163,184,0.3)'}`,
+            }}
+          >
+            {lakeToday ? 'lake' : 'pg — SES routes are pixel-blind here'}
+          </span>
+        </h3>
         <div className="metrics-grid">
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <div className="metric-content">
-              <span className="metric-value">{dashboard?.performance?.delivered?.toLocaleString() || 0}</span>
+              <span className="metric-value">{todayDelivered.toLocaleString()}</span>
               <span className="metric-label">Delivered</span>
             </div>
           </div>
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faEnvelope} /></span>
             <div className="metric-content">
-              <span className="metric-value">{dashboard?.performance?.open_rate ? `${(dashboard.performance.open_rate * 100).toFixed(1)}%` : '0%'}</span>
-              <span className="metric-label">Open Rate</span>
+              <span className="metric-value">{`${todayOpenRate.toFixed(1)}%`}</span>
+              <span className="metric-label">Open Rate{lakeToday ? ` (${lakeToday.opens.toLocaleString()} opens)` : ''}</span>
             </div>
           </div>
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
             <div className="metric-content">
-              <span className="metric-value">{dashboard?.performance?.click_rate ? `${(dashboard.performance.click_rate * 100).toFixed(1)}%` : '0%'}</span>
-              <span className="metric-label">Click Rate</span>
+              <span className="metric-value">{`${todayClickRate.toFixed(1)}%`}</span>
+              <span className="metric-label">Click Rate{lakeToday ? ` (${lakeToday.clicks.toLocaleString()} clicks)` : ''}</span>
             </div>
           </div>
           <div className="metric-card">
@@ -513,28 +621,28 @@ const EnhancedDashboard: React.FC = () => {
             information at all).
           */}
           <div className="metric-card">
-            <span className="metric-icon" style={{ color: (dashboard?.performance?.hard_bounces || 0) > 0 ? '#ef4444' : '#475569' }}>
+            <span className="metric-icon" style={{ color: todayHard > 0 ? '#ef4444' : '#475569' }}>
               <FontAwesomeIcon icon={faBan} />
             </span>
             <div className="metric-content">
-              <span className="metric-value" style={{ color: (dashboard?.performance?.hard_bounces || 0) > 0 ? '#ef4444' : undefined }}>
-                {(dashboard?.performance?.hard_bounces || 0).toLocaleString()}
+              <span className="metric-value" style={{ color: todayHard > 0 ? '#ef4444' : undefined }}>
+                {todayHard.toLocaleString()}
               </span>
               <span className="metric-label">
-                Hard Bounce {dashboard?.performance?.hard_bounce_rate != null && (dashboard.performance.hard_bounce_rate > 0) ? `(${dashboard.performance.hard_bounce_rate.toFixed(2)}%)` : ''}
+                Hard Bounce {todayHardRate != null && todayHardRate > 0 ? `(${todayHardRate.toFixed(2)}%)` : ''}
               </span>
             </div>
           </div>
           <div className="metric-card">
-            <span className="metric-icon" style={{ color: (dashboard?.performance?.soft_bounces || 0) > 0 ? '#f59e0b' : '#475569' }}>
+            <span className="metric-icon" style={{ color: todaySoft > 0 ? '#f59e0b' : '#475569' }}>
               <FontAwesomeIcon icon={faBan} />
             </span>
             <div className="metric-content">
-              <span className="metric-value" style={{ color: (dashboard?.performance?.soft_bounces || 0) > 0 ? '#f59e0b' : undefined }}>
-                {(dashboard?.performance?.soft_bounces || 0).toLocaleString()}
+              <span className="metric-value" style={{ color: todaySoft > 0 ? '#f59e0b' : undefined }}>
+                {todaySoft.toLocaleString()}
               </span>
               <span className="metric-label">
-                Soft Bounce {dashboard?.performance?.soft_bounce_rate != null && (dashboard.performance.soft_bounce_rate > 0) ? `(${dashboard.performance.soft_bounce_rate.toFixed(2)}%)` : ''}
+                Soft Bounce {todaySoftRate != null && todaySoftRate > 0 ? `(${todaySoftRate.toFixed(2)}%)` : ''}
               </span>
             </div>
           </div>

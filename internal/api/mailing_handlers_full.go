@@ -379,6 +379,11 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		SELECT id, name, status, sent_count, open_count, click_count, created_at
 		FROM mailing_campaigns
 		WHERE organization_id = $1
+		  -- Operator campaigns only: the partner-drip orchestrator and the
+		  -- click-drip journey sender create hundreds of mini-campaigns/day
+		  -- ([partner-drip] waves) that would otherwise fill all 5 rows.
+		  AND partner_drip_tag IS NULL
+		  AND COALESCE(campaign_type, '') <> 'click_drip'
 		ORDER BY created_at DESC LIMIT 5
 	`, orgID); qErr != nil {
 		log.Printf("[dashboard] recent_campaigns error org=%s: %v", orgStr, qErr)

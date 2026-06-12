@@ -1120,6 +1120,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// every 10s. Authed: the payload carries campaign names + worker
 			// errors (QA finding H2).
 			r.Get("/outbox/engine-status", HandleOutboxEngineStatus(db))
+			r.Get("/outbox/isp-pipes", HandleOutboxISPPipes(db))
 
 			// === AUDIENCE CADENCE v3 — messages-to-engage/convert KPIs per ISP +
 			// the ISP doctrine registry (audience_cadence_kpis.go).
@@ -1339,6 +1340,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			consciousness.SetCampaignTracker(campaignTracker)
 
 			consciousnessAPI := NewConsciousnessService(consciousness, campaignTracker, convictionStore, signalProcessor, engineOrgID)
+			SetConsciousnessDB(db) // campaign-name enrichment + hourly assessment (handlers_consciousness.go)
 			consciousnessAPI.RegisterRoutes(r)
 
 			// Start the orchestrator (launches all 48 agents)

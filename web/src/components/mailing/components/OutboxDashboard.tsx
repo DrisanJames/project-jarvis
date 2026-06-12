@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faBolt,
+  faChevronDown,
+  faChevronRight,
   faExclamationTriangle,
   faGaugeHigh,
   faHeartPulse,
@@ -32,11 +34,16 @@ import { apiFetch } from '../shared/apiFetch';
 // is about to do, and which ISPs are deferring above their own baseline.
 // Sections render independently — a failed backend section shows an inline
 // error chip, never a blank page. The dead-letter table from the v1 page is
-// preserved at the bottom (still /api/outbox/dead-letter).
+// preserved at the bottom (still /api/outbox/dead-letter), filtered
+// client-side to the last 8h, newest first, max 50 rows.
+// v2.1: per-ISP rows expand into a per-VMTA pipes sub-table
+// (/api/mailing/outbox/isp-pipes, fetched on expand only).
 
-const PAGE_VERSION = '2.0';
+const PAGE_VERSION = '2.1';
 const POLL_INTERVAL_MS = 10_000;
 const DEAD_LETTER_POLL_EVERY_N_TICKS = 3; // every ~30s
+const DEAD_LETTER_WINDOW_HOURS = 8;
+const DEAD_LETTER_MAX_ROWS = 50;
 const BACKLOG_QUEUED_THRESHOLD = 1_000;
 const BACKLOG_AGE_THRESHOLD_SEC = 15 * 60;
 
@@ -77,7 +84,10 @@ interface WaveSection {
   planned_future: number;
   enqueuing: number;
   sending: number;
+  // completed_24h counts wave EXECUTIONS, not messages;
+  // completed_recipients_24h is the planned-recipient sum of those waves.
   completed_24h: number;
+  completed_recipients_24h: number;
   failed_24h: number;
   cancelled_24h: number;
   upcoming: UpcomingWave[];
@@ -163,6 +173,33 @@ interface DeadLetterRow {
 interface DeadLetterResponse {
   rows: DeadLetterRow[];
   count: number;
+}
+
+// isp-pipes drill-down (mirror HandleOutboxISPPipes in outbox_engine_status.go)
+
+interface ISPPipeRow {
+  vmta: string;
+  attempted: number;
+  delivered: number;
+  deferred: number;
+  hard_bounces: number;
+  delivered_rate: number;
+  deferral_rate: number;
+  hard_bounce_rate: number;
+}
+
+interface ISPPipesResponse {
+  isp: string;
+  window_hours: number;
+  generated_at: string;
+  cache_age_seconds: number;
+  rows: ISPPipeRow[];
+}
+
+interface PipesState {
+  loading: boolean;
+  error: string | null;
+  rows: ISPPipeRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -313,14 +350,70 @@ const SectionError: React.FC<{ label: string; error?: string }> = ({ label, erro
   </div>
 );
 
-const Stat: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
-  <div style={{ minWidth: 90 }}>
+const Stat: React.FC<{ label: string; value: string; color?: string; title?: string }> = ({ label, value, color, title }) => (
+  <div style={{ minWidth: 90 }} title={title}>
     <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 20, fontWeight: 700, color: color ?? '#e5e7eb', fontVariantNumeric: 'tabular-nums' }}>
       {value}
     </div>
   </div>
 );
+
+// PipesSubTable renders the inline per-VMTA breakdown under an expanded ISP
+// row: which MTA pipe is struggling for this family (last 24h, pmta_acct_raw).
+const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, state }) => {
+  if (!state || state.loading) {
+    return (
+      <div style={{ padding: '12px 16px', fontSize: 12, color: '#94a3b8' }}>
+        <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 6 }} />
+        Loading VMTA pipes for {titleCase(isp)}…
+      </div>
+    );
+  }
+  if (state.error) {
+    return (
+      <div style={{ padding: '10px 16px' }}>
+        <SectionError label={`${titleCase(isp)} VMTA pipes`} error={state.error} />
+      </div>
+    );
+  }
+  if (state.rows.length === 0) {
+    return (
+      <div style={{ padding: '12px 16px', fontSize: 12, color: '#64748b' }}>
+        No PMTA accounting rows for {titleCase(isp)} in the last 24h.
+      </div>
+    );
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead>
+        <tr>
+          <th style={{ ...thStyle, paddingLeft: 28 }}>VMTA</th>
+          <th style={numTh}>Attempted</th>
+          <th style={numTh}>Delivered %</th>
+          <th style={numTh}>Deferral %</th>
+          <th style={numTh}>Bounces</th>
+        </tr>
+      </thead>
+      <tbody>
+        {state.rows.map((p) => {
+          const defColor = p.deferral_rate > 0.5 ? '#ef4444' : p.deferral_rate > 0.1 ? '#f59e0b' : '#86efac';
+          return (
+            <tr key={p.vmta}>
+              <td style={{ ...tdStyle, paddingLeft: 28, fontFamily: 'monospace', fontSize: 11, color: '#c7d2fe' }}>
+                {p.vmta}
+              </td>
+              <td style={numTd}>{fmt(p.attempted)}</td>
+              <td style={numTd}>{fmtPct(p.delivered_rate)}</td>
+              <td style={{ ...numTd, color: defColor, fontWeight: 600 }}>{fmtPct(p.deferral_rate)}</td>
+              <td style={{ ...numTd, color: p.hard_bounces > 0 ? '#ef4444' : '#e5e7eb' }}>{fmt(p.hard_bounces)}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -334,6 +427,35 @@ export const OutboxDashboard: React.FC = () => {
   const [lastFetchAt, setLastFetchAt] = useState<Date | null>(null);
   const [, setClockTick] = useState<number>(0);
   const tickCount = useRef<number>(0);
+  // Per-ISP → VMTA pipes drill-down: fetched on expand only (backend caches
+  // per-family for ~120s, so re-expanding is cheap).
+  const [expandedISP, setExpandedISP] = useState<string | null>(null);
+  const [pipes, setPipes] = useState<Record<string, PipesState>>({});
+
+  const fetchPipes = useCallback(async (ispName: string) => {
+    setPipes((prev) => ({ ...prev, [ispName]: { loading: true, error: null, rows: prev[ispName]?.rows ?? [] } }));
+    try {
+      const res = await apiFetch(`/api/mailing/outbox/isp-pipes?isp=${encodeURIComponent(ispName)}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`isp-pipes HTTP ${res.status}`);
+      const json = (await res.json()) as ISPPipesResponse;
+      setPipes((prev) => ({ ...prev, [ispName]: { loading: false, error: null, rows: json.rows || [] } }));
+    } catch (err) {
+      setPipes((prev) => ({
+        ...prev,
+        [ispName]: { loading: false, error: err instanceof Error ? err.message : String(err), rows: [] },
+      }));
+    }
+  }, []);
+
+  const toggleISP = useCallback(
+    (ispName: string) => {
+      setExpandedISP((prev) => (prev === ispName ? null : ispName));
+      if (expandedISP !== ispName) void fetchPipes(ispName);
+    },
+    [expandedISP, fetchPipes],
+  );
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -410,6 +532,21 @@ export const OutboxDashboard: React.FC = () => {
     });
     return rows;
   }, [data]);
+
+  // Dead-letter window: the endpoint returns the most recent rows (newest
+  // first by COALESCE(last_attempt_at, created_at), see HandleOutboxDeadLetter
+  // in outbox_admin.go) but with no time bound — filter to the last 8h here
+  // so the operator sees what's failing NOW, not a week of history.
+  const recentDeadLetter = useMemo(() => {
+    const cutoff = Date.now() - DEAD_LETTER_WINDOW_HOURS * 3_600_000;
+    return deadLetter
+      .filter((r) => {
+        const t = new Date(r.last_attempt_at).getTime();
+        return !Number.isNaN(t) && t >= cutoff;
+      })
+      .sort((a, b) => new Date(b.last_attempt_at).getTime() - new Date(a.last_attempt_at).getTime())
+      .slice(0, DEAD_LETTER_MAX_ROWS);
+  }, [deadLetter]);
 
   const secondsSinceFetch = lastFetchAt ? Math.max(0, Math.round((Date.now() - lastFetchAt.getTime()) / 1000)) : null;
 
@@ -542,6 +679,7 @@ export const OutboxDashboard: React.FC = () => {
               <Stat
                 label="Sent 24h"
                 value={data.queue.ok ? fmt(data.queue.sent_24h) : '—'}
+                title="Per-recipient 'sent' tracking events — includes click-drip direct sends and other non-wave paths, so it legitimately exceeds wave recipients"
               />
             </div>
           </section>
@@ -644,7 +782,11 @@ export const OutboxDashboard: React.FC = () => {
                     <Stat label="Scheduled" value={fmt(data.waves.planned_future)} color="#c7d2fe" />
                     <Stat label="Enqueuing" value={fmt(data.waves.enqueuing)} color="#93c5fd" />
                     <Stat label="Sending" value={fmt(data.waves.sending)} color="#86efac" />
-                    <Stat label="Done 24h" value={fmt(data.waves.completed_24h)} />
+                    <Stat
+                      label="Waves done 24h"
+                      value={`${fmt(data.waves.completed_24h)} (${fmt(data.waves.completed_recipients_24h)} recipients)`}
+                      title="Count of wave executions, not messages — recipients = planned recipients across those completed waves"
+                    />
                     <Stat
                       label="Failed 24h"
                       value={fmt(data.waves.failed_24h)}
@@ -795,26 +937,53 @@ export const OutboxDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {ispRows.map((r) => (
-                      <tr key={r.isp} style={r.storm ? { background: 'rgba(239,68,68,0.10)' } : undefined}>
-                        <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? '#fca5a5' : '#dbeafe' }}>
-                          {titleCase(r.isp)}
-                          {r.storm && (
-                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Deferral storm" />
+                    {ispRows.map((r) => {
+                      const isOpen = expandedISP === r.isp;
+                      return (
+                        <React.Fragment key={r.isp}>
+                          <tr
+                            onClick={() => toggleISP(r.isp)}
+                            title="Click to drill into per-VMTA pipes (last 24h)"
+                            style={{
+                              cursor: 'pointer',
+                              background: r.storm
+                                ? 'rgba(239,68,68,0.10)'
+                                : isOpen
+                                  ? 'rgba(99,102,241,0.10)'
+                                  : undefined,
+                            }}
+                          >
+                            <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? '#fca5a5' : '#dbeafe' }}>
+                              <FontAwesomeIcon
+                                icon={isOpen ? faChevronDown : faChevronRight}
+                                style={{ color: '#6366f1', fontSize: 11, marginRight: 7 }}
+                              />
+                              {titleCase(r.isp)}
+                              {r.storm && (
+                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Deferral storm" />
+                              )}
+                            </td>
+                            <td style={numTd}>{fmt(r.queued)}</td>
+                            <td style={numTd}>{fmt(r.sent24h)}</td>
+                            <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
+                            <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : '#86efac', fontWeight: 600 }}>
+                              {fmtPct(r.recentRate)}
+                            </td>
+                            <td style={numTd}>{fmtPct(r.baselineRate)}</td>
+                            <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : '#94a3b8' }}>
+                              {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
+                            </td>
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={7} style={{ padding: 0, background: 'rgba(0,0,0,0.22)' }}>
+                                <PipesSubTable isp={r.isp} state={pipes[r.isp]} />
+                              </td>
+                            </tr>
                           )}
-                        </td>
-                        <td style={numTd}>{fmt(r.queued)}</td>
-                        <td style={numTd}>{fmt(r.sent24h)}</td>
-                        <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
-                        <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : '#86efac', fontWeight: 600 }}>
-                          {fmtPct(r.recentRate)}
-                        </td>
-                        <td style={numTd}>{fmtPct(r.baselineRate)}</td>
-                        <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : '#94a3b8' }}>
-                          {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
-                        </td>
-                      </tr>
-                    ))}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -879,14 +1048,16 @@ export const OutboxDashboard: React.FC = () => {
               }}
             >
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: deadLetter.length > 0 ? '#ef4444' : '#64748b' }} />
-                Dead-letter ({fmt(deadLetter.length)})
+                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? '#ef4444' : '#64748b' }} />
+                Dead-letter ({fmt(recentDeadLetter.length)})
               </h2>
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>Most recent 50</span>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                Last {DEAD_LETTER_WINDOW_HOURS}h · newest first · max {DEAD_LETTER_MAX_ROWS}
+              </span>
             </header>
-            {deadLetter.length === 0 ? (
+            {recentDeadLetter.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-                No dead-letter rows. Pipeline healthy.
+                No dead-letter rows in the last {DEAD_LETTER_WINDOW_HOURS} hours. Pipeline healthy.
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
@@ -902,7 +1073,7 @@ export const OutboxDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {deadLetter.map((r) => (
+                    {recentDeadLetter.map((r) => (
                       <tr key={r.id}>
                         <td style={tdStyle}>{r.email || r.subscriber_id}</td>
                         <td style={{ ...tdStyle, color: '#ef4444' }}>{r.status}</td>

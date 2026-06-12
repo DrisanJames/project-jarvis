@@ -1143,7 +1143,9 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		                          AND engaged_at IS NULL
 		                          AND terminal_reason IS NULL
 		                          AND next_touch_at IS NOT NULL
-		                          AND next_touch_at <= NOW())                    AS followups_due
+		                          AND next_touch_at <= NOW())                    AS followups_due,
+		       COALESCE(SUM(COALESCE(eo_attempts, 0)), 0)                       AS eo_credits_total,
+		       COUNT(*) FILTER (WHERE validated_at > NOW() - INTERVAL '24 hours') AS eo_validated_24h
 		FROM partner_clean_queue
 		GROUP BY 1, 2
 		ORDER BY 1, 7 DESC
@@ -1154,8 +1156,14 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 	defer rows.Close()
 
 	type vAgg struct {
-		pendingEO, hold, ready, claimed, mailed, sent24h          int
-		t1, t2, t3, t4, engaged, completed, followupsDue          int
+		pendingEO, hold, ready, claimed, mailed, sent24h int
+		t1, t2, t3, t4, engaged, completed, followupsDue int
+		// eoCredits = SUM(eo_attempts): EmailOversight bills per validation
+		// call, and partner_validator.go increments eo_attempts exactly once
+		// per call — so this is consumed EO credits. eoValidated24h counts
+		// rows whose last validation landed in the last 24h.
+		eoCredits      int64
+		eoValidated24h int
 	}
 	vTotals := map[string]*vAgg{}
 	var vOrder []string
@@ -1165,8 +1173,10 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		var vertical, isp string
 		var pendingEO, hold, ready, claimed, mailed, sent24h int
 		var t1, t2, t3, t4, engaged, completed, followupsDue int
+		var eoCredits int64
+		var eoValidated24h int
 		if err := rows.Scan(&vertical, &isp, &pendingEO, &hold, &ready, &claimed, &mailed, &sent24h,
-			&t1, &t2, &t3, &t4, &engaged, &completed, &followupsDue); err != nil {
+			&t1, &t2, &t3, &t4, &engaged, &completed, &followupsDue, &eoCredits, &eoValidated24h); err != nil {
 			continue
 		}
 		agg, ok := vTotals[vertical]
@@ -1188,6 +1198,8 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		agg.engaged += engaged
 		agg.completed += completed
 		agg.followupsDue += followupsDue
+		agg.eoCredits += eoCredits
+		agg.eoValidated24h += eoValidated24h
 
 		isps = append(isps, map[string]interface{}{
 			"vertical": vertical,
@@ -1213,9 +1225,11 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 			"touch_2":       a.t2,
 			"touch_3":       a.t3,
 			"touch_4":       a.t4,
-			"engaged":       a.engaged,
-			"completed":     a.completed,
-			"followups_due": a.followupsDue,
+			"engaged":          a.engaged,
+			"completed":        a.completed,
+			"followups_due":    a.followupsDue,
+			"eo_credits_total": a.eoCredits,
+			"eo_validated_24h": a.eoValidated24h,
 		})
 	}
 	return verticals, isps, rows.Err()

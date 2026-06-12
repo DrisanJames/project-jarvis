@@ -348,32 +348,6 @@ interface CampaignStats {
   api_version?: string;
 }
 
-interface DashboardStats {
-  total_campaigns: number; // pagination.total from server, NOT page length
-  page_campaigns: number;  // length of the page actually used to compute aggregates
-  draft_count: number;
-  scheduled_count: number;
-  sending_count: number;
-  completed_count: number;
-  total_sent: number;
-  total_delivered: number;
-  total_opens: number;
-  total_clicks: number;
-  total_hard_bounces: number;
-  total_soft_bounces: number;
-  total_complaints: number;
-  total_unsubscribes: number;
-  avg_open_rate: number;
-  avg_click_rate: number;
-  avg_hard_bounce_rate: number;
-  avg_soft_bounce_rate: number;
-  avg_complaint_rate: number;
-  total_revenue: number;
-  recent_campaigns: Campaign[];
-  scheduled_campaigns: Campaign[];
-  top_campaigns: Campaign[];
-}
-
 type ViewType = 'dashboard' | 'campaigns' | 'scheduled' | 'details' | 'create' | 'edit';
 type StatusFilter = 'all' | 'draft' | 'scheduled' | 'sending' | 'completed' | 'paused' | 'failed';
 
@@ -420,7 +394,18 @@ const API_BASE = '/api/mailing';
 //       and instead drill: opening one re-fetches the list scoped to that
 //       partner_tag (individual waves, real uuids) with a "Back to rollups"
 //       banner; the background poller preserves the drill via a ref
-const PAGE_VERSION_CAMPAIGN_PORTAL = '1.3';
+//   1.4 (2026-06-12) — Dashboard subtab facelift:
+//     * Dashboard now reads /analytics/campaign-summary rows (drip waves
+//       rolled up) instead of the /campaigns page aggregate — one coherent
+//       hero (campaigns / sent / delivered% / opens / clicks / hard / soft)
+//       labeled with its true 90-day scope; the garbled perf-intel bar,
+//       duplicated rate tiles, and "from last 200" sample rates are removed
+//     * Top Performers exclude rollups + '[partner-drip]' waves and require
+//       sent >= 500 (tiny drip waves at 100% opens can no longer rank);
+//       sent count shown alongside rates
+//     * Recent Campaigns excludes rollups + '[partner-drip]' waves — the
+//       drip program has its own screen
+const PAGE_VERSION_CAMPAIGN_PORTAL = '1.4';
 
 // ============================================================================
 // API HELPER WITH ORGANIZATION CONTEXT
@@ -493,13 +478,16 @@ const MetricCard: React.FC<{
   subValue?: string;
   trend?: 'up' | 'down' | 'neutral';
   color?: string;
-}> = ({ icon, label, value, subValue, trend, color = 'primary' }) => (
+  // Optional inline color for the value itself (e.g. hard bounce red #ef4444 /
+  // soft bounce amber #f59e0b, which have no metric-{color} CSS class).
+  valueColor?: string;
+}> = ({ icon, label, value, subValue, trend, color = 'primary', valueColor }) => (
   <div className={`metric-card metric-${color}`}>
-    <div className="metric-icon">
+    <div className="metric-icon" style={valueColor ? { color: valueColor } : undefined}>
       <FontAwesomeIcon icon={icon} />
     </div>
     <div className="metric-content">
-      <div className="metric-value">
+      <div className="metric-value" style={valueColor ? { color: valueColor } : undefined}>
         {typeof value === 'number' ? <AnimatedCounter value={value} formatFn={(n) => Math.round(n).toLocaleString()} /> : value}
         {trend && (
           <span className={`metric-trend trend-${trend}`}>
@@ -522,24 +510,24 @@ const ProgressBar: React.FC<{ value: number; max: number; color?: string }> = ({
   );
 };
 
-const RateDisplay: React.FC<{ rate: number; label: string; icon: any; color: string }> = ({ rate, label, icon, color }) => (
-  <div className={`rate-display rate-${color}`}>
-    <FontAwesomeIcon icon={icon} className="rate-icon" />
-    <span className="rate-value">{rate.toFixed(2)}%</span>
-    <span className="rate-label">{label}</span>
-  </div>
-);
-
 // ============================================================================
 // DASHBOARD VIEW
 // ============================================================================
 
+// True when a summary row belongs to the partner-drip program (the rollup
+// rows themselves, or any stray flat '[partner-drip]' wave that leaked into
+// the individual rows). The drip program has its own screen — the Campaign
+// Center dashboard is for real operator campaigns.
+const isDripSummaryRow = (r: CampaignSummaryRow): boolean =>
+  !!r.is_rollup || (r.name || '').startsWith('[partner-drip]');
+
 const CampaignDashboard: React.FC<{
-  stats: DashboardStats | null;
+  rows: CampaignSummaryRow[];
   loading: boolean;
+  dataAsOf: string | null;
   onViewCampaign: (id: string) => void;
   onViewByStatus: (status: StatusFilter) => void;
-}> = ({ stats, loading, onViewCampaign, onViewByStatus }) => {
+}> = ({ rows, loading, dataAsOf, onViewCampaign, onViewByStatus }) => {
   if (loading) {
     return (
       <div className="loading-state">
@@ -549,7 +537,7 @@ const CampaignDashboard: React.FC<{
     );
   }
 
-  if (!stats) {
+  if (rows.length === 0) {
     return (
       <div className="empty-state">
         <FontAwesomeIcon icon={faEnvelope} size="3x" />
@@ -559,161 +547,138 @@ const CampaignDashboard: React.FC<{
     );
   }
 
+  // Real operator campaigns (drip rollups + '[partner-drip]' waves excluded).
+  const realRows = rows.filter(r => !isDripSummaryRow(r));
+  const dripPrograms = rows.filter(r => r.is_rollup).length;
+
+  // Hero totals sum EVERY loaded row (rollups carry real drip volume), so the
+  // platform numbers are complete; lists below are operator-campaign-only.
+  const tot = rows.reduce(
+    (acc, r) => {
+      acc.sent += r.sent || 0;
+      acc.delivered += r.delivered || 0;
+      acc.hard += r.hard_bounce || 0;
+      acc.soft += r.soft_bounce || 0;
+      acc.opens += r.opens || 0;
+      acc.clicks += r.clicks || 0;
+      return acc;
+    },
+    { sent: 0, delivered: 0, hard: 0, soft: 0, opens: 0, clicks: 0 },
+  );
+  // Processed-aware denominator (matches the backend campaign-summary
+  // convention): SES sent_count under-reports, so delivery/bounce rates use
+  // max(sent, delivered+hard+soft) to stay <=100%.
+  const denom = Math.max(tot.sent, tot.delivered + tot.hard + tot.soft);
+  const pct = (num: number, den: number): number => (den > 0 ? (num / den) * 100 : 0);
+
+  const scopeLabel = dripPrograms > 0
+    ? `last 90 days · ${dripPrograms} drip program${dripPrograms === 1 ? '' : 's'} rolled up`
+    : 'last 90 days';
+
+  const draftCount = realRows.filter(r => r.status === 'draft').length;
+  const scheduledRows = realRows
+    .filter(r => r.status === 'scheduled')
+    .sort((a, b) => {
+      const aT = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0;
+      const bT = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
+      return aT - bT;
+    });
+  const sendingCount = realRows.filter(r => r.status === 'sending').length;
+  const completedCount = realRows.filter(r => COMPLETED_STATUSES.includes(r.status)).length;
+
+  // Top performers: real, finished, MEANINGFUL-volume campaigns only — a
+  // 6-recipient wave at 100% opens must never rank, hence sent >= 500.
+  const topPerformers = realRows
+    .filter(r => COMPLETED_STATUSES.includes(r.status) && (r.sent || 0) >= 500)
+    .sort((a, b) => pct(b.opens, b.delivered) - pct(a.opens, a.delivered))
+    .slice(0, 5);
+
+  // Recent: backend already sorts newest-activity-first.
+  const recentRows = realRows.slice(0, 10);
+
   return (
     <div className="campaign-dashboard">
-      {/* Hero Stats */}
+      {/* Hero — ONE coherent block, every number from the same summary rows,
+          scope labeled explicitly. */}
+      <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.5rem' }}>
+        <FontAwesomeIcon icon={faChartBar} /> Scope: {scopeLabel}
+        {dataAsOf && <span style={{ marginLeft: 8 }}>· data as of {new Date(dataAsOf).toLocaleString()}</span>}
+      </div>
       <div className="hero-stats ig-stagger">
-        <MetricCard 
-          icon={faEnvelope} 
-          label="Total Campaigns" 
-          value={stats.total_campaigns}
-          subValue={`${stats.completed_count} completed`}
+        <MetricCard
+          icon={faEnvelope}
+          label="Campaigns"
+          value={realRows.length}
+          subValue={`${completedCount} completed · ${scopeLabel}`}
           color="primary"
         />
-        <MetricCard 
-          icon={faPaperPlane} 
-          label="Total Sent" 
-          value={stats.total_sent}
-          subValue="All time"
+        <MetricCard
+          icon={faPaperPlane}
+          label="Sent"
+          value={tot.sent}
+          subValue={scopeLabel}
           color="blue"
         />
-        <MetricCard 
-          icon={faEnvelopeOpen} 
-          label="Total Opens" 
-          value={stats.total_opens}
-          subValue={`${stats.avg_open_rate.toFixed(1)}% avg rate`}
+        <MetricCard
+          icon={faCheckCircle}
+          label="Delivered"
+          value={`${pct(tot.delivered, denom).toFixed(1)}%`}
+          subValue={`${tot.delivered.toLocaleString()} of ${denom.toLocaleString()} sent`}
           color="green"
         />
-        <MetricCard 
-          icon={faMousePointer} 
-          label="Total Clicks" 
-          value={stats.total_clicks}
-          subValue={`${stats.avg_click_rate.toFixed(1)}% avg rate`}
+        <MetricCard
+          icon={faEnvelopeOpen}
+          label="Opens"
+          value={tot.opens}
+          subValue={`${pct(tot.opens, tot.delivered).toFixed(1)}% of delivered`}
+          color="green"
+        />
+        <MetricCard
+          icon={faMousePointer}
+          label="Clicks"
+          value={tot.clicks}
+          subValue={`${pct(tot.clicks, tot.delivered).toFixed(1)}% of delivered`}
           color="purple"
+        />
+        <MetricCard
+          icon={faBan}
+          label="Hard Bounce"
+          value={`${pct(tot.hard, denom).toFixed(2)}%`}
+          subValue={`${tot.hard.toLocaleString()} hard`}
+          color="primary"
+          valueColor="#ef4444"
+        />
+        <MetricCard
+          icon={faExclamationTriangle}
+          label="Soft Bounce"
+          value={`${pct(tot.soft, denom).toFixed(2)}%`}
+          subValue={`${tot.soft.toLocaleString()} soft`}
+          color="primary"
+          valueColor="#f59e0b"
         />
       </div>
 
-      {/* Performance Intelligence Bar */}
-      {stats.total_campaigns > 0 && (() => {
-        const efficiency = stats.total_sent > 0
-          ? ((stats.total_opens / stats.total_sent) * 100)
-          : 0;
-        const clickToOpen = stats.total_opens > 0
-          ? ((stats.total_clicks / stats.total_opens) * 100)
-          : 0;
-        const combinedBounceRate = stats.avg_hard_bounce_rate + stats.avg_soft_bounce_rate;
-        const deliveryHealth = stats.total_sent > 0
-          ? Math.max(0, 100 - (combinedBounceRate * 10) - (stats.avg_complaint_rate * 1000))
-          : 0;
-        const engagementScore = Math.min(100, (efficiency * 2) + (clickToOpen * 1.5) + (deliveryHealth * 0.3));
-        const grade = engagementScore >= 80 ? 'A' : engagementScore >= 60 ? 'B' : engagementScore >= 40 ? 'C' : engagementScore >= 20 ? 'D' : 'F';
-        const gradeColor = engagementScore >= 80 ? '#00b894' : engagementScore >= 60 ? '#00b0ff' : engagementScore >= 40 ? '#fdcb6e' : '#e94560';
-
-        return (
-          <div className="perf-intel-bar ig-data-stream">
-            <div className="perf-intel-grade" style={{ borderColor: gradeColor }}>
-              <span className="perf-intel-grade-letter" style={{ color: gradeColor }}>{grade}</span>
-              <span className="perf-intel-grade-score">{engagementScore.toFixed(0)}</span>
-            </div>
-            <div className="perf-intel-metrics">
-              <div className="perf-intel-metric">
-                <span className="pim-label">OPEN EFFICIENCY</span>
-                <span className="pim-value">{efficiency.toFixed(1)}%</span>
-              </div>
-              <div className="perf-intel-metric">
-                <span className="pim-label">CLICK-TO-OPEN</span>
-                <span className="pim-value">{clickToOpen.toFixed(1)}%</span>
-              </div>
-              <div className="perf-intel-metric">
-                <span className="pim-label">DELIVERY HEALTH</span>
-                <span className="pim-value" style={{ color: deliveryHealth >= 90 ? '#00b894' : deliveryHealth >= 70 ? '#fdcb6e' : '#e94560' }}>{deliveryHealth.toFixed(0)}%</span>
-              </div>
-              <div className="perf-intel-metric">
-                <span className="pim-label">CAMPAIGNS</span>
-                <span className="pim-value">{stats.total_campaigns}</span>
-              </div>
-              <div className="perf-intel-metric">
-                <span className="pim-label">COMPLETION RATE</span>
-                <span className="pim-value">{stats.total_campaigns > 0 ? ((stats.completed_count / stats.total_campaigns) * 100).toFixed(0) : 0}%</span>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Campaign Status Overview */}
+      {/* Campaign Status Overview (real operator campaigns only) */}
       <div className="status-overview">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faChartPie} /> Campaign Status</h3>
         </div>
         <div className="status-grid ig-stagger">
           <div className="status-item status-draft" onClick={() => onViewByStatus('draft')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={stats.draft_count} /></div>
+            <div className="status-count"><AnimatedCounter value={draftCount} /></div>
             <div className="status-label">Drafts</div>
           </div>
           <div className="status-item status-scheduled" onClick={() => onViewByStatus('scheduled')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={stats.scheduled_count} /></div>
+            <div className="status-count"><AnimatedCounter value={scheduledRows.length} /></div>
             <div className="status-label">Scheduled</div>
           </div>
           <div className="status-item status-sending" onClick={() => onViewByStatus('sending')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={stats.sending_count} /></div>
+            <div className="status-count"><AnimatedCounter value={sendingCount} /></div>
             <div className="status-label"><span className="ig-pulse-dot" /> Sending</div>
           </div>
           <div className="status-item status-completed" onClick={() => onViewByStatus('completed')} style={{ cursor: 'pointer' }}>
-            <div className="status-count"><AnimatedCounter value={stats.completed_count} /></div>
+            <div className="status-count"><AnimatedCounter value={completedCount} /></div>
             <div className="status-label">Completed</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Performance Rates */}
-      <div className="performance-section">
-        <div className="section-header">
-          <h3><FontAwesomeIcon icon={faPercentage} /> Performance Rates</h3>
-          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
-            All Campaigns · {stats.total_campaigns} total
-            {stats.page_campaigns < stats.total_campaigns && (
-              <span style={{ color: '#94a3b8', marginLeft: '0.5rem' }}>
-                (rates from last {stats.page_campaigns})
-              </span>
-            )}
-          </span>
-        </div>
-        <div className="rates-grid ig-stagger">
-          <RateDisplay rate={stats.avg_open_rate} label="Open Rate" icon={faEnvelopeOpen} color="green" />
-          <RateDisplay rate={stats.avg_click_rate} label="Click Rate" icon={faMousePointer} color="blue" />
-          <RateDisplay rate={stats.avg_hard_bounce_rate} label="Hard Bounce Rate" icon={faBan} color="#ef4444" />
-          <RateDisplay rate={stats.avg_soft_bounce_rate} label="Soft Bounce Rate" icon={faExclamationTriangle} color="#f59e0b" />
-          <RateDisplay rate={stats.avg_complaint_rate} label="Complaint Rate" icon={faExclamationTriangle} color="red" />
-        </div>
-      </div>
-
-      {/* Health Metrics */}
-      <div className="health-section">
-        <div className="section-header">
-          <h3><FontAwesomeIcon icon={faTachometerAlt} /> Deliverability Health</h3>
-          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>All Campaigns · {stats.total_sent.toLocaleString()} sent</span>
-        </div>
-        <div className="health-metrics ig-stagger">
-          <div className="health-item">
-            <div className="health-label" style={{ color: '#ef4444' }}>Hard Bounces</div>
-            <div className="health-value"><AnimatedCounter value={stats.total_hard_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-            <ProgressBar value={stats.total_hard_bounces} max={stats.total_sent} color={stats.avg_hard_bounce_rate > 2 ? 'red' : 'green'} />
-          </div>
-          <div className="health-item">
-            <div className="health-label" style={{ color: '#f59e0b' }}>Soft Bounces</div>
-            <div className="health-value"><AnimatedCounter value={stats.total_soft_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-            <ProgressBar value={stats.total_soft_bounces} max={stats.total_sent} color={stats.avg_soft_bounce_rate > 3 ? '#f59e0b' : 'green'} />
-          </div>
-          <div className="health-item">
-            <div className="health-label">Complaints</div>
-            <div className="health-value"><AnimatedCounter value={stats.total_complaints} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-            <ProgressBar value={stats.total_complaints} max={stats.total_sent} color={stats.avg_complaint_rate > 0.1 ? 'red' : 'green'} />
-          </div>
-          <div className="health-item">
-            <div className="health-label">Unsubscribes</div>
-            <div className="health-value"><AnimatedCounter value={stats.total_unsubscribes} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
-            <ProgressBar value={stats.total_unsubscribes} max={stats.total_sent} color="blue" />
           </div>
         </div>
       </div>
@@ -729,13 +694,13 @@ const CampaignDashboard: React.FC<{
             </button>
           </div>
           <div className="campaign-list-mini">
-            {stats.scheduled_campaigns.length === 0 ? (
+            {scheduledRows.length === 0 ? (
               <div className="empty-list">
                 <FontAwesomeIcon icon={faCalendarAlt} />
                 <span>No scheduled campaigns</span>
               </div>
             ) : (
-              stats.scheduled_campaigns.slice(0, 5).map(campaign => (
+              scheduledRows.slice(0, 5).map(campaign => (
                 <div key={campaign.id} className="campaign-mini-card" onClick={() => onViewCampaign(campaign.id)}>
                   <div className="mini-card-info">
                     <div className="mini-card-name">{campaign.name}</div>
@@ -746,7 +711,7 @@ const CampaignDashboard: React.FC<{
                   </div>
                   <div className="mini-card-recipients">
                     <FontAwesomeIcon icon={faUsers} />
-                    {campaign.total_recipients?.toLocaleString() || 0}
+                    {campaign.targeted?.toLocaleString() || 0}
                   </div>
                 </div>
               ))
@@ -754,34 +719,38 @@ const CampaignDashboard: React.FC<{
           </div>
         </div>
 
-        {/* Top Performing Campaigns */}
+        {/* Top Performing Campaigns — real, finished, >=500 sent only */}
         <div className="dashboard-section">
           <div className="section-header">
             <h3><FontAwesomeIcon icon={faTrophy} /> Top Performers</h3>
+            <span style={{ fontSize: '0.7rem', color: '#64748b' }}>min 500 sent</span>
             <button className="section-action" onClick={() => onViewByStatus('completed')}>
               View All <FontAwesomeIcon icon={faArrowRight} />
             </button>
           </div>
           <div className="campaign-list-mini">
-            {stats.top_campaigns.length === 0 ? (
+            {topPerformers.length === 0 ? (
               <div className="empty-list">
                 <FontAwesomeIcon icon={faChartBar} />
-                <span>No completed campaigns yet</span>
+                <span>No completed campaigns with 500+ sent yet</span>
               </div>
             ) : (
-              stats.top_campaigns.slice(0, 5).map((campaign, index) => (
+              topPerformers.map((campaign, index) => (
                 <div key={campaign.id} className="campaign-mini-card" onClick={() => onViewCampaign(campaign.id)}>
                   <div className="rank-badge">#{index + 1}</div>
                   <div className="mini-card-info">
                     <div className="mini-card-name">{campaign.name}</div>
                     <div className="mini-card-stats">
-                      <span className="stat-open">
+                      <span className="stat-open" title="Opens / delivered">
                         <FontAwesomeIcon icon={faEnvelopeOpen} />
-                        {campaign.sent_count > 0 ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1) : 0}%
+                        {pct(campaign.opens, campaign.delivered).toFixed(1)}%
                       </span>
-                      <span className="stat-click">
+                      <span className="stat-click" title="Clicks / delivered">
                         <FontAwesomeIcon icon={faMousePointer} />
-                        {campaign.sent_count > 0 ? ((campaign.click_count / campaign.sent_count) * 100).toFixed(1) : 0}%
+                        {pct(campaign.clicks, campaign.delivered).toFixed(1)}%
+                      </span>
+                      <span style={{ color: '#64748b' }}>
+                        <FontAwesomeIcon icon={faPaperPlane} /> {campaign.sent.toLocaleString()} sent
                       </span>
                     </div>
                   </div>
@@ -792,7 +761,8 @@ const CampaignDashboard: React.FC<{
         </div>
       </div>
 
-      {/* Recent Campaigns */}
+      {/* Recent Campaigns — operator campaigns only; the drip program has its
+          own screen (and its rollups still count in the hero totals above). */}
       <div className="recent-section">
         <div className="section-header">
           <h3><FontAwesomeIcon icon={faClock} /> Recent Campaigns</h3>
@@ -813,34 +783,39 @@ const CampaignDashboard: React.FC<{
               </tr>
             </thead>
             <tbody>
-              {stats.recent_campaigns.length === 0 ? (
+              {recentRows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="empty-row">
                     <FontAwesomeIcon icon={faEnvelope} /> No recent campaigns
                   </td>
                 </tr>
               ) : (
-                stats.recent_campaigns.slice(0, 10).map(campaign => (
+                recentRows.map(campaign => (
                   <tr key={campaign.id} onClick={() => onViewCampaign(campaign.id)}>
                     <td className="campaign-name-cell">
                       <div className="campaign-name">{campaign.name}</div>
-                      <div className="campaign-subject">{campaign.subject}</div>
                     </td>
                     <td><StatusBadge status={campaign.status} /></td>
-                    <td>{campaign.sent_count?.toLocaleString() || 0}</td>
+                    <td>{campaign.sent?.toLocaleString() || 0}</td>
                     <td>
-                      {campaign.open_count?.toLocaleString() || 0}
-                      <span className="cell-rate">
-                        ({campaign.sent_count > 0 ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1) : 0}%)
+                      {campaign.opens?.toLocaleString() || 0}
+                      <span className="cell-rate" title="Opens / delivered">
+                        ({pct(campaign.opens, campaign.delivered).toFixed(1)}%)
                       </span>
                     </td>
                     <td>
-                      {campaign.click_count?.toLocaleString() || 0}
-                      <span className="cell-rate">
-                        ({campaign.sent_count > 0 ? ((campaign.click_count / campaign.sent_count) * 100).toFixed(1) : 0}%)
+                      {campaign.clicks?.toLocaleString() || 0}
+                      <span className="cell-rate" title="Clicks / delivered">
+                        ({pct(campaign.clicks, campaign.delivered).toFixed(1)}%)
                       </span>
                     </td>
-                    <td>{new Date(campaign.created_at).toLocaleDateString()}</td>
+                    <td>
+                      {campaign.scheduled_at
+                        ? new Date(campaign.scheduled_at).toLocaleDateString()
+                        : campaign.updated_at
+                          ? new Date(campaign.updated_at).toLocaleDateString()
+                          : '—'}
+                    </td>
                   </tr>
                 ))
               )}
@@ -3367,7 +3342,6 @@ export const CampaignPortal: React.FC<{
     }
   }, [initialOffer]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [selectedCampaignStats, setSelectedCampaignStats] = useState<CampaignStats | null>(null);
   const [campaignVariants, setCampaignVariants] = useState<CampaignVariant[]>([]);
@@ -3396,96 +3370,19 @@ export const CampaignPortal: React.FC<{
   const [partnerDrill, setPartnerDrill] = useState<{ tag: string; label: string } | null>(null);
   const partnerDrillRef = useRef<string | null>(null);
 
-  // Fetch dashboard stats — background=true skips loading spinner for seamless polling.
-  //
-  // The list endpoint is paginated (max page=200 per ParsePagination). The
-  // server now returns `pagination.total` so we use that for the headline
-  // "Total Campaigns" tile rather than the page length. Aggregates and
-  // recent/top lists remain page-scoped — they're labeled accordingly in the UI.
+  // Fetch the raw campaign page. v1.4: the Dashboard subtab no longer
+  // aggregates this drip-wave-polluted page — it reads the campaign-summary
+  // rows instead (see CampaignDashboard). The page is still needed for the
+  // nav-tab counts and the sending/scheduled auto-refresh trigger.
   const fetchDashboardStats = useCallback(async (background = false) => {
     if (!background) setLoading(true);
     try {
       const campaignsRes = await orgFetch(`${API_BASE}/campaigns?limit=200`, organization?.id);
       const campaignsData = await campaignsRes.json();
       const allCampaigns: Campaign[] = campaignsData.data || campaignsData.campaigns || [];
-      const paginationTotal: number = (campaignsData.pagination && typeof campaignsData.pagination.total === 'number')
-        ? campaignsData.pagination.total
-        : allCampaigns.length;
-
-      const totalDelivered = allCampaigns.reduce(
-        (sum, c) => sum + (((c as any).delivered_count) || 0),
-        0,
-      );
-      const totalSent = allCampaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0);
-
-      const stats: DashboardStats = {
-        // Use the server-side pagination total so this tile reflects every
-        // campaign for the org, not just the loaded page.
-        total_campaigns: paginationTotal,
-        page_campaigns: allCampaigns.length,
-        draft_count: allCampaigns.filter(c => c.status === 'draft').length,
-        scheduled_count: allCampaigns.filter(c => c.status === 'scheduled').length,
-        sending_count: allCampaigns.filter(c => c.status === 'sending').length,
-        completed_count: allCampaigns.filter(c => COMPLETED_STATUSES.includes(c.status)).length,
-        total_sent: totalSent,
-        total_delivered: totalDelivered,
-        total_opens: allCampaigns.reduce((sum, c) => sum + (c.open_count || 0), 0),
-        total_clicks: allCampaigns.reduce((sum, c) => sum + (c.click_count || 0), 0),
-        total_hard_bounces: allCampaigns.reduce((sum, c) => sum + (c.hard_bounce_count || 0), 0),
-        total_soft_bounces: allCampaigns.reduce((sum, c) => sum + (c.soft_bounce_count || 0), 0),
-        total_complaints: allCampaigns.reduce((sum, c) => sum + (c.complaint_count || 0), 0),
-        total_unsubscribes: allCampaigns.reduce((sum, c) => sum + (c.unsubscribe_count || 0), 0),
-        avg_open_rate: 0,
-        avg_click_rate: 0,
-        avg_hard_bounce_rate: 0,
-        avg_soft_bounce_rate: 0,
-        avg_complaint_rate: 0,
-        total_revenue: allCampaigns.reduce((sum, c) => sum + (c.revenue || 0), 0),
-        recent_campaigns: [...allCampaigns].sort((a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        ).slice(0, 10),
-        scheduled_campaigns: allCampaigns
-          .filter(c => c.status === 'scheduled')
-          .sort((a, b) => {
-            const aDate = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0;
-            const bDate = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
-            return aDate - bDate;
-          }),
-        // Top performers must include every "the campaign actually finished"
-        // status — not just `completed`. Excluding `sent` and
-        // `completed_with_errors` previously hid 90%+ of completed campaigns.
-        top_campaigns: allCampaigns
-          .filter(c => COMPLETED_STATUSES.includes(c.status) && c.sent_count > 0)
-          .sort((a, b) => {
-            // Prefer delivered as the denominator (matches the Deliverability
-            // screen) and fall back to sent_count when delivered is unavailable.
-            const aDel = ((a as any).delivered_count) || a.sent_count || 0;
-            const bDel = ((b as any).delivered_count) || b.sent_count || 0;
-            const aRate = aDel > 0 ? a.open_count / aDel : 0;
-            const bRate = bDel > 0 ? b.open_count / bDel : 0;
-            return bRate - aRate;
-          })
-          .slice(0, 5),
-      };
-
-      // Open/click rates denominator = delivered (Deliverability convention).
-      // Bounce/complaint denominator = sent. Falling back to sent for opens
-      // when delivered is zero (legacy campaigns) keeps the tiles non-blank.
-      const denomEng = totalDelivered > 0 ? totalDelivered : totalSent;
-      if (denomEng > 0) {
-        stats.avg_open_rate = (stats.total_opens / denomEng) * 100;
-        stats.avg_click_rate = (stats.total_clicks / denomEng) * 100;
-      }
-      if (totalSent > 0) {
-        stats.avg_hard_bounce_rate = (stats.total_hard_bounces / totalSent) * 100;
-        stats.avg_soft_bounce_rate = (stats.total_soft_bounces / totalSent) * 100;
-        stats.avg_complaint_rate = (stats.total_complaints / totalSent) * 100;
-      }
-
-      setDashboardStats(stats);
       setCampaigns(allCampaigns);
     } catch (err) {
-      console.error('Failed to fetch dashboard stats:', err);
+      console.error('Failed to fetch campaigns:', err);
     } finally {
       if (!background) setLoading(false);
     }
@@ -3666,12 +3563,12 @@ export const CampaignPortal: React.FC<{
           </div>
         </div>
         <div className="header-actions">
-          <button 
-            className="refresh-btn" 
-            onClick={() => fetchDashboardStats(false)}
-            disabled={loading}
+          <button
+            className="refresh-btn"
+            onClick={() => { fetchDashboardStats(false); fetchCampaignSummary(false); }}
+            disabled={loading || summaryLoading}
           >
-            <FontAwesomeIcon icon={faSync} spin={loading} /> Refresh
+            <FontAwesomeIcon icon={faSync} spin={loading || summaryLoading} /> Refresh
           </button>
         </div>
       </div>
@@ -3704,8 +3601,9 @@ export const CampaignPortal: React.FC<{
       <div className="portal-content ig-fade-in">
         {view === 'dashboard' && (
           <CampaignDashboard
-            stats={dashboardStats}
-            loading={loading}
+            rows={summaryRows}
+            loading={summaryLoading}
+            dataAsOf={summaryDataAsOf}
             onViewCampaign={handleViewCampaign}
             onViewByStatus={(status) => { setView('campaigns'); setFilter(status); }}
           />

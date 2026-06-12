@@ -50,6 +50,10 @@ interface FunnelVertical {
   engaged: number;
   completed: number;
   followups_due: number;
+  // EO billing: SUM(eo_attempts) — one increment per EmailOversight call —
+  // plus how many rows were validated in the last 24h.
+  eo_credits_total: number;
+  eo_validated_24h: number;
 }
 
 interface FunnelISP {
@@ -534,8 +538,15 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
       </div>
 
       {/* Lifecycle: pending → ready → mailed */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 10 }}>
         <MiniStat label="Pending EO" value={v.pending_eo} accent="#a78bfa" />
+        <MiniStat
+          label="EO credits"
+          value={v.eo_credits_total ?? 0}
+          accent="#60a5fa"
+          sub={`${(v.eo_validated_24h ?? 0).toLocaleString()} val. 24h`}
+          title="EmailOversight validation calls consumed (billed per call); sub-text = leads validated in the last 24h"
+        />
         <MiniStat label="Ready" value={v.ready} accent="#10b981" />
         <MiniStat label="Mailed" value={v.mailed} accent="#6366f1" />
         <MiniStat label="Due now" value={v.followups_due} accent={v.followups_due > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their next_touch_at" />
@@ -552,6 +563,21 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
         </span>
         <span title="All touches exhausted without engagement">
           Completed: <b style={{ color: 'rgba(180,210,240,0.8)' }}>{v.completed.toLocaleString()}</b>
+        </span>
+      </div>
+      {/* Outcome rates against mailed — div-by-zero guarded in ratePct */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 4 }}>
+        <span
+          title="engaged = opened/clicked and exited the drip as a win"
+          style={{ color: '#10b981', fontWeight: 600 }}
+        >
+          Activation {ratePct(v.engaged, v.mailed)}
+        </span>
+        <span
+          title="churn = exhausted all touches without engaging"
+          style={{ color: v.completed > 0 ? '#f59e0b' : 'rgba(180,210,240,0.55)' }}
+        >
+          Churn {ratePct(v.completed, v.mailed)}
         </span>
       </div>
 
@@ -606,12 +632,18 @@ const TouchBar: React.FC<{ t1: number; t2: number; t3: number; t4: number }> = (
   );
 };
 
-const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string }> = ({ label, value, accent, title }) => (
+const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string; sub?: string }> = ({ label, value, accent, title, sub }) => (
   <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center' }}>
     <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe' }}>{value.toLocaleString()}</div>
+    {sub && <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)', marginTop: 1 }}>{sub}</div>}
   </div>
 );
+
+// ratePct renders num/denom as a percent, guarding the empty-lane case so a
+// vertical with zero mailed reads "—" instead of NaN%.
+const ratePct = (num: number, denom: number): string =>
+  denom > 0 ? `${((num / denom) * 100).toFixed(1)}%` : '—';
 
 const WaveStatus: React.FC<{ status: string }> = ({ status }) => {
   const colors: Record<string, string> = {
