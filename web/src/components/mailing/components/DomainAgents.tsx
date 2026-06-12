@@ -19,6 +19,7 @@ import {
   C, panelStyle, btnStyle, btnDisabledStyle, Loading, ErrorState, fmtInt, fmtPct100,
 } from './domain-agents/ui';
 import { ScorecardSection } from './domain-agents/ScorecardSection';
+import { UpcomingSendsSection } from './domain-agents/UpcomingSendsSection';
 import { BriefingPlanSection } from './domain-agents/BriefingPlanSection';
 import { ApproveDeploySection } from './domain-agents/ApproveDeploySection';
 
@@ -201,6 +202,8 @@ export const DomainAgents: React.FC = () => {
             </div>
 
             <ScorecardSection domain={selected} />
+
+            <UpcomingSendsSection domain={selected} />
 
             <BriefingPlanSection
               domain={selected}

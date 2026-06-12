@@ -38,6 +38,7 @@ func (a *DomainAgentAPI) RegisterRoutes(r chi.Router) {
 	r.Route("/domain-agent", func(dr chi.Router) {
 		dr.Get("/domains", a.HandleDomains)
 		dr.Get("/scorecard", a.HandleScorecard)
+		dr.Get("/upcoming", a.HandleUpcoming)
 		dr.Post("/scorecard/refresh", a.HandleScorecardRefresh)
 		dr.Post("/plans/generate", a.HandleGeneratePlan)
 		dr.Get("/plans", a.HandlePlanLookup)
@@ -662,4 +663,124 @@ func (a *DomainAgentAPI) HandlePlanStatus(w http.ResponseWriter, r *http.Request
 		})
 	}
 	respondJSON(w, http.StatusOK, out)
+}
+
+// HandleUpcoming returns the domain's SCHEDULED sending board — every campaign
+// (regardless of which tool deployed it) whose planned waves fire from now
+// through the next N days, grouped by calendar day. This is the forward-looking
+// counterpart to the scorecard: the scorecard reads what happened, /upcoming
+// reads what is committed to happen (mailing_campaigns + isp plans + waves).
+func (a *DomainAgentAPI) HandleUpcoming(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := getOrgID(r)
+	domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
+	if domain == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "domain query parameter is required"})
+		return
+	}
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	if days > 30 {
+		days = 30
+	}
+	// A brand's PMTA route (em.<apex>) and SES tenant (m.<apex>) are the same
+	// property to the operator — show both under either spelling.
+	alt := domain
+	switch {
+	case strings.HasPrefix(domain, "em."):
+		alt = "m." + strings.TrimPrefix(domain, "em.")
+	case strings.HasPrefix(domain, "m."):
+		alt = "em." + strings.TrimPrefix(domain, "m.")
+	}
+
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT c.id::text, c.name, c.status, COALESCE(c.subject, ''),
+		       COALESCE(c.total_recipients, 0),
+		       ARRAY_AGG(DISTINCT ip.isp) FILTER (WHERE ip.isp IS NOT NULL),
+		       ARRAY_AGG(DISTINCT ip.sending_domain),
+		       MIN(w.scheduled_at), MAX(w.window_end_at),
+		       COUNT(DISTINCT w.id),
+		       COUNT(DISTINCT w.id) FILTER (WHERE w.status = 'planned')
+		FROM mailing_campaigns c
+		JOIN mailing_campaign_isp_plans ip ON ip.campaign_id = c.id
+		JOIN mailing_campaign_waves w ON w.campaign_id = c.id
+		WHERE c.organization_id = $1
+		  AND LOWER(ip.sending_domain) IN ($2, $3)
+		  AND c.status IN ('scheduled', 'sending', 'preparing', 'finalizing_audience')
+		  AND w.scheduled_at >= NOW() - INTERVAL '6 hours'
+		  AND w.scheduled_at < CURRENT_DATE + ($4 + 1) * INTERVAL '1 day'
+		GROUP BY c.id
+		ORDER BY MIN(w.scheduled_at)
+	`, orgID, domain, alt, days)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type upcomingCampaign struct {
+		ID            string    `json:"id"`
+		Name          string    `json:"name"`
+		Status        string    `json:"status"`
+		Subject       string    `json:"subject"`
+		Recipients    int       `json:"recipients"`
+		ISPs          []string  `json:"isps"`
+		Domains       []string  `json:"sending_domains"`
+		FirstWaveAt   time.Time `json:"first_wave_at"`
+		WindowEndAt   time.Time `json:"window_end_at"`
+		Waves         int       `json:"waves"`
+		WavesPending  int       `json:"waves_pending"`
+	}
+	type upcomingDay struct {
+		Date           string             `json:"date"`
+		Campaigns      []upcomingCampaign `json:"campaigns"`
+		Recipients     int                `json:"recipients"`
+		DripCampaigns  int                `json:"drip_campaigns"`
+		DripRecipients int                `json:"drip_recipients"`
+	}
+	dayIdx := map[string]int{}
+	var out []upcomingDay
+	for rows.Next() {
+		var uc upcomingCampaign
+		var isps, doms pq.StringArray
+		if err := rows.Scan(&uc.ID, &uc.Name, &uc.Status, &uc.Subject, &uc.Recipients,
+			&isps, &doms, &uc.FirstWaveAt, &uc.WindowEndAt, &uc.Waves, &uc.WavesPending); err != nil {
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		uc.ISPs = isps
+		uc.Domains = doms
+		day := uc.FirstWaveAt.UTC().Format("2006-01-02")
+		i, ok := dayIdx[day]
+		if !ok {
+			i = len(out)
+			dayIdx[day] = i
+			out = append(out, upcomingDay{Date: day})
+		}
+		// Partner-drip micro-campaigns fire every ~15 min; rolled up so they
+		// don't drown the scheduled lanes in the table.
+		if strings.HasPrefix(uc.Name, "[partner-drip]") {
+			out[i].DripCampaigns++
+			out[i].DripRecipients += uc.Recipients
+			continue
+		}
+		out[i].Campaigns = append(out[i].Campaigns, uc)
+		out[i].Recipients += uc.Recipients
+	}
+	if err := rows.Err(); err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if out == nil {
+		out = []upcomingDay{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"domain": domain,
+		"days":   days,
+		"dates":  out,
+	})
 }
