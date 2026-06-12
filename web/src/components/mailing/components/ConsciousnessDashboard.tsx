@@ -5,6 +5,7 @@ import {
   faChartBar, faExclamationTriangle,
   faSyncAlt, faEye, faStream,
   faBolt, faTowerBroadcast, faGears,
+  faCopy, faCheck, faClipboardList,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area,
@@ -60,6 +61,9 @@ interface ConsciousnessState {
 
 interface CampaignMetrics {
   campaign_id: string;
+  /** Server-side enriched human name (batch-resolved from mailing_campaigns).
+   *  Falls back to a short id in the UI when the lookup misses. */
+  campaign_name?: string;
   started_at: string;
   updated_at: string;
   sent: number;
@@ -187,6 +191,100 @@ interface HourlyAssessmentResp {
   pipes: HourlyPipe[] | null;
 }
 
+// ----------------------------------------------------------------------------
+//  Types — persisted hourly assessments + advisory recommendations
+//  (mailing_consciousness_assessments; engine writes one row per scope per
+//  interval, default 60 min). ADVISORY ONLY — nothing here applies changes.
+// ----------------------------------------------------------------------------
+
+interface AssessmentRecommendation {
+  severity: string; // info | warn | critical
+  scope: string;
+  isp?: string;
+  domain?: string;
+  pool?: string;
+  type: string; // reroute | throttle | exclude | warmup
+  evidence: string;
+  action: string;
+  source_vmta?: string;
+  target_vmta?: string;
+  target_pool?: string;
+  created_at: string;
+}
+
+interface AssessmentPipeStat {
+  isp: string;
+  vmta: string;
+  pool: string;
+  attempted: number;
+  delivered: number;
+  deferred: number;
+  hard_bounced: number;
+  soft_bounced: number;
+  rep_blocked: number;
+  complaints: number;
+  delivered_pct: number;
+  deferral_pct: number;
+  hard_pct: number;
+}
+
+interface AssessmentBody {
+  window_minutes: number;
+  totals: {
+    attempted: number; delivered: number; deferred: number;
+    hard_bounced: number; soft_bounced: number; rep_blocked: number; complaints: number;
+    delivered_pct: number; deferral_pct: number; hard_pct: number; rep_block_pct: number;
+  };
+  signals: { by_severity?: Record<string, number>; by_type?: Record<string, number>; total: number };
+  notable_events?: string[];
+  pipes?: AssessmentPipeStat[];
+  recommendations: AssessmentRecommendation[];
+}
+
+interface PersistedAssessment {
+  id: string;
+  hour: string;
+  scope: string; // 'platform' or an ISP family
+  posture: string; // idle | healthy | watch | degraded | critical
+  body: AssessmentBody;
+  created_at: string;
+}
+
+interface AssessmentsResp {
+  generated_at: string;
+  hours: number;
+  latest: PersistedAssessment[];
+  history: PersistedAssessment[];
+}
+
+interface FlattenedRecommendation extends AssessmentRecommendation {
+  assessment_scope: string;
+  assessment_hour: string;
+  posture: string;
+}
+
+interface RecommendationsResp {
+  generated_at: string;
+  assessment_hour: string;
+  advisory_only: boolean;
+  count: number;
+  recommendations: FlattenedRecommendation[];
+}
+
+const postureColor: Record<string, string> = {
+  healthy: '#10b981',
+  watch: '#fdcb6e',
+  degraded: '#f97316',
+  critical: '#ef4444',
+  idle: 'rgba(180,210,240,0.45)',
+};
+
+const recSeverityColor: Record<string, string> = {
+  info: '#00b0ff',
+  warn: '#f59e0b',
+  critical: '#ef4444',
+};
+
 const TS_METRICS = ['delivered', 'deferred', 'hard_bounce', 'soft_bounce'] as const;
 type TSMetric = typeof TS_METRICS[number];
 
@@ -267,6 +365,17 @@ function ispLabel(isp: string): string {
 function pctOf(num: number, denom: number): number {
   if (denom <= 0) return 0;
   return Math.round((num / denom) * 10000) / 100;
+}
+
+/** Short display form of a campaign UUID — only used when the server-side
+ *  name lookup missed (§2: no raw UUIDs on this screen). */
+function shortCampaignId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+/** Display label for a campaign: enriched name first, short-id fallback. */
+function campaignLabel(c: CampaignMetrics): string {
+  return c.campaign_name || shortCampaignId(c.campaign_id);
 }
 
 // ----------------------------------------------------------------------------
@@ -392,6 +501,7 @@ export const ConsciousnessDashboard: React.FC = () => {
           .filter((c: any) => c.status === 'completed' || c.status === 'sending' || c.status === 'completed_with_errors')
           .map((c: any) => ({
             campaign_id: c.id,
+            campaign_name: c.name || '',
             started_at: c.started_at || c.created_at,
             updated_at: c.updated_at,
             sent: c.sent_count || 0,
@@ -607,6 +717,10 @@ export const ConsciousnessDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Body: main column + native advisory recommendations side rail (§4) */}
+      <div style={styles.bodyRow}>
+      <div style={styles.mainCol}>
+
       {/* Main tabs: Operations dashboard (primary) vs Engine Internals */}
       <div style={styles.sectionTabs}>
         <button
@@ -628,6 +742,7 @@ export const ConsciousnessDashboard: React.FC = () => {
 
       {mainTab === 'operations' && (
         <>
+          <AssessmentsPanel />
           <HourlyAssessmentPanel />
           <OperationsBoard
             rows={ispRows}
@@ -672,6 +787,388 @@ export const ConsciousnessDashboard: React.FC = () => {
             {activeSection === 'overview' && renderOverview(state, campaigns, allThoughts)}
             {activeSection === 'philosophies' && renderPhilosophies(filteredPhilosophies, selectedISP, setSelectedISP)}
             {activeSection === 'thoughts' && renderThoughts(allThoughts, thoughtsEndRef, thoughtsLive, setThoughtsLive)}
+          </div>
+        </>
+      )}
+
+      </div>
+      <RecommendationsRail />
+      </div>
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
+//  Persisted hourly assessments — the screen's DEFAULT view (§3.4): the
+//  latest assessment per scope plus history. The engine writes one row per
+//  scope per interval; raw thoughts stay in-memory behind the live toggle.
+// ----------------------------------------------------------------------------
+
+const ASSESSMENTS_POLL_MS = 5 * 60 * 1000;
+
+function scopeLabel(scope: string): string {
+  return scope === 'platform' ? 'Platform' : `${ispLabel(scope)} family`;
+}
+
+const PostureChip: React.FC<{ posture: string }> = ({ posture }) => {
+  const color = postureColor[posture] || 'rgba(180,210,240,0.45)';
+  return (
+    <span style={{
+      padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+      textTransform: 'uppercase', letterSpacing: 0.5,
+      background: color + '22', color, whiteSpace: 'nowrap',
+    }}>{posture || 'unknown'}</span>
+  );
+};
+
+const AssessmentsPanel: React.FC = () => {
+  const [data, setData] = useState<AssessmentsResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedScope, setSelectedScope] = useState<string>('platform');
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/mailing/consciousness/assessments?hours=24');
+        if (cancelled) return;
+        if (res.ok) {
+          setData(await res.json());
+          setError(null);
+        } else {
+          const body = await res.json().catch(() => null);
+          setError(body?.error || `assessments unavailable (${res.status})`);
+        }
+      } catch {
+        if (!cancelled) setError('assessments unreachable');
+      }
+    };
+    load();
+    const interval = setInterval(load, ASSESSMENTS_POLL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const latest = data?.latest || [];
+  const scopes = useMemo(() => {
+    const s = latest.map(a => a.scope);
+    s.sort((a, b) => (a === 'platform' ? -1 : b === 'platform' ? 1 : a.localeCompare(b)));
+    return s;
+  }, [latest]);
+
+  const current = latest.find(a => a.scope === selectedScope)
+    || latest.find(a => a.scope === 'platform')
+    || latest[0];
+  const history = useMemo(
+    () => (data?.history || []).filter(a => current && a.scope === current.scope && a.id !== current.id),
+    [data, current],
+  );
+
+  return (
+    <div className="ig-card-hover" style={{ ...styles.card, marginBottom: 20 }}>
+      <h3 style={styles.cardTitle}>
+        <FontAwesomeIcon icon={faBrain} style={{ marginRight: 8, color: '#00b0ff' }} />
+        Hourly Assessments
+        <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+          one per scope per hour · latest + history
+        </span>
+      </h3>
+
+      {error && <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>{error}</p>}
+
+      {!error && latest.length === 0 && (
+        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>
+          No hourly assessments persisted yet — the engine writes one per scope each hour
+          (first one lands a few minutes after boot).
+        </p>
+      )}
+
+      {latest.length > 0 && (
+        <>
+          {/* Scope chips */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            {scopes.map(scope => {
+              const a = latest.find(x => x.scope === scope)!;
+              const active = current && current.scope === scope;
+              return (
+                <button
+                  key={scope}
+                  onClick={() => setSelectedScope(scope)}
+                  style={{
+                    ...styles.ispFilterBtn,
+                    ...(active ? styles.ispFilterBtnActive : {}),
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%',
+                    background: postureColor[a.posture] || 'rgba(180,210,240,0.45)',
+                  }} />
+                  {scopeLabel(scope)}
+                </button>
+              );
+            })}
+          </div>
+
+          {current && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                <span style={{ color: '#dbeafe', fontSize: 14, fontWeight: 700 }}>{scopeLabel(current.scope)}</span>
+                <PostureChip posture={current.posture} />
+                <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
+                  assessed {new Date(current.created_at).toLocaleString()} · {current.body.window_minutes}m window
+                  · {current.body.recommendations.length} recommendation{current.body.recommendations.length === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              {/* Totals strip */}
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10, fontFamily: 'monospace', fontSize: 12 }}>
+                <span style={{ color: '#818cf8' }}>{(current.body.totals?.attempted || 0).toLocaleString()} attempted</span>
+                <span style={{ color: '#10b981' }}>{(current.body.totals?.delivered_pct || 0).toFixed(1)}% delivered</span>
+                <span style={{ color: deferralColor(current.body.totals?.deferral_pct || 0) }}>
+                  {(current.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
+                </span>
+                <span style={{ color: (current.body.totals?.hard_pct || 0) > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>
+                  {(current.body.totals?.hard_pct || 0).toFixed(1)}% hard
+                </span>
+                <span style={{ color: 'rgba(180,210,240,0.65)' }}>
+                  {current.body.signals?.total || 0} engine signals
+                </span>
+              </div>
+
+              {/* Notable events (deduped WONTs / storms / blocks) */}
+              {(current.body.notable_events || []).length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  {(current.body.notable_events || []).slice(0, 6).map((ev, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginBottom: 3 }}>
+                      <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e', fontSize: 10, marginTop: 3, flexShrink: 0 }} />
+                      <span style={{ color: 'rgba(180,210,240,0.8)', fontSize: 12, lineHeight: 1.35 }}>{ev}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Per-pipe table for this scope */}
+              {(current.body.pipes || []).length > 0 && (
+                <div style={{ ...styles.opsTableWrap, maxHeight: 240 }}>
+                  <table style={styles.opsTable}>
+                    <thead>
+                      <tr>
+                        {['ISP', 'VMTA', 'Pool', 'Attempted', 'Delivered %', 'Deferral %', 'Hard %'].map(h => (
+                          <th key={h} style={styles.opsTh}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(current.body.pipes || []).map((p, i) => (
+                        <tr key={`${p.isp}-${p.vmta}-${i}`} style={styles.opsTr}>
+                          <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>{ispLabel(p.isp)}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0', whiteSpace: 'nowrap' }}>{p.vmta}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'rgba(180,210,240,0.8)', whiteSpace: 'nowrap' }}>{p.pool || '—'}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{p.attempted.toLocaleString()}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? '#10b981' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                            {p.delivered_pct.toFixed(1)}%
+                          </td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>{p.deferral_pct.toFixed(1)}%</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.hard_pct > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>{p.hard_pct.toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* History scroll for this scope */}
+              {history.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                    History — last {data?.hours || 24}h
+                  </div>
+                  <div style={{ maxHeight: 160, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {history.map(a => (
+                      <div key={a.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '6px 10px', borderRadius: 6, background: 'rgba(0,200,255,0.04)',
+                        fontSize: 12,
+                      }}>
+                        <span style={{ color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                          {new Date(a.created_at).toLocaleString()}
+                        </span>
+                        <PostureChip posture={a.posture} />
+                        <span style={{ color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace' }}>
+                          {(a.body.totals?.attempted || 0).toLocaleString()} attempted · {(a.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
+                        </span>
+                        <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.45)' }}>
+                          {a.body.recommendations.length} rec{a.body.recommendations.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------------
+//  Recommendations side rail (§4) — native right column, newest assessment's
+//  recommendations as cards (severity chip, scope, evidence, action,
+//  timestamp, copy-as-text). History below the fold. ADVISORY ONLY.
+// ----------------------------------------------------------------------------
+
+function recommendationAsText(rec: AssessmentRecommendation, hour?: string): string {
+  const parts = [
+    `[${rec.severity.toUpperCase()}] ${rec.type} · ${rec.scope}`,
+    rec.action,
+    `Evidence: ${rec.evidence}`,
+  ];
+  if (hour) parts.push(`Assessment hour: ${new Date(hour).toLocaleString()}`);
+  return parts.join('\n');
+}
+
+const RecommendationCard: React.FC<{ rec: AssessmentRecommendation; hour?: string; muted?: boolean }> = ({ rec, hour, muted }) => {
+  const [copied, setCopied] = useState(false);
+  const color = recSeverityColor[rec.severity] || '#00b0ff';
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(recommendationAsText(rec, hour));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable — ignore
+    }
+  };
+
+  return (
+    <div style={{
+      padding: '10px 12px', borderRadius: 8,
+      background: muted ? 'rgba(13,21,38,0.5)' : color + '10',
+      border: `1px solid ${muted ? 'rgba(99,102,241,0.1)' : color + '33'}`,
+      borderLeft: `3px solid ${color}`,
+      opacity: muted ? 0.75 : 1,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{
+          padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: 0.5, background: color + '22', color,
+        }}>{rec.severity}</span>
+        <span style={{
+          padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: 0.5,
+          background: 'rgba(0,200,255,0.1)', color: '#00b0ff',
+        }}>{rec.type}</span>
+        <span style={{ color: 'rgba(180,210,240,0.55)', fontSize: 10, fontFamily: 'monospace' }}>{rec.scope}</span>
+        <button
+          onClick={copy}
+          title="Copy as text"
+          style={{
+            marginLeft: 'auto', background: 'none', border: '1px solid rgba(0,200,255,0.15)',
+            color: copied ? '#10b981' : 'rgba(180,210,240,0.65)', borderRadius: 5,
+            padding: '2px 7px', fontSize: 10, cursor: 'pointer', flexShrink: 0,
+          }}
+        >
+          <FontAwesomeIcon icon={copied ? faCheck : faCopy} />
+        </button>
+      </div>
+      <p style={{ color: '#e0e6f0', fontSize: 12, margin: '0 0 4px', lineHeight: 1.45 }}>{rec.action}</p>
+      <p style={{ color: 'rgba(180,210,240,0.55)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>{rec.evidence}</p>
+      <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10, display: 'block', marginTop: 5 }}>
+        {new Date(rec.created_at).toLocaleString()}
+      </span>
+    </div>
+  );
+};
+
+const RecommendationsRail: React.FC = () => {
+  const [current, setCurrent] = useState<RecommendationsResp | null>(null);
+  const [assessments, setAssessments] = useState<AssessmentsResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [recRes, assessRes] = await Promise.all([
+          apiFetch('/api/mailing/consciousness/recommendations'),
+          apiFetch('/api/mailing/consciousness/assessments?hours=24'),
+        ]);
+        if (cancelled) return;
+        if (recRes.ok) {
+          setCurrent(await recRes.json());
+          setError(null);
+        } else {
+          const body = await recRes.json().catch(() => null);
+          setError(body?.error || `recommendations unavailable (${recRes.status})`);
+        }
+        if (assessRes.ok) setAssessments(await assessRes.json());
+      } catch {
+        if (!cancelled) setError('recommendations unreachable');
+      }
+    };
+    load();
+    const interval = setInterval(load, ASSESSMENTS_POLL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const currentRecs = current?.recommendations || [];
+
+  // History below the fold: recommendations from assessments OLDER than the
+  // newest hour, per-ISP scopes only (the platform scope aggregates them).
+  const historyRecs = useMemo(() => {
+    const newestHour = current?.assessment_hour;
+    const out: { rec: AssessmentRecommendation; hour: string }[] = [];
+    for (const a of assessments?.history || []) {
+      if (a.scope === 'platform') continue;
+      if (newestHour && new Date(a.hour).getTime() >= new Date(newestHour).getTime()) continue;
+      for (const rec of a.body.recommendations || []) {
+        out.push({ rec, hour: a.hour });
+      }
+    }
+    return out.slice(0, 50);
+  }, [assessments, current]);
+
+  return (
+    <div style={styles.recRail}>
+      <h3 style={{ ...styles.cardTitle, marginBottom: 4 }}>
+        <FontAwesomeIcon icon={faClipboardList} style={{ marginRight: 8, color: '#fdcb6e' }} />
+        Recommendations
+      </h3>
+      <p style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10, margin: '0 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Advisory only — nothing is auto-applied
+        {current?.assessment_hour && ` · assessed ${new Date(current.assessment_hour).toLocaleTimeString()}`}
+      </p>
+
+      {error && <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>{error}</p>}
+
+      {!error && currentRecs.length === 0 && (
+        <p style={{ color: '#10b981', fontSize: 12, margin: 0 }}>
+          No active recommendations — all pipes within band on the latest assessment.
+        </p>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {currentRecs.map((rec, i) => (
+          <RecommendationCard key={`cur-${i}`} rec={rec} hour={rec.assessment_hour} />
+        ))}
+      </div>
+
+      {historyRecs.length > 0 && (
+        <>
+          <div style={{
+            color: 'rgba(180,210,240,0.45)', fontSize: 10, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: 0.5, margin: '16px 0 8px',
+            borderTop: '1px solid rgba(99,102,241,0.12)', paddingTop: 12,
+          }}>
+            Earlier — last 24h
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {historyRecs.map(({ rec, hour }, i) => (
+              <RecommendationCard key={`hist-${i}`} rec={rec} hour={hour} muted />
+            ))}
           </div>
         </>
       )}
@@ -1164,7 +1661,15 @@ function renderOverview(
           <div style={styles.campaignMiniList}>
             {campaigns.slice(0, 4).map(c => (
               <div key={c.campaign_id} style={styles.campaignMiniItem}>
-                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 13 }}>{c.campaign_id}</span>
+                <span
+                  title={c.campaign_name || c.campaign_id}
+                  style={{
+                    color: '#e0e6f0', fontWeight: 600, fontSize: 13,
+                    display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {campaignLabel(c)}
+                </span>
                 <div style={styles.miniStats}>
                   <span style={{ color: '#00b894' }}>{c.delivered} dlvd</span>
                   <span style={{ color: '#00e5ff' }}>{c.unique_opens} opens</span>
@@ -1407,8 +1912,14 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
             return (
               <div key={c.campaign_id} className="ig-card-hover" style={styles.campaignCard}>
                 <div style={styles.campaignCardHeader}>
-                  <h3 style={{ color: '#e0e6f0', fontSize: 16, margin: 0, fontWeight: 700 }}>
-                    {c.campaign_id}
+                  <h3
+                    title={c.campaign_name || c.campaign_id}
+                    style={{
+                      color: '#e0e6f0', fontSize: 16, margin: 0, fontWeight: 700,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
+                    }}
+                  >
+                    {campaignLabel(c)}
                   </h3>
                   <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
                     Started {new Date(c.started_at).toLocaleDateString()}
@@ -1487,8 +1998,30 @@ const RateBar: React.FC<{ label: string; value: number; color: string }> = ({ la
 const styles: Record<string, React.CSSProperties> = {
   container: {
     padding: 24,
-    maxWidth: 1400,
+    maxWidth: 1720,
     margin: '0 auto',
+  },
+  // Body layout: main column + native recommendations side rail (§4)
+  bodyRow: {
+    display: 'flex',
+    gap: 20,
+    alignItems: 'flex-start',
+  },
+  mainCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  recRail: {
+    width: 300,
+    flexShrink: 0,
+    background: 'rgba(13,21,38,0.6)',
+    border: '1px solid rgba(0,200,255,0.08)',
+    borderRadius: 12,
+    padding: 16,
+    position: 'sticky' as const,
+    top: 12,
+    maxHeight: 'calc(100vh - 40px)',
+    overflow: 'auto' as const,
   },
   loadingContainer: {
     display: 'flex',

@@ -2017,6 +2017,22 @@ func runStartupMigrations(db *sql.DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
+		// Consciousness hourly assessments — one row per scope (platform +
+		// per-ISP family) per assessment interval, written by the engine's
+		// assessment loop (internal/engine/consciousness_assessment.go) and
+		// read by /api/mailing/consciousness/assessments|recommendations.
+		// Replaces per-event thought persistence (Round-3 §3). Placed near the
+		// top of this slice (new table, no deps, fast).
+		{"create_consciousness_assessments", `CREATE TABLE IF NOT EXISTS mailing_consciousness_assessments (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			hour            TIMESTAMPTZ NOT NULL,
+			scope           TEXT NOT NULL,
+			posture         TEXT NOT NULL DEFAULT '',
+			body            JSONB NOT NULL DEFAULT '{}',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_consciousness_assessments_org_scope_time", `CREATE INDEX IF NOT EXISTS idx_consciousness_assessments_org_scope_time ON mailing_consciousness_assessments (organization_id, scope, created_at DESC)`},
 		// Creative registry — browse/preview surface for the send-day creative
 		// archive (ReviewForge phase 2). Synced from operator tooling via
 		// /api/admin/creatives-sync; read by the portal Creative Studio tab.

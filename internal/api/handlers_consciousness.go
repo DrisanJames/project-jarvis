@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -236,13 +237,24 @@ func NewConsciousnessService(
 
 // RegisterRoutes mounts all consciousness and campaign event routes.
 func (s *ConsciousnessService) RegisterRoutes(r chi.Router) {
+	// Wire the persisted hourly-assessment store into the engine. The DB is
+	// set via SetConsciousnessDB just before RegisterRoutes; the engine's
+	// assessment loop (started later by consciousness.Start) no-ops until
+	// this is wired.
+	if db := getConsciousnessDB(); db != nil && s.consciousness != nil {
+		s.consciousness.SetAssessmentStore(db, s.orgID)
+	}
+
 	r.Route("/consciousness", func(r chi.Router) {
 		r.Get("/state", s.HandleGetState)
 		r.Get("/philosophies", s.HandleGetPhilosophies)
 		r.Get("/philosophies/{isp}", s.HandleGetISPPhilosophies)
 		r.Get("/thoughts", s.HandleGetThoughts)
 		r.Get("/thoughts/stream", s.HandleThoughtStream)
+		r.Get("/thoughts/archive", s.HandleGetLegacyThoughts)
 		r.Get("/hourly-assessment", s.HandleHourlyAssessment)
+		r.Get("/assessments", s.HandleGetAssessments)
+		r.Get("/recommendations", s.HandleGetRecommendations)
 	})
 
 	r.Route("/campaign-events", func(r chi.Router) {
@@ -332,11 +344,39 @@ func (s *ConsciousnessService) HandleThoughtStream(w http.ResponseWriter, r *htt
 
 // --- Campaign Event Endpoints ---
 
-// HandleGetCampaigns returns all active campaigns.
+// campaignMetricsWithName decorates the tracker's CampaignMetrics with the
+// human-friendly campaign name (Round-3 §2: Mailflow must never render raw
+// UUIDs). Name resolution reuses the batch resolver + cache above; lookup
+// misses leave the field empty and the UI falls back to a short id.
+type campaignMetricsWithName struct {
+	*engine.CampaignMetrics
+	CampaignName string `json:"campaign_name,omitempty"`
+}
+
+// campaignReportWithName is the same decoration for the full report payload.
+type campaignReportWithName struct {
+	*engine.CampaignReport
+	CampaignName string `json:"campaign_name,omitempty"`
+}
+
+// HandleGetCampaigns returns all active campaigns, server-side enriched with
+// campaign_name (one batched lookup, never client-side N+1).
 func (s *ConsciousnessService) HandleGetCampaigns(w http.ResponseWriter, r *http.Request) {
 	campaigns := s.tracker.GetAllCampaigns()
+	ids := make([]string, 0, len(campaigns))
+	for _, c := range campaigns {
+		ids = append(ids, c.CampaignID)
+	}
+	names := resolveCampaignNames(r.Context(), ids)
+	out := make([]campaignMetricsWithName, 0, len(campaigns))
+	for i := range campaigns {
+		out = append(out, campaignMetricsWithName{
+			CampaignMetrics: &campaigns[i],
+			CampaignName:    names[strings.ToLower(campaigns[i].CampaignID)],
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(campaigns)
+	json.NewEncoder(w).Encode(out)
 }
 
 // HandleGetCampaignMetrics returns metrics for a specific campaign.
@@ -347,8 +387,12 @@ func (s *ConsciousnessService) HandleGetCampaignMetrics(w http.ResponseWriter, r
 		http.Error(w, "campaign not found", http.StatusNotFound)
 		return
 	}
+	names := resolveCampaignNames(r.Context(), []string{metrics.CampaignID})
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	json.NewEncoder(w).Encode(campaignMetricsWithName{
+		CampaignMetrics: metrics,
+		CampaignName:    names[strings.ToLower(metrics.CampaignID)],
+	})
 }
 
 // HandleGetCampaignReport returns the full report for a campaign.
@@ -359,8 +403,12 @@ func (s *ConsciousnessService) HandleGetCampaignReport(w http.ResponseWriter, r 
 		http.Error(w, "campaign not found", http.StatusNotFound)
 		return
 	}
+	names := resolveCampaignNames(r.Context(), []string{report.CampaignID})
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(report)
+	json.NewEncoder(w).Encode(campaignReportWithName{
+		CampaignReport: report,
+		CampaignName:   names[strings.ToLower(report.CampaignID)],
+	})
 }
 
 // HandleFlushCampaignReport flushes the campaign report to S3.
@@ -420,7 +468,13 @@ func (s *ConsciousnessService) HandleCampaignEventStream(w http.ResponseWriter, 
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(event)
+			// §2 sweep: streamed events carry the campaign name too (cache-hit
+			// after the first event per campaign).
+			names := resolveCampaignNames(ctx, []string{event.CampaignID})
+			data, _ := json.Marshal(struct {
+				engine.CampaignEvent
+				CampaignName string `json:"campaign_name,omitempty"`
+			}{event, names[strings.ToLower(event.CampaignID)]})
 			fmt.Fprintf(w, "event: campaign_event\ndata: %s\n\n", data)
 			flusher.Flush()
 		}
@@ -583,4 +637,242 @@ func (s *ConsciousnessService) HandleHourlyAssessment(w http.ResponseWriter, r *
 	hourlyAssessmentCache.Unlock()
 
 	respondJSON(w, http.StatusOK, resp)
+}
+
+// ─── Persisted Hourly Assessments (Round-3 §3/§4) ────────────────────────────
+//
+// The engine (internal/engine/consciousness_assessment.go) writes ONE
+// assessment per scope per interval to mailing_consciousness_assessments.
+// These endpoints are the read surface: the Consciousness screen's default
+// view (latest per scope + history) and the recommendations feed reused by
+// the Domain Agent surface. All recommendations are advisory — there is no
+// apply endpoint by design.
+
+type persistedAssessment struct {
+	ID        string                `json:"id"`
+	Hour      time.Time             `json:"hour"`
+	Scope     string                `json:"scope"`
+	Posture   string                `json:"posture"`
+	Body      engine.AssessmentBody `json:"body"`
+	CreatedAt time.Time             `json:"created_at"`
+}
+
+func scanPersistedAssessments(rows *sql.Rows) []persistedAssessment {
+	out := []persistedAssessment{}
+	for rows.Next() {
+		var a persistedAssessment
+		var raw []byte
+		if rows.Scan(&a.ID, &a.Hour, &a.Scope, &a.Posture, &raw, &a.CreatedAt) != nil {
+			continue
+		}
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &a.Body)
+		}
+		if a.Body.Recommendations == nil {
+			a.Body.Recommendations = []engine.AssessmentRecommendation{}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// queryAssessmentsForOrg runs q for the request org; if that org has no rows
+// it retries with the engine org (the writer), so the screen works regardless
+// of which org context the request carries.
+func (s *ConsciousnessService) queryAssessmentsForOrg(ctx context.Context, db *sql.DB, q string, orgID string, extra ...interface{}) []persistedAssessment {
+	run := func(org string) ([]persistedAssessment, error) {
+		args := append([]interface{}{org}, extra...)
+		rows, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanPersistedAssessments(rows), nil
+	}
+	res, err := run(orgID)
+	if (err != nil || len(res) == 0) && orgID != s.orgID && s.orgID != "" {
+		if fallback, fErr := run(s.orgID); fErr == nil {
+			return fallback
+		}
+	}
+	if res == nil {
+		res = []persistedAssessment{}
+	}
+	return res
+}
+
+// HandleGetAssessments — GET /api/mailing/consciousness/assessments?scope=&hours=24.
+// Returns the latest assessment per scope plus the window's history (newest
+// first). This is the screen's default view; the live thought stream stays
+// behind the explicit debug toggle.
+func (s *ConsciousnessService) HandleGetAssessments(w http.ResponseWriter, r *http.Request) {
+	db := getConsciousnessDB()
+	if db == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "assessments not wired: consciousness DB not set"})
+		return
+	}
+	orgID := getOrgID(r)
+	hours := 24
+	if h := r.URL.Query().Get("hours"); h != "" {
+		if parsed, err := strconv.Atoi(h); err == nil && parsed > 0 && parsed <= 24*14 {
+			hours = parsed
+		}
+	}
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	scopeFilter := ""
+	latestArgs := []interface{}{}
+	if scope != "" {
+		scopeFilter = " AND scope = $2"
+		latestArgs = append(latestArgs, scope)
+	}
+
+	latest := s.queryAssessmentsForOrg(ctx, db, `
+		SELECT DISTINCT ON (scope) id::text, hour, scope, posture, body, created_at
+		FROM mailing_consciousness_assessments
+		WHERE organization_id = $1::uuid
+		  AND created_at > NOW() - INTERVAL '7 days'`+scopeFilter+`
+		ORDER BY scope, created_at DESC`, orgID, latestArgs...)
+
+	historyArgs := []interface{}{hours}
+	historyScopeFilter := ""
+	if scope != "" {
+		historyScopeFilter = " AND scope = $3"
+		historyArgs = append(historyArgs, scope)
+	}
+	history := s.queryAssessmentsForOrg(ctx, db, `
+		SELECT id::text, hour, scope, posture, body, created_at
+		FROM mailing_consciousness_assessments
+		WHERE organization_id = $1::uuid
+		  AND created_at > NOW() - ($2 || ' hours')::interval`+historyScopeFilter+`
+		ORDER BY created_at DESC
+		LIMIT 500`, orgID, historyArgs...)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"generated_at": time.Now().UTC(),
+		"hours":        hours,
+		"latest":       latest,
+		"history":      history,
+	})
+}
+
+// flattenedRecommendation is one advisory recommendation tagged with the
+// assessment it came from — the shape the side rail and the Domain Agent
+// surface consume.
+type flattenedRecommendation struct {
+	engine.AssessmentRecommendation
+	AssessmentScope string    `json:"assessment_scope"`
+	AssessmentHour  time.Time `json:"assessment_hour"`
+	Posture         string    `json:"posture"`
+}
+
+// HandleGetRecommendations — GET /api/mailing/consciousness/recommendations.
+// Flattens the newest assessment per scope into one advisory feed (single
+// source of truth: the hourly assessment). The platform scope is skipped so
+// recommendations aren't duplicated (it aggregates the per-ISP scopes).
+func (s *ConsciousnessService) HandleGetRecommendations(w http.ResponseWriter, r *http.Request) {
+	db := getConsciousnessDB()
+	if db == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "recommendations not wired: consciousness DB not set"})
+		return
+	}
+	orgID := getOrgID(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	latest := s.queryAssessmentsForOrg(ctx, db, `
+		SELECT DISTINCT ON (scope) id::text, hour, scope, posture, body, created_at
+		FROM mailing_consciousness_assessments
+		WHERE organization_id = $1::uuid
+		  AND created_at > NOW() - INTERVAL '7 days'
+		ORDER BY scope, created_at DESC`, orgID)
+
+	recs := []flattenedRecommendation{}
+	var newestHour time.Time
+	for _, a := range latest {
+		if a.Scope == engine.AssessmentScopePlatform {
+			if a.Hour.After(newestHour) {
+				newestHour = a.Hour
+			}
+			continue // platform aggregates the per-ISP scopes — avoid duplicates
+		}
+		if a.Hour.After(newestHour) {
+			newestHour = a.Hour
+		}
+		for _, rec := range a.Body.Recommendations {
+			recs = append(recs, flattenedRecommendation{
+				AssessmentRecommendation: rec,
+				AssessmentScope:          a.Scope,
+				AssessmentHour:           a.Hour,
+				Posture:                  a.Posture,
+			})
+		}
+	}
+	sevRank := map[string]int{"critical": 0, "warn": 1, "info": 2}
+	sort.SliceStable(recs, func(i, j int) bool {
+		return sevRank[recs[i].Severity] < sevRank[recs[j].Severity]
+	})
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"generated_at":    time.Now().UTC(),
+		"assessment_hour": newestHour,
+		"advisory_only":   true,
+		"count":           len(recs),
+		"recommendations": recs,
+	})
+}
+
+// HandleGetLegacyThoughts — GET /api/mailing/consciousness/thoughts/archive.
+// Read-only access to legacy mailing_consciousness_thoughts rows (the table
+// no longer receives writes — §3.2). Returns engine.Thought-shaped objects so
+// the existing screen rendering applies unchanged.
+func (s *ConsciousnessService) HandleGetLegacyThoughts(w http.ResponseWriter, r *http.Request) {
+	db := getConsciousnessDB()
+	if db == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "archive not wired: consciousness DB not set"})
+		return
+	}
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(isp, ''), COALESCE(agent_type, ''), thought_type,
+		       content, COALESCE(reasoning, ''), COALESCE(confidence, 0),
+		       COALESCE(severity, ''), COALESCE(related_ids, '[]'::jsonb), created_at
+		FROM mailing_consciousness_thoughts
+		ORDER BY created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		// Table may not exist in fresh environments — an empty archive is fine.
+		respondJSON(w, http.StatusOK, []engine.Thought{})
+		return
+	}
+	defer rows.Close()
+
+	thoughts := []engine.Thought{}
+	for rows.Next() {
+		var t engine.Thought
+		var ispStr, agentStr string
+		var relatedRaw []byte
+		if rows.Scan(&t.ID, &ispStr, &agentStr, &t.Type, &t.Content, &t.Reasoning,
+			&t.Confidence, &t.Severity, &relatedRaw, &t.Timestamp) != nil {
+			continue
+		}
+		t.ISP = engine.ISP(ispStr)
+		t.AgentType = engine.AgentType(agentStr)
+		if len(relatedRaw) > 0 {
+			_ = json.Unmarshal(relatedRaw, &t.RelatedIDs)
+		}
+		thoughts = append(thoughts, t)
+	}
+	respondJSON(w, http.StatusOK, enrichThoughts(r.Context(), thoughts))
 }

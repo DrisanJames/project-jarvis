@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -36,6 +37,15 @@ type Consciousness struct {
 
 	subMu       sync.RWMutex
 	subscribers map[string]chan Thought
+
+	// Hourly assessment cadence (consciousness_assessment.go): signals
+	// accumulate in memory per scope and are flushed as one DB row per scope
+	// every assessmentInterval. Raw thoughts are never written to the DB.
+	assessMu           sync.Mutex
+	assessAcc          map[string]*assessmentAccumulator
+	assessmentDB       *sql.DB
+	assessmentOrgID    string
+	assessmentInterval time.Duration
 
 	stopCh chan struct{}
 }
@@ -97,15 +107,17 @@ func NewConsciousness(
 	bucket string,
 ) *Consciousness {
 	return &Consciousness{
-		convictions:  convictions,
-		processor:    processor,
-		memory:       memory,
-		s3Client:     s3Client,
-		bucket:       bucket,
-		philosophies: make(map[string]*Philosophy),
-		maxThoughts:  500,
-		subscribers:  make(map[string]chan Thought),
-		stopCh:       make(chan struct{}),
+		convictions:        convictions,
+		processor:          processor,
+		memory:             memory,
+		s3Client:           s3Client,
+		bucket:             bucket,
+		philosophies:       make(map[string]*Philosophy),
+		maxThoughts:        500,
+		subscribers:        make(map[string]chan Thought),
+		assessAcc:          make(map[string]*assessmentAccumulator),
+		assessmentInterval: assessmentIntervalFromEnv(),
+		stopCh:             make(chan struct{}),
 	}
 }
 
@@ -130,6 +142,7 @@ func (c *Consciousness) Start(ctx context.Context) {
 	go c.synthesisLoop(ctx)
 	go c.persistLoop(ctx)
 	go c.campaignMonitorLoop(ctx)
+	go c.assessmentLoop(ctx)
 
 	c.think(Thought{
 		Type:     "observation",
@@ -231,6 +244,10 @@ func (c *Consciousness) think(t Thought) {
 		c.thoughts = c.thoughts[len(c.thoughts)-c.maxThoughts:]
 	}
 	c.mu.Unlock()
+
+	// Fold into the hourly assessment staging buffers (in-memory only; the
+	// ring buffer above remains the only live store for raw thoughts).
+	c.accumulateForAssessment(t)
 
 	c.fanOutThought(t)
 }
