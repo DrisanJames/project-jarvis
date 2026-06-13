@@ -251,15 +251,25 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// Prior caps (gmail 200/yahoo 20/aol 20/microsoft 100/apple 200/comcast 100/
 		// charter 100/att 60/sbcglobal 60/cox 60/verizon 60/other 150) are preserved
 		// in git history; raise back once block rate (5.x.x reputation DSNs) recovers.
+		// 2026-06-13 operator cap revision (Sam's data "fine, just drain faster"):
+		//   gmail     0      HOLD all new gmail; focus on known engagers (follow-ups
+		//                    + clicker rings continue; only new first-touch stops)
+		//   yahoo     8->16  growing lane, doubled per operator
+		//   apple     ~uncapped (100000; routed to mature-4 for placement)
+		//   microsoft ~uncapped (100000; spreads all 16)
+		//   att       50 ceiling, true rate set by NewRecordDailyISPCaps att=225/brand
+		//             (×4 mature = ~900/day) — "loving the growth, 480->900/d"
+		//   aol       30 ceiling, true rate set by NewRecordDailyISPCaps aol=56/brand
+		//             (×16 brands = ~900/day)
 		cfg.PerISPCapPerWave = map[string]int{
-			"gmail":     50,
-			"yahoo":     8,
-			"aol":       8,
-			"microsoft": 30,
-			"apple":     50,
+			"gmail":     0,
+			"yahoo":     16,
+			"aol":       30,
+			"microsoft": 100000,
+			"apple":     100000,
 			"comcast":   30,
 			"charter":   30,
-			"att":       20,
+			"att":       50,
 			"sbcglobal": 20,
 			"cox":       20,
 			"verizon":   20,
@@ -270,7 +280,12 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// Operator 2026-06-10: gmail 400/day (allow-listed brands only),
 		// yahoo 100/day and aol 100/day across all brands. ISPs not listed
 		// here have no daily new-record budget (per-wave caps only).
-		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 400, "yahoo": 100, "aol": 100}
+		// 2026-06-13 operator: gmail HELD to 0 (no new gmail). att/aol set to
+		// hit ~900/day TOTAL via per-brand budgets (caps are per-brand/day):
+		//   att 225/brand × 4 mature (routed) = ~900/day
+		//   aol  56/brand × 16 brands         = ~900/day
+		// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
+		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0, "yahoo": 100, "aol": 56, "att": 225}
 		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
 			parsed := map[string]int{}
 			for _, pair := range strings.Split(v, ",") {
