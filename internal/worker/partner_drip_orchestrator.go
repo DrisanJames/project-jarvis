@@ -288,17 +288,30 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		}
 	}
 	if cfg.NewRecordISPBrandAllow == nil {
-		gmailBrands := "db,ht,mh,qf"
-		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_GMAIL_NEW_BRANDS")); v != "" {
-			gmailBrands = v
-		}
-		allow := map[string]bool{}
-		for _, b := range strings.Split(gmailBrands, ",") {
-			if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
-				allow[b] = true
+		// Deliverability routing (operator 2026-06-13): the engagement-priced /
+		// reputation-sensitive ISPs ship only from the warmed mature-4 domains
+		// (db/ht/mh/qf own the isolated per-ISP IP pools). Per-ISP env override:
+		// PARTNER_DRIP_<ISP>_NEW_BRANDS (e.g. PARTNER_DRIP_YAHOO_NEW_BRANDS).
+		matureBrands := "db,ht,mh,qf"
+		parseAllow := func(envKey, def string) map[string]bool {
+			v := strings.TrimSpace(os.Getenv(envKey))
+			if v == "" {
+				v = def
 			}
+			m := map[string]bool{}
+			for _, b := range strings.Split(v, ",") {
+				if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
+					m[b] = true
+				}
+			}
+			return m
 		}
-		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{"gmail": allow}
+		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{
+			"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
+			"yahoo": parseAllow("PARTNER_DRIP_YAHOO_NEW_BRANDS", matureBrands),
+			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", matureBrands),
+			"att":   parseAllow("PARTNER_DRIP_ATT_NEW_BRANDS", matureBrands),
+		}
 	}
 	if cfg.PerISPDrainDays == nil {
 		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
@@ -712,6 +725,11 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// wave's per-ISP caps to what this brand may still mail TODAY. Gmail is
 	// additionally brand-gated. Follow-ups bypass this (separate loop).
 	perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, perISPCaps)
+	// Deliverability routing (operator 2026-06-13): pin the hard,
+	// engagement-priced ISPs to the warmed mature-4 domains. When a
+	// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
+	// non-positive cap), so they only ship from db/ht/mh/qf.
+	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
@@ -1129,6 +1147,31 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// applyISPBrandRouting enforces ISP→brand deliverability routing: for any ISP
+// in NewRecordISPBrandAllow, if the waving brand is NOT in that ISP's allow
+// set, its per-ISP cap is forced to 0 so the claim skips it (claimRecordsByISPCaps
+// drops non-positive caps). This pins engagement-priced ISPs (gmail/yahoo/
+// apple/att) to the warmed mature-4 domains regardless of daily-cap membership.
+// Unlike applyNewRecordDailyBudget this is pure routing — it never imposes a
+// volume throttle; allowed brands keep whatever cap resolvePerISPCaps produced.
+func (po *PartnerDripOrchestrator) applyISPBrandRouting(brand string, caps map[string]int) map[string]int {
+	if len(po.cfg.NewRecordISPBrandAllow) == 0 {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	for isp, allow := range po.cfg.NewRecordISPBrandAllow {
+		isp = strings.ToLower(strings.TrimSpace(isp))
+		if len(allow) == 0 {
+			continue
+		}
+		if !allow[lb] {
+			out[isp] = 0
+		}
+	}
+	return out
 }
 
 // applyNewRecordDailyBudget clamps a wave's per-ISP caps to the brand's

@@ -144,3 +144,32 @@ func TestReplaceMoneyMergeTags(t *testing.T) {
 		t.Fatalf("brand derivation wrong: %s", out2)
 	}
 }
+
+func TestApplyISPBrandRouting(t *testing.T) {
+	po := &PartnerDripOrchestrator{cfg: PartnerDripOrchestratorConfig{
+		NewRecordISPBrandAllow: map[string]map[string]bool{
+			"gmail": {"db": true, "ht": true, "mh": true, "qf": true},
+			"yahoo": {"db": true, "ht": true, "mh": true, "qf": true},
+			"apple": {"db": true, "ht": true, "mh": true, "qf": true},
+			"att":   {"db": true, "ht": true, "mh": true, "qf": true},
+		},
+	}}
+	caps := map[string]int{"gmail": 500, "yahoo": 300, "apple": 1000, "att": 200, "microsoft": 800, "comcast": 100}
+	// non-mature brand: hard ISPs zeroed, others untouched
+	got := po.applyISPBrandRouting("lpl", caps)
+	for _, isp := range []string{"gmail", "yahoo", "apple", "att"} {
+		if got[isp] != 0 {
+			t.Fatalf("lpl: %s should be 0, got %d", isp, got[isp])
+		}
+	}
+	if got["microsoft"] != 800 || got["comcast"] != 100 {
+		t.Fatalf("lpl: non-routed ISPs altered: %v", got)
+	}
+	// mature brand: all caps preserved
+	got2 := po.applyISPBrandRouting("qf", caps)
+	for isp, want := range caps {
+		if got2[isp] != want {
+			t.Fatalf("qf: %s want %d got %d", isp, want, got2[isp])
+		}
+	}
+}
