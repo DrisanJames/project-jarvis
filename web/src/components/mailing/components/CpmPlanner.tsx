@@ -108,6 +108,28 @@ interface ConvList {
   totals: { manual_total: number; manual_revenue: number };
 }
 
+// Linked campaigns (mirror HandleListDealCampaigns / cpmDealCampaign).
+interface DealCampaign {
+  campaign_id: string;
+  name: string;
+  status: string;
+  delivered: number;
+  added_at: string;
+}
+interface VolumeToGoal {
+  planned_volume: number;
+  delivered_total: number;
+  delivered_associated: number;
+  remaining: number;
+  actual_daily: number;
+  days_to_goal: number;
+}
+interface DealCampaignList {
+  campaigns: DealCampaign[];
+  volume_to_goal: VolumeToGoal;
+}
+interface CampaignCandidate { id: string; name: string; status: string; created_at: string; }
+
 interface Insights {
   deal: Deal;
   capacity: Capacity;
@@ -305,6 +327,12 @@ export const CpmPlanner: React.FC = () => {
   const [convMsg, setConvMsg] = useState<Record<string, { text: string; ok: boolean }>>({});
   const [convListOpen, setConvListOpen] = useState<Record<string, boolean>>({});
   const csvInputRef = useRef<HTMLInputElement | null>(null);
+  // Linked campaigns + volume-to-goal per deal.
+  const [campData, setCampData] = useState<Record<string, DealCampaignList>>({});
+  const [campOpen, setCampOpen] = useState<Record<string, boolean>>({});
+  const [campCandidates, setCampCandidates] = useState<Record<string, CampaignCandidate[]>>({});
+  const [campQuery, setCampQuery] = useState<Record<string, string>>({});
+  const [campBusy, setCampBusy] = useState(false);
   // Deal id handed off from the Offers tab ("View in CPM Planner") —
   // auto-expanded once the deal list loads.
   const [focusDealId, setFocusDealId] = useState<string | null>(
@@ -526,6 +554,42 @@ export const CpmPlanner: React.FC = () => {
     } catch (e) {
       setConvMsg(prev => ({ ...prev, [d.id]: { text: e instanceof Error ? e.message : 'delete failed', ok: false } }));
     }
+  };
+
+  // ── Linked campaigns ──────────────────────────────────────────────
+  const loadCampaigns = useCallback(async (dealId: string) => {
+    try {
+      const res = await apiFetch(`${API}/deals/${dealId}/campaigns`);
+      if (res.ok) { const j = await res.json(); setCampData(prev => ({ ...prev, [dealId]: j })); }
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const searchCandidates = useCallback(async (dealId: string, q: string) => {
+    try {
+      const res = await apiFetch(`${API}/deals/${dealId}/campaign-candidates?q=${encodeURIComponent(q)}&limit=50`);
+      if (res.ok) {
+        const j = await res.json();
+        setCampCandidates(prev => ({ ...prev, [dealId]: j.candidates || [] }));
+      }
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const associateCampaign = async (dealId: string, campaignID: string) => {
+    setCampBusy(true);
+    try {
+      await apiFetch(`${API}/deals/${dealId}/campaigns`, {
+        method: 'POST', body: JSON.stringify({ campaign_ids: [campaignID] }),
+      });
+      await Promise.all([loadCampaigns(dealId), searchCandidates(dealId, campQuery[dealId] || ''), loadAll()]);
+    } finally { setCampBusy(false); }
+  };
+
+  const removeCampaign = async (dealId: string, campaignID: string) => {
+    setCampBusy(true);
+    try {
+      await apiFetch(`${API}/deals/${dealId}/campaigns/${campaignID}`, { method: 'DELETE' });
+      await Promise.all([loadCampaigns(dealId), loadAll()]);
+    } finally { setCampBusy(false); }
   };
 
   const expandDeal = useCallback(async (dealId: string, hasInsights: boolean, hasPerf: boolean) => {
@@ -1014,6 +1078,107 @@ export const CpmPlanner: React.FC = () => {
     );
   };
 
+  // ── Linked campaigns & volume-to-goal panel ──────────────────────
+  const renderCampaigns = (d: Deal) => {
+    const cd = campData[d.id];
+    const open = !!campOpen[d.id];
+    const cands = campCandidates[d.id] || [];
+    const v = cd?.volume_to_goal;
+    return (
+      <div style={{ padding: '12px 20px', borderTop: `1px solid ${C.border}` }}>
+        <button
+          onClick={() => {
+            const next = !open;
+            setCampOpen(prev => ({ ...prev, [d.id]: next }));
+            if (next && !cd) { loadCampaigns(d.id); searchCandidates(d.id, ''); }
+          }}
+          style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12,
+            fontWeight: 700, padding: 0, display: 'flex', alignItems: 'center', gap: 6,
+            textTransform: 'uppercase', letterSpacing: 0.5 }}
+        >
+          <FontAwesomeIcon icon={open ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
+          Linked campaigns &amp; volume to goal
+          {cd ? ` — ${cd.campaigns.length} linked` : ''}
+        </button>
+        {open && (
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Volume-to-goal rollup */}
+            {v && (
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', background: 'rgba(10,20,45,0.4)',
+                border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 14px' }}>
+                {[
+                  ['Planned volume', fmtInt(v.planned_volume)],
+                  ['Delivered (all)', fmtInt(v.delivered_total)],
+                  ['Remaining to goal', fmtInt(v.remaining)],
+                  ['Current daily', fmtInt(Math.round(v.actual_daily))],
+                  ['Days to goal', v.actual_daily > 0 ? `${Math.ceil(v.days_to_goal)}d` : '∞'],
+                ].map(([k, val]) => (
+                  <div key={k}>
+                    <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{k}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: C.heading }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Associate picker */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                placeholder="Search campaigns to link…"
+                value={campQuery[d.id] || ''}
+                onChange={e => {
+                  const q = e.target.value;
+                  setCampQuery(prev => ({ ...prev, [d.id]: q }));
+                  searchCandidates(d.id, q);
+                }}
+                style={{ flex: 1, padding: '6px 10px', background: 'rgba(10,20,45,0.6)',
+                  border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 13 }}
+              />
+            </div>
+            {cands.length > 0 && (
+              <div style={{ maxHeight: 160, overflowY: 'auto', border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                {cands.map(c => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '5px 10px', borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.heading }} title={c.name}>{c.name}</span>
+                    <button disabled={campBusy} onClick={() => associateCampaign(d.id, c.id)}
+                      style={{ background: C.indigo, border: 'none', color: '#fff', borderRadius: 5,
+                        padding: '3px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                      + Link
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Linked list */}
+            {cd && cd.campaigns.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>
+                  <th style={thStyle}>Campaign</th><th style={thStyle}>Status</th>
+                  <th style={thStyle}>Delivered</th><th style={thStyle}></th>
+                </tr></thead>
+                <tbody>
+                  {cd.campaigns.map(c => (
+                    <tr key={c.campaign_id}>
+                      <td style={{ ...tdStyle, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
+                      <td style={tdStyle}>{c.status}</td>
+                      <td style={tdStyle}>{fmtInt(c.delivered)}</td>
+                      <td style={{ ...tdStyle, width: 36 }}>
+                        <button onClick={() => removeCampaign(d.id, c.campaign_id)} title="Unlink campaign"
+                          style={{ background: 'none', border: 'none', color: C.red, cursor: 'pointer' }}>
+                          <FontAwesomeIcon icon={faTrash} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderInsights = (d: Deal) => {
     const ins = insights[d.id];
     if (insightsLoading === d.id && !ins) {
@@ -1048,6 +1213,9 @@ export const CpmPlanner: React.FC = () => {
         <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
           {renderConversions(d)}
         </div>
+
+        {/* Linked campaigns & volume-to-goal */}
+        {renderCampaigns(d)}
 
         {/* Pace chart: daily sent bars vs required-daily reference, with the
             conversion series (tracked + manual) on the right axis */}

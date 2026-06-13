@@ -1212,6 +1212,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Post("/deals/{id}/conversions", cpmPlanner.HandleAddDealConversions)
 				cp.Get("/deals/{id}/conversions", cpmPlanner.HandleListDealConversions)
 				cp.Delete("/deals/{id}/conversions/{convID}", cpmPlanner.HandleDeleteDealConversion)
+				// Campaign→deal association (volume-to-goal planning, 2026-06-13).
+				cp.Get("/deals/{id}/campaigns", cpmPlanner.HandleListDealCampaigns)
+				cp.Post("/deals/{id}/campaigns", cpmPlanner.HandleAssociateDealCampaigns)
+				cp.Delete("/deals/{id}/campaigns/{campaignID}", cpmPlanner.HandleRemoveDealCampaign)
+				cp.Get("/deals/{id}/campaign-candidates", cpmPlanner.HandleDealCampaignCandidates)
 				cp.Get("/capacity", cpmPlanner.HandleCapacity)
 				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
 			})

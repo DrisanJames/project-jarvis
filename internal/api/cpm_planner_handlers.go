@@ -67,6 +67,16 @@ func (h *CpmPlannerHandlers) ensureTables() {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cpm_deals_org ON mailing_cpm_deals(organization_id, status)`,
+		// Explicit campaign→deal association (operator 2026-06-13): lets an
+		// operator earmark specific campaigns to a deal so delivery/volume-to-
+		// goal counts that exact set, on top of the offer_id auto-match.
+		`CREATE TABLE IF NOT EXISTS mailing_cpm_deal_campaigns (
+			deal_id UUID NOT NULL,
+			campaign_id UUID NOT NULL,
+			added_at TIMESTAMPTZ DEFAULT NOW(),
+			PRIMARY KEY (deal_id, campaign_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_campaigns_deal ON mailing_cpm_deal_campaigns(deal_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
@@ -233,8 +243,10 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float64) cpmDealProgress {
 	p := cpmDealProgress{Payout: payout}
 
-	if d.OfferID != "" {
-		// Delivery aggregates from tracking events (counter columns are stale).
+	// Delivery campaign set = offer_id auto-match (when mapped) ∪ explicitly
+	// associated campaigns (operator 2026-06-13). Associated campaigns count
+	// regardless of offer_id, so an operator can attribute any send to the deal.
+	{
 		evQ := `
 			SELECT
 				COUNT(*) FILTER (WHERE event_type = 'sent'),
@@ -248,12 +260,16 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 			  AND event_at >= $2
 			  AND campaign_id IN (
 				SELECT id FROM mailing_campaigns
-				WHERE organization_id = $1 AND offer_id = $3 AND created_at >= $2
+				WHERE organization_id = $1 AND offer_id = NULLIF($3,'')::uuid AND created_at >= $2
+				UNION
+				SELECT campaign_id FROM mailing_cpm_deal_campaigns WHERE deal_id = $4
 			  )`
-		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID).Scan(
+		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID).Scan(
 			&p.Sent, &p.Delivered, &p.Opened, &p.Clicked, &p.HardBounces, &p.SoftBounces); err != nil {
 			log.Printf("[CpmPlanner] progress events for deal %s: %v", d.ID, err)
 		}
+	}
+	if d.OfferID != "" {
 
 		// Conversion ground truth: everflow postbacks → offer suppressions.
 		// countOfferConversions (offer_center_handlers.go) is THE shared
@@ -275,18 +291,20 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 
 	// Manual conversions (operator CSV uploads / quick-adds) — counted for
 	// EVERY deal, mapped or not: offers without postback wiring are exactly
-	// the manual-upload case. Window matches tracked: since deal start.
-	// manualRevEffective values each manual row at its reported revenue when
-	// present, else at the basis estimate — so a CSV with real revenue is
-	// authoritative and a count-only quick-add still earns the payout.
+	// the manual-upload case. NO date floor (operator 2026-06-13): manual
+	// rows are explicit, deal-scoped operator ground truth, so they count
+	// toward the deal regardless of converted_at vs start_date — an operator
+	// backfilling a conversion dated before the deal's nominal start still
+	// sees it land. manualRevEffective values each row at its reported revenue
+	// when present, else at the basis estimate.
 	var manualRevEffective float64
 	if err := h.db.QueryRow(`
 		SELECT COALESCE(SUM(count), 0),
 		       COALESCE(SUM(revenue), 0),
-		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE count * $4 END), 0)
+		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE count * $3 END), 0)
 		FROM mailing_cpm_manual_conversions
-		WHERE organization_id = $1 AND deal_id = $2 AND converted_at >= $3`,
-		orgID, d.ID, d.startDate, basis).Scan(&p.ConversionsManual, &p.ManualRevenue, &manualRevEffective); err != nil {
+		WHERE organization_id = $1 AND deal_id = $2`,
+		orgID, d.ID, basis).Scan(&p.ConversionsManual, &p.ManualRevenue, &manualRevEffective); err != nil {
 		log.Printf("[CpmPlanner] progress manual conversions for deal %s: %v", d.ID, err)
 	}
 	p.Conversions = p.ConversionsTracked + p.ConversionsManual
@@ -1301,4 +1319,187 @@ func fmtCpmInt(n int64) string {
 		b.WriteRune(c)
 	}
 	return b.String()
+}
+
+// ─── Campaign association (operator 2026-06-13) ──────────────────────────────
+// Earmark specific campaigns to a deal so delivery/volume-to-goal counts that
+// exact set (UNION-ed with the offer_id auto-match in loadProgress), and the
+// operator can see remaining volume to the deal's planned_volume target.
+
+type cpmDealCampaign struct {
+	CampaignID string    `json:"campaign_id"`
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	Delivered  int64     `json:"delivered"`
+	AddedAt    time.Time `json:"added_at"`
+}
+
+// HandleListDealCampaigns GET /cpm-planner/deals/{id}/campaigns
+// Associated campaigns with per-campaign delivered counts + a volume-to-goal
+// rollup (planned_volume, delivered, remaining, days-to-goal at current rate).
+func (h *CpmPlannerHandlers) HandleListDealCampaigns(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	deals, err := h.loadDeals(orgID, dealID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deal: %v", err))
+		return
+	}
+	if len(deals) == 0 {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+	d := deals[0]
+
+	rows, err := h.db.Query(`
+		SELECT dc.campaign_id, COALESCE(c.name,'(deleted)'), COALESCE(c.status,''),
+		       dc.added_at,
+		       COALESCE((SELECT COUNT(*) FROM mailing_tracking_events e
+		                 WHERE e.campaign_id = dc.campaign_id AND e.event_type='delivered'), 0)
+		FROM mailing_cpm_deal_campaigns dc
+		LEFT JOIN mailing_campaigns c ON c.id = dc.campaign_id
+		WHERE dc.deal_id = $1
+		ORDER BY dc.added_at DESC`, dealID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("list campaigns: %v", err))
+		return
+	}
+	defer rows.Close()
+	out := []cpmDealCampaign{}
+	var assocDelivered int64
+	for rows.Next() {
+		var c cpmDealCampaign
+		if err := rows.Scan(&c.CampaignID, &c.Name, &c.Status, &c.AddedAt, &c.Delivered); err != nil {
+			continue
+		}
+		assocDelivered += c.Delivered
+		out = append(out, c)
+	}
+
+	// Volume-to-goal: planned_volume is the deal's CPM volume target. Use the
+	// deal's full delivered (offer-match ∪ associated, from progress) so the
+	// remaining figure matches the headline, and project days at actual daily.
+	remaining := d.PlannedVolume - d.Progress.Sent
+	if remaining < 0 {
+		remaining = 0
+	}
+	var daysToGoal float64
+	if d.Progress.ActualDaily > 0 {
+		daysToGoal = float64(remaining) / d.Progress.ActualDaily
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"campaigns": out,
+		"volume_to_goal": map[string]interface{}{
+			"planned_volume":      d.PlannedVolume,
+			"delivered_total":     d.Progress.Sent,        // offer-match ∪ associated
+			"delivered_associated": assocDelivered,         // associated campaigns only
+			"remaining":           remaining,
+			"actual_daily":        d.Progress.ActualDaily,
+			"days_to_goal":        daysToGoal,
+		},
+	})
+}
+
+// HandleAssociateDealCampaigns POST /cpm-planner/deals/{id}/campaigns {"campaign_ids":[...]}
+func (h *CpmPlannerHandlers) HandleAssociateDealCampaigns(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	ok, err := h.dealExists(orgID, dealID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deal: %v", err))
+		return
+	}
+	if !ok {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+	var req struct {
+		CampaignIDs []string `json:"campaign_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	inserted := 0
+	for _, cid := range req.CampaignIDs {
+		cid = strings.TrimSpace(cid)
+		if cid == "" {
+			continue
+		}
+		// Only associate campaigns that exist in this org.
+		res, err := h.db.Exec(`
+			INSERT INTO mailing_cpm_deal_campaigns (deal_id, campaign_id)
+			SELECT $1, $2 WHERE EXISTS (
+				SELECT 1 FROM mailing_campaigns WHERE id = $2 AND organization_id = $3)
+			ON CONFLICT (deal_id, campaign_id) DO NOTHING`, dealID, cid, orgID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("associate: %v", err))
+			return
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			inserted++
+		}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"associated": inserted, "requested": len(req.CampaignIDs)})
+}
+
+// HandleRemoveDealCampaign DELETE /cpm-planner/deals/{id}/campaigns/{campaignID}
+func (h *CpmPlannerHandlers) HandleRemoveDealCampaign(w http.ResponseWriter, r *http.Request) {
+	dealID := chi.URLParam(r, "id")
+	cid := chi.URLParam(r, "campaignID")
+	if _, err := h.db.Exec(
+		`DELETE FROM mailing_cpm_deal_campaigns WHERE deal_id = $1 AND campaign_id = $2`,
+		dealID, cid); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("remove: %v", err))
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"removed": true})
+}
+
+// HandleDealCampaignCandidates GET /cpm-planner/deals/{id}/campaign-candidates?q=&limit=
+// Recent campaigns the operator can associate — offer-matched first, then a
+// name search, excluding already-associated. Lightweight picker source.
+func (h *CpmPlannerHandlers) HandleDealCampaignCandidates(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit := 50
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 200 {
+		limit = n
+	}
+	args := []interface{}{orgID, dealID}
+	nameFilter := ""
+	if q != "" {
+		args = append(args, "%"+q+"%")
+		nameFilter = fmt.Sprintf(" AND c.name ILIKE $%d", len(args))
+	}
+	args = append(args, limit)
+	rows, err := h.db.Query(`
+		SELECT c.id, c.name, COALESCE(c.status,''), c.created_at
+		FROM mailing_campaigns c
+		WHERE c.organization_id = $1
+		  AND c.created_at > NOW() - INTERVAL '45 days'
+		  AND c.id NOT IN (SELECT campaign_id FROM mailing_cpm_deal_campaigns WHERE deal_id = $2)`+
+		nameFilter+`
+		ORDER BY c.created_at DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("candidates: %v", err))
+		return
+	}
+	defer rows.Close()
+	type cand struct {
+		ID        string    `json:"id"`
+		Name      string    `json:"name"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	out := []cand{}
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.ID, &c.Name, &c.Status, &c.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"candidates": out})
 }
