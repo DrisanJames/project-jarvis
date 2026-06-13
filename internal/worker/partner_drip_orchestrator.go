@@ -283,9 +283,9 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// 2026-06-13 operator: gmail HELD to 0 (no new gmail). att/aol set to
 		// hit ~900/day TOTAL via per-brand budgets (caps are per-brand/day):
 		//   att 225/brand × 4 mature (routed) = ~900/day
-		//   aol  56/brand × 16 brands         = ~900/day
+		//   aol 225/brand × 4 mature (routed 2026-06-13) = ~900/day
 		// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
-		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0, "yahoo": 100, "aol": 56, "att": 225}
+		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0, "yahoo": 100, "aol": 225, "att": 225}
 		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
 			parsed := map[string]int{}
 			for _, pair := range strings.Split(v, ",") {
@@ -326,6 +326,7 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			"yahoo": parseAllow("PARTNER_DRIP_YAHOO_NEW_BRANDS", matureBrands),
 			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", matureBrands),
 			"att":   parseAllow("PARTNER_DRIP_ATT_NEW_BRANDS", matureBrands),
+			"aol":   parseAllow("PARTNER_DRIP_AOL_NEW_BRANDS", matureBrands), // 2026-06-13: AOL routed to mature-4 (best placement, 36.9% on HT)
 		}
 	}
 	if cfg.PerISPDrainDays == nil {
