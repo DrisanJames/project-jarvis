@@ -1190,6 +1190,32 @@ func (po *PartnerDripOrchestrator) applyISPBrandRouting(brand string, caps map[s
 	return out
 }
 
+// applyFollowupGmailRouting zeroes ONLY the gmail per-ISP cap when `brand` is
+// not in the gmail allow-set (NewRecordISPBrandAllow["gmail"], default
+// db/ht/mh/qf). The welcome path runs the full applyISPBrandRouting; the
+// follow-up path historically skipped all ISP→brand routing, so because the
+// follow-up brand rotation is INDEPENDENT of a record's original mailed_brand,
+// gmail touches could ship under any brand — including ones the operator has
+// banned from gmail. Operator 2026-06-14: "BAN ALL GMAIL delivery for YIH,
+// thingoftheday, learnpersonalloans, refinanceratesusa, consumerpro,
+// businessweeklypro, financialcalculate — this includes any and all drips."
+// This gates gmail ONLY (not yahoo/apple/att/aol) so existing follow-up volume
+// for the other sensitive ISPs is unchanged — gmail follow-ups now ship solely
+// from the warmed mature-4, where the gmail engager rings already live.
+func (po *PartnerDripOrchestrator) applyFollowupGmailRouting(brand string, caps map[string]int) map[string]int {
+	allow := po.cfg.NewRecordISPBrandAllow["gmail"]
+	if len(allow) == 0 {
+		return caps
+	}
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	if allow[lb] {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	out["gmail"] = 0
+	return out
+}
+
 // applyNewRecordDailyBudget clamps a wave's per-ISP caps to the brand's
 // remaining daily new-record budget (NewRecordDailyISPCaps, America/Denver
 // day). mailed_at is written exactly once (first touch), so counting rows
@@ -2232,6 +2258,11 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
+	// Gmail brand-ban on follow-ups (operator 2026-06-14). The follow-up brand
+	// rotation is independent of a record's original mailed_brand, so without
+	// this a gmail touch could ship under a brand banned from gmail. Gate gmail
+	// to the warmed mature-4 (db/ht/mh/qf) just like the welcome path does.
+	perISPCaps = po.applyFollowupGmailRouting(brand, perISPCaps)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
