@@ -118,6 +118,14 @@ func (pv *PartnerValidator) processOnce() {
 	if pv.eoClient == nil {
 		return
 	}
+	// Reap orphaned in-flight rows first. A row goes 'eo_in_flight' at claim
+	// time and should return to a terminal state within seconds; if the process
+	// dies (deploy/restart) between claim and apply, the row would otherwise be
+	// stuck forever because the claimer only selects 'pending_eo'. Any row still
+	// in-flight long past a batch's lifetime is an orphan — return it to the
+	// queue. The 15-minute floor is well above real batch latency, so it never
+	// races a sibling validator that legitimately holds a fresh claim.
+	pv.reapStaleInFlight(pv.ctx)
 	for {
 		if pv.ctx.Err() != nil {
 			return
@@ -160,7 +168,7 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 			LIMIT $2
 		)
 		UPDATE partner_clean_queue q
-		SET status = 'eo_in_flight'
+		SET status = 'eo_in_flight', claimed_at = NOW()
 		FROM claimed
 		WHERE q.id = claimed.id
 		RETURNING q.id, q.email, q.email_md5, q.eo_attempts, q.dataset_id, q.partner_id, q.vertical
@@ -178,6 +186,29 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// reapStaleInFlight returns orphaned 'eo_in_flight' rows to 'pending_eo' so a
+// later cycle can re-validate them. Orphans appear when the process dies
+// between claim and apply (the claimer only sees 'pending_eo', so they would
+// otherwise wedge permanently — observed 2026-06-08..09, 831 rows stuck across
+// verticals until a manual re-queue). claimed_at IS NULL covers rows claimed
+// before this column was populated. eo_attempts is left untouched: orphaning is
+// the platform's fault, not a validation failure, so it must not burn retries.
+func (pv *PartnerValidator) reapStaleInFlight(ctx context.Context) {
+	res, err := pv.db.ExecContext(ctx, `
+		UPDATE partner_clean_queue
+		SET status = 'pending_eo'
+		WHERE status = 'eo_in_flight'
+		  AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '15 minutes')
+	`)
+	if err != nil {
+		log.Printf("[PartnerValidator] reap_stale_in_flight: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[PartnerValidator] reaped %d orphaned eo_in_flight -> pending_eo", n)
+	}
 }
 
 // validateAndApply runs EO concurrently then applies status updates per
