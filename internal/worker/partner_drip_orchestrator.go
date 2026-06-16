@@ -713,6 +713,25 @@ func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Contex
 	return out, nil
 }
 
+// appleBannedDripVerticals returns drip verticals barred from Apple/iCloud. Operator 2026-06-16:
+// Apple HM08-rejects Fidelity term-life ~85-92% via BOTH PMTA and SES (content/domain policy — no
+// ESP or whitelisting lever; proven against Sam's Club, which delivers to the same Apple audience
+// at 0.04% hard). Zeroing the apple per-wave cap makes claim*ByISPCaps skip Apple for these
+// verticals. Override the default via PARTNER_DRIP_APPLE_BANNED_VERTICALS (comma-separated list).
+func appleBannedDripVerticals() map[string]bool {
+	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_APPLE_BANNED_VERTICALS"))
+	if v == "" {
+		v = "term_life"
+	}
+	m := map[string]bool{}
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+			m[s] = true
+		}
+	}
+	return m
+}
+
 func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v verticalState) error {
 	waveSize := po.computeWaveSize(v)
 	if waveSize <= 0 {
@@ -746,6 +765,12 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
 	// non-positive cap), so they only ship from db/ht/mh/qf.
 	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
+	// Apple-banned verticals (operator 2026-06-16): Fidelity term-life is HM08-rejected by Apple
+	// ~85-92% (content policy — no ESP lever). Zero the apple cap so no Apple/iCloud records are
+	// claimed for these verticals; every other ISP is unaffected.
+	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
+		perISPCaps["apple"] = 0
+	}
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
@@ -2263,6 +2288,11 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	// this a gmail touch could ship under a brand banned from gmail. Gate gmail
 	// to the warmed mature-4 (db/ht/mh/qf) just like the welcome path does.
 	perISPCaps = po.applyFollowupGmailRouting(brand, perISPCaps)
+	// Apple-banned verticals (operator 2026-06-16): same Fidelity term-life → Apple ban as the
+	// welcome path — follow-up touches must not ship term-life to Apple either.
+	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
+		perISPCaps["apple"] = 0
+	}
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
