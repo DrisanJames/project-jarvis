@@ -732,6 +732,58 @@ func appleBannedDripVerticals() map[string]bool {
 	return m
 }
 
+// dripBrandISPBlocks returns per-(brand,ISP) hard blocks: when a wave is shipping
+// under a blocked brand to a blocked ISP, that ISP's per-wave cap is forced to 0
+// so no new records are claimed for that brand→ISP pipe. Unlike the ISP→brand
+// allow-routing (applyISPBrandRouting, an allow-list), this is a surgical DENYLIST
+// for a single (brand,ISP) pair — it leaves every other brand and every other ISP
+// untouched. Operator 2026-06-16: "reduce History Thinking Microsoft to 0 — no more
+// new data on this pipe until told otherwise" (HT is on the Server-B Microsoft pipe
+// whose reputation throttle is collapsing; see the serverB_msft hourly watch).
+// Override the default via PARTNER_DRIP_BRAND_ISP_BLOCKS (comma-separated brand=isp
+// pairs, e.g. "ht=microsoft,mh=microsoft"). Applied on BOTH welcome and follow-up
+// paths so the brand→ISP pipe is fully stopped, not just first-touch.
+func dripBrandISPBlocks() map[string]map[string]bool {
+	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_BRAND_ISP_BLOCKS"))
+	if v == "" {
+		v = "ht=microsoft"
+	}
+	m := map[string]map[string]bool{}
+	for _, pair := range strings.Split(v, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		brand := strings.ToLower(strings.TrimSpace(kv[0]))
+		isp := strings.ToLower(strings.TrimSpace(kv[1]))
+		if brand == "" || isp == "" {
+			continue
+		}
+		if m[brand] == nil {
+			m[brand] = map[string]bool{}
+		}
+		m[brand][isp] = true
+	}
+	return m
+}
+
+// applyBrandISPBlocks zeroes the per-ISP cap for any ISP blocked for `brand`
+// (see dripBrandISPBlocks). claim*ByISPCaps drops non-positive caps, so a zeroed
+// ISP ships nothing under this brand.
+func (po *PartnerDripOrchestrator) applyBrandISPBlocks(brand string, caps map[string]int) map[string]int {
+	blocks := dripBrandISPBlocks()
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	bm := blocks[lb]
+	if len(bm) == 0 {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	for isp := range bm {
+		out[isp] = 0
+	}
+	return out
+}
+
 func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v verticalState) error {
 	waveSize := po.computeWaveSize(v)
 	if waveSize <= 0 {
@@ -771,6 +823,9 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
 	}
+	// Per-(brand,ISP) hard block (operator 2026-06-16): e.g. History Thinking → Microsoft = 0.
+	// Surgical denylist for a single brand→ISP pipe; every other brand/ISP is unaffected.
+	perISPCaps = po.applyBrandISPBlocks(brand, perISPCaps)
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
@@ -2293,6 +2348,10 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
 	}
+	// Per-(brand,ISP) hard block (operator 2026-06-16): History Thinking → Microsoft = 0.
+	// Follow-up brand rotation is independent of mailed_brand, so this must run here too to
+	// fully stop the HT→Microsoft pipe (not just first-touch).
+	perISPCaps = po.applyBrandISPBlocks(brand, perISPCaps)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
