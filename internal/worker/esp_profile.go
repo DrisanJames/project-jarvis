@@ -44,7 +44,7 @@ func (s *ProfileBasedSender) SetIPChangeCallback(cb OnIPsChangedFunc) {
 // Send looks up the sending profile for the message, creates the
 // appropriate ESP sender, and delegates delivery.
 func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	var vendorType, apiKey, apiSecret, sendingDomain, region, poolPrefix, ipPool string
+	var vendorType, apiKey, apiSecret, sendingDomain, region, poolPrefix, ipPool, routingMode string
 	var smtpHost, smtpUsername, smtpPassword sql.NullString
 	var smtpPort sql.NullInt64
 
@@ -57,10 +57,11 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 			   smtp_host, smtp_port,
 			   smtp_username, smtp_password,
 			   COALESCE(pool_prefix, ''),
-			   COALESCE(ip_pool, '')
+			   COALESCE(ip_pool, ''),
+			   COALESCE(routing_mode, '')
 		FROM mailing_sending_profiles
 		WHERE id = $1
-	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool)
+	`, msg.ProfileID).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool, &routingMode)
 
 	if err != nil {
 		log.Printf("[ProfileBasedSender] No profile %s, looking for default", msg.ProfileID)
@@ -73,11 +74,12 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 				   smtp_host, smtp_port,
 				   smtp_username, smtp_password,
 				   COALESCE(pool_prefix, ''),
-				   COALESCE(ip_pool, '')
+				   COALESCE(ip_pool, ''),
+				   COALESCE(routing_mode, '')
 			FROM mailing_sending_profiles
 			WHERE is_default = true AND status = 'active'
 			LIMIT 1
-		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool)
+		`).Scan(&vendorType, &apiKey, &apiSecret, &sendingDomain, &region, &smtpHost, &smtpPort, &smtpUsername, &smtpPassword, &poolPrefix, &ipPool, &routingMode)
 		if err != nil {
 			return nil, fmt.Errorf("no sending profile found and no default configured")
 		}
@@ -146,6 +148,15 @@ func (s *ProfileBasedSender) Send(ctx context.Context, msg *EmailMessage) (*Send
 		// use it. SMTP fallback is intentionally removed — a delayed send
 		// (requeue) is safer than an SMTP injection that risks DMARC failure.
 		if apiURL != "" {
+			// routing_mode='kumo' selects the KumoMTA injector (X-Virtual-MTA
+			// content header) instead of the PMTA HTTP bridge (json vmta field).
+			// The profile keeps vendor_type='pmta' so every deploy/preflight/wave
+			// gate (which filters vendor_type='pmta') accepts it unchanged.
+			if routingMode == "kumo" {
+				return s.getCachedSender(msg.ProfileID+":kumo-api", func() ESPSender {
+					return NewKumoAPISender(apiURL, s.db, poolPrefix)
+				}).Send(ctx, msg)
+			}
 			return s.getCachedSender(msg.ProfileID+":pmta-api", func() ESPSender {
 				return NewPMTAAPISender(apiURL, s.db, poolPrefix)
 			}).Send(ctx, msg)

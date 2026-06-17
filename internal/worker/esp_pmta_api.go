@@ -34,6 +34,11 @@ type PMTAAPISender struct {
 	consecutiveFailures int64
 	lastError           string
 	bridgeAlertFn       BridgeAlertFunc
+
+	// headerRouting selects KumoMTA semantics: route via an X-Virtual-MTA header
+	// inside the message content (Kumo's policy reads it to pick the egress pool)
+	// instead of the json `vmta` field the PMTA HTTP bridge expects.
+	headerRouting bool
 }
 
 // NewPMTAAPISender creates a PMTA API sender.
@@ -49,6 +54,18 @@ func NewPMTAAPISender(apiEndpoint string, db *sql.DB, poolPrefix string) *PMTAAP
 		},
 		ipPool: newVMTAPool(db, poolPrefix),
 	}
+}
+
+// NewKumoAPISender creates a sender for KumoMTA's HTTP injection API. It speaks
+// the same /api/inject/v1 contract as the PMTA bridge, but routes by writing an
+// X-Virtual-MTA header into the message content (Kumo reads it to select the
+// egress pool) instead of sending a json `vmta` field — Kumo would reject the
+// unknown field, and PMTA-bridge double-injection is avoided by using a separate
+// profile vendor_type ("kumo").
+func NewKumoAPISender(apiEndpoint string, db *sql.DB, poolPrefix string) *PMTAAPISender {
+	s := NewPMTAAPISender(apiEndpoint, db, poolPrefix)
+	s.headerRouting = true
+	return s
 }
 
 // SetIPChangeCallback registers a callback on the sender's VMTA pool that
@@ -163,6 +180,16 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		return nil, fmt.Errorf("no VMTA routing available — no X-Virtual-MTA header and no IP pool configured; refusing to send via server IP")
 	}
 
+	// KumoMTA routes on an X-Virtual-MTA content header, not the json `vmta`
+	// field. Move the resolved VMTA into the message content and drop the field.
+	routedVMTA, _ := payload["vmta"].(string)
+	if s.headerRouting {
+		if routedVMTA != "" {
+			payload["content"] = "X-Virtual-MTA: " + routedVMTA + "\r\n" + rfc822.String()
+		}
+		delete(payload, "vmta")
+	}
+
 	var body bytes.Buffer
 	enc := json.NewEncoder(&body)
 	enc.SetEscapeHTML(false)
@@ -197,7 +224,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		go s.updateIPCounters(selectedIPID)
 	}
 
-	usedVMTA, _ := payload["vmta"].(string)
+	usedVMTA := routedVMTA
 	log.Printf("[PMTA-API] Sent to %s via %s (id: %s, status: %d)", msg.Email, injectURL, messageID, resp.StatusCode)
 	return &SendResult{Success: true, MessageID: messageID, ESPType: "pmta-api", SentAt: time.Now(), VMTA: usedVMTA}, nil
 }

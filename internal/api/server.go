@@ -79,6 +79,8 @@ type Server struct {
 	DataPipeline *worker.DataPipeline
 	// PMTA accounting — public POST /engine/webhook; set when ingestor + workers are ready
 	pmtaAccountingWebhook http.HandlerFunc
+	// KumoMTA log-hook events — public POST /engine/kumo; set when ingestor is ready
+	kumoEventsWebhook http.HandlerFunc
 	// Wave processor throughput provider (SA-7). Set after sendWorkerPool
 	// is constructed in main.go via SetWaveProcessorThroughputProvider.
 	// Read by the /api/wave-processor/status handler registered in

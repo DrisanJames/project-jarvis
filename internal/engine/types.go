@@ -236,6 +236,7 @@ type AccountingRecord struct {
 	DeliveryTime string `json:"time_logged"`
 	FeedbackType string `json:"feedback_type"`
 	JobID        string `json:"job_id"`
+	Source       string `json:"source"` // emitter origin: "" / "pmta" (default), "kumo", "ses"
 }
 
 // UnmarshalJSON handles both forwarder-style and legacy field names.
@@ -271,6 +272,7 @@ func (r *AccountingRecord) UnmarshalJSON(data []byte) error {
 	r.DeliveryTime = str("time_logged", "dlvStamp", "timeLogged")
 	r.FeedbackType = str("feedback_type", "fbType", "feedbackType")
 	r.JobID = str("job_id", "jobId")
+	r.Source = str("source")
 
 	if v, ok := raw["size"]; ok {
 		switch s := v.(type) {

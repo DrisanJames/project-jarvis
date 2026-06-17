@@ -1776,6 +1776,10 @@ var criticalSendPathDDL = []struct {
 	// with a vertical-aware unique index ('' = the NULL/global chain).
 	{"drop_followup_creatives_pk", `ALTER TABLE partner_drip_followup_creatives DROP CONSTRAINT IF EXISTS partner_drip_followup_creatives_pkey`},
 	{"followup_creatives_vertical_uq", `CREATE UNIQUE INDEX IF NOT EXISTS partner_drip_followup_creatives_uq ON partner_drip_followup_creatives (brand, touch_number, COALESCE(vertical,''))`},
+	// routing_mode distinguishes the KumoMTA HTTP injector from the PMTA HTTP
+	// bridge for vendor_type='pmta' profiles. ProfileBasedSender reads it
+	// UNCONDITIONALLY per send, so the column must exist before any worker starts.
+	{"add_profile_routing_mode", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS routing_mode TEXT`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded

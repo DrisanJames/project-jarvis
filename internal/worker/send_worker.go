@@ -1640,7 +1640,9 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		sender = p.mailgunSender
 	case "sendgrid":
 		sender = p.sendgridSender
-	case "pmta":
+	case "pmta", "kumo":
+		// Both dispatch through the ProfileBasedSender, which reads vendor_type
+		// and selects the PMTA-bridge or KumoMTA injector per profile.
 		sender = p.pmtaSender
 	default:
 		sender = p.sesSender

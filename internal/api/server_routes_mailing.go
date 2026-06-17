@@ -184,6 +184,16 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			http.Error(w, "engine not ready", http.StatusServiceUnavailable)
 		})
 
+		// KumoMTA log-hook events — public, called by the Kumo box log_hook.
+		// Translates Kumo log records into the same accounting pipeline as PMTA.
+		s.router.Post("/engine/kumo", func(w http.ResponseWriter, r *http.Request) {
+			if s.kumoEventsWebhook != nil {
+				s.kumoEventsWebhook(w, r)
+				return
+			}
+			http.Error(w, "engine not ready", http.StatusServiceUnavailable)
+		})
+
 		// Tracking endpoints — public (called from email clients, no auth)
 		s.router.Get("/track/open/{data}", svc.HandleTrackOpen)
 		s.router.Get("/track/open/{data}/{sig}", svc.HandleTrackOpen)
@@ -391,7 +401,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			ingestor.StartAccountingWebhookWorkers(acctCtx)
 			r.Post("/engine/webhook", ingestor.HandleWebhook)
 			s.pmtaAccountingWebhook = ingestor.HandleWebhook
+			s.kumoEventsWebhook = ingestor.HandleKumoWebhook
 			log.Println("[engine] PMTA accounting webhook ready (public /engine/webhook)")
+			log.Println("[engine] Kumo events webhook ready (public /engine/kumo)")
 
 			// Site pixel management and real-time traffic
 			r.Get("/site-pixel/snippet", siteEventsHandler.HandleGetPixelSnippet)

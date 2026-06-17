@@ -380,12 +380,16 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	// side of the backfill so the live feed continues seamlessly. event_uid is
 	// derived from PMTA's stable per-record fields so HTTP-bridge redeliveries
 	// dedupe in Athena via SELECT DISTINCT event_uid.
-	routeType := "pmta_direct"
+	src := rec.Source
+	if src == "" {
+		src = "pmta"
+	}
+	routeType := src + "_direct"
 	if IsPMTARelayedToSES(rec) {
 		routeType = "ses_tenant"
 	}
 	analytics.Emit(analytics.Event{
-		EventUID:    "pmta:" + rec.JobID + ":" + rec.Recipient + ":" + rec.Type + ":" + rec.DeliveryTime,
+		EventUID:    src + ":" + rec.JobID + ":" + rec.Recipient + ":" + rec.Type + ":" + rec.DeliveryTime,
 		CampaignID:  rec.JobID,
 		Email:       rec.Recipient,
 		EmailDomain: rec.Domain,
@@ -399,7 +403,7 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 		DSNDiag:     rec.DSNDiag,
 		SourceIP:    rec.SourceIP,
 		EventAt:     time.Now().UTC().Format(time.RFC3339),
-		Source:      "pmta",
+		Source:      src,
 	})
 }
 
