@@ -147,32 +147,87 @@ func TestResolvePerISPCaps_NoDatasetOverride(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestBrandISPBlocks verifies the per-(brand,ISP) hard denylist (operator
-// 2026-06-16: History Thinking → Microsoft = 0). The default block must zero
-// ONLY ht→microsoft; every other brand and every other ISP of ht is untouched.
-func TestBrandISPBlocks(t *testing.T) {
-	po := &PartnerDripOrchestrator{}
-	base := map[string]int{"microsoft": 100000, "apple": 100000, "yahoo": 16, "gmail": 0}
 
-	// Default (env unset) → ht microsoft zeroed, ht's other ISPs intact.
-	t.Setenv("PARTNER_DRIP_BRAND_ISP_BLOCKS", "")
-	gotHT := po.applyBrandISPBlocks("ht", base)
-	assert.Equal(t, 0, gotHT["microsoft"], "ht microsoft must be blocked to 0")
-	assert.Equal(t, 100000, gotHT["apple"], "ht apple must be untouched")
-	assert.Equal(t, 16, gotHT["yahoo"], "ht yahoo must be untouched")
-	// Input map must not be mutated (clone semantics).
-	assert.Equal(t, 100000, base["microsoft"], "source caps must not be mutated")
+// TestBrandISPSESProfiles + TestPartitionWaveBySESProfile cover the per-(brand,ISP)
+// SES tenant routing that replaced the HT→Microsoft block (operator 2026-06-16:
+// "route all HT Microsoft traffic through AWS SES").
+func TestBrandISPSESProfiles(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "")
+	m := dripBrandISPSESProfiles()
+	assert.Equal(t, "c24a8455-e893-4895-a8ad-4556d9013003", m["ht"]["microsoft"], "default ht microsoft → HT SES tenant")
+	assert.Empty(t, m["ht"]["apple"], "ht apple not pinned by default")
+	assert.Nil(t, m["db"], "db has no SES pins by default")
 
-	// A different brand's microsoft is NOT blocked by the default.
-	gotDB := po.applyBrandISPBlocks("db", base)
-	assert.Equal(t, 100000, gotDB["microsoft"], "db microsoft must NOT be blocked")
+	// Env override REPLACES the default (must re-list ht to keep it).
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=AAA,mh=microsoft=BBB")
+	m = dripBrandISPSESProfiles()
+	assert.Equal(t, "AAA", m["ht"]["microsoft"])
+	assert.Equal(t, "BBB", m["mh"]["microsoft"])
+}
 
-	// Env override: add mh→microsoft (must re-list ht — env replaces default).
-	t.Setenv("PARTNER_DRIP_BRAND_ISP_BLOCKS", "ht=microsoft,mh=microsoft")
-	assert.Equal(t, 0, po.applyBrandISPBlocks("ht", base)["microsoft"], "ht still blocked under override")
-	assert.Equal(t, 0, po.applyBrandISPBlocks("mh", base)["microsoft"], "mh now blocked under override")
-	assert.Equal(t, 100000, po.applyBrandISPBlocks("qf", base)["microsoft"], "qf not in override → unblocked")
+func TestPartitionWaveBySESProfile(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=PROF_HT_MS")
+	recs := []claimedRecord{
+		{id: "1", ispFamily: "microsoft"},
+		{id: "2", ispFamily: "apple"},
+		{id: "3", ispFamily: "microsoft"},
+		{id: "4", ispFamily: "yahoo"},
+	}
+	subs := []string{"s1", "s2", "s3", "s4"}
 
-	// Case/space insensitivity on brand input.
-	assert.Equal(t, 0, po.applyBrandISPBlocks("  HT  ", base)["microsoft"], "brand match must be case/space-insensitive")
+	// ht: microsoft peels into its own SES group; the rest stay PMTA ("").
+	groups := partitionWaveBySESProfile("ht", recs, subs)
+	require.Len(t, groups, 2)
+	assert.Equal(t, "", groups[0].profileID, "PMTA group leads")
+	assert.ElementsMatch(t, []string{"2", "4"}, idsOf(groups[0].recs))
+	assert.Equal(t, []string{"s2", "s4"}, groups[0].subIDs, "subIDs stay aligned to recs")
+	assert.Equal(t, "PROF_HT_MS", groups[1].profileID)
+	assert.ElementsMatch(t, []string{"1", "3"}, idsOf(groups[1].recs))
+
+	// db: no pins → a single PMTA group holding everything (pre-split behavior).
+	groups = partitionWaveBySESProfile("db", recs, subs)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "", groups[0].profileID)
+	assert.Len(t, groups[0].recs, 4)
+}
+
+func idsOf(recs []claimedRecord) []string {
+	out := make([]string, len(recs))
+	for i, r := range recs {
+		out[i] = r.id
+	}
+	return out
+}
+
+// TestApplyThroughputSafety_SESBypassesThrottle verifies the critical guard for
+// the HT→Microsoft SES reroute: an SES-pinned (brand,isp) bypasses the PMTA
+// throttle deferral (mailing_isp_throttle_state), so a 0-msgs/hr collapsed
+// Microsoft pipe does NOT defer the records we're deliberately routing to SES;
+// a non-SES brand's same ISP is still deferred.
+func TestApplyThroughputSafety_SESBypassesThrottle(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=PROF")
+	po := NewPartnerDripOrchestrator(db, PartnerDripOrchestratorConfig{ThrottledISPRateThreshold: 50})
+
+	recs := []claimedRecord{{id: "1", ispFamily: "microsoft"}, {id: "2", ispFamily: "apple"}}
+	caps := map[string]int{"microsoft": 100000, "apple": 100000, "other": 40}
+	throttleRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"isp", "msgs_per_hour"}).AddRow("microsoft", 0.0).AddRow("apple", 14.0)
+	}
+
+	// brand=ht: microsoft is SES-routed → bypasses throttle (kept); apple is
+	// throttled and NOT SES-routed → deferred.
+	mock.ExpectQuery(`FROM mailing_isp_throttle_state`).WillReturnRows(throttleRows())
+	keepHT, defHT, _, err := po.applyThroughputSafety(context.Background(), "ht", recs, caps)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1"}, idsOf(keepHT), "ht microsoft kept (SES bypass)")
+	assert.Equal(t, []string{"2"}, idsOf(defHT), "apple deferred (throttled, not SES)")
+
+	// brand=db: microsoft NOT SES-routed → throttle applies → both deferred.
+	mock.ExpectQuery(`FROM mailing_isp_throttle_state`).WillReturnRows(throttleRows())
+	keepDB, _, _, err := po.applyThroughputSafety(context.Background(), "db", recs, caps)
+	require.NoError(t, err)
+	assert.Empty(t, idsOf(keepDB), "db: microsoft+apple both throttled → none kept")
 }

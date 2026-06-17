@@ -31,6 +31,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -732,56 +733,169 @@ func appleBannedDripVerticals() map[string]bool {
 	return m
 }
 
-// dripBrandISPBlocks returns per-(brand,ISP) hard blocks: when a wave is shipping
-// under a blocked brand to a blocked ISP, that ISP's per-wave cap is forced to 0
-// so no new records are claimed for that brand→ISP pipe. Unlike the ISP→brand
-// allow-routing (applyISPBrandRouting, an allow-list), this is a surgical DENYLIST
-// for a single (brand,ISP) pair — it leaves every other brand and every other ISP
-// untouched. Operator 2026-06-16: "reduce History Thinking Microsoft to 0 — no more
-// new data on this pipe until told otherwise" (HT is on the Server-B Microsoft pipe
-// whose reputation throttle is collapsing; see the serverB_msft hourly watch).
-// Override the default via PARTNER_DRIP_BRAND_ISP_BLOCKS (comma-separated brand=isp
-// pairs, e.g. "ht=microsoft,mh=microsoft"). Applied on BOTH welcome and follow-up
-// paths so the brand→ISP pipe is fully stopped, not just first-touch.
-func dripBrandISPBlocks() map[string]map[string]bool {
-	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_BRAND_ISP_BLOCKS"))
+// brandSESSendingDomain maps a brand to its SES tenant sending domain (m.<apex>),
+// used when a wave (or part of one) is pinned to that brand's SES tenant profile
+// via dripBrandISPSESProfiles. Only the SES-tenant brands need an entry; brands
+// without one keep their default em.<apex> PMTA domain.
+var brandSESSendingDomain = map[string]string{
+	"ht": "m.historythinking.com",
+	"mh": "m.myownhealth.net",
+}
+
+// dripBrandISPSESProfiles returns per-(brand,ISP) SES tenant profile pins. When a
+// drip wave for `brand` includes a pinned ISP, that ISP's records are peeled off
+// into a SEPARATE campaign pinned to the brand's SES tenant profile (m.<apex>,
+// via_ses=true) instead of the default em.<apex> PMTA route — routing a
+// collapsing-reputation ISP pipe through the SES relay, mirroring the boards'
+// ses_tight route and the standing Gmail-via-SES rule. Operator 2026-06-16:
+// "route all HT Microsoft traffic through AWS SES" (HT rides the Server-B
+// Microsoft pipe whose reputation throttle collapsed). Default: ht microsoft →
+// HT SES tenant (c24a8455…). Override via PARTNER_DRIP_BRAND_ISP_SES_PROFILES
+// (comma-separated brand=isp=profileUUID triples, env REPLACES the default).
+// The PMTA route is the default for every (brand,ISP) NOT listed here.
+func dripBrandISPSESProfiles() map[string]map[string]string {
+	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES"))
 	if v == "" {
-		v = "ht=microsoft"
+		v = "ht=microsoft=c24a8455-e893-4895-a8ad-4556d9013003"
 	}
-	m := map[string]map[string]bool{}
-	for _, pair := range strings.Split(v, ",") {
-		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(kv) != 2 {
+	m := map[string]map[string]string{}
+	for _, trip := range strings.Split(v, ",") {
+		parts := strings.SplitN(strings.TrimSpace(trip), "=", 3)
+		if len(parts) != 3 {
 			continue
 		}
-		brand := strings.ToLower(strings.TrimSpace(kv[0]))
-		isp := strings.ToLower(strings.TrimSpace(kv[1]))
-		if brand == "" || isp == "" {
+		brand := strings.ToLower(strings.TrimSpace(parts[0]))
+		isp := strings.ToLower(strings.TrimSpace(parts[1]))
+		pid := strings.TrimSpace(parts[2])
+		if brand == "" || isp == "" || pid == "" {
 			continue
 		}
 		if m[brand] == nil {
-			m[brand] = map[string]bool{}
+			m[brand] = map[string]string{}
 		}
-		m[brand][isp] = true
+		m[brand][isp] = pid
 	}
 	return m
 }
 
-// applyBrandISPBlocks zeroes the per-ISP cap for any ISP blocked for `brand`
-// (see dripBrandISPBlocks). claim*ByISPCaps drops non-positive caps, so a zeroed
-// ISP ships nothing under this brand.
-func (po *PartnerDripOrchestrator) applyBrandISPBlocks(brand string, caps map[string]int) map[string]int {
-	blocks := dripBrandISPBlocks()
-	lb := strings.ToLower(strings.TrimSpace(brand))
-	bm := blocks[lb]
-	if len(bm) == 0 {
-		return caps
+// claimGroup is a subset of a wave's claimed records routed to one campaign.
+// recs and subIDs are index-aligned. profileID == "" means the default PMTA
+// route (resolve by SendingDomain); a non-empty UUID pins an SES tenant profile.
+type claimGroup struct {
+	profileID string
+	recs      []claimedRecord
+	subIDs    []string
+}
+
+// partitionWaveBySESProfile splits a wave's claimed records (and index-aligned
+// subscriber ids) into routing groups: one default-PMTA group plus one group per
+// distinct SES tenant profile pinned for (brand, isp) in dripBrandISPSESProfiles.
+// Brands/ISPs with no pin all fall into the "" (PMTA) group, so when nothing is
+// pinned the result is a single group identical to the pre-split behavior.
+// Groups are returned PMTA-first, then SES groups in deterministic profile order.
+func partitionWaveBySESProfile(brand string, recs []claimedRecord, subIDs []string) []claimGroup {
+	pins := dripBrandISPSESProfiles()[strings.ToLower(strings.TrimSpace(brand))]
+	byProfile := map[string]*claimGroup{}
+	order := []string{}
+	for i, r := range recs {
+		if i >= len(subIDs) {
+			break
+		}
+		pid := ""
+		if pins != nil {
+			if p, ok := pins[strings.ToLower(strings.TrimSpace(r.ispFamily))]; ok {
+				pid = p
+			}
+		}
+		g, ok := byProfile[pid]
+		if !ok {
+			g = &claimGroup{profileID: pid}
+			byProfile[pid] = g
+			order = append(order, pid)
+		}
+		g.recs = append(g.recs, r)
+		g.subIDs = append(g.subIDs, subIDs[i])
 	}
-	out := cloneISPCapMap(caps)
-	for isp := range bm {
-		out[isp] = 0
+	sort.Strings(order) // "" sorts first → PMTA group leads, SES groups follow deterministically
+	out := make([]claimGroup, 0, len(order))
+	for _, pid := range order {
+		out = append(out, *byProfile[pid])
 	}
 	return out
+}
+
+// deployWaveGroup ships ONE campaign for a routing group of a wave (see
+// partitionWaveBySESProfile): builds the per-group segment, builds the campaign
+// input, pins the SES profile + SES sending domain when profileID is set,
+// deploys, stamps partner attribution, and marks the group's records mailed.
+// nameSuffix (e.g. "[t2]") is appended to the campaign name when non-empty.
+func (po *PartnerDripOrchestrator) deployWaveGroup(ctx context.Context, v verticalState, brand string, creative creativeRec, g claimGroup, nameSuffix string) (string, error) {
+	segmentID, err := po.createWaveSegment(ctx, v, brand, g.recs, g.subIDs)
+	if err != nil {
+		return "", fmt.Errorf("create_wave_segment: %w", err)
+	}
+	input, err := po.buildCampaignInput(v, brand, creative, segmentID, tallyISPs(g.recs))
+	if err != nil {
+		return "", fmt.Errorf("build_input: %w", err)
+	}
+	if g.profileID != "" {
+		// Pin the SES tenant profile — this bypasses the by-domain PMTA lookup
+		// (see PMTACampaignInput.SendingProfileID). Match SendingDomain to the
+		// SES tenant so footer/tracking-domain logic stays consistent.
+		input.SendingProfileID = g.profileID
+		if d, ok := brandSESSendingDomain[strings.ToLower(strings.TrimSpace(brand))]; ok {
+			input.SendingDomain = d
+		}
+		// Disambiguate the name: PMTA + SES groups of one wave share the same
+		// creative (and thus the same base name); tag SES groups so the two
+		// campaigns are distinct (unique per profile within a wave).
+		input.Name = fmt.Sprintf("%s [ses:%s]", input.Name, shortID(g.profileID))
+	}
+	if nameSuffix != "" {
+		input.Name = fmt.Sprintf("%s %s", input.Name, nameSuffix)
+	}
+	campaignID, err := po.cfg.DeployFn(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("deploy: %w", err)
+	}
+	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
+		log.Printf("[PartnerDripOrchestrator] stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
+	}
+	if err := po.markMailed(ctx, g.recs, campaignID, brand); err != nil {
+		log.Printf("[PartnerDripOrchestrator] mark_mailed (campaign %s already deployed!): %v", campaignID, err)
+	}
+	return campaignID, nil
+}
+
+// routeLabel renders a routing group's route for logs: "pmta" for the default
+// by-domain route, or "ses:<profile>" when pinned to an SES tenant profile.
+func routeLabel(profileID string) string {
+	if profileID == "" {
+		return "pmta"
+	}
+	return "ses:" + profileID
+}
+
+// deployWaveGroups partitions a wave's claimed records by SES routing and deploys
+// each group as its own campaign (PMTA remainder + one campaign per pinned SES
+// tenant). Returns the last campaign id and the total records actually deployed.
+// A group whose deploy fails releases ONLY its own records (the next tick retries
+// them) so a partial failure never unships the groups that already mailed.
+func (po *PartnerDripOrchestrator) deployWaveGroups(ctx context.Context, v verticalState, brand string, creative creativeRec, claimed []claimedRecord, subscriberIDs []string, nameSuffix string) (lastCampaignID string, deployedCount int) {
+	for _, g := range partitionWaveBySESProfile(brand, claimed, subscriberIDs) {
+		cid, err := po.deployWaveGroup(ctx, v, brand, creative, g, nameSuffix)
+		if err != nil {
+			_ = po.releaseClaim(ctx, g.recs)
+			log.Printf("[PartnerDripOrchestrator] wave group deploy failed: vertical=%s brand=%s route=%s size=%d: %v",
+				v.vertical, brand, routeLabel(g.profileID), len(g.recs), err)
+			continue
+		}
+		lastCampaignID = cid
+		deployedCount += len(g.recs)
+		log.Printf("[PartnerDripOrchestrator] wave fired: vertical=%s brand=%s campaign=%s size=%d route=%s creative=%s",
+			v.vertical, brand, cid, len(g.recs), routeLabel(g.profileID), creative.filename)
+	}
+	return lastCampaignID, deployedCount
 }
 
 func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v verticalState) error {
@@ -823,9 +937,6 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
 	}
-	// Per-(brand,ISP) hard block (operator 2026-06-16): e.g. History Thinking → Microsoft = 0.
-	// Surgical denylist for a single brand→ISP pipe; every other brand/ISP is unaffected.
-	perISPCaps = po.applyBrandISPBlocks(brand, perISPCaps)
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
@@ -837,7 +948,7 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	// Apply throttle-based ISP deferral + per-ISP cap. Records cut from this
 	// wave are released back to 'ready' so the next tick can revisit them
 	// (potentially against a different brand whose throttle state differs).
-	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed, perISPCaps)
+	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, brand, claimed, perISPCaps)
 	if err != nil {
 		log.Printf("[PartnerDripOrchestrator] throughput_safety check failed for vertical=%s: %v — proceeding without deferral", v.vertical, err)
 		keep = claimed
@@ -861,42 +972,17 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 		return fmt.Errorf("promote_subscribers: %w", err)
 	}
 
-	segmentID, err := po.createWaveSegment(ctx, v, brand, claimed, subscriberIDs)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("create_wave_segment: %w", err)
+	// Split the wave by SES routing and deploy each group as its own campaign
+	// (PMTA remainder + one campaign per pinned SES tenant — e.g. ht microsoft →
+	// HT SES tenant). When nothing is pinned this is a single PMTA campaign,
+	// identical to the pre-split behavior.
+	lastCampaignID, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, "")
+	if deployedCount == 0 {
+		return fmt.Errorf("all wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 	}
-
-	ispCounts := tallyISPs(claimed)
-	input, err := po.buildCampaignInput(v, brand, creative, segmentID, ispCounts)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("build_input: %w", err)
-	}
-
-	campaignID, err := po.cfg.DeployFn(ctx, input)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("deploy: %w", err)
-	}
-
-	// Stamp the partner attribution columns onto the campaign row so the
-	// analytics dashboard can join campaigns back to this dataset. Best-effort
-	// — a failure here doesn't unship the wave.
-	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
-		log.Printf("[PartnerDripOrchestrator] stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
-	}
-
-	if err := po.markMailed(ctx, claimed, campaignID, brand); err != nil {
-		log.Printf("[PartnerDripOrchestrator] mark_mailed (campaign %s already deployed!): %v", campaignID, err)
-	}
-
-	if err := po.updateDripState(ctx, v.vertical, newIdx, brand, campaignID, len(claimed)); err != nil {
+	if err := po.updateDripState(ctx, v.vertical, newIdx, brand, lastCampaignID, deployedCount); err != nil {
 		log.Printf("[PartnerDripOrchestrator] update_state: %v", err)
 	}
-
-	log.Printf("[PartnerDripOrchestrator] wave fired: vertical=%s brand=%s campaign=%s size=%d creative=%s",
-		v.vertical, brand, campaignID, len(claimed), creative.filename)
 	return nil
 }
 
@@ -1886,11 +1972,17 @@ func (po *PartnerDripOrchestrator) applyDatasetISPCapOverrides(ctx context.Conte
 //   1. Active ISP backoff in mailing_isp_throttle_state (rate < threshold).
 //   2. Per-ISP cap per wave (resolved caps passed by caller).
 // Returns (keep, deferred, reasons-by-isp).
-func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, recs []claimedRecord, perISPCaps map[string]int) ([]claimedRecord, []claimedRecord, map[string]string, error) {
+func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, brand string, recs []claimedRecord, perISPCaps map[string]int) ([]claimedRecord, []claimedRecord, map[string]string, error) {
 	throttled, err := po.fetchThrottledISPs(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// SES-pinned (brand,isp) pairs route through the SES relay, NOT the PMTA
+	// pipe whose reputation/throttle state mailing_isp_throttle_state tracks —
+	// so the PMTA throttle deferral must NOT gate them (otherwise a 0-msgs/hr
+	// ISP like a collapsed Microsoft pipe would defer every record we are
+	// deliberately re-routing to SES, and they'd never ship). Operator 2026-06-16.
+	sesPins := dripBrandISPSESProfiles()[strings.ToLower(strings.TrimSpace(brand))]
 	keep := make([]claimedRecord, 0, len(recs))
 	deferred := make([]claimedRecord, 0)
 	counts := make(map[string]int)
@@ -1900,7 +1992,8 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, re
 		if isp == "" {
 			isp = "other"
 		}
-		if rate, ok := throttled[isp]; ok {
+		_, sesRouted := sesPins[isp]
+		if rate, ok := throttled[isp]; ok && !sesRouted {
 			if existing, exists := reasons[isp]; !exists || existing == "" {
 				reasons[isp] = fmt.Sprintf("throttled (rate=%.1f)", rate)
 			}
@@ -2348,10 +2441,6 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
 	}
-	// Per-(brand,ISP) hard block (operator 2026-06-16): History Thinking → Microsoft = 0.
-	// Follow-up brand rotation is independent of mailed_brand, so this must run here too to
-	// fully stop the HT→Microsoft pipe (not just first-touch).
-	perISPCaps = po.applyBrandISPBlocks(brand, perISPCaps)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
@@ -2360,7 +2449,7 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		return nil
 	}
 
-	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, claimed, perISPCaps)
+	keep, deferred, deferralReasons, err := po.applyThroughputSafety(ctx, brand, claimed, perISPCaps)
 	if err != nil {
 		log.Printf("[PartnerDripOrchestrator] followup throughput_safety failed for vertical=%s: %v — proceeding without deferral", v.vertical, err)
 		keep = claimed
@@ -2409,38 +2498,15 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 		return fmt.Errorf("promote_followup_subscribers: %w", err)
 	}
 
-	segmentID, err := po.createWaveSegment(ctx, v, brand, claimed, subscriberIDs)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("create_followup_segment: %w", err)
+	// Split by SES routing (e.g. ht microsoft → HT SES tenant) and deploy each
+	// group as its own follow-up campaign. The "[t%d]" suffix tags the touch so
+	// analytics distinguishes welcome vs follow-up waves at a glance.
+	_, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
+	if deployedCount == 0 {
+		return fmt.Errorf("all followup wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 	}
-
-	ispCounts := tallyISPs(claimed)
-	input, err := po.buildCampaignInput(v, brand, creative, segmentID, ispCounts)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("build_followup_input: %w", err)
-	}
-	// Tag the campaign name so analytics distinguishes welcome vs.
-	// follow-up waves at a glance.
-	input.Name = fmt.Sprintf("%s [t%d]", input.Name, touchNum)
-
-	campaignID, err := po.cfg.DeployFn(ctx, input)
-	if err != nil {
-		_ = po.releaseClaim(ctx, claimed)
-		return fmt.Errorf("deploy_followup: %w", err)
-	}
-
-	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
-		log.Printf("[PartnerDripOrchestrator] followup stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
-	}
-
-	if err := po.markMailed(ctx, claimed, campaignID, brand); err != nil {
-		log.Printf("[PartnerDripOrchestrator] followup mark_mailed (campaign %s already deployed!): %v", campaignID, err)
-	}
-
-	log.Printf("[PartnerDripOrchestrator] followup wave fired: vertical=%s brand=%s touch=%d campaign=%s size=%d creative=%s",
-		v.vertical, brand, touchNum, campaignID, len(claimed), creative.filename)
+	log.Printf("[PartnerDripOrchestrator] followup wave complete: vertical=%s brand=%s touch=%d deployed=%d creative=%s",
+		v.vertical, brand, touchNum, deployedCount, creative.filename)
 	return nil
 }
 
