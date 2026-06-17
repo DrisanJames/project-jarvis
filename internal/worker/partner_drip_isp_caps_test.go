@@ -146,3 +146,33 @@ func TestResolvePerISPCaps_NoDatasetOverride(t *testing.T) {
 	assert.Equal(t, 8, caps["yahoo"], "no override -> global protective cap preserved")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestBrandISPBlocks verifies the per-(brand,ISP) hard denylist (operator
+// 2026-06-16: History Thinking → Microsoft = 0). The default block must zero
+// ONLY ht→microsoft; every other brand and every other ISP of ht is untouched.
+func TestBrandISPBlocks(t *testing.T) {
+	po := &PartnerDripOrchestrator{}
+	base := map[string]int{"microsoft": 100000, "apple": 100000, "yahoo": 16, "gmail": 0}
+
+	// Default (env unset) → ht microsoft zeroed, ht's other ISPs intact.
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_BLOCKS", "")
+	gotHT := po.applyBrandISPBlocks("ht", base)
+	assert.Equal(t, 0, gotHT["microsoft"], "ht microsoft must be blocked to 0")
+	assert.Equal(t, 100000, gotHT["apple"], "ht apple must be untouched")
+	assert.Equal(t, 16, gotHT["yahoo"], "ht yahoo must be untouched")
+	// Input map must not be mutated (clone semantics).
+	assert.Equal(t, 100000, base["microsoft"], "source caps must not be mutated")
+
+	// A different brand's microsoft is NOT blocked by the default.
+	gotDB := po.applyBrandISPBlocks("db", base)
+	assert.Equal(t, 100000, gotDB["microsoft"], "db microsoft must NOT be blocked")
+
+	// Env override: add mh→microsoft (must re-list ht — env replaces default).
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_BLOCKS", "ht=microsoft,mh=microsoft")
+	assert.Equal(t, 0, po.applyBrandISPBlocks("ht", base)["microsoft"], "ht still blocked under override")
+	assert.Equal(t, 0, po.applyBrandISPBlocks("mh", base)["microsoft"], "mh now blocked under override")
+	assert.Equal(t, 100000, po.applyBrandISPBlocks("qf", base)["microsoft"], "qf not in override → unblocked")
+
+	// Case/space insensitivity on brand input.
+	assert.Equal(t, 0, po.applyBrandISPBlocks("  HT  ", base)["microsoft"], "brand match must be case/space-insensitive")
+}
