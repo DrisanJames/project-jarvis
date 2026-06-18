@@ -67,6 +67,25 @@ var dripBrands = []string{
 	"bwp", "ci", "cp", "fc", "hws", "lpl", "mrd", "rb", "rru", "tot", "wfy", "yih",
 }
 
+// verticalBrandRoster overrides the default dripBrands rotation for specific
+// verticals. samsclub_internal warms the new KumoMTA Colo1 domains
+// (mpf/pmd/trb, fresh OVH IPs 51.81.135.220-222) by sending the Sam's Club
+// digest ONLY from those three; the mature brands are freed from this vertical.
+// These brands are intentionally absent from the global dripBrands slice so
+// they send for NO other vertical (welcome AND follow-up). 2026-06-17 warm-up.
+var verticalBrandRoster = map[string][]string{
+	"samsclub_internal": {"mpf", "pmd", "trb"},
+}
+
+// brandRosterFor returns the brand rotation a vertical should walk: its
+// dedicated roster if one exists, else the shared dripBrands.
+func brandRosterFor(vertical string) []string {
+	if r, ok := verticalBrandRoster[strings.ToLower(strings.TrimSpace(vertical))]; ok {
+		return r
+	}
+	return dripBrands
+}
+
 var brandSendingDomain = map[string]string{
 	// Mature 4
 	"db":  "em.discountblog.com",
@@ -86,6 +105,11 @@ var brandSendingDomain = map[string]string{
 	"tot": "em.thingoftheday.org",
 	"wfy": "em.warrantyforyou.com",
 	"yih": "em.yourinsurancehub.com",
+	// KumoMTA Colo1 warm-up 2026-06-17 (fresh OVH IPs .220/.221/.222). NOT in
+	// dripBrands — routed only via verticalBrandRoster[samsclub_internal].
+	"mpf": "em.mypersonalfinancial.com",
+	"pmd": "em.paymydebit.com",
+	"trb": "em.theretirementblog.com",
 }
 
 // BrandSendingDomain exposes the orchestrator's brand → sending-domain
@@ -1018,13 +1042,14 @@ func (po *PartnerDripOrchestrator) computeWaveSize(v verticalState) int {
 // any brand the operator has paused (via PausedBrandPredicate). Returns
 // the chosen brand + the next index to write to partner_drip_state.
 func (po *PartnerDripOrchestrator) pickNextBrand(ctx context.Context, v verticalState) (string, int, error) {
-	for offset := 0; offset < len(dripBrands); offset++ {
-		idx := (v.brandIndex + offset) % len(dripBrands)
-		brand := dripBrands[idx]
+	roster := brandRosterFor(v.vertical)
+	for offset := 0; offset < len(roster); offset++ {
+		idx := (v.brandIndex + offset) % len(roster)
+		brand := roster[idx]
 		if po.cfg.PausedBrandPredicate != nil && po.cfg.PausedBrandPredicate(ctx, brand) {
 			continue
 		}
-		next := (idx + 1) % len(dripBrands)
+		next := (idx + 1) % len(roster)
 		return brand, next, nil
 	}
 	return "", v.brandIndex, fmt.Errorf("all brands paused — no brand available")
@@ -2247,6 +2272,12 @@ func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
 	}
 
 	for _, v := range verticals {
+		// Verticals with a dedicated warm-up roster (e.g. samsclub_internal on
+		// the new KumoMTA domains) send WELCOME touches only: no multi-touch on
+		// fresh IPs, and the mature brands stay off this vertical entirely.
+		if _, dedicated := verticalBrandRoster[strings.ToLower(strings.TrimSpace(v.vertical))]; dedicated {
+			continue
+		}
 		// Each vertical is processed independently. The follow-up brand
 		// rotation is shared across verticals — every (vertical, brand)
 		// combination gets a wave at most once per tick.
