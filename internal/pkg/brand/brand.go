@@ -48,6 +48,13 @@ var OwnedDomains = []string{
 	"ratesbazar.com",
 	// May 9 2026 (B) — single-brand follow-up expansion (Server B donor: mh-*).
 	"warrantyforyou.com",
+	// Jun 2026 KumoMTA Colo1 expansion — sending from em.<apex> via the
+	// KumoMTA injector (40.160.129.116), dedicated egress IPs 51.81.135.220-222
+	// in warmup. Server/pools/IPs/profiles seeded in runStartupMigrations
+	// (seed_kumo_*); routing_mode='kumo' on each profile.
+	"mypersonalfinancial.com",
+	"paymydebit.com",
+	"theretirementblog.com",
 }
 
 // Root maps a sending domain to its brand root.
