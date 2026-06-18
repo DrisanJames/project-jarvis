@@ -716,7 +716,7 @@ export const CpmPlanner: React.FC = () => {
           }} />
         </div>
         <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
-          {fmtInt(d.progress.sent)} / {fmtInt(d.planned_volume)} ({(d.progress.pct_volume_delivered * 100).toFixed(1)}%)
+          {fmtInt(d.progress.delivered)} / {fmtInt(d.planned_volume)} ({(d.progress.pct_volume_delivered * 100).toFixed(1)}%)
         </div>
       </div>
     );

@@ -102,7 +102,7 @@ type cpmDealProgress struct {
 	ConversionsManual  int64   `json:"conversions_manual"`  // operator CSV uploads / quick-adds
 	ManualRevenue      float64 `json:"manual_revenue"`      // raw revenue reported on manual rows
 	Payout             float64 `json:"payout"`
-	PctDelivered       float64 `json:"pct_volume_delivered"` // sent / planned_volume (0..1+)
+	PctDelivered       float64 `json:"pct_volume_delivered"` // delivered / planned_volume (0..1+)
 	Revenue            float64 `json:"revenue_earned"`
 	ActualEcpm         float64 `json:"actual_ecpm"`
 	ActualEcpa         float64 `json:"actual_ecpa"` // proportional budget spent / conversions; 0 when no conversions
@@ -309,12 +309,15 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	}
 	p.Conversions = p.ConversionsTracked + p.ConversionsManual
 
+	// CPM volume is billed on DELIVERED (operator 2026-06-18: "base only on delivered").
+	// Every volume-basis metric — progress %, eCPM (revenue per 1000 delivered), eCPA,
+	// daily pace — uses Delivered, NOT Sent. Sent stays a raw count for the tiles only.
 	if d.PlannedVolume > 0 {
-		p.PctDelivered = float64(p.Sent) / float64(d.PlannedVolume)
+		p.PctDelivered = float64(p.Delivered) / float64(d.PlannedVolume)
 	}
 	p.Revenue = float64(p.ConversionsTracked)*basis + manualRevEffective
-	if p.Sent > 0 {
-		p.ActualEcpm = p.Revenue / float64(p.Sent) * 1000
+	if p.Delivered > 0 {
+		p.ActualEcpm = p.Revenue / float64(p.Delivered) * 1000
 	}
 	if p.Conversions > 0 {
 		p.ActualEcpa = (d.Budget * p.PctDelivered) / float64(p.Conversions)
@@ -331,7 +334,7 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	if elapsed < 1 {
 		elapsed = 1
 	}
-	p.ActualDaily = float64(p.Sent) / float64(elapsed)
+	p.ActualDaily = float64(p.Delivered) / float64(elapsed)
 	p.OnPace = p.ActualDaily >= p.RequiredDaily
 	return p
 }
@@ -1231,7 +1234,7 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 			if extraSlots < 1 {
 				extraSlots = 1
 			}
-			remaining := float64(d.PlannedVolume) - float64(p.Sent)
+			remaining := float64(d.PlannedVolume) - float64(p.Delivered)
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -1240,10 +1243,10 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 				extendedDays = p.DaysElapsed + int64(math.Ceil(remaining/p.ActualDaily))
 			}
 			recs = append(recs, fmt.Sprintf(
-				"Behind pace: sending %s/day vs %s/day needed — add %d more campaign slot(s) of %s per day, or extend the window to %d days at the current rate.",
+				"Behind pace: delivering %s/day vs %s/day needed — add %d more campaign slot(s) of %s per day, or extend the window to %d days at the current rate.",
 				fmtCpmInt(int64(p.ActualDaily)), fmtCpmInt(int64(p.RequiredDaily)),
 				extraSlots, fmtCpmInt(int64(d.AvgCampaignSize)), extendedDays))
-		} else if p.Sent > 0 {
+		} else if p.Delivered > 0 {
 			recs = append(recs, fmt.Sprintf(
 				"On pace: %s/day actual vs %s/day required (%.1f%% of planned volume delivered).",
 				fmtCpmInt(int64(p.ActualDaily)), fmtCpmInt(int64(p.RequiredDaily)), p.PctDelivered*100))
@@ -1251,9 +1254,9 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 	}
 
 	// 2. eCPM vs goal.
-	if p.Sent > 0 && p.ActualEcpm < d.EcpmGoal {
-		crPerMillion := float64(p.Conversions) / float64(p.Sent) * 1_000_000
-		remainingVolume := d.PlannedVolume - p.Sent
+	if p.Delivered > 0 && p.ActualEcpm < d.EcpmGoal {
+		crPerMillion := float64(p.Conversions) / float64(p.Delivered) * 1_000_000
+		remainingVolume := d.PlannedVolume - p.Delivered
 		if remainingVolume < 0 {
 			remainingVolume = 0
 		}
@@ -1266,7 +1269,7 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 			requiredCr = float64(neededConv) / float64(remainingVolume) * 1_000_000
 		}
 		msg := fmt.Sprintf(
-			"Actual eCPM $%.2f vs $%.2f goal — converting %.1f per million sent; you need %d more conversions over the remaining %s sends (%.1f per million required). Consider concentrating volume on the ISPs/brands where this offer converts.",
+			"Actual eCPM $%.2f vs $%.2f goal — converting %.1f per million delivered; you need %d more conversions over the remaining %s delivered (%.1f per million required). Consider concentrating volume on the ISPs/brands where this offer converts.",
 			p.ActualEcpm, d.EcpmGoal, crPerMillion, neededConv, fmtCpmInt(remainingVolume), requiredCr)
 		if len(topDomains) > 0 {
 			parts := make([]string, 0, len(topDomains))
@@ -1276,7 +1279,7 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 			msg += " Top converting domains: " + strings.Join(parts, ", ") + "."
 		}
 		recs = append(recs, msg)
-	} else if p.Sent > 0 && p.ActualEcpm >= d.EcpmGoal {
+	} else if p.Delivered > 0 && p.ActualEcpm >= d.EcpmGoal {
 		recs = append(recs, fmt.Sprintf(
 			"Earning above plan: actual eCPM $%.2f vs $%.2f goal — current mix is working, hold the volume allocation.",
 			p.ActualEcpm, d.EcpmGoal))
@@ -1294,8 +1297,8 @@ func buildCpmRecommendations(d *cpmDeal, cap cpmCapacity, topDomains []cpmDomain
 	if d.EcpaGoal > 0 {
 		if p.Conversions == 0 && p.PctDelivered > 0.20 {
 			recs = append(recs, fmt.Sprintf(
-				"Zero conversions after %.0f%% of planned volume (%s sent) — verify the everflow postback wiring and the creative's money links before sending more budgeted volume.",
-				p.PctDelivered*100, fmtCpmInt(p.Sent)))
+				"Zero conversions after %.0f%% of planned volume (%s delivered) — verify the everflow postback wiring and the creative's money links before sending more budgeted volume.",
+				p.PctDelivered*100, fmtCpmInt(p.Delivered)))
 		} else if p.Conversions > 0 && p.ActualEcpa > d.EcpaGoal {
 			recs = append(recs, fmt.Sprintf(
 				"Actual eCPA $%.2f is above the $%.2f goal — conversions are costing more volume than planned; tighten the audience toward proven converters.",
