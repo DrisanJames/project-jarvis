@@ -239,18 +239,24 @@ func (c *OutboxSelfCheck) runWithTimeout(parent context.Context, fn func(ctx con
 }
 
 // cancelTerminalParentQueued sweeps a bounded batch of abandoned 'queued' rows
-// and marks them 'cancelled'. A row is abandoned when no live path can ever
-// dispatch it — covering both zombie classes from the 2026-06-07 incident:
+// and marks them 'cancelled'. A row is abandoned ONLY when its parent CAMPAIGN
+// reached a terminal state (completed/cancelled/failed/sent) but leftover queue
+// rows were never drained — at that point no worker will ever claim them, since
+// the send pool claims strictly WHERE campaign.status='sending'.
 //
-//   - its parent campaign reached a terminal state (completed/cancelled/failed/
-//     sent) but the leftover queue rows were never drained, or
-//   - its WAVE is terminal (completed/cancelled/sent): the wave's window closed
-//     and the dispatcher will never re-dispatch it, stranding the row even while
-//     the campaign still shows 'sending'.
-//
-// This is the root-cause fix for the recurring "oldest queued row" false alarm;
-// it runs every self-check tick and is bounded so it can never run away under
-// load.
+// The WAVE-terminal branch was REMOVED 2026-06-18 (operator). It was the root
+// cause of mass silent under-delivery: the dispatcher marks a wave 'completed'
+// the instant it ENQUEUES (not when sent), so during a wave's normal send window
+// every still-'queued' row sits under a 'completed' wave while the campaign is
+// still 'sending' and the workers are actively draining it. The wave-branch
+// cancelled those LIVE rows out from under the send pool — a race the janitor
+// won for any wave enqueued above the drain rate (jun17 W3/W4: ~89k/87k rows
+// cancelled, attempts=0, never sent). Dispatch is keyed on the CAMPAIGN, not the
+// wave, so a 'completed' wave under a 'sending' campaign is never abandoned.
+// Campaign completion is itself drain-gated (complete_finished_campaigns only
+// flips a campaign terminal once NO queue rows remain in queued/sending/claimed),
+// so the campaign branch below never cancels a live row — only genuine
+// operator/system aborts (cancelled/failed) with rows still queued.
 func (c *OutboxSelfCheck) cancelTerminalParentQueued(ctx context.Context) {
 	var affected int64
 	err := c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -259,17 +265,10 @@ func (c *OutboxSelfCheck) cancelTerminalParentQueued(ctx context.Context) {
 			SELECT q.id
 			FROM mailing_campaign_queue q
 			WHERE q.status = 'queued'
-			  AND (
-			    EXISTS (
-			      SELECT 1 FROM mailing_campaigns c
-			      WHERE c.id = q.campaign_id
-			        AND c.status IN ('completed','cancelled','failed','sent')
-			    )
-			    OR EXISTS (
-			      SELECT 1 FROM mailing_campaign_waves w
-			      WHERE w.id = q.wave_id
-			        AND w.status IN ('completed','cancelled','sent')
-			    )
+			  AND EXISTS (
+			    SELECT 1 FROM mailing_campaigns c
+			    WHERE c.id = q.campaign_id
+			      AND c.status IN ('completed','cancelled','failed','sent')
 			  )
 			LIMIT $1
 		)
@@ -277,7 +276,7 @@ func (c *OutboxSelfCheck) cancelTerminalParentQueued(ctx context.Context) {
 		SET status = 'cancelled',
 		    updated_at = NOW(),
 		    error_message = COALESCE(NULLIF(q.error_message, ''), '') ||
-		                    ' [outbox-selfcheck janitor: terminal campaign/wave]'
+		                    ' [outbox-selfcheck janitor: terminal campaign]'
 		FROM victims v
 		WHERE q.id = v.id
 	`, selfCheckJanitorBatch)

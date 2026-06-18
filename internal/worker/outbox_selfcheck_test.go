@@ -237,12 +237,13 @@ func TestSelfCheck_ContinuesAfterQueryError(t *testing.T) {
 func TestSelfCheck_QueuedInvariantsExcludeTerminalParents(t *testing.T) {
 	db, mock := newSelfCheckMockDB(t)
 
-	// Janitor sweep covers terminal campaign OR terminal wave; here it reports
-	// 7 zombies cancelled.
+	// Janitor sweep covers ONLY terminal CAMPAIGN now (the wave-terminal branch
+	// was removed 2026-06-18 — it cancelled live rows under enqueued-but-still-
+	// draining waves). Here it reports 7 zombies cancelled.
 	mock.ExpectBegin()
 	mock.ExpectExec(`SET LOCAL statement_timeout = '120000ms'`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(`WITH victims[\s\S]*c\.status IN \('completed','cancelled','failed','sent'\)[\s\S]*mailing_campaign_waves[\s\S]*w\.status IN \('completed','cancelled','sent'\)`).
+	mock.ExpectExec(`WITH victims[\s\S]*c\.status IN \('completed','cancelled','failed','sent'\)[\s\S]*UPDATE mailing_campaign_queue`).
 		WillReturnResult(sqlmock.NewResult(0, 7))
 	mock.ExpectCommit()
 
