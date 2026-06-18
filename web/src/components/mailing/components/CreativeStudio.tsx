@@ -23,6 +23,7 @@ import { apiFetch } from '../shared/apiFetch';
 const SITE_KEYS = [
   'db', 'mh', 'qf', 'ht', 'bwp', 'fc', 'cp', 'hws',
   'rru', 'tot', 'yih', 'mrd', 'ci', 'lpl', 'rb', 'wfy',
+  'mpf', 'pmd', 'trb',
 ];
 
 interface StudioBrand {
