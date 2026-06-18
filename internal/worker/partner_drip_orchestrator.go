@@ -86,6 +86,36 @@ func brandRosterFor(vertical string) []string {
 	return dripBrands
 }
 
+// warmupRosterBrands is the set of every brand that appears in a
+// verticalBrandRoster — fresh-IP warm-up brands. They are confined both to their
+// vertical (via the roster) AND to that warm-up's ISP set: see processVertical,
+// where they bypass the mature-brand allow-list and ship yahoo/aol only.
+var warmupRosterBrands = func() map[string]bool {
+	m := map[string]bool{}
+	for _, brands := range verticalBrandRoster {
+		for _, b := range brands {
+			m[strings.ToLower(strings.TrimSpace(b))] = true
+		}
+	}
+	return m
+}()
+
+// keepOnlyISPCaps returns a copy of caps with every ISP except the allowed set
+// forced to 0, confining a wave to a fixed ISP set.
+func keepOnlyISPCaps(caps map[string]int, allowed ...string) map[string]int {
+	keep := make(map[string]bool, len(allowed))
+	for _, a := range allowed {
+		keep[strings.ToLower(strings.TrimSpace(a))] = true
+	}
+	out := cloneISPCapMap(caps)
+	for isp := range out {
+		if !keep[strings.ToLower(strings.TrimSpace(isp))] {
+			out[isp] = 0
+		}
+	}
+	return out
+}
+
 var brandSendingDomain = map[string]string{
 	// Mature 4
 	"db":  "em.discountblog.com",
@@ -946,15 +976,26 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
-	// Per-brand daily new-record budget (operator 2026-06-10): clamp the
-	// wave's per-ISP caps to what this brand may still mail TODAY. Gmail is
-	// additionally brand-gated. Follow-ups bypass this (separate loop).
-	perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, perISPCaps)
-	// Deliverability routing (operator 2026-06-13): pin the hard,
-	// engagement-priced ISPs to the warmed mature-4 domains. When a
-	// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
-	// non-positive cap), so they only ship from db/ht/mh/qf.
-	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
+	if warmupRosterBrands[strings.ToLower(strings.TrimSpace(brand))] {
+		// Warm-up brands (fresh KumoMTA IPs on a dedicated verticalBrandRoster,
+		// e.g. samsclub_internal -> mpf/pmd/trb) send ONLY yahoo+aol — the Sam's
+		// Yahoo/AOL digest. Bypass the mature-brand allow-list (applyISPBrandRouting
+		// would zero yahoo/aol for any non-mature brand, leaving only ungated ISPs
+		// like sbcglobal) and the daily-budget gate; every non-yahoo/aol ISP is
+		// zeroed so a fresh IP can never drift onto sbcglobal/att/etc. The yahoo/aol
+		// caps stay at resolvePerISPCaps' value (the gentle dataset override).
+		perISPCaps = keepOnlyISPCaps(perISPCaps, "yahoo", "aol")
+	} else {
+		// Per-brand daily new-record budget (operator 2026-06-10): clamp the
+		// wave's per-ISP caps to what this brand may still mail TODAY. Gmail is
+		// additionally brand-gated. Follow-ups bypass this (separate loop).
+		perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, perISPCaps)
+		// Deliverability routing (operator 2026-06-13): pin the hard,
+		// engagement-priced ISPs to the warmed mature-4 domains. When a
+		// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
+		// non-positive cap), so they only ship from db/ht/mh/qf.
+		perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
+	}
 	// Apple-banned verticals (operator 2026-06-16): Fidelity term-life is HM08-rejected by Apple
 	// ~85-92% (content policy — no ESP lever). Zero the apple cap so no Apple/iCloud records are
 	// claimed for these verticals; every other ISP is unaffected.
