@@ -32,6 +32,7 @@ const OfferManagement = lazy(() => import('../components/OfferManagement').then(
 const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(m => ({ default: m.JarvisDashboard })));
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
 const SendDayPlanner = lazy(() => import('../components/SendDayPlanner').then(m => ({ default: m.SendDayPlanner })));
+const DraftBoardView = lazy(() => import('../components/DraftBoardView').then(m => ({ default: m.DraftBoardView })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
 const CampaignCopilotPanel = lazy(() => import('../components/CampaignCopilot').then(m => ({ default: m.CampaignCopilot })));
@@ -58,7 +59,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner';
 
 interface Tab {
   id: TabId;
@@ -70,7 +71,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'marketing-agent'] },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'marketing-agent'] },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Manage segments, lists & subscribers' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
@@ -168,6 +169,7 @@ export const MailingPortal: React.FC = () => {
       case 'campaign-center':
       case 'pmta-wizard':
       case 'send-day':
+      case 'draft-board':
       case 'marketing-agent':
         return <CampaignCenterSection activeSubTab={activeTab} onSubTabChange={setActiveTab} pendingOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} copilotOpen={copilotOpen} setCopilotOpen={setCopilotOpen} />;
       case 'sending-plans':
@@ -1542,6 +1544,7 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'campaign-center')} onClick={() => onSubTabChange('campaign-center')}>Dashboard</button>
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
         <button style={subNavBtnStyle(subTab === 'send-day')} onClick={() => onSubTabChange('send-day')}>Send Day</button>
+        <button style={subNavBtnStyle(subTab === 'draft-board')} onClick={() => onSubTabChange('draft-board')}>Draft Board</button>
         <button style={subNavBtnStyle(subTab === 'marketing-agent')} onClick={() => onSubTabChange('marketing-agent')}>Marketing Agent</button>
       </div>
       <PreparationBanner campaigns={preparingCampaigns} transitions={transitions} onDismissTransition={handleDismissTransition} />
@@ -1577,6 +1580,8 @@ const CampaignCenterSection: React.FC<{
           <EmailMarketingAgentPanel />
         ) : subTab === 'send-day' ? (
           <SendDayPlanner onEditInWizard={handleEditInWizard} onCampaignPreparing={handleCampaignPreparing} />
+        ) : subTab === 'draft-board' ? (
+          <DraftBoardView />
         ) : (
           <CampaignPortal initialOffer={pendingOffer} onOfferConsumed={onOfferConsumed} onEditInWizard={handleEditInWizard} />
         )}
