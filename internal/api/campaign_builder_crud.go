@@ -45,6 +45,14 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		args = append(args, status)
 	}
 
+	// exclude_drip=true hides the continuous per-recipient partner-drip
+	// micro-campaigns (named "[partner-drip] ...") so plan/board views show
+	// the staged send-day campaigns rather than thousands of drip rows.
+	if r.URL.Query().Get("exclude_drip") == "true" {
+		whereClause += fmt.Sprintf(" AND c.name NOT LIKE $%d", len(args)+1)
+		args = append(args, "[partner-drip]%")
+	}
+
 	// Get total count with same filters
 	var total int64
 	countQuery := `SELECT COUNT(*) FROM mailing_campaigns c` + whereClause

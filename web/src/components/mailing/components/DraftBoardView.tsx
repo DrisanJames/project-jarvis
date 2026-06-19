@@ -97,6 +97,7 @@ export const DraftBoardView: React.FC = () => {
 
   const [date, setDate] = useState<string>(todayMT);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [includeDrip, setIncludeDrip] = useState<boolean>(false);
   const [rows, setRows] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +109,8 @@ export const DraftBoardView: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const qs = statusFilter === 'all' ? '' : `&status=${encodeURIComponent(statusFilter)}`;
+      const qs = (statusFilter === 'all' ? '' : `&status=${encodeURIComponent(statusFilter)}`)
+        + (includeDrip ? '' : '&exclude_drip=true');
       // The list endpoint caps each page at 200 — page through so a busy send
       // day (300+ campaigns) groups completely rather than truncating.
       const PAGE = 200, MAX = 2000;
@@ -128,7 +130,7 @@ export const DraftBoardView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [headers, statusFilter]);
+  }, [headers, statusFilter, includeDrip]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -207,6 +209,10 @@ export const DraftBoardView: React.FC = () => {
         >
           {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>)}
         </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'rgba(180,210,240,0.75)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={includeDrip} onChange={e => setIncludeDrip(e.target.checked)} />
+          Include partner-drip
+        </label>
         <button onClick={() => void load()} style={ghostBtn}>{loading ? 'Loading…' : 'Refresh'}</button>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
           {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: '#00e5ff', fontWeight: 600 }}>{num(totals.audience)}</span> audience
