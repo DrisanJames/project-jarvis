@@ -53,6 +53,14 @@ func (cb *CampaignBuilder) HandleListCampaigns(w http.ResponseWriter, r *http.Re
 		args = append(args, "[partner-drip]%")
 	}
 
+	// scheduled_date=YYYY-MM-DD filters to campaigns whose scheduled send time
+	// falls on that calendar day in America/Denver (MT) — the send-day/plan
+	// views are organised by the campaign's actual MST send date.
+	if sd := r.URL.Query().Get("scheduled_date"); sd != "" {
+		whereClause += fmt.Sprintf(" AND (c.scheduled_at AT TIME ZONE 'America/Denver')::date = $%d::date", len(args)+1)
+		args = append(args, sd)
+	}
+
 	// Get total count with same filters
 	var total int64
 	countQuery := `SELECT COUNT(*) FROM mailing_campaigns c` + whereClause

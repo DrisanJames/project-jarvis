@@ -109,19 +109,23 @@ export const DraftBoardView: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const qs = (statusFilter === 'all' ? '' : `&status=${encodeURIComponent(statusFilter)}`)
+      // Server-side filter to the selected MT send date + drip exclusion, so we
+      // fetch exactly the day's plan rather than paging the whole campaign table.
+      const qs = `&scheduled_date=${date}`
+        + (statusFilter === 'all' ? '' : `&status=${encodeURIComponent(statusFilter)}`)
         + (includeDrip ? '' : '&exclude_drip=true');
-      // The list endpoint caps each page at 200 — page through so a busy send
-      // day (300+ campaigns) groups completely rather than truncating.
-      const PAGE = 200, MAX = 2000;
+      // The endpoint paginates by `page` (200/page). Walk pages until the server
+      // says there are no more (a day can exceed 200 with ISP-split campaigns).
+      const PAGE = 200;
       const acc: CampaignRow[] = [];
-      for (let offset = 0; offset < MAX; offset += PAGE) {
-        const r = await fetch(`/api/mailing/campaigns?limit=${PAGE}&offset=${offset}${qs}`, { headers });
+      for (let page = 1; page <= 30; page++) {
+        const r = await fetch(`/api/mailing/campaigns?limit=${PAGE}&page=${page}${qs}`, { headers });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
-        const page: CampaignRow[] = Array.isArray(j) ? j : (j.campaigns ?? j.data ?? j.items ?? []);
-        acc.push(...page);
-        if (page.length < PAGE) break;
+        const items: CampaignRow[] = Array.isArray(j) ? j : (j.data ?? j.campaigns ?? j.items ?? []);
+        acc.push(...items);
+        const pg = j.pagination;
+        if (items.length < PAGE || (pg && pg.has_more === false) || (pg && page >= pg.total_pages)) break;
       }
       setRows(acc);
     } catch (e) {
@@ -130,7 +134,7 @@ export const DraftBoardView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [headers, statusFilter, includeDrip]);
+  }, [headers, statusFilter, includeDrip, date]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -157,8 +161,12 @@ export const DraftBoardView: React.FC = () => {
   }, [details, fetchDetail]);
 
   // Filter to the selected MT day, then group by sending domain.
+  // Bucket by scheduled_at ONLY — that's the campaign's actual MST send time.
+  // Unscheduled campaigns (no scheduled_at) aren't "being mailed at a time",
+  // so they don't belong under a send date (using created_at would pull in
+  // other days' drafts created today).
   const grouped = useMemo(() => {
-    const inDay = rows.filter(c => mtDate(c.scheduled_at || c.created_at) === date);
+    const inDay = rows.filter(c => mtDate(c.scheduled_at) === date);
     const byDomain = new Map<string, CampaignRow[]>();
     for (const c of inDay) {
       const d = domainOf(c.from_email);
@@ -215,7 +223,7 @@ export const DraftBoardView: React.FC = () => {
         </label>
         <button onClick={() => void load()} style={ghostBtn}>{loading ? 'Loading…' : 'Refresh'}</button>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
-          {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: '#00e5ff', fontWeight: 600 }}>{num(totals.audience)}</span> audience
+          {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: '#00e5ff', fontWeight: 600 }}>{num(totals.audience)}</span> planned sends
         </div>
       </div>
 
@@ -244,7 +252,7 @@ export const DraftBoardView: React.FC = () => {
             }}>
               <span style={{ fontSize: 15, fontWeight: 700, color: 'rgba(225,235,250,0.96)' }}>{group.domain}</span>
               <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>{group.campaigns.length} campaign{group.campaigns.length === 1 ? '' : 's'}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: '#00e5ff', fontWeight: 600 }}>{num(group.audience)} audience</span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: '#00e5ff', fontWeight: 600 }}>{num(group.audience)} planned sends</span>
             </div>
 
             {/* Campaign rows */}
@@ -313,7 +321,7 @@ export const DraftBoardView: React.FC = () => {
       </div>
 
       <div style={{ marginTop: 18, fontSize: 10, color: 'rgba(180,210,240,0.35)' }}>
-        Draft Board v1.0 · reads /api/mailing/campaigns + /pmta-campaign/{'{id}'}/edit-data · times in America/Denver (MT)
+        Draft Board v1.1 · domain → campaign(MT) → per-ISP volume targets · "planned sends" = cumulative recipients across a domain's campaigns/waves (a member in multiple waves counts each time, so it exceeds unique reach) · times in America/Denver (MT)
       </div>
     </div>
   );
