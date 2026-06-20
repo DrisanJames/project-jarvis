@@ -31,12 +31,20 @@ interface Cell {
   count: number;            // # of split campaigns aggregated (ISP/tier splits)
   statuses: Set<string>;
   firstScheduled: string | null;
+  ids: string[];            // campaign ids in this brand×wave (for the per-ISP drill-down)
 }
 
 const STATUS_FG: Record<string, string> = {
   draft: '#9ca3af', scheduled: '#00b0ff', preparing: '#facc15',
   finalizing_audience: '#facc15', sending: '#c084fc', sent: '#00b894',
   completed: '#00b894', failed: '#e94560', cancelled: '#bdbdbd',
+};
+
+// Logical ISP display order + labels (canonical, matches the Draft Board).
+const ISP_ORDER: string[] = ['microsoft', 'gmail', 'apple', 'yahoo', 'comcast', 'charter', 'att', 'aol', 'cox', 'sbcglobal', 'verizon', 'other'];
+const ISP_LABEL: Record<string, string> = {
+  microsoft: 'Microsoft', gmail: 'Gmail', apple: 'Apple', yahoo: 'Yahoo', comcast: 'Comcast',
+  charter: 'Charter', att: 'AT&T', aol: 'AOL', cox: 'Cox', sbcglobal: 'SBCGlobal', verizon: 'Verizon', other: 'Other',
 };
 
 const num = (n: number): string => (n || 0).toLocaleString();
@@ -136,6 +144,33 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
   useEffect(() => { void load(); }, [load]);
 
+  // Per-ISP drill-down: clicking a cell shows that brand×wave's declared volume broken
+  // out by ISP (summed isp_quotas across its split campaigns, fetched lazily from edit-data).
+  type Sel = { wave: string; domain: string; label: string; offer: string; volume: number; ids: string[] };
+  const [selected, setSelected] = useState<Sel | null>(null);
+  const [ispDetail, setIspDetail] = useState<Record<string, Record<string, number> | 'loading' | 'error'>>({});
+  useEffect(() => { setSelected(null); }, [date]);   // clear the drill-down when the date changes
+
+  const openCell = useCallback(async (sel: Sel) => {
+    setSelected(sel);
+    const key = `${sel.wave}|${sel.domain}`;
+    setIspDetail(prev => (prev[key] && prev[key] !== 'error' ? prev : { ...prev, [key]: 'loading' }));
+    try {
+      const agg: Record<string, number> = {};
+      for (const id of sel.ids) {
+        const r = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const ci = j.campaign_input ?? j;
+        for (const q of (ci.isp_quotas ?? [])) agg[q.isp] = (agg[q.isp] || 0) + (q.volume || 0);
+        for (const isp of (ci.target_isps ?? [])) if (agg[isp] == null) agg[isp] = 0;  // show targeted ISPs even at 0/uncapped
+      }
+      setIspDetail(prev => ({ ...prev, [key]: agg }));
+    } catch {
+      setIspDetail(prev => ({ ...prev, [key]: 'error' }));
+    }
+  }, [headers]);
+
   // Build the (domain × wave) matrix. Brand IDENTITY = the authoritative from_email DOMAIN
   // (so two domains can never collapse into one column, and a stray dash in a label can't
   // mis-bucket). Cancelled campaigns are excluded from the plan view.
@@ -151,9 +186,10 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
       if (!labelOfDomain.has(domain)) labelOfDomain.set(domain, brandLabelOf(r.name) || labelFromDomain(domain));
       waveSet.add(wave);
       const row = (mtx[wave] ??= {});
-      const cell = (row[domain] ??= { offer: offerOf(r.name), volume: 0, count: 0, statuses: new Set(), firstScheduled: r.scheduled_at });
+      const cell = (row[domain] ??= { offer: offerOf(r.name), volume: 0, count: 0, statuses: new Set(), firstScheduled: r.scheduled_at, ids: [] });
       cell.volume += r.total_recipients || 0;
       cell.count += 1;
+      if (r.id) cell.ids.push(r.id);
       cell.statuses.add(r.status);
       if (r.scheduled_at && (!cell.firstScheduled || new Date(r.scheduled_at).getTime() < new Date(cell.firstScheduled).getTime())) {
         cell.firstScheduled = r.scheduled_at;
@@ -210,15 +246,19 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                   {brands.map(b => {
                     const cell = matrix[w]?.[b.domain];
                     if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
+                    const isSel = selected?.wave === w && selected?.domain === b.domain;
                     const st = cellStatus(cell.statuses);
+                    // Cell shows just the DECLARED VOLUME (+ offer); click to drill into per-ISP.
                     return (
-                      <td key={b.domain} style={tdBase}>
-                        <div style={{ fontSize: 11, color: 'rgba(220,235,250,0.9)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130 }}>{cell.offer}</div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#cbd5f5' }}>{num(cell.volume)}</div>
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <span style={{ fontSize: 9, fontWeight: 700, color: STATUS_FG[st] ?? '#9ca3af', textTransform: 'uppercase' }}>{st.replace(/_/g, ' ')}</span>
-                          {cell.count > 1 && <span style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)' }}>×{cell.count}</span>}
-                        </div>
+                      <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
+                        <button
+                          onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
+                          title="Click for volumes by ISP"
+                          style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
+                        >
+                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
+                        </button>
                       </td>
                     );
                   })}
@@ -228,11 +268,50 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
           </tbody>
         </table>
       </div>
+      {selected && (() => {
+        const key = `${selected.wave}|${selected.domain}`;
+        const d = ispDetail[key];
+        const obj = d && typeof d === 'object' ? d : null;
+        const total = obj ? Object.values(obj).reduce((s, n) => s + n, 0) : 0;
+        return (
+          <div style={detailPanel}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13 }}>
+                <b style={{ color: '#00e5ff' }}>{selected.label}</b> · {selected.wave} · {selected.offer} · <b>{num(selected.volume)}</b> declared
+              </span>
+              <button onClick={() => setSelected(null)} style={closeBtn}>✕</button>
+            </div>
+            {d === 'loading' ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>loading volumes by ISP…</div>
+              : d === 'error' ? <div style={{ fontSize: 12, color: '#e94560', marginTop: 6 }}>failed to load per-ISP volumes</div>
+              : obj ? (
+                total === 0 ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>uncapped (audience-bound) — targets {ISP_ORDER.filter(i => obj[i] != null).map(i => ISP_LABEL[i] ?? i).join(', ') || '—'}</div>
+                : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {ISP_ORDER.filter(isp => obj[isp] != null).map(isp => (
+                      <span key={isp} style={ispChip}>{ISP_LABEL[isp] ?? isp}: <b style={{ color: '#cbd5f5' }}>{num(obj[isp])}</b></span>
+                    ))}
+                    <span style={{ ...ispChip, borderColor: 'rgba(0,229,255,0.4)' }}>Σ by ISP: <b style={{ color: '#00e5ff' }}>{num(total)}</b></span>
+                  </div>
+              ) : null}
+          </div>
+        );
+      })()}
     </div>
   );
 };
 
 export default BrandWaveGrid;
+
+const detailPanel: React.CSSProperties = {
+  marginTop: 12, padding: '12px 14px', borderRadius: 8,
+  background: 'rgba(0,229,255,0.05)', border: '1px solid rgba(0,229,255,0.25)',
+};
+const closeBtn: React.CSSProperties = {
+  background: 'transparent', border: 'none', color: 'rgba(180,210,240,0.7)', cursor: 'pointer', fontSize: 14,
+};
+const ispChip: React.CSSProperties = {
+  fontSize: 11, padding: '3px 9px', borderRadius: 999,
+  background: 'rgba(13,21,38,0.8)', border: '1px solid rgba(0,200,255,0.15)', color: 'rgba(220,235,250,0.85)',
+};
 
 const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'rgba(180,210,240,0.75)' };
 const thBase: React.CSSProperties = {
