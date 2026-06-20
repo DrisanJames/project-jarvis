@@ -218,13 +218,19 @@ func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uu
 			when = when.In(loc)
 		}
 
-		body := fmt.Sprintf("Email: %s\nOffer: %s\nPayout: $%.2f\nDate: %s",
-			email, offer, payout, when.Format("Jan 2, 2006 3:04 PM MST"))
+		body := fmt.Sprintf("Email: %s\nOffer: %s", email, offer)
 		if strings.TrimSpace(txnID) != "" {
 			body += "\nTransaction: " + txnID
 		}
 
-		if err := notifier.Notify("New conversion", body); err != nil {
+		msg := notify.Message{
+			Tier:     notify.TierEvent,
+			Scope:    "Conversion",
+			Headline: fmt.Sprintf("%s · payout *$%.2f*", offer, payout),
+			Context:  fmt.Sprintf("as of %s · Everflow", when.Format("Jan 2, 2006 3:04 PM MST")),
+			Body:     body,
+		}
+		if err := notify.Deliver(notifier, msg); err != nil {
 			log.Printf("[conversion-notify] failed to post to #conversions: %v", err)
 		}
 	}()

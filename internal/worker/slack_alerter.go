@@ -18,28 +18,42 @@ import (
 // non-empty returned id) keeps working unchanged.
 type SlackAlerter struct {
 	notifier notify.Notifier
-	title    string
+	scope    string      // stable subsystem label → notify.Message.Scope
+	tier     notify.Tier // severity → notify.Message.Tier
 }
 
-// NewSlackAlerter builds a Slack-backed alerter. title is the bold header on
-// each posted message (e.g. "Campaign lateness"). A nil notifier yields a
-// disabled alerter whose SendSMS returns an error (which callers log).
+// NewSlackAlerter builds a Slack-backed alerter. The supplied title becomes the
+// message Scope (e.g. "Campaign lateness") and the tier defaults to TierAlert,
+// preserving the prior behaviour. A nil notifier yields a disabled alerter whose
+// SendSMS returns an error (which callers log).
 func NewSlackAlerter(n notify.Notifier, title string) *SlackAlerter {
-	if title == "" {
-		title = "Project Jarvis alert"
-	}
-	return &SlackAlerter{notifier: n, title: title}
+	return NewSlackAlerterTiered(n, title, notify.TierAlert)
 }
 
-// SendSMS satisfies SMSAlerter by posting body to Slack. The `ctx` and `to`
-// arguments are unused (notify has its own timeout; the channel is fixed). On
-// success it returns the sentinel id "slack" so callers that treat a non-empty
+// NewSlackAlerterTiered builds a Slack-backed alerter with an explicit house-style
+// scope and tier. scope is the stable subsystem label that feeds Message.Scope;
+// tier is the severity. An empty scope defaults to "Project Jarvis alert".
+func NewSlackAlerterTiered(n notify.Notifier, scope string, tier notify.Tier) *SlackAlerter {
+	if scope == "" {
+		scope = "Project Jarvis alert"
+	}
+	if tier == "" {
+		tier = notify.TierAlert
+	}
+	return &SlackAlerter{notifier: n, scope: scope, tier: tier}
+}
+
+// SendSMS satisfies SMSAlerter by posting body to Slack via the house-style
+// renderer. The `ctx` and `to` arguments are unused (notify has its own timeout;
+// the channel is fixed). The monitor's body string becomes the message Headline.
+// On success it returns the sentinel id "slack" so callers that treat a non-empty
 // id as "delivered" behave the same as with the Twilio SID.
 func (s *SlackAlerter) SendSMS(_ context.Context, _ string, body string) (string, error) {
 	if s == nil || s.notifier == nil {
 		return "", fmt.Errorf("slack alerter: nil notifier")
 	}
-	if err := s.notifier.Notify(s.title, body); err != nil {
+	msg := notify.Message{Tier: s.tier, Scope: s.scope, Headline: body}
+	if err := notify.Deliver(s.notifier, msg); err != nil {
 		return "", err
 	}
 	return "slack", nil

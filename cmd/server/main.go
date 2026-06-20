@@ -648,7 +648,7 @@ func main() {
 			// 5 minutes and routes breaches to #outbox-self-check.
 			outboxSelfCheck := worker.NewOutboxSelfCheck(mailingDB)
 			if _, noop := outboxNotifier.(notify.NoopNotifier); !noop {
-				outboxSelfCheck.SetAlerter(worker.NewSlackAlerter(outboxNotifier, "Outbox self-check"), []string{"slack"})
+				outboxSelfCheck.SetAlerter(worker.NewSlackAlerterTiered(outboxNotifier, "OUTBOX", notify.TierAlert), []string{"slack"})
 				log.Printf("Outbox Self-Check Slack alerts ENABLED (transport=%s)", outboxNotifier.Name())
 			} else {
 				log.Println("Outbox Self-Check Slack alerts DISABLED (no Slack transport configured)")
@@ -659,7 +659,7 @@ func main() {
 			// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
 			storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)
 			if _, noop := storageNotifier.(notify.NoopNotifier); !noop {
-				storageGuard.SetAlerter(worker.NewSlackAlerter(storageNotifier, "Storage guard"), []string{"slack"})
+				storageGuard.SetAlerter(worker.NewSlackAlerterTiered(storageNotifier, "STORAGE", notify.TierAlert), []string{"slack"})
 				log.Printf("Storage Guard Slack alerts ENABLED (transport=%s)", storageNotifier.Name())
 			}
 			go storageGuard.Start(ctx)
@@ -866,7 +866,7 @@ func main() {
 				threshold := time.Duration(cfg.Alerting.CampaignLateness.ThresholdMinutes) * time.Minute
 				reAlert := time.Duration(cfg.Alerting.CampaignLateness.ReAlertAfterHours) * time.Hour
 				healthMonitor.SetLatenessAlerter(
-					worker.NewSlackAlerter(latenessNotifier, "Campaign lateness"),
+					worker.NewSlackAlerterTiered(latenessNotifier, "Campaign lateness", notify.TierAlert),
 					[]string{"slack"},
 					threshold,
 					reAlert,

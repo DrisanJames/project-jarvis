@@ -36,11 +36,15 @@ func TestSlackAlerter_SendSMS_PostsAndReturnsSentinel(t *testing.T) {
 	if fn.calls != 1 {
 		t.Fatalf("expected exactly 1 Notify call, got %d", fn.calls)
 	}
-	if fn.lastTitle != "Campaign lateness" {
-		t.Fatalf("expected title %q, got %q", "Campaign lateness", fn.lastTitle)
+	// fakeNotifier implements only Notify, so Deliver takes the legacy
+	// title/body path: title = "<scope> — <headline>", body holds the rest
+	// (empty here). The scope is the title passed to the constructor and the
+	// headline is the monitor's body string.
+	if fn.lastTitle != "Campaign lateness — campaign X is late" {
+		t.Fatalf("expected title %q, got %q", "Campaign lateness — campaign X is late", fn.lastTitle)
 	}
-	if fn.lastBody != "campaign X is late" {
-		t.Fatalf("expected body passthrough, got %q", fn.lastBody)
+	if fn.lastBody != "" {
+		t.Fatalf("expected empty legacy body, got %q", fn.lastBody)
 	}
 }
 

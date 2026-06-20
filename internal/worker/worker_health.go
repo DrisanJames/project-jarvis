@@ -262,10 +262,13 @@ func (m *WorkerHealthMonitor) checkOnce(ctx context.Context) {
 
 	for _, s := range stalls {
 		age := time.Since(s.lastBeat).Round(time.Minute)
-		title := fmt.Sprintf("⚠️ Worker stalled: %s", s.name)
-		body := fmt.Sprintf("No heartbeat for %s (expected every %ds). last_status=%s%s",
-			age, s.interval, s.status, errSuffix(s.errMsg))
-		if err := m.notifier.Notify(title, body); err != nil {
+		msg := notify.Message{
+			Tier:     notify.TierAlert,
+			Scope:    "Worker stall",
+			Headline: fmt.Sprintf("*%s* no heartbeat for %s (expected %ds)", s.name, age, s.interval),
+			Body:     fmt.Sprintf("last_status=%s%s", s.status, errSuffix(s.errMsg)),
+		}
+		if err := notify.Deliver(m.notifier, msg); err != nil {
 			log.Printf("[WorkerHealthMonitor] alert send failed for %s: %v", s.name, err)
 		} else {
 			log.Printf("[WorkerHealthMonitor] ALERTED stall: %s (idle %s)", s.name, age)

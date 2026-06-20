@@ -179,14 +179,14 @@ func (m *PartnerDripDigestMonitor) digestOnce(ctx context.Context) {
 
 	sort.Slice(data, func(i, j int) bool { return data[i].remaining > data[j].remaining })
 
-	var b strings.Builder
 	status := "PAUSED (no drip_state row)"
 	if live {
 		status = "LIVE"
 	}
-	fmt.Fprintf(&b, "status: %s\n", status)
-	fmt.Fprintf(&b, "remaining: %s  (ready %s · hold %s)\n",
-		comma(totRemaining), comma(totReady), comma(totRemaining-totReady))
+	headline := fmt.Sprintf("%s — %s · remaining *%s* (ready %s · hold %s)",
+		m.label, status, comma(totRemaining), comma(totReady), comma(totRemaining-totReady))
+
+	var b strings.Builder
 	fmt.Fprintf(&b, "mailed total: %s  ·  sent last 24h: %s\n", comma(totMailed), comma(totSent24))
 	if totSent24 > 0 {
 		etaDays := (totRemaining + totSent24 - 1) / totSent24
@@ -200,8 +200,14 @@ func (m *PartnerDripDigestMonitor) digestOnce(ctx context.Context) {
 		fmt.Fprintf(&b, "  %-10s %10s   (24h: %s)\n", r.isp, comma(r.remaining), comma(r.sent24h))
 	}
 
-	title := fmt.Sprintf("Sam's Club drip — %s digest", m.label)
-	if err := m.notifier.Notify(title, b.String()); err != nil {
+	msg := notify.Message{
+		Tier:     notify.TierDigest,
+		Scope:    "Sam's Club drip",
+		Headline: headline,
+		Context:  fmt.Sprintf("as of %s", time.Now().Format("Jan 2, 2006 3:04 PM MST")),
+		Body:     b.String(),
+	}
+	if err := notify.Deliver(m.notifier, msg); err != nil {
 		log.Printf("[PartnerDripDigest] %s: Slack post failed: %v", m.vertical, err)
 		return
 	}

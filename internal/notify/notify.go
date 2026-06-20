@@ -26,6 +26,14 @@ type Notifier interface {
 	Name() string
 }
 
+// BlockNotifier is an optional capability: a transport that can post Block Kit
+// blocks (the house style — see render.go / docs/SLACK_COMMS_STANDARD.md) with a
+// plain-text fallback. Notifiers that don't implement it fall back to Notify()
+// via Deliver(). fallback is the notification text (and old-client mirror).
+type BlockNotifier interface {
+	NotifyBlocks(blocks []any, fallback string) error
+}
+
 // NoopNotifier logs alerts instead of sending them. Used when no external
 // transport is configured.
 type NoopNotifier struct{}
