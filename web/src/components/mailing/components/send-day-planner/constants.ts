@@ -110,14 +110,16 @@ export const WELCOME_NL_QUOTAS_BASELINE: Record<Brand, Record<ISP, number>> = {
 // Default engager + welcome family rotation for May 12. Mirrors
 // ENGAGER_FAMILY + WELCOME_NL_FAMILY in the Python script. Operator can
 // override per-cell via the canvas drawer.
+// warby-parker is BANNED from newsletters (advertiser directive 2026-06-14) —
+// replaced with personal-loans (the approved NL family; mirrors eng_w2_rotation.py).
 export const ENGAGER_FAMILY: Record<Slot, Partial<Record<Brand, string>>> = {
-  'eng-w1': { DB: 'quicken-loans',     QF: 'the-capital-wallet', HT: 'north-star-loans',    MH: 'warby-parker' },
-  'eng-w2': { DB: 'the-capital-wallet', QF: 'warby-parker',       HT: 'quicken-loans',       MH: 'north-star-loans' },
-  'eng-w3': { DB: 'warby-parker',       QF: 'north-star-loans',   HT: 'the-capital-wallet',  MH: 'quicken-loans' },
+  'eng-w1': { DB: 'quicken-loans',     QF: 'the-capital-wallet', HT: 'north-star-loans',    MH: 'personal-loans' },
+  'eng-w2': { DB: 'the-capital-wallet', QF: 'personal-loans',     HT: 'quicken-loans',       MH: 'north-star-loans' },
+  'eng-w3': { DB: 'personal-loans',     QF: 'north-star-loans',   HT: 'the-capital-wallet',  MH: 'quicken-loans' },
   'welcome-newsletter': {},
 };
 export const WELCOME_NL_FAMILY: Record<Brand, string> = {
-  DB: 'north-star-loans', QF: 'quicken-loans', HT: 'warby-parker', MH: 'the-capital-wallet',
+  DB: 'north-star-loans', QF: 'quicken-loans', HT: 'personal-loans', MH: 'the-capital-wallet',
 };
 
 // Hard deploy targets — the canvas's Deploy button posts here.
@@ -142,9 +144,11 @@ export const GATE_C_REQUIRED_COMMIT = 'a92af78';
 // Used as the FALLBACK when /creative-resolve doesn't return a subject
 // (offline / disk-load mode failed).
 export const ENGAGER_FAMILY_COPY: Record<string, { subject: string; preheader: string }> = {
-  'warby-parker': {
-    subject: "Last chance: this spring's frames are flying off shelves",
-    preheader: "Limited stock on the 3 shapes we're seeing most this month — see what's left.",
+  // Fallback only (creative-resolve supplies the real subject). personal-loans
+  // replaced the banned warby-parker family (2026-06-14).
+  'personal-loans': {
+    subject: 'Personal loan rates you might not know you qualify for',
+    preheader: "A quick look at what today's personal-loan offers actually cost.",
   },
   'quicken-loans': {
     subject: 'Rates just moved again — your HELOC window is closing',
@@ -161,9 +165,11 @@ export const ENGAGER_FAMILY_COPY: Record<string, { subject: string; preheader: s
 };
 
 export const WELCOME_FAMILY_COPY: Record<string, { subject: string; preheader: string }> = {
-  'warby-parker': {
-    subject: "What this season's frames quietly say about you",
-    preheader: 'A short look at the shapes and tints showing up most this spring.',
+  // Fallback only (creative-resolve supplies the real subject). personal-loans
+  // replaced the banned warby-parker family (2026-06-14).
+  'personal-loans': {
+    subject: 'How personal loans actually work in 2026',
+    preheader: 'A plain-English look at rates, terms, and when a personal loan makes sense.',
   },
   'quicken-loans': {
     subject: 'How home equity actually moves when rates do',

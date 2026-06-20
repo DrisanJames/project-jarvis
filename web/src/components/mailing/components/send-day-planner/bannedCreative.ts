@@ -14,6 +14,11 @@ export const FALLBACK_BANNED_CREATIVES = new Set<string>([
   'trugreen-6weeks-free.html',
 ]);
 
+// Banned by PREFIX — advertiser families retired from newsletters regardless of
+// brand/date suffix. Mirrors eng_w2_rotation.py assert_creative_not_banned()
+// (base.startswith("warby-parker-")). Warby Parker banned from NL 2026-06-14.
+export const BANNED_PREFIXES: readonly string[] = ['warby-parker-'];
+
 export function basenameLower(filename: string): string {
   const base = filename.split('/').pop() ?? filename;
   return base.toLowerCase();
@@ -25,6 +30,8 @@ export function isBanned(
   filename: string, banned?: ReadonlySet<string> | BannedCreative[],
 ): boolean {
   const base = basenameLower(filename);
+  // Prefix bans apply regardless of the API/fallback list (advertiser-family retirement).
+  if (BANNED_PREFIXES.some(p => base.startsWith(p))) return true;
   if (Array.isArray(banned)) {
     return banned.some(b => basenameLower(b.filename) === base);
   }

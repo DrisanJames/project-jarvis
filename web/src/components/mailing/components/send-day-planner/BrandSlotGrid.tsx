@@ -1,6 +1,6 @@
 import React from 'react';
 import { BRANDS, BRAND_LABEL, SLOT_NAME_FRAGMENT, SLOT_ORDER } from './constants';
-import { resolveQuotas } from './payloadBuilder';
+import { engagerAutoCap, resolveQuotas } from './payloadBuilder';
 import { isBanned } from './bannedCreative';
 import { toMDTLabel } from './schedule';
 import type { BannedCreative, Brand, CellDraft, CellKey, Slot } from './types';
@@ -43,7 +43,11 @@ const Cell: React.FC<{
   onOpenAudit: () => void;
 }> = ({ draft, banned, onEdit, onCancel, onReresolve, onOpenAudit }) => {
   const { quotas } = resolveQuotas(draft);
-  const total = quotas.reduce((s, q) => s + q.volume, 0);
+  // Engager quotas are a per-ISP CEILING (engagerAutoCap applied to every one of the 11 ISPs),
+  // so summing them ×11 wildly overstates the real send (which is audience-bound and far smaller).
+  // Show the per-brand cap; the live materialized audience lives in the Draft Board.
+  const isEngager = draft.slot !== 'welcome-newsletter';
+  const total = isEngager ? engagerAutoCap(draft.brand) : quotas.reduce((s, q) => s + q.volume, 0);
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 6,
@@ -62,7 +66,9 @@ const Cell: React.FC<{
         <span>{toMDTLabel(draft.startAtUTC)} MDT · {draft.windowHours}h</span>
         <span>{quotas.length} ISP</span>
       </div>
-      <div style={{ fontSize: 12, color: '#00e5ff', fontWeight: 600 }}>{total.toLocaleString()} planned</div>
+      <div style={{ fontSize: 12, color: '#00e5ff', fontWeight: 600 }}>
+        {total.toLocaleString()} {isEngager ? 'cap · live count in Draft Board' : 'planned'}
+      </div>
       {draft.error && <div style={{ fontSize: 11, color: '#e94560' }}>{draft.error}</div>}
       <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
         <button onClick={onOpenAudit} style={btnStyle('rgba(0,176,255,0.15)', '#00b0ff')}>Audit</button>
