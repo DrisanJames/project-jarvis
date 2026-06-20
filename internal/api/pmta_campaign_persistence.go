@@ -571,6 +571,150 @@ func savePMTADraftCampaign(
 	}, nil
 }
 
+// stagePMTADraftCampaign always INSERTs a brand-new draft campaign row with a
+// freshly generated UUID. Unlike savePMTADraftCampaign — which reuses the
+// org's single "latest draft" via resolvePMTACampaignIdentity and upserts on
+// it — this lets the operator stage many distinct drafts (e.g. a multi-campaign
+// send-day board) that can later be approved/promoted independently.
+//
+// It writes the exact same pmta_config JSON blob and denormalized columns as
+// savePMTADraftCampaign; the only differences are (1) the campaign ID is always
+// new (no reuse-latest-draft lookup) and (2) the statement is a plain INSERT,
+// since a fresh UUID can never collide on the primary key.
+func stagePMTADraftCampaign(
+	ctx context.Context,
+	db *sql.DB,
+	orgID string,
+	draft engine.PMTACampaignDraftInput,
+	cc *campaignColumnCache,
+) (engine.PMTACampaignDraftResult, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Always a fresh row — never reuse the org's latest draft.
+	campaignID := uuid.New()
+
+	profile, err := resolvePMTASendingProfile(ctx, tx, orgID, draft.CampaignInput.SendingDomain, draft.CampaignInput.SendingProfileID)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, err
+	}
+
+	input := withCampaignID(draft.CampaignInput, campaignID.String())
+	config := pmtaCampaignConfig{
+		CampaignInput: input,
+		ScheduleMode:  normalizeDraftScheduleMode(draft.ScheduleMode),
+	}
+	configJSON, _ := json.Marshal(config)
+	quotaPayload, _ := json.Marshal(buildPMTACampaignQuotaPayload(input))
+
+	inclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.InclusionLists)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("resolve inclusion lists: %w", err)
+	}
+	exclusionIDs, err := resolveListNamesToIDs(ctx, db, orgID, input.ExclusionLists)
+	if err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("resolve exclusion lists: %w", err)
+	}
+	inclusionListsJSON, _ := json.Marshal(inclusionIDs)
+	suppressionListsJSON, _ := json.Marshal(exclusionIDs)
+	suppressionSegmentsJSON, _ := json.Marshal(input.ExclusionSegments)
+
+	resolvedFromName := ""
+	if profile.FromName.Valid && profile.FromName.String != "" {
+		resolvedFromName = profile.FromName.String
+	}
+	resolvedFromEmail := ""
+	if profile.FromEmail.Valid {
+		resolvedFromEmail = profile.FromEmail.String
+	}
+	if len(input.Variants) > 0 && strings.TrimSpace(input.Variants[0].FromName) != "" {
+		resolvedFromName = input.Variants[0].FromName
+	}
+
+	subject := ""
+	previewText := ""
+	htmlContent := ""
+	plainContent := ""
+	if len(input.Variants) > 0 {
+		subject = input.Variants[0].Subject
+		previewText = input.Variants[0].PreviewText
+		htmlContent = input.Variants[0].HTMLContent
+		plainContent = input.Variants[0].PlainContent
+	}
+
+	scheduledAt := derivePMTADraftScheduledAt(input)
+	timezone := strings.TrimSpace(input.Timezone)
+	if timezone == "" {
+		timezone = "UTC"
+	}
+
+	colList := []string{"id", "organization_id", "name", "status", "scheduled_at",
+		"from_name", "from_email", "reply_to", "subject", "preview_text", "html_content",
+		"plain_content", "created_at", "updated_at"}
+	valList := []string{"$1", "$2", "$3", "'draft'", "$4",
+		"$5", "$6", "$7", "$8", "$9", "$10",
+		"$11", "NOW()", "NOW()"}
+	args := []any{
+		campaignID, orgID, input.Name, scheduledAt,
+		resolvedFromName, resolvedFromEmail, profile.ReplyTo, subject, previewText, htmlContent,
+		plainContent,
+	}
+	nextP := 12
+
+	type optCol struct {
+		col string
+		val any
+	}
+	optionals := []optCol{
+		{"sending_profile_id", nullUUID(profile.ProfileID.String)},
+		{"esp_quotas", quotaPayload},
+		{"isp_quotas", quotaPayload},
+		{"list_ids", inclusionListsJSON},
+		{"suppression_list_ids", suppressionListsJSON},
+		{"suppression_segment_ids", suppressionSegmentsJSON},
+		{"timezone", timezone},
+		{"queued_count", 0},
+		{"execution_mode", pmtaExecutionModeWave},
+		{"pmta_config", configJSON},
+	}
+	for _, o := range optionals {
+		if cc.has(o.col) {
+			colList = append(colList, o.col)
+			valList = append(valList, fmt.Sprintf("$%d", nextP))
+			args = append(args, o.val)
+			nextP++
+		}
+	}
+	if cc.has("send_type") {
+		colList = append(colList, "send_type")
+		valList = append(valList, "'blast'")
+	}
+
+	// Plain INSERT: the fresh UUID guarantees no primary-key collision, so this
+	// always materializes a distinct draft row (no upsert / reuse).
+	query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
+		strings.Join(colList, ", "), strings.Join(valList, ", "))
+	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("stage PMTA draft: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("commit PMTA draft: %w", err)
+	}
+
+	return engine.PMTACampaignDraftResult{
+		CampaignID:    campaignID.String(),
+		Name:          input.Name,
+		Status:        "draft",
+		ScheduleMode:  normalizeDraftScheduleMode(draft.ScheduleMode),
+		UpdatedAt:     time.Now().UTC(),
+		CampaignInput: input,
+	}, nil
+}
+
 func insertABVariants(ctx context.Context, tx *sql.Tx, orgID, campaignID string, input engine.PMTACampaignInput) error {
 	testID := uuid.New().String()
 	if _, err := tx.ExecContext(ctx, `

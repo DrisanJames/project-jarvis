@@ -96,6 +96,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)
 		cr.Post("/draft", s.HandleSaveDraftCampaign)
+		cr.Post("/stage", s.HandleStageCampaign)
 		cr.Post("/intel", s.HandleCampaignIntel)
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
@@ -801,6 +802,56 @@ func (s *PMTACampaignService) HandleSaveDraftCampaign(w http.ResponseWriter, r *
 	}
 
 	respondJSON(w, http.StatusOK, result)
+}
+
+// HandleStageCampaign stores the PMTA wizard state as a brand-new draft row on
+// every call. Unlike HandleSaveDraftCampaign (which keeps a single "latest
+// draft" per org and updates it in place), this always INSERTs a distinct
+// campaign with a fresh UUID — letting the operator stage a multi-campaign
+// send-day board as independent drafts that can later be approved/promoted.
+//
+// It accepts the same request body as POST /pmta-campaign/draft:
+// {"campaign_input": {...}, "schedule_mode": "quick"}.
+func (s *PMTACampaignService) HandleStageCampaign(w http.ResponseWriter, r *http.Request) {
+	var draft engine.PMTACampaignDraftInput
+	if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	input := draft.CampaignInput
+	if strings.TrimSpace(input.Name) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign name is required"})
+		return
+	}
+	if len(input.TargetISPs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target ISP is required"})
+		return
+	}
+	if strings.TrimSpace(input.SendingDomain) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending domain is required"})
+		return
+	}
+	if len(input.Variants) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
+		return
+	}
+
+	ctx := r.Context()
+	orgID := getOrgID(r)
+
+	result, err := stagePMTADraftCampaign(ctx, s.db, orgID, draft, s.colCache)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"campaign_id":  result.CampaignID,
+		"name":         result.Name,
+		"status":       result.Status,
+		"scheduled_at": derivePMTADraftScheduledAt(result.CampaignInput),
+	})
 }
 
 // HandleDeployCampaign creates a PMTA-routed campaign and queues it for sending.

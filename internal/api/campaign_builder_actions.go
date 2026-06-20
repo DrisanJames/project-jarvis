@@ -142,14 +142,16 @@ func (cb *CampaignBuilder) HandleResumeCampaign(w http.ResponseWriter, r *http.R
 func (cb *CampaignBuilder) HandleCancelCampaign(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
-	
-	// First check current status
+	orgID := getOrganizationID(r)
+
+	// First check current status (org-scoped — operators must not cancel another
+	// org's campaign by id).
 	var currentStatus string
 	var sentCount int
 	err := cb.db.QueryRowContext(ctx, `
-		SELECT status, COALESCE(sent_count, 0) FROM mailing_campaigns WHERE id = $1
-	`, id).Scan(&currentStatus, &sentCount)
-	
+		SELECT status, COALESCE(sent_count, 0) FROM mailing_campaigns WHERE id = $1 AND organization_id = $2
+	`, id, orgID).Scan(&currentStatus, &sentCount)
+
 	if err != nil {
 		http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
 		return
@@ -164,10 +166,10 @@ func (cb *CampaignBuilder) HandleCancelCampaign(w http.ResponseWriter, r *http.R
 	
 	// Cancel the campaign
 	result, err := cb.db.ExecContext(ctx, `
-		UPDATE mailing_campaigns 
+		UPDATE mailing_campaigns
 		SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND status NOT IN ('sent', 'completed', 'completed_with_errors', 'cancelled', 'failed')
-	`, id)
+		WHERE id = $1 AND organization_id = $2 AND status NOT IN ('sent', 'completed', 'completed_with_errors', 'cancelled', 'failed')
+	`, id, orgID)
 	
 	if err != nil {
 		http.Error(w, `{"error":"failed to cancel campaign"}`, http.StatusInternalServerError)

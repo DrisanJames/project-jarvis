@@ -103,6 +103,9 @@ export const DraftBoardView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, EditData | 'loading' | 'error'>>({});
+  // Per-campaign action state for approve/disapprove (in-flight + inline error/success).
+  const [action, setAction] = useState<Record<string, { busy: boolean; error?: string; ok?: string }>>({});
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const headers = useMemo(() => ({ 'X-Organization-ID': orgId }), [orgId]);
 
@@ -151,6 +154,78 @@ export const DraftBoardView: React.FC = () => {
     }
   }, [headers]);
 
+  // APPROVE — fetch the draft's full config, then redeploy carrying its existing
+  // campaign_id so the backend promotes the draft row in place (draft →
+  // finalizing_audience → scheduled) rather than creating a duplicate.
+  const approveCampaign = useCallback(async (id: string): Promise<boolean> => {
+    setAction(prev => ({ ...prev, [id]: { busy: true } }));
+    try {
+      const er = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
+      if (!er.ok) throw new Error(`edit-data HTTP ${er.status}`);
+      const ej = await er.json();
+      const input = ej.campaign_input ?? ej;
+      if (!input || typeof input !== 'object') throw new Error('no campaign_input in edit-data');
+      // edit-data STRIPS campaign_id out of campaign_input (handlers_pmta_campaign.go
+      // delete(inputMap,"campaign_id")) and returns it as a separate top-level field.
+      // Re-attach the real id so the deploy path promotes THIS draft in place — without
+      // it the server falls back to "the org's newest draft" and approves the WRONG one.
+      (input as Record<string, unknown>).campaign_id = ej.campaign_id || id;
+      const dr = await fetch('/api/mailing/pmta-campaign/deploy', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!dr.ok) {
+        let msg = `deploy HTTP ${dr.status}`;
+        try { const dj = await dr.json(); if (dj?.error) msg = dj.error; } catch { /* keep status */ }
+        throw new Error(msg);
+      }
+      setAction(prev => ({ ...prev, [id]: { busy: false, ok: 'Approved' } }));
+      return true;
+    } catch (e) {
+      setAction(prev => ({ ...prev, [id]: { busy: false, error: e instanceof Error ? e.message : 'approve failed' } }));
+      return false;
+    }
+  }, [headers]);
+
+  // A draft whose scheduled time has already passed would fire IMMEDIATELY (the
+  // wave scheduler dispatches scheduled_at <= NOW()), blasting the whole campaign
+  // with no throttle window. Block approval until it's re-staged with a future time.
+  const isPastDue = useCallback((id: string): boolean => {
+    const c = rows.find(r => r.id === id);
+    if (!c?.scheduled_at) return false;
+    const t = new Date(c.scheduled_at).getTime();
+    return !Number.isNaN(t) && t <= Date.now();
+  }, [rows]);
+
+  const handleApprove = useCallback(async (id: string) => {
+    if (isPastDue(id)) {
+      setAction(prev => ({ ...prev, [id]: { busy: false, error: 'Scheduled time has passed — re-stage with a future time before approving (would send immediately, no throttle).' } }));
+      return;
+    }
+    if (!window.confirm('Approve & schedule this campaign?')) return;
+    const ok = await approveCampaign(id);
+    if (ok) await load();
+  }, [approveCampaign, load, isPastDue]);
+
+  // DISAPPROVE — soft-cancel the draft (status → cancelled).
+  const handleDisapprove = useCallback(async (id: string) => {
+    if (!window.confirm('Discard this draft?')) return;
+    setAction(prev => ({ ...prev, [id]: { busy: true } }));
+    try {
+      const r = await fetch(`/api/mailing/campaigns/${id}/cancel`, { method: 'POST', headers });
+      if (!r.ok) {
+        let msg = `cancel HTTP ${r.status}`;
+        try { const j = await r.json(); if (j?.error) msg = j.error; } catch { /* keep status */ }
+        throw new Error(msg);
+      }
+      setAction(prev => ({ ...prev, [id]: { busy: false, ok: 'Discarded' } }));
+      await load();
+    } catch (e) {
+      setAction(prev => ({ ...prev, [id]: { busy: false, error: e instanceof Error ? e.message : 'cancel failed' } }));
+    }
+  }, [headers, load]);
+
   const toggle = useCallback((id: string) => {
     setExpanded(prev => {
       const next = new Set(prev);
@@ -189,6 +264,35 @@ export const DraftBoardView: React.FC = () => {
     audience: grouped.reduce((s, g) => s + g.audience, 0),
   }), [grouped]);
 
+  // Draft campaign ids currently in view (for the whole-board "Approve all").
+  const draftIds = useMemo(
+    () => grouped.flatMap(g => g.campaigns).filter(c => c.status === 'draft').map(c => c.id),
+    [grouped],
+  );
+
+  const handleApproveAll = useCallback(async () => {
+    if (draftIds.length === 0) return;
+    const eligible = draftIds.filter(id => !isPastDue(id));
+    const skipped = draftIds.length - eligible.length;
+    if (eligible.length === 0) {
+      window.alert('All drafts in view have a past scheduled time — re-stage with future times before approving.');
+      return;
+    }
+    const msg = `Approve & schedule ${eligible.length} draft${eligible.length === 1 ? '' : 's'} in view?`
+      + (skipped ? `\n(${skipped} skipped — scheduled time already passed.)` : '');
+    if (!window.confirm(msg)) return;
+    setBulkBusy(true);
+    try {
+      // Sequential — promotes each draft in place; avoids hammering the deploy path.
+      for (const id of eligible) {
+        await approveCampaign(id);
+      }
+      await load();
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [draftIds, approveCampaign, load, isPastDue]);
+
   const previewCreative = useCallback((html?: string) => {
     if (!html) return;
     const blob = new Blob([html], { type: 'text/html' });
@@ -222,6 +326,15 @@ export const DraftBoardView: React.FC = () => {
           Include partner-drip
         </label>
         <button onClick={() => void load()} style={ghostBtn}>{loading ? 'Loading…' : 'Refresh'}</button>
+        {draftIds.length > 0 && (
+          <button
+            onClick={() => void handleApproveAll()}
+            disabled={bulkBusy}
+            style={{ ...approveBtn, opacity: bulkBusy ? 0.6 : 1, cursor: bulkBusy ? 'default' : 'pointer' }}
+          >
+            {bulkBusy ? 'Approving…' : `✓ Approve all drafts (${draftIds.length})`}
+          </button>
+        )}
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
           {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: '#00e5ff', fontWeight: 600 }}>{num(totals.audience)}</span> planned sends
         </div>
@@ -310,6 +423,31 @@ export const DraftBoardView: React.FC = () => {
                         {det && det !== 'loading' && det !== 'error' && (
                           <IspTable det={det} totalAudience={c.total_recipients} />
                         )}
+
+                        {/* Approve / Disapprove — only for staged drafts. */}
+                        {c.status === 'draft' && (() => {
+                          const a = action[c.id];
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => void handleApprove(c.id)}
+                                disabled={a?.busy || bulkBusy}
+                                style={{ ...approveBtn, opacity: (a?.busy || bulkBusy) ? 0.6 : 1, cursor: (a?.busy || bulkBusy) ? 'default' : 'pointer' }}
+                              >
+                                {a?.busy ? 'Approving…' : '✓ Approve & schedule'}
+                              </button>
+                              <button
+                                onClick={() => void handleDisapprove(c.id)}
+                                disabled={a?.busy || bulkBusy}
+                                style={{ ...disapproveBtn, opacity: (a?.busy || bulkBusy) ? 0.6 : 1, cursor: (a?.busy || bulkBusy) ? 'default' : 'pointer' }}
+                              >
+                                ✕ Disapprove
+                              </button>
+                              {a?.error && <span style={{ fontSize: 12, color: '#e94560' }}>{a.error}</span>}
+                              {a?.ok && !a?.error && <span style={{ fontSize: 12, color: '#00b894', fontWeight: 600 }}>{a.ok} ✓</span>}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -376,5 +514,7 @@ const thCell: React.CSSProperties = { padding: '4px 14px 4px 0', fontWeight: 600
 const tdCell: React.CSSProperties = { padding: '4px 14px 4px 0', color: 'rgba(220,235,250,0.9)' };
 const ghostBtn: React.CSSProperties = { background: 'rgba(0,176,255,0.12)', color: '#00b0ff', border: '1px solid rgba(0,176,255,0.35)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
 const linkBtn: React.CSSProperties = { background: 'transparent', color: '#00b0ff', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' };
+const approveBtn: React.CSSProperties = { background: 'rgba(0,184,148,0.14)', color: '#00b894', border: '1px solid rgba(0,184,148,0.45)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const disapproveBtn: React.CSSProperties = { background: 'rgba(233,69,96,0.12)', color: '#e94560', border: '1px solid rgba(233,69,96,0.45)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
 
 export default DraftBoardView;
