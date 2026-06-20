@@ -1650,6 +1650,274 @@ func (h *PartnerAdminHandler) HandleListAuditLog(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]interface{}{"events": out})
 }
 
+// ============ GET /api/mailing/data-partners/warmup-progress ============
+
+// warmupDatasetID is the partner dataset whose ISP overrides hold the per-wave
+// ramp caps for the KumoMTA new-domain warm-up (mpf / pmd / trb).
+const warmupDatasetID = "c4400fab-64dd-41ed-aed3-aa3f7d35c3da"
+
+// warmupBrands restricts the warm-up panel to the three brand-new sending
+// domains being ramped on KumoMTA. The samsclub_internal drip campaign-name
+// pattern also matches the 16 mature brands, so we filter to these.
+var warmupBrands = []string{"mpf", "pmd", "trb"}
+
+// warmupISPExpr derives an ISP family from recipient_domain in SQL, matching
+// the partner slicer's families (yahoo annex / aol / microsoft / apple /
+// comcast / gmail / other). Kept in one place so the per-domain, by-ISP, and
+// recovery-curve queries agree.
+const warmupISPExpr = `
+	CASE
+	    WHEN t.recipient_domain ~* '(^|\.)(yahoo|ymail|rocketmail)\.'  THEN 'yahoo'
+	    WHEN t.recipient_domain ~* '(^|\.)aol\.'                       THEN 'aol'
+	    WHEN t.recipient_domain ~* '(^|\.)(outlook|hotmail|live|msn)\.' THEN 'microsoft'
+	    WHEN t.recipient_domain ~* '(^|\.)(icloud|me|mac)\.'           THEN 'apple'
+	    WHEN t.recipient_domain ~* '(^|\.)(comcast|xfinity)\.'         THEN 'comcast'
+	    WHEN t.recipient_domain ~* '(^|\.)gmail\.'                     THEN 'gmail'
+	    ELSE 'other'
+	END`
+
+// HandleGetWarmupProgress backs the read-only "Warm-Up Progress" panel that
+// tracks the KumoMTA new-domain warm-up (em.mypersonalfinancial.com /
+// em.paymydebit.com / em.theretirementblog.com). Everything is re-aggregated
+// LIVE from mailing_tracking_events on each poll — campaign counter columns are
+// known-stale and never used. Four sections:
+//
+//   - domains[]:        per (brand, sending_domain) window roll-up. Bounces are
+//                       split hard vs soft per bounce-metrics doctrine.
+//   - by_isp[]:         per (brand, derived ISP) window roll-up. The warm-up is
+//                       Yahoo/AOL only, so most volume lands in those families.
+//   - recovery_curve[]: per UTC hour bucket, overall + per-brand, the
+//                       delivered/sent ramp (the "recovery" the operator watches).
+//   - caps[]:           current per-wave ISP caps from the dataset's overrides.
+//
+// Default window 72h; ?hours=N (1..168) overrides. Read-only: no writes, no
+// org scoping (the partner-admin group is admin-gated at the router and the
+// warm-up campaigns are global by campaign name — matching the sibling
+// drip-performance handlers).
+func (h *PartnerAdminHandler) HandleGetWarmupProgress(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	hours := 72
+	if v, err := strconv.Atoi(r.URL.Query().Get("hours")); err == nil && v > 0 && v <= 168 {
+		hours = v
+	}
+
+	resp := map[string]interface{}{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"window_hours": hours,
+		"dataset_id":   warmupDatasetID,
+		"brands":       warmupBrands,
+		// bounce_type on mailing_tracking_events distinguishes hard from soft,
+		// so the panel splits them rather than reporting a combined "bounced".
+		"bounce_split":    true,
+		"engagement_note": "opens/clicks are pending tracking wiring for these new domains — currently 0",
+	}
+
+	if domains, err := h.warmupDomains(ctx, hours); err != nil {
+		resp["domains_error"] = err.Error()
+	} else {
+		resp["domains"] = domains
+	}
+
+	if byISP, err := h.warmupByISP(ctx, hours); err != nil {
+		resp["by_isp_error"] = err.Error()
+	} else {
+		resp["by_isp"] = byISP
+	}
+
+	if curve, err := h.warmupRecoveryCurve(ctx, hours); err != nil {
+		resp["recovery_curve_error"] = err.Error()
+	} else {
+		resp["recovery_curve"] = curve
+	}
+
+	if caps, err := h.warmupCaps(ctx); err != nil {
+		resp["caps_error"] = err.Error()
+	} else {
+		resp["caps"] = caps
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// warmupDomains rolls every event up per (brand, sending_domain) over the
+// window, straight from tracking events. hard vs soft split per doctrine.
+func (h *PartnerAdminHandler) warmupDomains(ctx context.Context, hours int) ([]map[string]interface{}, error) {
+	hb := HardBounceSQL("t")
+	rows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT split_part(c.name, ' ', 3) AS brand,
+		       t.sending_domain,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0)      AS sent,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered,
+		       COALESCE(SUM(CASE WHEN t.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0) AS deferred,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0)         AS hard,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0)   AS soft,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0)    AS opened,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0)   AS clicked
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		WHERE c.name ILIKE '%%partner-drip%%samsclub_internal%%'
+		  AND split_part(c.name, ' ', 3) = ANY($2)
+		  AND t.event_at > NOW() - ($1 * INTERVAL '1 hour')
+		GROUP BY 1, 2
+		ORDER BY sent DESC
+	`, hb, hb), hours, pq.Array(warmupBrands))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, len(warmupBrands))
+	for rows.Next() {
+		var brand, domain string
+		var sent, delivered, deferred, hard, soft, opened, clicked int
+		if err := rows.Scan(&brand, &domain, &sent, &delivered, &deferred, &hard, &soft, &opened, &clicked); err != nil {
+			continue
+		}
+		deliveredPct := 0.0
+		if sent > 0 {
+			deliveredPct = float64(delivered) / float64(sent) * 100.0
+		}
+		out = append(out, map[string]interface{}{
+			"brand":         brand,
+			"domain":        domain,
+			"sent":          sent,
+			"delivered":     delivered,
+			"deferred":      deferred,
+			"hard_bounce":   hard,
+			"soft_bounce":   soft,
+			"opened":        opened,
+			"clicked":       clicked,
+			"delivered_pct": deliveredPct,
+		})
+	}
+	return out, rows.Err()
+}
+
+// warmupByISP rolls events up per (brand, derived ISP). Bounces are combined
+// here (the per-domain section carries the hard/soft split) to keep the ISP
+// matrix compact.
+func (h *PartnerAdminHandler) warmupByISP(ctx context.Context, hours int) ([]map[string]interface{}, error) {
+	rows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT split_part(c.name, ' ', 3) AS brand,
+		       %s AS isp,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0)      AS sent,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered,
+		       COALESCE(SUM(CASE WHEN t.event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0) AS deferred,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' THEN 1 ELSE 0 END), 0)   AS bounced,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0)    AS opened,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0)   AS clicked
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		WHERE c.name ILIKE '%%partner-drip%%samsclub_internal%%'
+		  AND split_part(c.name, ' ', 3) = ANY($2)
+		  AND t.event_at > NOW() - ($1 * INTERVAL '1 hour')
+		GROUP BY 1, 2
+		ORDER BY 1, sent DESC
+	`, warmupISPExpr), hours, pq.Array(warmupBrands))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, 16)
+	for rows.Next() {
+		var brand, isp string
+		var sent, delivered, deferred, bounced, opened, clicked int
+		if err := rows.Scan(&brand, &isp, &sent, &delivered, &deferred, &bounced, &opened, &clicked); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"brand":     brand,
+			"isp":       isp,
+			"sent":      sent,
+			"delivered": delivered,
+			"deferred":  deferred,
+			"bounced":   bounced,
+			"opened":    opened,
+			"clicked":   clicked,
+		})
+	}
+	return out, rows.Err()
+}
+
+// warmupRecoveryCurve buckets sent/delivered per UTC hour — once overall
+// (brand="") and once per brand — so the UI can plot the delivered/sent ramp
+// as the warm-up recovers.
+func (h *PartnerAdminHandler) warmupRecoveryCurve(ctx context.Context, hours int) ([]map[string]interface{}, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT date_trunc('hour', t.event_at) AS hour_utc,
+		       grp.brand,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0)      AS sent,
+		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		-- grp emits each event twice: once under its brand, once under the
+		-- overall bucket (brand=''), so one scan yields both granularities.
+		CROSS JOIN LATERAL (VALUES (split_part(c.name, ' ', 3)), ('')) AS grp(brand)
+		WHERE c.name ILIKE '%partner-drip%samsclub_internal%'
+		  AND split_part(c.name, ' ', 3) = ANY($2)
+		  AND t.event_at > NOW() - ($1 * INTERVAL '1 hour')
+		  AND t.event_type IN ('sent','delivered')
+		GROUP BY 1, 2
+		ORDER BY 1, 2
+	`, hours, pq.Array(warmupBrands))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, 256)
+	for rows.Next() {
+		var hr time.Time
+		var brand string
+		var sent, delivered int
+		if err := rows.Scan(&hr, &brand, &sent, &delivered); err != nil {
+			continue
+		}
+		deliveredPct := 0.0
+		if sent > 0 {
+			deliveredPct = float64(delivered) / float64(sent) * 100.0
+		}
+		out = append(out, map[string]interface{}{
+			"hour_utc":      hr.UTC().Format(time.RFC3339),
+			"brand":         brand, // "" = overall across all warm-up brands
+			"sent":          sent,
+			"delivered":     delivered,
+			"delivered_pct": deliveredPct,
+		})
+	}
+	return out, rows.Err()
+}
+
+// warmupCaps returns the current per-wave ISP caps for the warm-up dataset.
+func (h *PartnerAdminHandler) warmupCaps(ctx context.Context) ([]map[string]interface{}, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT isp, COALESCE(max_per_wave, 0)
+		FROM partner_isp_distribution_overrides
+		WHERE dataset_id = $1
+		ORDER BY max_per_wave DESC, isp
+	`, warmupDatasetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0, 16)
+	for rows.Next() {
+		var isp string
+		var maxPerWave int
+		if err := rows.Scan(&isp, &maxPerWave); err != nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"isp":          isp,
+			"max_per_wave": maxPerWave,
+		})
+	}
+	return out, rows.Err()
+}
+
 // ============ helpers ============
 
 func slugifyForPartner(s string) string {

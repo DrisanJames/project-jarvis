@@ -2,12 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faPlus, faSync, faSpinner, faExclamationTriangle, faPause, faPlay,
-  faSeedling, faFingerprint, faRoute, faChartBar, faClipboardList,
+  faSeedling, faFingerprint, faRoute, faChartBar, faClipboardList, faGaugeHigh,
 } from '@fortawesome/free-solid-svg-icons';
 import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
 import { DripPerformancePanel } from './DripPerformancePanel';
+import { WarmupProgressPanel } from './WarmupProgressPanel';
 import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
@@ -70,7 +71,7 @@ interface DashboardResponse {
   recent_batches: BatchSummary[];
 }
 
-type TabId = 'overview' | 'partners' | 'batches' | 'creatives' | 'audit';
+type TabId = 'overview' | 'warmup' | 'partners' | 'batches' | 'creatives' | 'audit';
 
 export const PartnerIngestPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -131,6 +132,7 @@ export const PartnerIngestPortal: React.FC = () => {
 
   const tabs: { id: TabId; label: string; icon: typeof faSeedling }[] = [
     { id: 'overview', label: 'Overview', icon: faRoute },
+    { id: 'warmup', label: 'Warm-Up', icon: faGaugeHigh },
     { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
     { id: 'batches', label: 'Inbound Batches', icon: faSeedling },
     { id: 'creatives', label: 'Drip Creatives', icon: faSeedling },
@@ -211,6 +213,8 @@ export const PartnerIngestPortal: React.FC = () => {
           </div>
         </div>
       )}
+
+      {activeTab === 'warmup' && <WarmupProgressPanel />}
 
       {activeTab === 'partners' && (
         <div>
