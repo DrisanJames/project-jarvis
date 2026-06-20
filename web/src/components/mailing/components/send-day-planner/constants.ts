@@ -7,7 +7,7 @@
 
 import type { Brand, ISP, Slot } from './types';
 
-export const PAGE_VERSION = '1.0';
+export const PAGE_VERSION = '2.0';
 
 export const BRANDS: Brand[] = ['DB', 'QF', 'HT', 'MH'];
 
