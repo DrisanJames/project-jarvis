@@ -13,6 +13,7 @@ package api
 // accidental query would fail the test because no expectation was set.
 
 import (
+	"strings"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -344,9 +345,15 @@ func TestHandleTrackClick_RejectsMalformedBase64(t *testing.T) {
 }
 
 func TestApplyDeadLinkRemap(t *testing.T) {
-	dead := "https://www.cratoolpro.com/BJB4Q5BF/J78S2MD/?creative_id=643104&source_id=email&sub1=abc&sub2=businessweeklypro.com"
-	if got := applyDeadLinkRemap(dead); got != "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/" {
-		t.Fatalf("dead J78S2MD link not remapped, got %q", got)
+	dead := "https://www.cratoolpro.com/BJB4Q5BF/J78S2MD/?creative_id=643104&source_id=email&sub1=abc&sub2=businessweeklypro.com&sub3=cid9"
+	got := applyDeadLinkRemap(dead)
+	if !strings.HasPrefix(got, "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/?") {
+		t.Fatalf("dead J78S2MD link not remapped to k8k0hfdt base, got %q", got)
+	}
+	for _, want := range []string{"source_id=email", "sub1=abc", "sub2=businessweeklypro.com", "sub3=cid9"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("attribution param %q not carried, got %q", want, got)
+		}
 	}
 	// unrelated cratoolpro offer must pass through untouched
 	live := "https://www.cratoolpro.com/BJB4Q5BF/K86F3PC/?source_id=email"

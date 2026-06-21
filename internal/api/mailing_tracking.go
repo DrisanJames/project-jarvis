@@ -240,10 +240,37 @@ var deadLinkRemap = []struct{ match, to string }{
 func applyDeadLinkRemap(rawURL string) string {
 	for _, m := range deadLinkRemap {
 		if strings.Contains(rawURL, m.match) {
-			return m.to
+			return carryAttribution(m.to, rawURL)
 		}
 	}
 	return rawURL
+}
+
+// carryAttribution copies the per-subscriber attribution params (source_id,
+// sub1, sub2, sub3) from the original (already-rendered) money link onto the
+// remap target so conversions on the new network still tie back to the
+// subscriber/brand/campaign. The token's originalURL was Liquid-rendered before
+// it was wrapped, so sub1/sub2/sub3 already hold concrete values here.
+func carryAttribution(target, originalURL string) string {
+	u, err := url.Parse(originalURL)
+	if err != nil {
+		return target
+	}
+	src := u.Query()
+	keep := url.Values{}
+	for _, k := range []string{"source_id", "sub1", "sub2", "sub3"} {
+		if v := src.Get(k); v != "" {
+			keep.Set(k, v)
+		}
+	}
+	if len(keep) == 0 {
+		return target
+	}
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	return target + sep + keep.Encode()
 }
 
 // HandleTrackClick records a click event and redirects
