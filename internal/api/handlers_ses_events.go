@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
@@ -447,7 +448,7 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 	// Phase 1 event lake (best-effort, no-op unless enabled). Emitted only on a
 	// genuinely new row so SNS redeliveries don't double-feed the lake. This is
 	// the SES "delivered != relay" truth that the RRU reconciliation depends on.
-	analytics.Emit(analytics.Event{
+	lakeEvt := analytics.Event{
 		EventUID:        "ses:" + eventID.String(),
 		RecipientSendID: recipientSendID,
 		CampaignID:      campaignID,
@@ -461,7 +462,20 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		LinkURL:         linkURL,
 		EventAt:         eventAt.UTC().Format(time.RFC3339),
 		Source:          "ses",
-	})
+	}
+	analytics.Emit(lakeEvt)
+
+	// DARK Kafka mirror of the raw SES ingest event (fire-and-forget, flag-gated,
+	// nil-safe). Key on campaign id when present, else the recipient email. No-op
+	// unless the bus is wired AND the ingest flag is ON — zero behavior/latency by
+	// default. Errors here can never reach the SNS handler path.
+	ingestKey := campaignID
+	if ingestKey == "" {
+		ingestKey = recipientEmail
+	}
+	if b, mErr := json.Marshal(&lakeEvt); mErr == nil {
+		eventbus.PublishIngest(ingestKey, b)
+	}
 
 	// Keep mailing_campaigns aggregate counters consistent for SES-routed
 	// mail, since PMTA "d" is now recorded as relayed_to_ses (not delivered)

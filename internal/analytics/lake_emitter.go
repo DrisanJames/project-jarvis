@@ -28,6 +28,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/firehose"
 	fhtypes "github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 )
 
 // Event is one row of the ignite_analytics.email_events Glue table. Field names
@@ -208,6 +209,12 @@ func (e *Emitter) flush(batch []Event) {
 		if err != nil {
 			continue
 		}
+		// DARK Kafka mirror (fire-and-forget, flag-gated, nil-safe). Publish the
+		// raw JSON (no trailing newline) keyed by recipient email. No-op unless
+		// the bus is wired AND the lake flag is ON, so this adds zero behavior and
+		// zero latency by default. Done before the newline append so Kafka carries
+		// clean JSON.
+		eventbus.PublishLake(batch[i].Email, b)
 		b = append(b, '\n')
 		recs = append(recs, fhtypes.Record{Data: b})
 	}

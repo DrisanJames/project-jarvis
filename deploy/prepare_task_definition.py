@@ -58,6 +58,19 @@ PASSTHROUGH_ENV_VARS = [
     "SLACK_BOT_TOKEN",
     "SLACK_CONVERSIONS_WEBHOOK_URL",
     "SLACK_CONVERSIONS_CHANNEL",
+    # Kafka event backbone (internal/eventbus). DARK unless KAFKA_BROKERS is set
+    # AND the per-flow KAFKA_FLAG_PRODUCE_* is ON. Set in the deploy shell on the
+    # rollout that activates the bus; once in the task def, subsequent deploys
+    # inherit them. KAFKA_ALLOW_AUTO_TOPICS lets the producer create evt.* topics
+    # on first publish (bootstrap/test against MSK Serverless).
+    "KAFKA_BROKERS",
+    "KAFKA_SASL_MECHANISM",
+    "KAFKA_TLS",
+    "KAFKA_ALLOW_AUTO_TOPICS",
+    "KAFKA_FLAG_PRODUCE_LAKE",
+    "KAFKA_FLAG_PRODUCE_INGEST",
+    "KAFKA_FLAG_PRODUCE_SUPPRESS",
+    "ANALYTICS_FIREHOSE_STREAM_SHADOW",
 ]
 
 REMOVE_ENV_VARS = [

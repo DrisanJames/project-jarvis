@@ -1,0 +1,66 @@
+{
+  "topics": [
+    {
+      "name": "evt.lake.v1",
+      "partitions": 12,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "delete",
+        "retention.ms": "604800000",
+        "min.insync.replicas": "2"
+      }
+    },
+    {
+      "name": "evt.ingest.v1",
+      "partitions": 12,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "delete",
+        "retention.ms": "604800000",
+        "min.insync.replicas": "2"
+      }
+    },
+    {
+      "name": "suppression.state",
+      "partitions": 6,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "compact",
+        "min.insync.replicas": "2",
+        "min.cleanable.dirty.ratio": "0.1",
+        "segment.ms": "86400000",
+        "delete.retention.ms": "86400000"
+      }
+    },
+    {
+      "name": "evt.lake.v1.dlq",
+      "partitions": 3,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "delete",
+        "retention.ms": "1209600000",
+        "min.insync.replicas": "2"
+      }
+    },
+    {
+      "name": "evt.ingest.v1.dlq",
+      "partitions": 3,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "delete",
+        "retention.ms": "1209600000",
+        "min.insync.replicas": "2"
+      }
+    },
+    {
+      "name": "suppression.state.dlq",
+      "partitions": 3,
+      "replication_factor": 3,
+      "config": {
+        "cleanup.policy": "delete",
+        "retention.ms": "1209600000",
+        "min.insync.replicas": "2"
+      }
+    }
+  ]
+}

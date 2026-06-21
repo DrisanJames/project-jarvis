@@ -14,11 +14,12 @@ import (
 
 // HealthStatus represents the overall health of the system.
 type HealthStatus struct {
-	Status  string                    `json:"status"` // "healthy", "degraded", "unhealthy"
-	Version string                    `json:"version"`
-	Uptime  string                    `json:"uptime"`
-	Build   buildinfo.Info            `json:"build"`
-	Checks  map[string]ComponentCheck `json:"checks"`
+	Status   string                    `json:"status"` // "healthy", "degraded", "unhealthy"
+	Version  string                    `json:"version"`
+	Uptime   string                    `json:"uptime"`
+	Build    buildinfo.Info            `json:"build"`
+	Checks   map[string]ComponentCheck `json:"checks"`
+	EventBus EventBusStatus            `json:"event_bus"`
 }
 
 // ComponentCheck represents the health of a single component.
@@ -61,10 +62,11 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	// Fast path for ALB health checks — no dependency checks, instant 200.
 	// Use /health/detailed for full dependency status, /health/ready for 503 on failure.
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "healthy",
-		"version": healthVersion,
-		"uptime":  formatUptime(time.Since(hc.startTime)),
-		"build":   buildinfo.Current(),
+		"status":    "healthy",
+		"version":   healthVersion,
+		"uptime":    formatUptime(time.Since(hc.startTime)),
+		"build":     buildinfo.Current(),
+		"event_bus": CurrentEventBusStatus(),
 	})
 }
 
@@ -73,11 +75,12 @@ func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) 
 	checks := hc.runAllChecks(r.Context())
 	overall := determineOverallStatus(checks)
 	respondJSON(w, http.StatusOK, HealthStatus{
-		Status:  overall,
-		Version: healthVersion,
-		Uptime:  formatUptime(time.Since(hc.startTime)),
-		Build:   buildinfo.Current(),
-		Checks:  checks,
+		Status:   overall,
+		Version:  healthVersion,
+		Uptime:   formatUptime(time.Since(hc.startTime)),
+		Build:    buildinfo.Current(),
+		Checks:   checks,
+		EventBus: CurrentEventBusStatus(),
 	})
 }
 

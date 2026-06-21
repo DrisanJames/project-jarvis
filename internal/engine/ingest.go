@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/analytics"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
 	"github.com/redis/go-redis/v9"
 )
@@ -388,7 +389,7 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 	if IsPMTARelayedToSES(rec) {
 		routeType = "ses_tenant"
 	}
-	analytics.Emit(analytics.Event{
+	lakeEvt := analytics.Event{
 		EventUID:    src + ":" + rec.JobID + ":" + rec.Recipient + ":" + rec.Type + ":" + rec.DeliveryTime,
 		CampaignID:  rec.JobID,
 		Email:       rec.Recipient,
@@ -404,7 +405,20 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 		SourceIP:    rec.SourceIP,
 		EventAt:     time.Now().UTC().Format(time.RFC3339),
 		Source:      src,
-	})
+	}
+	analytics.Emit(lakeEvt)
+
+	// DARK Kafka mirror of the raw PMTA/Kumo ingest event (fire-and-forget,
+	// flag-gated, nil-safe). Key on campaign id (rec.JobID) when present, else the
+	// recipient. No-op unless the bus is wired AND the ingest flag is ON — zero
+	// behavior/latency by default.
+	ingestKey := rec.JobID
+	if ingestKey == "" {
+		ingestKey = rec.Recipient
+	}
+	if b, mErr := json.Marshal(&lakeEvt); mErr == nil {
+		eventbus.PublishIngest(ingestKey, b)
+	}
 }
 
 // routeToGlobalSuppression suppresses permanent failures and recipient-quality

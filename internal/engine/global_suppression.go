@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 )
 
 // GlobalSuppressionHub is the single source of truth for all suppressed emails.
@@ -288,6 +291,20 @@ func (h *GlobalSuppressionHub) Suppress(ctx context.Context, email, reason, sour
 	h.emailSet[email] = true
 	h.hashSet[hash] = true
 	h.mu.Unlock()
+
+	// DARK Kafka mirror of the suppression ADD (fire-and-forget, flag-gated,
+	// nil-safe). ADD-ONLY by design: only this add path taps the bus; the
+	// unsuppress/removal path (Remove) intentionally stays DB-only. No-op unless
+	// the bus is wired AND the suppress flag is ON — zero behavior/latency by
+	// default.
+	if b, mErr := json.Marshal(map[string]string{
+		"email":      email,
+		"reason":     reason,
+		"brand_root": "",
+		"source":     source,
+	}); mErr == nil {
+		eventbus.PublishSuppressAdd(email, b)
+	}
 
 	// Append to global suppression file for PMTA
 	h.appendToGlobalFile(email)

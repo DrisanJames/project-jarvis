@@ -412,6 +412,11 @@ func main() {
 		}
 	}
 
+	// Kafka event-backbone handle (SA-6). Stays nil/dark until wireEventBus runs
+	// below; its Stop() is registered on the shutdown path. A nil handle Stops
+	// safely, so the dark default (KAFKA_BROKERS unset) needs no special casing.
+	var eventBus *eventBusHandle
+
 	// ── Run migrations and start workers (server is already serving) ──
 	if mailingDB != nil {
 		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -635,6 +640,17 @@ func main() {
 			// scans that previously took ~15s against a 1M+ row queue table.
 			api.StartOutboxSummaryRefresher(ctx, mailingDB)
 			log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
+
+			// ── Kafka event backbone (SA-6) — DARK BY DEFAULT ──────────────
+			// wireEventBus is a no-op unless KAFKA_BROKERS is set (and even
+			// then each producer flow + consumer is independently flag-gated,
+			// defaults OFF; the suppression projector runs in SHADOW mode and
+			// does NOT mutate the live hub). It NEVER touches the send queue,
+			// send worker, or schedulers. When KAFKA_BROKERS is unset (today's
+			// prod) it logs one "disabled" line and returns a dark handle, and
+			// the package-level Publish* taps stay nil — byte-identical
+			// behavior. Wired here, after the DB + redis client exist.
+			eventBus = wireEventBus(ctx, mailingDB, redisClient)
 
 			// Operational-alert transport. Twilio SMS was retired 2026-06-07
 			// (dead credentials → http 401); each operational pager now posts
@@ -1682,6 +1698,10 @@ func main() {
 
 	// Cancel background tasks
 	cancel()
+
+	// Stop the Kafka event backbone (consumers, flag pollers, then flush+close
+	// the producer taps). Safe no-op on a nil/dark handle.
+	eventBus.Stop()
 
 	// Flush any buffered analytics events to the lake (no-op when disabled).
 	analytics.Shutdown()
@@ -7196,6 +7216,47 @@ END $$`},
 			last_error TEXT,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+
+		// =====================================================================
+		// Migration 049: Kafka event-backbone SHADOW tables (ships DARK).
+		// ADDITIVE ONLY — new tables, no ALTER of any existing table. Nothing
+		// writes to these until the Wave-2 shadow consumers are wired behind
+		// their flags (which require KAFKA_BROKERS set AND a flag ON). Schema
+		// lands before/with the binary, so the consumers can never reference a
+		// missing table. The exact snippet is carried in the header of
+		// migrations/049_kafka_shadow_tables.sql. Each statement is its own
+		// idempotent CREATE ... IF NOT EXISTS entry so it fits the per-statement
+		// 5s budget of this runner.
+		// =====================================================================
+		{"create_ingest_events_shadow", `CREATE TABLE IF NOT EXISTS ingest_events_shadow (
+			id                 UUID        NOT NULL,
+			campaign_id        UUID,
+			subscriber_id      UUID,
+			recipient          TEXT,
+			event_type         VARCHAR(20) NOT NULL,
+			isp                VARCHAR(50),
+			event_at           TIMESTAMPTZ NOT NULL,
+			kafka_event_uid    TEXT,
+			kafka_offset       BIGINT,
+			kafka_partition    INT,
+			shadow_ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT uq_ingest_events_shadow_id_event_at UNIQUE (id, event_at)
+		)`},
+		{"idx_ies_kafka_uid", `CREATE INDEX IF NOT EXISTS idx_ies_kafka_uid ON ingest_events_shadow (kafka_event_uid)`},
+		{"idx_ies_event_at", `CREATE INDEX IF NOT EXISTS idx_ies_event_at ON ingest_events_shadow (event_at)`},
+		{"idx_ies_campaign", `CREATE INDEX IF NOT EXISTS idx_ies_campaign ON ingest_events_shadow (campaign_id, event_at DESC)`},
+		{"create_suppression_shadow", `CREATE TABLE IF NOT EXISTS suppression_shadow (
+			email           TEXT NOT NULL,
+			reason          TEXT,
+			brand_root      TEXT NOT NULL DEFAULT '',
+			source          TEXT,
+			kafka_event_uid TEXT,
+			applied_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT uq_suppression_shadow_email_brand UNIQUE (email, brand_root)
+		)`},
+		{"idx_supp_shadow_email", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_email ON suppression_shadow (email)`},
+		{"idx_supp_shadow_applied_at", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_applied_at ON suppression_shadow (applied_at DESC)`},
+		{"idx_supp_shadow_kafka_uid", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_kafka_uid ON suppression_shadow (kafka_event_uid)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
