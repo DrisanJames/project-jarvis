@@ -240,6 +240,80 @@ func TestProcessRecord_NoDLQ_RetainsOnFailure(t *testing.T) {
 	}
 }
 
+// GAP 2: a handler that fails because the context was canceled (shutdown) must
+// NOT be routed to the DLQ and must NOT be treated as handled. processRecord
+// returns errShutdown so the consumer loop stops WITHOUT committing the offset —
+// the (valid) record redelivers on restart instead of being parked in a
+// non-replaying DLQ.
+func TestProcessRecord_ShutdownNotDLQd_NotHandled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int32
+	// Handler returns ctx.Err() once the ctx is canceled (the typical shape: an
+	// in-flight handler observing cancellation, e.g. a DB/send call aborting).
+	h := func(c context.Context, key, value []byte) error {
+		atomic.AddInt32(&calls, 1)
+		cancel() // simulate shutdown arriving mid-handle
+		return c.Err()
+	}
+	dlq := &recordingDLQ{}
+	opts := ConsumerOptions{MaxRetries: 5, RetryBackoff: time.Millisecond}
+
+	err := processRecord(ctx, h, dlq, opts, "t", []byte("k"), []byte("v"))
+	if !errors.Is(err, errShutdown) {
+		t.Fatalf("processRecord err = %v, want errShutdown (do not DLQ, do not commit)", err)
+	}
+	if dlq.count() != 0 {
+		t.Fatalf("DLQ hit %d times on shutdown; valid record must NOT be DLQ'd", dlq.count())
+	}
+	// It must NOT have been treated as handled (errShutdown != nil signals the
+	// loop to stop without committing). And it must not have burned the full
+	// retry budget once it saw the cancellation.
+	if calls != 1 {
+		t.Fatalf("handler called %d times after shutdown; want 1 (stop immediately, no retry storm)", calls)
+	}
+}
+
+// GAP 2 (already-canceled): if the ctx is canceled before the record is even
+// attempted, processRecord returns errShutdown without running the handler and
+// without DLQ'ing — the record is retained for redelivery.
+func TestProcessRecord_AlreadyCanceled_RetainedNotDLQd(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already shutting down
+	var calls int32
+	h := func(c context.Context, key, value []byte) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}
+	dlq := &recordingDLQ{}
+	err := processRecord(ctx, h, dlq, ConsumerOptions{}, "t", nil, nil)
+	if !errors.Is(err, errShutdown) {
+		t.Fatalf("processRecord err = %v, want errShutdown", err)
+	}
+	if dlq.count() != 0 {
+		t.Fatalf("DLQ hit %d on already-canceled ctx; want 0", dlq.count())
+	}
+	if calls != 0 {
+		t.Fatalf("handler ran %d times on already-canceled ctx; want 0", calls)
+	}
+}
+
+// GAP 2 must not over-reach: a genuine (NON-shutdown) permanent failure still
+// goes to the DLQ. This guards the fix from accidentally suppressing real
+// poison-record parking.
+func TestProcessRecord_GenuineFailure_StillDLQd_AfterFix(t *testing.T) {
+	wantErr := errors.New("genuine poison")
+	h := func(ctx context.Context, key, value []byte) error { return wantErr }
+	dlq := &recordingDLQ{}
+	opts := ConsumerOptions{MaxRetries: 1, RetryBackoff: time.Millisecond}
+	err := processRecord(context.Background(), h, dlq, opts, "t", nil, nil)
+	if err != nil {
+		t.Fatalf("processRecord err = %v, want nil (DLQ park => commit)", err)
+	}
+	if dlq.count() != 1 {
+		t.Fatalf("genuine failure: DLQ hit %d, want 1", dlq.count())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FlagGate
 // ---------------------------------------------------------------------------
