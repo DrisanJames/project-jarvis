@@ -110,11 +110,12 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 // redirect target changes. Remove an entry once its offer is retired.
 //
 // jun21 Metal Roofing dead-link incident (2026-06-21): cratoolpro offer J78S2MD
-// went dead; live destination is the k8k0hfdt smartlink. (Mirrors the same map
-// in internal/api/mailing_tracking.go — the public t.em/track/click path is
-// served by THIS tracking service, so the fix must live here too.)
+// went dead; live destination is the eos57ytf smartlink (corrected 2026-06-21 —
+// the interim k8k0hfdt 3QJ6DW/3LKS16 target was also wrong). Mirrors the same
+// map in internal/api/mailing_tracking.go — the public t.em/track/click path is
+// served by THIS tracking service, so the fix must live here too.
 var deadLinkRemap = []struct{ match, to string }{
-	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/"},
+	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/"},
 }
 
 func applyDeadLinkRemap(rawURL string) string {

@@ -347,7 +347,7 @@ func TestHandleTrackClick_RejectsMalformedBase64(t *testing.T) {
 func TestApplyDeadLinkRemap(t *testing.T) {
 	dead := "https://www.cratoolpro.com/BJB4Q5BF/J78S2MD/?creative_id=643104&source_id=email&sub1=abc&sub2=businessweeklypro.com&sub3=cid9"
 	got := applyDeadLinkRemap(dead)
-	if !strings.HasPrefix(got, "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/?") {
+	if !strings.HasPrefix(got, "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/?") {
 		t.Fatalf("dead J78S2MD link not remapped to k8k0hfdt base, got %q", got)
 	}
 	for _, want := range []string{"source_id=email", "sub1=abc", "sub2=businessweeklypro.com", "sub3=cid9"} {
