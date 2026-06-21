@@ -115,7 +115,8 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 // map in internal/api/mailing_tracking.go — the public t.em/track/click path is
 // served by THIS tracking service, so the fix must live here too.
 var deadLinkRemap = []struct{ match, to string }{
-	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/"},
+	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/"}, // metal roofing
+	{"k8k0hfdt.com/3QJ6DW/3MZNPR", "https://www.xnonu.com/TQ5MX18J/XF1SR2CS/"},      // empire flooring (2026-06-21)
 }
 
 func applyDeadLinkRemap(rawURL string) string {

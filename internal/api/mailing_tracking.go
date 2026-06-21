@@ -235,7 +235,8 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 // went dead; live destination is the eos57ytf smartlink below (corrected
 // 2026-06-21 — the interim k8k0hfdt 3QJ6DW/3LKS16 target was also wrong).
 var deadLinkRemap = []struct{ match, to string }{
-	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/"},
+	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.eos57ytf.com/K4C5ZLC/S6WFF5/"}, // metal roofing
+	{"k8k0hfdt.com/3QJ6DW/3MZNPR", "https://www.xnonu.com/TQ5MX18J/XF1SR2CS/"},      // empire flooring (2026-06-21)
 }
 
 func applyDeadLinkRemap(rawURL string) string {
