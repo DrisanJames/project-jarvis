@@ -246,5 +246,24 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	funnelCtx, funnelCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	persistAudienceFunnel(funnelCtx, s.db, campaignID, orgID, audience)
 	funnelCancel()
+
+	// Per-deploy audit breadcrumb (html sha + money links shipped). POST-COMMIT,
+	// best-effort, non-gating: writeDeploymentAudit returns nothing, recovers any
+	// panic internally, and CANNOT affect deploy success (see deployment_audit.go).
+	// Uses the committed s.db handle, not the (now-committed) tx.
+	auditHTML := ""
+	if len(input.Variants) > 0 {
+		auditHTML = input.Variants[0].HTMLContent
+	}
+	// Fire-and-forget: the audit must add ZERO latency to the serial finalize loop.
+	// All values are captured as goroutine params so the next loop iteration cannot
+	// race the shared loop variables. writeDeploymentAudit owns an internal
+	// defer/recover (its FIRST defer), so a panic here is contained and can never
+	// crash the process.
+	go func(orgID, campaignID, offerKey, html, domain string, total int) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		writeDeploymentAudit(ctx, s.db, orgID, campaignID, offerKey, html, domain, total)
+	}(orgID, campaignID, input.OfferID, auditHTML, input.SendingDomain, audience.SelectedTotal)
 }
 

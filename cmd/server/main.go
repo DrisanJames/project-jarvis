@@ -2130,6 +2130,34 @@ func runStartupMigrations(db *sql.DB) {
 		// template so copy edits stay in sync; conversations for the embedded
 		// creative agent live in their own tables (EDITH's list stays clean).
 		{"add_mailing_creatives_template_id", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS template_id UUID`},
+		// Creative Studio approval + money-link-test surface (creatives_registry.go
+		// approve/reject/money-link-check endpoints). approval_status ∈
+		// pending|approved|rejected; money_link_status ∈ untested|pass|warn|dead.
+		// All idempotent ADD COLUMN IF NOT EXISTS — re-run-safe on every boot.
+		{"add_mailing_creatives_approval_status", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending'`},
+		{"add_mailing_creatives_approved_by", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS approved_by TEXT NOT NULL DEFAULT ''`},
+		{"add_mailing_creatives_approved_at", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`},
+		{"add_mailing_creatives_money_link_status", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS money_link_status TEXT NOT NULL DEFAULT 'untested'`},
+		{"add_mailing_creatives_money_link_checked_at", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS money_link_checked_at TIMESTAMPTZ`},
+		{"add_mailing_creatives_money_link_detail", `ALTER TABLE mailing_creatives ADD COLUMN IF NOT EXISTS money_link_detail TEXT NOT NULL DEFAULT ''`},
+		// PMTA deployment audit ledger — created here so it exists at boot; a
+		// separate builder (the deploy path) WRITES the row at deploy time. One
+		// immutable row per deployed campaign (campaign_id UNIQUE) capturing the
+		// exact html sha256 + money links + recipient count that shipped.
+		{"create_mailing_pmta_deployment_audits", `CREATE TABLE IF NOT EXISTS mailing_pmta_deployment_audits (
+			id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			campaign_id      UUID NOT NULL UNIQUE,
+			organization_id  UUID NOT NULL,
+			offer_key        TEXT NOT NULL DEFAULT '',
+			html_sha256      TEXT NOT NULL DEFAULT '',
+			money_links      JSONB NOT NULL DEFAULT '[]',
+			sending_domain   TEXT NOT NULL DEFAULT '',
+			total_recipients INT NOT NULL DEFAULT 0,
+			deployed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_pmta_audit_campaign", `CREATE INDEX IF NOT EXISTS idx_pmta_audit_campaign ON mailing_pmta_deployment_audits(campaign_id)`},
+		{"idx_pmta_audit_org", `CREATE INDEX IF NOT EXISTS idx_pmta_audit_org ON mailing_pmta_deployment_audits(organization_id, deployed_at DESC)`},
 		{"create_creative_agent_conversations", `CREATE TABLE IF NOT EXISTS creative_agent_conversations (
 			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			organization_id UUID NOT NULL,

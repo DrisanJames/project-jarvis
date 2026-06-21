@@ -66,6 +66,21 @@ type offerJourneyMapRow struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// offerSlugMapRow mirrors a row of mailing_offer_slug_map — the cratoolpro
+// slug → Everflow offer_id inlet that the click-postback / attribution path
+// resolves an inbound click against. Read-only here (seeded in migrations,
+// no admin write endpoints); exposed so the operator validator and portal
+// can inspect the live inlet without a DB session.
+type offerSlugMapRow struct {
+	CratoolproSlug  string    `json:"cratoolpro_slug"`
+	EverflowOfferID string    `json:"everflow_offer_id"`
+	OfferName       string    `json:"offer_name"`
+	Enabled         bool      `json:"enabled"`
+	Notes           string    `json:"notes"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 // payoutTypeAllowed mirrors the CHECK constraint on mailing_offer_journey_map.
 // Keep this in lockstep with the migration in cmd/server/main.go
 // (jun01_click_drip_offer_journey_map_payout_chk) — any drift here lets
@@ -355,6 +370,49 @@ func (h *ClickDripAdminHandlers) ListOfferJourneyMap(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, map[string]interface{}{"data": out})
 }
 
+// ─── offer slug map: list (read-only) ──────────────────────────────────────
+
+// ListOfferSlugMap — GET /api/mailing/offer-slug-map
+//
+// Returns every row of mailing_offer_slug_map ordered by cratoolpro_slug ASC.
+// This table is the cratoolpro-slug → Everflow offer_id inlet for the
+// click-drip / attribution path; it is seeded only in migrations and has no
+// write endpoints, so this list is read-only by design. Tiny table (one row
+// per live slug), so no pagination / filter parameters are needed.
+func (h *ClickDripAdminHandlers) ListOfferSlugMap(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.db.QueryContext(r.Context(), `
+		SELECT cratoolpro_slug, everflow_offer_id,
+		       COALESCE(offer_name, ''), enabled,
+		       COALESCE(notes, ''), created_at, updated_at
+		FROM mailing_offer_slug_map
+		ORDER BY cratoolpro_slug ASC
+	`)
+	if err != nil {
+		writeClickDripError(w, "list_offer_slug_map_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	out := make([]offerSlugMapRow, 0)
+	for rows.Next() {
+		var row offerSlugMapRow
+		if err := rows.Scan(
+			&row.CratoolproSlug, &row.EverflowOfferID, &row.OfferName,
+			&row.Enabled, &row.Notes, &row.CreatedAt, &row.UpdatedAt,
+		); err != nil {
+			writeClickDripError(w, "scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		writeClickDripError(w, "rows_err: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"data": out})
+}
+
 // ─── offer journey map: upsert ─────────────────────────────────────────────
 
 type upsertOfferJourneyMapRequest struct {
@@ -473,4 +531,7 @@ func RegisterClickDripAdminRoutes(r chi.Router, db *sql.DB) {
 	r.Get("/offer-journey-map", h.ListOfferJourneyMap)
 	r.Put("/offer-journey-map/{everflow_offer_id}", h.UpsertOfferJourneyMap)
 	r.Delete("/offer-journey-map/{everflow_offer_id}", h.DeleteOfferJourneyMap)
+	// Read-only inlet inspector — slug map is seeded in migrations and has
+	// no write endpoints, so GET only (no PUT/POST/DELETE).
+	r.Get("/offer-slug-map", h.ListOfferSlugMap)
 }

@@ -12,6 +12,7 @@ import {
   faRobot,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
+import { useToast } from '../shared/ToastSystem';
 
 // Creative Studio v2 — the ReviewForge email builder, centralized in the
 // portal. Builder renders through the engine sidecar (byte-identical to the
@@ -57,6 +58,33 @@ interface CreativeMeta {
   source: string;
   generated_at: string;
   html_bytes: number;
+  // Approval + money-link spot-check (joined onto the registry row by the API).
+  approval_status?: 'pending' | 'approved' | 'rejected';
+  approved_by?: string;
+  approved_at?: string | null;
+  money_link_status?: 'untested' | 'pass' | 'warn' | 'dead';
+  money_link_checked_at?: string | null;
+  money_link_detail?: string;
+}
+
+type CreativeAction = 'check' | 'proof' | 'approve' | 'reject';
+
+interface MoneyLinkFinding {
+  level: string;
+  code: string;
+  detail: string;
+}
+
+interface MoneyLinkCheckResponse {
+  money_link_status: CreativeMeta['money_link_status'];
+  detail?: string;
+  findings?: MoneyLinkFinding[];
+}
+
+interface SendProofResponse {
+  status: 'sent' | 'error';
+  message_id?: string;
+  error?: string;
 }
 
 interface ChatMsg {
@@ -89,6 +117,32 @@ const chipStyle = (active: boolean): React.CSSProperties => ({
   padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
 });
 
+const badgeStyle = (fg: string): React.CSSProperties => ({
+  display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+  fontSize: 11, fontWeight: 600, lineHeight: 1.4,
+  color: fg, background: `${fg}1f`, border: `1px solid ${fg}55`,
+  whiteSpace: 'nowrap',
+});
+
+function approvalColor(status: CreativeMeta['approval_status']): string {
+  if (status === 'approved') return '#00b894';
+  if (status === 'rejected') return '#e94560';
+  return '#fdcb6e'; // pending / undefined
+}
+
+function moneyLinkColor(status: CreativeMeta['money_link_status']): string {
+  if (status === 'pass') return '#00b894';
+  if (status === 'warn') return '#f59e0b';
+  if (status === 'dead') return '#ef4444';
+  return '#94a3b8'; // untested / undefined
+}
+
+const smallBtnStyle = (bg: string, border: string): React.CSSProperties => ({
+  background: bg, border: `1px solid ${border}`, borderRadius: 5,
+  color: '#e5e7eb', padding: '3px 8px', fontSize: 11, cursor: 'pointer',
+  fontWeight: 600, whiteSpace: 'nowrap',
+});
+
 // Minimal markdown for agent replies (bold, inline code, line breaks).
 function renderAgentText(text: string): React.ReactNode {
   return text.split('\n').map((line, i) => {
@@ -110,6 +164,7 @@ function renderAgentText(text: string): React.ReactNode {
 }
 
 export const CreativeStudio: React.FC = () => {
+  const { addToast } = useToast();
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [brands, setBrands] = useState<StudioBrand[]>([]);
   const [view, setView] = useState<'builder' | 'library'>('builder');
@@ -143,6 +198,12 @@ export const CreativeStudio: React.FC = () => {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [selected, setSelected] = useState<CreativeMeta | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  // Approval / money-link spot-check controls.
+  const [proofEmail, setProofEmail] = useState('');
+  // Per-creative in-flight state, keyed "<id>:<action>".
+  const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
+  // Which creative has its inline approve-confirm armed.
+  const [approveArmed, setApproveArmed] = useState<string | null>(null);
 
   // Agent state
   const [chatOpen, setChatOpen] = useState(true);
@@ -194,6 +255,14 @@ export const CreativeStudio: React.FC = () => {
   useEffect(() => {
     if (view === 'library') fetchLibrary();
   }, [view, fetchLibrary]);
+
+  // Keep the right-hand preview's selected row in sync with refreshed metadata
+  // (approval / money-link status) without dropping the loaded previewHtml.
+  useEffect(() => {
+    if (!selected) return;
+    const fresh = creatives.find((c) => c.id === selected.id);
+    if (fresh && fresh !== selected) setSelected(fresh);
+  }, [creatives, selected]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -272,6 +341,114 @@ export const CreativeStudio: React.FC = () => {
       setPreviewHtml(`<p>preview failed: ${err instanceof Error ? err.message : String(err)}</p>`);
     }
   }, []);
+
+  const flightKey = (id: string, action: CreativeAction) => `${id}:${action}`;
+  const isInFlight = useCallback(
+    (id: string, action: CreativeAction) => Boolean(inFlight[flightKey(id, action)]),
+    [inFlight],
+  );
+  const setFlight = useCallback((id: string, action: CreativeAction, on: boolean) => {
+    setInFlight((cur) => ({ ...cur, [flightKey(id, action)]: on }));
+  }, []);
+
+  // Run the money-link spot-check. Toasts the verdict; a `dead` result raises an
+  // error toast carrying the detail (the in-app "spot-check" alert).
+  const checkMoneyLink = useCallback(async (c: CreativeMeta) => {
+    if (isInFlight(c.id, 'check')) return;
+    setFlight(c.id, 'check', true);
+    try {
+      const res = await apiFetch(`/api/mailing/creatives/${c.id}/money-link-check`, {
+        method: 'POST',
+        body: JSON.stringify({ http: true }),
+        credentials: 'include',
+      });
+      const json: MoneyLinkCheckResponse & { error?: string } = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      const status = json.money_link_status;
+      const detail = json.detail || '';
+      if (status === 'dead') {
+        addToast({ type: 'error', title: `Money-link DEAD — ${c.offer_key} (${c.brand_code})`, message: detail });
+      } else if (status === 'warn') {
+        addToast({ type: 'warning', title: `Money-link WARN — ${c.offer_key} (${c.brand_code})`, message: detail });
+      } else if (status === 'pass') {
+        addToast({ type: 'success', title: `Money-link OK — ${c.offer_key} (${c.brand_code})`, message: detail || undefined });
+      } else {
+        addToast({ type: 'info', title: `Money-link ${status ?? 'untested'} — ${c.offer_key}`, message: detail || undefined });
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Money-link check failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setFlight(c.id, 'check', false);
+      fetchLibrary();
+    }
+  }, [isInFlight, setFlight, addToast, fetchLibrary]);
+
+  const sendProof = useCallback(async (c: CreativeMeta) => {
+    if (isInFlight(c.id, 'proof')) return;
+    const to = proofEmail.trim();
+    if (!to) {
+      addToast({ type: 'warning', title: 'Proof recipient needed', message: 'Enter a test email in the library header first.' });
+      return;
+    }
+    setFlight(c.id, 'proof', true);
+    try {
+      const res = await apiFetch(`/api/mailing/creatives/${c.id}/send-proof`, {
+        method: 'POST',
+        body: JSON.stringify({ to_email: to }),
+        credentials: 'include',
+      });
+      const json: SendProofResponse & { error?: string } = await res.json();
+      if (!res.ok || json.status === 'error') {
+        throw new Error(json.error || json.message_id || `HTTP ${res.status}`);
+      }
+      addToast({ type: 'success', title: `Proof sent → ${to}`, message: json.message_id ? `message ${json.message_id}` : undefined });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Proof send failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setFlight(c.id, 'proof', false);
+    }
+  }, [isInFlight, setFlight, proofEmail, addToast]);
+
+  const approveCreative = useCallback(async (c: CreativeMeta) => {
+    if (isInFlight(c.id, 'approve')) return;
+    setFlight(c.id, 'approve', true);
+    try {
+      const res = await apiFetch(`/api/mailing/creatives/${c.id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+        credentials: 'include',
+      });
+      const json: { error?: string } = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      addToast({ type: 'success', title: `Approved — ${c.offer_key} (${c.brand_code})` });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Approve failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setApproveArmed(null);
+      setFlight(c.id, 'approve', false);
+      fetchLibrary();
+    }
+  }, [isInFlight, setFlight, addToast, fetchLibrary]);
+
+  const rejectCreative = useCallback(async (c: CreativeMeta) => {
+    if (isInFlight(c.id, 'reject')) return;
+    setFlight(c.id, 'reject', true);
+    try {
+      const res = await apiFetch(`/api/mailing/creatives/${c.id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+        credentials: 'include',
+      });
+      const json: { error?: string } = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      addToast({ type: 'warning', title: `Rejected — ${c.offer_key} (${c.brand_code})` });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Reject failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setFlight(c.id, 'reject', false);
+      fetchLibrary();
+    }
+  }, [isInFlight, setFlight, addToast, fetchLibrary]);
 
   const sendChat = useCallback(async () => {
     const text = chatInput.trim();
@@ -528,13 +705,22 @@ export const CreativeStudio: React.FC = () => {
             </>
           ) : (
             <>
-              <div style={{ flex: '0 0 480px', overflowY: 'auto' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <div style={{ flex: '0 0 760px', overflowY: 'auto' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <button onClick={fetchLibrary} style={btnStyle('#1e293b', '#334155')}>
                     <FontAwesomeIcon icon={faRotate} spin={libraryLoading} /> Refresh
                   </button>
                   <span style={{ fontSize: 12, color: '#94a3b8' }}>
                     {creatives.length} creatives · manage in Content Library → “Creative Studio”
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>Proof to</label>
+                    <input
+                      value={proofEmail}
+                      onChange={(e) => setProofEmail(e.target.value)}
+                      placeholder="test@example.com"
+                      style={{ ...inputStyle, width: 180, padding: '5px 8px' }}
+                    />
                   </span>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -544,6 +730,9 @@ export const CreativeStudio: React.FC = () => {
                       <th style={{ padding: '6px 8px' }}>Brand</th>
                       <th style={{ padding: '6px 8px' }}>Date</th>
                       <th style={{ padding: '6px 8px' }}>Source</th>
+                      <th style={{ padding: '6px 8px' }}>Approval</th>
+                      <th style={{ padding: '6px 8px' }}>Money-Link</th>
+                      <th style={{ padding: '6px 8px' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -554,10 +743,64 @@ export const CreativeStudio: React.FC = () => {
                         <td style={{ padding: '6px 8px' }}>{c.brand_code}</td>
                         <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{new Date(c.generated_at).toLocaleDateString()}</td>
                         <td style={{ padding: '6px 8px', color: c.source === 'studio' ? '#a78bfa' : '#94a3b8' }}>{c.source}</td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <span style={badgeStyle(approvalColor(c.approval_status))} title={c.approved_by ? `by ${c.approved_by}` : undefined}>
+                            {c.approval_status ?? 'pending'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <span style={badgeStyle(moneyLinkColor(c.money_link_status))} title={c.money_link_detail || undefined}>
+                            {c.money_link_status ?? 'untested'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '6px 8px' }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            <button
+                              disabled={isInFlight(c.id, 'check')}
+                              onClick={() => checkMoneyLink(c)}
+                              style={{ ...smallBtnStyle('#1e293b', '#334155'), opacity: isInFlight(c.id, 'check') ? 0.5 : 1 }}>
+                              Check
+                            </button>
+                            <button
+                              disabled={isInFlight(c.id, 'proof')}
+                              onClick={() => sendProof(c)}
+                              style={{ ...smallBtnStyle('#1e293b', '#334155'), opacity: isInFlight(c.id, 'proof') ? 0.5 : 1 }}>
+                              Proof
+                            </button>
+                            {approveArmed === c.id ? (
+                              <>
+                                <button
+                                  disabled={isInFlight(c.id, 'approve')}
+                                  onClick={() => approveCreative(c)}
+                                  style={{ ...smallBtnStyle('rgba(0,184,148,0.18)', '#00b894'), color: '#00b894', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
+                                  Confirm
+                                </button>
+                                <button
+                                  onClick={() => setApproveArmed(null)}
+                                  style={smallBtnStyle('#1e293b', '#334155')}>
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                disabled={isInFlight(c.id, 'approve')}
+                                onClick={() => setApproveArmed(c.id)}
+                                style={{ ...smallBtnStyle('rgba(0,184,148,0.12)', '#00b894'), color: '#00b894', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
+                                Approve
+                              </button>
+                            )}
+                            <button
+                              disabled={isInFlight(c.id, 'reject')}
+                              onClick={() => rejectCreative(c)}
+                              style={{ ...smallBtnStyle('rgba(233,69,96,0.12)', '#e94560'), color: '#e94560', opacity: isInFlight(c.id, 'reject') ? 0.5 : 1 }}>
+                              Reject
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                     {!libraryLoading && creatives.length === 0 && (
-                      <tr><td colSpan={4} style={{ padding: 16, color: '#94a3b8' }}>No creatives yet.</td></tr>
+                      <tr><td colSpan={7} style={{ padding: 16, color: '#94a3b8' }}>No creatives yet.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -569,8 +812,28 @@ export const CreativeStudio: React.FC = () => {
                       <div style={{ fontWeight: 600 }}>{selected.subject}</div>
                       <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>{selected.filename}</div>
                     </div>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8,
+                      padding: '8px 10px', background: '#0f172a', border: '1px solid #1f2937', borderRadius: 8,
+                    }}>
+                      <span style={badgeStyle(approvalColor(selected.approval_status))} title={selected.approved_by ? `by ${selected.approved_by}` : undefined}>
+                        {selected.approval_status ?? 'pending'}
+                      </span>
+                      <span style={badgeStyle(moneyLinkColor(selected.money_link_status))}>
+                        money-link: {selected.money_link_status ?? 'untested'}
+                      </span>
+                      {selected.money_link_detail && (
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>{selected.money_link_detail}</span>
+                      )}
+                      <button
+                        disabled={isInFlight(selected.id, 'check')}
+                        onClick={() => checkMoneyLink(selected)}
+                        style={{ ...smallBtnStyle('#1e293b', '#334155'), marginLeft: 'auto', opacity: isInFlight(selected.id, 'check') ? 0.5 : 1 }}>
+                        <FontAwesomeIcon icon={faRotate} spin={isInFlight(selected.id, 'check')} /> Run money-link check
+                      </button>
+                    </div>
                     <iframe title="library-preview" sandbox="" srcDoc={previewHtml ?? '<p style="font-family:sans-serif;color:#64748b">loading…</p>'}
-                      style={{ width: '100%', height: 'calc(100% - 44px)', background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                      style={{ width: '100%', height: 'calc(100% - 108px)', background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
                   </>
                 ) : (
                   <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>Select a creative to preview.</div>

@@ -298,6 +298,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Route("/creatives", func(c chi.Router) {
 				c.Get("/", creativesRegistry.HandleList)
 				c.Get("/{id}/preview", creativesRegistry.HandlePreview)
+				// Approval + money-link-test surface (creatives_registry.go).
+				c.Post("/{id}/approve", creativesRegistry.HandleApprove)
+				c.Post("/{id}/reject", creativesRegistry.HandleReject)
+				c.Post("/{id}/money-link-check", creativesRegistry.HandleMoneyLinkCheck)
+				// Send a single proof of a registry creative (creative_proof_send.go),
+				// reusing the offer proof-send machinery (PMTA + tracking injection).
+				creativeProofSvc := NewProofSendHandler(db)
+				c.Post("/{id}/send-proof", creativeProofSvc.HandleCreativeProof)
 			})
 
 			// Creative Studio v2 — ReviewForge engine sidecar orchestration +
