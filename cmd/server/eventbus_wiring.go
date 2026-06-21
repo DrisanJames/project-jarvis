@@ -89,6 +89,25 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 	}
 	h.prod = prod
 
+	// Ensure the topics exist. MSK Serverless does not reliably honor client-side
+	// producer auto-create, so when KAFKA_ALLOW_AUTO_TOPICS is set we create them
+	// explicitly from here (the only in-VPC component that can reach the private
+	// brokers). Delete-policy only — Serverless does not support compaction, and
+	// the suppression flow (the compacted topic) is OFF in this configuration.
+	if cfg.AllowAutoTopics {
+		specs := []eventbus.TopicSpec{
+			{Name: eventbus.TopicLake, Partitions: 12},
+			{Name: eventbus.TopicIngest, Partitions: 12},
+			{Name: eventbus.TopicLake + ".dlq", Partitions: 3},
+			{Name: eventbus.TopicIngest + ".dlq", Partitions: 3},
+		}
+		if err := eventbus.EnsureTopics(ctx, cfg, specs); err != nil {
+			log.Printf("[eventbus] EnsureTopics: %v (producer may fail until topics exist)", err)
+		} else {
+			log.Println("[eventbus] topics ensured (evt.lake.v1, evt.ingest.v1, + .dlq)")
+		}
+	}
+
 	// One Tap per flow over the SAME producer. Each is still individually
 	// flag-gated inside publish.go, so a wired-but-flag-off flow is a no-op.
 	h.lakeTap = eventbus.NewTap(prod)
