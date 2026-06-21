@@ -109,6 +109,7 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"dt":                 dtRe,
 	"event_type":         tokenRe,
 	"isp_group":          tokenRe,
+	"isp":                tokenRe, // CLEAN ISP — computed from the real recipient domain (see ispExpr)
 	"brand":              dottedRe, // brands are apex domains ("discountblog.com")
 	"email_domain":       dottedRe, // recipient domains contain dots
 	"route_type":         tokenRe,
@@ -131,20 +132,46 @@ var boolRe = regexp.MustCompile(`^(true|false)$`)
 // The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
 const localDtExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE 'America/Denver', '%Y-%m-%d')"
 
+// ispExpr is the CLEAN ISP classification — computed from the REAL recipient domain
+// (parsed from the `email` field), NOT the stored `isp_group`/`email_domain`. The stored
+// fields carry PMTA *.queue names (aol.queue/att.queue/yahoo.queue) that mis-bucket aol/yahoo
+// (operator stats deep-dive 2026-06-20). Mirrors gen_cap_planner.ISP_CASE so the analytics UI,
+// the cap sheets, and ad-hoc queries all agree. Grain is granular (verizon/sbcglobal kept distinct).
+const ispDomainExpr = "lower(split_part(email, '@', 2))"
+const ispExpr = "CASE" +
+	" WHEN " + ispDomainExpr + " IN ('outlook.com','hotmail.com','live.com','msn.com','hotmail.co.uk','windowslive.com','passport.com','outlook.co.uk') THEN 'microsoft'" +
+	" WHEN " + ispDomainExpr + " IN ('gmail.com','googlemail.com') THEN 'gmail'" +
+	" WHEN " + ispDomainExpr + " IN ('yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.ca') THEN 'yahoo'" +
+	" WHEN " + ispDomainExpr + " IN ('icloud.com','me.com','mac.com') THEN 'apple'" +
+	" WHEN " + ispDomainExpr + " = 'comcast.net' THEN 'comcast'" +
+	" WHEN " + ispDomainExpr + " = 'aol.com' THEN 'aol'" +
+	" WHEN " + ispDomainExpr + " = 'att.net' THEN 'att'" +
+	" WHEN " + ispDomainExpr + " = 'sbcglobal.net' THEN 'sbcglobal'" +
+	" WHEN " + ispDomainExpr + " = 'cox.net' THEN 'cox'" +
+	" WHEN " + ispDomainExpr + " IN ('charter.net','spectrum.net') THEN 'charter'" +
+	" WHEN " + ispDomainExpr + " = 'verizon.net' THEN 'verizon'" +
+	" ELSE 'other' END"
+
 // dimSelect / dimGroup render a dimension for the SELECT and GROUP BY lists.
 // Plain columns pass through; local_dt is computed (aliased in SELECT, raw
 // expression in GROUP BY — Athena does not allow grouping by the alias when
 // it shadows nothing).
 func dimSelect(d string) string {
-	if d == "local_dt" {
+	switch d {
+	case "local_dt":
 		return localDtExpr + " AS local_dt"
+	case "isp":
+		return ispExpr + " AS isp"
 	}
 	return d
 }
 
 func dimGroup(d string) string {
-	if d == "local_dt" {
+	switch d {
+	case "local_dt":
 		return localDtExpr
+	case "isp":
+		return ispExpr
 	}
 	return d
 }
@@ -557,6 +584,10 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 			b.WriteString(f.Eq[col]) // validated true|false — unquoted boolean
 		case "local_dt":
 			b.WriteString(localDtExpr)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		case "isp":
+			b.WriteString(ispExpr)
 			b.WriteString(" = ")
 			b.WriteString(sqlStr(f.Eq[col]))
 		default:

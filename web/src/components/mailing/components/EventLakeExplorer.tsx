@@ -737,7 +737,8 @@ function filterParams(f: AppliedFilters): Record<string, string> {
 const COMMON_ISP_GROUPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast', 'charter', 'att', 'verizon', 'other'];
 
 const ROW_DIMS: Array<{ id: string; label: string }> = [
-  { id: 'isp_group', label: 'ISP Group' },
+  { id: 'isp', label: 'ISP' },                       // clean — from real recipient domain (truthful)
+  { id: 'isp_group', label: 'ISP Group (raw)' },     // raw stored field — carries PMTA *.queue noise
   { id: 'brand', label: 'Brand' },
   { id: 'email_domain', label: 'Email Domain' },
   { id: 'route_type', label: 'Route Type' },
@@ -1480,7 +1481,7 @@ interface DimFetched {
 
 const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
-  const [dim, setDim] = useState('isp_group');
+  const [dim, setDim] = useState('isp');
   const [fetched, setFetched] = useState<DimFetched | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1753,7 +1754,7 @@ const CampaignTab: React.FC<{
     const lakeFilters = { campaign_id: id };
     const [a, b, c, d] = await Promise.allSettled([
       fetchBreakdown({ from: f, to: t, groupBy: ['event_type'], limit: 5000, filters: lakeFilters }, 0, { signal: ctl.signal, bypass: true }),
-      fetchBreakdown({ from: f, to: t, groupBy: ['isp_group', 'event_type'], limit: 5000, filters: lakeFilters }, 0, { signal: ctl.signal, bypass: true }),
+      fetchBreakdown({ from: f, to: t, groupBy: ['isp', 'event_type'], limit: 5000, filters: lakeFilters }, 0, { signal: ctl.signal, bypass: true }),
       fetchCampaignSummary(id, ctl.signal),
       fetchLakeEvents({ campaign_id: id, limit: 100 }, { signal: ctl.signal }),
     ]);
@@ -1812,7 +1813,7 @@ const CampaignTab: React.FC<{
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const ispPivot = useMemo(() => pivotByDim(result?.ispRows || [], 'isp_group'), [result]);
+  const ispPivot = useMemo(() => pivotByDim(result?.ispRows || [], 'isp'), [result]);
   const onIspSort = (col: string) => setIspSort((s) =>
     s.col === col ? { col, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
 
