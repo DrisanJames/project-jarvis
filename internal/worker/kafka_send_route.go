@@ -121,19 +121,10 @@ func kafkaRouteWave(waveID, campaignID string) bool {
 // install the producer. It does NOT consult the producer (the wiring sets the
 // producer based on this), so it is a pure env read.
 func KafkaSendQueueEnabled() bool {
-	if envTruthy(os.Getenv("KAFKA_SEND_QUEUE_ENABLED")) {
-		return true
-	}
-	if envTruthy(os.Getenv("KAFKA_SEND_QUEUE_ALL")) {
-		return true
-	}
-	if strings.TrimSpace(os.Getenv("KAFKA_SEND_QUEUE_WAVES")) != "" {
-		return true
-	}
-	if strings.TrimSpace(os.Getenv("KAFKA_SEND_QUEUE_CAMPAIGNS")) != "" {
-		return true
-	}
-	return false
+	// Delegate to the canonical low-level gate (sendqueue.SendRouteEnabled) so the
+	// wiring gate here and the bypass-blocking gate in api/mailing/repository can
+	// never drift — same env names, same semantics, one implementation.
+	return sendqueue.SendRouteEnabled()
 }
 
 // produceQueueCommand builds a SendCommand carrying the FULL queue row and

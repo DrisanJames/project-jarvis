@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 )
 
 // Store provides database operations for mailing entities
@@ -461,6 +462,16 @@ func (s *Store) IncrementServerUsage(ctx context.Context, serverID uuid.UUID) er
 func (s *Store) EnqueueEmails(ctx context.Context, items []*QueueItem) error {
 	if len(items) == 0 {
 		return nil
+	}
+
+	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
+	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This legacy
+	// Store.EnqueueEmails path (CampaignSender.PrepareCampaign, not wired into the
+	// live PMTA wave flow) INSERTs directly; BLOCK it loudly so any unexpected use
+	// is a visible, Kafka-attributable failure rather than a silent bypass. Dark
+	// default (routing OFF): no-op, byte-identical to today.
+	if sendqueue.SendRouteEnabled() {
+		return fmt.Errorf("kafka-route: BLOCKED direct enqueue at mailing.Store.EnqueueEmails — Kafka routing is ON; this path must be routed")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

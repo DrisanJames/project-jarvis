@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
@@ -1542,6 +1543,20 @@ func (s *PMTACampaignService) HandleRetryCampaign(w http.ResponseWriter, r *http
 func (s *PMTACampaignService) HandleTriggerSend(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := s.orgID
+
+	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer
+	// (QueueWriterConsumer) is the ONLY thing permitted to INSERT into
+	// mailing_campaign_queue. This manual/admin trigger-send is a LEGACY bypass
+	// that INSERTs directly; BLOCK it loudly so any unexpected use is a visible,
+	// Kafka-attributable failure rather than a silent bypass of the hard path.
+	// When routing is OFF (the dark default) this guard is a no-op and the path
+	// behaves byte-identically to today.
+	if sendqueue.SendRouteEnabled() {
+		log.Printf("[kafka-route] BLOCKED direct enqueue at api.HandleTriggerSend — Kafka routing is ON; this path must be routed")
+		respondJSON(w, 409, map[string]string{"error": "kafka send-routing is ON: direct trigger-send enqueue is disabled; sends route through the Kafka send path"})
+		return
+	}
+
 	campaignID := r.URL.Query().Get("campaign_id")
 
 	if campaignID == "" {

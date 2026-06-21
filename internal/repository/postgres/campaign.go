@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/domain"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 	"github.com/ignite/sparkpost-monitor/internal/service/campaign"
 )
 
@@ -201,6 +202,16 @@ func (r *CampaignRepo) UpdateStatus(ctx context.Context, orgID, id string, statu
 }
 
 func (r *CampaignRepo) EnqueueSubscribers(ctx context.Context, orgID, campaignID string, batchSize int) (int, error) {
+	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
+	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This DDD
+	// repository enqueue path (internal/service/campaign, not wired into cmd/ — no
+	// live caller) INSERTs directly; BLOCK it loudly so any unexpected use is a
+	// visible, Kafka-attributable failure rather than a silent bypass. Dark
+	// default (routing OFF): no-op, byte-identical to today.
+	if sendqueue.SendRouteEnabled() {
+		return 0, fmt.Errorf("kafka-route: BLOCKED direct enqueue at postgres.CampaignRepo.EnqueueSubscribers — Kafka routing is ON; this path must be routed")
+	}
+
 	// Resolve list_id from campaign
 	var listID sql.NullString
 	if err := r.db.QueryRowContext(ctx, `

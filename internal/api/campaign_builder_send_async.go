@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 )
 
@@ -114,6 +115,17 @@ func (cb *CampaignBuilder) HandleSetThrottle(w http.ResponseWriter, r *http.Requ
 func (cb *CampaignBuilder) HandleSendCampaignAsync(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
+
+	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
+	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This legacy
+	// list/segment async-enqueue path INSERTs directly (enqueueCampaignAsync);
+	// BLOCK it loudly so any unexpected use is a visible, Kafka-attributable
+	// failure rather than a silent bypass. Dark default (routing OFF): no-op.
+	if sendqueue.SendRouteEnabled() {
+		log.Printf("[kafka-route] BLOCKED direct enqueue at api.HandleSendCampaignAsync — Kafka routing is ON; this path must be routed")
+		http.Error(w, `{"error":"kafka send-routing is ON: legacy async enqueue is disabled; sends route through the Kafka send path"}`, http.StatusConflict)
+		return
+	}
 
 	// Acquire distributed lock to prevent duplicate sends from concurrent API calls
 	lock := distlock.NewLock(cb.redisClient, cb.db, fmt.Sprintf("campaign:%s", id), 10*time.Minute)
@@ -299,6 +311,16 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 		return
 	}
 	defer rows.Close()
+
+	// SK-5 defensive guard: should be unreachable because HandleSendCampaignAsync
+	// blocks at entry when routing is ON, but if this background enqueuer is ever
+	// invoked while Kafka is the hard send path, refuse to direct-INSERT — fail the
+	// campaign loudly instead of silently bypassing Kafka.
+	if sendqueue.SendRouteEnabled() {
+		log.Printf("[kafka-route] BLOCKED direct enqueue at api.enqueueCampaignAsync — Kafka routing is ON; this path must be routed")
+		cb.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed' WHERE id = $1`, campaignID)
+		return
+	}
 
 	// Insert into queue
 	var queued int

@@ -450,12 +450,15 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 		idempotencyKey := outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID)
 		queueID := uuid.New()
 
-		// SK-4 producer fork: when this wave is routed to Kafka, PRODUCE the
+		// SK-5 HARD SEND PATH: when this wave is routed to Kafka, PRODUCE the
 		// full-row command to send.commands.v1 INSTEAD of inserting directly; the
-		// QueueWriterConsumer runs the SAME INSERT. On ANY produce failure, fall
-		// back to the direct INSERT for this recipient (NEVER drop). When NOT
-		// routed (the default), the direct INSERT runs exactly as before.
-		writtenViaKafka := false
+		// QueueWriterConsumer runs the SAME INSERT. Kafka is now the HARD send path:
+		// on ANY produce failure we DO NOT fall back to a direct INSERT — we fail
+		// the wave enqueue loudly. The surrounding transaction rolls back (no
+		// partial INSERTs land), the plan_recipients stay 'selected', and the
+		// PMTAWaveScheduler re-dispatches the wave. No recipient is dropped; the
+		// row is simply written later, via Kafka. When NOT routed (the default,
+		// dark path), the direct INSERT below runs exactly as before.
 		if p.routeToKafka {
 			cmd := buildSendCommand(
 				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
@@ -463,12 +466,10 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 				rec.selectionRank, p.scheduledAt, uuid.Nil,
 			)
 			if perr := produceQueueCommand(ctx, cmd); perr != nil {
-				log.Printf("[WaveEnqueue] wave %s: Kafka produce FAILED for key=%s (%v) — falling back to direct INSERT (no drop)", p.waveID, idempotencyKey, perr)
-			} else {
-				writtenViaKafka = true
+				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)
+				return 0, 0, 0, 0, fmt.Errorf("kafka-route: produce failed for wave %s key %s: %w", p.waveID, idempotencyKey, perr)
 			}
-		}
-		if !writtenViaKafka {
+		} else {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO mailing_campaign_queue (
 					id, campaign_id, subscriber_id, subject, html_content, plain_content,
@@ -652,23 +653,27 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 			reserveUsedCount++
 		}
 
-		// SK-4 producer fork: when routed, PRODUCE the full-row command to
+		// SK-5 HARD SEND PATH: when routed, PRODUCE the full-row command to
 		// send.commands.v1 (the set-based path leaves HTML/plain empty and carries
 		// content_snapshot_id, exactly like the direct INSERT's NULL,NULL + $5).
-		// On ANY produce failure, fall through to the direct-INSERT arrays for
-		// this recipient (NEVER drop). When NOT routed (default), every recipient
-		// goes to the direct-INSERT arrays unchanged.
+		// Kafka is now the HARD send path: on ANY produce failure we DO NOT fall
+		// back to a direct INSERT — we fail the wave enqueue loudly. The
+		// surrounding transaction rolls back (the batched INSERT below never runs,
+		// no partial rows land), the plan_recipients stay 'selected', and the
+		// PMTAWaveScheduler re-dispatches the wave. No recipient is dropped; the
+		// rows are written later, via Kafka. When NOT routed (default), every
+		// recipient goes to the direct-INSERT arrays unchanged.
 		if p.routeToKafka {
 			cmd := buildSendCommand(
 				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
 				recipientSubject, "", "", rec.recipientISP, rec.audienceSourceType, nullStringToSource(normSource),
 				rec.selectionRank, p.scheduledAt, snapshotID,
 			)
-			if perr := produceQueueCommand(ctx, cmd); perr == nil {
-				continue // written to Kafka; skip the direct-INSERT arrays
-			} else {
-				log.Printf("[WaveEnqueue] wave %s: Kafka produce FAILED for key=%s (%v) — falling back to direct INSERT (no drop)", p.waveID, idempotencyKey, perr)
+			if perr := produceQueueCommand(ctx, cmd); perr != nil {
+				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)
+				return 0, 0, 0, 0, fmt.Errorf("kafka-route: produce failed for wave %s key %s: %w", p.waveID, idempotencyKey, perr)
 			}
+			continue // written to Kafka; skip the direct-INSERT arrays
 		}
 
 		sourceIDs = append(sourceIDs, normSource)
