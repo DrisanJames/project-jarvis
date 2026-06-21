@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -100,7 +101,54 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 	h.pub.Publish(r.Context(), evt)
 
 	log.Printf("CLICK campaign=%s subscriber=%s url=%s", evt.CampaignID, evt.SubscriberID, originalURL)
-	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, applyDeadLinkRemap(originalURL), http.StatusTemporaryRedirect)
+}
+
+// deadLinkRemap repoints money links whose offer destination went dead AFTER
+// the email was sent, so clicks on already-mailed messages are salvaged without
+// re-mailing. The click event above still logs the true original URL; only the
+// redirect target changes. Remove an entry once its offer is retired.
+//
+// jun21 Metal Roofing dead-link incident (2026-06-21): cratoolpro offer J78S2MD
+// went dead; live destination is the k8k0hfdt smartlink. (Mirrors the same map
+// in internal/api/mailing_tracking.go — the public t.em/track/click path is
+// served by THIS tracking service, so the fix must live here too.)
+var deadLinkRemap = []struct{ match, to string }{
+	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/"},
+}
+
+func applyDeadLinkRemap(rawURL string) string {
+	for _, m := range deadLinkRemap {
+		if strings.Contains(rawURL, m.match) {
+			return carryAttribution(m.to, rawURL)
+		}
+	}
+	return rawURL
+}
+
+// carryAttribution copies per-subscriber attribution params (source_id, sub1,
+// sub2, sub3) from the original rendered money link onto the remap target so
+// conversions on the new network still tie back to subscriber/brand/campaign.
+func carryAttribution(target, originalURL string) string {
+	u, err := url.Parse(originalURL)
+	if err != nil {
+		return target
+	}
+	src := u.Query()
+	keep := url.Values{}
+	for _, k := range []string{"source_id", "sub1", "sub2", "sub3"} {
+		if v := src.Get(k); v != "" {
+			keep.Set(k, v)
+		}
+	}
+	if len(keep) == 0 {
+		return target
+	}
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	return target + sep + keep.Encode()
 }
 
 func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
