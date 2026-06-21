@@ -71,6 +71,13 @@ PASSTHROUGH_ENV_VARS = [
     "KAFKA_FLAG_PRODUCE_INGEST",
     "KAFKA_FLAG_PRODUCE_SUPPRESS",
     "ANALYTICS_FIREHOSE_STREAM_SHADOW",
+    # SK-4 Kafka-PRIMARY send queue (routes real sends through Kafka). DARK unless
+    # KAFKA_SEND_QUEUE_ENABLED warms the consumer AND a routing allowlist (or _ALL)
+    # selects waves. Default unset ⇒ EnqueuePMTAWave routes nothing ⇒ byte-identical.
+    "KAFKA_SEND_QUEUE_ENABLED",
+    "KAFKA_SEND_QUEUE_ALL",
+    "KAFKA_SEND_QUEUE_WAVES",
+    "KAFKA_SEND_QUEUE_CAMPAIGNS",
 ]
 
 REMOVE_ENV_VARS = [

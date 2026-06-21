@@ -33,13 +33,28 @@ type EventBusConsumerStatus struct {
 	LakeRunning        bool   `json:"lake_running"`
 }
 
+// EventBusSendQueueStatus (SK-4) reports the Kafka-primary send-queue routing:
+// whether the QueueWriterConsumer + LedgerReconciler are running, how many waves
+// have been routed to Kafka, and the running queue-write counters. All zero/false
+// when the send-queue is dark (the default).
+type EventBusSendQueueStatus struct {
+	Enabled             bool   `json:"enabled"`
+	ConsumerRunning     bool   `json:"consumer_running"`
+	ReconcilerRunning   bool   `json:"reconciler_running"`
+	RoutedWaves         uint64 `json:"routed_waves"`
+	QueueWritesInsert   uint64 `json:"queue_writes_inserted"`
+	QueueWritesConflict uint64 `json:"queue_writes_conflicts"`
+	QueueWritesFailed   uint64 `json:"queue_writes_failed"`
+}
+
 // EventBusStatus is the whole /health "event_bus" block.
 type EventBusStatus struct {
-	Enabled    bool                   `json:"enabled"`
-	BrokersSet bool                   `json:"brokers_set"`
-	Producer   EventBusProducerStatus `json:"producer"`
-	Flags      EventBusFlags          `json:"flags"`
-	Consumers  EventBusConsumerStatus `json:"consumers"`
+	Enabled    bool                    `json:"enabled"`
+	BrokersSet bool                    `json:"brokers_set"`
+	Producer   EventBusProducerStatus  `json:"producer"`
+	Flags      EventBusFlags           `json:"flags"`
+	Consumers  EventBusConsumerStatus  `json:"consumers"`
+	SendQueue  EventBusSendQueueStatus `json:"send_queue"`
 }
 
 // EventBusFlags surfaces the three per-flow producer flags as plain booleans.

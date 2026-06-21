@@ -206,6 +206,18 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	}
 
 	useCapAware := capChecker != nil && !capAwareClaimDisabled()
+
+	// SK-4 producer fork (DARK BY DEFAULT): decide ONCE per wave whether this
+	// wave's queue rows are PRODUCED to Kafka (send.commands.v1) instead of
+	// INSERTed directly. kafkaRouteWave is false unless the operator opted this
+	// wave/campaign in AND a producer is wired, so by default this is false and
+	// the direct INSERT path below runs UNCHANGED (byte-identical to today).
+	routeToKafka := kafkaRouteWave(waveID, campaignID.String())
+	if routeToKafka {
+		kafkaRoutedWaves++
+		log.Printf("[WaveEnqueue] wave %s campaign %s ROUTED to Kafka send.commands.v1 (SK-4 primary transport)", waveID, campaignID)
+	}
+
 	params := waveEnqueueParams{
 		waveID:       waveID,
 		waveUUID:     waveUUID,
@@ -220,6 +232,7 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		isLocked:     isContentLocked,
 		brandKey:     brandKey,
 		useCapAware:  useCapAware,
+		routeToKafka: routeToKafka,
 	}
 
 	var queuedCount, skippedCount, capSkippedCount, reserveUsedCount int
@@ -290,6 +303,9 @@ type waveEnqueueParams struct {
 	isLocked     bool
 	brandKey     string
 	useCapAware  bool
+	// routeToKafka (SK-4) routes this wave's queue rows through Kafka
+	// (send.commands.v1) instead of the direct INSERT. Default false (dark).
+	routeToKafka bool
 }
 
 // enqueueWaveRowAtATime is the legacy enqueue path (pre set-based cutover):
@@ -432,23 +448,45 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 		// index uq_mcq_idempotency_key will reject the duplicate row via
 		// ON CONFLICT DO NOTHING.
 		idempotencyKey := outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID)
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO mailing_campaign_queue (
-				id, campaign_id, subscriber_id, subject, html_content, plain_content,
-				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
-				recipient_isp, selection_rank, audience_source_type, audience_source_id,
-				idempotency_key
-			) VALUES (
-				$1, $2, $3, $4, $5, $13,
-				'queued', 5, $6, NOW(), $7, $8,
-				$9, $10, $11, $12, $14
+		queueID := uuid.New()
+
+		// SK-4 producer fork: when this wave is routed to Kafka, PRODUCE the
+		// full-row command to send.commands.v1 INSTEAD of inserting directly; the
+		// QueueWriterConsumer runs the SAME INSERT. On ANY produce failure, fall
+		// back to the direct INSERT for this recipient (NEVER drop). When NOT
+		// routed (the default), the direct INSERT runs exactly as before.
+		writtenViaKafka := false
+		if p.routeToKafka {
+			cmd := buildSendCommand(
+				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
+				recipientSubject, recipientHTML, p.plainContent, rec.recipientISP, rec.audienceSourceType, sourceIDString(sourceID),
+				rec.selectionRank, p.scheduledAt, uuid.Nil,
 			)
-			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-		`, uuid.New(), p.campaignID, rec.subscriberID, recipientSubject, recipientHTML,
-			p.scheduledAt, p.ispPlanID, p.waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
-			p.plainContent, idempotencyKey,
-		); err != nil {
-			return 0, 0, 0, 0, err
+			if perr := produceQueueCommand(ctx, cmd); perr != nil {
+				log.Printf("[WaveEnqueue] wave %s: Kafka produce FAILED for key=%s (%v) — falling back to direct INSERT (no drop)", p.waveID, idempotencyKey, perr)
+			} else {
+				writtenViaKafka = true
+			}
+		}
+		if !writtenViaKafka {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO mailing_campaign_queue (
+					id, campaign_id, subscriber_id, subject, html_content, plain_content,
+					status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
+					recipient_isp, selection_rank, audience_source_type, audience_source_id,
+					idempotency_key
+				) VALUES (
+					$1, $2, $3, $4, $5, $13,
+					'queued', 5, $6, NOW(), $7, $8,
+					$9, $10, $11, $12, $14
+				)
+				ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+			`, queueID, p.campaignID, rec.subscriberID, recipientSubject, recipientHTML,
+				p.scheduledAt, p.ispPlanID, p.waveID, rec.recipientISP, rec.selectionRank, rec.audienceSourceType, sourceID,
+				p.plainContent, idempotencyKey,
+			); err != nil {
+				return 0, 0, 0, 0, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE mailing_campaign_plan_recipients
@@ -601,19 +639,46 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 			recipientSubject = mutateSubjectLine(p.baseSubject, computeMutationSeed(rec.subscriberID, p.waveID), p.brandKey)
 		}
 
-		sourceIDs = append(sourceIDs, normalizeSourceID(rec.audienceSourceID))
-		queueIDs = append(queueIDs, uuid.New().String())
-		subscriberIDs = append(subscriberIDs, rec.subscriberID.String())
-		subjects = append(subjects, recipientSubject)
-		isps = append(isps, rec.recipientISP)
-		ranks = append(ranks, int64(rec.selectionRank))
-		sourceTypes = append(sourceTypes, rec.audienceSourceType)
-		idemKeys = append(idemKeys, outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID).String())
+		idempotencyKey := outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID)
+		queueID := uuid.New()
+		normSource := normalizeSourceID(rec.audienceSourceID)
+
+		// The plan_recipient ALWAYS transitions to 'queued' once accepted —
+		// whether the row goes to Kafka or the direct INSERT — so it is never
+		// re-claimed by a later pass. (Counted below.)
 		queuedPlanIDs = append(queuedPlanIDs, rec.recordID.String())
 		queuedCount++
 		if rec.planRecStatus == "reserve" {
 			reserveUsedCount++
 		}
+
+		// SK-4 producer fork: when routed, PRODUCE the full-row command to
+		// send.commands.v1 (the set-based path leaves HTML/plain empty and carries
+		// content_snapshot_id, exactly like the direct INSERT's NULL,NULL + $5).
+		// On ANY produce failure, fall through to the direct-INSERT arrays for
+		// this recipient (NEVER drop). When NOT routed (default), every recipient
+		// goes to the direct-INSERT arrays unchanged.
+		if p.routeToKafka {
+			cmd := buildSendCommand(
+				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
+				recipientSubject, "", "", rec.recipientISP, rec.audienceSourceType, nullStringToSource(normSource),
+				rec.selectionRank, p.scheduledAt, snapshotID,
+			)
+			if perr := produceQueueCommand(ctx, cmd); perr == nil {
+				continue // written to Kafka; skip the direct-INSERT arrays
+			} else {
+				log.Printf("[WaveEnqueue] wave %s: Kafka produce FAILED for key=%s (%v) — falling back to direct INSERT (no drop)", p.waveID, idempotencyKey, perr)
+			}
+		}
+
+		sourceIDs = append(sourceIDs, normSource)
+		queueIDs = append(queueIDs, queueID.String())
+		subscriberIDs = append(subscriberIDs, rec.subscriberID.String())
+		subjects = append(subjects, recipientSubject)
+		isps = append(isps, rec.recipientISP)
+		ranks = append(ranks, int64(rec.selectionRank))
+		sourceTypes = append(sourceTypes, rec.audienceSourceType)
+		idemKeys = append(idemKeys, idempotencyKey.String())
 	}
 
 	if len(skippedPlanIDs) > 0 {
@@ -657,6 +722,13 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		); err != nil {
 			return 0, 0, 0, 0, err
 		}
+	}
+	// The plan_recipient queued-transition is driven by queuedPlanIDs, NOT
+	// queueIDs: a routed wave PRODUCES its rows (so queueIDs is empty) but the
+	// plan_recipients must STILL move to 'queued' so a later pass never re-claims
+	// them. In the un-routed (default) path queuedPlanIDs == queueIDs's
+	// recipients, so this is byte-identical to before.
+	if len(queuedPlanIDs) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE mailing_campaign_plan_recipients
 			SET status = 'queued', queued_at = NOW(), wave_id = $2

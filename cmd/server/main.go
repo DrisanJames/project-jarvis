@@ -1800,6 +1800,29 @@ var criticalSendPathDDL = []struct {
 	// bridge for vendor_type='pmta' profiles. ProfileBasedSender reads it
 	// UNCONDITIONALLY per send, so the column must exist before any worker starts.
 	{"add_profile_routing_mode", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS routing_mode TEXT`},
+	// ---- Kafka send-queue ledger (migration 050, SK-4) ----
+	// Additive: NEW table only — no existing table is altered. It sits on the
+	// send path (the QueueWriterConsumer's optional ledger record + the
+	// LedgerReconciler scan reference it), so per migration 050's note it lives
+	// in criticalSendPathDDL: schema must land BEFORE the binary that references
+	// it. All statements are idempotent (IF NOT EXISTS), ~1ms after first boot.
+	// Ships DARK: nothing writes here unless KAFKA_SEND_QUEUE_* routing is on.
+	{"create_send_ledger", `CREATE TABLE IF NOT EXISTS mailing_send_ledger (
+		idempotency_key UUID PRIMARY KEY,
+		campaign_id     UUID,
+		subscriber_id   UUID,
+		wave_id         UUID,
+		status          TEXT NOT NULL DEFAULT 'claimed',
+		message_id      TEXT,
+		worker_id       TEXT,
+		attempts        INT  NOT NULL DEFAULT 0,
+		claimed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+		sent_at         TIMESTAMPTZ
+	)`},
+	{"add_send_ledger_command", `ALTER TABLE mailing_send_ledger ADD COLUMN IF NOT EXISTS command JSONB`},
+	{"idx_send_ledger_claimed", `CREATE INDEX IF NOT EXISTS idx_send_ledger_claimed ON mailing_send_ledger (status, claimed_at) WHERE status='claimed'`},
+	{"idx_send_ledger_redrive", `CREATE INDEX IF NOT EXISTS idx_send_ledger_redrive ON mailing_send_ledger (status, claimed_at) WHERE status IN ('claimed','failed','requeued')`},
+	// ---- end Kafka send-queue ledger ----
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded

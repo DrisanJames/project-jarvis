@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"log"
 	"os"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -27,6 +28,8 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/api"
 	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 	"github.com/ignite/sparkpost-monitor/internal/eventbus/consumers"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 // eventBusHandle owns the lifecycle of everything the event backbone wires:
@@ -58,6 +61,18 @@ type eventBusHandle struct {
 	lakeRunning   bool
 
 	suppMode string
+
+	// ── SK-4 Kafka-primary send-queue (DARK BY DEFAULT) ──
+	// Only constructed when the bus is enabled AND worker.KafkaSendQueueEnabled()
+	// (a routing allowlist / KAFKA_SEND_QUEUE_ENABLED is set). Default: nil/false,
+	// so EnqueuePMTAWave routes nothing → byte-identical to today.
+	sendQueueProd      eventbus.Producer
+	queueWriter        *sendqueue.QueueWriterConsumer
+	ledgerReconciler   *sendqueue.LedgerReconciler
+	reconcilerCancel   context.CancelFunc
+	sendQueueEnabled   bool
+	queueWriterRunning bool
+	reconcilerRunning  bool
 }
 
 // wireEventBus performs the gated boot wiring. ctx is the server lifecycle
@@ -212,8 +227,85 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 		}
 	}
 
+	// 4) SK-4 Kafka-PRIMARY send queue (DARK BY DEFAULT). Only wires when the
+	//    operator has opted in via env (worker.KafkaSendQueueEnabled): a routing
+	//    allowlist (KAFKA_SEND_QUEUE_WAVES / KAFKA_SEND_QUEUE_CAMPAIGNS), or
+	//    KAFKA_SEND_QUEUE_ALL, or KAFKA_SEND_QUEUE_ENABLED. With all unset, this
+	//    whole block is skipped: no topic ensured, no consumer/reconciler started,
+	//    no producer installed → EnqueuePMTAWave routes NOTHING and the send path
+	//    is byte-identical to today.
+	wireSendQueue(ctx, h, db, cfg)
+
 	setEventBusStatus(h)
 	return h
+}
+
+// wireSendQueue is the SK-4 dark-gated wiring. Preconditions: the bus is enabled
+// (KAFKA_BROKERS set, producer built). It is a no-op unless the operator opted in
+// via env. On opt-in it: (a) ensures send.commands.v1 (+ .dlq); (b) installs the
+// durable producer into the wave dispatcher (worker.SetKafkaSendProducer) so a
+// routed wave can PRODUCE; (c) starts the QueueWriterConsumer (INSERTs the same
+// queue row) and the LedgerReconciler. Any construction failure leaves the
+// producer UNINSTALLED so kafkaRouteWave stays false (the dispatcher falls back
+// to the direct INSERT) — no recipient is ever lost.
+func wireSendQueue(ctx context.Context, h *eventBusHandle, db *sql.DB, cfg eventbus.Config) {
+	if !worker.KafkaSendQueueEnabled() {
+		log.Println("[eventbus] send-queue (SK-4) DARK — KAFKA_SEND_QUEUE_* unset; EnqueuePMTAWave routes nothing, send path unchanged")
+		return
+	}
+	h.sendQueueEnabled = true
+
+	// Ensure the send-commands topic + DLQ exist (idempotent). The send-queue
+	// reuses the same producer-side topic the ledger path defines.
+	if cfg.AllowAutoTopics {
+		if err := eventbus.EnsureTopics(ctx, cfg, []eventbus.TopicSpec{
+			{Name: sendqueue.TopicQueueWrites, Partitions: 12},
+			{Name: sendqueue.TopicQueueWrites + ".dlq", Partitions: 3},
+		}); err != nil {
+			log.Printf("[eventbus] send-queue EnsureTopics: %v (producer may fail until topics exist)", err)
+		} else {
+			log.Printf("[eventbus] send-queue topics ensured (%s + .dlq)", sendqueue.TopicQueueWrites)
+		}
+	}
+
+	// Durable producer for the wave-dispatcher fork. We reuse the bus producer
+	// (h.prod): it is the idempotent franz-go client, exactly what
+	// EnqueueSendCommands wants (synchronous, error-returning, not the lossy Tap).
+	h.sendQueueProd = h.prod
+	worker.SetKafkaSendProducer(h.sendQueueProd)
+	log.Println("[eventbus] send-queue (SK-4) producer INSTALLED into wave dispatcher — routed waves will PRODUCE to send.commands.v1")
+
+	// QueueWriterConsumer: INSERTs the SAME mailing_campaign_queue row the
+	// dispatcher would. A stat hook feeds /health.
+	qw := sendqueue.NewQueueWriterConsumer(db, eventbus.Config{
+		Brokers:          cfg.Brokers,
+		ClientID:         cfg.ClientID,
+		SASLMechanism:    cfg.SASLMechanism,
+		TLS:              cfg.TLS,
+		Group:            "ignite-send-queue-writer",
+		Topics:           []string{sendqueue.TopicQueueWrites},
+		FlagPollInterval: cfg.FlagPollInterval,
+	}).WithStatHook(func(inserted, conflicts, failed uint64) {
+		setSendQueueCounters(inserted, conflicts, failed)
+	})
+	dlq := consumers.NewProducerDLQ(h.prod)
+	if err := qw.Start(ctx, dlq); err != nil {
+		log.Printf("[eventbus] send-queue QueueWriterConsumer start failed: %v", err)
+	} else {
+		h.queueWriter = qw
+		h.queueWriterRunning = true
+		log.Println("[eventbus] send-queue QueueWriterConsumer started (group=ignite-send-queue-writer, topic=send.commands.v1) — INSERTs into mailing_campaign_queue; send path UNCHANGED")
+	}
+
+	// LedgerReconciler: re-drives any stranded ledger rows by re-producing the
+	// stored command. Runs in its own cancellable goroutine.
+	rctx, cancel := context.WithCancel(ctx)
+	h.reconcilerCancel = cancel
+	rec := sendqueue.NewLedgerReconcilerWithProducer(db, h.sendQueueProd, 0, 0)
+	h.ledgerReconciler = rec
+	h.reconcilerRunning = true
+	go rec.Start(rctx)
+	log.Println("[eventbus] send-queue LedgerReconciler started (re-drives stranded commands)")
 }
 
 // Stop gracefully tears down everything the handle owns: it stops the consumers,
@@ -223,6 +315,16 @@ func (h *eventBusHandle) Stop() {
 	if h == nil {
 		return
 	}
+	// SK-4 send-queue first: stop the reconciler goroutine + the queue writer
+	// before the producer/taps close (they share h.prod).
+	if h.reconcilerCancel != nil {
+		h.reconcilerCancel()
+	}
+	if h.queueWriter != nil {
+		h.queueWriter.Stop()
+	}
+	// Clear the dispatcher's producer hook so no further wave routes after Stop.
+	worker.SetKafkaSendProducer(nil)
 	// Consumers first (stop pulling), then producers/taps.
 	if h.ingestConsumer != nil {
 		h.ingestConsumer.Stop()
@@ -268,6 +370,24 @@ func eventBusInstanceID() string {
 	return base
 }
 
+// sendQueueInserted/Conflicts/Failed are the live queue-write counters the
+// QueueWriterConsumer's stat hook updates; the /health snapshot reads them via
+// atomic loads. They are package-level (not on the handle) because the hook
+// closure outlives a single wireEventBus call and there is one bus per process.
+var (
+	sendQueueInserted  atomic.Uint64
+	sendQueueConflicts atomic.Uint64
+	sendQueueFailed    atomic.Uint64
+)
+
+// setSendQueueCounters stores the latest running counts (the hook passes
+// monotonic totals, so a plain Store is correct).
+func setSendQueueCounters(inserted, conflicts, failed uint64) {
+	sendQueueInserted.Store(inserted)
+	sendQueueConflicts.Store(conflicts)
+	sendQueueFailed.Store(failed)
+}
+
 // setEventBusStatus registers a /health snapshot provider that reflects this
 // handle. The provider closure reads LIVE producer counters (eventbus.
 // ProducerStats — cheap atomic loads) on every call, while the wiring/consumer
@@ -298,6 +418,15 @@ func setEventBusStatus(h *eventBusHandle) {
 				SuppressionRunning: h.suppRunning,
 				SuppressionMode:    h.suppMode,
 				LakeRunning:        h.lakeRunning,
+			},
+			SendQueue: api.EventBusSendQueueStatus{
+				Enabled:             h.sendQueueEnabled,
+				ConsumerRunning:     h.queueWriterRunning,
+				ReconcilerRunning:   h.reconcilerRunning,
+				RoutedWaves:         worker.KafkaRoutedWaves(),
+				QueueWritesInsert:   sendQueueInserted.Load(),
+				QueueWritesConflict: sendQueueConflicts.Load(),
+				QueueWritesFailed:   sendQueueFailed.Load(),
 			},
 		}
 		return st

@@ -61,24 +61,54 @@ type errPanic struct{ v any }
 
 func (e errPanic) Error() string { return fmt.Sprintf("handler panic: %v", e.v) }
 
+// errShutdown is the sentinel processRecord returns when the handler failed
+// because the context was canceled/deadline-exceeded — i.e. the process is
+// SHUTTING DOWN, not because the record is genuinely poison. The consumer loop
+// treats it specially: it stops WITHOUT committing the in-flight record's offset
+// and WITHOUT routing it to the DLQ, so the record redelivers on restart. This
+// is the fix for the clean-shutdown-dumps-valid-records-into-the-DLQ gap: a
+// production DLQ does not auto-replay, so DLQ'ing valid in-flight work on every
+// shutdown is a silent drop. A record only reaches the DLQ when it genuinely
+// failed maxRetries times for a NON-shutdown reason.
+var errShutdown = errors.New("eventbus: consumer shutting down (record retained, not DLQ'd)")
+
+// isShutdownErr reports whether err is a context cancellation / deadline from a
+// shutdown (as opposed to a real handler failure).
+func isShutdownErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // processRecord runs the handler with at-least-once semantics for ONE record:
 // per-record panic recovery, bounded retries, and DLQ on permanent failure. It
 // is broker-free and is the unit-tested core of the consumer. It returns nil
 // once the record is either handled OR durably sent to the DLQ (i.e. the offset
-// is safe to commit); it returns a non-nil error ONLY if the DLQ itself failed,
-// in which case the caller must NOT commit (so the record is redelivered rather
-// than lost).
+// is safe to commit); it returns errShutdown if the failure was caused by ctx
+// cancellation (the caller must STOP without committing and WITHOUT DLQ'ing —
+// the record redelivers on restart); it returns any other non-nil error ONLY if
+// the DLQ itself failed, in which case the caller must NOT commit (so the record
+// is redelivered rather than lost).
 func processRecord(ctx context.Context, h Handler, dlq DLQ, opts ConsumerOptions, topic string, key, value []byte) error {
 	attempts := opts.maxRetries() + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
+		// If the context is already canceled before we even attempt, this is a
+		// shutdown: do not run/retry, do not DLQ — leave the record for redelivery.
+		if ctx.Err() != nil {
+			return errShutdown
+		}
 		if err := safeHandle(ctx, h, key, value); err != nil {
 			lastErr = err
+			// A failure caused by ctx cancellation is a SHUTDOWN, not a poison
+			// record: stop immediately, do NOT DLQ, do NOT commit. The record
+			// redelivers on restart.
+			if ctx.Err() != nil || isShutdownErr(err) {
+				return errShutdown
+			}
 			if i < attempts-1 {
 				select {
 				case <-ctx.Done():
-					lastErr = ctx.Err()
-					i = attempts // break out; go to DLQ with ctx error
+					// Shutdown arrived during backoff: retain the record.
+					return errShutdown
 				case <-time.After(opts.retryBackoff()):
 				}
 			}
@@ -87,7 +117,7 @@ func processRecord(ctx context.Context, h Handler, dlq DLQ, opts ConsumerOptions
 		return nil // handled successfully -> commit
 	}
 
-	// Permanent failure: do not lose the record.
+	// Permanent failure (NON-shutdown): do not lose the record.
 	if dlq == nil {
 		// No DLQ configured. We must still not lose the record: refuse to commit
 		// by returning the error so the loop re-delivers. (A consumer wired
@@ -186,6 +216,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 		for !iter.Done() {
 			rec := iter.Next()
 			if err := processRecord(ctx, c.handler, c.dlq, c.opts, rec.Topic, rec.Key, rec.Value); err != nil {
+				if errors.Is(err, errShutdown) {
+					// Shutdown mid-record: STOP without committing this record's
+					// offset and WITHOUT DLQ'ing it. The record (and the rest of
+					// this fetch) redelivers on restart. This is the fix for the
+					// clean-shutdown -> DLQ drop: valid in-flight work is never
+					// parked in a non-replaying DLQ on a graceful stop.
+					return ctx.Err()
+				}
 				// Record retained (handler+DLQ both failed): skip commit so it
 				// is redelivered. Do not lose it.
 				log.Printf("[eventbus-consumer] record retained (uncommitted) topic=%s: %v", rec.Topic, err)
