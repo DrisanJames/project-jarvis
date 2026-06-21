@@ -2024,3 +2024,116 @@ func pathBaseForCreative(p string) string {
 	}
 	return path.Base(p)
 }
+
+// ============ GET /api/mailing/data-partners/previous-activations ============
+
+// HandleGetPreviousActivations reports, per previous data activation (dataset),
+// how many of the records mailed within the window reached the OPENERS
+// (7D-Openers) or CLICKERS (30D-Clickers) engaged segments — with counts and
+// percentages of the mailed base.
+//
+// Segment membership is the platform's canonical, self-cleaning definition of
+// "made it to the openers/clickers segment" and joins on the clean subscriber_id
+// that partner records carry. The stored partner_clean_queue.engaged_at column
+// is inert (not maintained) and is deliberately NOT used here.
+func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	days := 7
+	if v, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && v > 0 && v <= 90 {
+		days = v
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		WITH op AS (
+			SELECT id FROM mailing_segments WHERE status = 'active' AND name ILIKE '%7D Openers%'
+		),
+		cl AS (
+			SELECT id FROM mailing_segments WHERE status = 'active' AND name ILIKE '%30D Clickers%'
+		),
+		opm AS (
+			SELECT DISTINCT subscriber_id FROM mailing_segment_members WHERE segment_id IN (SELECT id FROM op)
+		),
+		clm AS (
+			SELECT DISTINCT subscriber_id FROM mailing_segment_members WHERE segment_id IN (SELECT id FROM cl)
+		),
+		mailed AS (
+			SELECT dataset_id, subscriber_id, mailed_at
+			FROM partner_clean_queue
+			WHERE mailed_at > NOW() - ($1 * INTERVAL '1 day') AND subscriber_id IS NOT NULL
+		)
+		SELECT d.id, d.name, p.name, COALESCE(d.vertical, ''),
+		       MAX(m.mailed_at) AS last_mailed_at,
+		       COUNT(DISTINCT m.subscriber_id) AS mailed,
+		       COUNT(DISTINCT m.subscriber_id) FILTER (WHERE o.subscriber_id IS NOT NULL) AS openers,
+		       COUNT(DISTINCT m.subscriber_id) FILTER (WHERE c.subscriber_id IS NOT NULL) AS clickers
+		FROM mailed m
+		JOIN partner_datasets d ON d.id = m.dataset_id
+		JOIN data_partners p ON p.id = d.partner_id
+		LEFT JOIN opm o ON o.subscriber_id = m.subscriber_id
+		LEFT JOIN clm c ON c.subscriber_id = m.subscriber_id
+		GROUP BY d.id, d.name, p.name, d.vertical
+		ORDER BY mailed DESC
+	`, days)
+	if err != nil {
+		writeJSONError(w, "previous_activations_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type activation struct {
+		DatasetID    string   `json:"dataset_id"`
+		DatasetName  string   `json:"dataset_name"`
+		PartnerName  string   `json:"partner_name"`
+		Vertical     string   `json:"vertical"`
+		LastMailedAt *string  `json:"last_mailed_at"`
+		Mailed       int      `json:"mailed"`
+		Openers      int      `json:"openers"`
+		OpenersPct   float64  `json:"openers_pct"`
+		Clickers     int      `json:"clickers"`
+		ClickersPct  float64  `json:"clickers_pct"`
+	}
+	pct := func(n, d int) float64 {
+		if d == 0 {
+			return 0
+		}
+		return float64(int(float64(n)/float64(d)*10000+0.5)) / 100 // round to 2dp
+	}
+
+	out := []activation{}
+	var totMailed, totOpeners, totClickers int
+	for rows.Next() {
+		var a activation
+		var lastMailed sql.NullTime
+		if err := rows.Scan(&a.DatasetID, &a.DatasetName, &a.PartnerName, &a.Vertical,
+			&lastMailed, &a.Mailed, &a.Openers, &a.Clickers); err != nil {
+			writeJSONError(w, "previous_activations_scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if lastMailed.Valid {
+			s := lastMailed.Time.UTC().Format(time.RFC3339)
+			a.LastMailedAt = &s
+		}
+		a.OpenersPct = pct(a.Openers, a.Mailed)
+		a.ClickersPct = pct(a.Clickers, a.Mailed)
+		totMailed += a.Mailed
+		totOpeners += a.Openers
+		totClickers += a.Clickers
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSONError(w, "previous_activations_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"days":         days,
+		"activations":  out,
+		"totals": map[string]interface{}{
+			"mailed":       totMailed,
+			"openers":      totOpeners,
+			"openers_pct":  pct(totOpeners, totMailed),
+			"clickers":     totClickers,
+			"clickers_pct": pct(totClickers, totMailed),
+		},
+	})
+}

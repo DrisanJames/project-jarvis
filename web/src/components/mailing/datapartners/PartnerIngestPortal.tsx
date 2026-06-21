@@ -12,6 +12,7 @@ import { WarmupProgressPanel } from './WarmupProgressPanel';
 import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
+import { PreviousActivationsPanel } from './PreviousActivationsPanel';
 import { apiFetch } from '../shared/apiFetch';
 
 const PAGE_VERSION = '1.2';
@@ -71,7 +72,7 @@ interface DashboardResponse {
   recent_batches: BatchSummary[];
 }
 
-type TabId = 'overview' | 'warmup' | 'partners' | 'batches' | 'creatives' | 'audit';
+type TabId = 'overview' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
 
 export const PartnerIngestPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -135,6 +136,7 @@ export const PartnerIngestPortal: React.FC = () => {
     { id: 'warmup', label: 'Warm-Up', icon: faGaugeHigh },
     { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
     { id: 'batches', label: 'Inbound Batches', icon: faSeedling },
+    { id: 'activations', label: 'Previous Activations', icon: faChartBar },
     { id: 'creatives', label: 'Drip Creatives', icon: faSeedling },
     { id: 'audit', label: 'Audit Log', icon: faClipboardList },
   ];
@@ -340,6 +342,7 @@ export const PartnerIngestPortal: React.FC = () => {
 
       {activeTab === 'creatives' && <CreativesPanel />}
 
+      {activeTab === 'activations' && <PreviousActivationsPanel />}
       {activeTab === 'audit' && <AuditLogPanel />}
 
       {wizardOpen && (

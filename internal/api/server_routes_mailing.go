@@ -330,6 +330,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Route("/data-partners", func(dp chi.Router) {
 				dp.Get("/dashboard", partnerAdmin.HandleGetDashboard)
 				dp.Get("/drip-performance", partnerAdmin.HandleGetDripPerformance)
+				dp.Get("/previous-activations", partnerAdmin.HandleGetPreviousActivations)
 				dp.Get("/warmup-progress", partnerAdmin.HandleGetWarmupProgress)
 				dp.Get("/", partnerAdmin.HandleListPartners)
 				dp.Post("/", partnerAdmin.HandleCreatePartner)
