@@ -342,3 +342,20 @@ func TestHandleTrackClick_RejectsMalformedBase64(t *testing.T) {
 		t.Errorf("sql expectations: %v", err)
 	}
 }
+
+func TestApplyDeadLinkRemap(t *testing.T) {
+	dead := "https://www.cratoolpro.com/BJB4Q5BF/J78S2MD/?creative_id=643104&source_id=email&sub1=abc&sub2=businessweeklypro.com"
+	if got := applyDeadLinkRemap(dead); got != "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/" {
+		t.Fatalf("dead J78S2MD link not remapped, got %q", got)
+	}
+	// unrelated cratoolpro offer must pass through untouched
+	live := "https://www.cratoolpro.com/BJB4Q5BF/K86F3PC/?source_id=email"
+	if got := applyDeadLinkRemap(live); got != live {
+		t.Fatalf("unrelated link wrongly remapped, got %q", got)
+	}
+	// owned-domain URL untouched
+	owned := "https://businessweeklypro.com/blog/x"
+	if got := applyDeadLinkRemap(owned); got != owned {
+		t.Fatalf("owned URL wrongly remapped, got %q", got)
+	}
+}

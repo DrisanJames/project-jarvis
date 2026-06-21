@@ -224,6 +224,28 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	svc.serveTrackingPixel(w)
 }
 
+// deadLinkRemap repoints money links whose offer destination went dead AFTER
+// the email was sent, so clicks on already-mailed messages are salvaged without
+// re-mailing. The original (now-dead) URL is carried inside the signed click
+// token; we match it by substring and redirect the user to the live URL instead.
+// The click event still logs the true original URL (forensics) — only the final
+// redirect target changes. Remove an entry once its offer is retired.
+//
+// jun21 Metal Roofing dead-link incident (2026-06-21): cratoolpro offer J78S2MD
+// went dead; the live destination is the k8k0hfdt smartlink below.
+var deadLinkRemap = []struct{ match, to string }{
+	{"cratoolpro.com/BJB4Q5BF/J78S2MD", "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/"},
+}
+
+func applyDeadLinkRemap(rawURL string) string {
+	for _, m := range deadLinkRemap {
+		if strings.Contains(rawURL, m.match) {
+			return m.to
+		}
+	}
+	return rawURL
+}
+
 // HandleTrackClick records a click event and redirects
 func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -262,7 +284,7 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	if campaignID == uuid.Nil || subscriberID == uuid.Nil || emailID == uuid.Nil {
 		log.Printf("TRACK CLICK: rejecting tracking link with nil ids (camp=%s sub=%s email_id=%s)", campaignID, subscriberID, emailID)
 		if originalURL != "" {
-			http.Redirect(w, r, originalURL, http.StatusFound)
+			http.Redirect(w, r, applyDeadLinkRemap(originalURL), http.StatusFound)
 			return
 		}
 		http.Error(w, "Invalid tracking data", http.StatusBadRequest)
@@ -361,7 +383,7 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	svc.updateISPAgent(ctx, campaignID, isp, "click")
 	svc.incrClickEngagement(isp, subscriberID.String())
 
-	redirectURL := enrichOwnedDomainURL(originalURL, subscriberID, emailID, campaignID)
+	redirectURL := enrichOwnedDomainURL(applyDeadLinkRemap(originalURL), subscriberID, emailID, campaignID)
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 }
 
