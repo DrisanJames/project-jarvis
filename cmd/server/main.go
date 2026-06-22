@@ -809,6 +809,19 @@ func main() {
 			go samsDripDigest.Start(ctx)
 			log.Printf("Sam's Club drip digest started (vertical=samsclub_internal, 6h, transport=%s)", samsDripNotifier.Name())
 
+			// Partner engagement marker — the missing WRITER for
+			// partner_clean_queue.engaged_at. Stamps engaged_at when a
+			// record's subscriber CLICKS one of that dataset's drip
+			// campaigns (partner_dataset_id match, clicks-only). Fixes the
+			// drip's engaged-exit (stop re-mailing proven clickers) AND the
+			// Activation/Churn metrics that were stuck at 0/100% because the
+			// column was read everywhere but written nowhere. Backfills all
+			// history once on boot, then sweeps recent clicks every 3m.
+			// Kill: DISABLE_PARTNER_ENGAGEMENT_MARKER=1.
+			engagementMarker := worker.NewPartnerEngagementMarker(mailingDB)
+			go engagementMarker.Start(ctx)
+			log.Printf("Partner engagement marker started (clicks->engaged_at, 3m; kill: DISABLE_PARTNER_ENGAGEMENT_MARKER)")
+
 			// Journey Segment Enroller — auto-enrolls subscribers from
 			// segment-triggered journeys (Welcome Series Phase 2). Uses the
 			// segmentation engine for saved segments, and the
