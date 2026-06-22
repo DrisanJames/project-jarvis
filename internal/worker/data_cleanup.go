@@ -338,14 +338,28 @@ func (dc *DataCleanupWorker) primaryBusy(ctx context.Context) bool {
 
 // ---------------------------------------------------------------------------
 // cleanupPlanRecipients — Delete planned-recipient rows for TERMINAL campaigns
-// older than 14 days. mailing_campaign_plan_recipients is the deploy-time
+// older than 2 days. mailing_campaign_plan_recipients is the deploy-time
 // audience snapshot consumed by the wave scheduler (EnqueuePMTAWave copies
 // these into mailing_campaign_queue). Once a campaign reaches a terminal state
-// (sent/cancelled/failed) the plan rows are dead weight — but they were never
-// being cleaned, so the table grew to ~12 GB / ~28M rows. Active campaigns
-// (scheduled / finalizing_audience / sending / preparing) are explicitly NOT
-// touched: their plan rows are still being enqueued. Deletes are index-driven
-// via idx_plan_recips_campaign and batched.
+// (sent/cancelled/failed) the plan rows are dead weight (cancelled campaigns
+// can't be un-cancelled; a redeploy of a failed/reused campaign re-plans fresh
+// rows anyway), so a short window is safe and keeps this HOT table small.
+//
+// Retention was 14 days, but at ~450k+ planned recipients/day (plus redeploys
+// and cancellations) that retained millions of terminal rows and the table
+// re-bloated to ~8 GB (2026-06-22), whose cross-domain dedup scan times out the
+// 20-min phase-2 deadline and silently fails the largest-audience brand's
+// planning. 2 days keeps the live set to ~1-2 days of churn (a small, steady
+// working set whose freed index pages get reused) while leaving a same-day
+// debug/retry buffer. Active campaigns (scheduled / finalizing_audience /
+// sending / preparing) are explicitly NOT touched: their plan rows are still
+// being enqueued. Deletes are index-driven via idx_plan_recips_campaign and
+// batched.
+//
+// NOTE: DELETE frees space for reuse but does NOT shrink the on-disk file;
+// physical reclamation of pre-existing bloat is a one-time REINDEX/pg_repack
+// (done manually 2026-06-22). With the 2-day window the live set stays small,
+// so the indexes reach a bounded steady state without further reindexing.
 //
 // NOTE: this bounds growth and frees space for reuse; it does NOT shrink the
 // on-disk file. Physical reclamation of existing bloat requires an online
@@ -373,7 +387,7 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 		}
 		var dropped int
 		if err := dc.db.QueryRowContext(ctx,
-			`SELECT drop_old_plan_recipient_partitions(14)`,
+			`SELECT drop_old_plan_recipient_partitions(2)`,
 		).Scan(&dropped); err != nil {
 			log.Printf("[DataCleanup] drop_old_plan_recipient_partitions failed: %v", err)
 			return
@@ -396,7 +410,7 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 		SELECT c.id
 		FROM mailing_campaigns c
 		WHERE c.status IN ('sent', 'cancelled', 'failed')
-		  AND COALESCE(c.updated_at, c.created_at) < NOW() - INTERVAL '14 days'
+		  AND COALESCE(c.updated_at, c.created_at) < NOW() - INTERVAL '2 days'
 		  AND EXISTS (
 			SELECT 1 FROM mailing_campaign_plan_recipients pr
 			WHERE pr.campaign_id = c.id
