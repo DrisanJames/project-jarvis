@@ -87,7 +87,7 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 	}
 	q := `
 		UPDATE partner_clean_queue q
-		SET engaged_at = e.first_click, updated_at = NOW()
+		SET engaged_at = e.first_click
 		FROM (
 			SELECT te.subscriber_id, c.partner_dataset_id, MIN(te.event_at) AS first_click
 			FROM mailing_tracking_events te
