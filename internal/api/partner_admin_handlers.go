@@ -1145,7 +1145,16 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		                          AND next_touch_at IS NOT NULL
 		                          AND next_touch_at <= NOW())                    AS followups_due,
 		       COALESCE(SUM(COALESCE(eo_attempts, 0)), 0)                       AS eo_credits_total,
-		       COUNT(*) FILTER (WHERE validated_at > NOW() - INTERVAL '24 hours') AS eo_validated_24h
+		       COUNT(*) FILTER (WHERE validated_at > NOW() - INTERVAL '24 hours') AS eo_validated_24h,
+		       -- Three mutually-exclusive outcome buckets over the mailed-into-drip
+		       -- population (engaged / in_progress / churned). They partition it and
+		       -- sum to it, so the UI rates total 100%. Denominator is the bucket
+		       -- SUM, NOT touch_count (touch_count can be 0 on mailed rows — e.g.
+		       -- personal_loans — and would break the rates).
+		       COUNT(*) FILTER (WHERE engaged_at IS NULL AND terminal_reason IS NULL
+		                          AND mailed_campaign_id IS NOT NULL)            AS in_progress,
+		       COUNT(*) FILTER (WHERE engaged_at IS NULL
+		                          AND terminal_reason = 'completed')            AS churned
 		FROM partner_clean_queue
 		GROUP BY 1, 2
 		ORDER BY 1, 7 DESC
@@ -1158,6 +1167,7 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 	type vAgg struct {
 		pendingEO, hold, ready, claimed, mailed, sent24h int
 		t1, t2, t3, t4, engaged, completed, followupsDue int
+		inProgress, churned                              int
 		// eoCredits = SUM(eo_attempts): EmailOversight bills per validation
 		// call, and partner_validator.go increments eo_attempts exactly once
 		// per call — so this is consumed EO credits. eoValidated24h counts
@@ -1174,9 +1184,9 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		var pendingEO, hold, ready, claimed, mailed, sent24h int
 		var t1, t2, t3, t4, engaged, completed, followupsDue int
 		var eoCredits int64
-		var eoValidated24h int
+		var eoValidated24h, inProgress, churned int
 		if err := rows.Scan(&vertical, &isp, &pendingEO, &hold, &ready, &claimed, &mailed, &sent24h,
-			&t1, &t2, &t3, &t4, &engaged, &completed, &followupsDue, &eoCredits, &eoValidated24h); err != nil {
+			&t1, &t2, &t3, &t4, &engaged, &completed, &followupsDue, &eoCredits, &eoValidated24h, &inProgress, &churned); err != nil {
 			continue
 		}
 		agg, ok := vTotals[vertical]
@@ -1200,6 +1210,8 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		agg.followupsDue += followupsDue
 		agg.eoCredits += eoCredits
 		agg.eoValidated24h += eoValidated24h
+		agg.inProgress += inProgress
+		agg.churned += churned
 
 		isps = append(isps, map[string]interface{}{
 			"vertical": vertical,
@@ -1210,9 +1222,35 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		})
 	}
 
+	// Conversions per vertical (distinct conversion tied to the vertical's
+	// subscribers; sub1 = subscriber_id). Separate cheap query merged in — same
+	// semantics as Previous Activations so the two screens agree.
+	convByVertical := map[string]int{}
+	if crows, cerr := h.db.QueryContext(ctx, `
+		SELECT vertical, COUNT(*) FROM (
+			SELECT DISTINCT q.vertical, mc.conversion_id
+			FROM mailing_cpm_manual_conversions mc
+			JOIN (SELECT DISTINCT vertical, subscriber_id FROM partner_clean_queue WHERE subscriber_id IS NOT NULL) q
+			  ON q.subscriber_id::text = mc.sub1
+		) z GROUP BY vertical
+	`); cerr == nil {
+		for crows.Next() {
+			var v string
+			var n int
+			if crows.Scan(&v, &n) == nil {
+				convByVertical[v] = n
+			}
+		}
+		crows.Close()
+	}
+
 	verticals := make([]map[string]interface{}, 0, len(vOrder))
 	for _, v := range vOrder {
 		a := vTotals[v]
+		// drip_total = the mailed-into-drip population = the three buckets summed
+		// (NOT touch_count, which can be 0 on mailed rows). The UI divides the
+		// three rates by this so they total 100%.
+		dripTotal := a.engaged + a.inProgress + a.churned
 		verticals = append(verticals, map[string]interface{}{
 			"vertical":      v,
 			"pending_eo":    a.pendingEO,
@@ -1227,6 +1265,10 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 			"touch_4":       a.t4,
 			"engaged":          a.engaged,
 			"completed":        a.completed,
+			"in_progress":      a.inProgress,
+			"churned":          a.churned,
+			"drip_total":       dripTotal,
+			"conversions":      convByVertical[v],
 			"followups_due":    a.followupsDue,
 			"eo_credits_total": a.eoCredits,
 			"eo_validated_24h": a.eoValidated24h,

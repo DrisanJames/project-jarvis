@@ -49,6 +49,10 @@ interface FunnelVertical {
   touch_4: number;
   engaged: number;
   completed: number;
+  in_progress?: number;
+  churned?: number;
+  drip_total?: number;
+  conversions?: number;
   followups_due: number;
   // EO billing: SUM(eo_attempts) — one increment per EmailOversight call —
   // plus how many rows were validated in the last 24h.
@@ -529,7 +533,18 @@ const RateCell: React.FC<{ count: number; denom: number; color: string; bold?: b
 
 const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isps }) => {
   const touchTotal = v.touch_1 + v.touch_2 + v.touch_3 + v.touch_4;
-  const topISPs = [...isps].sort((a, b) => b.sent_24h - a.sent_24h).slice(0, 5);
+  // Three mutually-exclusive outcome buckets that partition the drip and sum to
+  // 100%: engaged (a win) + in-progress (still mailing) + churned (exhausted,
+  // no engagement). Backend supplies in_progress/churned; fall back to deriving
+  // them so an older payload still renders sensibly.
+  const inProgress = v.in_progress ?? Math.max(0, touchTotal - v.engaged - v.completed);
+  const churned = v.churned ?? Math.max(0, touchTotal - v.engaged - inProgress);
+  // Rate denominator = the mailed-into-drip population (the bucket sum), NOT
+  // touch_count — touch_count can be 0 on mailed rows and would break the rates.
+  const dripDenom = v.drip_total ?? (v.engaged + inProgress + churned);
+  // Show ALL ISPs (sent first, then ready) so the column reconciles to the
+  // "sent / 24h" headline and large held backlogs (e.g. gmail) stay visible.
+  const allISPs = [...isps].sort((a, b) => (b.sent_24h - a.sent_24h) || (b.ready - a.ready));
   return (
     <div style={card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
@@ -558,30 +573,40 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
       </div>
       <TouchBar t1={v.touch_1} t2={v.touch_2} t3={v.touch_3} t4={v.touch_4} />
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 8 }}>
-        <span title="Recipients who opened/clicked — exited the drip as a win">
+        <span title="Clicked — exited the drip as a win">
           Engaged: <b style={{ color: '#10b981' }}>{v.engaged.toLocaleString()}</b>
         </span>
-        <span title="All touches exhausted without engagement">
-          Completed: <b style={{ color: 'rgba(180,210,240,0.8)' }}>{v.completed.toLocaleString()}</b>
+        <span title="Still being mailed — touches 1-3, not yet engaged or exhausted">
+          In progress: <b style={{ color: '#60a5fa' }}>{inProgress.toLocaleString()}</b>
+        </span>
+        <span title="Conversions (money events) tied to this dataset's records — CPM, $0 revenue by design">
+          Conv: <b style={{ color: (v.conversions ?? 0) > 0 ? '#f59e0b' : 'rgba(180,210,240,0.55)' }}>{(v.conversions ?? 0).toLocaleString()}</b>
         </span>
       </div>
-      {/* Outcome rates against mailed — div-by-zero guarded in ratePct */}
+      {/* Three outcome buckets — engaged + in-progress + churn partition the drip
+          and sum to 100% (denominator = records in drip, not mailed). */}
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 4 }}>
         <span
-          title="engaged = opened/clicked and exited the drip as a win"
+          title="activation = clicked and exited the drip as a win"
           style={{ color: '#10b981', fontWeight: 600 }}
         >
-          Activation {ratePct(v.engaged, v.mailed)}
+          Activation {ratePct(v.engaged, dripDenom)}
         </span>
         <span
-          title="churn = exhausted all touches without engaging"
-          style={{ color: v.completed > 0 ? '#f59e0b' : 'rgba(180,210,240,0.55)' }}
+          title="in progress = still being mailed (touches 1-3), no outcome yet"
+          style={{ color: '#60a5fa', fontWeight: 600 }}
         >
-          Churn {ratePct(v.completed, v.mailed)}
+          In-Progress {ratePct(inProgress, dripDenom)}
+        </span>
+        <span
+          title="churn = exhausted all touches without ever engaging"
+          style={{ color: churned > 0 ? '#f59e0b' : 'rgba(180,210,240,0.55)', fontWeight: 600 }}
+        >
+          Churn {ratePct(churned, dripDenom)}
         </span>
       </div>
 
-      {topISPs.length > 0 && (
+      {allISPs.length > 0 && (
         <>
           <div style={{ height: 1, background: 'rgba(120,150,200,0.12)', margin: '10px 0' }} />
           <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
@@ -593,13 +618,18 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
               </tr>
             </thead>
             <tbody>
-              {topISPs.map(i => (
+              {allISPs.map(i => (
                 <tr key={i.isp}>
                   <td style={ispTd}>{i.isp}</td>
-                  <td style={ispTdNum}>{i.ready.toLocaleString()}</td>
+                  <td style={{ ...ispTdNum, color: i.ready > 50000 ? '#f59e0b' : undefined }} title={i.ready > 50000 ? 'large held/queued backlog' : undefined}>{i.ready.toLocaleString()}</td>
                   <td style={{ ...ispTdNum, color: i.sent_24h > 0 ? '#10b981' : undefined }}>{i.sent_24h.toLocaleString()}</td>
                 </tr>
               ))}
+              <tr style={{ borderTop: '1px solid rgba(120,150,200,0.18)' }}>
+                <td style={{ ...ispTd, color: 'rgba(180,210,240,0.5)', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: 10 }}>Total</td>
+                <td style={{ ...ispTdNum, color: 'rgba(180,210,240,0.7)' }}>{allISPs.reduce((s, i) => s + i.ready, 0).toLocaleString()}</td>
+                <td style={{ ...ispTdNum, color: 'rgba(180,210,240,0.7)' }}>{allISPs.reduce((s, i) => s + i.sent_24h, 0).toLocaleString()}</td>
+              </tr>
             </tbody>
           </table>
         </>
