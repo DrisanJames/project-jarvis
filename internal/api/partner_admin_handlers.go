@@ -2029,118 +2029,185 @@ func pathBaseForCreative(p string) string {
 // ============ GET /api/mailing/data-partners/previous-activations ============
 
 // HandleGetPreviousActivations reports, per previous data activation (dataset),
-// how the records mailed in the window actually engaged with the partner's OWN
-// mail, plus conversions, so a data partner's performance can be judged.
+// the LIFETIME engagement footprint of the dataset's records on the partner's
+// OWN mail — so a data partner can be judged on the whole activation, not a
+// rolling slice.
 //
-// Accuracy notes (v2, 2026-06-22, after a two-agent adversarial review):
-//   - opens/clicks/bounces are scoped to the campaigns that actually mailed the
-//     dataset's records (join on mailed_campaign_id), NOT segment membership —
-//     segment membership over-counted by ~2x (opens) / ~4.6x (clicks) because it
-//     credited engagement with ANY brand/offer.
-//   - conv_window = conversions for records mailed IN the window (accurate but
-//     lags, often ~0); conv_lifetime = all conversions ever tied to the dataset's
-//     records (the ranking signal). Both shown, separately labeled, so a tiny
-//     current-week mailed slice can't inherit historical conversions.
-//   - revenue is $0 by design (CPM deals pay per-send), so rank by clicks +
-//     conv_lifetime, not revenue. opens are ~90% Apple-MPP/machine — weak signal.
+// Accuracy notes (v3, 2026-06-22, after the operator flagged the v2 screen as
+// internally inconsistent — a 7-day "Mailed" next to all-time conversions read
+// as broken):
+//   - ALL primary metrics are LIFETIME and share one timeframe. v2 mixed a 7-day
+//     window (mailed/opens/clicks/bounce) with all-time (total_records,
+//     conv_lifetime); a dormant-but-historically-huge dataset (Spicy: 114,650
+//     lifetime mailed) showed "Mailed 200", which destroyed trust.
+//   - opens/clicks/bounces are scoped to the dataset's OWN campaigns via
+//     mailing_campaigns.partner_dataset_id (the same scoping the engaged_at
+//     marker uses), joined on (subscriber_id, campaign_id). v2 joined events on
+//     subscriber_id ALONE against a global campaign set, so a subscriber who
+//     engaged with ANOTHER dataset's campaign leaked in (verified over-count).
+//     partner_dataset_id scoping also captures EVERY touch — per-row
+//     mailed_campaign_id only holds the last touch and undercounted Spicy ~3-4x.
+//   - bounce% is lifetime and surfaced prominently: it's the list-quality tell
+//     the 7-day window hid (recent survivors show ~0%, lifetime shows 30-47%).
+//   - recent_mailed / recent_clicks (last `days`) are a small freshness signal,
+//     clearly separate from the lifetime headline — never mixed into a rate.
+//   - conv = all conversions ever tied to the dataset's records (distinct
+//     conversion). revenue is $0 by design (CPM pays per-send); rank by clicks +
+//     conv, not revenue. opens are ~90% Apple-MPP/machine — weak signal.
 //   - cost/CPM per record is NOT in the system (needs partner deal terms).
+//
+// Computed live as 3 cheap queries merged in Go (~10s total; each well under the
+// 30s mailingDB statement_timeout) — no background rollup, so numbers are always
+// fresh on load with no staleness/worker-bug surface.
 func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	days := 7
+	days := 7 // recency window for the freshness columns only; headline is lifetime
 	if v, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && v > 0 && v <= 90 {
 		days = v
 	}
 
-	rows, err := h.db.QueryContext(ctx, `
-		WITH mailed AS (
-			SELECT dataset_id, subscriber_id, mailed_campaign_id
-			FROM partner_clean_queue
-			WHERE mailed_at > NOW() - make_interval(days => $1) AND subscriber_id IS NOT NULL
-		),
-		camps AS (SELECT DISTINCT mailed_campaign_id cid FROM mailed WHERE mailed_campaign_id IS NOT NULL),
-		ev AS (
-			SELECT subscriber_id,
-			       bool_or(event_type = 'opened')  AS o,
-			       bool_or(event_type = 'clicked') AS k,
-			       bool_or(event_type = 'bounced') AS b
-			FROM mailing_tracking_events
-			WHERE event_at > NOW() - make_interval(days => $1)
-			  AND event_type IN ('opened','clicked','bounced')
-			  AND campaign_id IN (SELECT cid FROM camps)
-			GROUP BY subscriber_id
-		),
-		prev AS (
-			SELECT p.dataset_id, COUNT(DISTINCT p.subscriber_id) AS clk_prev
-			FROM partner_clean_queue p
-			WHERE p.mailed_at > NOW() - make_interval(days => $1 * 2)
-			  AND p.mailed_at <= NOW() - make_interval(days => $1)
-			  AND p.subscriber_id IS NOT NULL
-			  AND EXISTS (
-				SELECT 1 FROM mailing_tracking_events e
-				WHERE e.subscriber_id = p.subscriber_id AND e.event_type = 'clicked'
-				  AND e.campaign_id = p.mailed_campaign_id
-				  AND e.event_at > NOW() - make_interval(days => $1 * 2)
-				  AND e.event_at <= NOW() - make_interval(days => $1)
-			  )
-			GROUP BY p.dataset_id
-		),
-		conv_w AS (
-			SELECT m.dataset_id, COUNT(*) AS c
-			FROM mailing_cpm_manual_conversions mc JOIN mailed m ON m.subscriber_id::text = mc.sub1
-			GROUP BY m.dataset_id
-		),
-		conv_l AS (
-			SELECT p.dataset_id, COUNT(*) AS c
-			FROM mailing_cpm_manual_conversions mc JOIN partner_clean_queue p ON p.subscriber_id::text = mc.sub1
-			GROUP BY p.dataset_id
-		),
-		agg AS (
-			SELECT m.dataset_id,
-			       COUNT(DISTINCT m.subscriber_id) AS mailed,
-			       COUNT(DISTINCT m.subscriber_id) FILTER (WHERE ev.o) AS opens,
-			       COUNT(DISTINCT m.subscriber_id) FILTER (WHERE ev.k) AS clicks,
-			       COUNT(DISTINCT m.subscriber_id) FILTER (WHERE ev.b) AS bounced
-			FROM mailed m LEFT JOIN ev ON ev.subscriber_id = m.subscriber_id
-			GROUP BY m.dataset_id
-		)
+	type activation struct {
+		DatasetID    string  `json:"dataset_id"`
+		DatasetName  string  `json:"dataset_name"`
+		PartnerName  string  `json:"partner_name"`
+		Vertical     string  `json:"vertical"`
+		TotalRecords int     `json:"total_records"`
+		Mailed       int     `json:"mailed"`
+		Opens        int     `json:"opens"`
+		OpensPct     float64 `json:"opens_pct"`
+		Clicks       int     `json:"clicks"`
+		ClicksPct    float64 `json:"clicks_pct"`
+		Bounced      int     `json:"bounced"`
+		BouncePct    float64 `json:"bounce_pct"`
+		ConvLifetime int     `json:"conv_lifetime"`
+		RecentMailed int     `json:"recent_mailed"`
+		RecentClicks int     `json:"recent_clicks"`
+		RecentDays   int     `json:"recent_days"`
+		Trend        string  `json:"trend"`
+		LowSample    bool    `json:"low_sample"`
+	}
+
+	// Q1 — per-dataset volume + recency (partner_clean_queue only; cheap ~1s).
+	byID := map[string]*activation{}
+	order := []string{}
+	prevClicks := map[string]int{}
+	q1, err := h.db.QueryContext(ctx, `
 		SELECT d.id, d.name, p.name, COALESCE(d.vertical, ''),
-		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id) AS total_records,
-		       a.mailed, a.opens, a.clicks, a.bounced,
-		       COALESCE(cw.c, 0) AS conv_window, COALESCE(cl.c, 0) AS conv_lifetime,
-		       COALESCE(pv.clk_prev, 0) AS clicks_prev
-		FROM agg a
-		JOIN partner_datasets d ON d.id = a.dataset_id
+		       (SELECT COUNT(*) FROM partner_clean_queue q2 WHERE q2.dataset_id = d.id) AS total_records,
+		       q.mailed, q.recent_mailed, q.recent_clicks, q.prev_clicks
+		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
-		LEFT JOIN conv_w cw ON cw.dataset_id = a.dataset_id
-		LEFT JOIN conv_l cl ON cl.dataset_id = a.dataset_id
-		LEFT JOIN prev pv ON pv.dataset_id = a.dataset_id
-		ORDER BY a.clicks DESC, conv_lifetime DESC
+		JOIN (
+			SELECT dataset_id,
+			       COUNT(DISTINCT subscriber_id) FILTER (WHERE mailed_campaign_id IS NOT NULL) AS mailed,
+			       COUNT(DISTINCT subscriber_id) FILTER (WHERE mailed_at > NOW() - make_interval(days => $1)) AS recent_mailed,
+			       COUNT(DISTINCT subscriber_id) FILTER (WHERE engaged_at > NOW() - make_interval(days => $1)) AS recent_clicks,
+			       COUNT(DISTINCT subscriber_id) FILTER (WHERE engaged_at > NOW() - make_interval(days => $1 * 2) AND engaged_at <= NOW() - make_interval(days => $1)) AS prev_clicks
+			FROM partner_clean_queue
+			WHERE subscriber_id IS NOT NULL
+			GROUP BY dataset_id
+		) q ON q.dataset_id = d.id
+		WHERE q.mailed > 0
 	`, days)
 	if err != nil {
 		writeJSONError(w, "previous_activations_failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
-	type activation struct {
-		DatasetID     string  `json:"dataset_id"`
-		DatasetName   string  `json:"dataset_name"`
-		PartnerName   string  `json:"partner_name"`
-		Vertical      string  `json:"vertical"`
-		TotalRecords  int     `json:"total_records"`
-		Mailed        int     `json:"mailed"`
-		Opens         int     `json:"opens"`
-		OpensPct      float64 `json:"opens_pct"`
-		Clicks        int     `json:"clicks"`
-		ClicksPct     float64 `json:"clicks_pct"`
-		Bounced       int     `json:"bounced"`
-		BouncePct     float64 `json:"bounce_pct"`
-		ConvWindow    int     `json:"conv_window"`
-		ConvLifetime  int     `json:"conv_lifetime"`
-		ClicksPrev    int     `json:"clicks_prev"`
-		Trend         string  `json:"trend"`
-		LowSample     bool    `json:"low_sample"`
+	for q1.Next() {
+		a := &activation{RecentDays: days}
+		var prev int
+		if err := q1.Scan(&a.DatasetID, &a.DatasetName, &a.PartnerName, &a.Vertical, &a.TotalRecords,
+			&a.Mailed, &a.RecentMailed, &a.RecentClicks, &prev); err != nil {
+			q1.Close()
+			writeJSONError(w, "previous_activations_scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		byID[a.DatasetID] = a
+		prevClicks[a.DatasetID] = prev
+		order = append(order, a.DatasetID)
 	}
+	q1.Close()
+	if err := q1.Err(); err != nil {
+		writeJSONError(w, "previous_activations_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Q2 — lifetime opens/clicks/bounces on the dataset's OWN campaigns
+	// (partner_dataset_id scoping = all touches; joined on subscriber+campaign so
+	// no cross-dataset leak). Heaviest query (~7s).
+	q2, err := h.db.QueryContext(ctx, `
+		WITH subs AS (
+			SELECT DISTINCT dataset_id, subscriber_id
+			FROM partner_clean_queue
+			WHERE subscriber_id IS NOT NULL AND mailed_campaign_id IS NOT NULL
+		),
+		camps AS (SELECT id, partner_dataset_id AS ds FROM mailing_campaigns WHERE partner_dataset_id IS NOT NULL)
+		SELECT s.dataset_id,
+		       COUNT(DISTINCT s.subscriber_id) FILTER (WHERE te.event_type = 'opened')  AS opens,
+		       COUNT(DISTINCT s.subscriber_id) FILTER (WHERE te.event_type = 'clicked') AS clicks,
+		       COUNT(DISTINCT s.subscriber_id) FILTER (WHERE te.event_type = 'bounced') AS bounced
+		FROM subs s
+		JOIN camps cp ON cp.ds = s.dataset_id
+		JOIN mailing_tracking_events te
+		  ON te.subscriber_id = s.subscriber_id AND te.campaign_id = cp.id
+		 AND te.event_type IN ('opened','clicked','bounced')
+		GROUP BY s.dataset_id
+	`)
+	if err != nil {
+		writeJSONError(w, "previous_activations_events_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for q2.Next() {
+		var id string
+		var o, k, b int
+		if err := q2.Scan(&id, &o, &k, &b); err != nil {
+			q2.Close()
+			writeJSONError(w, "previous_activations_events_scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if a := byID[id]; a != nil {
+			a.Opens, a.Clicks, a.Bounced = o, k, b
+		}
+	}
+	q2.Close()
+	if err := q2.Err(); err != nil {
+		writeJSONError(w, "previous_activations_events_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Q3 — lifetime conversions: distinct conversion tied to the dataset's
+	// subscribers (a subscriber in N datasets attributes to each, by design;
+	// distinct conversion_id avoids duplicate-row multiplication). ~2s.
+	q3, err := h.db.QueryContext(ctx, `
+		SELECT dataset_id, COUNT(*) AS c FROM (
+			SELECT DISTINCT p.dataset_id, mc.conversion_id
+			FROM mailing_cpm_manual_conversions mc
+			JOIN (SELECT DISTINCT dataset_id, subscriber_id FROM partner_clean_queue WHERE subscriber_id IS NOT NULL) p
+			  ON p.subscriber_id::text = mc.sub1
+		) z GROUP BY dataset_id
+	`)
+	if err != nil {
+		writeJSONError(w, "previous_activations_conv_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for q3.Next() {
+		var id string
+		var c int
+		if err := q3.Scan(&id, &c); err != nil {
+			q3.Close()
+			writeJSONError(w, "previous_activations_conv_scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if a := byID[id]; a != nil {
+			a.ConvLifetime = c
+		}
+	}
+	q3.Close()
+	if err := q3.Err(); err != nil {
+		writeJSONError(w, "previous_activations_conv_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	pct := func(n, d int) float64 {
 		if d == 0 {
 			return 0
@@ -2148,22 +2215,17 @@ func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter
 		return float64(int(float64(n)/float64(d)*10000+0.5)) / 100
 	}
 
-	out := []activation{}
-	var tMailed, tOpens, tClicks, tBounced, tConvW, tConvL int
-	for rows.Next() {
-		var a activation
-		if err := rows.Scan(&a.DatasetID, &a.DatasetName, &a.PartnerName, &a.Vertical, &a.TotalRecords,
-			&a.Mailed, &a.Opens, &a.Clicks, &a.Bounced, &a.ConvWindow, &a.ConvLifetime, &a.ClicksPrev); err != nil {
-			writeJSONError(w, "previous_activations_scan_failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+	out := make([]activation, 0, len(order))
+	var tMailed, tOpens, tClicks, tBounced, tConvL int
+	for _, id := range order {
+		a := byID[id]
 		a.OpensPct = pct(a.Opens, a.Mailed)
 		a.ClicksPct = pct(a.Clicks, a.Mailed)
 		a.BouncePct = pct(a.Bounced, a.Mailed)
 		switch {
-		case a.Clicks > a.ClicksPrev:
+		case a.RecentClicks > prevClicks[id]:
 			a.Trend = "up"
-		case a.Clicks < a.ClicksPrev:
+		case a.RecentClicks < prevClicks[id]:
 			a.Trend = "down"
 		default:
 			a.Trend = "flat"
@@ -2173,17 +2235,20 @@ func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter
 		tOpens += a.Opens
 		tClicks += a.Clicks
 		tBounced += a.Bounced
-		tConvW += a.ConvWindow
 		tConvL += a.ConvLifetime
-		out = append(out, a)
+		out = append(out, *a)
 	}
-	if err := rows.Err(); err != nil {
-		writeJSONError(w, "previous_activations_iter_failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Rank by lifetime clicks (the human signal), then conversions.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Clicks != out[j].Clicks {
+			return out[i].Clicks > out[j].Clicks
+		}
+		return out[i].ConvLifetime > out[j].ConvLifetime
+	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"days":        days,
+		"scope":       "lifetime",
 		"activations": out,
 		"totals": map[string]interface{}{
 			"mailed":        tMailed,
@@ -2193,16 +2258,16 @@ func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter
 			"clicks_pct":    pct(tClicks, tMailed),
 			"bounced":       tBounced,
 			"bounce_pct":    pct(tBounced, tMailed),
-			"conv_window":   tConvW,
 			"conv_lifetime": tConvL,
 		},
 		// Honest caveats surfaced to the UI so the numbers aren't over-read.
 		"notes": map[string]interface{}{
-			"engagement_scope": "opens/clicks/bounces are on the partner's own mailed campaigns in the window (not cross-brand segment membership)",
+			"scope":            "all headline metrics are LIFETIME (the whole activation) on the dataset's own campaigns; recent_mailed/recent_clicks are a separate last-N-day freshness signal",
+			"engagement_scope": "opens/clicks/bounces scoped to the dataset's own campaigns via partner_dataset_id (all touches), joined on subscriber+campaign — no cross-dataset leak",
+			"bounce_caveat":    "bounce% is lifetime list-health — the single best partner-quality tell; dirty lists run 30-47%",
 			"opens_caveat":     "opens are ~90% Apple-MPP/machine industry-wide; rank by clicks + conversions",
-			"conv_window_vs_lifetime": "conv_window = conversions for records mailed in this window (lags, often ~0); conv_lifetime = all conversions ever tied to the dataset's records (use to rank)",
-			"revenue":     "CPM deals pay per-send; conversion revenue is $0 by design — judge by conversion count",
-			"cost_missing": "cost/CPM per record is not in the system; needs partner deal terms for true ROI",
+			"revenue":          "CPM deals pay per-send; conversion revenue is $0 by design — judge by conversion count",
+			"cost_missing":     "cost/CPM per record is not in the system; needs partner deal terms for true ROI",
 		},
 	})
 }
