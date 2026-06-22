@@ -53,13 +53,17 @@ func (m *PartnerEngagementMarker) Start(ctx context.Context) {
 	}
 	log.Printf("[PartnerEngagementMarker] started interval=%s (clicks->engaged_at)", m.interval)
 
-	// Startup delay so migrations/boot settle before the heavy backfill.
+	// Startup delay so migrations/boot settle before the catch-up pass.
 	select {
 	case <-ctx.Done():
 		return
 	case <-time.After(2 * time.Minute):
 	}
-	m.markOnce(ctx, 0) // backfill over all history
+	// Boot catch-up: bounded to 7 days so it stays well under the app's
+	// statement_timeout (an unbounded all-history pass scans every click ever
+	// and times out). 7d comfortably covers any deploy/downtime gap; the
+	// one-time full-history backfill is a manual op (already applied 2026-06-22).
+	m.markOnce(ctx, 7*24*60)
 
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
