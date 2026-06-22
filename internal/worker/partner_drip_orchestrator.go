@@ -73,9 +73,12 @@ var dripBrands = []string{
 // digest ONLY from those three; the mature brands are freed from this vertical.
 // These brands are intentionally absent from the global dripBrands slice so
 // they send for NO other vertical (welcome AND follow-up). 2026-06-17 warm-up.
-var verticalBrandRoster = map[string][]string{
-	"samsclub_internal": {"mpf", "pmd", "trb"},
-}
+// 2026-06-22: KumoMTA Colo1 brands moved to scheduling-only (operator: "no
+// longer use automations and ai for sending"). The samsclub_internal roster is
+// removed so NO vertical auto-mails mpf/pmd/trb or the 5 new ISP-pooled brands
+// (bcc/usf/yfb/hlj/fth) — they're absent from global dripBrands AND have no
+// dedicated roster. Kumo sends are now driven only via the scheduler/send-day.
+var verticalBrandRoster = map[string][]string{}
 
 // brandRosterFor returns the brand rotation a vertical should walk: its
 // dedicated roster if one exists, else the shared dripBrands.

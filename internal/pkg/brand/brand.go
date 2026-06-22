@@ -55,6 +55,13 @@ var OwnedDomains = []string{
 	"mypersonalfinancial.com",
 	"paymydebit.com",
 	"theretirementblog.com",
+	// Jun 2026 KumoMTA Colo1 ISP-pool expansion — 5 new brands on the IPXO
+	// /24 (16.217.96.0/24), ISP-pooled (2 IPs/ISP), routing_mode='kumo'.
+	"bestcreditcare.com",
+	"us-finance.com",
+	"yourfinancialblog.com",
+	"homeloansbyjaime.com",
+	"firsttimebuyerhomeloan.com",
 }
 
 // Root maps a sending domain to its brand root.
