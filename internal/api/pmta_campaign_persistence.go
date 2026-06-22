@@ -705,6 +705,12 @@ func stagePMTADraftCampaign(
 		return engine.PMTACampaignDraftResult{}, fmt.Errorf("commit PMTA draft: %w", err)
 	}
 
+	// Confirm the row is durably committed before reporting success — never return
+	// a 200 + campaign_id for a campaign that isn't actually persisted.
+	if err := verifyCampaignPersisted(db, campaignID.String(), orgID); err != nil {
+		return engine.PMTACampaignDraftResult{}, fmt.Errorf("stage PMTA draft: %w", err)
+	}
+
 	return engine.PMTACampaignDraftResult{
 		CampaignID:    campaignID.String(),
 		Name:          input.Name,
@@ -713,6 +719,32 @@ func stagePMTADraftCampaign(
 		UpdatedAt:     time.Now().UTC(),
 		CampaignInput: input,
 	}, nil
+}
+
+// verifyCampaignPersisted confirms a just-committed campaign row is durably
+// readable before a handler reports success. Under concurrent burst load a
+// commit can return nil while the row is not retrievable (request-context
+// cancellation races during commit, connection-pool/replica anomalies). Without
+// this check /pmta-campaign/stage and /deploy could return HTTP 200 with a
+// campaign_id that pointed at no persisted row (2026-06-22 staging-burst
+// false-success: 50/200 board campaigns silently lost). The verification uses a
+// FRESH context so it is independent of the (possibly near-deadline or already
+// cancelled) request context, and returns an error so the caller surfaces a
+// loud 500 the client can retry instead of a silent false success.
+func verifyCampaignPersisted(db *sql.DB, campaignID, orgID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var got string
+	err := db.QueryRowContext(ctx,
+		`SELECT id::text FROM mailing_campaigns WHERE id = $1 AND organization_id = $2`,
+		campaignID, orgID).Scan(&got)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("post-commit verification failed: campaign %s not durable", campaignID)
+	}
+	if err != nil {
+		return fmt.Errorf("post-commit verification: %w", err)
+	}
+	return nil
 }
 
 func insertABVariants(ctx context.Context, tx *sql.Tx, orgID, campaignID string, input engine.PMTACampaignInput) error {

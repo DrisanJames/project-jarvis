@@ -1061,6 +1061,13 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit reservation: %w", err)
 	}
+
+	// Confirm the reservation row is durably committed before returning the id —
+	// never return a 200 + campaign_id for a campaign that isn't actually
+	// persisted (2026-06-22 staging/deploy burst false-success).
+	if err := verifyCampaignPersisted(s.db, campaignID.String(), orgID); err != nil {
+		return "", fmt.Errorf("reserve campaign for deploy: %w", err)
+	}
 	return campaignID.String(), nil
 }
 

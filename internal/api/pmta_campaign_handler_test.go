@@ -61,6 +61,9 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	// Post-commit durability verification (false-success guard)
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
 
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
@@ -314,6 +317,9 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 	mock.ExpectExec("UPDATE mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	// Post-commit durability verification (false-success guard)
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(draftID))
 
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
@@ -377,6 +383,9 @@ func TestHandleDeployCampaign_ReusesScheduledCampaignID(t *testing.T) {
 	mock.ExpectExec("UPDATE mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	// Post-commit durability verification (false-success guard)
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(existingID))
 
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))

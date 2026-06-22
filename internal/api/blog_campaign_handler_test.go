@@ -154,6 +154,9 @@ func TestHandleBlogCampaign_HappyPath(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO mailing_campaigns`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	// Post-commit durability verification (false-success guard)
+	mock.ExpectQuery(`SELECT id::text FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
 
 	scheduled := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	body, _ := json.Marshal(BlogCampaignInput{
