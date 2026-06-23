@@ -469,8 +469,8 @@ export const ISPAgentIntelligence: React.FC = () => {
             <span className="ia-pulse" />
           </div>
           <div>
-            <h1>ISP Agent Intelligence</h1>
-            <p>Specialized AI agents learning the behavior of every ISP</p>
+            <h1>Mailbox Provider Intelligence</h1>
+            <p>Specialized AI agents learning the behavior of every mailbox provider</p>
           </div>
         </div>
         {subTab === 'intelligence' && (
@@ -556,7 +556,7 @@ export const ISPAgentIntelligence: React.FC = () => {
         <div className="ia-managed-section-header">
           <div className="ia-managed-section-title">
             <FontAwesomeIcon icon={faNetworkWired} />
-            <h2>Managed ISP Agents</h2>
+            <h2>Managed Provider Agents</h2>
           </div>
           <span className="ia-managed-section-subtitle">Persistent agents spawned by campaigns</span>
         </div>
@@ -633,7 +633,7 @@ export const ISPAgentIntelligence: React.FC = () => {
               <FontAwesomeIcon icon={faInfoCircle} />
             </div>
             <div className="ia-managed-empty-body">
-              <h4>No ISP agents have been spawned yet</h4>
+              <h4>No provider agents have been created yet</h4>
               <p>Create a campaign using the AI Agent Wizard to deploy your first agents.</p>
             </div>
           </div>
@@ -963,7 +963,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                   {expandedAgent === agent.id && engineData?.reason === 'no_engine_mapping' && (
                     <div className="ia-engine-panel ia-engine-no-mapping" onClick={(e) => e.stopPropagation()}>
                       <FontAwesomeIcon icon={faInfoCircle} />
-                      <span>No engine mapping for this ISP — real-time throttle data unavailable</span>
+                      <span>No engine mapping for this mailbox provider — real-time pacing data unavailable</span>
                     </div>
                   )}
 
@@ -1090,7 +1090,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       {/* ═══ Computed ISP Intelligence Section ════════════════════════════ */}
       <div className="ia-computed-section-header">
         <FontAwesomeIcon icon={faBrain} />
-        <h2>Computed ISP Intelligence</h2>
+        <h2>Computed Provider Intelligence</h2>
       </div>
 
       {/* ─── Search Bar ─────────────────────────────────────────────────── */}
@@ -1099,7 +1099,7 @@ export const ISPAgentIntelligence: React.FC = () => {
           <FontAwesomeIcon icon={faSearch} className="ia-search-icon" />
           <input
             type="text"
-            placeholder="Search by ISP or domain..."
+            placeholder="Search by mailbox provider or domain..."
             value={searchFilter}
             onChange={(e) => setSearchFilter(e.target.value)}
             className="ia-search-input"
@@ -1115,13 +1115,13 @@ export const ISPAgentIntelligence: React.FC = () => {
         {loading && agents.length === 0 ? (
           <div className="ia-loading">
             <FontAwesomeIcon icon={faSpinner} spin size="2x" />
-            <p>Initializing ISP agents...</p>
+            <p>Initializing provider agents...</p>
           </div>
         ) : sortedAgents.length === 0 ? (
           <div className="ia-empty">
             <FontAwesomeIcon icon={faRobot} size="3x" />
             <h3>No Agents Found</h3>
-            <p>AI agents are created as email data flows through the system. Send emails to start building ISP-specific intelligence.</p>
+            <p>AI agents are created as email data flows through the system. Send emails to start building mailbox-provider-specific intelligence.</p>
           </div>
         ) : (
           <div className="ia-agents-grid ig-stagger">

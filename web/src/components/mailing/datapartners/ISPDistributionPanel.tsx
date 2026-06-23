@@ -119,10 +119,10 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 16 }}>
           <div>
             <h3 style={{ margin: 0, color: '#dbeafe' }}>
-              <FontAwesomeIcon icon={faChartBar} /> ISP Distribution — {datasetName}
+              <FontAwesomeIcon icon={faChartBar} /> Mailbox Provider Distribution — {datasetName}
             </h3>
             <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
-              Override ISP percentages and per-wave caps. Empty = use natural distribution from queue.
+              Override mailbox provider percentages and per-batch caps. Empty = use natural distribution from queue.
             </div>
           </div>
           <button onClick={fetchThroughput} style={iconBtn}><FontAwesomeIcon icon={faSync} spin={loading} /> Refresh</button>
@@ -144,12 +144,12 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
           <>
             <div style={metricsGrid}>
               <Metric label="Ready queue" value={totalQueue.toLocaleString()} />
-              <Metric label="Flush window" value={`${data.flush_window_hours}h`} />
-              <Metric label="Waves remaining" value={String(data.waves_remaining)} />
-              <Metric label="Recommended wave size" value={data.recommended_wave_size.toLocaleString()} />
+              <Metric label="Send window" value={`${data.flush_window_hours}h`} />
+              <Metric label="Batches remaining" value={String(data.waves_remaining)} />
+              <Metric label="Recommended batch size" value={data.recommended_wave_size.toLocaleString()} />
             </div>
 
-            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Live ISP breakdown (ready queue)</h4>
+            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Live mailbox provider breakdown (ready queue)</h4>
             <div style={{ marginBottom: 16, display: 'flex', height: 24, borderRadius: 4, overflow: 'hidden', border: '1px solid rgba(120,150,200,0.2)' }}>
               {ISP_FAMILIES.map(isp => {
                 const count = data.isp_breakdown[isp] ?? 0;
@@ -167,14 +167,14 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
               })}
             </div>
 
-            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Overrides (per-wave)</h4>
+            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Overrides (per-batch)</h4>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-                  <th style={th}>ISP</th>
+                  <th style={th}>Mailbox provider</th>
                   <th style={th}>Live %</th>
                   <th style={th}>Override %</th>
-                  <th style={th}>Max per wave</th>
+                  <th style={th}>Max per batch</th>
                 </tr>
               </thead>
               <tbody>
@@ -222,7 +222,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
             <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
               <button onClick={onClose} style={ghostBtn}>Close</button>
               <button onClick={handleSave} disabled={saving} style={primaryBtn}>
-                {saving && <FontAwesomeIcon icon={faSpinner} spin />} Save (next wave)
+                {saving && <FontAwesomeIcon icon={faSpinner} spin />} Save (next batch)
               </button>
             </div>
           </>

@@ -107,7 +107,7 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
       setApproveResults(data.results || []);
       setConfirmOpen(false);
       onPlanChange({ ...plan, status: data.status, deploy_results: (data.results || []) as unknown[] });
-      addToast({ type: 'campaign', title: 'Plan approved', message: `Deploy kicked off for ${plan.sending_domain} — watching campaign QA.` });
+      addToast({ type: 'campaign', title: 'Plan approved', message: `Deployment started for ${plan.sending_domain} — monitoring campaign status.` });
       startPolling(plan.id);
     } catch (e) {
       addToast({ type: 'error', title: 'Approve failed', message: e instanceof Error ? e.message : String(e) });
@@ -174,7 +174,7 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
             >
               <div style={{ color: C.danger, fontSize: 13, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <FontAwesomeIcon icon={faTriangleExclamation} />
-                Deploys {payloadCount} campaign{payloadCount === 1 ? '' : 's'} for {plan.sending_domain} via the live PMTA pipeline
+                Deploys {payloadCount} campaign{payloadCount === 1 ? '' : 's'} for {plan.sending_domain} to your mailbox providers
               </div>
               <div style={{ color: C.muted, fontSize: 12, marginBottom: 8 }}>
                 Type <span style={{ color: C.text, fontWeight: 700 }}>{plan.sending_domain}</span> to confirm.
@@ -246,7 +246,7 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
         <div style={{ marginTop: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: C.muted }}>
-              Campaign QA
+              Campaign Status
             </div>
             {polling && (
               <span style={{ fontSize: 11.5, color: C.accent }}>

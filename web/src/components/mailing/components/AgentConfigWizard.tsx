@@ -972,7 +972,7 @@ export const AgentConfigWizard: React.FC<{
         <FontAwesomeIcon icon={faClock} /> Send Window
       </h2>
       <p className="aw-step-subtitle">
-        Configure when agents should send. The AI will optimize delivery times per ISP.
+        Configure when agents should send. The AI will optimize delivery times per mailbox provider.
       </p>
 
       <div className="aw-window-config">
@@ -1024,7 +1024,7 @@ export const AgentConfigWizard: React.FC<{
       {sendWindow && (
         <div className="aw-isp-schedule">
           <h3>
-            <FontAwesomeIcon icon={faRobot} /> ISP Delivery Schedule
+            <FontAwesomeIcon icon={faRobot} /> Mailbox Provider Delivery Schedule
           </h3>
           <div className="aw-isp-grid">
             {sendWindow.isp_schedule.map((entry, i) => (
@@ -1069,7 +1069,7 @@ export const AgentConfigWizard: React.FC<{
               <FontAwesomeIcon icon={faCheck} />
             </div>
             <h2>Agents Deployed Successfully</h2>
-            <p>{deployResult.total_agents} ISP agents are now active for campaign {deployResult.campaign_id}</p>
+            <p>{deployResult.total_agents} mailbox providers are now sending for campaign {deployResult.campaign_id}</p>
 
             <div className="aw-deployed-grid">
               {deployResult.deployed_agents.map((agent, i) => (
@@ -1108,7 +1108,7 @@ export const AgentConfigWizard: React.FC<{
           <FontAwesomeIcon icon={faRocket} /> Review &amp; Deploy
         </h2>
         <p className="aw-step-subtitle">
-          Review your configuration and deploy ISP agents to begin the campaign.
+          Review your settings and start the campaign.
         </p>
 
         <div className="aw-review-card">
@@ -1153,7 +1153,7 @@ export const AgentConfigWizard: React.FC<{
 
         {sendWindow && (
           <div className="aw-review-card">
-            <h3><FontAwesomeIcon icon={faRobot} /> ISP Agents to Deploy</h3>
+            <h3><FontAwesomeIcon icon={faRobot} /> Mailbox Provider Agents to Deploy</h3>
             <div className="aw-review-agents">
               <div className="aw-isp-grid">
                 {sendWindow.isp_schedule.map((entry, i) => (
@@ -1211,7 +1211,7 @@ export const AgentConfigWizard: React.FC<{
           </div>
           <div>
             <h1>Agent Configuration Wizard</h1>
-            <p>Configure AI-powered ISP agents for your campaign</p>
+            <p>Set up AI-powered sending for your campaign</p>
           </div>
         </div>
         <button className="aw-cancel-btn" onClick={onCancel}>Cancel</button>

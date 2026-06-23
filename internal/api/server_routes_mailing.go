@@ -322,6 +322,32 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				c.Get("/agent/conversations/{id}", creativeAgent.HandleGetConversation)
 			})
 
+			// Offer Proofs — Creative Studio "Offers" sub-view (offer_proofs.go).
+			// Upload a network creative → rehost images + inject footer/unsub →
+			// email to account managers → manual approve (domains/ISPs/variants) →
+			// registry of active/inactive approved proofs. imageCDN is shared so
+			// the create path rehosts server-side via the same S3/CDN pipeline.
+			offerProofs := NewOfferProofsService(db,
+				NewImageCDNHandlers(db, s.s3Client, s.imageBucket, s.cdnDomain, s.awsRegion))
+			r.Route("/offer-proofs", func(c chi.Router) {
+				c.Get("/", offerProofs.HandleList)
+				c.Post("/", offerProofs.HandleCreate)
+				c.Get("/isps", offerProofs.HandleISPs)
+				c.Post("/bulk", offerProofs.HandleBulk)
+				c.Get("/{id}", offerProofs.HandleGet)
+				c.Get("/{id}/preview", offerProofs.HandlePreview)
+				c.Patch("/{id}", offerProofs.HandleUpdate)
+				c.Post("/{id}/approve", offerProofs.HandleApprove)
+				c.Post("/{id}/reject", offerProofs.HandleReject)
+				c.Post("/{id}/send", offerProofs.HandleSend)
+			})
+			r.Route("/proof-recipients", func(c chi.Router) {
+				c.Get("/", offerProofs.HandleListRecipients)
+				c.Post("/", offerProofs.HandleCreateRecipient)
+				c.Patch("/{id}", offerProofs.HandleUpdateRecipient)
+				c.Delete("/{id}", offerProofs.HandleDeleteRecipient)
+			})
+
 			// Data Partner Ingestion admin endpoints — authenticated via the
 			// session / X-Admin-Key auth that wraps the /api router. Mounted
 			// FIRST in this group because they're cheap and we want them up
@@ -337,6 +363,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/datasets", partnerAdmin.HandleListDatasets)
 				dp.Post("/{id}/datasets", partnerAdmin.HandleCreateDataset)
 				dp.Get("/datasets/{id}/throughput", partnerAdmin.HandleGetDatasetThroughput)
+				dp.Get("/datasets/{id}/offer-performance", partnerAdmin.HandleGetDatasetOfferPerformance)
 				dp.Get("/datasets/{id}/quality-report", partnerAdmin.HandleDatasetQualityReport)
 				dp.Put("/datasets/{id}/isp-distribution", partnerAdmin.HandleUpdateISPDistribution)
 				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
@@ -598,6 +625,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/campaigns/{id}/timeseries", advSvc.HandleCampaignTimeseries)
 			r.Get("/campaigns/{id}/detail", advSvc.HandleCampaignInlineDetail)
 			r.Get("/campaigns/list-metrics", advSvc.HandleCampaignListMetrics)
+
+			// Current-day (Denver/MT) performance snapshot — read-only
+			// operator dashboard aggregated by sending domain or by offer
+			// (group_by=domain|offer). Domain view mirrors the
+			// #customer-acquisition Slack digest; offer view adds
+			// slug-anchored EXACT clicks + best-effort campaign→offer
+			// volume. See performance_snapshot.go.
+			r.Get("/performance/snapshot", advSvc.HandlePerformanceSnapshot)
 
 			// Analytics event lake READ layer (Athena-backed) — read-only
 			// query surface over s3://ignite-analytics-lake. Disabled by

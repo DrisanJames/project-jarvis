@@ -155,7 +155,7 @@ export const JarvisDashboard: React.FC = () => {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h2 style={styles.title}>🤖 JARVIS — Autonomous Campaign Orchestrator</h2>
+          <h2 style={styles.title}>🤖 Jarvis — Your Campaign Assistant</h2>
           <p style={styles.subtitle}>No campaign is currently running.</p>
         </div>
         <div style={styles.idleCard}>
@@ -194,7 +194,7 @@ export const JarvisDashboard: React.FC = () => {
       {/* Header */}
       <div style={styles.header}>
         <div>
-          <h2 style={styles.title}>🤖 JARVIS — Autonomous Campaign Orchestrator</h2>
+          <h2 style={styles.title}>🤖 Jarvis — Your Campaign Assistant</h2>
           <p style={styles.subtitle}>
             Campaign <code>{campaign.id.slice(0, 8)}</code> — {campaign.offer_name} (Offer {campaign.offer_id})
           </p>

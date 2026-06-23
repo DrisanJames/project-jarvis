@@ -1506,7 +1506,7 @@ export const JourneyCenter: React.FC = () => {
           className={`jc-nav-tab ${view === 'click-drip' ? 'active' : ''}`}
           onClick={() => setView('click-drip')}
         >
-          <FontAwesomeIcon icon={faHandPointer} /> Click-Drip
+          <FontAwesomeIcon icon={faHandPointer} /> Automated Follow-ups
         </button>
       </div>
 

@@ -1278,7 +1278,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         <div className="sr-empty-state">
           <FontAwesomeIcon icon={faHistory} className="empty-icon" />
           <h4>No Refresh Cycles Yet</h4>
-          <p>Start your first suppression refresh cycle to begin tracking history. Cycles run automatically during configured refresh windows.</p>
+          <p>Start your first suppression refresh to begin tracking history. Refreshes run automatically during your configured window.</p>
           <button className="sr-btn-primary" onClick={triggerCycle} disabled={status?.engine_running === true}>
             <FontAwesomeIcon icon={faPlay} /> Start First Cycle
           </button>
@@ -1748,7 +1748,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
     return (
       <div className={`sr-auto-refresh ${animateIn ? 'sr-animate-in' : ''}`}>
         <div className="sr-loading">
-          <span>Loading suppression refresh engine&hellip;</span>
+          <span>Loading suppression refresh&hellip;</span>
         </div>
       </div>
     );

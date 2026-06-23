@@ -157,7 +157,7 @@ export const WarmupDashboard: React.FC = () => {
 
       {/* ISP Delivery Heatmap */}
       <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>ISP Delivery Heatmap</h3>
+        <h3 style={styles.sectionTitle}>Mailbox Provider Delivery Heatmap</h3>
         <div style={styles.heatmapContainer}>
           <table style={styles.heatmapTable}>
             <thead>

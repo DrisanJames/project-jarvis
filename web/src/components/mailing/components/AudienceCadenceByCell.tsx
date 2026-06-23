@@ -216,7 +216,7 @@ function ispHeadline(r: CadenceISPKPI): string {
   if (r.engaged_sample > 0) {
     return `${name} engages at message ~${Math.round(r.msgs_to_engage_p50)} (p50); only ${r.converters} converter${r.converters === 1 ? '' : 's'} in window — convert read not yet stable.`;
   }
-  return `${name}: no engagement sample in window (route may be pixel-blind — see doctrine).`;
+  return `${name}: no engagement sample in window (this route may not report opens — see best practices).`;
 }
 
 function globalHeadline(isps: CadenceISPKPI[]): string | null {
@@ -302,7 +302,7 @@ export const AudienceCadenceByCell: React.FC = () => {
   const startEdit = (isp: string) => {
     const d = doctrines[isp];
     setDraft({
-      title: d?.title ?? `${label(isp)} — doctrine`,
+      title: d?.title ?? `${label(isp)} — best practices`,
       doctrine_md: d?.doctrine_md ?? '',
       north_stars: d?.north_stars ?? '',
       health_bands: d?.health_bands ?? '',
@@ -369,12 +369,12 @@ export const AudienceCadenceByCell: React.FC = () => {
         <div>
           <h1 style={styles.title}>
             <FontAwesomeIcon icon={faBullseye} style={{ color: C.indigo, marginRight: 12 }} />
-            Audience Cadence — Messages to Convert, per ISP
+            Audience Cadence — Messages to Convert, per Mailbox Provider
           </h1>
           <p style={styles.subtitle}>
             How many messages does an audience member need before they engage — and before they
-            convert — in each ISP environment? Evolving statistics from the live send + tracking +
-            conversion streams. Click an ISP for its full distribution and its <strong>standing doctrine</strong>.
+            convert — in each mailbox provider environment? Evolving statistics from the live send,
+            tracking, and conversion data. Click a mailbox provider for its full distribution and its <strong>standing best practices</strong>.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -418,7 +418,7 @@ export const AudienceCadenceByCell: React.FC = () => {
           <thead>
             <tr>
               <th style={{ ...styles.th, textAlign: 'left', width: 28 }} />
-              <th style={{ ...styles.th, textAlign: 'left' }}>ISP</th>
+              <th style={{ ...styles.th, textAlign: 'left' }}>Mailbox Provider</th>
               <th style={{ ...styles.th, textAlign: 'left', minWidth: 140 }}>Msgs → engage (p50, p25–p75)</th>
               <th style={styles.th}>Msgs → convert<br />p50</th>
               <th style={styles.th}>Conv /<br />10k sends</th>
@@ -445,11 +445,11 @@ export const AudienceCadenceByCell: React.FC = () => {
                       <div style={{ fontWeight: 700, color: C.heading }}>
                         {label(isp)}
                         {doc && (
-                          <FontAwesomeIcon icon={faBookOpen} style={{ color: C.indigo, marginLeft: 8, fontSize: 11 }} title="Doctrine on file" />
+                          <FontAwesomeIcon icon={faBookOpen} style={{ color: C.indigo, marginLeft: 8, fontSize: 11 }} title="Best practices on file" />
                         )}
                       </div>
                       <div style={{ fontSize: 10.5, color: C.textSec, maxWidth: 360, marginTop: 2 }}>
-                        {r ? ispHeadline(r) : 'No PG-visible sample in window — doctrine only.'}
+                        {r ? ispHeadline(r) : 'No reportable sample in window — best practices only.'}
                       </div>
                     </td>
                     <td style={{ ...styles.td, textAlign: 'left' }}>
@@ -569,9 +569,9 @@ export const AudienceCadenceByCell: React.FC = () => {
                               </>
                             ) : (
                               <div style={{ fontSize: 12, color: C.textMuted }}>
-                                No KPI sample for this ISP in the window. If this route is SES-carried
-                                (gmail, the SES-tenant brands), engagement is pixel-blind in Postgres —
-                                judge it from the event lake per the doctrine.
+                                No KPI sample for this mailbox provider in the window. If this sending route
+                                is relayed (Gmail and the relay-routed brands), engagement is not reported
+                                here — judge it from Reporting per the best practices.
                               </div>
                             )}
                           </div>
@@ -581,11 +581,11 @@ export const AudienceCadenceByCell: React.FC = () => {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                               <h3 style={styles.expandTitle}>
                                 <FontAwesomeIcon icon={faBookOpen} style={{ color: C.amber, marginRight: 8 }} />
-                                {doc?.title || `${label(isp)} — no doctrine on file`}
+                                {doc?.title || `${label(isp)} — no best practices on file`}
                               </h3>
                               {editingISP !== isp && (
                                 <button style={styles.btnSmall} onClick={(e) => { e.stopPropagation(); startEdit(isp); }}>
-                                  <FontAwesomeIcon icon={faPen} /> {doc ? 'Edit' : 'Add doctrine'}
+                                  <FontAwesomeIcon icon={faPen} /> {doc ? 'Edit' : 'Add best practices'}
                                 </button>
                               )}
                             </div>
@@ -598,7 +598,7 @@ export const AudienceCadenceByCell: React.FC = () => {
                                   value={draft.title}
                                   onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                                 />
-                                <label style={styles.editLabel}>Doctrine (markdown: **bold**, ## headers, - bullets)</label>
+                                <label style={styles.editLabel}>Best practices (markdown: **bold**, ## headers, - bullets)</label>
                                 <textarea
                                   style={{ ...styles.editArea, minHeight: 160 }}
                                   value={draft.doctrine_md}
@@ -659,7 +659,7 @@ export const AudienceCadenceByCell: React.FC = () => {
                               </>
                             ) : (
                               <div style={{ fontSize: 12, color: C.textMuted }}>
-                                No doctrine seeded for this ISP family yet. Use "Add doctrine" to write one.
+                                No best practices set for this mailbox provider yet. Use "Add best practices" to write some.
                               </div>
                             )}
                           </div>
@@ -679,7 +679,7 @@ export const AudienceCadenceByCell: React.FC = () => {
         <button style={styles.legacyToggle} onClick={openLegacy}>
           <FontAwesomeIcon icon={legacyOpen ? faChevronDown : faChevronRight} style={{ marginRight: 8 }} />
           <FontAwesomeIcon icon={faGlobe} style={{ color: C.indigo, marginRight: 8 }} />
-          Welcome-pool refresh view (legacy 2.0) — "when do I need to upload more data per ISP?"
+          Welcome-pool refresh view — "when do I need to upload more data per mailbox provider?"
         </button>
         {legacyOpen && (
           <div style={{ marginTop: 12 }}>
@@ -702,7 +702,7 @@ export const AudienceCadenceByCell: React.FC = () => {
                 <table style={styles.table}>
                   <thead>
                     <tr>
-                      <th style={{ ...styles.th, textAlign: 'left' }}>ISP</th>
+                      <th style={{ ...styles.th, textAlign: 'left' }}>Mailbox Provider</th>
                       <th style={styles.th}>Pool</th>
                       <th style={styles.th}>Welcome mailable</th>
                       <th style={styles.th}>Never mailed</th>

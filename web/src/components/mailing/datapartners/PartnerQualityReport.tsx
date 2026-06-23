@@ -115,9 +115,9 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
         <Stat label="Posts (API calls)" value={t.posts} />
         <Stat label="Leads received" value={t.records_received} />
         <Stat label="Dropped at intake" value={t.intake_dropped} sub={pctOf(t.intake_dropped, t.records_received)} accent={t.intake_dropped > 0 ? '#f59e0b' : undefined} title="Already suppressed / duplicates — never entered the queue" />
-        <Stat label="EO passed" value={t.eo_passed} sub={pctOf(t.eo_passed, validated)} accent="#10b981" title="Verified deliverable by EmailOversight" />
-        <Stat label="EO rejected" value={t.eo_rejected} sub={pctOf(t.eo_rejected, validated)} accent="#ef4444" title="Failed mailbox validation — see reasons below" />
-        <Stat label="Awaiting EO" value={t.eo_pending} accent="#a78bfa" />
+        <Stat label="Verified" value={t.eo_passed} sub={pctOf(t.eo_passed, validated)} accent="#10b981" title="Confirmed deliverable by email verification" />
+        <Stat label="Rejected" value={t.eo_rejected} sub={pctOf(t.eo_rejected, validated)} accent="#ef4444" title="Failed mailbox validation — see reasons below" />
+        <Stat label="Awaiting verification" value={t.eo_pending} accent="#a78bfa" />
         <Stat label="Mailed" value={t.mailed} accent="#6366f1" />
         <Stat label="Engaged" value={t.engaged} sub={pctOf(t.engaged, t.mailed)} accent="#10b981" title="Opened or clicked after mailing" />
       </div>
@@ -150,7 +150,7 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
           <table style={tableStyle}>
             <thead>
               <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-                <th style={th}>EmailOversight verdict</th>
+                <th style={th}>Email verification verdict</th>
                 <th style={thNum}>Leads</th>
                 <th style={thNum}>% of validated</th>
               </tr>
@@ -172,11 +172,11 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
 
         {/* ISP mix */}
         <div>
-          <div style={sectionLabel}>ISP mix of accepted leads</div>
+          <div style={sectionLabel}>Mailbox provider mix of accepted leads</div>
           <table style={tableStyle}>
             <thead>
               <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-                <th style={th}>ISP</th>
+                <th style={th}>Mailbox provider</th>
                 <th style={thNum}>Queued</th>
                 <th style={thNum}>Ready</th>
                 <th style={thNum}>Mailed</th>

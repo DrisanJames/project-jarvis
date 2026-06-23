@@ -690,7 +690,7 @@ const LakeChainCard: React.FC<{ lake: LakeChainStatus }> = ({ lake }) => {
     <div className="worker-card">
       <div className="worker-card-header">
         <span className="worker-name">
-          <FontAwesomeIcon icon={faDatabase} /> nightly lake chain
+          <FontAwesomeIcon icon={faDatabase} /> nightly segment refresh
         </span>
         {healthy ? (
           <span className="worker-state online">
@@ -712,10 +712,10 @@ const LakeChainCard: React.FC<{ lake: LakeChainStatus }> = ({ lake }) => {
       <div className="worker-items">
         {lake.standard_built_24h.toLocaleString()} standard + {lake.engaged_built_24h.toLocaleString()} engaged segments built (24h)
       </div>
-      <div className="worker-detail">{lake.lake_builder_built_24h.toLocaleString()} lake-builder builds (24h)</div>
+      <div className="worker-detail">{lake.lake_builder_built_24h.toLocaleString()} segment builds (24h)</div>
       <div className="worker-footer">
         <span>06:30 UTC daily</span>
-        <span>Fargate</span>
+        <span>cloud infrastructure</span>
       </div>
     </div>
   );
@@ -854,7 +854,7 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetc
               <AnimatedNumber value={operated.length} />
             </div>
             <div className="hero-stat-label">Operated Segments</div>
-            <div className="hero-stat-trend">{activeSegs.length} active · machine segments excluded</div>
+            <div className="hero-stat-trend">{activeSegs.length} active · auto-generated segments excluded</div>
           </div>
         </div>
 

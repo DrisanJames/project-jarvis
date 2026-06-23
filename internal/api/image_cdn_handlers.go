@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -512,10 +513,191 @@ type rehostHTMLResponse struct {
 	ImagesFailed   int    `json:"images_failed"`
 }
 
+// RehostCounts tallies the outcome of a RehostHTML pass.
+type RehostCounts struct {
+	Rehosted int
+	Cached   int
+	Skipped  int
+	Failed   int
+}
+
+// RehostHTML downloads every external <img> in html, uploads each to our S3/CDN
+// (dedup by SHA-256), and rewrites the src attributes to the hosted URL. It is
+// the reusable core shared by the HTTP handler and the offer-proof create path.
+// orgID must already be a validated UUID string. When S3 isn't configured the
+// HTML is returned unchanged (graceful degradation). Never returns an error for
+// a single image that fails to download/upload — those are tallied in Failed and
+// the original src is left in place.
+func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (string, RehostCounts) {
+	var counts RehostCounts
+	if strings.TrimSpace(html) == "" || !h.s3Configured {
+		if !h.s3Configured {
+			log.Printf("[ImageRehost] S3 not configured, returning original HTML without rehosting")
+		}
+		return html, counts
+	}
+
+	// Check for org-specific verified image domain (e.g., img.horoscopeinfo.com)
+	var orgImageDomain string
+	h.db.QueryRowContext(ctx, `
+		SELECT domain FROM mailing_image_domains
+		WHERE org_id = $1 AND verified = true AND ssl_status = 'active'
+		ORDER BY created_at ASC LIMIT 1
+	`, orgID).Scan(&orgImageDomain)
+
+	// Get CDN domain to skip images already on our CDN
+	cdnDomain := h.imageCDN.GetCDNDomain()
+	s3Bucket := h.imageCDN.GetBucket()
+
+	// Find all <img src="..."> in the HTML
+	matches := imgSrcRegex.FindAllStringSubmatch(html, -1)
+	if len(matches) == 0 {
+		log.Printf("[ImageRehost] No <img> tags found in HTML (%d bytes)", len(html))
+		return html, counts
+	}
+
+	log.Printf("[ImageRehost] Found %d <img> tags in HTML, processing for org %s", len(matches), orgID)
+
+	processedHTML := html
+
+	// HTTP client with timeout for downloading external images
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	// Track already-processed URLs to avoid duplicate work in same request
+	urlToCDN := make(map[string]string)
+
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		originalURL := match[1]
+
+		// Skip data URIs
+		if strings.HasPrefix(originalURL, "data:") {
+			counts.Skipped++
+			continue
+		}
+
+		// Skip relative URLs (no host)
+		if !strings.HasPrefix(originalURL, "http://") && !strings.HasPrefix(originalURL, "https://") {
+			counts.Skipped++
+			continue
+		}
+
+		// Skip images already on our CDN
+		if cdnDomain != "" && strings.Contains(originalURL, cdnDomain) {
+			counts.Skipped++
+			continue
+		}
+
+		// Skip images already on our S3 bucket
+		if s3Bucket != "" && strings.Contains(originalURL, s3Bucket) {
+			counts.Skipped++
+			continue
+		}
+
+		// Check if we already processed this URL in this request
+		if cdnURL, ok := urlToCDN[originalURL]; ok {
+			processedHTML = strings.Replace(processedHTML, originalURL, cdnURL, 1)
+			counts.Cached++
+			continue
+		}
+
+		// URL-encode spaces for the download URL
+		downloadURL := strings.ReplaceAll(originalURL, " ", "%20")
+
+		// Download the image
+		log.Printf("[ImageRehost] Downloading: %s", downloadURL)
+		resp, err := httpClient.Get(downloadURL)
+		if err != nil {
+			log.Printf("[ImageRehost] WARNING: Failed to download %s: %v", downloadURL, err)
+			counts.Failed++
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			log.Printf("[ImageRehost] WARNING: Download returned HTTP %d for %s", resp.StatusCode, downloadURL)
+			counts.Failed++
+			continue
+		}
+
+		// Read image bytes (limit to 10MB to prevent OOM on oversized remote images)
+		imageData, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		resp.Body.Close()
+		if err != nil {
+			log.Printf("[ImageRehost] WARNING: Failed to read image data from %s: %v", downloadURL, err)
+			counts.Failed++
+			continue
+		}
+
+		if len(imageData) == 0 {
+			log.Printf("[ImageRehost] WARNING: Empty image data from %s", downloadURL)
+			counts.Failed++
+			continue
+		}
+
+		// Compute SHA-256 checksum for deduplication
+		hash := sha256.Sum256(imageData)
+		checksum := hex.EncodeToString(hash[:])
+
+		// Check for existing image with same checksum (dedup)
+		existingImage, err := h.imageCDN.FindImageByChecksum(ctx, orgID, checksum)
+		if err != nil {
+			log.Printf("[ImageRehost] WARNING: Checksum lookup failed: %v", err)
+			// Continue with upload anyway
+		}
+
+		var cdnURL string
+
+		if existingImage != nil {
+			// Image already hosted - use existing CDN URL
+			cdnURL = existingImage.CDNURL
+			log.Printf("[ImageRehost] Cached: %s -> %s (checksum match)", originalURL, cdnURL)
+			counts.Cached++
+		} else {
+			// Extract filename from URL
+			filename := extractFilenameFromURL(originalURL)
+
+			// Upload via ImageCDNService
+			opts := mailing.DefaultUploadOptions()
+			opts.GenerateThumbnails = false // Email images don't need thumbnails
+			opts.OptimizeForWeb = false     // Preserve original quality for email
+
+			hostedImage, err := h.imageCDN.UploadImageWithOptions(ctx, orgID, filename, bytes.NewReader(imageData), opts)
+			if err != nil {
+				log.Printf("[ImageRehost] WARNING: Failed to upload %s: %v", originalURL, err)
+				counts.Failed++
+				continue
+			}
+
+			cdnURL = hostedImage.CDNURL
+			log.Printf("[ImageRehost] Rehosted: %s -> %s (%d bytes)", originalURL, cdnURL, len(imageData))
+			counts.Rehosted++
+		}
+
+		// If an org-specific image domain is active, rewrite CDN URL to use it
+		if orgImageDomain != "" && cdnURL != "" {
+			cdnURL = rewriteToCustomDomain(cdnURL, orgImageDomain, cdnDomain)
+		}
+
+		// Replace the original URL with the CDN URL in the HTML
+		processedHTML = strings.ReplaceAll(processedHTML, originalURL, cdnURL)
+
+		// Cache for dedup within this request
+		urlToCDN[originalURL] = cdnURL
+	}
+
+	log.Printf("[ImageRehost] Complete: rehosted=%d, cached=%d, skipped=%d, failed=%d",
+		counts.Rehosted, counts.Cached, counts.Skipped, counts.Failed)
+	return processedHTML, counts
+}
+
 // HandleRehostCreativeImages accepts HTML content, downloads all external images,
 // uploads them to S3/CDN, and returns the HTML with rewritten image URLs.
 // This ensures email creatives serve images from our sending domain's CDN
-// rather than third-party hosts like imageports.com.
+// rather than third-party hosts like imageports.com. Thin HTTP wrapper over
+// RehostHTML.
 func (h *ImageCDNHandlers) HandleRehostCreativeImages(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -543,191 +725,15 @@ func (h *ImageCDNHandlers) HandleRehostCreativeImages(w http.ResponseWriter, r *
 		return
 	}
 
-	// If HTML is empty, return immediately
-	if strings.TrimSpace(input.HTML) == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(rehostHTMLResponse{
-			HTML: input.HTML,
-		})
-		return
-	}
-
-	// If S3 is not configured, return HTML as-is (graceful degradation)
-	if !h.s3Configured {
-		log.Printf("[ImageRehost] S3 not configured, returning original HTML without rehosting")
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(rehostHTMLResponse{
-			HTML: input.HTML,
-		})
-		return
-	}
-
-	// Check for org-specific verified image domain (e.g., img.horoscopeinfo.com)
-	var orgImageDomain string
-	h.db.QueryRowContext(ctx, `
-		SELECT domain FROM mailing_image_domains
-		WHERE org_id = $1 AND verified = true AND ssl_status = 'active'
-		ORDER BY created_at ASC LIMIT 1
-	`, orgID).Scan(&orgImageDomain)
-
-	// Get CDN domain to skip images already on our CDN
-	cdnDomain := h.imageCDN.GetCDNDomain()
-	s3Bucket := h.imageCDN.GetBucket()
-
-	// Find all <img src="..."> in the HTML
-	matches := imgSrcRegex.FindAllStringSubmatch(input.HTML, -1)
-	if len(matches) == 0 {
-		log.Printf("[ImageRehost] No <img> tags found in HTML (%d bytes)", len(input.HTML))
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(rehostHTMLResponse{
-			HTML: input.HTML,
-		})
-		return
-	}
-
-	log.Printf("[ImageRehost] Found %d <img> tags in HTML, processing for org %s", len(matches), orgID)
-
-	processedHTML := input.HTML
-	var rehosted, cached, skipped, failed int
-
-	// HTTP client with timeout for downloading external images
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-
-	// Track already-processed URLs to avoid duplicate work in same request
-	urlToCDN := make(map[string]string)
-
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-		originalURL := match[1]
-
-		// Skip data URIs
-		if strings.HasPrefix(originalURL, "data:") {
-			skipped++
-			continue
-		}
-
-		// Skip relative URLs (no host)
-		if !strings.HasPrefix(originalURL, "http://") && !strings.HasPrefix(originalURL, "https://") {
-			skipped++
-			continue
-		}
-
-		// Skip images already on our CDN
-		if cdnDomain != "" && strings.Contains(originalURL, cdnDomain) {
-			skipped++
-			continue
-		}
-
-		// Skip images already on our S3 bucket
-		if s3Bucket != "" && strings.Contains(originalURL, s3Bucket) {
-			skipped++
-			continue
-		}
-
-		// Check if we already processed this URL in this request
-		if cdnURL, ok := urlToCDN[originalURL]; ok {
-			processedHTML = strings.Replace(processedHTML, originalURL, cdnURL, 1)
-			cached++
-			continue
-		}
-
-		// URL-encode spaces for the download URL
-		downloadURL := strings.ReplaceAll(originalURL, " ", "%20")
-
-		// Download the image
-		log.Printf("[ImageRehost] Downloading: %s", downloadURL)
-		resp, err := httpClient.Get(downloadURL)
-		if err != nil {
-			log.Printf("[ImageRehost] WARNING: Failed to download %s: %v", downloadURL, err)
-			failed++
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			log.Printf("[ImageRehost] WARNING: Download returned HTTP %d for %s", resp.StatusCode, downloadURL)
-			failed++
-			continue
-		}
-
-		// Read image bytes (limit to 10MB to prevent OOM on oversized remote images)
-		imageData, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-		resp.Body.Close()
-		if err != nil {
-			log.Printf("[ImageRehost] WARNING: Failed to read image data from %s: %v", downloadURL, err)
-			failed++
-			continue
-		}
-
-		if len(imageData) == 0 {
-			log.Printf("[ImageRehost] WARNING: Empty image data from %s", downloadURL)
-			failed++
-			continue
-		}
-
-		// Compute SHA-256 checksum for deduplication
-		hash := sha256.Sum256(imageData)
-		checksum := hex.EncodeToString(hash[:])
-
-		// Check for existing image with same checksum (dedup)
-		existingImage, err := h.imageCDN.FindImageByChecksum(ctx, orgID, checksum)
-		if err != nil {
-			log.Printf("[ImageRehost] WARNING: Checksum lookup failed: %v", err)
-			// Continue with upload anyway
-		}
-
-		var cdnURL string
-
-		if existingImage != nil {
-			// Image already hosted - use existing CDN URL
-			cdnURL = existingImage.CDNURL
-			log.Printf("[ImageRehost] Cached: %s -> %s (checksum match)", originalURL, cdnURL)
-			cached++
-		} else {
-			// Extract filename from URL
-			filename := extractFilenameFromURL(originalURL)
-
-			// Upload via ImageCDNService
-			opts := mailing.DefaultUploadOptions()
-			opts.GenerateThumbnails = false // Email images don't need thumbnails
-			opts.OptimizeForWeb = false     // Preserve original quality for email
-
-			hostedImage, err := h.imageCDN.UploadImageWithOptions(ctx, orgID, filename, bytes.NewReader(imageData), opts)
-			if err != nil {
-				log.Printf("[ImageRehost] WARNING: Failed to upload %s: %v", originalURL, err)
-				failed++
-				continue
-			}
-
-			cdnURL = hostedImage.CDNURL
-			log.Printf("[ImageRehost] Rehosted: %s -> %s (%d bytes)", originalURL, cdnURL, len(imageData))
-			rehosted++
-		}
-
-		// If an org-specific image domain is active, rewrite CDN URL to use it
-		if orgImageDomain != "" && cdnURL != "" {
-			cdnURL = rewriteToCustomDomain(cdnURL, orgImageDomain, cdnDomain)
-		}
-
-		// Replace the original URL with the CDN URL in the HTML
-		processedHTML = strings.ReplaceAll(processedHTML, originalURL, cdnURL)
-
-		// Cache for dedup within this request
-		urlToCDN[originalURL] = cdnURL
-	}
-
-	log.Printf("[ImageRehost] Complete: rehosted=%d, cached=%d, skipped=%d, failed=%d",
-		rehosted, cached, skipped, failed)
+	processedHTML, counts := h.RehostHTML(ctx, orgID, input.HTML)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rehostHTMLResponse{
 		HTML:           processedHTML,
-		ImagesRehosted: rehosted,
-		ImagesCached:   cached,
-		ImagesSkipped:  skipped,
-		ImagesFailed:   failed,
+		ImagesRehosted: counts.Rehosted,
+		ImagesCached:   counts.Cached,
+		ImagesSkipped:  counts.Skipped,
+		ImagesFailed:   counts.Failed,
 	})
 }
 

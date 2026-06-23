@@ -130,7 +130,7 @@ export const ScorecardSection: React.FC<{ domain: string }> = ({ domain }) => {
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
               <thead>
                 <tr>
-                  <th style={thStyle}>ISP</th>
+                  <th style={thStyle}>Provider</th>
                   <th style={{ ...thStyle, textAlign: 'right' }}>Sends</th>
                   <th style={{ ...thStyle, textAlign: 'right' }}>Human Open %</th>
                   <th style={{ ...thStyle, textAlign: 'right' }}>Machine Open Share</th>

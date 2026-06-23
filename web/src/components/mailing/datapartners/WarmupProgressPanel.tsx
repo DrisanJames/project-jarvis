@@ -152,7 +152,7 @@ export const WarmupProgressPanel: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 6, marginBottom: 12 }}>
         <h3 style={{ color: '#dbeafe', margin: 0 }}>
           <FontAwesomeIcon icon={faSeedling} style={{ marginRight: 8, color: '#10b981' }} />
-          Warm-Up Progress — KumoMTA new domains
+          Warm-Up Progress — new sending domains
         </h3>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
           <span style={{ color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -164,7 +164,7 @@ export const WarmupProgressPanel: React.FC = () => {
       </div>
 
       <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginBottom: 12 }}>
-        Last {data?.window_hours ?? WINDOW_HOURS}h. Tracking the delivered/sent recovery of <b>mpf / pmd / trb</b> on KumoMTA.
+        Last {data?.window_hours ?? WINDOW_HOURS}h. Tracking the delivered/sent recovery of <b>mpf / pmd / trb</b> on the new sending domains.
         Bounces split hard (red) vs soft (amber). {data?.engagement_note
           ? <span style={{ color: '#f59e0b' }}> {data.engagement_note} (opens/clicks pending tracking wiring).</span>
           : <span> Opens/clicks pending tracking wiring.</span>}
@@ -212,20 +212,20 @@ export const WarmupProgressPanel: React.FC = () => {
           </ResponsiveContainer>
         ) : (
           <div style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, padding: '24px 0', textAlign: 'center' }}>
-            No events in the window yet — the curve fills in as accounting events arrive.
+            No events in the window yet — the curve fills in as delivery activity arrives.
           </div>
         )}
       </div>
 
       {/* ───── Per-ISP table ───── */}
       <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)', margin: '22px 0 8px' }}>
-        Per-ISP breakdown (last {data?.window_hours ?? WINDOW_HOURS}h) — the warm-up targets Yahoo / AOL only; rates are against sent.
+        Per-provider breakdown (last {data?.window_hours ?? WINDOW_HOURS}h) — the warm-up targets Yahoo / AOL only; rates are against sent.
       </div>
       <table style={tableStyle}>
         <thead>
           <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
             <th style={th}>Brand</th>
-            <th style={th}>ISP</th>
+            <th style={th}>Mailbox provider</th>
             <th style={thNum}>Sent</th>
             <th style={thNum} title="Delivered, as % of sent">Delivered</th>
             <th style={thNum} title="Deferred — transient throttling during warm-up">Deferred</th>
@@ -257,7 +257,7 @@ export const WarmupProgressPanel: React.FC = () => {
 
       {/* ───── Current per-wave caps ───── */}
       <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)', margin: '22px 0 8px' }}>
-        Current per-wave ISP caps (warm-up dataset overrides) — <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{data?.dataset_id}</span>
+        Current per-batch provider caps (warm-up dataset overrides) — <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{data?.dataset_id}</span>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {caps.map(c => (
@@ -269,7 +269,7 @@ export const WarmupProgressPanel: React.FC = () => {
           </div>
         ))}
         {caps.length === 0 && (
-          <div style={{ color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>No ISP caps configured for the warm-up dataset.</div>
+          <div style={{ color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>No provider caps configured for the warm-up dataset.</div>
         )}
       </div>
     </div>

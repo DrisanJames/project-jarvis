@@ -296,8 +296,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
               }}
             >
               No slots yet. Slots and deploy payloads are attached by the compile step — creatives
-              live in review-forge on the operator machine, so compilation runs there, not on the
-              server. From the repo root:
+              live in the creative system, so compilation runs there. From the command line:
               <div style={{ marginTop: 6 }}>
                 <code style={{ color: C.accent, fontSize: 12 }}>
                   python3 -m agents.domainagent compile --domain {domain} --brief
@@ -323,7 +322,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
                   <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{s.name}</span>
                   <span style={{ fontSize: 11.5, color: C.muted, textAlign: 'right' }}>
                     {s.scheduled_at} · {s.window_hours}h window
-                    {s.target_isps && s.target_isps.length > 0 ? ` · ISPs: ${s.target_isps.join(', ')}` : ''}
+                    {s.target_isps && s.target_isps.length > 0 ? ` · Providers: ${s.target_isps.join(', ')}` : ''}
                   </span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>

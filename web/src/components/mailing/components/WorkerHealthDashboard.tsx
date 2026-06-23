@@ -110,7 +110,7 @@ export const WorkerHealthDashboard: React.FC = () => {
             Worker Health
           </h1>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-            Background-worker heartbeats from <code>mailing_worker_heartbeats</code> — polls every 15s.
+            Live status of background processing — refreshes every 15s.
             {' '}Page v{PAGE_VERSION}
             {data && <> · API v{data.api_version}</>}
             {lastFetchAt && <> · Last fetch {lastFetchAt.toLocaleTimeString()}</>}
@@ -133,35 +133,35 @@ export const WorkerHealthDashboard: React.FC = () => {
       {error && (
         <div style={{ background: '#3f1d1d', color: '#fecaca', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faTriangleExclamation} />
-          Error loading worker health: {error}
+          Error loading background processing status: {error}
         </div>
       )}
 
       {stalledCount > 0 && (
         <div style={{ background: '#3f1d1d', color: '#fecaca', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #ef444455' }}>
           <FontAwesomeIcon icon={faSkull} style={{ color: '#ef4444' }} />
-          <strong>{stalledCount}</strong> worker{stalledCount === 1 ? '' : 's'} stalled — a Slack alert has been sent (if configured).
+          <strong>{stalledCount}</strong> background process{stalledCount === 1 ? '' : 'es'} stalled — the team has been alerted.
         </div>
       )}
 
       {loading && !data ? (
         <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>
-          <FontAwesomeIcon icon={faSpinner} spin /> Loading worker health…
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading background processing status…
         </div>
       ) : workers.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 13, background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6 }}>
-          No worker heartbeats recorded yet. Workers emit their first beat at the end of their first cycle after boot.
+          No activity recorded yet. Background processing reports its status after its first cycle completes.
         </div>
       ) : (
         <section style={{ background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: '#1e293b', color: '#94a3b8' }}>
-                <th style={thStyle}>Worker</th>
+                <th style={thStyle}>Process</th>
                 <th style={thStyle}>State</th>
-                <th style={thStyle}>Last beat</th>
-                <th style={thStyle}>Cycle interval</th>
-                <th style={thStyle}>Cycles</th>
+                <th style={thStyle}>Last run</th>
+                <th style={thStyle}>Run interval</th>
+                <th style={thStyle}>Runs</th>
                 <th style={thStyle}>Detail</th>
               </tr>
             </thead>
@@ -254,14 +254,14 @@ export const WorkerHealthWidget: React.FC = () => {
     <div className="system-card ig-card-hover" style={{ borderColor: healthy ? undefined : 'rgba(239,68,68,0.5)' }}>
       <div className="system-header">
         <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? '#22c55e' : '#ef4444' }} /></span>
-        <h3>Workers</h3>
+        <h3>Background Processing</h3>
         <span className={`status-badge ${healthy ? 'active' : 'inactive'}`}>
           {error ? 'unknown' : healthy ? `${total} healthy` : `${stalled.length} stalled`}
         </span>
       </div>
       <div className="system-description">
-        {error && <p>Worker health endpoint unreachable.</p>}
-        {!error && total === 0 && <p>No worker heartbeats recorded yet.</p>}
+        {error && <p>Background processing status is unavailable.</p>}
+        {!error && total === 0 && <p>No activity recorded yet.</p>}
         {!error && total > 0 && (
           <div style={{ maxHeight: 230, overflowY: 'auto', marginTop: 2 }}>
             {sorted.map(w => {

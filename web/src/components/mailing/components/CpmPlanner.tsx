@@ -746,15 +746,15 @@ export const CpmPlanner: React.FC = () => {
     const tiles = [
       { label: 'Sent', value: fmtInt(t.sent), sub: `${p.campaign_count} campaigns`, color: C.indigo },
       { label: 'Delivered', value: fmtInt(t.delivered), sub: t.sent > 0 ? `${((t.delivered / t.sent) * 100).toFixed(1)}% of sent` : '—', color: C.green },
-      { label: 'Human Opens', value: fmtInt(t.opened), sub: 'machine opens excluded', color: C.green },
-      { label: 'Human Clicks', value: fmtInt(t.clicked), sub: 'machine clicks excluded', color: C.amber },
+      { label: 'Human Opens', value: fmtInt(t.opened), sub: 'Apple Mail privacy opens excluded', color: C.green },
+      { label: 'Human Clicks', value: fmtInt(t.clicked), sub: 'automated/bot clicks excluded', color: C.amber },
       // Bounce split is ALWAYS hard vs soft — never a combined number.
-      { label: 'Hard Bounces', value: fmtInt(t.hard_bounces), sub: 'reputation risk', color: C.red },
+      { label: 'Hard Bounces', value: fmtInt(t.hard_bounces), sub: 'provider deliverability risk', color: C.red },
       { label: 'Soft Bounces', value: fmtInt(t.soft_bounces), sub: 'usually transient', color: C.amber },
       { label: 'Conversions', value: fmtInt(t.conversions), sub: `conv / ${p.days}d`, color: '#3b82f6' },
       {
         label: 'Suppressed', value: fmtInt(t.suppression_total),
-        sub: p.dnm_list_size > 0 ? `DNM list ${fmtInt(p.dnm_list_size)}` : 'all time, all reasons',
+        sub: p.dnm_list_size > 0 ? `Suppression list ${fmtInt(p.dnm_list_size)}` : 'all time, all reasons',
         color: C.muted,
       },
     ];
@@ -787,11 +787,11 @@ export const CpmPlanner: React.FC = () => {
             border: `1px solid ${suppressedShare > 50 ? 'rgba(239,68,68,0.4)' : C.border}`,
             color: suppressedShare > 50 ? C.red : C.heading,
           }}>
-            Deal ceiling: {suppressedShare.toFixed(1)}% of the last scrub audience ({fmtInt(p.audience_size)}) is already suppressed for this offer.
+            Deal ceiling: {suppressedShare.toFixed(1)}% of the last cleaned audience ({fmtInt(p.audience_size)}) is already on the suppression list for this offer.
           </div>
         ) : (
           <div style={{ fontSize: 11, color: C.muted }}>
-            Suppressed share vs audience not shown — no completed DNM scrub provides an audience size for this offer.
+            Suppressed share vs audience not shown — no completed list cleaning provides an audience size for this offer.
           </div>
         )}
 
@@ -917,7 +917,7 @@ export const CpmPlanner: React.FC = () => {
 
         {/* Tracked / manual / total split */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {chip('Tracked (postback)', p.conversions_tracked, C.indigo)}
+          {chip('Tracked (offer tracking)', p.conversions_tracked, C.indigo)}
           {chip('Manual', p.conversions_manual, C.amber)}
           {chip('Total', p.conversions, C.green)}
           <span style={{ fontSize: 11, color: C.muted }}>
@@ -963,8 +963,8 @@ export const CpmPlanner: React.FC = () => {
           <button onClick={() => addManualConversions(d)} disabled={convBusy} style={smallBtn}>
             {convBusy ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPlus} />} Add conversions
           </button>
-          <button onClick={() => csvInputRef.current?.click()} disabled={convBusy} style={smallBtn} title="Everflow conversions export — deduped on conversion_id, re-upload safe">
-            <FontAwesomeIcon icon={faUpload} /> Upload Everflow CSV
+          <button onClick={() => csvInputRef.current?.click()} disabled={convBusy} style={smallBtn} title="Offer-tracking conversions export — duplicates removed automatically, re-upload safe">
+            <FontAwesomeIcon icon={faUpload} /> Upload offer-tracking CSV
           </button>
           <input
             ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }}
@@ -1017,7 +1017,7 @@ export const CpmPlanner: React.FC = () => {
               </div>
             ) : data.entries.length === 0 ? (
               <div style={{ padding: '10px 0', color: C.muted, fontSize: 12 }}>
-                No manual conversions yet — quick-add a count or upload an Everflow CSV.
+                No manual conversions yet — quick-add a count or upload an offer-tracking CSV.
               </div>
             ) : (
               <div style={{ marginTop: 8, background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
@@ -1029,7 +1029,7 @@ export const CpmPlanner: React.FC = () => {
                       <th style={thStyle}>Revenue</th>
                       <th style={thStyle}>Source</th>
                       <th style={thStyle}>Conversion ID</th>
-                      <th style={thStyle}>Sub1 / Sub2</th>
+                      <th style={thStyle}>Tracking tags</th>
                       <th style={thStyle}>Note</th>
                       <th style={thStyle}></th>
                     </tr>
@@ -1577,7 +1577,7 @@ export const CpmPlanner: React.FC = () => {
                       </td>
                       <td style={{ ...tdStyle, fontWeight: 600 }}>{d.name}</td>
                       <td style={{ ...tdStyle, color: d.offer_id ? C.heading : C.muted }}>
-                        {d.offer_name || (d.everflow_offer_id ? `EF ${d.everflow_offer_id}` : 'unmapped')}
+                        {d.offer_name || (d.everflow_offer_id ? `Offer ${d.everflow_offer_id}` : 'unmapped')}
                       </td>
                       <td style={tdStyle}>{fmtMoney(d.budget)}</td>
                       <td style={tdStyle}>{fmtMoney(d.ecpm_goal)}</td>

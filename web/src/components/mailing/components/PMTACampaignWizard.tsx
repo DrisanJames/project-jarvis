@@ -299,11 +299,11 @@ const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 const STEPS = [
-  { id: 1, label: 'ISP Targeting',          icon: faServer },
+  { id: 1, label: 'Mailbox Providers',      icon: faServer },
   { id: 2, label: 'Sending Domain',         icon: faGlobe },
   { id: 3, label: 'Content + A/B',          icon: faPenFancy },
   { id: 4, label: 'Audience + Suppression', icon: faUsers },
-  { id: 5, label: 'Infrastructure Intel',   icon: faBrain },
+  { id: 5, label: 'Sending Insights',       icon: faBrain },
   { id: 6, label: 'Review + Deploy',        icon: faRocket },
 ];
 
@@ -811,7 +811,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     const errors: string[] = [];
     switch (s) {
       case 1:
-        if (selectedISPs.length === 0) errors.push('Select at least one target ISP');
+        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
         break;
       case 2:
         if (!selectedDomain) errors.push('Select a sending domain');
@@ -1585,9 +1585,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   const renderStep1 = () => (
     <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Select Target ISPs<RequiredDot /></h3>
+      <h3 style={{ margin: '0 0 4px' }}>Select Mailbox Providers<RequiredDot /></h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-        Choose which ISP ecosystems to target. Cards show live health from the governance engine.
+        Choose which mailbox providers to target. Cards show live health from the delivery engine.
       </p>
       <StepErrorBanner stepNum={1} />
 
@@ -1606,11 +1606,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         >
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>
             <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#00e5ff' }} />
-            3-Day ISP Sending Health
+            3-Day Provider Sending Health
             {insightsLoading && <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#64748b', fontSize: 11 }} />}
             {!insightsLoading && ispInsights.length > 0 && (
               <span style={{ fontSize: 11, color: '#64748b', fontWeight: 400 }}>
-                — {ispInsights.filter(i => i.recommendation === 'DECREASE' || i.recommendation === 'PAUSE').length} ISPs need attention
+                — {ispInsights.filter(i => i.recommendation === 'DECREASE' || i.recommendation === 'PAUSE').length} providers need attention
               </span>
             )}
           </span>
@@ -1736,7 +1736,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
                           {insight.mpp_opens > 0 && (
                             <div style={{ marginTop: 4, fontSize: 9, color: '#f59e0b' }}>
-                              MPP: {fmtK(insight.mpp_opens)} machine opens ({insight.opened > 0 ? Math.round(insight.mpp_opens / insight.opened * 100) : 0}%)
+                              Apple Mail privacy opens: {fmtK(insight.mpp_opens)} ({insight.opened > 0 ? Math.round(insight.mpp_opens / insight.opened * 100) : 0}%)
                             </div>
                           )}
 
@@ -1913,7 +1913,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 role="button"
                 tabIndex={0}
                 aria-pressed={selected}
-                aria-label={`Select ${meta.label} ISP`}
+                aria-label={`Select ${meta.label} provider`}
                 key={r.isp}
                 className="ig-card-hover"
                 onClick={() => toggleISP(r.isp)}
@@ -1991,7 +1991,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         marginTop: selectedISPs.length > 0 ? 12 : 0,
       }}>
         <div style={{ padding: '8px 12px', background: '#10b98115', borderRadius: 8, fontSize: 13, color: '#10b981' }}>
-          <FontAwesomeIcon icon={faCheckCircle} /> {selectedISPs.length} ISP{selectedISPs.length > 1 ? 's' : ''} selected: {selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')}
+          <FontAwesomeIcon icon={faCheckCircle} /> {selectedISPs.length} provider{selectedISPs.length > 1 ? 's' : ''} selected: {selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')}
         </div>
       </div>
 
@@ -2024,7 +2024,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             </button>
           </div>
           <p style={{ margin: '0 0 12px', fontSize: 11, color: '#64748b' }}>
-            Set maximum sends per ISP. Leave at 0 for unlimited.
+            Set maximum sends per mailbox provider. Leave at 0 for unlimited.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
             {selectedISPs.map(isp => {
@@ -2059,7 +2059,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 onChange={e => setISPQuotas(prev => ({ ...prev, other: Number(e.target.value) }))}
                 style={{ flex: 1, width: 80, background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 4, color: '#e0e6f0', padding: '4px 8px', fontSize: 12, textAlign: 'right' }}
               />
-              <span style={{ fontSize: 10, color: '#64748b' }}>Domains not matching any ISP above</span>
+              <span style={{ fontSize: 10, color: '#64748b' }}>Domains not matching any provider above</span>
             </div>
             {Object.values(ispQuotas).some(v => v > 0) && (
               <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#10b981', padding: '4px 0', fontWeight: 600 }}>
@@ -2134,7 +2134,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   animation: 'spin 0.8s linear infinite',
                 }} />
                 <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>
-                  AI is reviewing your ISP sending history...
+                  AI is reviewing your provider sending history...
                 </p>
                 <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
               </div>
@@ -2506,8 +2506,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           </div>
           <p style={{ margin: 0, color: 'rgba(180,210,240,0.7)', fontSize: 12, lineHeight: 1.5 }}>
             {contentLocked
-              ? 'LOCKED — every recipient receives the approved subject and HTML byte-for-byte. Per-recipient fingerprint mutations (synonym swaps, punctuation rotation, invisible HTML comments) are disabled. Honeypot link and URL sanitization remain on.'
-              : 'Unlocked — the wave dispatcher applies subtle per-recipient subject and HTML mutations to disrupt ISP fingerprinting. Enable this only when the advertiser requires byte-faithful delivery of the approved creative (e.g. TruGreen, brand-compliance partners).'}
+              ? 'LOCKED — every recipient receives the approved subject and HTML exactly as written. Per-recipient content variation is disabled. Link safety and URL cleanup remain on.'
+              : 'Unlocked — small per-recipient variations are applied to the subject and HTML to improve deliverability. Enable this only when the advertiser requires the approved creative to be delivered exactly as written (e.g. brand-compliance partners).'}
           </p>
         </div>
       </div>
@@ -2617,7 +2617,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 ? <><FontAwesomeIcon icon={faSpinner} spin /> Generating with Claude...</>
                 : aiSuggestingIdx === idx
                   ? <><FontAwesomeIcon icon={faTimes} /> Dismiss Suggestions</>
-                  : <><FontAwesomeIcon icon={faMagic} /> AI Suggest Subject + Preheader</>
+                  : <><FontAwesomeIcon icon={faMagic} /> AI Suggest Subject + Preview Text</>
               }
             </button>
 
@@ -3294,7 +3294,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   {/* ISP breakdown bars */}
                   {audienceEstimate.isp_breakdown && Object.keys(audienceEstimate.isp_breakdown).length > 0 && (
                     <div>
-                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>ISP Distribution</div>
+                      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Provider Distribution</div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {Object.entries(audienceEstimate.isp_breakdown)
                           .sort((a, b) => (b[1] as number) - (a[1] as number))
@@ -3354,9 +3354,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
     return (
       <div className="wiz-step-content ig-fade-in">
-        <h3 style={{ margin: '0 0 4px' }}>Infrastructure Intelligence</h3>
+        <h3 style={{ margin: '0 0 4px' }}>Sending Insights</h3>
         <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-          Live state of the targeted ecosystem — throughput, warmup, conviction insights, and active warnings.
+          Live state of the targeted providers — throughput, warm-up, delivery insights, and active warnings.
         </p>
 
         {turbulenceAlerts.length > 0 && !turbulenceDismissed && (
@@ -3439,7 +3439,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               </div>
             ))}
             <div style={{ textAlign: 'center', padding: 10, color: 'rgba(0,200,255,0.4)', fontSize: 12 }}>
-              <FontAwesomeIcon icon={faSpinner} spin /> Querying governance engine...
+              <FontAwesomeIcon icon={faSpinner} spin /> Querying delivery engine...
             </div>
           </div>
         )}
@@ -3683,7 +3683,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               <FontAwesomeIcon icon={faCheckCircle} size="3x" style={{ marginBottom: 12 }} />
               <h3>Campaign Created</h3>
               <p>ID: {deployResult.campaign_id}</p>
-              <p>{deployResult.variant_count} variant{deployResult.variant_count > 1 ? 's' : ''} targeting {deployResult.target_isps?.length} ISP{deployResult.target_isps?.length > 1 ? 's' : ''}</p>
+              <p>{deployResult.variant_count} variant{deployResult.variant_count > 1 ? 's' : ''} targeting {deployResult.target_isps?.length} mailbox provider{deployResult.target_isps?.length > 1 ? 's' : ''}</p>
               <button onClick={onClose} style={{ marginTop: 16, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
                 Done
               </button>
@@ -3743,7 +3743,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                       border: `2px solid ${scheduleMode === mode ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
                     }}
                   >
-                    {mode === 'quick' ? 'Quick Schedule' : 'Per-ISP Plans'}
+                    {mode === 'quick' ? 'Quick Schedule' : 'Per-Provider Plans'}
                   </button>
                 ))}
               </div>
@@ -3835,7 +3835,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                       <div style={{ width: 4, height: 16, borderRadius: 2, background: '#00e5ff' }} />
                       <h4 style={{ margin: 0, fontSize: 13, color: '#00e5ff', fontWeight: 600 }}>Global Settings</h4>
-                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Configure once, apply to all ISPs</span>
+                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Configure once, apply to all providers</span>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
                       <div>
@@ -3907,7 +3907,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                         transition: 'all 0.2s',
                       }}
                     >
-                      Apply to All ISPs
+                      Apply to All Providers
                     </button>
                   </div>
 
@@ -4028,24 +4028,24 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <SummaryCard title="Target ISPs" value={selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')} />
+            <SummaryCard title="Target Providers" value={selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')} />
             <SummaryCard title="Sending Domain" value={selectedDomain} />
             <SummaryCard title="Variants" value={`${variants.length} variant${variants.length > 1 ? 's' : ''} (${variants.map(v => `${v.variant_name}: ${v.split_percent}%`).join(', ')})`} />
             <SummaryCard title="Audience" value={audienceEstimate ? `${audienceEstimate.after_suppressions.toLocaleString()} recipients` : 'Not estimated'} />
-            <SummaryCard title="Schedule Mode" value={sendMode === 'immediate' ? 'Immediate' : scheduleMode === 'quick' ? `Quick: ${scheduledAt || 'Not set'}` : 'Per-ISP custom plans'} />
-            <SummaryCard title="ISP Plan Summary" value={
+            <SummaryCard title="Schedule Mode" value={sendMode === 'immediate' ? 'Immediate' : scheduleMode === 'quick' ? `Quick: ${scheduledAt || 'Not set'}` : 'Per-provider custom plans'} />
+            <SummaryCard title="Provider Plan Summary" value={
               sendMode === 'scheduled' && scheduleMode === 'per-isp'
                 ? selectedISPs.map(isp => {
                     const plan = ispPlansByKey[isp];
                     const spanCount = plan?.timeSpans?.length || 0;
                     return `${ISP_META[isp]?.label || isp}: ${spanCount} span${spanCount === 1 ? '' : 's'} / ${plan?.cadenceMode || 'single'}`;
                   }).join(' | ')
-                : 'Global schedule applies to all selected ISPs'
+                : 'Global schedule applies to all selected providers'
             } />
             <SummaryCard title="From Names" value={variants.map(v => v.from_name).filter(Boolean).join(' / ') || '—'} />
             <SummaryCard title="Subject Lines" value={variants.map(v => v.subject).filter(Boolean).join(' / ') || '—'} />
-            <SummaryCard title="Pre-header" value={variants[0]?.preview_text || '(none)'} />
-            <SummaryCard title="ISP Quotas" value={
+            <SummaryCard title="Preview Text" value={variants[0]?.preview_text || '(none)'} />
+            <SummaryCard title="Provider Quotas" value={
               Object.entries(ispQuotas).filter(([, v]) => v > 0).length > 0
                 ? Object.entries(ispQuotas).filter(([, v]) => v > 0).map(([isp, vol]) => `${ISP_META[isp]?.label || isp}: ${vol.toLocaleString()}`).join(' / ')
                 : 'Unlimited (no quotas)'
@@ -4075,8 +4075,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               </div>
               <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
                 {randomizeAudience
-                  ? 'Audience will be shuffled randomly before applying ISP quotas.'
-                  : 'Subscribers selected in list order until each ISP quota is reached.'}
+                  ? 'Audience will be shuffled randomly before applying provider quotas.'
+                  : 'Subscribers selected in list order until each provider quota is reached.'}
               </div>
             </div>
           )}
@@ -4208,7 +4208,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
                 {!cloneLoading && cloneCandidates.length === 0 && (
                   <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
-                    No PMTA campaigns available to clone.
+                    No campaigns available to clone.
                   </div>
                 )}
 

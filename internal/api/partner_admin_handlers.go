@@ -2313,3 +2313,299 @@ func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter
 		},
 	})
 }
+
+// HandleGetDatasetOfferPerformance returns the per-OFFER funnel for one dataset:
+// which offers the dataset's audience clicked and converted on, with rates. It is
+// the expand-row drill-down under Previous Activations.
+//
+// Attribution is by acquisition LINEAGE (the same partner_clean_queue subscriber
+// link the parent panel uses), because partner-drip campaigns carry partner_dataset_id
+// but NO offer_id (the offer is resolved at send-time from the dataset's vertical) —
+// so the only reliable offer signal is on the engagement/conversion itself:
+//   - clicks  -> the cratoolpro money-slug in tracking_events.link_url, resolved via
+//     mailing_offer_slug_map (slugFromLinkURL, identical anchoring to the offer view).
+//     Verdict-filtered to HUMAN clicks (raw money-link clicks include scanner detonations).
+//   - convs   -> mailing_offer_suppressions(reason='converted').offer_id (postback truth;
+//     the manual-import sink has no offer_id, hence the parent "Conv" may differ).
+// Denominator for every rate is the dataset's distinct mailed reach (shared across offers,
+// since the per-offer mailed split isn't recoverable without offer_id on campaigns).
+func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWriter, r *http.Request) {
+	// On-demand per-dataset scan; bound it so a pathological dataset fails the
+	// request gracefully instead of holding a connection open.
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	datasetID := chi.URLParam(r, "id")
+	if _, err := uuid.Parse(datasetID); err != nil {
+		writeJSONError(w, "invalid dataset id", http.StatusBadRequest)
+		return
+	}
+
+	// Dataset header + mailed denominator (distinct mailed reach — same basis as the parent row).
+	var dsName, partnerName, vertical string
+	var mailed int
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT d.name, p.name, COALESCE(d.vertical,''),
+		       (SELECT COUNT(DISTINCT subscriber_id) FROM partner_clean_queue
+		         WHERE dataset_id = d.id AND subscriber_id IS NOT NULL AND mailed_campaign_id IS NOT NULL)
+		FROM partner_datasets d JOIN data_partners p ON p.id = d.partner_id
+		WHERE d.id = $1`, datasetID).Scan(&dsName, &partnerName, &vertical, &mailed); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, "dataset not found", http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, "dataset_offer_perf_header_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type offerMeta struct{ name, everflow string }
+	idToOffer := map[string]offerMeta{}  // mailing_offers.id -> meta
+	efToIDs := map[string][]string{}     // everflow_offer_id -> ids (NOT unique: ef can map to several offers)
+	nameCount := map[string]int{}
+	nameToID := map[string]string{} // normalized name -> id, kept ONLY when unambiguous
+	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	if rows, err := h.db.QueryContext(ctx, `SELECT id::text, COALESCE(name,''), COALESCE(everflow_offer_id,'') FROM mailing_offers`); err == nil {
+		for rows.Next() {
+			var id, name, ef string
+			if err := rows.Scan(&id, &name, &ef); err == nil {
+				idToOffer[id] = offerMeta{name: name, everflow: ef}
+				if ef != "" {
+					efToIDs[ef] = append(efToIDs[ef], id)
+				}
+				if name != "" {
+					n := norm(name)
+					nameCount[n]++
+					nameToID[n] = id
+				}
+			}
+		}
+		rows.Close()
+	}
+	for n, c := range nameCount { // ambiguous names must NOT force a merge
+		if c > 1 {
+			delete(nameToID, n)
+		}
+	}
+	// slug -> everflow id + slug-side offer name (the canonical money-slug dictionary).
+	slugToEf := map[string]string{}
+	slugName := map[string]string{}
+	if rows, err := h.db.QueryContext(ctx, `SELECT cratoolpro_slug, COALESCE(everflow_offer_id,''), COALESCE(offer_name,'') FROM mailing_offer_slug_map`); err == nil {
+		for rows.Next() {
+			var slug, ef, name string
+			if err := rows.Scan(&slug, &ef, &name); err == nil {
+				slugToEf[slug] = ef
+				if name != "" {
+					slugName[slug] = name
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	// slug_map.offer_name is frequently a TRUNCATED prefix of mailing_offers.name
+	// (e.g. "National Debt Relief" vs "National Debt Relief - Partner Drip (644006)"),
+	// so exact-name match alone splits those offers. Precompute slug-name → canonical
+	// offer id via exact OR *unambiguous* prefix (verified 0 ambiguous-prefix collisions
+	// across the live slug dictionary 2026-06-22). Computed once over the small set of
+	// distinct slug names — never per click row.
+	offerNames := make([][2]string, 0, len(idToOffer)) // (normalized name, id)
+	for id, m := range idToOffer {
+		if m.name != "" {
+			offerNames = append(offerNames, [2]string{norm(m.name), id})
+		}
+	}
+	slugNameToID := map[string]string{}
+	for _, raw := range slugName {
+		sn := norm(raw)
+		if sn == "" {
+			continue
+		}
+		if _, done := slugNameToID[sn]; done {
+			continue
+		}
+		if id, ok := nameToID[sn]; ok { // exact, unambiguous
+			slugNameToID[sn] = id
+			continue
+		}
+		match := map[string]bool{}
+		for _, on := range offerNames {
+			if strings.HasPrefix(on[0], sn) {
+				match[on[1]] = true
+			}
+		}
+		if len(match) == 1 { // unambiguous prefix
+			for id := range match {
+				slugNameToID[sn] = id
+			}
+		}
+	}
+
+	// resolveClickOffer maps a money slug to a CANONICAL offer key (a mailing_offers.id
+	// when resolvable) so a click merges with a conversion for the SAME real offer even
+	// when slug_map.everflow_offer_id disagrees with mailing_offers.everflow_offer_id
+	// (Liberty: slug ef=1090 vs offer ef=338) or its name is truncated (NDR). Precedence,
+	// each step refusing an ambiguous merge: unique-everflow → exact/unambiguous-prefix
+	// name → labeled unmapped row (so a gap is visible, never silently split or mis-merged).
+	resolveClickOffer := func(slug string) (key, name, ef string) {
+		ef = slugToEf[slug]
+		nm := slugName[slug]
+		if ids := efToIDs[ef]; len(ids) == 1 {
+			return ids[0], idToOffer[ids[0]].name, ef
+		}
+		if nm != "" {
+			if id, ok := slugNameToID[norm(nm)]; ok {
+				return id, idToOffer[id].name, idToOffer[id].everflow
+			}
+			return "name:" + norm(nm), nm + " (unmapped slug)", ef
+		}
+		return "slug:" + slug, "slug " + slug + " (unmapped)", ef
+	}
+
+	type acc struct {
+		name     string
+		everflow string
+		clickers map[string]struct{}
+		clicks   int
+		convs    int
+	}
+	offers := map[string]*acc{}
+	get := func(key, name, ef string) *acc {
+		a := offers[key]
+		if a == nil {
+			a = &acc{name: name, everflow: ef, clickers: map[string]struct{}{}}
+			offers[key] = a
+		}
+		if a.name == "" && name != "" {
+			a.name = name
+		}
+		return a
+	}
+
+	// Clicks: scan the dataset's HUMAN clicks, anchor the money slug, attribute to an offer.
+	cr, err := h.db.QueryContext(ctx, `
+		WITH ds_subs AS (
+			SELECT DISTINCT subscriber_id FROM partner_clean_queue
+			WHERE dataset_id = $1 AND subscriber_id IS NOT NULL AND mailed_campaign_id IS NOT NULL
+		)
+		SELECT te.subscriber_id::text, COALESCE(te.link_url,'')
+		FROM mailing_tracking_events te
+		JOIN ds_subs s ON s.subscriber_id = te.subscriber_id
+		WHERE te.event_type = 'clicked'
+		  AND ignite_verdict_is_human(ignite_event_verdict(te.user_agent, te.ip_address))
+	`, datasetID)
+	if err != nil {
+		writeJSONError(w, "dataset_offer_perf_clicks_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for cr.Next() {
+		var sid, link string
+		if err := cr.Scan(&sid, &link); err != nil {
+			continue
+		}
+		slug := slugFromLinkURL(link)
+		if slug == "" {
+			continue
+		}
+		if _, known := slugToEf[slug]; !known {
+			if _, named := slugName[slug]; !named {
+				continue // a money slug not in our dictionary — skip (don't guess)
+			}
+		}
+		key, name, ef := resolveClickOffer(slug)
+		a := get(key, name, ef)
+		a.clicks++
+		a.clickers[sid] = struct{}{}
+	}
+	cr.Close()
+	// Surface a timeout/iteration failure as an error — never return a silently
+	// truncated funnel as HTTP 200 (rows.Next stops on ctx deadline).
+	if err := cr.Err(); err != nil {
+		writeJSONError(w, "dataset_offer_perf_clicks_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Conversions: postback ground truth, by offer_id (direct on offer_suppressions).
+	vr, err := h.db.QueryContext(ctx, `
+		WITH ds_subs AS (
+			SELECT DISTINCT subscriber_id FROM partner_clean_queue
+			WHERE dataset_id = $1 AND subscriber_id IS NOT NULL AND mailed_campaign_id IS NOT NULL
+		)
+		SELECT mos.offer_id::text, COUNT(DISTINCT mos.subscriber_id)
+		FROM mailing_offer_suppressions mos
+		JOIN ds_subs s ON s.subscriber_id = mos.subscriber_id
+		WHERE mos.reason = 'converted'
+		GROUP BY mos.offer_id
+	`, datasetID)
+	if err != nil {
+		writeJSONError(w, "dataset_offer_perf_conv_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for vr.Next() {
+		var oid string
+		var c int
+		if err := vr.Scan(&oid, &c); err != nil {
+			continue
+		}
+		om := idToOffer[oid]
+		name := om.name
+		if name == "" {
+			name = "offer " + oid[:8]
+		}
+		a := get(oid, name, om.everflow)
+		a.convs += c
+	}
+	vr.Close()
+	if err := vr.Err(); err != nil {
+		writeJSONError(w, "dataset_offer_perf_conv_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	pct := func(n, d int) float64 {
+		if d == 0 {
+			return 0
+		}
+		return float64(int(float64(n)/float64(d)*10000+0.5)) / 100
+	}
+
+	type offerRow struct {
+		OfferKey       string  `json:"offer_key"`
+		OfferName      string  `json:"offer_name"`
+		EverflowID     string  `json:"everflow_offer_id"`
+		Clickers       int     `json:"clickers"`
+		Clicks         int     `json:"clicks"`
+		CTRPct         float64 `json:"ctr_pct"`         // clickers / mailed
+		Conversions    int     `json:"conversions"`     // postback converters
+		ConvPct        float64 `json:"conv_pct"`        // conversions / mailed
+		ClickToConvPct float64 `json:"click_to_conv_pct"` // conversions / clickers
+	}
+	out := make([]offerRow, 0, len(offers))
+	for key, a := range offers {
+		clk := len(a.clickers)
+		out = append(out, offerRow{
+			OfferKey:  key,
+			OfferName: a.name, EverflowID: a.everflow,
+			Clickers: clk, Clicks: a.clicks, CTRPct: pct(clk, mailed),
+			Conversions: a.convs, ConvPct: pct(a.convs, mailed), ClickToConvPct: pct(a.convs, clk),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Conversions != out[j].Conversions {
+			return out[i].Conversions > out[j].Conversions
+		}
+		return out[i].Clickers > out[j].Clickers
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"dataset_id":   datasetID,
+		"dataset_name": dsName,
+		"partner_name": partnerName,
+		"vertical":     vertical,
+		"mailed":       mailed,
+		"offers":       out,
+		"notes": map[string]interface{}{
+			"attribution":  "lineage: subscribers acquired/mailed from this dataset (partner_clean_queue). Captures conversions on ANY offer they were later mailed, not just partner-drip.",
+			"clicks":       "HUMAN clicks (verdict-filtered) anchored to the cratoolpro money-slug in link_url, resolved via mailing_offer_slug_map — exact offer attribution.",
+			"conversions":  "postback ground truth (mailing_offer_suppressions.reason='converted', offer_id direct). May differ from the parent 'Conv' (CSV-imported manual conversions — a separate sink with no offer_id).",
+			"rate_basis":   "CTR and Conv% are over the dataset's distinct mailed reach (per-offer mailed isn't recoverable — campaigns carry no offer_id); click→conv is conversions/clickers.",
+		},
+	})
+}

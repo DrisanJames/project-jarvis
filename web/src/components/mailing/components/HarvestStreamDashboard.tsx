@@ -398,14 +398,14 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
             </div>
             <div
               style={{ padding: '12px', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px', background: 'rgba(99,102,241,0.05)' }}
-              title="Newly created subscriber rows whose created_at falls inside the selected window. Confirmed = status active/confirmed at query time."
+              title="Newly added subscribers whose sign-up falls inside the selected window. Confirmed = active or confirmed at query time."
             >
               <div style={{ fontSize: '0.75em', color: '#818cf8', fontWeight: 600, marginBottom: '4px' }}>
                 <FontAwesomeIcon icon={faUserPlus} /> ACQUISITION
               </div>
               <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.acquisition?.total_new ?? 0)}</div>
               <div style={{ fontSize: '0.75em', color: '#94a3b8' }}>
-                {fmt(data.acquisition?.total_confirmed ?? 0)} confirmed · across {data.acquisition?.by_isp?.length ?? 0} ISP buckets
+                {fmt(data.acquisition?.total_confirmed ?? 0)} confirmed · across {data.acquisition?.by_isp?.length ?? 0} mailbox providers
               </div>
             </div>
           </div>
@@ -414,12 +414,12 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           {data.acquisition && data.acquisition.by_isp.length > 0 && (
             <div className="ac-table-wrap" style={{ marginBottom: '20px' }}>
               <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
-                <FontAwesomeIcon icon={faUserPlus} /> Newly introduced audience (last {hours}h, by ISP)
+                <FontAwesomeIcon icon={faUserPlus} /> Newly introduced audience (last {hours}h, by mailbox provider)
               </div>
               <table className="ac-table">
                 <thead>
                   <tr>
-                    <th>ISP</th>
+                    <th>Mailbox Provider</th>
                     <th>New subs</th>
                     <th>Confirmed</th>
                     <th>Confirm rate</th>
@@ -450,7 +450,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
             <table className="ac-table">
               <thead>
                 <tr>
-                  <th>ISP</th>
+                  <th>Mailbox Provider</th>
                   <th>Sent</th>
                   <th>Delivered</th>
                   <th>Delivery %</th>
@@ -467,7 +467,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </thead>
               <tbody>
                 {data.by_isp.length === 0 ? (
-                  <tr><td colSpan={13} style={{ textAlign: 'center', color: '#94a3b8' }}>No ISP activity in this window.</td></tr>
+                  <tr><td colSpan={13} style={{ textAlign: 'center', color: '#94a3b8' }}>No mailbox provider activity in this window.</td></tr>
                 ) : data.by_isp.map(r => (
                   <tr key={r.isp}>
                     <td style={{ fontWeight: 500 }}>
@@ -543,7 +543,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               <table className="ac-table" style={{ tableLayout: 'fixed', minWidth: '720px', fontSize: '0.75em' }}>
                 <thead>
                   <tr>
-                    <th style={{ width: '90px' }}>ISP</th>
+                    <th style={{ width: '90px' }}>Mailbox Provider</th>
                     {Array.from({ length: 24 }).map((_, h) => (
                       <th key={h} style={{ textAlign: 'center', padding: '3px', color: h >= 3 && h <= 19 ? '#e2e8f0' : '#64748b' }}>{hour24To12(h)}</th>
                     ))}
@@ -566,7 +566,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                         return (
                           <td
                             key={h}
-                            title={cell ? `${isp} @ ${hLabel} MST\nsent=${v}\ndelivered=${cell.metrics.delivered}\nopen_rate=${openR.toFixed(2)}%\nhard_bounce_rate=${hardR.toFixed(2)}%` : `${isp} @ ${hLabel} MST — no data`}
+                            title={cell ? `${isp} @ ${hLabel} MST\nSent: ${v}\nDelivered: ${cell.metrics.delivered}\nOpen rate: ${openR.toFixed(2)}%\nHard bounce rate: ${hardR.toFixed(2)}%` : `${isp} @ ${hLabel} MST — no data`}
                             style={{
                               background: v > 0 ? color : 'transparent',
                               textAlign: 'center',
@@ -585,7 +585,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </table>
             </div>
             <div style={{ fontSize: '0.7em', color: '#64748b', marginTop: '4px' }}>
-              Cell intensity is relative to the max per ISP. Hover for exact counts and rates.
+              Cell intensity is relative to the max per mailbox provider. Hover for exact counts and rates.
             </div>
           </div>
 
@@ -646,7 +646,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </thead>
               <tbody>
                 {data.by_campaign.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94a3b8' }}>No harvest campaigns found. Deploy via scripts/deploy_welcome_harvest.py.</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94a3b8' }}>No harvest campaigns found.</td></tr>
                 ) : data.by_campaign.map(c => (
                   <tr key={c.campaign_id}>
                     <td>{c.name}</td>

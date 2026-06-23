@@ -554,9 +554,9 @@ export const MissionControl: React.FC = () => {
 
           {/* Live ISP Agents */}
           <div className="mc-live-agents">
-            <h4><FontAwesomeIcon icon={faRobot} /> Live ISP Agents</h4>
+            <h4><FontAwesomeIcon icon={faRobot} /> Live Mailbox Provider Agents</h4>
             {liveAgents.length === 0 ? (
-              <p className="mc-live-agents-empty">No ISP agents are currently active</p>
+              <p className="mc-live-agents-empty">No mailbox provider activity right now</p>
             ) : (
               <div className="mc-live-agents-list">
                 {liveAgents.map(a => (

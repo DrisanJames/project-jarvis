@@ -143,7 +143,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     addToast({
       type: 'campaign',
       title: 'Campaign Deployed',
-      message: `${name} is now live. JARVIS is monitoring delivery.`,
+      message: `${name} is now live. Jarvis is monitoring your delivery.`,
       duration: 8000,
     });
   }, [addToast]);

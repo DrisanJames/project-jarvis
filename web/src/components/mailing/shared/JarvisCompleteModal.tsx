@@ -173,7 +173,7 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
           transition: 'opacity 0.5s ease',
         }}>
           <FontAwesomeIcon icon={faChartLine} style={{ color: '#00b894', marginRight: 6 }} />
-          JARVIS is actively monitoring delivery performance
+          Jarvis is actively monitoring your delivery performance
         </div>
 
         {/* Action button */}

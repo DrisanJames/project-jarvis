@@ -256,8 +256,8 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
     return {
       state: 'STORM',
       color: '#ef4444',
-      sentence: `${ratePhrase} ${titleCase(worst.isp)} deferring at ${fmtPct(worst.recent_rate)} (${worst.multiplier.toFixed(1)}× baseline) — storm governor likely pacing.${
-        storms.length > 1 ? ` ${storms.length - 1} more ISP${storms.length > 2 ? 's' : ''} storming.` : ''
+      sentence: `${ratePhrase} ${titleCase(worst.isp)} delaying at ${fmtPct(worst.recent_rate)} (${worst.multiplier.toFixed(1)}× baseline) — sending is being paced automatically.${
+        storms.length > 1 ? ` ${storms.length - 1} more mailbox provider${storms.length > 2 ? 's' : ''} delaying heavily.` : ''
       }`,
     };
   }
@@ -265,15 +265,15 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
     return {
       state: 'BACKLOGGED',
       color: '#f59e0b',
-      sentence: `${fmt(queued)} queued with oldest waiting ${fmtDuration(oldest)} — workers are behind. ${ratePhrase}`,
+      sentence: `${fmt(queued)} queued with oldest waiting ${fmtDuration(oldest)} — sending is behind schedule. ${ratePhrase}`,
     };
   }
   if (rate >= 1 || (d.queue.ok && d.queue.processing > 0)) {
-    const eta = rate > 0 && queued > 0 ? ` Backlog drain ETA ${fmtDuration((queued / rate) * 60)}.` : '';
+    const eta = rate > 0 && queued > 0 ? ` Queue clears in about ${fmtDuration((queued / rate) * 60)}.` : '';
     return {
       state: 'SENDING',
       color: '#22c55e',
-      sentence: `${ratePhrase} ${fmt(queued)} queued.${eta} Deferrals normal across ISPs.`,
+      sentence: `${ratePhrase} ${fmt(queued)} queued.${eta} Delays normal across mailbox providers.`,
     };
   }
   const dueBit = d.waves.ok
@@ -366,21 +366,21 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
     return (
       <div style={{ padding: '12px 16px', fontSize: 12, color: '#94a3b8' }}>
         <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 6 }} />
-        Loading VMTA pipes for {titleCase(isp)}…
+        Loading sending servers for {titleCase(isp)}…
       </div>
     );
   }
   if (state.error) {
     return (
       <div style={{ padding: '10px 16px' }}>
-        <SectionError label={`${titleCase(isp)} VMTA pipes`} error={state.error} />
+        <SectionError label={`${titleCase(isp)} sending servers`} error={state.error} />
       </div>
     );
   }
   if (state.rows.length === 0) {
     return (
       <div style={{ padding: '12px 16px', fontSize: 12, color: '#64748b' }}>
-        No PMTA accounting rows for {titleCase(isp)} in the last 24h.
+        No delivery activity for {titleCase(isp)} in the last 24h.
       </div>
     );
   }
@@ -388,10 +388,10 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
         <tr>
-          <th style={{ ...thStyle, paddingLeft: 28 }}>VMTA</th>
+          <th style={{ ...thStyle, paddingLeft: 28 }}>Sending Server</th>
           <th style={numTh}>Attempted</th>
           <th style={numTh}>Delivered %</th>
-          <th style={numTh}>Deferral %</th>
+          <th style={numTh}>Delayed %</th>
           <th style={numTh}>Bounces</th>
         </tr>
       </thead>
@@ -567,7 +567,7 @@ export const OutboxDashboard: React.FC = () => {
             Sending Engine
           </h1>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-            Live wave manager + outbox observability · polls every {POLL_INTERVAL_MS / 1000}s · Page v{PAGE_VERSION}
+            Live send schedule + delivery monitoring · polls every {POLL_INTERVAL_MS / 1000}s · Page v{PAGE_VERSION}
             {data && <> · API v{data.api_version}</>}
           </div>
         </div>
@@ -623,7 +623,7 @@ export const OutboxDashboard: React.FC = () => {
           }}
         >
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
-          Engine status fetch failing: {fetchError} — showing last known data.
+          Could not refresh engine status: {fetchError} — showing last known data.
         </div>
       )}
 
@@ -679,7 +679,7 @@ export const OutboxDashboard: React.FC = () => {
               <Stat
                 label="Sent 24h"
                 value={data.queue.ok ? fmt(data.queue.sent_24h) : '—'}
-                title="Per-recipient 'sent' tracking events — includes click-drip direct sends and other non-wave paths, so it legitimately exceeds wave recipients"
+                title="Per-recipient sent events — includes automated follow-up sends and other paths, so it can exceed send-batch recipients"
               />
             </div>
           </section>
@@ -738,7 +738,7 @@ export const OutboxDashboard: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
                     <span>{Math.round(data.throughput.utilization_pct)}% of 24h peak</span>
                     <span>
-                      Backlog drain ETA:{' '}
+                      Queue clears in:{' '}
                       <span style={{ color: '#e5e7eb', fontWeight: 600 }}>
                         {drainEtaSec != null ? fmtDuration(drainEtaSec) : data.queue.ok && data.queue.queued > 0 ? '∞ (idle)' : '—'}
                       </span>
@@ -752,7 +752,7 @@ export const OutboxDashboard: React.FC = () => {
                       color={data.queue.ok && data.queue.failed_24h > 0 ? '#f59e0b' : '#e5e7eb'}
                     />
                     <Stat
-                      label="Dead-letter 24h"
+                      label="Failed sends 24h"
                       value={data.queue.ok ? fmt(data.queue.dead_letter_24h) : '—'}
                       color={data.queue.ok && data.queue.dead_letter_24h > 0 ? '#ef4444' : '#e5e7eb'}
                     />
@@ -765,7 +765,7 @@ export const OutboxDashboard: React.FC = () => {
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
                 <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
-                Wave Manager
+                Send Schedule
               </h2>
               {!data.waves.ok ? (
                 <div style={{ marginTop: 10 }}>
@@ -780,12 +780,12 @@ export const OutboxDashboard: React.FC = () => {
                       color={data.waves.planned_due > 0 ? '#f59e0b' : '#e5e7eb'}
                     />
                     <Stat label="Scheduled" value={fmt(data.waves.planned_future)} color="#c7d2fe" />
-                    <Stat label="Enqueuing" value={fmt(data.waves.enqueuing)} color="#93c5fd" />
+                    <Stat label="Preparing" value={fmt(data.waves.enqueuing)} color="#93c5fd" />
                     <Stat label="Sending" value={fmt(data.waves.sending)} color="#86efac" />
                     <Stat
-                      label="Waves done 24h"
+                      label="Batches done 24h"
                       value={`${fmt(data.waves.completed_24h)} (${fmt(data.waves.completed_recipients_24h)} recipients)`}
-                      title="Count of wave executions, not messages — recipients = planned recipients across those completed waves"
+                      title="Count of completed send batches, not messages — recipients = planned recipients across those completed batches"
                     />
                     <Stat
                       label="Failed 24h"
@@ -795,16 +795,16 @@ export const OutboxDashboard: React.FC = () => {
                   </div>
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-                      Next 5 waves
+                      Next 5 send batches
                     </div>
                     {data.waves.upcoming.length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No planned waves.</div>
+                      <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No scheduled send batches.</div>
                     ) : (
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
                             <th style={thStyle}>Campaign</th>
-                            <th style={numTh}>Wave</th>
+                            <th style={numTh}>Batch</th>
                             <th style={thStyle}>Scheduled</th>
                             <th style={numTh}>Recipients</th>
                           </tr>
@@ -879,7 +879,7 @@ export const OutboxDashboard: React.FC = () => {
                     />
                     <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
                     <Area type="monotone" dataKey="sent" name="Sent /min" stroke="#818cf8" strokeWidth={2} fill="url(#sentFill)" />
-                    <Line type="monotone" dataKey="deferred" name="Deferred /min" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="#f59e0b" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -898,7 +898,7 @@ export const OutboxDashboard: React.FC = () => {
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
                 <FontAwesomeIcon icon={faWater} style={{ color: '#818cf8' }} />
-                Per-ISP — queue, share, deferral
+                Per mailbox provider — queue, share, delays
                 {data.storm.ok && data.storm.active && (
                   <span
                     style={{
@@ -913,25 +913,25 @@ export const OutboxDashboard: React.FC = () => {
                       borderRadius: 999,
                     }}
                   >
-                    STORM ACTIVE
+                    HEAVY DELAYS
                   </span>
                 )}
               </h2>
               {!data.storm.ok && !data.queue.ok ? (
                 <div style={{ marginTop: 10 }}>
-                  <SectionError label="ISP breakdown" error={data.storm.error || data.queue.error} />
+                  <SectionError label="Mailbox provider breakdown" error={data.storm.error || data.queue.error} />
                 </div>
               ) : ispRows.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#64748b', padding: '16px 0' }}>No ISP activity in the window.</div>
+                <div style={{ fontSize: 12, color: '#64748b', padding: '16px 0' }}>No mailbox provider activity in the window.</div>
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
                   <thead>
                     <tr>
-                      <th style={thStyle}>ISP</th>
+                      <th style={thStyle}>Mailbox Provider</th>
                       <th style={numTh}>Queued</th>
                       <th style={numTh}>Sent 24h</th>
                       <th style={numTh}>Share</th>
-                      <th style={numTh}>Deferral 60m</th>
+                      <th style={numTh}>Delays 60m</th>
                       <th style={numTh}>Baseline</th>
                       <th style={numTh}>× Base</th>
                     </tr>
@@ -943,7 +943,7 @@ export const OutboxDashboard: React.FC = () => {
                         <React.Fragment key={r.isp}>
                           <tr
                             onClick={() => toggleISP(r.isp)}
-                            title="Click to drill into per-VMTA pipes (last 24h)"
+                            title="Click to view per sending server (last 24h)"
                             style={{
                               cursor: 'pointer',
                               background: r.storm
@@ -960,7 +960,7 @@ export const OutboxDashboard: React.FC = () => {
                               />
                               {titleCase(r.isp)}
                               {r.storm && (
-                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Deferral storm" />
+                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Heavy delays" />
                               )}
                             </td>
                             <td style={numTd}>{fmt(r.queued)}</td>
@@ -993,11 +993,11 @@ export const OutboxDashboard: React.FC = () => {
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
                 <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
-                Worker heartbeats
+                Sending Server Status
               </h2>
               {!data.workers.ok ? (
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
-                  Heartbeat table not available in this environment.
+                  Server status not available in this environment.
                 </div>
               ) : data.workers.workers.length === 0 ? (
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>No heartbeats recorded yet.</div>
@@ -1025,7 +1025,7 @@ export const OutboxDashboard: React.FC = () => {
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wkr.name}</span>
                         </span>
                         <span style={{ fontSize: 11, color: wkr.stalled ? '#fca5a5' : '#94a3b8', flexShrink: 0 }}>
-                          {wkr.stalled ? 'STALLED · ' : ''}
+                          {wkr.stalled ? 'NOT RESPONDING · ' : ''}
                           {fmtDuration(wkr.seconds_since_beat)} ago
                         </span>
                       </div>
@@ -1049,7 +1049,7 @@ export const OutboxDashboard: React.FC = () => {
             >
               <h2 style={panelTitleStyle}>
                 <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? '#ef4444' : '#64748b' }} />
-                Dead-letter ({fmt(recentDeadLetter.length)})
+                Failed Sends ({fmt(recentDeadLetter.length)})
               </h2>
               <span style={{ fontSize: 11, color: '#94a3b8' }}>
                 Last {DEAD_LETTER_WINDOW_HOURS}h · newest first · max {DEAD_LETTER_MAX_ROWS}
@@ -1057,7 +1057,7 @@ export const OutboxDashboard: React.FC = () => {
             </header>
             {recentDeadLetter.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-                No dead-letter rows in the last {DEAD_LETTER_WINDOW_HOURS} hours. Pipeline healthy.
+                No failed sends in the last {DEAD_LETTER_WINDOW_HOURS} hours. Delivery healthy.
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>

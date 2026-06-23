@@ -486,7 +486,7 @@ export const InboxProfiles: React.FC = () => {
           onChange={(e) => { setIspFilter(e.target.value); setPage(1); }}
           className="ii-filter-select"
         >
-          <option value="">All ISPs</option>
+          <option value="">All Providers</option>
           <option value="gmail">Gmail</option>
           <option value="yahoo">Yahoo</option>
           <option value="microsoft">Microsoft</option>
@@ -529,7 +529,7 @@ export const InboxProfiles: React.FC = () => {
                 <thead>
                   <tr>
                     <th className="ii-th-email">Inbox</th>
-                    <th className="ii-th-isp">ISP</th>
+                    <th className="ii-th-isp">Provider</th>
                     <th className="ii-th-score" onClick={() => handleSort('engagement')}>
                       Score <FontAwesomeIcon icon={getSortIcon('engagement')} className="ii-sort-icon" />
                     </th>
@@ -568,7 +568,7 @@ export const InboxProfiles: React.FC = () => {
                             <div className="ii-domain-text">
                               {p.domain}
                               {managedAgentDomains.has(p.domain) && (
-                                <span className="ii-agent-badge" title="Managed ISP agent active for this domain">🤖 Agent Active</span>
+                                <span className="ii-agent-badge" title="Managed mailbox provider agent active for this domain">🤖 Agent Active</span>
                               )}
                             </div>
                           </div>

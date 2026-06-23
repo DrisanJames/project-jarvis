@@ -52,7 +52,7 @@ const ISP_LABELS: Record<string, string> = {
 const SourceBadge: React.FC<{ source?: string; routeType?: string }> = ({ source, routeType }) => (
   <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
     <span
-      title="Metrics source — v1 reads Postgres tracking events only (lake wiring is a follow-up)"
+      title="Metrics source — current view reads our tracking only (Reporting integration is a follow-up)"
       style={{
         fontSize: '0.62rem', fontWeight: 700, letterSpacing: 0.5, padding: '2px 7px',
         borderRadius: 6, border: '1px solid #34d39955', background: '#34d3991a', color: '#34d399',
@@ -159,13 +159,13 @@ export const CampaignExpand: React.FC<{
           <FontAwesomeIcon icon={faClock} style={{ marginRight: 5 }} />
           {fmtWindow(win?.window_start, win?.window_end)}
         </span>
-        <span title="First wave">
-          1st wave {fmtDenverTime(win?.first_wave_at || c?.scheduled_at)} · {win?.wave_count ?? 0} waves
+        <span title="First send batch">
+          1st send {fmtDenverTime(win?.first_wave_at || c?.scheduled_at)} · {win?.wave_count ?? 0} send batches
         </span>
-        {win?.throttle_speed && <span>throttle {win.throttle_speed}{win.throttle_rate_per_minute ? ` @${win.throttle_rate_per_minute}/min` : ''}{win.throttle_duration_hours ? ` over ${win.throttle_duration_hours}h` : ''}</span>}
+        {win?.throttle_speed && <span>send rate {win.throttle_speed}{win.throttle_rate_per_minute ? ` @${win.throttle_rate_per_minute}/min` : ''}{win.throttle_duration_hours ? ` over ${win.throttle_duration_hours}h` : ''}</span>}
         <button
           onClick={() => onOpenModal(campaignId)}
-          title="Open the full campaign record (creative variants, audience funnel, queue depth, pause/cancel actions)"
+          title="Open the full campaign record (creative versions, audience funnel, pending count, pause/cancel actions)"
           style={{
             marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
             background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)',
@@ -182,8 +182,8 @@ export const CampaignExpand: React.FC<{
           fontSize: 11.5, color: '#7dd3fc', background: 'rgba(56,189,248,0.07)',
           border: '1px solid rgba(56,189,248,0.25)', borderRadius: 8, padding: '6px 10px',
         }}>
-          SES-routed: Postgres events are sparse on this route — delivered/opens here are a lower
-          bound (source=pg). Lake-backed SES truth is a follow-up.
+          Relayed route: our tracking events are sparse on this route — delivered/opens here are a lower
+          bound. Full Reporting figures are a follow-up.
         </div>
       )}
 
@@ -191,16 +191,16 @@ export const CampaignExpand: React.FC<{
       {k && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <KpiChip label="Delivered" value={`${k.delivered_rate.toFixed(1)}%`} sub={`${numFmt(k.delivered)} of ${numFmt(Math.max(k.attempted, k.delivered + k.hard_bounces + k.soft_bounces))}`} color="#22c55e" tip="delivered / max(attempted, delivered+hard+soft)" />
-          <KpiChip label="Human Open" value={`${k.human_open_rate.toFixed(1)}%`} sub={`${numFmt(k.human_opens)} uniq`} color="#38bdf8" tip="unique human opens / delivered (machine/MPP excluded)" />
+          <KpiChip label="Human Open" value={`${k.human_open_rate.toFixed(1)}%`} sub={`${numFmt(k.human_opens)} uniq`} color="#38bdf8" tip="unique human opens / delivered (Apple Mail privacy & automated opens excluded)" />
           <KpiChip label="Human Click" value={`${k.human_click_rate.toFixed(2)}%`} sub={`${numFmt(k.human_clicks)} uniq`} color="#c084fc" tip="unique clicks / delivered" />
           <KpiChip label="CTOR" value={`${k.ctor.toFixed(1)}%`} tip="unique clicks / unique human opens" />
-          <KpiChip label="Hard" value={`${k.hard_bounce_rate.toFixed(2)}%`} sub={numFmt(k.hard_bounces)} color="#ef4444" tip="TRUE list-hygiene hard bounces (HardBounceSQL taxonomy)" />
+          <KpiChip label="Hard" value={`${k.hard_bounce_rate.toFixed(2)}%`} sub={numFmt(k.hard_bounces)} color="#ef4444" tip="True hard bounces (invalid addresses)" />
           <KpiChip label="Soft" value={`${k.soft_bounce_rate.toFixed(2)}%`} sub={numFmt(k.soft_bounces)} color="#f59e0b" tip="transient bounces" />
           <KpiChip label="Complaints" value={numFmt(k.complaints)} color={k.complaints > 0 ? '#ef4444' : undefined} />
           <KpiChip label="Unsubs" value={numFmt(k.unsubscribes)} />
           <KpiChip label="Deferrals" value={numFmt(k.deferrals)} color="#60a5fa" />
           {k.conversions !== null && k.conversions !== undefined && (
-            <KpiChip label="Conversions" value={numFmt(k.conversions)} color="#34d399" tip={`offer suppressions reason='converted' in the campaign window${c?.offer_name ? ` for ${c.offer_name}` : ''}`} />
+            <KpiChip label="Conversions" value={numFmt(k.conversions)} color="#34d399" tip={`conversions in the campaign window${c?.offer_name ? ` for ${c.offer_name}` : ''}`} />
           )}
         </div>
       )}
@@ -213,7 +213,7 @@ export const CampaignExpand: React.FC<{
             Send pace · {series?.bucket || '—'} buckets
           </span>
           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)' }}>
-            wave starts marked · times in Denver
+            send batches marked · times in Denver
           </span>
         </div>
         {chartData.length === 0 ? (
@@ -259,14 +259,14 @@ export const CampaignExpand: React.FC<{
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.2fr) minmax(280px, 1fr)', gap: 10 }}>
         {/* (c) per-ISP mini table */}
         <div style={PANEL}>
-          <div style={{ ...LABEL, marginBottom: 6 }}>Per-ISP family (recipient)</div>
+          <div style={{ ...LABEL, marginBottom: 6 }}>Per-mailbox-provider (recipient)</div>
           {(detail.isp_breakdown || []).length === 0 ? (
-            <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>No per-ISP events yet.</div>
+            <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>No per-mailbox-provider events yet.</div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: 'rgba(180,210,240,0.45)', textAlign: 'right' }}>
-                  <th style={{ textAlign: 'left', padding: '3px 6px' }}>ISP</th>
+                  <th style={{ textAlign: 'left', padding: '3px 6px' }}>Mailbox Provider</th>
                   <th style={{ padding: '3px 6px' }}>Delivered</th>
                   <th style={{ padding: '3px 6px' }}>H. Opens</th>
                   <th style={{ padding: '3px 6px' }}>H. Clicks</th>
@@ -327,7 +327,7 @@ export const CampaignExpand: React.FC<{
             <div style={{ ...LABEL, marginBottom: 6 }}>Content &amp; audience</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5, color: '#cbd5e1' }}>
               <div><span style={LABEL}>Subject </span>{c?.subject || '—'}</div>
-              <div><span style={LABEL}>Preheader </span><span style={{ fontStyle: 'italic', opacity: 0.8 }}>{c?.preheader || '—'}</span></div>
+              <div><span style={LABEL}>Preview Text </span><span style={{ fontStyle: 'italic', opacity: 0.8 }}>{c?.preheader || '—'}</span></div>
               <div><span style={LABEL}>From </span>{c?.from_name || '—'}{c?.from_email ? ` <${c.from_email}>` : ''}</div>
               <div><span style={LABEL}>Domain </span>{c?.sending_domain || '—'} · {c?.sending_profile || '—'}</div>
               {c?.offer_name && <div><span style={LABEL}>Offer </span>{c.offer_name}</div>}
@@ -360,7 +360,7 @@ export const CampaignExpand: React.FC<{
 
       {k?.data_as_of && (
         <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)' }}>
-          Source: tracking_events (pg) · last event {fmtDenverTime(k.data_as_of)} MT
+          Source: tracking events · last event {fmtDenverTime(k.data_as_of)} MT
         </div>
       )}
     </div>

@@ -137,14 +137,14 @@ export const SendTestEmail: React.FC = () => {
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #080c14;">
   <div style="background: #0d1526; border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
     <div style="text-align: center; margin-bottom: 32px;">
-      <h1 style="color: #00e5ff; margin: 0; font-size: 28px;">📬 JARVIS</h1>
+      <h1 style="color: #00e5ff; margin: 0; font-size: 28px;">📬 Mailing Platform</h1>
       <p style="color: rgba(180,210,240,0.65); margin: 8px 0 0;">Mailing Platform Test</p>
     </div>
     
     <h2 style="color: #e0e6f0; margin-bottom: 16px;">${subject}</h2>
     
     <p style="color: #c0c8d8; line-height: 1.6;">
-      This is a test email sent from the Jarvis Mailing Platform.
+      This is a test email sent from your mailing platform.
     </p>
     
     <div style="background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%); color: white; padding: 20px; border-radius: 12px; margin: 24px 0;">
@@ -156,7 +156,7 @@ export const SendTestEmail: React.FC = () => {
     
     <div style="background: #0a0f1a; border-radius: 8px; padding: 16px; margin-top: 24px;">
       <p style="margin: 0; font-size: 13px; color: rgba(180,210,240,0.65);">
-        <strong>Sent via:</strong> SparkPost API<br>
+        <strong>Sent via:</strong> sending infrastructure<br>
         <strong>From:</strong> ${fromName} &lt;${fromEmail}&gt;<br>
         <strong>Timestamp:</strong> ${new Date().toISOString()}
       </p>
@@ -164,7 +164,7 @@ export const SendTestEmail: React.FC = () => {
   </div>
   
   <p style="text-align: center; color: rgba(180,210,240,0.65); font-size: 12px; margin-top: 24px;">
-    Powered by Jarvis Mailing Platform
+    Powered by your mailing platform
   </p>
 </body>
 </html>`;
@@ -193,7 +193,7 @@ export const SendTestEmail: React.FC = () => {
       <div className="send-header">
         <div>
           <h1>✉️ Send Test Email</h1>
-          <p className="subtitle">Send test emails via SparkPost, AWS SES, Mailgun, or other ESPs</p>
+          <p className="subtitle">Send test emails through your sending infrastructure</p>
         </div>
 
         {throttle && (
@@ -214,7 +214,7 @@ export const SendTestEmail: React.FC = () => {
         <form onSubmit={handleSend} className="send-form">
           {profiles.length > 0 && (
             <div className="form-group full-width profile-selector">
-              <label>🚀 Sending Profile (ESP)</label>
+              <label>🚀 Sending Profile</label>
               <select 
                 value={selectedProfileId} 
                 onChange={(e) => handleProfileChange(e.target.value)}

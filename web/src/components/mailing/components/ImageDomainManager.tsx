@@ -61,11 +61,11 @@ async function orgFetch(url: string, orgId: string, opts?: RequestInit) {
 }
 
 const stepLabels: Record<string, string> = {
-  s3_bucket: 'S3 Bucket Configuration',
-  acm_certificate: 'ACM SSL Certificate',
+  s3_bucket: 'Storage Configuration',
+  acm_certificate: 'SSL Certificate',
   dns_validation: 'DNS Validation',
-  cloudfront_distribution: 'CloudFront Distribution',
-  route53_alias: 'Route53 ALIAS Record',
+  cloudfront_distribution: 'Content Delivery Setup',
+  route53_alias: 'DNS Alias Record',
 };
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; icon: any }> = {
@@ -368,7 +368,7 @@ export const ImageDomainManager: React.FC = () => {
             img.yoursendingdomain.com
           </code>
           ) allow emails to serve images from your brand domain, improving deliverability and inbox reputation.
-          The system automatically provisions S3 storage, SSL certificates, CloudFront CDN, and DNS records using your AWS profile.
+          The system automatically sets up secure storage, SSL certificates, content delivery, and DNS records.
         </div>
       </div>
 
@@ -439,7 +439,7 @@ export const ImageDomainManager: React.FC = () => {
                         </div>
                         {s.cloudfront_domain && (
                           <div style={{ fontSize: '11px', color: '#74b9ff', marginTop: '4px' }}>
-                            CloudFront: {s.cloudfront_domain}
+                            CDN domain: {s.cloudfront_domain}
                           </div>
                         )}
                       </div>
@@ -592,7 +592,7 @@ export const ImageDomainManager: React.FC = () => {
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                     <th style={{ padding: '10px 12px', textAlign: 'left', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>Domain</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'left', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>CloudFront</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'left', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>CDN</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>SSL</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>Verified</th>
                     <th style={{ padding: '10px 12px', textAlign: 'left', color: '#888', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>Created</th>
@@ -695,7 +695,7 @@ export const ImageDomainManager: React.FC = () => {
             </button>
           </div>
           <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
-            Enter a custom domain for image hosting. The system will automatically provision S3, SSL, CloudFront, and DNS records.
+            Enter a custom domain for image hosting. The system will automatically set up secure storage, SSL, content delivery, and DNS records.
           </div>
         </div>
       </div>

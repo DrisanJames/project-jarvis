@@ -104,7 +104,7 @@ export const DataPipelineDashboard: React.FC = () => {
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'rgba(180,210,240,0.65)', gap: 10, fontSize: 14 }}>
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading pipeline data...
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading list import data...
       </div>
     );
   }
@@ -117,10 +117,10 @@ export const DataPipelineDashboard: React.FC = () => {
         <div>
           <h2 style={{ color: '#e2e8f0', margin: 0, fontSize: 22, fontWeight: 600 }}>
             <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: '#818cf8' }} />
-            Data Ingestion Pipeline
+            List Import
           </h2>
           <p style={{ color: 'rgba(148,163,184,0.8)', margin: '6px 0 0', fontSize: 13 }}>
-            Automated S3 ingestion, EmailOversight validation & list replenishment
+            Automated list import, email verification & list replenishment
           </p>
         </div>
         <button
@@ -166,7 +166,7 @@ export const DataPipelineDashboard: React.FC = () => {
         <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, border: '1px solid rgba(100,116,139,0.2)', padding: 20, marginBottom: 28 }}>
           <h3 style={{ color: '#e2e8f0', margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
             <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: '#818cf8' }} />
-            30-Day Pipeline Activity
+            30-Day List Import Activity
           </h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={chartData}>
@@ -191,14 +191,14 @@ export const DataPipelineDashboard: React.FC = () => {
         <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, border: '1px solid rgba(100,116,139,0.2)', padding: 20, marginBottom: 28 }}>
           <h3 style={{ color: '#e2e8f0', margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
             <FontAwesomeIcon icon={faServer} style={{ marginRight: 8, color: '#06b6d4' }} />
-            Domain / ISP Health
+            Domain / Mailbox Provider Health
           </h3>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid rgba(100,116,139,0.2)' }}>
                   <th style={thStyle}>Sending Domain</th>
-                  <th style={thStyle}>ISP</th>
+                  <th style={thStyle}>Mailbox Provider</th>
                   <th style={thStyle}>List</th>
                   <th style={{ ...thStyle, textAlign: 'right' }}>Subscribers</th>
                   <th style={{ ...thStyle, textAlign: 'right' }}>Files Available</th>
@@ -235,7 +235,7 @@ export const DataPipelineDashboard: React.FC = () => {
           Run History
         </h3>
         {runs.length === 0 ? (
-          <p style={{ color: '#64748b', fontSize: 13 }}>No pipeline runs yet.</p>
+          <p style={{ color: '#64748b', fontSize: 13 }}>No import runs yet.</p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -273,7 +273,7 @@ export const DataPipelineDashboard: React.FC = () => {
       </div>
 
       <div style={{ textAlign: 'right', marginTop: 16, color: '#475569', fontSize: 11 }}>
-        Data Pipeline Dashboard v{PAGE_VERSION}
+        List Import Dashboard v{PAGE_VERSION}
       </div>
     </div>
   );

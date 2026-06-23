@@ -178,7 +178,7 @@ export const DataNormalizerPanel: React.FC = () => {
       <div style={{ padding: '24px', color: '#e0e6f0', maxWidth: 1200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
           <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#00e5ff', fontSize: 18 }} />
-          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading normalizer data...</span>
+          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading list import data...</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
           {[1, 2, 3, 4, 5, 6].map(i => (
@@ -204,10 +204,10 @@ export const DataNormalizerPanel: React.FC = () => {
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
             <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: '#00e5ff' }} />
-            S3 Data Normalizer
+            List Import
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
-            Imports and normalizes CSV data from the jvc-email-data S3 bucket
+            Imports and cleans CSV data from your list storage
           </p>
         </div>
         <button

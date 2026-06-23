@@ -687,7 +687,7 @@ function saveRecentMember(email: string): RecentMember[] {
 
 const LoadingRow: React.FC<{ label?: string }> = ({ label }) => (
   <div style={styles.sectionLoading}>
-    <FontAwesomeIcon icon={faSpinner} spin /> {label || 'Querying Athena…'}
+    <FontAwesomeIcon icon={faSpinner} spin /> {label || 'Querying analytics database…'}
   </div>
 );
 
@@ -729,7 +729,7 @@ const FriendlyState: React.FC<{ kind: 'disabled' | 'empty' }> = ({ kind }) => (
   <div style={styles.lakeOnlyNotice}>
     <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 8, color: COLORS.warn }} />
     {kind === 'disabled'
-      ? 'Audience lake read layer is disabled on the server — this panel will populate once it is enabled.'
+      ? 'Audience analytics read layer is disabled on the server — this panel will populate once it is enabled.'
       : 'The audience snapshot returned no rows for this query.'}
   </div>
 );
@@ -1210,7 +1210,7 @@ const SRC_DIMS: Array<{ id: string; label: string }> = [
   { id: 'data_source', label: 'Data Source' },
   { id: 'source', label: 'Source (import file)' },
   { id: 'source_system', label: 'Source System' },
-  { id: 'isp', label: 'ISP' },
+  { id: 'isp', label: 'Mailbox Provider' },
   { id: 'engagement_band', label: 'Engagement Band' },
   { id: 'verification_status', label: 'Verification' },
   { id: 'acquired_dt', label: 'Acquired Day' },
@@ -1321,7 +1321,7 @@ const SrcRowExpansion: React.FC<{ dim: string; row: SrcMetricRow }> = ({ dim, ro
       <div style={styles.detailGrid}>
         {item('attempted', fmt(c.attempted), COLORS.accent)}
         {item('delivered', `${fmt(c.delivered)} (${fmtPct(r.delivery)})`, COLORS.good, denomTitle(r))}
-        {item('relayed_to_ses', `${fmt(c.relayed)} — relay handoff, not a delivery`, INFO_BLUE)}
+        {item('relayed', `${fmt(c.relayed)} — relay handoff, not a delivery`, INFO_BLUE)}
         {item('delivery_delay', fmt(c.delays), COLORS.warn)}
         {item('hard bounce', `${fmt(c.hard)} (${fmtPct(r.hard)})`, HARD_RED, denomTitle(r))}
         {item('soft bounce', `${fmt(c.soft)} (${fmtPct(r.soft)})`, SOFT_AMBER, denomTitle(r))}
@@ -1334,7 +1334,7 @@ const SrcRowExpansion: React.FC<{ dim: string; row: SrcMetricRow }> = ({ dim, ro
       </div>
       <div style={styles.tableFooterNote}>
         Reading: members acquired from the same {dim} tend to perform like this cohort — use it to predict
-        how new imports from this source will behave. Opens/clicks are directional (lake covers SES-routed
+        how new imports from this source will behave. Opens/clicks are directional (analytics covers relay-route
         mail + app-tracking backfill only).
       </div>
     </div>
@@ -1563,7 +1563,7 @@ const SourcesTab: React.FC = () => {
           <div style={styles.tableFooterNote}>
             Del/Hard/Soft/Comp rates use attempted as the denominator (fallback delivered+hard+soft — hover
             any rate for the denominator actually used); Open/Click rates use delivered; CTOR uses opens.
-            DATA CAVEAT: open/click events exist in the lake only for SES-routed mail and app-tracking
+            DATA CAVEAT: open/click events exist in analytics only for relay-route mail and app-tracking
             backfill — Opens/Open%/Clicks/Click%/CTOR are directional, not absolute. Hard and soft bounces
             are never summed.
           </div>
@@ -1792,7 +1792,7 @@ const GrowthTab: React.FC = () => {
             Growth — First Touch
           </h2>
           <p style={styles.panelSubtitle}>
-            Recipients whose FIRST-ever lake event (attempted / delivered / relayed) fell on each day —
+            Recipients whose FIRST-ever recorded event (attempted / delivered / relayed) fell on each day —
             i.e. addresses newly put into rotation — with each cohort's ACTIVATION (≥1 open ever; the
             acquisition signal) and CHURN (unsubscribed / hard-bounced / complained). Filter cohorts by
             the thresholds below. Includes seedlist/proof recipients (events-side, not joined to the
@@ -1949,13 +1949,13 @@ const GrowthTab: React.FC = () => {
             </table>
           </div>
           <div style={styles.tableFooterNote}>
-            "First touch" means first touch within lake history, NOT lifetime — members mailed before the
-            lake began recording will show their first lake-era send here, even if they are not actually new.
+            "First touch" means first touch within reporting history, NOT lifetime — members mailed before
+            reporting began recording will show their first recorded send here, even if they are not actually new.
             "Activated" = ≥1 open event ever (clicked likewise). "Churn %" = members with an unsubscribe,
             hard-bounce or complaint event, over cohort size — the per-reason columns stay separate.
             Caveats: young cohorts (the last few days) under-read activation because members haven't had
-            time to open yet; open/click/unsubscribe events reach the lake only for SES-routed mail + the
-            app-tracking backfill (hard bounces flow from BOTH PMTA and SES, so bounce churn is solid
+            time to open yet; open/click/unsubscribe events reach analytics only for relay-route mail + the
+            app-tracking backfill (hard bounces flow from BOTH sending routes, so bounce churn is solid
             everywhere). Compare cohorts against each other, not an absolute target.
           </div>
         </>
@@ -1972,13 +1972,13 @@ const PROFILE_EVENT_DETAIL_FIELDS: Array<{ label: string; get: (e: LakeEvent) =>
   { label: 'email', get: (e) => e.email },
   { label: 'recipient_send_id', get: (e) => e.recipient_send_id },
   { label: 'subscriber_id', get: (e) => e.subscriber_id },
-  { label: 'vmta', get: (e) => e.vmta },
+  { label: 'sending server', get: (e) => e.vmta },
   { label: 'pool', get: (e) => e.pool },
   { label: 'dsn_diag', get: (e) => e.dsn_diag },
   { label: 'source_ip', get: (e) => e.source_ip },
   { label: 'variant', get: (e) => e.variant },
   { label: 'suppression_reason', get: (e) => e.suppression_reason },
-  { label: 'route_type', get: (e) => e.route_type },
+  { label: 'sending route', get: (e) => e.route_type },
   { label: 'source', get: (e) => e.source },
   { label: 'event_uid', get: (e) => e.event_uid },
   { label: 'ingested_at', get: (e) => e.ingested_at },
@@ -2022,7 +2022,7 @@ const ProfileCard: React.FC<{ profile: AudienceProfile; index: number; total: nu
         <MetaItem label="imported_at" value={fmtTs(p.imported_at)} />
         <MetaItem label="created_at" value={fmtTs(p.created_at)} />
         <MetaItem label="list_id" value={p.list_id} mono />
-        <MetaItem label="isp / domain" value={[p.isp, p.email_domain].filter(Boolean).join(' · ')} />
+        <MetaItem label="mailbox provider / domain" value={[p.isp, p.email_domain].filter(Boolean).join(' · ')} />
         <MetaItem label="verification" value={p.verification_status} />
         <MetaItem label="data quality" value={p.data_quality_score == null ? '' : p.data_quality_score.toFixed(2)} />
         <MetaItem label="churn risk" value={p.churn_risk_score == null ? '' : p.churn_risk_score.toFixed(2)} />
@@ -2112,7 +2112,7 @@ const MemberTab: React.FC = () => {
             </h2>
             <p style={styles.panelSubtitle}>
               One email → every per-list audience profile (identity, provenance, lifecycle, totals)
-              plus its lake event history (events_limit 200). <TimingNote meta={result?.meta ?? null} />
+              plus its reported event history (events_limit 200). <TimingNote meta={result?.meta ?? null} />
             </p>
           </div>
         </div>
@@ -2181,12 +2181,12 @@ const MemberTab: React.FC = () => {
               <div>
                 <h2 style={styles.panelTitle}>Event History (newest first, limit 200)</h2>
                 <p style={styles.panelSubtitle}>
-                  Lake events for this email. Open/click rows exist only for SES-routed mail and
+                  Reported events for this email. Open/click rows exist only for relay-route mail and
                   app-tracking backfill — absence of opens here is not proof of inactivity.
                 </p>
               </div>
             </div>
-            {m.events.length === 0 ? <EmptyRow label="No lake events for this email." /> : (
+            {m.events.length === 0 ? <EmptyRow label="No reported events for this email." /> : (
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
                   <thead>
@@ -2195,7 +2195,7 @@ const MemberTab: React.FC = () => {
                       <th style={{ ...styles.th, textAlign: 'left' }}>event_at</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>event_type</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>brand</th>
-                      <th style={{ ...styles.th, textAlign: 'left' }}>isp_group</th>
+                      <th style={{ ...styles.th, textAlign: 'left' }}>Mailbox Provider</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>email_domain</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>campaign_id</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>bounce_cat</th>
@@ -2305,7 +2305,7 @@ export const AudienceAnalytics: React.FC = () => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatusError(msg);
-      addToast({ type: 'error', title: 'Audience lake status failed', message: msg });
+      addToast({ type: 'error', title: 'Audience analytics status failed', message: msg });
     } finally {
       setStatusLoading(false);
     }
@@ -2329,7 +2329,7 @@ export const AudienceAnalytics: React.FC = () => {
   if (statusLoading && !status) {
     return (
       <div style={styles.loadingShell}>
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading audience lake status…
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading audience analytics status…
       </div>
     );
   }
@@ -2344,8 +2344,8 @@ export const AudienceAnalytics: React.FC = () => {
             Audience Analytics
           </h1>
           <p style={styles.subtitle}>
-            Acquisition, churn, source performance, growth and member lookup over the Athena-backed
-            audience lake — daily per-member snapshots joined to email-event outcomes. Every rate
+            Acquisition, churn, source performance, growth and member lookup over the
+            audience analytics database — daily per-member snapshots joined to email-event outcomes. Every rate
             discloses its denominator; hard and soft bounces are never combined.
           </p>
         </div>
@@ -2393,9 +2393,9 @@ export const AudienceAnalytics: React.FC = () => {
         <div style={styles.darkCard}>
           <FontAwesomeIcon icon={faMoon} style={{ fontSize: 28, color: COLORS.accentAlt }} />
           <div style={{ flex: 1 }}>
-            <div style={styles.darkTitle}>Audience lake read layer is dark</div>
+            <div style={styles.darkTitle}>Audience analytics read layer is off</div>
             <div style={styles.darkBody}>
-              The Athena-backed audience read layer is not enabled on the server, so this screen issues
+              The audience analytics read layer is not enabled on the server, so this screen issues
               no queries. Once it is enabled the status strip above will flip to Read: on and the
               analytics tabs will activate.
             </div>
@@ -2410,7 +2410,7 @@ export const AudienceAnalytics: React.FC = () => {
           <div style={{ flex: 1 }}>
             <div style={styles.darkTitle}>First audience snapshot is still seeding</div>
             <div style={styles.darkBody}>
-              The audience lake takes a full per-member snapshot daily at <b>07:00 UTC</b>. None has
+              The audience analytics database takes a full per-member snapshot daily at <b>07:00 UTC</b>. None has
               landed yet (latest_dt is empty), so there is nothing to analyze — check back after the
               next run, or hit Refresh status above. No queries are issued until a snapshot exists.
             </div>
@@ -2473,9 +2473,9 @@ export const AudienceAnalytics: React.FC = () => {
       {/* ─── Footer / version stripe ───────────────────────────── */}
       <div style={styles.footer}>
         <span>Page: Audience Analytics v{PAGE_VERSION}</span>
-        <span>Source: audience lake snapshots + ignite_analytics.email_events (Athena)</span>
+        <span>Source: audience snapshots + email events (analytics database)</span>
         <span>Snapshot: {status?.latest_dt || 'none'}</span>
-        <span>Read {readEnabled ? 'enabled' : 'dark'}</span>
+        <span>Read {readEnabled ? 'enabled' : 'off'}</span>
       </div>
     </div>
   );

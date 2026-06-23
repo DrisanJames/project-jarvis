@@ -150,7 +150,7 @@ export const ThrottleAnalytics: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load throttle analytics:', err);
-      addToast({ type: 'error', title: 'Throttle analytics', message: 'Failed to load throttle analytics' });
+      addToast({ type: 'error', title: 'Sending speed analytics', message: 'Failed to load sending speed analytics' });
     } finally {
       setLoading(false);
     }
@@ -188,7 +188,7 @@ export const ThrottleAnalytics: React.FC = () => {
   if (loading && !data) {
     return (
       <div className="ta-loading">
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading throttle analytics...
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading sending speed analytics...
       </div>
     );
   }
@@ -196,7 +196,7 @@ export const ThrottleAnalytics: React.FC = () => {
   if (!data) {
     return (
       <div className="ta-empty">
-        No throttle analytics data available. The engine may not be running.
+        No sending speed analytics data available. The sending system may not be running.
       </div>
     );
   }
@@ -230,7 +230,7 @@ export const ThrottleAnalytics: React.FC = () => {
           onClick={() => setExcludeMPP(prev => !prev)}
         >
           <FontAwesomeIcon icon={excludeMPP ? faToggleOn : faToggleOff} />
-          {excludeMPP ? ' MPP Opens Excluded' : ' Including MPP Opens'}
+          {excludeMPP ? ' Apple Mail Privacy Opens Excluded' : ' Including Apple Mail Privacy Opens'}
         </button>
       </div>
 
@@ -238,7 +238,7 @@ export const ThrottleAnalytics: React.FC = () => {
       <div className="ta-section-header">
         <div className="ta-section-title">
           <FontAwesomeIcon icon={faTachometerAlt} />
-          <h2>Live ISP Rate Gauges</h2>
+          <h2>Live Mailbox Provider Rate Gauges</h2>
         </div>
         <div className="ta-header-right">
           {data.updated_at && (
@@ -283,7 +283,7 @@ export const ThrottleAnalytics: React.FC = () => {
       <div className="ta-section-header" style={{ marginTop: 32 }}>
         <div className="ta-section-title">
           <FontAwesomeIcon icon={faUsers} />
-          <h2>Audience Health by ISP</h2>
+          <h2>Audience Health by Mailbox Provider</h2>
         </div>
         <span className="ta-count-badge">{selectedDate}</span>
       </div>
@@ -295,7 +295,7 @@ export const ThrottleAnalytics: React.FC = () => {
           <table className="ta-audience-table">
             <thead>
               <tr>
-                <th>ISP</th>
+                <th>Mailbox Provider</th>
                 <th>Sent</th>
                 <th>Delivered</th>
                 <th>Opens</th>
@@ -357,7 +357,7 @@ export const ThrottleAnalytics: React.FC = () => {
       </div>
 
       {recentDecisions.length === 0 ? (
-        <div className="ta-empty-section">No throttle decisions recorded yet.</div>
+        <div className="ta-empty-section">No sending speed adjustments recorded yet.</div>
       ) : (
         <div className="ta-timeline">
           {recentDecisions.map((d, i) => {
@@ -395,13 +395,13 @@ export const ThrottleAnalytics: React.FC = () => {
       <div className="ta-section-header" style={{ marginTop: 32 }}>
         <div className="ta-section-title">
           <FontAwesomeIcon icon={faBrain} />
-          <h2>Throttle Conviction Memory</h2>
+          <h2>Sending Speed Insights</h2>
         </div>
-        <span className="ta-count-badge">{convictions.length} convictions</span>
+        <span className="ta-count-badge">{convictions.length} insights</span>
       </div>
 
       {convictions.length === 0 ? (
-        <div className="ta-empty-section">No throttle convictions recorded yet.</div>
+        <div className="ta-empty-section">No sending speed insights recorded yet.</div>
       ) : (
         <div className="ta-convictions">
           {Object.entries(convictionsByISP).sort(([a], [b]) => a.localeCompare(b)).map(([isp, convictions]) => {

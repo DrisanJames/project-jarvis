@@ -389,7 +389,7 @@ export const TrackingDomainManager: React.FC = () => {
             </code>
             {activeTrackingURL.includes('si3p4trk') && (
               <span style={{ color: '#fdcb6e', marginLeft: '8px', fontSize: '12px' }}>
-                (Default Everflow domain - provision a branded domain below)
+                (Default tracking domain - set up a branded domain below)
               </span>
             )}
           </div>
@@ -444,7 +444,7 @@ export const TrackingDomainManager: React.FC = () => {
           <code style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>
             track.yoursendingdomain.com
           </code>
-          ) replace the default Everflow tracking domain in email links, improving brand consistency and inbox deliverability.
+          ) replace the default tracking domain in email links, improving brand consistency and inbox deliverability.
           Once active, all new tracking links will automatically use the branded domain.
         </div>
       </div>
@@ -515,7 +515,7 @@ export const TrackingDomainManager: React.FC = () => {
                         </div>
                         {s.cloudfront_domain && (
                           <div style={{ fontSize: '11px', color: '#a29bfe', marginTop: '4px' }}>
-                            CloudFront: {s.cloudfront_domain}
+                            CDN domain: {s.cloudfront_domain}
                           </div>
                         )}
                       </div>
@@ -660,7 +660,7 @@ export const TrackingDomainManager: React.FC = () => {
                       <div style={{ fontSize: '14px', fontWeight: 600, fontFamily: 'monospace' }}>{d.domain}</div>
                       {d.cloudfront_domain && (
                         <div style={{ fontSize: '11px', color: '#a29bfe', marginTop: '4px' }}>
-                          CloudFront: {d.cloudfront_domain}
+                          CDN domain: {d.cloudfront_domain}
                         </div>
                       )}
                       <div style={{ fontSize: '11px', color: '#888', marginTop: '4px' }}>
@@ -836,8 +836,8 @@ export const TrackingDomainManager: React.FC = () => {
             </button>
           </div>
           <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
-            Enter a custom tracking domain. The system will provision SSL via ACM, CloudFront distribution, and DNS records.
-            Once active, all Everflow tracking links will automatically use this branded domain.
+            Enter a custom tracking domain. The system will set up SSL, content delivery, and DNS records.
+            Once active, all tracking links will automatically use this branded domain.
           </div>
         </div>
       </div>

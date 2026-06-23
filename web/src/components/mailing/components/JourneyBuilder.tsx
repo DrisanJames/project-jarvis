@@ -955,10 +955,10 @@ export const JourneyBuilder: React.FC = () => {
                     </select>
                     {selectedNode.config.segmentId === CLEANED_NEVER_MAILED_PRESET_ID && (
                       <small>
-                        This preset auto-enrolls every subscriber whose <code>verified_at</code> is set
-                        and whose <code>computed_fields.first_email_at</code> is NULL — i.e. cleaned
-                        but never mailed. Wave-native sends will respect global suppression and the
-                        per-journey ISP quotas configured in Settings.
+                        This preset auto-enrolls every subscriber who has been verified
+                        but has never received an email — i.e. cleaned
+                        but never mailed. Sends respect global suppression and the
+                        per-journey mailbox provider quotas configured in Settings.
                       </small>
                     )}
                   </div>
@@ -1057,7 +1057,7 @@ export const JourneyBuilder: React.FC = () => {
           {selectedNode.type === 'email' && (
             <>
               <div className="config-group">
-                <label>Sending Profile (ESP)</label>
+                <label>Sending Profile</label>
                 <select
                   data-testid="email-sending-profile-select"
                   value={selectedNode.config.sendingProfileId || ''}
@@ -1625,7 +1625,7 @@ export const JourneyBuilder: React.FC = () => {
             <section className="settings-section">
               <h4>Engagement exit policy</h4>
               <p className="hint">
-                Phase 4 watcher exits any active enrollment in this journey
+                We exit any active enrollment in this journey
                 when the subscriber opens or clicks <em>any</em> email in the
                 system, not just emails from this journey.
               </p>
@@ -1652,15 +1652,15 @@ export const JourneyBuilder: React.FC = () => {
             </section>
 
             <section className="settings-section">
-              <h4>Hourly ISP quotas</h4>
+              <h4>Hourly mailbox provider quotas</h4>
               <p className="hint">
-                Wave-native sends throttle per ISP bucket. Leave a value at 0
-                to fall back to global per-IP caps from the PMTA scheduler.
+                Sends throttle per mailbox provider. Leave a value at 0
+                to fall back to the default sending limits.
               </p>
               <table className="isp-quota-table" data-testid="journey-isp-quotas">
                 <thead>
                   <tr>
-                    <th>ISP bucket</th>
+                    <th>Mailbox provider</th>
                     <th style={{ width: 120 }}>Hourly cap</th>
                   </tr>
                 </thead>
@@ -1688,7 +1688,7 @@ export const JourneyBuilder: React.FC = () => {
             <section className="settings-section">
               <h4>Suppression</h4>
               <p className="hint">
-                Global suppression is always applied to every wave injection;
+                Global suppression is always applied to every send;
                 this cannot be disabled on a per-journey basis. Hard bounces,
                 unsubscribes, and complaints from any campaign suppress the
                 subscriber for every journey.

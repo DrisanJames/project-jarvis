@@ -131,7 +131,7 @@ export const UpcomingSendsSection: React.FC<{ domain: string }> = ({ domain }) =
                 <th style={thStyle}>First wave (local)</th>
                 <th style={thStyle}>Campaign</th>
                 <th style={thStyle}>Subject</th>
-                <th style={thStyle}>ISPs</th>
+                <th style={thStyle}>Providers</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Recipients</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Waves left</th>
                 <th style={thStyle}>Status</th>

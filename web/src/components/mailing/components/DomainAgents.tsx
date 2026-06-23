@@ -169,7 +169,7 @@ export const DomainAgents: React.FC = () => {
             onClick={handleRefreshScorecard}
             disabled={refreshing}
             style={refreshing ? { ...btnDisabledStyle, padding: '4px 10px', fontSize: 11.5 } : { ...btnStyle, padding: '4px 10px', fontSize: 11.5 }}
-            title="Recompute the per-domain scorecard for the last 3 days"
+            title="Update the per-domain performance metrics for the last 3 days"
           >
             <FontAwesomeIcon icon={refreshing ? faSpinner : faRotateRight} spin={refreshing} style={{ marginRight: 5 }} />
             Refresh scorecard
@@ -199,7 +199,7 @@ export const DomainAgents: React.FC = () => {
             <div style={{ fontSize: 13, fontWeight: 600, color: selected === null ? C.accent : C.text }}>
               All domains
             </div>
-            <div style={{ fontSize: 11.5, color: C.muted }}>Cross-domain baselines &amp; verdicts</div>
+            <div style={{ fontSize: 11.5, color: C.muted }}>Performance comparison across domains</div>
           </div>
         )}
 

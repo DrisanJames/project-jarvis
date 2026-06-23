@@ -180,18 +180,18 @@ const POLL_INTERVAL_MS: Record<WindowKey, number> = {
 };
 
 const THROUGHPUT_VARIABLES = [
-  { name: 'max_msg_rate', scope: 'Per ISP, hourly', desc: 'Ceiling rate in mailing_engine_isp_config. ThrottleAgent adjusts down from this; never above.' },
-  { name: 'warmup_daily_limit', scope: 'Per IP, daily', desc: 'Caps messages per warmup IP per day. Checked by vmtaPool.next().' },
-  { name: 'currentRateAdj', scope: 'Per ISP, dynamic', desc: 'ThrottleAgent multiplier (0.0–1.0). Reacts to deferrals >20%. Recovers at +10% steps when deferrals <10%.' },
-  { name: 'IP count per pool', scope: 'Per pool', desc: 'More IPs = more parallel capacity. vmtaPool round-robins across available IPs.' },
+  { name: 'max_msg_rate', scope: 'Per provider, hourly', desc: 'Ceiling send rate per mailbox provider. The pacing engine adjusts down from this; never above.' },
+  { name: 'warmup_daily_limit', scope: 'Per IP, daily', desc: 'Caps messages per warmup IP per day.' },
+  { name: 'currentRateAdj', scope: 'Per provider, dynamic', desc: 'Pacing multiplier (0.0–1.0). Reacts to deferrals >20%. Recovers at +10% steps when deferrals <10%.' },
+  { name: 'IP count per pool', scope: 'Per sending route', desc: 'More IPs = more parallel capacity. Sends round-robin across available IPs.' },
   { name: 'IP status', scope: 'Per IP', desc: 'Only active and warmup IPs are selected. Quarantined IPs are skipped.' },
-  { name: 'max_connections', scope: 'Per ISP', desc: 'PMTA connection limit to ISP MX servers. Too many = blocks; too few = underutilization.' },
-  { name: 'PMTA max-msg-rate', scope: 'Per VMTA/pool', desc: 'Server-side rate limit in PMTA config. Must be >= app rate or PMTA bottlenecks.' },
-  { name: 'bounce_action_pct', scope: 'Per ISP', desc: 'Hard bounce rate threshold that triggers ThrottleAgent rate reduction.' },
-  { name: 'complaint_action_pct', scope: 'Per ISP', desc: 'Complaint rate threshold that triggers ThrottleAgent rate reduction.' },
-  { name: 'PER_IP_RATE_LIMITING', scope: 'Global env', desc: 'When enabled, ISP rate is split across IPs for per-IP token bucket sizing.' },
-  { name: 'Send worker concurrency', scope: 'Global', desc: 'Number of goroutines in SendWorkerPool processing the queue.' },
-  { name: 'Queue depth', scope: 'Global', desc: 'If queue is shallow, throughput is supply-limited regardless of rate settings.' },
+  { name: 'max_connections', scope: 'Per provider', desc: 'Connection limit to the mailbox provider. Too many = blocks; too few = underutilization.' },
+  { name: 'server max-msg-rate', scope: 'Per sending route', desc: 'Server-side rate limit on the sending infrastructure. Must be >= app rate or the server bottlenecks.' },
+  { name: 'bounce_action_pct', scope: 'Per provider', desc: 'Hard bounce rate threshold that triggers a pacing reduction.' },
+  { name: 'complaint_action_pct', scope: 'Per provider', desc: 'Complaint rate threshold that triggers a pacing reduction.' },
+  { name: 'PER_IP_RATE_LIMITING', scope: 'Global setting', desc: 'When enabled, the provider rate is split across IPs for per-IP pacing.' },
+  { name: 'Send worker concurrency', scope: 'Global', desc: 'Number of parallel workers processing the send queue.' },
+  { name: 'Queue depth', scope: 'Global', desc: 'If the queue is shallow, throughput is supply-limited regardless of rate settings.' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ export const DeliverabilityControl: React.FC = () => {
       {/* Header bar */}
       <div style={styles.header}>
         <div style={styles.headerLeft}>
-          <h2 style={styles.title}>Deliverability ISP Health Center</h2>
+          <h2 style={styles.title}>Deliverability Health Center</h2>
           <span style={styles.version}>v{PAGE_VERSION} / API v{data.api_version}</span>
         </div>
         <div style={styles.headerStats}>
@@ -361,7 +361,7 @@ export const DeliverabilityControl: React.FC = () => {
 
       {/* Divider */}
       <div style={styles.sectionDivider}>
-        <span style={styles.sectionLabel}>Rate Controls (per ISP)</span>
+        <span style={styles.sectionLabel}>Rate Controls (per Provider)</span>
       </div>
 
       {/* 6. Throughput calculator (existing) */}
@@ -602,7 +602,7 @@ const HealthCenterChart: React.FC<{
     <div style={styles.chartCard}>
       <div style={styles.chartHeader}>
         <h3 style={styles.chartTitle}>
-          ISP Health Center
+          Health Center
           <span style={styles.chartSub}>
             real-time {metric.replace('_', ' ')} by {groupBy.replace('_', ' ')} • {windowKey}
           </span>
@@ -617,7 +617,7 @@ const HealthCenterChart: React.FC<{
             <button
               onClick={() => onGroupByChange('isp')}
               style={groupBy === 'isp' ? styles.toggleBtnActive : styles.toggleBtn}
-            >by ISP</button>
+            >by Provider</button>
             <button
               onClick={() => onGroupByChange('sending_domain')}
               style={groupBy === 'sending_domain' ? styles.toggleBtnActive : styles.toggleBtn}
@@ -730,7 +730,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
   if (pivot.isps.length === 0) {
     return (
       <div style={styles.chartCard}>
-        <h3 style={styles.chartTitle}>ISP × Sending Domain</h3>
+        <h3 style={styles.chartTitle}>Mailbox Provider × Sending Domain</h3>
         <div style={styles.chartEmpty}>No events in window.</div>
       </div>
     );
@@ -740,7 +740,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
     <div style={styles.chartCard}>
       <div style={styles.chartHeader}>
         <h3 style={styles.chartTitle}>
-          ISP × Sending Domain
+          Mailbox Provider × Sending Domain
           <span style={styles.chartSub}>{windowKey} • accept rate prominent, hard/soft/defer/complaint as secondary</span>
         </h3>
       </div>
@@ -748,7 +748,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
         <table style={styles.matrixTable}>
           <thead>
             <tr>
-              <th style={styles.matrixIspHead}>ISP</th>
+              <th style={styles.matrixIspHead}>Provider</th>
               {pivot.domains.map(d => (
                 <th key={d} style={styles.matrixDomainHead}>
                   <span style={{ color: SENDING_DOMAIN_COLORS[d] || '#94a3b8' }}>●</span>{' '}{d}
@@ -863,7 +863,7 @@ const DrilldownPanel: React.FC<{
       {open && (
         <div style={styles.drilldownBody}>
           <div style={styles.filterChips}>
-            <span style={styles.chipLabel}>ISP:</span>
+            <span style={styles.chipLabel}>Provider:</span>
             <button
               onClick={() => setIspFilter('')}
               style={ispFilter === '' ? styles.chipActive : styles.chip}
@@ -898,7 +898,7 @@ const DrilldownPanel: React.FC<{
             <table style={styles.drilldownTable}>
               <thead>
                 <tr>
-                  <th style={styles.drilldownTh}>ISP</th>
+                  <th style={styles.drilldownTh}>Provider</th>
                   <th style={styles.drilldownTh}>Sending Domain</th>
                   <th style={styles.drilldownTh}>{colHeader}</th>
                   <th style={styles.drilldownTh}>Sample Diagnostic</th>
@@ -1007,7 +1007,7 @@ const IPColumn: React.FC<{ title: string; color: string; rows: IPActivityRow[]; 
               </div>
             ) : (
               <div style={styles.ipRowMetricsCold}>
-                {ip.last_seen_at ? `last seen ${new Date(ip.last_seen_at).toLocaleString()}` : 'never seen in PMTA accounting'}
+                {ip.last_seen_at ? `last seen ${new Date(ip.last_seen_at).toLocaleString()}` : 'never seen in sending activity'}
               </div>
             )}
           </div>

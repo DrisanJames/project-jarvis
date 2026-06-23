@@ -136,7 +136,7 @@ export const AgentChatSection: React.FC<{ domain: string | null }> = ({ domain }
           ))}
           {busy && (
             <div style={{ ...agentBubble, color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}>
-              <FontAwesomeIcon icon={faSpinner} spin /> working — reading data / running tools…
+              <FontAwesomeIcon icon={faSpinner} spin /> working — gathering data and planning…
             </div>
           )}
         </div>

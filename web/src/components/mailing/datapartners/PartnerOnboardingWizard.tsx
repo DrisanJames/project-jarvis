@@ -146,7 +146,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
             <select value={vertical} onChange={e => setVertical(e.target.value)} style={input}>
               {VERTICALS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
             </select>
-            <label style={fieldLabel}>Flush window (hours) — how long before all records have shipped</label>
+            <label style={fieldLabel}>Send window (hours) — how long before all records have been sent</label>
             <input type="number" min={1} max={168} value={flushHours} onChange={e => setFlushHours(parseInt(e.target.value || '24', 10))} style={input} />
             {error && <div style={errorBox}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
@@ -188,16 +188,16 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
               <div style={{ marginTop: 12, fontSize: 16, color: '#dbeafe' }}>{partnerName} is live.</div>
               <div style={{ marginTop: 8, color: 'rgba(180,210,240,0.7)', fontSize: 13 }}>
                 Dataset <b>{datasetName}</b> ({vertical}) is ready to receive records.
-                Records will start hitting the cleaning pipeline within 30s of POST.
+                Records will start list processing within 30s of submission.
               </div>
             </div>
             <div style={{ background: 'rgba(15,30,60,0.5)', padding: 16, borderRadius: 6, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
               <b>What happens next:</b><br />
               1. Partner POSTs records to <code>/api/partner-ingest/v1/records</code> with their X-Partner-Key.<br />
-              2. Records are stored in S3 and queued for slicing.<br />
-              3. Slicer drops globally-suppressed records, queues survivors for EmailOversight validation.<br />
-              4. EO-Verified + Complainer records become &lsquo;ready&rsquo; in the cleaning queue.<br />
-              5. The 15-minute drip orchestrator round-robins them across DB / HT / MH / QF brands.<br />
+              2. Records are saved to list storage and queued for list processing.<br />
+              3. List processing drops globally-suppressed records, queues the rest for email verification.<br />
+              4. Verified records become &lsquo;ready&rsquo; in the import queue.<br />
+              5. The 15-minute automated follow-ups round-robin them across DB / HT / MH / QF brands.<br />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={onClose} style={primaryBtn}>Close</button>

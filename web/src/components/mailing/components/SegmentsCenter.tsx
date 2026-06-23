@@ -178,7 +178,7 @@ const categoryMetaFor = (cat: string): SegmentCategoryMeta | undefined =>
 /** Short label for chips/badges. Falls back to the raw id for categories not
  * in the static metadata (e.g. 'engaged-model', 'data-partner'). */
 const categoryLabel = (cat: string): string => {
-  if (cat === MACHINE_CATEGORY) return 'Machine';
+  if (cat === MACHINE_CATEGORY) return 'Auto-generated';
   return categoryMetaFor(cat)?.shortLabel ?? cat;
 };
 
@@ -435,7 +435,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
       const res = await orgFetch(`/api/mailing/v2/segments/${segment.id}/refresh?force=${force ? 'true' : 'false'}`, { method: 'POST' });
       const payload = await res.json().catch(() => ({} as Record<string, unknown>));
       if (res.status === 202) {
-        pushToast('info', `${segment.name}: lake build started — watching for completion`);
+        pushToast('info', `${segment.name}: segment build started — watching for completion`);
         patchRow(segment.id, { last_build_status: 'running' });
         startBuildPolling([segment.id]);
       } else if (res.ok) {
@@ -450,9 +450,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         });
         pushToast('ok', `${segment.name}: refreshed${typeof count === 'number' ? ` — ${count.toLocaleString()} members` : ''}`);
       } else if (res.status === 409) {
-        pushToast('error', 'another lake build is running — try shortly');
+        pushToast('error', 'another segment build is running — try shortly');
       } else if (res.status === 503) {
-        pushToast('error', 'lake reader is disabled — refresh unavailable');
+        pushToast('error', 'segment refresh is temporarily unavailable');
       } else {
         pushToast('error', `${segment.name}: ${String(payload?.error || `refresh failed (HTTP ${res.status})`)}`);
       }
@@ -616,9 +616,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         fetchListRef.current(0, false);
         if (created.length > 0) startBuildPolling(created.map(s => s.id));
       } else if (res.status === 409) {
-        setReqError('Build slot busy — another lake build is already running. Try again shortly.');
+        setReqError('Build in progress — another segment build is already running. Try again shortly.');
       } else if (res.status === 503) {
-        setReqError('Lake reader is disabled — segment build requests are unavailable right now.');
+        setReqError('Segment service is temporarily unavailable — try again later.');
       } else {
         setReqError(String(payload?.error || `Request failed (HTTP ${res.status})`));
       }
@@ -775,7 +775,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         <div className="header-left">
           <h2><FontAwesomeIcon icon={faCrosshairs} /> Segments</h2>
           <p>
-            {operatedCount.toLocaleString()} segments · {machineCount.toLocaleString()} machine
+            {operatedCount.toLocaleString()} segments · {machineCount.toLocaleString()} auto-generated
             <span style={{ marginLeft: 8, fontSize: '0.7rem', opacity: 0.6 }}>v{SEGMENTS_PAGE_VERSION}</span>
           </p>
         </div>
@@ -798,7 +798,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
           <button
             className="btn btn-primary"
             onClick={() => { setReqError(null); setShowRequestModal(true); }}
-            title="Request engagement segments from the event lake (open/click × windows × scope)"
+            title="Request engagement segments from analytics (open/click × windows × scope)"
           >
             <FontAwesomeIcon icon={faRocket} /> Request Segment
           </button>
@@ -849,10 +849,10 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
           <button
             type="button"
             style={{ ...chipStyle(category === MACHINE_CATEGORY), opacity: category === MACHINE_CATEGORY ? 1 : 0.65, marginLeft: 'auto' }}
-            title="Machine-generated partner-drip wave snapshots (partner_wave_static). Hidden everywhere else."
+            title="Auto-generated segments from promotional waves. Hidden by default."
             onClick={() => setCategory(MACHINE_CATEGORY)}
           >
-            Machine ({machineCount.toLocaleString()})
+            Auto-generated ({machineCount.toLocaleString()})
           </button>
         )}
       </div>
@@ -916,8 +916,8 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                     <td
                       style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontFamily: 'monospace', fontSize: 13 }}
                       title={segment.audience_source === 'materialized'
-                        ? 'Materialized audience — the count the send engine mails to'
-                        : 'Cached count — never materialized via the build ledger; Refresh for a live number'}
+                        ? 'Current audience size — the count emails are sent to'
+                        : 'Cached estimate — Refresh for the latest count'}
                     >
                       {memberCount(segment).toLocaleString()}
                     </td>
@@ -946,8 +946,8 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                             : st === 'blocked_delta'
                               ? 'Blocked: count changed >50% — Force refresh (confirms first)'
                               : isLakeRow(segment)
-                                ? 'Refresh — rebuilds async from the event lake (202)'
-                                : 'Refresh — re-materializes synchronously via the build ledger (200)'}
+                                ? 'Refresh — rebuilds from analytics (may take a moment)'
+                                : 'Refresh — updates the audience count instantly'}
                           style={st === 'blocked_delta' ? { color: '#f59e0b' } : undefined}
                         >
                           <FontAwesomeIcon icon={busy ? faSpinner : faSyncAlt} spin={busy} />
@@ -1114,7 +1114,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                   <div style={{ fontSize: 13, color: '#f59e0b' }}>{sample.error}</div>
                 ) : sample.emails.length === 0 ? (
                   <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
-                    no materialized members — Refresh the segment, then re-open
+                    no audience members yet — Refresh the segment, then re-open
                   </div>
                 ) : (
                   <div style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 12px', maxHeight: 220, overflowY: 'auto' }}>
@@ -1135,7 +1135,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                 style={{ textDecoration: 'none' }}
                 href={`/api/mailing/v2/segments/${drawerRow.id}/members.csv`}
                 download
-                title="Export all materialized members as CSV"
+                title="Export all audience members as CSV"
               >
                 <FontAwesomeIcon icon={faDownload} /> Export CSV
               </a>
@@ -1235,9 +1235,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               <div className="form-group">
                 <label>Scope *</label>
                 <select value={reqScope} onChange={e => setReqScope(e.target.value as 'global' | 'brand' | 'isp')}>
-                  <option value="global">Global (all brands, all ISPs)</option>
+                  <option value="global">Global (all brands, all providers)</option>
                   <option value="brand">Brand (single sending brand)</option>
-                  <option value="isp">ISP (single recipient ISP)</option>
+                  <option value="isp">Mailbox provider (single recipient provider)</option>
                 </select>
               </div>
               {reqScope === 'brand' && (
@@ -1253,7 +1253,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               )}
               {reqScope === 'isp' && (
                 <div className="form-group">
-                  <label>ISP *</label>
+                  <label>Mailbox provider *</label>
                   <input
                     type="text"
                     value={reqIsp}
@@ -1285,7 +1285,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                   type="text"
                   value={reqName}
                   onChange={e => setReqName(e.target.value)}
-                  placeholder="e.g. Lake-Openers-Gmail"
+                  placeholder="e.g. Gmail-Openers"
                 />
               </div>
 

@@ -433,7 +433,7 @@ export const OfferManagement: React.FC = () => {
       const res = await apiFetch(`${API}/offers/${id}/optizmo/status`, { credentials: 'include' });
       if (res.ok) setOptizmoStatus(await res.json());
     } catch {
-      addToast({ type: 'warning', title: 'Failed to load Optizmo status' });
+      addToast({ type: 'warning', title: 'Failed to load compliance status' });
     }
   }, [addToast]);
 
@@ -627,7 +627,7 @@ export const OfferManagement: React.FC = () => {
                               )}
                               {counts.suppression_count > 0 && (
                                 <span
-                                  title={`${counts.suppression_count.toLocaleString()} suppressed (includes Everflow conversion exits)`}
+                                  title={`${counts.suppression_count.toLocaleString()} suppressed (includes offer-tracking conversion exits)`}
                                   style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}
                                 >
                                   {fmtCompact(counts.suppression_count)} sup
@@ -690,7 +690,7 @@ export const OfferManagement: React.FC = () => {
               {(offerCounts[offer.id]?.suppression_count ?? 0) > 0 && (
                 <span
                   onClick={() => setActiveTab('compliance')}
-                  title="Includes Everflow conversion exits — click to view the suppression list"
+                  title="Includes offer-tracking conversion exits — click to view the suppression list"
                   style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.55)', cursor: 'pointer' }}
                 >
                   {offerCounts[offer.id].suppression_count.toLocaleString()} suppressed
@@ -698,7 +698,7 @@ export const OfferManagement: React.FC = () => {
               )}
               {(offerCounts[offer.id]?.conversions_30d ?? 0) > 0 && (
                 <span
-                  title="Everflow conversions recorded in the last 30 days"
+                  title="Conversions recorded in the last 30 days"
                   style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                 >
                   {offerCounts[offer.id].conversions_30d.toLocaleString()} conv / 30d
@@ -845,10 +845,10 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
             {WEB_PROPERTIES.map(wp => <option key={wp.key} value={wp.key}>{wp.label}</option>)}
           </select>
         </div>
-        {field('Everflow Offer ID', 'everflow_offer_id')}
-        {field('Everflow Creative ID', 'everflow_creative_id')}
+        {field('Offer Tracking ID', 'everflow_offer_id')}
+        {field('Offer Tracking Creative ID', 'everflow_creative_id')}
         {field('Tracking Link Template', 'tracking_link_template')}
-        {field('Optizmo Link', 'optizmo_link')}
+        {field('Compliance Sync Link', 'optizmo_link')}
         {field('Offer Opt-Out Link', 'offer_optout_link')}
         {field('Landing Page Slug', 'landing_page_slug')}
         {field('Payout', 'payout', 'number')}
@@ -2205,7 +2205,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
 
   return (
     <div>
-      <h3 style={sectionTitle}>Optizmo Compliance</h3>
+      <h3 style={sectionTitle}>Compliance</h3>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, padding: 16, background: '#0d1526', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
         <div>
@@ -2282,12 +2282,12 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
 
       {isFailed && !activeJob && (
         <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
-          Scrub failed — {optizmoStatus?.jobs?.[0]?.error_message || 'check the Optizmo link and try again'}
+          Scrub failed — {optizmoStatus?.jobs?.[0]?.error_message || 'check the compliance sync link and try again'}
         </div>
       )}
 
       <div style={{ marginBottom: 20, padding: 16, background: '#0d1526', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginBottom: 8 }}>Manual Import (upload Optizmo suppression hash file)</div>
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginBottom: 8 }}>Manual Import (upload compliance suppression file)</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <input
             type="file"
@@ -2338,7 +2338,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                 transition: 'background 0.2s',
               }}
               disabled={syncToggling || !offer?.optizmo_link}
-              title={!offer?.optizmo_link ? 'Configure an Optizmo link first' : offer?.suppression_sync_enabled ? 'Disable nightly sync' : 'Enable nightly sync'}
+              title={!offer?.optizmo_link ? 'Configure a compliance sync link first' : offer?.suppression_sync_enabled ? 'Disable nightly sync' : 'Enable nightly sync'}
               onClick={async () => {
                 setSyncToggling(true);
                 try {
@@ -2368,10 +2368,10 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
         </div>
         <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>
           {!offer?.optizmo_link
-            ? 'Configure an Optizmo link to enable nightly sync'
+            ? 'Configure a compliance sync link to enable nightly sync'
             : offer?.suppression_sync_enabled
-              ? 'Suppression file will be downloaded nightly (10PM–2AM MST), uploaded to S3, and Bloom filter rebuilt'
-              : 'Enable to automatically sync Optizmo suppressions each night'
+              ? 'Suppression file will be downloaded nightly (10PM–2AM MST) and applied to your suppression filters'
+              : 'Enable to automatically sync compliance suppressions each night'
           }
         </div>
         {offer?.last_suppression_sync_at && (
@@ -2402,7 +2402,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                 <th>File Entries</th>
                 <th>Audience</th>
                 <th>Suppressed</th>
-                <th>S3</th>
+                <th>Stored</th>
                 <th>Error</th>
               </tr>
             </thead>
@@ -2441,7 +2441,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                     <td style={{ color: (j.suppressed_count ?? 0) > 0 ? '#22c55e' : (j.status === 'completed' ? '#ef4444' : 'rgba(255,255,255,0.35)'), fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
                     <td>
                       {hasS3 ? (
-                        <span style={{ fontSize: 10, color: '#22c55e' }} title={[j.s3_hash_key, j.s3_bloom_key].filter(Boolean).join('\n')}>&#x2713; S3</span>
+                        <span style={{ fontSize: 10, color: '#22c55e' }} title="Stored in Reporting">&#x2713; Stored</span>
                       ) : (
                         <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>—</span>
                       )}
@@ -3065,7 +3065,7 @@ const DeployTab: React.FC<{
           {isCompliant ? 'Compliance gate passed' : 'Compliance gate failed — scrub required'}
         </div>
         <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
-          Optizmo status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
+          Compliance status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
         </div>
       </div>
 
@@ -3199,10 +3199,10 @@ const NewOfferModal: React.FC<{
               {WEB_PROPERTIES.map(wp => <option key={wp.key} value={wp.key}>{wp.label}</option>)}
             </select>
           </div>
-          {field('Everflow Offer ID', 'everflow_offer_id')}
-          {field('Everflow Creative ID', 'everflow_creative_id')}
+          {field('Offer Tracking ID', 'everflow_offer_id')}
+          {field('Offer Tracking Creative ID', 'everflow_creative_id')}
           {field('Tracking Link Template', 'tracking_link_template')}
-          {field('Optizmo Link', 'optizmo_link')}
+          {field('Compliance Sync Link', 'optizmo_link')}
           {field('Offer Opt-Out Link', 'offer_optout_link')}
           {field('Payout', 'payout', { type: 'number' })}
           <div>

@@ -349,7 +349,7 @@ export const SuppressionPortal: React.FC = () => {
         {viewMode === 'optizmo' && (
           <>
             <span className="breadcrumb-separator">›</span>
-            <span className="breadcrumb-current">Optizmo Integration</span>
+            <span className="breadcrumb-current">Compliance Sync</span>
           </>
         )}
         {viewMode === 'auto-refresh' && (
@@ -434,10 +434,10 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
             <div className="hero-stat-value">
               <AnimatedNumber value={stats.optizmo_synced_today} />
             </div>
-            <div className="hero-stat-label">Optizmo Synced Today</div>
+            <div className="hero-stat-label">Compliance Synced Today</div>
             {stats.last_delta_update && (
               <div className="hero-stat-trend">
-                Last delta: {formatTimeAgo(stats.last_delta_update)}
+                Last update: {formatTimeAgo(stats.last_delta_update)}
               </div>
             )}
           </div>
@@ -478,8 +478,8 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
           <button className="quick-action-btn optizmo" onClick={() => onNavigate('optizmo')}>
             <span className="qa-icon"><FontAwesomeIcon icon={faSync} /></span>
             <div className="qa-content">
-              <strong>Optizmo Sync</strong>
-              <small>Configure daily delta sync</small>
+              <strong>Compliance Sync</strong>
+              <small>Configure automatic daily updates</small>
             </div>
             <span className="qa-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
@@ -718,35 +718,35 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
           <div className="health-metrics">
             <div className="health-metric">
               <div className="health-metric-header">
-                <span>Bloom Filter Memory</span>
-                <span className="health-value good" title="Data from API">{stats.bloom_filter_memory || '—'}</span>
+                <span>Lookup Index Memory</span>
+                <span className="health-value good" title="Data from system">{stats.bloom_filter_memory || '—'}</span>
               </div>
               <div className="health-bar">
                 <div className="health-bar-fill" style={{ width: stats.bloom_filter_memory ? '35%' : '0%' }} />
               </div>
-              <span className="health-detail">{stats.bloom_filter_memory ? `${stats.bloom_filter_memory} for suppression records` : 'Awaiting backend data'}</span>
+              <span className="health-detail">{stats.bloom_filter_memory ? `${stats.bloom_filter_memory} for suppression records` : 'Awaiting data'}</span>
             </div>
 
             <div className="health-metric">
               <div className="health-metric-header">
-                <span>Lookup Latency</span>
-                <span className="health-value good" title="Data from API">{stats.lookup_latency || '—'}</span>
+                <span>Lookup Response Time</span>
+                <span className="health-value good" title="Data from system">{stats.lookup_latency || '—'}</span>
               </div>
               <div className="health-bar">
                 <div className="health-bar-fill excellent" style={{ width: stats.lookup_latency ? '15%' : '0%' }} />
               </div>
-              <span className="health-detail">O(1) Bloom + O(log n) verify</span>
+              <span className="health-detail">Instant lookup with secure verification</span>
             </div>
 
             <div className="health-metric">
               <div className="health-metric-header">
-                <span>Optizmo Sync</span>
-                <span className="health-value good" title="Data from API">{stats.optizmo_sync_status || '—'}</span>
+                <span>Compliance Sync</span>
+                <span className="health-value good" title="Data from system">{stats.optizmo_sync_status || '—'}</span>
               </div>
               <div className="health-bar">
                 <div className="health-bar-fill syncing" style={{ width: stats.optizmo_sync_status ? '100%' : '0%' }} />
               </div>
-              <span className="health-detail">{stats.sync_schedule || 'Awaiting backend data'}</span>
+              <span className="health-detail">{stats.sync_schedule || 'Awaiting data'}</span>
             </div>
 
             <div className="health-metric">
@@ -774,8 +774,8 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
           <div className="how-step">
             <div className="how-step-number">2</div>
             <div className="how-step-content">
-              <strong>Bloom Filter</strong>
-              <p>O(1) probabilistic check eliminates 99% of non-matches instantly</p>
+              <strong>Instant Lookup</strong>
+              <p>A fast first-pass check eliminates 99% of non-matches instantly</p>
             </div>
           </div>
           <div className="how-step-arrow"><FontAwesomeIcon icon={faArrowRight} /></div>
@@ -783,7 +783,7 @@ const SuppressionDashboard: React.FC<DashboardProps> = ({ stats, lists, onNaviga
             <div className="how-step-number">3</div>
             <div className="how-step-content">
               <strong>Verification</strong>
-              <p>Bloom positives verified against sorted MD5 hashes for 100% accuracy</p>
+              <p>Potential matches confirmed with secure matching for 100% accuracy</p>
             </div>
           </div>
           <div className="how-step-arrow"><FontAwesomeIcon icon={faArrowRight} /></div>
@@ -1043,7 +1043,7 @@ const CreateSuppressionList: React.FC<CreateListProps> = ({ onCancel, onSuccess,
           <label>List Name *</label>
           <input
             type="text"
-            placeholder="e.g., Optizmo Master List"
+            placeholder="e.g., Compliance Master List"
             value={formData.name}
             onChange={e => setFormData(p => ({ ...p, name: e.target.value }))}
             autoFocus
@@ -1067,7 +1067,7 @@ const CreateSuppressionList: React.FC<CreateListProps> = ({ onCancel, onSuccess,
             onChange={e => setFormData(p => ({ ...p, source: e.target.value }))}
           >
             <option value="manual">Manual</option>
-            <option value="optizmo">Optizmo</option>
+            <option value="optizmo">Compliance Provider</option>
             <option value="import">Import</option>
             <option value="webhook">Webhook</option>
             <option value="bounce">Bounce Handler</option>
@@ -1173,7 +1173,7 @@ const EditSuppressionList: React.FC<EditListProps> = ({ list, onCancel, onSucces
             onChange={e => setFormData(p => ({ ...p, source: e.target.value }))}
           >
             <option value="manual">Manual</option>
-            <option value="optizmo">Optizmo</option>
+            <option value="optizmo">Compliance Provider</option>
             <option value="import">Import</option>
             <option value="webhook">Webhook</option>
             <option value="bounce">Bounce Handler</option>
@@ -1466,15 +1466,15 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
           <FontAwesomeIcon icon={faArrowLeft} /> Back to Dashboard
         </button>
         <div className="optizmo-title">
-          <h2><FontAwesomeIcon icon={faSync} /> Optizmo Integration</h2>
-          <p>Configure daily delta sync with Optizmo suppression API</p>
+          <h2><FontAwesomeIcon icon={faSync} /> Compliance Sync</h2>
+          <p>Configure automatic daily updates from your compliance provider</p>
         </div>
       </div>
 
       {loading ? (
         <div className="loading-container">
           <div className="loading-spinner"></div>
-          <p>Loading Optizmo configuration...</p>
+          <p>Loading compliance sync settings...</p>
         </div>
       ) : (
         <>
@@ -1483,7 +1483,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
             <div className="status-header">
               <span className={`status-indicator ${status?.connected ? 'connected' : 'disconnected'}`} />
               <span className="status-text">
-                {status?.connected ? 'Connected to Optizmo API' : 'Not Connected'}
+                {status?.connected ? 'Connected to compliance provider' : 'Not Connected'}
               </span>
             </div>
             {status?.last_sync && (
@@ -1541,7 +1541,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
 
           {/* Optizmo Lists */}
           <div className="optizmo-lists">
-            <h3><FontAwesomeIcon icon={faList} /> Synced Optizmo Lists</h3>
+            <h3><FontAwesomeIcon icon={faList} /> Synced Compliance Lists</h3>
             {config.lists.length > 0 ? (
               <div className="optizmo-lists-grid">
                 {config.lists.map(list => (
@@ -1555,7 +1555,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
                     <div className="optizmo-list-stats">
                       <span>{list.entry_count?.toLocaleString() || 0} entries</span>
                       {list.last_delta_at && (
-                        <span>Last delta: {formatTimeAgo(list.last_delta_at)}</span>
+                        <span>Last update: {formatTimeAgo(list.last_delta_at)}</span>
                       )}
                     </div>
                   </div>
@@ -1563,7 +1563,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
               </div>
             ) : (
               <div className="empty-state-mini">
-                <p>No Optizmo lists configured yet</p>
+                <p>No compliance lists configured yet</p>
                 <p className="hint">Lists will appear here after your first sync</p>
               </div>
             )}
@@ -1571,20 +1571,20 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
 
           {/* How Delta Sync Works */}
           <div className="how-delta-works">
-            <h3><FontAwesomeIcon icon={faBook} /> How Delta Sync Works</h3>
+            <h3><FontAwesomeIcon icon={faBook} /> How Compliance Sync Works</h3>
             <ol>
               <li>
-                <strong>Daily Check:</strong> At the configured time, the system calls Optizmo's
-                <code>prepare-download</code> API
+                <strong>Daily Check:</strong> At the configured time, the system retrieves updates
+                from your compliance provider
               </li>
               <li>
-                <strong>Delta Download:</strong> Only new/changed suppressions since last sync are downloaded
+                <strong>Update Download:</strong> Only new and changed suppressions since last sync are downloaded
               </li>
               <li>
-                <strong>S3 Storage:</strong> Files are stored in S3 with logical naming for fast lookup
+                <strong>Secure Storage:</strong> Files are stored securely with optimized organization for fast lookup
               </li>
               <li>
-                <strong>Bloom Update:</strong> New MD5 hashes are added to the Bloom filter for O(1) lookups
+                <strong>Index Update:</strong> New entries are added to the lookup index for instant matching
               </li>
             </ol>
           </div>
@@ -1959,7 +1959,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
             </div>
             {file && file.size > DIRECT_UPLOAD_THRESHOLD && (
               <div style={{ marginTop: '8px', color: 'var(--text-muted)', fontSize: '12px' }}>
-                <FontAwesomeIcon icon={faBolt} style={{ color: '#fdcb6e' }} /> Large file detected — will use parallel chunked upload ({Math.ceil(file.size / CHUNK_SIZE)} chunks, {PARALLEL_CHUNK_UPLOADS} concurrent)
+                <FontAwesomeIcon icon={faBolt} style={{ color: '#fdcb6e' }} /> Large file detected — will upload in parallel for faster processing
               </div>
             )}
           </div>
@@ -1982,10 +1982,10 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
             <h4><FontAwesomeIcon icon={faFile} /> File Format</h4>
             <ul>
               <li>One email address per line</li>
-              <li>MD5 hashes (32 characters) are also supported</li>
+              <li>Hashes (32 characters) are also supported</li>
               <li>Lines starting with # are treated as comments</li>
               <li>Duplicates are automatically removed</li>
-              <li>Files up to <strong>10 GB</strong> supported with chunked upload</li>
+              <li>Files up to <strong>10 GB</strong> supported</li>
             </ul>
           </div>
         </div>

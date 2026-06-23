@@ -196,7 +196,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
   return (
     <>
       <Panel
-        title="Terminal-State Recipients"
+        title="Delivery Summary by Recipient"
         description={`Per (campaign, subscriber) outcome — delivered wins everything. ${fmt(totalRecipients)} unique recipient pairs in window.`}
         loading={loadingT}
         error={errT}
@@ -209,7 +209,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
             <table className="ac-table" style={{ width: '100%' }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'left' }}>ISP</th>
+                  <th style={{ textAlign: 'left' }}>Mailbox Provider</th>
                   <th>Recipients</th>
                   <th>Delivered</th>
                   <th>Del%</th>
@@ -246,8 +246,8 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
       </Panel>
 
       <Panel
-        title="Domain × ISP Performance Matrix"
-        description="Source: pmta_acct_daily_summary (deduped delivery facts). Delivered = PMTA-direct + SES-confirmed (DELIVERY events). 'PMTA→SES' is the relay handoff, NOT a recipient delivery. Ground truth for sending-domain reputation."
+        title="Domain × Mailbox Provider Performance Matrix"
+        description="Deduplicated delivery facts. Delivered = direct delivery plus confirmed relay deliveries. The relay column is the relay handoff, NOT a recipient delivery. Ground truth for sending-domain reputation."
         loading={loadingM}
         error={errM}
         empty={!matrix || (matrix.cells || []).length === 0}
@@ -260,11 +260,11 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
               <thead>
                 <tr>
                   <th style={{ textAlign: 'left' }}>Sending Domain</th>
-                  <th>ISP</th>
+                  <th>Mailbox Provider</th>
                   <th>Sent</th>
                   <th>Delivered</th>
                   <th>Del%</th>
-                  <th style={{ color: '#8b5cf6' }} title="PMTA handed the message to SES for delivery. This is NOT a recipient delivery — SES DELIVERY events are folded into the Delivered column.">PMTA→SES</th>
+                  <th style={{ color: '#8b5cf6' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
                   <th style={{ color: '#ef4444' }}>Hard%</th>
                   <th style={{ color: '#f59e0b' }}>Soft%</th>
                   <th>Complaints</th>
@@ -328,8 +328,8 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
 
   return (
     <Panel
-      title="True Opens vs Proxy / MPP / Scanner"
-      description="Classifies every opened event. Scanner = open within 30s of send. MPP = is_machine_open. No-send = orphan/replay."
+      title="True Opens vs Proxy / Privacy / Scanner"
+      description="Classifies every opened event. Scanner = open within 30s of send. Privacy = Apple Mail privacy opens. No-send = orphan/replay."
       loading={loading}
       error={err}
       empty={!data || (data.grand_total?.total || 0) === 0}
@@ -341,17 +341,17 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
           <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(grand.total)}</span><span className="ac-kpi-label">Total Opens</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#22c55e' }}>{fmt(grand.human)}</span><span className="ac-kpi-label">Human ({ratio(grand.human, grand.total)})</span></div></div>
-            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#3b82f6' }}>{fmt(grand.mpp)}</span><span className="ac-kpi-label">MPP ({ratio(grand.mpp, grand.total)})</span></div></div>
+            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#3b82f6' }}>{fmt(grand.mpp)}</span><span className="ac-kpi-label">Apple Mail Privacy ({ratio(grand.mpp, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{fmt(grand.scanner)}</span><span className="ac-kpi-label">Scanner ({ratio(grand.scanner, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#a3a3a3' }}>{fmt(grand.no_send)}</span><span className="ac-kpi-label">Orphan / No-Send</span></div></div>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table className="ac-table" style={{ width: '100%' }}>
               <thead><tr>
-                <th style={{ textAlign: 'left' }}>ISP</th>
+                <th style={{ textAlign: 'left' }}>Mailbox Provider</th>
                 <th>Total</th>
                 <th style={{ color: '#22c55e' }}>Human</th>
-                <th style={{ color: '#3b82f6' }}>MPP</th>
+                <th style={{ color: '#3b82f6' }}>Apple Mail Privacy</th>
                 <th style={{ color: '#f59e0b' }}>Scanner</th>
                 <th>Orphan</th>
                 <th>Human %</th>
@@ -431,8 +431,8 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
   return (
     <>
       <Panel
-        title="Offer Performance (slug-derived)"
-        description="Attribution derived from link_url slug pattern. Until INTENT Phase 3 lands, this is the canonical offer view."
+        title="Offer Performance"
+        description="Attribution derived from the offer tracking link in each campaign. This is the canonical offer view."
         loading={loading} error={err}
         empty={!perf || (perf.rows || []).length === 0}
         onRefresh={load}
@@ -442,7 +442,7 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
           <table className="ac-table" style={{ width: '100%' }}>
             <thead><tr>
               <th style={{ textAlign: 'left' }}>Offer</th>
-              <th>Slug</th>
+              <th>Tracking Code</th>
               <th>Vertical</th>
               <th>Clicks</th>
               <th>Unique Clickers</th>
@@ -493,8 +493,8 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
       </Panel>
 
       <Panel
-        title="Slug Coverage Audit"
-        description="Campaigns scanned for the expected offer slug + cratoolpro tracking suffix in their creative HTML."
+        title="Offer Tracking Coverage Audit"
+        description="Campaigns scanned for the expected offer tracking link in their creative HTML."
         loading={loading} error={err}
         empty={!coverage || (coverage.campaigns || []).length === 0}
         onRefresh={load}
@@ -504,7 +504,7 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
           <table className="ac-table" style={{ width: '100%' }}>
             <thead><tr>
               <th style={{ textAlign: 'left' }}>Campaign</th>
-              <th>Detected Slugs</th>
+              <th>Detected Tracking Codes</th>
               <th>Tracking Suffix</th>
             </tr></thead>
             <tbody>
@@ -583,7 +583,7 @@ const AudienceTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null
     <>
       <Panel
         title="Daily Acquisition"
-        description="New subscriber rows per ISP × brand for the selected window."
+        description="New subscriber rows per mailbox provider × brand for the selected window."
         loading={loading} error={err}
         empty={!acq || (acq.rows || []).length === 0}
         onRefresh={load}
@@ -592,7 +592,7 @@ const AudienceTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null
         {acq && (
           <table className="ac-table" style={{ width: '100%' }}>
             <thead><tr>
-              <th style={{ textAlign: 'left' }}>ISP</th>
+              <th style={{ textAlign: 'left' }}>Mailbox Provider</th>
               <th>New Subs</th>
               <th>Confirmed</th>
               <th>Confirm Rate</th>
@@ -613,7 +613,7 @@ const AudienceTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null
 
       <Panel
         title="Segment Integrity"
-        description="Active segments with last-refresh staleness. Long stale_hours = segment hasn't materialized recently."
+        description="Active segments with last-refresh staleness. Long stale hours mean a segment has not refreshed recently."
         loading={loading} error={err}
         empty={!segs || (segs.segments || []).length === 0}
         onRefresh={load}
@@ -707,8 +707,8 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
   return (
     <>
       <Panel
-        title="Wave Scheduler Health"
-        description="Pre-deploy janitor signals: zombies (planned waves on dead campaigns), expired (window passed), due_now (planned and overdue)."
+        title="Send Schedule Health"
+        description="Pre-deploy cleanup signals: stalled (pending batches on dead campaigns), expired (window passed), due now (pending and overdue)."
         loading={loading} error={err}
         empty={!waves}
         onRefresh={load}
@@ -718,21 +718,21 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
           <>
             {waves.action_required && (
               <div style={{ background: '#7f1d1d', color: '#fecaca', padding: 8, borderRadius: 4, marginBottom: 12 }}>
-                <FontAwesomeIcon icon={faExclamationTriangle} /> Action required — run pre-deploy janitor.
+                <FontAwesomeIcon icon={faExclamationTriangle} /> Action required — run pre-deploy cleanup.
               </div>
             )}
             <div className="ac-kpi-grid" style={{ marginBottom: 12 }}>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? '#ef4444' : '#22c55e' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Zombies</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? '#ef4444' : '#22c55e' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Stalled</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.expired > 50 ? '#ef4444' : undefined }}>{fmt(waves.summary.expired)}</span><span className="ac-kpi-label">Expired</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.due_now)}</span><span className="ac-kpi-label">Due Now</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.planned)}</span><span className="ac-kpi-label">Planned</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.enqueued)}</span><span className="ac-kpi-label">Enqueued</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.enqueued)}</span><span className="ac-kpi-label">Queued</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.running)}</span><span className="ac-kpi-label">Running</span></div></div>
             </div>
             {(waves.samples || []).length > 0 && (
               <table className="ac-table" style={{ width: '100%' }}>
                 <thead><tr>
-                  <th>Campaign</th><th>Camp Status</th><th>Wave Status</th><th>Scheduled</th><th>Window End</th>
+                  <th>Campaign</th><th>Campaign Status</th><th>Batch Status</th><th>Scheduled</th><th>Window End</th>
                 </tr></thead>
                 <tbody>
                   {(waves.samples || []).slice(0, 25).map(s => (
@@ -752,7 +752,7 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
       </Panel>
 
       <Panel
-        title="Per-Minute Dispatch Timeline (last 60 min)"
+        title="Per-Minute Send Timeline (last 60 min)"
         description="Real-time send / deliver / bounce rates per minute. Auto-refresh every 30 seconds."
         loading={loading} error={err}
         empty={!disp || (disp.buckets || []).length === 0}
@@ -782,7 +782,7 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
 
       <Panel
         title="Who Did We Mail (Last 48 hours)"
-        description="Per-campaign mailing_campaign_queue status histogram. Use to spot stalled or failed enqueues."
+        description="Per-campaign delivery queue status breakdown. Use to spot stalled or failed sends."
         loading={loading} error={err}
         empty={!queue || (queue.campaigns || []).length === 0}
         onRefresh={load}
@@ -882,7 +882,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
     <>
       <Panel
         title={`Growth Narrative (${days}-day)`}
-        description="Daily totals from pmta_acct_daily_summary. Hard/soft rates per day for reputation review."
+        description="Daily delivery totals. Hard/soft rates per day for reputation review."
         loading={loading} error={err}
         empty={!data || (data.daily || []).length === 0}
         onRefresh={load}
@@ -905,7 +905,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
             <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(data.summary.total_sent)}</span><span className="ac-kpi-label">Total Sent</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#22c55e' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#8b5cf6' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">PMTA→SES Handoff (not delivery)</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#8b5cf6' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#ef4444' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
             </div>
@@ -915,7 +915,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                 <th>Sent</th>
                 <th>Delivered</th>
                 <th>Del%</th>
-                <th style={{ color: '#8b5cf6' }} title="PMTA→SES relay handoff — not a recipient delivery. SES DELIVERY events are folded into Delivered.">PMTA→SES</th>
+                <th style={{ color: '#8b5cf6' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
                 <th style={{ color: '#ef4444' }}>Hard%</th>
                 <th style={{ color: '#f59e0b' }}>Soft%</th>
               </tr></thead>
@@ -944,7 +944,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
       >
         <div style={{ display: 'flex', gap: 12 }}>
           <button className="ac-refresh-btn" onClick={() => downloadCSV('domain_isp')}>
-            <FontAwesomeIcon icon={faDownload} /> Domain × ISP (today)
+            <FontAwesomeIcon icon={faDownload} /> Domain × Mailbox Provider (today)
           </button>
           <button className="ac-refresh-btn" onClick={() => downloadCSV('growth_narrative')}>
             <FontAwesomeIcon icon={faDownload} /> Growth narrative (today)

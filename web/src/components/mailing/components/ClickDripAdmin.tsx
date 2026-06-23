@@ -382,7 +382,7 @@ const OfferJourneyEditModal: React.FC<{
 
   const handleSave = async () => {
     if (!clickJourneyId.trim()) {
-      setError('Click Journey ID is required');
+      setError('Follow-Up Sequence ID is required');
       return;
     }
     setSaving(true);
@@ -424,7 +424,7 @@ const OfferJourneyEditModal: React.FC<{
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h3 style={{ margin: 0, color: '#e0e6f0', fontSize: 16, fontWeight: 600 }}>
-            Edit offer-journey mapping
+            Edit offer follow-up mapping
           </h3>
           <button
             onClick={onClose}
@@ -437,7 +437,7 @@ const OfferJourneyEditModal: React.FC<{
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Everflow Offer ID
+              Offer ID
             </label>
             <div style={{ marginTop: 4, padding: '8px 12px', background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 6, color: 'rgba(180,210,240,0.6)', fontSize: 13, fontFamily: 'monospace' }}>
               {initial.everflow_offer_id}
@@ -446,13 +446,13 @@ const OfferJourneyEditModal: React.FC<{
 
           <div>
             <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Click Journey ID *
+              Follow-Up Sequence ID *
             </label>
             <input
               type="text"
               value={clickJourneyId}
               onChange={(e) => setClickJourneyId(e.target.value)}
-              placeholder="journey-xxx"
+              placeholder="sequence-xxx"
               style={{
                 marginTop: 4, width: '100%', padding: '8px 12px',
                 background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.25)',
@@ -488,7 +488,7 @@ const OfferJourneyEditModal: React.FC<{
                 onChange={(e) => setEnabled(e.target.checked)}
                 style={{ width: 16, height: 16, cursor: 'pointer' }}
               />
-              Enabled — click-drip enrollments active for this offer
+              Enabled — follow-up enrollments active for this offer
             </label>
           </div>
 
@@ -663,7 +663,7 @@ export const ClickDripAdmin: React.FC = () => {
       );
       addToast({
         type: 'success',
-        title: !previous ? 'Click-drip enabled' : 'Click-drip disabled',
+        title: !previous ? 'Follow-ups enabled' : 'Follow-ups disabled',
         message: `Offer ${row.everflow_offer_id}`,
       });
     } catch (e) {
@@ -872,10 +872,10 @@ export const ClickDripAdmin: React.FC = () => {
           WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
         }}>
           <FontAwesomeIcon icon={faHandPointer} style={{ color: '#a5b4fc' }} />
-          Click-Drip Admin
+          Automated Follow-Ups Admin
         </h2>
         <p style={{ margin: '6px 0 0', color: 'rgba(180,210,240,0.6)', fontSize: 13 }}>
-          Wire Everflow offers to click-triggered drip journeys. Toggling{' '}
+          Wire offers to click-triggered follow-up sequences. Toggling{' '}
           <strong style={{ color: '#86efac' }}>Enabled</strong> stops new enrollments immediately.{' '}
           <span style={{ color: 'rgba(180,210,240,0.45)' }}>v{CLICK_DRIP_ADMIN_VERSION}</span>
         </p>
@@ -892,7 +892,7 @@ export const ClickDripAdmin: React.FC = () => {
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#e0e6f0', display: 'flex', alignItems: 'center', gap: 8 }}>
-              Offer-Journey Map
+              Offer Follow-Up Map
               <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', fontWeight: 400 }}>
                 {journeyMap.length} {journeyMap.length === 1 ? 'mapping' : 'mappings'}
               </span>
@@ -930,8 +930,8 @@ export const ClickDripAdmin: React.FC = () => {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(99,102,241,0.2)' }}>
-                <th style={thStyle}>Everflow Offer ID</th>
-                <th style={thStyle}>Click Journey ID</th>
+                <th style={thStyle}>Offer ID</th>
+                <th style={thStyle}>Follow-Up Sequence ID</th>
                 <th style={thStyle}>Payout</th>
                 <th style={{ ...thStyle, width: 80 }}>Enabled</th>
                 <th style={thStyle}>Notes</th>
@@ -949,7 +949,7 @@ export const ClickDripAdmin: React.FC = () => {
               ) : journeyMap.length === 0 ? (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'rgba(180,210,240,0.45)' }}>
-                    No offer-journey mappings yet.
+                    No offer follow-up mappings yet.
                   </td>
                 </tr>
               ) : (
@@ -989,7 +989,7 @@ export const ClickDripAdmin: React.FC = () => {
                           value={row.enabled}
                           pending={togglesPending.has(row.everflow_offer_id)}
                           onChange={() => handleToggleJourneyMap(row)}
-                          title={row.enabled ? 'Disable click-drip for this offer' : 'Enable click-drip for this offer'}
+                          title={row.enabled ? 'Disable follow-ups for this offer' : 'Enable follow-ups for this offer'}
                         />
                       </td>
                       <td style={{ ...tdStyle, maxWidth: 220 }}>

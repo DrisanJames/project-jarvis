@@ -70,24 +70,24 @@ interface Tab {
 }
 
 const tabs: Tab[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'Real-time overview of email performance' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, manage & monitor campaigns', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'marketing-agent'] },
-  { id: 'lists', label: 'Segments', icon: faListUl, description: 'Manage segments, lists & subscribers' },
-  { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage suppression lists & global hub', childIds: ['suppressions', 'global-suppression'] },
-  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered insights — ISP agents, inbox intelligence & Jarvis', childIds: ['sending-plans', 'profiles', 'jarvis'] },
-  { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Sending, tracking & image domains' },
-  { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'Per-domain agentic send planning & approval — baselines, verdicts & scorecards' },
-  { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price CPM deals — planned volume, pace, capacity risk & live earnings vs goal' },
-  { id: 'offers', label: 'Offers', icon: faStore, description: 'Offer lifecycle — creatives, compliance, deployment & attribution' },
-  { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'ReviewForge creative archive — browse & preview pipeline-built newsletters per offer × brand' },
-  { id: 'event-lake', label: 'Analytics', icon: faChartPie, description: 'S3/Athena email-event lake — ISP, brand & campaign analytics' },
-  { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Audience analytics — acquisition, churn, source performance, member lookup & welcome pool' },
-  { id: 'audience-cadence', label: 'Audience Cadence', icon: faChartLine, description: 'Per (sending_domain × ISP) refresh cadence, churn & 1% activation target' },
-  { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates & content blocks' },
-  { id: 'delivery-servers', label: 'Servers', icon: faServer, description: 'PMTA servers, IPs & sending infrastructure' },
-  { id: 'consciousness', label: 'Consciousness', icon: faCrosshairs, description: 'AI beliefs, philosophies & campaign intelligence' },
-  { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Inbound data partner ingestion — API keys, batches, drip orchestrator, creatives' },
-  { id: 'outbox', label: 'Outbox', icon: faPaperPlane, description: 'Durable injection outbox — live state, stuck rows & dead-letter queue' },
+  { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'marketing-agent'] },
+  { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
+  { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
+  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — mailbox-provider insights, inbox intelligence and smart sending recommendations.', childIds: ['sending-plans', 'profiles', 'jarvis'] },
+  { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
+  { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'AI send-planning and approval for each sending domain — baselines, recommendations and scorecards.' },
+  { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price and plan CPM deals — projected volume, pace, capacity risk and live earnings vs goal.' },
+  { id: 'offers', label: 'Offers', icon: faStore, description: 'Manage your offers end to end — creatives, compliance, scheduling and conversion tracking.' },
+  { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.' },
+  { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
+  { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
+  { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
+  { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates and content blocks.' },
+  { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
+  { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, description: 'The AI insights and strategy behind your campaigns.' },
+  { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Manage inbound data-partner connections — access keys, submitted lists, automated follow-ups and creatives.' },
+  { id: 'outbox', label: 'Delivery Queue', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
 ];
 
 interface VersionInfo {
@@ -236,8 +236,8 @@ export const MailingPortal: React.FC = () => {
             <FontAwesomeIcon icon={faRobot} className="header-icon" />
             <div className="logo-pulse"></div>
           </div>
-          <h1>JARVIS</h1>
-          <span className="subtitle">Mailing Platform</span>
+          <h1>Jarvis</h1>
+          <span className="subtitle">Email Delivery Suite</span>
           <div className="header-scan-line"></div>
         </div>
 
@@ -463,7 +463,7 @@ const EnhancedDashboard: React.FC = () => {
             <span className="status-badge active">Active</span>
           </div>
           <div className="system-description">
-            <p>Production emails are routed through <strong>PowerMTA</strong> with per-ISP delivery optimization.</p>
+            <p>Your emails are sent through high-deliverability infrastructure, optimized for each mailbox provider.</p>
           </div>
           {/* Daily Cap Gauge */}
           <div className="daily-cap-section">
@@ -1023,14 +1023,14 @@ const DeliveryServersManager: React.FC = () => {
   return (
     <div className="manager-page">
       <div className="page-explanation">
-        <h3>PMTA Delivery Infrastructure</h3>
-        <p>Your mail is routed through <strong>PowerMTA</strong> servers. Each server manages dedicated IPs, 
-        DKIM signing, and ISP-specific routing for maximum deliverability.</p>
+        <h3>Sending Infrastructure</h3>
+        <p>Your mail is sent through dedicated sending servers. Each manages dedicated IP addresses,
+        authentication (DKIM), and provider-specific routing for maximum deliverability.</p>
       </div>
 
       {!hasPMTA && (
         <div className="no-data" style={{textAlign:'center', padding:'40px 20px'}}>
-          <p>No PMTA servers configured yet. Run the seed migration to populate infrastructure.</p>
+          <p>No sending servers configured yet. Your sending infrastructure will appear here once set up.</p>
         </div>
       )}
 
@@ -1090,13 +1090,13 @@ const DeliveryServersManager: React.FC = () => {
       )}
 
       <div className="server-info">
-        <h4>How PMTA Sending Works</h4>
+        <h4>How Sending Works</h4>
         <ol>
-          <li><strong>PMTA Relay</strong> — Emails are relayed through your dedicated PMTA server with per-ISP routing rules.</li>
-          <li><strong>Suppression Check</strong> — Before sending, each address is checked against bounces, complaints, and the global suppression hub.</li>
-          <li><strong>IP Rotation</strong> — Messages rotate across your dedicated IP pool based on ISP and warmup stage.</li>
-          <li><strong>DKIM Signing</strong> — PMTA applies domain-specific DKIM signatures on outbound mail.</li>
-          <li><strong>Tracking</strong> — Opens and clicks are tracked through the platform's tracking pixel and link wrapper.</li>
+          <li><strong>Delivery</strong> — Emails are sent through your dedicated sending servers with per-provider routing rules.</li>
+          <li><strong>Suppression Check</strong> — Before sending, each address is checked against bounces, complaints, and your global do-not-contact list.</li>
+          <li><strong>IP Rotation</strong> — Messages rotate across your dedicated IP addresses based on mailbox provider and warm-up stage.</li>
+          <li><strong>Authentication</strong> — Domain-specific DKIM signatures are applied to every outgoing message.</li>
+          <li><strong>Tracking</strong> — Opens and clicks are measured through the platform tracking pixel and link wrapper.</li>
         </ol>
       </div>
     </div>

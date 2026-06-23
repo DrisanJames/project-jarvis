@@ -74,7 +74,7 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
             vertical: found.vertical,
           });
         } else {
-          setError('Batch not found in recent dashboard data. Use admin SQL for older batches.');
+          setError('Batch not found in recent activity. Older batches are not available here.');
         }
       })
       .catch(err => setError(String(err)))
@@ -104,21 +104,21 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
             <div style={grid}>
               <Stat label="Status" value={detail.status} />
               <Stat label="Records" value={detail.record_count.toLocaleString()} />
-              <Stat label="Sliced offset" value={detail.next_record_offset.toLocaleString()} />
+              <Stat label="Processed offset" value={detail.next_record_offset.toLocaleString()} />
               <Stat label="Vertical" value={detail.vertical ?? '—'} />
             </div>
             <div style={{ marginTop: 12 }}>
               <Stat label="Received at" value={new Date(detail.received_at).toLocaleString()} />
               <Stat label="Completed at" value={detail.completed_at ? new Date(detail.completed_at).toLocaleString() : '—'} />
-              <Stat label="Emergency stopped" value={detail.emergency_stopped ? 'YES' : 'no'} />
+              <Stat label="Paused" value={detail.emergency_stopped ? 'YES' : 'no'} />
             </div>
             {detail.counters && (
               <div style={{ marginTop: 16 }}>
-                <h4 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>Cleaning pipeline counters</h4>
+                <h4 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>List processing counters</h4>
                 <div style={grid}>
-                  <Stat label="Sliced" value={detail.counters.sliced.toLocaleString()} />
+                  <Stat label="Processed" value={detail.counters.sliced.toLocaleString()} />
                   <Stat label="Suppressed (global)" value={detail.counters.suppressed_global.toLocaleString()} accent="#f59e0b" />
-                  <Stat label="Suppressed (EO)" value={detail.counters.suppressed_eo.toLocaleString()} accent="#f59e0b" />
+                  <Stat label="Suppressed (verification)" value={detail.counters.suppressed_eo.toLocaleString()} accent="#f59e0b" />
                   <Stat label="Ready" value={detail.counters.ready.toLocaleString()} accent="#10b981" />
                   <Stat label="Mailed" value={detail.counters.mailed.toLocaleString()} accent="#6366f1" />
                 </div>

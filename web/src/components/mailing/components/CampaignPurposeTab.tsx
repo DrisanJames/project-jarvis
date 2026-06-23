@@ -356,7 +356,7 @@ export const CampaignPurposeTab: React.FC<CampaignPurposeTabProps> = ({
         <div className="ai-toggles">
           <AIToggle
             label="Auto-adjust throughput"
-            description="Increase or decrease send rate based on ISP signals"
+            description="Increase or decrease send rate based on mailbox provider signals"
             checked={objective.ai_throughput_optimization}
             onChange={(v) => updateField('ai_throughput_optimization', v)}
           />
@@ -367,8 +367,8 @@ export const CampaignPurposeTab: React.FC<CampaignPurposeTabProps> = ({
             onChange={(v) => updateField('ai_creative_rotation', v)}
           />
           <AIToggle
-            label="Monitor ESP signals"
-            description="Watch SparkPost/SES events for spam signals"
+            label="Monitor delivery signals"
+            description="Watch delivery events for spam signals"
             checked={objective.esp_signal_monitoring}
             onChange={(v) => updateField('esp_signal_monitoring', v)}
           />
@@ -564,14 +564,14 @@ const DataActivationSettings: React.FC<{
       {activationLoading ? (
         <div className="activation-intel-loading">
           <FontAwesomeIcon icon={faSpinner} spin />
-          <span>Analyzing your ecosystem health...</span>
+          <span>Analyzing your sending health...</span>
         </div>
       ) : activationData && (
         <div className="activation-intelligence">
           {/* Ecosystem Health Overview */}
           <div className="ecosystem-health-banner">
             <div className="ecosystem-health-header">
-              <h5><FontAwesomeIcon icon={faShieldAlt} /> Ecosystem Health Intelligence</h5>
+              <h5><FontAwesomeIcon icon={faShieldAlt} /> Sending Health Insights</h5>
               <span className={`risk-badge risk-${activationData.overall_risk}`}>
                 {activationData.overall_risk?.toUpperCase()} RISK
               </span>
@@ -614,7 +614,7 @@ const DataActivationSettings: React.FC<{
           <div className="activation-recommendations">
             <h5>
               <FontAwesomeIcon icon={faMagic} />
-              AI Activation Recommendations — Strategic Campaigns by ISP
+              AI Activation Recommendations — Strategic Campaigns by Mailbox Provider
             </h5>
 
             <div className="recommendation-list">
@@ -670,7 +670,7 @@ const DataActivationSettings: React.FC<{
                             <div><span>Campaign:</span> <strong>{rec.campaign_suggestion.campaign_name}</strong></div>
                             <div><span>Target:</span> <strong>{rec.campaign_suggestion.target_segment}</strong></div>
                             <div><span>Schedule:</span> {rec.campaign_suggestion.send_schedule}</div>
-                            <div><span>ESP:</span> {rec.campaign_suggestion.esp_recommended}</div>
+                            <div><span>Route:</span> {rec.campaign_suggestion.esp_recommended}</div>
                             <div><span>Volume:</span> {rec.campaign_suggestion.volume}</div>
                           </div>
                           <div className="subject-lines">

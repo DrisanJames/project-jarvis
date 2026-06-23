@@ -566,7 +566,7 @@ function RouteFunnelPanel({ rows }: { rows: BreakdownRow[] }) {
   return (
     <div style={{ marginTop: 20 }}>
       <div style={styles.subPanelTitle}>
-        Route funnel — performance coupled per route (bounces: pmta+ses sources only)
+        Route funnel — performance coupled per sending route
       </div>
       <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
         <thead>
@@ -581,16 +581,16 @@ function RouteFunnelPanel({ rows }: { rows: BreakdownRow[] }) {
         </thead>
         <tbody>
           <tr>
-            <td style={rowLabel}>PMTA-direct</td>
-            <td style={cell} title="derived: delivered + bounces (PMTA emits no attempted event)">{fmt(pmtaAttempted)}*</td>
+            <td style={rowLabel}>Direct</td>
+            <td style={cell} title="derived: delivered + bounces (direct sends do not record a separate attempted event)">{fmt(pmtaAttempted)}*</td>
             <td style={cell}>{fmt(pmtaDelivered)}</td>
             <td style={cell}>{fmt(pmtaHard)}</td>
             <td style={cell}>{fmt(pmtaSoft)}</td>
             <td style={cell}>{pct(pmtaDelivered, pmtaAttempted)}</td>
           </tr>
           <tr>
-            <td style={rowLabel}>SES relay</td>
-            <td style={cell} title={`native attempted; cross-check: ${fmt(handoffs)} PMTA→SES handoffs`}>{fmt(sesAttempted)}</td>
+            <td style={rowLabel}>Relay route</td>
+            <td style={cell} title={`recorded attempted; cross-check: ${fmt(handoffs)} relay handoffs`}>{fmt(sesAttempted)}</td>
             <td style={cell}>{fmt(sesDelivered)}</td>
             <td style={cell} colSpan={2}>{fmt(sesBounced)}</td>
             <td style={cell}>{pct(sesDelivered, sesAttempted)}</td>
@@ -605,8 +605,8 @@ function RouteFunnelPanel({ rows }: { rows: BreakdownRow[] }) {
         </tbody>
       </table>
       <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
-        * PMTA attempted is derived (delivered+bounces) until the ingestor emits native attempted events.
-        {' '}SES attempted ≈ handoffs ({fmt(handoffs)}) is the pipeline-consistency check.
+        * Direct-route attempted is derived (delivered+bounces) until a separate attempted event is recorded.
+        {' '}Relay-route attempted ≈ handoffs ({fmt(handoffs)}) is the pipeline-consistency check.
       </div>
     </div>
   );
@@ -737,13 +737,13 @@ function filterParams(f: AppliedFilters): Record<string, string> {
 const COMMON_ISP_GROUPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast', 'charter', 'att', 'verizon', 'other'];
 
 const ROW_DIMS: Array<{ id: string; label: string }> = [
-  { id: 'isp', label: 'ISP' },                       // clean — from real recipient domain (truthful)
-  { id: 'isp_group', label: 'ISP Group (raw)' },     // raw stored field — carries PMTA *.queue noise
+  { id: 'isp', label: 'Mailbox Provider' },          // clean — from real recipient domain (truthful)
+  { id: 'isp_group', label: 'Mailbox Provider (raw)' }, // raw stored field — carries PMTA *.queue noise
   { id: 'brand', label: 'Brand' },
   { id: 'email_domain', label: 'Email Domain' },
-  { id: 'route_type', label: 'Route Type' },
+  { id: 'route_type', label: 'Sending Route' },
   { id: 'source', label: 'Source' },
-  { id: 'vmta', label: 'VMTA' },
+  { id: 'vmta', label: 'Sending Server' },
   { id: 'pool', label: 'Pool' },
   { id: 'variant', label: 'Variant' },
 ];
@@ -773,7 +773,7 @@ const Counter: React.FC<{ label: string; value: number; color: string }> = ({ la
 
 const LoadingRow: React.FC<{ label?: string }> = ({ label }) => (
   <div style={styles.sectionLoading}>
-    <FontAwesomeIcon icon={faSpinner} spin /> {label || 'Querying Athena…'}
+    <FontAwesomeIcon icon={faSpinner} spin /> {label || 'Querying analytics database…'}
   </div>
 );
 
@@ -1316,9 +1316,9 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               Range Overview
             </h2>
             <p style={styles.panelSubtitle}>
-              Days are <b>America/Denver</b> over {applied.from} → {applied.to}. Counts are COUNT(DISTINCT event_uid).
-              Attempted is DERIVED (delivered+bounces) — the PMTA pipe emits no attempted event;
-              raw attempted events exist on the SES pipe only. relayed_to_ses is a PMTA→SES handoff,
+              Days are <b>America/Denver</b> over {applied.from} → {applied.to}. Counts are de-duplicated per event.
+              Attempted is DERIVED (delivered+bounces) — direct sends do not record a separate attempted event;
+              recorded attempted events exist on the relay route only. Relayed is a relay handoff,
               not a recipient delivery. <TimingNote meta={meta} />
             </p>
           </div>
@@ -1340,7 +1340,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
             {/* KPI strip */}
             <div style={styles.kpiGrid}>
               <KpiCard label="Attempted (derived)" value={r.denom} color={COLORS.accent}
-                extra="delivered + bounces; PMTA emits no attempted event" />
+                extra="delivered + bounces; direct sends do not record a separate attempted event" />
               <KpiCard label="Delivered" value={c.delivered} color={COLORS.good}
                 rate={r.delivery} rateLabel="delivery" denomNote={dn} />
               <KpiCard label="Hard Bounce" value={c.hard} color={HARD_RED}
@@ -1357,7 +1357,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               <KpiCard label="Clicks (raw)" value={c.clicks} color={CLICK_VIOLET}
                 rate={r.click} rateLabel="click" denomNote={deliveredTitle(c)}
                 extra={`human-flagged: ${fmt(humanClicks)} · CTOR(raw): ${fmtPct(r.ctor)}`} />
-              <KpiCard label="Relayed → SES" value={c.relayed} color={INFO_BLUE}
+              <KpiCard label="Relayed" value={c.relayed} color={INFO_BLUE}
                 extra="relay handoff — not a delivery" />
             </div>
 
@@ -1779,7 +1779,7 @@ const CampaignTab: React.FC<{
       res.ispMeta = b.value.meta;
       res.ispTruncated = !!b.value.data.truncated;
     } else if (!isAbortError(b.reason)) {
-      addToast({ type: 'error', title: 'Campaign per-ISP query failed', message: b.reason instanceof Error ? b.reason.message : String(b.reason) });
+      addToast({ type: 'error', title: 'Campaign per-provider query failed', message: b.reason instanceof Error ? b.reason.message : String(b.reason) });
     }
     if (c.status === 'fulfilled') {
       // The handler can return HTTP 200 with {api_version, error} and NO
@@ -1834,11 +1834,11 @@ const CampaignTab: React.FC<{
     // The lake's ClassifyBounce folds policy/routing/connection categories into
     // hard_bounce, while Campaign Center v1.4 splits those out as
     // reputation_block — so the comparable tracking number is the SUM.
-    { label: 'Hard bounce *', lake: lakeC.hard, cc: cc.hard_bounce + (cc.reputation_block ?? 0), color: HARD_RED, note: 'tracking = hard_bounce + reputation_block (lake folds reputation blocks into hard)' },
+    { label: 'Hard bounce *', lake: lakeC.hard, cc: cc.hard_bounce + (cc.reputation_block ?? 0), color: HARD_RED, note: 'tracking = hard bounces + provider blocks (analytics folds provider blocks into hard)' },
     { label: 'Soft bounce', lake: lakeC.soft, cc: cc.soft_bounce, color: SOFT_AMBER },
     ...(sesRouted ? [
-      { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'lake = total open events; tracking = unique_opens' },
-      { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'lake = total click events; tracking = unique_clicks' },
+      { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'analytics = total open events; tracking = unique opens' },
+      { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'analytics = total click events; tracking = unique clicks' },
     ] : []),
   ] : [];
 
@@ -1853,8 +1853,8 @@ const CampaignTab: React.FC<{
               Campaign Lookup
             </h2>
             <p style={styles.panelSubtitle}>
-              Lake funnel + per-ISP matrix + reconciliation against the Campaign Center tracking-derived truth
-              (/api/mailing/analytics/campaign-summary). Lake queries scan {from} → {to}.
+              Analytics funnel + per-provider matrix + reconciliation against the Campaign Center tracking-derived truth.
+              Analytics queries scan {from} → {to}.
             </p>
           </div>
         </div>
@@ -1987,8 +1987,8 @@ const CampaignTab: React.FC<{
             ) : (
               <div style={styles.lakeOnlyNotice}>
                 <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 8, color: COLORS.warn }} />
-                Lake-only view — Campaign Center summary unavailable for <code style={styles.code}>{result.id}</code>
-                {result.ccError ? ` (${result.ccError})` : ''}. Metadata and reconciliation are hidden; lake metrics below are still authoritative for raw event counts.
+                Analytics-only view — Campaign Center summary unavailable for <code style={styles.code}>{result.id}</code>
+                {result.ccError ? ` (${result.ccError})` : ''}. Metadata and reconciliation are hidden; analytics metrics below are still authoritative for raw event counts.
               </div>
             )}
           </div>
@@ -1997,7 +1997,7 @@ const CampaignTab: React.FC<{
           <div style={styles.panel}>
             <div style={styles.panelHeader}>
               <div>
-                <h2 style={styles.panelTitle}>Lake Funnel</h2>
+                <h2 style={styles.panelTitle}>Analytics Funnel</h2>
                 <p style={styles.panelSubtitle}>
                   group_by=event_type, campaign_id={truncate(result.id, 14)}, {from} → {to}. <TimingNote meta={result.typeTotalsMeta} />
                 </p>
@@ -2005,7 +2005,7 @@ const CampaignTab: React.FC<{
             </div>
             <TruncationBanner truncated={result.typeTruncated} limit={5000} />
             {lakeC && lakeR ? (
-              lakeC.total === 0 ? <EmptyRow label="No lake events for this campaign in the selected range — widen the date range." /> : (
+              lakeC.total === 0 ? <EmptyRow label="No analytics events for this campaign in the selected range — widen the date range." /> : (
                 <div style={styles.kpiGrid}>
                   <KpiCard label="Attempted" value={lakeC.attempted} color={COLORS.accent} />
                   <KpiCard label="Delivered" value={lakeC.delivered} color={COLORS.good} rate={lakeR.delivery} rateLabel="delivery" denomNote={denomTitle(lakeR)} />
@@ -2016,26 +2016,26 @@ const CampaignTab: React.FC<{
                   <KpiCard label="Opens" value={lakeC.opens} color={OPEN_CYAN} rate={lakeR.open} rateLabel="open" denomNote={deliveredTitle(lakeC)} />
                   <KpiCard label="Clicks" value={lakeC.clicks} color={CLICK_VIOLET} rate={lakeR.click} rateLabel="click" denomNote={deliveredTitle(lakeC)}
                     extra={`CTOR: ${fmtPct(lakeR.ctor)}`} />
-                  <KpiCard label="Relayed → SES" value={lakeC.relayed} color={INFO_BLUE} extra="relay handoff — not a delivery" />
+                  <KpiCard label="Relayed" value={lakeC.relayed} color={INFO_BLUE} extra="relay handoff — not a delivery" />
                 </div>
               )
-            ) : <EmptyRow label="Lake funnel query failed — see toast." />}
+            ) : <EmptyRow label="Analytics funnel query failed — see toast." />}
           </div>
 
           {/* Per-ISP matrix */}
           <div style={styles.panel}>
             <div style={styles.panelHeader}>
               <div>
-                <h2 style={styles.panelTitle}>Per-ISP Matrix</h2>
+                <h2 style={styles.panelTitle}>Per-Provider Matrix</h2>
                 <p style={styles.panelSubtitle}>
                   group_by=isp_group,event_type scoped to this campaign. <TimingNote meta={result.ispMeta} />
                 </p>
               </div>
             </div>
             <TruncationBanner truncated={result.ispTruncated} limit={5000} />
-            {ispPivot.rows.length === 0 ? <EmptyRow label="No per-ISP lake rows for this campaign in range." /> : (
+            {ispPivot.rows.length === 0 ? <EmptyRow label="No per-provider analytics rows for this campaign in range." /> : (
               <MetricsTable
-                dimLabel="ISP Group"
+                dimLabel="Mailbox Provider"
                 rows={ispPivot.rows}
                 totals={ispPivot.totals}
                 sort={ispSort}
@@ -2049,9 +2049,9 @@ const CampaignTab: React.FC<{
             <div style={styles.panel}>
               <div style={styles.panelHeader}>
                 <div>
-                  <h2 style={styles.panelTitle}>Reconciliation — Lake vs Campaign Center</h2>
+                  <h2 style={styles.panelTitle}>Reconciliation — Analytics vs Campaign Center</h2>
                   <p style={styles.panelSubtitle}>
-                    Green = within 2% · amber = 2–10% · red = beyond 10%. Lake counts are COUNT(DISTINCT event_uid) over {from} → {to};
+                    Green = within 2% · amber = 2–10% · red = beyond 10%. Analytics counts are de-duplicated per event over {from} → {to};
                     Campaign Center is the tracking-derived truth ({cc.metrics_source || 'tracking'}).
                   </p>
                 </div>
@@ -2061,8 +2061,8 @@ const CampaignTab: React.FC<{
                 // vs real CC counts as a wall of red mismatches.
                 <div style={styles.lakeOnlyNotice}>
                   <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 8, color: COLORS.warn }} />
-                  No lake events for this campaign in the queried window ({from} → {to}) — reconciliation
-                  skipped. The campaign likely predates the lookup window (or the lake itself); widen the
+                  No analytics events for this campaign in the queried window ({from} → {to}) — reconciliation
+                  skipped. The campaign likely predates the lookup window (or the analytics history itself); widen the
                   date range and rerun to compare against Campaign Center.
                 </div>
               ) : (
@@ -2071,7 +2071,7 @@ const CampaignTab: React.FC<{
                     <thead>
                       <tr>
                         <th style={{ ...styles.th, textAlign: 'left' }}>Metric</th>
-                        <th style={{ ...styles.th, textAlign: 'right' }}>Lake</th>
+                        <th style={{ ...styles.th, textAlign: 'right' }}>Analytics</th>
                         <th style={{ ...styles.th, textAlign: 'right' }}>Campaign Center</th>
                         <th style={{ ...styles.th, textAlign: 'right' }}>Δ</th>
                         <th style={{ ...styles.th, textAlign: 'right' }}>Δ%</th>
@@ -2106,15 +2106,15 @@ const CampaignTab: React.FC<{
                   <div style={styles.tableFooterNote}>
                     {sesRouted ? (
                       <>
-                        * Opens/clicks compare different units by design: the lake counts <em>total</em> open/click events
-                        (every pixel fire / link hit is its own event_uid), while Campaign Center reports <em>unique</em> opens/clicks
-                        (deduped per recipient) — expect lake ≥ tracking; a large gap usually means heavy re-opens or bot scanning,
-                        not data loss. CC total_opens={fmt(cc.total_opens)} · total_clicks={fmt(cc.total_clicks)} for reference.
+                        * Opens/clicks compare different units by design: analytics counts <em>total</em> open/click events
+                        (every pixel fire / link hit is its own event), while Campaign Center reports <em>unique</em> opens/clicks
+                        (deduped per recipient) — expect analytics ≥ tracking; a large gap usually means heavy re-opens or bot scanning,
+                        not data loss. CC total opens={fmt(cc.total_opens)} · total clicks={fmt(cc.total_clicks)} for reference.
                       </>
                     ) : (
                       <>
-                        Open/click events for PMTA-routed mail are tracked in Campaign Center only (the internal
-                        tracking pixel does not emit to the lake), so Opens/Clicks rows are omitted here.
+                        Open/click events for direct-route mail are tracked in Campaign Center only (the internal
+                        tracking pixel does not feed analytics), so Opens/Clicks rows are omitted here.
                       </>
                     )}
                   </div>
@@ -2131,16 +2131,16 @@ const CampaignTab: React.FC<{
                 <p style={styles.panelSubtitle}><TimingNote meta={result.eventsMeta} /></p>
               </div>
             </div>
-            {result.events.length === 0 ? <EmptyRow label="No recent lake events for this campaign." /> : (
+            {result.events.length === 0 ? <EmptyRow label="No recent analytics events for this campaign." /> : (
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
                   <thead>
                     <tr>
                       <th style={{ ...styles.th, textAlign: 'left' }}>event_at</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>event_type</th>
-                      <th style={{ ...styles.th, textAlign: 'left' }}>isp_group</th>
+                      <th style={{ ...styles.th, textAlign: 'left' }}>Mailbox Provider</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>email_domain</th>
-                      <th style={{ ...styles.th, textAlign: 'left' }}>vmta</th>
+                      <th style={{ ...styles.th, textAlign: 'left' }}>Sending Server</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>bounce_cat</th>
                       <th style={{ ...styles.th, textAlign: 'left' }}>dsn_code</th>
                     </tr>
@@ -2241,7 +2241,7 @@ const RawEventsTab: React.FC<{
     } catch (e) {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
-      addToast({ type: 'error', title: 'Event lake query failed', message: msg });
+      addToast({ type: 'error', title: 'Event query failed', message: msg });
     } finally {
       if (abortRef.current === ctl) setLoading(false);
     }
@@ -2303,7 +2303,7 @@ const RawEventsTab: React.FC<{
                 <th style={{ ...styles.th, textAlign: 'left' }}>event_at</th>
                 <th style={{ ...styles.th, textAlign: 'left' }}>event_type</th>
                 <th style={{ ...styles.th, textAlign: 'left' }}>brand</th>
-                <th style={{ ...styles.th, textAlign: 'left' }}>isp_group</th>
+                <th style={{ ...styles.th, textAlign: 'left' }}>Mailbox Provider</th>
                 <th style={{ ...styles.th, textAlign: 'left' }}>email_domain</th>
                 <th style={{ ...styles.th, textAlign: 'left' }}>campaign_id</th>
                 <th style={{ ...styles.th, textAlign: 'left' }}>bounce_cat</th>
@@ -2328,7 +2328,7 @@ const RawEventsTab: React.FC<{
                       <td style={styles.td}>
                         <button
                           style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: eventTypeColor(e.event_type) + '55', background: 'transparent', cursor: 'pointer' }}
-                          title="Filter this tab by this event_type"
+                          title="Filter this tab by this event type"
                           onClick={(ev) => { ev.stopPropagation(); setEventType(e.event_type); }}
                         >
                           {e.event_type || '—'}
@@ -2339,7 +2339,7 @@ const RawEventsTab: React.FC<{
                         {e.isp_group ? (
                           <button
                             style={styles.cellLinkBtn}
-                            title="Filter this tab by this isp_group"
+                            title="Filter this tab by this mailbox provider"
                             onClick={(ev) => { ev.stopPropagation(); setIspGroup(e.isp_group); }}
                           >
                             {e.isp_group}
@@ -2437,7 +2437,7 @@ export const EventLakeExplorer: React.FC = () => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatusError(msg);
-      addToast({ type: 'error', title: 'Event lake status failed', message: msg });
+      addToast({ type: 'error', title: 'Event reporting status failed', message: msg });
     } finally {
       setStatusLoading(false);
     }
@@ -2471,7 +2471,7 @@ export const EventLakeExplorer: React.FC = () => {
   if (statusLoading && !status) {
     return (
       <div style={styles.loadingShell}>
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading event lake status…
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading event reporting status…
       </div>
     );
   }
@@ -2483,12 +2483,11 @@ export const EventLakeExplorer: React.FC = () => {
         <div>
           <h1 style={styles.title}>
             <FontAwesomeIcon icon={faDatabase} style={{ color: COLORS.accent, marginRight: 10 }} />
-            Event Lake Explorer
+            Event Explorer
           </h1>
           <p style={styles.subtitle}>
-            Decision-grade analytics over the S3 / Athena email-event lake — per-recipient sends, bounces,
-            suppressions, opens and clicks fanned out via Firehose to <code style={styles.code}>ignite_analytics.email_events</code>.
-            Counts are <code style={styles.code}>COUNT(DISTINCT event_uid)</code>; every rate discloses its denominator.
+            Decision-grade analytics over the email-event reporting database — per-recipient sends, bounces,
+            suppressions, opens and clicks. Counts are de-duplicated per event; every rate discloses its denominator.
           </p>
         </div>
         <button style={styles.refreshBtn} onClick={fetchStatus} disabled={statusLoading}>
@@ -2521,15 +2520,15 @@ export const EventLakeExplorer: React.FC = () => {
         <div style={styles.darkCard}>
           <FontAwesomeIcon icon={faMoon} style={{ fontSize: 28, color: COLORS.accentAlt }} />
           <div style={{ flex: 1 }}>
-            <div style={styles.darkTitle}>Event lake read layer is dark</div>
+            <div style={styles.darkTitle}>Event reporting read layer is off</div>
             <div style={styles.darkBody}>
-              The Athena-backed read layer is not configured. Set <code style={styles.code}>ANALYTICS_ATHENA_OUTPUT</code> (the
-              S3 Athena results location) on the server to enable breakdown &amp; event queries. Until then this screen shows
-              the write-side emitter counters above; query controls stay disabled.
+              The analytics database read layer is not configured. Enable the analytics results location on the
+              server to turn on breakdown &amp; event queries. Until then this screen shows the write-side
+              counters above; query controls stay disabled.
             </div>
             <div style={styles.darkHint}>
               <FontAwesomeIcon icon={faInfoCircle} style={{ color: COLORS.textMuted, marginRight: 6 }} />
-              Write side {status.enabled_write ? 'is emitting events to Firehose' : 'is also dark (ANALYTICS_FIREHOSE_STREAM unset)'}.
+              Write side {status.enabled_write ? 'is recording events to the analytics pipeline' : 'is also off (analytics pipeline not configured)'}.
             </div>
           </div>
         </div>
@@ -2587,9 +2586,9 @@ export const EventLakeExplorer: React.FC = () => {
 
       {/* ─── Footer / version stripe ───────────────────────────── */}
       <div style={styles.footer}>
-        <span>Page: Event Lake Explorer v{PAGE_VERSION}</span>
-        <span>Source: s3://ignite-analytics-lake → ignite_analytics.email_events</span>
-        <span>Read {readEnabled ? 'enabled' : 'dark'}</span>
+        <span>Page: Event Explorer v{PAGE_VERSION}</span>
+        <span>Source: analytics database (email events)</span>
+        <span>Read {readEnabled ? 'enabled' : 'off'}</span>
       </div>
     </div>
   );

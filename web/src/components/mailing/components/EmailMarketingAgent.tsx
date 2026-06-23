@@ -75,7 +75,7 @@ const S = {
 // ═══════════════════════════════════════════════════════════════════════════
 const AgentChat: React.FC = () => {
   const [messages, setMessages] = useState<AgentMessage[]>([{
-    role: 'assistant', content: '**EDITH** here — your email marketing strategist. I can analyze ISP health, plan campaigns, manage warmup strategies, create templates, and forecast your entire month.\n\n**Try asking:**\n- "How is our ISP health looking?"\n- "Plan a week of campaigns for quizfiesta.com"\n- "What templates do we have?"\n- "Set up a warmup strategy for our new domain"',
+    role: 'assistant', content: '**Jarvis** here — your email marketing strategist. I can analyze mailbox provider health, plan campaigns, manage warmup strategies, create templates, and forecast your entire month.\n\n**Try asking:**\n- "How is our mailbox provider health looking?"\n- "Plan a week of campaigns for quizfiesta.com"\n- "What templates do we have?"\n- "Set up a warmup strategy for our new domain"',
     timestamp: new Date(),
   }]);
   const [input, setInput] = useState('');
@@ -111,7 +111,7 @@ const AgentChat: React.FC = () => {
 
   const startNewConversation = () => {
     setConversationId(null);
-    setMessages([{ role: 'assistant', content: '**EDITH** here — starting a fresh conversation. What would you like to work on?', timestamp: new Date() }]);
+    setMessages([{ role: 'assistant', content: '**Jarvis** here — starting a fresh conversation. What would you like to work on?', timestamp: new Date() }]);
   };
 
   const deleteConversation = async (id: string) => {
@@ -202,14 +202,14 @@ const AgentChat: React.FC = () => {
           ))}
           {loading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#64748b', fontSize: 13 }}>
-              <FontAwesomeIcon icon={faSpinner} spin /> EDITH is thinking...
+              <FontAwesomeIcon icon={faSpinner} spin /> Jarvis is thinking...
             </div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
         <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} style={{ padding: '12px 16px', borderTop: '1px solid rgba(99,102,241,0.1)', display: 'flex', gap: 8 }}>
-          <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} placeholder="Ask EDITH anything about your email program..."
+          <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} placeholder="Ask Jarvis anything about your email program..."
             disabled={loading} style={{ flex: 1, padding: '10px 14px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 10, color: '#e2e8f0', fontSize: 13, outline: 'none' }} />
           <button type="submit" disabled={loading || !input.trim()} style={{ padding: '10px 16px', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none', borderRadius: 10, color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: loading || !input.trim() ? 0.5 : 1 }}>
             <FontAwesomeIcon icon={faPaperPlane} />
@@ -915,11 +915,11 @@ const AgentCalendar: React.FC = () => {
                   <input type="time" value={editConfig.scheduled_time || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_time: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Wave Interval (min)</label>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Send Batch Interval (min)</label>
                   <input type="number" value={editConfig.wave_interval_minutes ?? 15} onChange={e => setEditConfig(c => ({ ...c, wave_interval_minutes: +e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Throttle / Wave</label>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Throttle / Batch</label>
                   <input type="number" value={editConfig.throttle_per_wave ?? 0} onChange={e => setEditConfig(c => ({ ...c, throttle_per_wave: +e.target.value }))} placeholder="0 = unlimited" style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
               </div>
@@ -944,7 +944,7 @@ const AgentCalendar: React.FC = () => {
                   <input value={editConfig.subject || ''} onChange={e => setEditConfig(c => ({ ...c, subject: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Preview / Pre-header Text</label>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4, fontWeight: 600 }}>Preview Text</label>
                   <input value={editConfig.preview_text || ''} onChange={e => setEditConfig(c => ({ ...c, preview_text: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 {editConfig.template_id ? (
@@ -973,7 +973,7 @@ const AgentCalendar: React.FC = () => {
                   </div>
                 ) : (
                   <div style={{ padding: '10px', background: 'rgba(251,191,36,0.06)', borderRadius: 8, border: '1px solid rgba(251,191,36,0.15)', fontSize: 12, color: '#fbbf24' }}>
-                    No template assigned. Generate a forecast to auto-create templates, or ask EDITH to generate one.
+                    No template assigned. Generate a forecast to auto-create templates, or ask Jarvis to generate one.
                   </div>
                 )}
               </div>
@@ -981,7 +981,7 @@ const AgentCalendar: React.FC = () => {
 
             {/* Section 4: ISP Quotas */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>ISP Quotas</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(99,102,241,0.1)' }}>Mailbox Provider Quotas</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {ISP_BUCKETS.map(({ key, label }) => (
                   <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#111827', borderRadius: 8, border: '1px solid rgba(99,102,241,0.08)' }}>
@@ -1121,12 +1121,12 @@ const AgentCalendar: React.FC = () => {
               <div style={{ marginTop: 10 }}>
                 {miniChatMessages.map((m, i) => (
                   <div key={i} style={{ marginBottom: 8, padding: '8px 10px', borderRadius: 8, background: m.role === 'user' ? 'rgba(99,102,241,0.08)' : 'rgba(30,41,59,0.6)', border: `1px solid ${m.role === 'user' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)'}`, fontSize: 12, color: '#e2e8f0' }}>
-                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 3, fontWeight: 600 }}>{m.role === 'user' ? 'You' : 'EDITH'}</div>
+                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 3, fontWeight: 600 }}>{m.role === 'user' ? 'You' : 'Jarvis'}</div>
                     {m.role === 'assistant' ? <div dangerouslySetInnerHTML={{ __html: simpleMarkdown(m.content) }} /> : m.content}
                   </div>
                 ))}
                 <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                  <input value={miniChatInput} onChange={e => setMiniChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMiniChat()} placeholder="Ask EDITH about this campaign..." style={{ flex: 1, padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, outline: 'none' }} />
+                  <input value={miniChatInput} onChange={e => setMiniChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMiniChat()} placeholder="Ask Jarvis about this campaign..." style={{ flex: 1, padding: '8px 12px', background: '#111827', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, outline: 'none' }} />
                   <button onClick={sendMiniChat} disabled={!miniChatInput.trim() || miniChatLoading} style={{ padding: '8px 12px', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: 12, opacity: !miniChatInput.trim() || miniChatLoading ? 0.5 : 1 }}>
                     {miniChatLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPaperPlane} />}
                   </button>
@@ -1202,7 +1202,7 @@ const AgentCalendar: React.FC = () => {
                     <FontAwesomeIcon icon={saving ? faSpinner : faSave} spin={saving} /> {saving ? 'Saving...' : 'Save Changes'}
                   </button>
                   <div style={{ fontSize: 11, color: '#64748b', padding: '0 4px', lineHeight: 1.4 }}>
-                    Approving will deploy this as a real scheduled campaign. It will be sent at the configured date/time through the PMTA pipeline.
+                    Approving will deploy this as a real scheduled campaign. It will be sent at the configured date/time through the sending infrastructure.
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => approveRec(selectedRec.id)} disabled={approving}
@@ -1412,8 +1412,8 @@ export const EmailMarketingAgent: React.FC = () => {
       <div style={S.header}>
         <div style={S.headerIcon}><FontAwesomeIcon icon={faRobot} /></div>
         <div>
-          <h2 style={S.headerTitle}>EDITH — Email Marketing Agent</h2>
-          <div style={S.headerSubtitle}>AI strategist for ISP warmup, campaign planning & audience monetization</div>
+          <h2 style={S.headerTitle}>Jarvis — Email Marketing Assistant</h2>
+          <div style={S.headerSubtitle}>AI strategist for mailbox provider warmup, campaign planning & audience monetization</div>
         </div>
         <span style={{ marginLeft: 'auto', fontSize: 10, color: '#475569' }}>v{PAGE_VERSION}</span>
       </div>

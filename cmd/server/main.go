@@ -2189,6 +2189,63 @@ func runStartupMigrations(db *sql.DB) {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_creative_agent_messages_convo", `CREATE INDEX IF NOT EXISTS idx_creative_agent_messages_convo ON creative_agent_messages (conversation_id, created_at)`},
+		// Offer Proofs — Creative Studio "Offers" sub-view. Operator uploads a
+		// network-approved HTML creative; the server rehosts its images to our CDN
+		// and injects our footer/unsub, then the proof carries a manual approval
+		// lifecycle (pending|approved|rejected), an active/inactive flag, and the
+		// approved sending domains / ISPs / subject+preheader variants / from-names
+		// that the operator signs off on. v1 is a REGISTRY (the send-day reads it);
+		// nothing here gates HandleDeployCampaign. All additive + idempotent; off
+		// the critical send path, so it lives in the normal migration slice.
+		{"create_mailing_offer_proofs", `CREATE TABLE IF NOT EXISTS mailing_offer_proofs (
+			id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id  UUID NOT NULL,
+			name             TEXT NOT NULL,
+			offer_key        TEXT NOT NULL DEFAULT '',
+			html_content     TEXT NOT NULL,
+			html_raw         TEXT NOT NULL DEFAULT '',
+			images_rehosted  INTEGER NOT NULL DEFAULT 0,
+			approval_status  TEXT NOT NULL DEFAULT 'pending',
+			is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+			approved_by      TEXT NOT NULL DEFAULT '',
+			approved_at      TIMESTAMPTZ,
+			variants         JSONB NOT NULL DEFAULT '[]',
+			from_names       JSONB NOT NULL DEFAULT '[]',
+			approved_domains JSONB NOT NULL DEFAULT '[]',
+			approved_isps    JSONB NOT NULL DEFAULT '[]',
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, name)
+		)`},
+		{"idx_mailing_offer_proofs_org", `CREATE INDEX IF NOT EXISTS idx_mailing_offer_proofs_org ON mailing_offer_proofs (organization_id, created_at DESC)`},
+		// Account-manager contacts a proof can be emailed to for review. External
+		// reviewers (name + email), NOT platform logins — kept separate from users.
+		{"create_mailing_proof_recipients", `CREATE TABLE IF NOT EXISTS mailing_proof_recipients (
+			id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id  UUID NOT NULL,
+			name             TEXT NOT NULL,
+			email            TEXT NOT NULL,
+			is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, email)
+		)`},
+		// Per-send audit of proof emails (which AM got which proof, when, status).
+		{"create_mailing_proof_sends", `CREATE TABLE IF NOT EXISTS mailing_proof_sends (
+			id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id  UUID NOT NULL,
+			proof_id         UUID NOT NULL,
+			sending_domain   TEXT NOT NULL DEFAULT '',
+			recipient_email  TEXT NOT NULL DEFAULT '',
+			recipient_name   TEXT NOT NULL DEFAULT '',
+			subject          TEXT NOT NULL DEFAULT '',
+			from_name        TEXT NOT NULL DEFAULT '',
+			status           TEXT NOT NULL DEFAULT '',
+			message_id       TEXT NOT NULL DEFAULT '',
+			error            TEXT NOT NULL DEFAULT '',
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_mailing_proof_sends_proof", `CREATE INDEX IF NOT EXISTS idx_mailing_proof_sends_proof ON mailing_proof_sends (organization_id, proof_id, created_at DESC)`},
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},

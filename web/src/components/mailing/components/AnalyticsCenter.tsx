@@ -408,25 +408,25 @@ const LiveSendingBand: React.FC<LiveSendingBandProps> = ({ data, expanded, onTog
                 </div>
                 <div className="ac-live-wave-badges">
                   <span className="ac-live-badge" title="Completed">
-                    {c.waves.completed}/{c.waves.total} waves
+                    {c.waves.completed}/{c.waves.total} batches
                   </span>
                   {c.waves.running > 0 && <span className="ac-live-badge ac-live-badge-running">{c.waves.running} running</span>}
-                  {c.waves.enqueued > 0 && <span className="ac-live-badge ac-live-badge-enqueued">{c.waves.enqueued} enqueued</span>}
+                  {c.waves.enqueued > 0 && <span className="ac-live-badge ac-live-badge-enqueued">{c.waves.enqueued} queued</span>}
                   {c.waves.planned > 0 && <span className="ac-live-badge ac-live-badge-planned">{c.waves.planned} planned</span>}
                   {c.waves.cancelled > 0 && <span className="ac-live-badge ac-live-badge-cancelled">{c.waves.cancelled} cancelled</span>}
                   {c.waves.failed > 0 && <span className="ac-live-badge ac-live-badge-failed">{c.waves.failed} failed</span>}
                 </div>
                 <div className="ac-live-next-wave">
-                  <FontAwesomeIcon icon={faClock} /> next wave: <strong>{relativeFuture(c.next_wave_at)}</strong>
+                  <FontAwesomeIcon icon={faClock} /> next batch: <strong>{relativeFuture(c.next_wave_at)}</strong>
                 </div>
               </div>
 
               {isExpanded && c.isp_plans && c.isp_plans.length > 0 && (
                 <div className="ac-live-isp-rows">
                   <div className="ac-live-isp-head">
-                    <span>ISP</span>
+                    <span>Mailbox Provider</span>
                     <span>Status</span>
-                    <span>Waves</span>
+                    <span>Batches</span>
                     <span>1m</span>
                     <span>5m</span>
                     <span>Domain</span>
@@ -644,10 +644,10 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h3 style={{ margin: 0 }}>
-            <FontAwesomeIcon icon={faFilter} /> ISP Insights &mdash; {ispLabel}
+            <FontAwesomeIcon icon={faFilter} /> Mailbox Provider Insights &mdash; {ispLabel}
           </h3>
           <div style={{ fontSize: '0.72em', color: '#64748b', marginTop: 4 }}>
-            Deliverability and engagement by sending domain at the selected ISP &middot; dates in MST
+            Deliverability and engagement by sending domain at the selected mailbox provider &middot; dates in MST
             {windowMst && (
               <span style={{ marginLeft: 8, color: '#475569' }}>
                 ({windowMst.start_mst} &rarr; {windowMst.end_mst})
@@ -685,7 +685,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
       </div>
 
       {loading ? (
-        <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading ISP insights...</div>
+        <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading mailbox provider insights...</div>
       ) : series.length === 0 ? (
         <div className="ac-empty-mini">No sending domains detected. Run a campaign first.</div>
       ) : (
@@ -704,7 +704,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
                   <th>Clicks</th>
                   <th>Click %</th>
                   <th>Hard B <FontAwesomeIcon icon={faInfoCircle} title="Hard bounces indicate invalid addresses and degrade sender reputation. Treat as list hygiene signal." style={{ fontSize: 10, color: '#475569' }} /></th>
-                  <th>Soft B <FontAwesomeIcon icon={faInfoCircle} title="Soft bounces retry through the PMTA deferred queue. Not a list-quality signal." style={{ fontSize: 10, color: '#475569' }} /></th>
+                  <th>Soft B <FontAwesomeIcon icon={faInfoCircle} title="Soft bounces are temporary and retry automatically. Not a list-quality signal." style={{ fontSize: 10, color: '#475569' }} /></th>
                 </tr>
               </thead>
               <tbody>
@@ -1222,9 +1222,9 @@ export const AnalyticsCenter: React.FC = () => {
 
           {/* ─── ISP Performance Cards ─────────────────────────────────── */}
           <div className="ac-card ig-card-hover" style={{ gridColumn: '1 / -1' }}>
-            <h3><FontAwesomeIcon icon={faChartLine} /> Performance by ISP</h3>
+            <h3><FontAwesomeIcon icon={faChartLine} /> Performance by Mailbox Provider</h3>
             {ispCards.length === 0 ? (
-              <div className="ac-empty-mini">No ISP data available for this period.</div>
+              <div className="ac-empty-mini">No mailbox provider data available for this period.</div>
             ) : (
               <>
                 <div className="ac-isp-grid">
@@ -1291,7 +1291,7 @@ export const AnalyticsCenter: React.FC = () => {
                     {ispTrendLoading ? (
                       <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading trend…</div>
                     ) : ispTrend.length === 0 ? (
-                      <div className="ac-empty-mini">No trend data for this ISP.</div>
+                      <div className="ac-empty-mini">No trend data for this mailbox provider.</div>
                     ) : (
                       <div className="ac-trend-chart">
                         <ResponsiveContainer width="100%" height={300}>
@@ -1490,7 +1490,7 @@ export const AnalyticsCenter: React.FC = () => {
                                   document.getElementById('infra-breakdown-section')?.scrollIntoView({ behavior: 'smooth' });
                                 }}
                               >
-                                View Infra
+                                View Infrastructure
                               </button>
                             </td>
                           </tr>
@@ -1507,7 +1507,7 @@ export const AnalyticsCenter: React.FC = () => {
                   <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <FontAwesomeIcon icon={faDatabase} /> Audience Health by Sending Domain
                     <span style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400 }}>
-                      SDS · {fmt(sdsTotal)} total subscribers
+                      {fmt(sdsTotal)} total subscribers
                     </span>
                   </h3>
                   <span
@@ -1518,9 +1518,9 @@ export const AnalyticsCenter: React.FC = () => {
                   </span>
                 </div>
                 {sdsLoading ? (
-                  <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading SDS audience health...</div>
+                  <div className="ac-empty-mini"><FontAwesomeIcon icon={faSpinner} spin /> Loading audience health...</div>
                 ) : sdsHealth.length === 0 ? (
-                  <div className="ac-empty-mini">No SDS rows yet. Backfill or wait for shadow writes to populate.</div>
+                  <div className="ac-empty-mini">No audience health data yet.</div>
                 ) : (
                   <div className="ac-table-wrap">
                     <table className="ac-table">
@@ -1581,8 +1581,8 @@ export const AnalyticsCenter: React.FC = () => {
                   <div className="ac-range-selector">
                     {selectedDomain && (
                       <>
-                        <button className={drilldownType === 'ip' ? 'active' : ''} onClick={() => setDrilldownType('ip')}>By IP</button>
-                        <button className={drilldownType === 'isp' ? 'active' : ''} onClick={() => setDrilldownType('isp')}>By Target ISP</button>
+                        <button className={drilldownType === 'ip' ? 'active' : ''} onClick={() => setDrilldownType('ip')}>By Sending IP</button>
+                        <button className={drilldownType === 'isp' ? 'active' : ''} onClick={() => setDrilldownType('isp')}>By Mailbox Provider</button>
                         <button style={{ marginLeft: '10px', background: '#334155' }} onClick={() => { setSelectedDomain(null); setDrilldownType('ip'); }}>&larr; Back to Domains</button>
                       </>
                     )}
@@ -1612,7 +1612,7 @@ export const AnalyticsCenter: React.FC = () => {
                     <table className="ac-table">
                       <thead>
                         <tr>
-                          <th>{selectedDomain ? (drilldownType === 'ip' ? 'Sending IP' : 'Target ISP') : 'Sending Domain'}</th>
+                          <th>{selectedDomain ? (drilldownType === 'ip' ? 'Sending IP' : 'Mailbox Provider') : 'Sending Domain'}</th>
                           <th>Delivered</th>
                           <th>Deferred</th>
                           <th>Opens</th>

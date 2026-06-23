@@ -232,11 +232,11 @@ export const DripPerformancePanel: React.FC = () => {
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 6, marginBottom: 12 }}>
-        <h3 style={{ color: '#dbeafe', margin: 0 }}>Drip Performance</h3>
+        <h3 style={{ color: '#dbeafe', margin: 0 }}>Follow-Up Performance</h3>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
           <span style={{ color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faCircle} style={{ fontSize: 8 }} beat={secondsAgo !== null && secondsAgo < 3} />
-            LIVE — re-aggregated from tracking events every {FAST_POLL_MS / 1000}s
+            LIVE — refreshed from delivery activity every {FAST_POLL_MS / 1000}s
             {secondsAgo !== null && <span style={{ color: 'rgba(180,210,240,0.55)' }}>(updated {secondsAgo}s ago)</span>}
           </span>
         </div>
@@ -262,8 +262,8 @@ export const DripPerformancePanel: React.FC = () => {
       {/* ───── Wave rollup by vertical × brand ───── */}
       <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)', marginBottom: 8 }}>
         <FontAwesomeIcon icon={faPaperPlane} style={{ marginRight: 6 }} />
-        Waves — last {WINDOW_HOURS}h, rolled up per <b>vertical × brand</b>, biggest senders first. Expand a lane for its
-        hourly delivery graph and individual waves. Rates are against sent, not planned.
+        Send batches — last {WINDOW_HOURS}h, rolled up per <b>vertical × brand</b>, biggest senders first. Expand a lane for its
+        hourly delivery graph and individual send batches. Rates are against sent, not planned.
       </div>
 
       <table style={tableStyle}>
@@ -271,14 +271,14 @@ export const DripPerformancePanel: React.FC = () => {
           <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
             <th style={{ ...th, width: 26 }}></th>
             <th style={th}>Vertical / Brand</th>
-            <th style={thNum} title="Waves in window (currently queued/sending)">Waves</th>
+            <th style={thNum} title="Send batches in window (currently queued/sending)">Batches</th>
             <th style={{ ...th, minWidth: 140 }} title="Mail dispatched so far / planned recipients">Sent Progress</th>
             <th style={thNum} title="Delivered, as % of sent">Delivered</th>
             <th style={thNum} title="Hard bounces — permanent failures, reputation risk (% of sent)">Hard</th>
             <th style={thNum} title="Soft bounces — usually transient">Soft</th>
-            <th style={thNum} title="Raw opens — includes Apple MPP / scanner machine traffic">Opens</th>
+            <th style={thNum} title="Raw opens — includes automated privacy and scanner traffic">Opens</th>
             <th style={thNum}>Clicks</th>
-            <th style={th}>Last wave</th>
+            <th style={th}>Last batch</th>
           </tr>
         </thead>
         <tbody>
@@ -316,7 +316,7 @@ export const DripPerformancePanel: React.FC = () => {
             );
           })}
           {sortedRollup.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={10}>No waves in the last {WINDOW_HOURS}h.</td></tr>
+            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={10}>No send batches in the last {WINDOW_HOURS}h.</td></tr>
           )}
         </tbody>
       </table>
@@ -334,7 +334,7 @@ export const DripPerformancePanel: React.FC = () => {
               <th style={th}>Vertical</th>
               <th style={thNum} title="API posts received in the last 24h">Posts</th>
               <th style={thNum} title="Total lead records across those posts">Leads</th>
-              <th style={thNum} title="Posts still being sliced/validated">In-flight</th>
+              <th style={thNum} title="Posts still being processed/verified">In-flight</th>
               <th style={th}>Last received</th>
             </tr>
           </thead>
@@ -382,7 +382,7 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
   return (
     <div style={{ background: 'rgba(0,0,0,0.22)', borderTop: '1px solid rgba(99,102,241,0.25)', borderBottom: '1px solid rgba(99,102,241,0.25)', padding: '14px 16px' }}>
       <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>
-        Hourly delivery & performance — {VERTICAL_LABEL[group.vertical] ?? group.vertical} / {group.brand.toUpperCase()} (events as received)
+        Hourly delivery & performance — {VERTICAL_LABEL[group.vertical] ?? group.vertical} / {group.brand.toUpperCase()} (delivery activity as received)
       </div>
       {chartData.length > 0 ? (
         <ResponsiveContainer width="100%" height={210}>
@@ -405,16 +405,16 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
           </ComposedChart>
         </ResponsiveContainer>
       ) : (
-        <div style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, padding: '18px 0' }}>No events recorded for this lane yet — the graph fills in as accounting events arrive.</div>
+        <div style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, padding: '18px 0' }}>No activity recorded for this lane yet — the graph fills in as delivery activity arrives.</div>
       )}
 
       <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', margin: '12px 0 6px' }}>
-        Individual waves (newest first, live)
+        Individual send batches (newest first, live)
       </div>
       <table style={{ ...tableStyle, background: 'rgba(15,30,60,0.5)' }}>
         <thead>
           <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
-            <th style={th}>Wave</th>
+            <th style={th}>Batch</th>
             <th style={{ ...th, minWidth: 130 }}>Sent Progress</th>
             <th style={thNum}>Delivered</th>
             <th style={thNum}>Hard</th>
@@ -445,7 +445,7 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
             </tr>
           ))}
           {waves.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={9}>Loading waves…</td></tr>
+            <tr><td style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.5)' }} colSpan={9}>Loading send batches…</td></tr>
           )}
         </tbody>
       </table>
@@ -463,18 +463,18 @@ const OverallStrip: React.FC<{
   return (
     <div style={overallBox}>
       <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>
-        Overall — all drips, last 24h ({totals.waves.toLocaleString()} waves)
+        Overall — all follow-ups, last 24h ({totals.waves.toLocaleString()} send batches)
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8 }}>
         <BigStat label="Sent" value={totals.sent.toLocaleString()} />
         <BigStat label="Delivered" value={totals.delivered.toLocaleString()} sub={pct(totals.delivered)} accent="#10b981" />
         <BigStat label="Hard bounce" value={totals.hard_bounces.toLocaleString()} sub={pct(totals.hard_bounces)} accent="#ef4444" />
         <BigStat label="Soft bounce" value={totals.soft_bounces.toLocaleString()} sub={pct(totals.soft_bounces)} accent="#f59e0b" />
-        <BigStat label="Opens" value={totals.opens.toLocaleString()} title="Raw opens — includes Apple MPP / scanner machine traffic" />
+        <BigStat label="Opens" value={totals.opens.toLocaleString()} title="Raw opens — includes automated privacy and scanner traffic" />
         <BigStat label="Clicks" value={totals.clicks.toLocaleString()} accent="#a78bfa" />
-        <BigStat label="Ready backlog" value={overall.ready.toLocaleString()} title="Cleaned leads waiting for their first wave" />
-        <BigStat label="In drip" value={overall.inDrip.toLocaleString()} title="Recipients somewhere in the T1–T4 journey" />
-        <BigStat label="Engaged" value={overall.engaged.toLocaleString()} accent="#10b981" title="Opened/clicked — exited the drip as a win" />
+        <BigStat label="Ready pending" value={overall.ready.toLocaleString()} title="Verified leads waiting for their first send" />
+        <BigStat label="In follow-up" value={overall.inDrip.toLocaleString()} title="Recipients somewhere in the T1–T4 journey" />
+        <BigStat label="Engaged" value={overall.engaged.toLocaleString()} accent="#10b981" title="Opened/clicked — exited the follow-up sequence as a win" />
         <BigStat label="Due now" value={overall.dueNow.toLocaleString()} accent={overall.dueNow > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their scheduled time" />
       </div>
     </div>
@@ -554,32 +554,32 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
 
       {/* Lifecycle: pending → ready → mailed */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 10 }}>
-        <MiniStat label="Pending EO" value={v.pending_eo} accent="#a78bfa" />
+        <MiniStat label="Pending verification" value={v.pending_eo} accent="#a78bfa" />
         <MiniStat
-          label="EO credits"
+          label="Verification credits"
           value={v.eo_credits_total ?? 0}
           accent="#60a5fa"
           sub={`${(v.eo_validated_24h ?? 0).toLocaleString()} val. 24h`}
-          title="EmailOversight validation calls consumed (billed per call); sub-text = leads validated in the last 24h"
+          title="Email verification calls consumed (billed per call); sub-text = leads validated in the last 24h"
         />
         <MiniStat label="Ready" value={v.ready} accent="#10b981" />
         <MiniStat label="Mailed" value={v.mailed} accent="#6366f1" />
-        <MiniStat label="Due now" value={v.followups_due} accent={v.followups_due > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their next_touch_at" />
+        <MiniStat label="Due now" value={v.followups_due} accent={v.followups_due > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their next scheduled time" />
       </div>
 
       {/* Multi-touch state machine */}
       <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
-        Touch journey ({touchTotal.toLocaleString()} in drip)
+        Touch journey ({touchTotal.toLocaleString()} in follow-up)
       </div>
       <TouchBar t1={v.touch_1} t2={v.touch_2} t3={v.touch_3} t4={v.touch_4} />
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 8 }}>
-        <span title="Clicked — exited the drip as a win">
+        <span title="Clicked — exited the follow-up sequence as a win">
           Engaged: <b style={{ color: '#10b981' }}>{v.engaged.toLocaleString()}</b>
         </span>
         <span title="Still being mailed — touches 1-3, not yet engaged or exhausted">
           In progress: <b style={{ color: '#60a5fa' }}>{inProgress.toLocaleString()}</b>
         </span>
-        <span title="Conversions (money events) tied to this dataset's records — CPM, $0 revenue by design">
+        <span title="Conversions tied to this dataset's records — CPM, $0 revenue by design">
           Conv: <b style={{ color: (v.conversions ?? 0) > 0 ? '#f59e0b' : 'rgba(180,210,240,0.55)' }}>{(v.conversions ?? 0).toLocaleString()}</b>
         </span>
       </div>
@@ -587,7 +587,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
           and sum to 100% (denominator = records in drip, not mailed). */}
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 4 }}>
         <span
-          title="activation = clicked and exited the drip as a win"
+          title="activation = clicked and exited the follow-up sequence as a win"
           style={{ color: '#10b981', fontWeight: 600 }}
         >
           Activation {ratePct(v.engaged, dripDenom)}
@@ -612,7 +612,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
           <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ color: 'rgba(180,210,240,0.5)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                <th style={ispTh}>ISP</th>
+                <th style={ispTh}>Mailbox provider</th>
                 <th style={ispThNum}>Ready</th>
                 <th style={ispThNum}>Sent 24h</th>
               </tr>
@@ -621,7 +621,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
               {allISPs.map(i => (
                 <tr key={i.isp}>
                   <td style={ispTd}>{i.isp}</td>
-                  <td style={{ ...ispTdNum, color: i.ready > 50000 ? '#f59e0b' : undefined }} title={i.ready > 50000 ? 'large held/queued backlog' : undefined}>{i.ready.toLocaleString()}</td>
+                  <td style={{ ...ispTdNum, color: i.ready > 50000 ? '#f59e0b' : undefined }} title={i.ready > 50000 ? 'large held/queued pending' : undefined}>{i.ready.toLocaleString()}</td>
                   <td style={{ ...ispTdNum, color: i.sent_24h > 0 ? '#10b981' : undefined }}>{i.sent_24h.toLocaleString()}</td>
                 </tr>
               ))}

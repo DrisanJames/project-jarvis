@@ -206,7 +206,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
   const grandTotal = useMemo(() => Object.values(totalsByBrand).reduce((s, n) => s + n, 0), [totalsByBrand]);
 
-  if (loading) return <div style={msg}>Loading the real plan for {date}…</div>;
+  if (loading) return <div style={msg}>Loading the plan for {date}…</div>;
   if (error) return <div style={{ ...msg, color: '#e94560' }}>Failed to load plan: {error}</div>;
   if (!brands.length) return <div style={msg}>No campaigns scheduled for {date}. (Nothing staged yet for this date.)</div>;
 
@@ -214,7 +214,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
     <div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(220,235,250,0.92)' }}>
-          {brands.length} brands · {waves.length} waves · {num(grandTotal)} planned
+          {brands.length} brands · {waves.length} send batches · {num(grandTotal)} planned
         </span>
         <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>← scroll horizontally for all brands →</span>
       </div>
@@ -222,7 +222,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
         <table style={{ borderCollapse: 'separate', borderSpacing: 0, minWidth: '100%' }}>
           <thead>
             <tr>
-              <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Wave</th>
+              <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Send batch</th>
               {brands.map(b => (
                 <th key={b.domain} style={thBase}>
                   <div style={{ fontWeight: 700, color: '#00e5ff', fontSize: 12 }}>{b.label}</div>
@@ -253,7 +253,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                       <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
                         <button
                           onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
-                          title="Click for volumes by ISP"
+                          title="Click for volumes by mailbox provider"
                           style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
                         >
                           <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
@@ -281,15 +281,15 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
               </span>
               <button onClick={() => setSelected(null)} style={closeBtn}>✕</button>
             </div>
-            {d === 'loading' ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>loading volumes by ISP…</div>
-              : d === 'error' ? <div style={{ fontSize: 12, color: '#e94560', marginTop: 6 }}>failed to load per-ISP volumes</div>
+            {d === 'loading' ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>loading volumes by mailbox provider…</div>
+              : d === 'error' ? <div style={{ fontSize: 12, color: '#e94560', marginTop: 6 }}>failed to load per-provider volumes</div>
               : obj ? (
                 total === 0 ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>uncapped (audience-bound) — targets {ISP_ORDER.filter(i => obj[i] != null).map(i => ISP_LABEL[i] ?? i).join(', ') || '—'}</div>
                 : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
                     {ISP_ORDER.filter(isp => obj[isp] != null).map(isp => (
                       <span key={isp} style={ispChip}>{ISP_LABEL[isp] ?? isp}: <b style={{ color: '#cbd5f5' }}>{num(obj[isp])}</b></span>
                     ))}
-                    <span style={{ ...ispChip, borderColor: 'rgba(0,229,255,0.4)' }}>Σ by ISP: <b style={{ color: '#00e5ff' }}>{num(total)}</b></span>
+                    <span style={{ ...ispChip, borderColor: 'rgba(0,229,255,0.4)' }}>Σ by provider: <b style={{ color: '#00e5ff' }}>{num(total)}</b></span>
                   </div>
               ) : null}
           </div>

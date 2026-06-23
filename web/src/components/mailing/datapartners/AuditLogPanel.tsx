@@ -63,7 +63,7 @@ export const AuditLogPanel: React.FC = () => {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)' }}>
-          <FontAwesomeIcon icon={faClipboardList} /> Every admin action — partner creation, dataset CRUD, emergency stop / resume, ISP overrides, creative hot-swaps — is recorded here with before/after state.
+          <FontAwesomeIcon icon={faClipboardList} /> Every admin action — partner creation, dataset changes, pause / resume, mailbox provider overrides, creative swaps — is recorded here with before/after state.
         </div>
         <button onClick={fetchEvents} style={iconBtn}>
           <FontAwesomeIcon icon={faSync} spin={loading} /> Refresh

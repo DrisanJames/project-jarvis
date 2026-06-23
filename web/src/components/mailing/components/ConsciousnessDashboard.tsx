@@ -689,9 +689,9 @@ export const ConsciousnessDashboard: React.FC = () => {
             <div style={styles.iconPulse} />
           </div>
           <div>
-            <h1 style={styles.title}>Consciousness</h1>
+            <h1 style={styles.title}>Campaign Intelligence</h1>
             <p style={styles.subtitle}>
-              {state?.summary || 'All-ISP delivery operations, live'}
+              {state?.summary || 'All delivery operations, live'}
             </p>
           </div>
         </div>
@@ -775,7 +775,7 @@ export const ConsciousnessDashboard: React.FC = () => {
                   section === 'philosophies' ? faLightbulb :
                   faCommentDots
                 } style={{ marginRight: 6 }} />
-                {section === 'campaigns' ? 'Mail Flow' : section.charAt(0).toUpperCase() + section.slice(1)}
+                {section === 'campaigns' ? 'Mail Flow' : section === 'philosophies' ? 'Insights' : section === 'thoughts' ? 'Activity' : section.charAt(0).toUpperCase() + section.slice(1)}
                 {section === 'thoughts' && liveThoughts.length > 0 && (
                   <span style={styles.liveDot} />
                 )}
@@ -1595,7 +1595,7 @@ function renderOverview(
       <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#00b0ff' }} />
-          Belief Distribution
+          Insight Distribution
         </h3>
         <div style={styles.beliefBars}>
           <div style={styles.beliefRow}>
@@ -1626,7 +1626,7 @@ function renderOverview(
       <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
-          Strongest Beliefs
+          Strongest Insights
         </h3>
         <div style={styles.beliefsList}>
           {(state?.philosophies || []).slice(0, 5).map(p => (
@@ -1686,7 +1686,7 @@ function renderOverview(
       <div className="ig-data-stream ig-card-hover" style={{ ...styles.card, gridColumn: '1 / -1' }}>
         <h3 style={styles.cardTitle}>
           <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
-          Live Thought Stream
+          Live Activity Stream
           <span style={styles.liveDot} />
         </h3>
         <div style={styles.thoughtFeed}>
@@ -1746,7 +1746,7 @@ function renderPhilosophies(
         {philosophies.length === 0 ? (
           <div style={styles.emptyState}>
             <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
-            <p style={{ color: 'rgba(180,210,240,0.65)' }}>No philosophies formed yet. The system needs more observations.</p>
+            <p style={{ color: 'rgba(180,210,240,0.65)' }}>No insights yet. The system needs more data.</p>
           </div>
         ) : (
           philosophies.map(p => (

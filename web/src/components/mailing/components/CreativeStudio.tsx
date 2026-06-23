@@ -10,9 +10,11 @@ import {
   faBookOpen,
   faHammer,
   faRobot,
+  faStamp,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
+import { OfferProofs } from './OfferProofs';
 
 // Creative Studio v2 — the ReviewForge email builder, centralized in the
 // portal. Builder renders through the engine sidecar (byte-identical to the
@@ -167,7 +169,7 @@ export const CreativeStudio: React.FC = () => {
   const { addToast } = useToast();
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [brands, setBrands] = useState<StudioBrand[]>([]);
-  const [view, setView] = useState<'builder' | 'library'>('builder');
+  const [view, setView] = useState<'builder' | 'library' | 'offers'>('builder');
 
   // Builder state
   const [mode, setMode] = useState<'newsletter' | 'solo'>('newsletter');
@@ -367,16 +369,16 @@ export const CreativeStudio: React.FC = () => {
       const status = json.money_link_status;
       const detail = json.detail || '';
       if (status === 'dead') {
-        addToast({ type: 'error', title: `Money-link DEAD — ${c.offer_key} (${c.brand_code})`, message: detail });
+        addToast({ type: 'error', title: `Tracking link DEAD — ${c.offer_key} (${c.brand_code})`, message: detail });
       } else if (status === 'warn') {
-        addToast({ type: 'warning', title: `Money-link WARN — ${c.offer_key} (${c.brand_code})`, message: detail });
+        addToast({ type: 'warning', title: `Tracking link WARN — ${c.offer_key} (${c.brand_code})`, message: detail });
       } else if (status === 'pass') {
-        addToast({ type: 'success', title: `Money-link OK — ${c.offer_key} (${c.brand_code})`, message: detail || undefined });
+        addToast({ type: 'success', title: `Tracking link OK — ${c.offer_key} (${c.brand_code})`, message: detail || undefined });
       } else {
-        addToast({ type: 'info', title: `Money-link ${status ?? 'untested'} — ${c.offer_key}`, message: detail || undefined });
+        addToast({ type: 'info', title: `Tracking link ${status ?? 'untested'} — ${c.offer_key}`, message: detail || undefined });
       }
     } catch (err) {
-      addToast({ type: 'error', title: 'Money-link check failed', message: err instanceof Error ? err.message : String(err) });
+      addToast({ type: 'error', title: 'Tracking link check failed', message: err instanceof Error ? err.message : String(err) });
     } finally {
       setFlight(c.id, 'check', false);
       fetchLibrary();
@@ -511,6 +513,10 @@ export const CreativeStudio: React.FC = () => {
             style={btnStyle(view === 'library' ? '#312e81' : '#1e293b', view === 'library' ? '#4338ca' : '#334155')}>
             <FontAwesomeIcon icon={faBookOpen} /> Library
           </button>
+          <button onClick={() => setView('offers')}
+            style={btnStyle(view === 'offers' ? '#312e81' : '#1e293b', view === 'offers' ? '#4338ca' : '#334155')}>
+            <FontAwesomeIcon icon={faStamp} /> Offers
+          </button>
           <button onClick={() => setChatOpen((v) => !v)}
             style={btnStyle(chatOpen ? '#14532d' : '#1e293b', chatOpen ? '#16a34a' : '#334155')}>
             <FontAwesomeIcon icon={faRobot} /> Agent
@@ -528,10 +534,15 @@ export const CreativeStudio: React.FC = () => {
         )}
       </div>
       <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-        Renders with the production ReviewForge template engine. Saves land in Content Library →
-        “Creative Studio/&lt;SITE&gt;” and the creative registry (pull to send-day with <code>forge-pull</code>).
+        Renders with the production creative engine. Saves land in Content Library →
+        “Creative Studio/&lt;SITE&gt;” and the creative library.
       </div>
 
+      {view === 'offers' ? (
+        <div style={{ display: 'flex', marginTop: 16, flex: 1, minHeight: 0 }}>
+          <OfferProofs />
+        </div>
+      ) : (
       <div style={{ display: 'flex', gap: 16, marginTop: 16, flex: 1, minHeight: 0 }}>
         {/* ───────────────────────── main area ───────────────────────── */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 16 }}>
@@ -622,18 +633,18 @@ export const CreativeStudio: React.FC = () => {
                   <input value={subtitleOverride} onChange={(e) => setSubtitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                   <label style={labelStyle}>CTA label</label>
                   <input value={ctaLabel} onChange={(e) => setCtaLabel(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
-                  <label style={labelStyle}>CTA URL (leave blank — pipeline manages money links)</label>
+                  <label style={labelStyle}>CTA URL (leave blank — tracking links are added automatically)</label>
                   <input value={ctaUrl} onChange={(e) => setCtaUrl(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                 </div>
 
-                <label style={labelStyle}>Subject (blank = pool pick)</label>
+                <label style={labelStyle}>Subject (leave blank to auto-fill)</label>
                 <input value={subjectLine} onChange={(e) => setSubjectLine(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
-                <label style={labelStyle}>Preheader (blank = pool pick)</label>
+                <label style={labelStyle}>Preview text (leave blank to auto-fill)</label>
                 <input value={preheader} onChange={(e) => setPreheader(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
 
                 <label style={{ fontSize: 13, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                   <input type="checkbox" checked={refreshContent} onChange={(e) => setRefreshContent(e.target.checked)} />
-                  Refresh editorial content (live site feeds)
+                  Refresh editorial content (latest site articles)
                 </label>
 
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -655,7 +666,7 @@ export const CreativeStudio: React.FC = () => {
                 {results.some((r) => r.saved) && (
                   <div style={{ marginTop: 12, color: '#22c55e', fontSize: 13 }}>
                     <FontAwesomeIcon icon={faCircleCheck} /> Saved {results.filter((r) => r.saved).length}/{results.length} to
-                    the Content Library + registry
+                    the Content Library
                   </div>
                 )}
               </div>
@@ -686,7 +697,7 @@ export const CreativeStudio: React.FC = () => {
                           <div style={{ color: '#94a3b8', marginTop: 2 }}>{activeResult.preheader}</div>
                           {activeResult.filename && (
                             <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>
-                              {activeResult.filename} · {activeResult.money_urls} money URL{activeResult.money_urls === 1 ? '' : 's'}
+                              {activeResult.filename} · {activeResult.money_urls} tracking link{activeResult.money_urls === 1 ? '' : 's'}
                             </div>
                           )}
                         </div>
@@ -698,7 +709,7 @@ export const CreativeStudio: React.FC = () => {
                 ) : (
                   <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>
                     Pick sites and hit Preview — one render per brand, tab across the results. The
-                    engine produces the exact email a recipient would see (live editorial included).
+                    creative engine produces the exact email a recipient would see (live editorial included).
                   </div>
                 )}
               </div>
@@ -731,7 +742,7 @@ export const CreativeStudio: React.FC = () => {
                       <th style={{ padding: '6px 8px' }}>Date</th>
                       <th style={{ padding: '6px 8px' }}>Source</th>
                       <th style={{ padding: '6px 8px' }}>Approval</th>
-                      <th style={{ padding: '6px 8px' }}>Money-Link</th>
+                      <th style={{ padding: '6px 8px' }}>Tracking Link</th>
                       <th style={{ padding: '6px 8px' }}>Actions</th>
                     </tr>
                   </thead>
@@ -820,7 +831,7 @@ export const CreativeStudio: React.FC = () => {
                         {selected.approval_status ?? 'pending'}
                       </span>
                       <span style={badgeStyle(moneyLinkColor(selected.money_link_status))}>
-                        money-link: {selected.money_link_status ?? 'untested'}
+                        tracking link: {selected.money_link_status ?? 'untested'}
                       </span>
                       {selected.money_link_detail && (
                         <span style={{ fontSize: 11, color: '#94a3b8' }}>{selected.money_link_detail}</span>
@@ -829,7 +840,7 @@ export const CreativeStudio: React.FC = () => {
                         disabled={isInFlight(selected.id, 'check')}
                         onClick={() => checkMoneyLink(selected)}
                         style={{ ...smallBtnStyle('#1e293b', '#334155'), marginLeft: 'auto', opacity: isInFlight(selected.id, 'check') ? 0.5 : 1 }}>
-                        <FontAwesomeIcon icon={faRotate} spin={isInFlight(selected.id, 'check')} /> Run money-link check
+                        <FontAwesomeIcon icon={faRotate} spin={isInFlight(selected.id, 'check')} /> Run tracking-link check
                       </button>
                     </div>
                     <iframe title="library-preview" sandbox="" srcDoc={previewHtml ?? '<p style="font-family:sans-serif;color:#64748b">loading…</p>'}
@@ -851,7 +862,7 @@ export const CreativeStudio: React.FC = () => {
           }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid #1f2937', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
               <FontAwesomeIcon icon={faRobot} style={{ color: '#a78bfa' }} /> Creative Agent
-              <span style={{ fontWeight: 400, color: '#64748b', fontSize: 11 }}>generates via the real engine</span>
+              <span style={{ fontWeight: 400, color: '#64748b', fontSize: 11 }}>generates via the creative engine</span>
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {messages.length === 0 && (
@@ -895,6 +906,7 @@ export const CreativeStudio: React.FC = () => {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 };

@@ -323,7 +323,7 @@ export const DraftBoardView: React.FC = () => {
         </select>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'rgba(180,210,240,0.75)', cursor: 'pointer' }}>
           <input type="checkbox" checked={includeDrip} onChange={e => setIncludeDrip(e.target.checked)} />
-          Include partner-drip
+          Include automated follow-ups
         </label>
         <button onClick={() => void load()} style={ghostBtn}>{loading ? 'Loading…' : 'Refresh'}</button>
         {draftIds.length > 0 && (
@@ -417,9 +417,9 @@ export const DraftBoardView: React.FC = () => {
                         </div>
 
                         {/* Per-ISP volume targets / caps */}
-                        <div style={fieldLabel}>Volume targets by ISP</div>
-                        {det === 'loading' && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>Loading ISP plan…</div>}
-                        {det === 'error' && <div style={{ fontSize: 12, color: '#e94560' }}>Could not load ISP plan (edit-data unavailable for this campaign).</div>}
+                        <div style={fieldLabel}>Volume targets by mailbox provider</div>
+                        {det === 'loading' && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>Loading mailbox provider plan…</div>}
+                        {det === 'error' && <div style={{ fontSize: 12, color: '#e94560' }}>Could not load mailbox provider plan for this campaign.</div>}
                         {det && det !== 'loading' && det !== 'error' && (
                           <IspTable det={det} totalAudience={c.total_recipients} />
                         )}
@@ -459,7 +459,7 @@ export const DraftBoardView: React.FC = () => {
       </div>
 
       <div style={{ marginTop: 18, fontSize: 10, color: 'rgba(180,210,240,0.35)' }}>
-        Draft Board v1.1 · domain → campaign(MT) → per-ISP volume targets · "planned sends" = cumulative recipients across a domain's campaigns/waves (a member in multiple waves counts each time, so it exceeds unique reach) · times in America/Denver (MT)
+        Draft Board v1.1 · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
       </div>
     </div>
   );
@@ -477,7 +477,7 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number }> = ({ det, tot
     <table style={{ borderCollapse: 'collapse', fontSize: 12, marginTop: 6, minWidth: 320 }}>
       <thead>
         <tr style={{ color: 'rgba(180,210,240,0.6)', textAlign: 'left' }}>
-          <th style={thCell}>ISP</th>
+          <th style={thCell}>Mailbox provider</th>
           <th style={{ ...thCell, textAlign: 'right' }}>{anyCap ? 'Volume target / cap' : 'Cap'}</th>
         </tr>
       </thead>

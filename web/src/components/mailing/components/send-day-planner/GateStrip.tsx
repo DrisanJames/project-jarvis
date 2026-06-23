@@ -2,19 +2,19 @@ import React from 'react';
 import type { GateState } from './types';
 
 const GATE_LABELS: Record<keyof GateState, string> = {
-  gateA: 'A · PMTA Stability',
-  gateB: 'B · Wave Dispatcher',
-  gateC: 'C · Dead-Letter SHA',
+  gateA: 'A · Sending Server Stability',
+  gateB: 'B · Send Batch Dispatcher',
+  gateC: 'C · Delivery Build Check',
   gateD: 'D · Sending Profiles',
   gateE: 'E · Audit Reviewed',
   gateF: 'F · Volume Ramp',
 };
 
 const GATE_RULE_HINT: Record<keyof GateState, string> = {
-  gateA: 'pmtad uptime ≥30m, no recent coredumps, acct-forward sha = 090bae5b…',
-  gateB: 'zombies + expired waves < 50',
-  gateC: 'production SHA contains commit a92af78 (IsPMTATransient fix)',
-  gateD: 'every domain has profile, pool active, ≥1 IP active or warmup',
+  gateA: 'Sending servers up ≥30m, no recent crashes, forwarder verified',
+  gateB: 'stuck + expired send batches < 50',
+  gateC: 'production build includes the latest delivery-retry fix',
+  gateD: 'every domain has an active sending profile and at least one ready IP',
   gateE: 'operator reviewed audit JSON for every cell',
   gateF: 'today_planned ≥ yesterday_planned × 1.20 × 0.95',
 };
@@ -85,9 +85,9 @@ export const GateStrip: React.FC<GateStripProps> = ({ state, onToggleAuditReview
     ? `${Object.entries(state.gateA.servers).map(([k, v]) => `${k}=${v.state}`).join(' · ')}`
     : undefined;
   const dB = state.gateB
-    ? `zombies=${state.gateB.zombies} expired=${state.gateB.expired} due_now=${state.gateB.due_now}`
+    ? `stuck=${state.gateB.zombies} expired=${state.gateB.expired} due now=${state.gateB.due_now}`
     : undefined;
-  const dC = state.gateC ? `sha=${state.gateC.git_sha?.slice(0, 7) || '??'}` : undefined;
+  const dC = state.gateC ? `build=${state.gateC.git_sha?.slice(0, 7) || '??'}` : undefined;
   const dD = state.gateD
     ? `${Object.values(state.gateD.results).filter(r => r.ok).length}/${Object.keys(state.gateD.results).length} domains pass`
     : undefined;

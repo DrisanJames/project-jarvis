@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -89,26 +90,42 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 			map[string]string{"error": "could not resolve a sending domain for brand_code '" + brandCode + "'"})
 		return
 	}
-	profileID, fromEmail, trackBase := h.resolveSendingProfileByDomain(ctx, orgID.String(), sendingDomain)
-	if profileID == "" {
-		respondJSON(w, http.StatusUnprocessableEntity,
-			map[string]string{"error": "no active PMTA sending profile for domain '" + sendingDomain + "'"})
+	if subject == "" {
+		subject = "Creative Proof"
+	}
+	messageID, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain,
+		"[PROOF] "+subject, "", preheader, htmlContent, to, creativeID,
+		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID})
+	if sendErr != nil {
+		log.Printf("[creative-proof] PMTA error creative=%s domain=%s: %v", creativeID, sendingDomain, sendErr)
+		respondJSON(w, http.StatusOK, map[string]string{"status": "error", "error": sendErr.Error()})
 		return
+	}
+	log.Printf("[creative-proof] sent creative=%s to=%s via PMTA messageID=%s domain=%s isp=%s",
+		creativeID, to, messageID, sendingDomain, worker.ClassifySubscriberISP(to))
+	respondJSON(w, http.StatusOK, map[string]string{"status": "sent", "message_id": messageID})
+}
+
+// sendProofMessage renders an HTML creative with the proof Liquid context,
+// injects tracking + unsubscribe, and sends ONE message to `to` through the
+// active PMTA sending profile for `sendingDomain`. It is the reusable core
+// shared by the creative-proof and offer-proof send paths. extraHeaders are
+// merged in (List-Unsubscribe is added automatically when a track base exists).
+// Returns the PMTA message id, or an error if the profile is unresolved or the
+// send fails. fromName "" leaves the profile/default from name.
+func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string) (string, error) {
+	profileID, fromEmail, trackBase := h.resolveSendingProfileByDomain(ctx, orgID, sendingDomain)
+	if profileID == "" {
+		return "", fmt.Errorf("no active PMTA sending profile for domain '%s'", sendingDomain)
 	}
 
 	recipientISP := worker.ClassifySubscriberISP(to)
 	ts := mailing.NewTemplateService()
-
-	// ── Render + send: mirrors ProofSendHandler.sendOneProof closely. ──
-	if subject == "" {
-		subject = "Creative Proof"
-	}
-	subject = "[PROOF] " + subject
 	emailID := uuid.New().String()
 
 	var unsubURL string
 	if trackBase != "" && h.trackingSecret != "" {
-		unsubURL = worker.GenerateUnsubscribeURL(orgID.String(), proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
+		unsubURL = worker.GenerateUnsubscribeURL(orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
 	}
 
 	rc := buildProofRenderContext(to, trackBase, emailID, unsubURL)
@@ -118,19 +135,19 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 
 	renderedSubject, rerr := ts.Render("", subject, rc)
 	if rerr != nil {
-		log.Printf("[creative-proof] Liquid render error (subject): %v", rerr)
+		log.Printf("[proof-send] Liquid render error (subject): %v", rerr)
 		renderedSubject = subject
 	}
 	renderedHTML, rerr := ts.Render("", htmlContent, rc)
 	if rerr != nil {
-		log.Printf("[creative-proof] Liquid render error (html): %v", rerr)
+		log.Printf("[proof-send] Liquid render error (html): %v", rerr)
 		renderedHTML = htmlContent
 	}
 
-	renderedHTML = worker.ReplaceTrackingMergeTags(renderedHTML, proofCampaignID, proofSubscriberID, creativeID)
+	renderedHTML = worker.ReplaceTrackingMergeTags(renderedHTML, proofCampaignID, proofSubscriberID, refID)
 	if trackBase != "" && h.trackingSecret != "" {
 		renderedHTML = worker.InjectTrackingPixelAndLinks(
-			renderedHTML, proofCampaignID, proofSubscriberID, emailID, trackBase, orgID.String(), h.trackingSecret,
+			renderedHTML, proofCampaignID, proofSubscriberID, emailID, trackBase, orgID, h.trackingSecret,
 		)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{system.unsubscribe_url}}", unsubURL)
@@ -139,16 +156,15 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 		renderedHTML = "<html><body>" + renderedHTML + "</body></html>"
 	}
 
-	headers := map[string]string{
-		"X-Proof-Send":  "true",
-		"X-Creative-ID": creativeID,
+	headers := map[string]string{}
+	for k, v := range extraHeaders {
+		headers[k] = v
 	}
 	if unsubURL != "" {
 		headers["List-Unsubscribe"] = "<" + unsubURL + ">"
 		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 	}
 
-	fromName := ""
 	msg := &worker.EmailMessage{
 		Email:        to,
 		FromName:     fromName,
@@ -162,17 +178,12 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 
 	result, sendErr := h.sender.Send(ctx, msg)
 	if sendErr != nil {
-		log.Printf("[creative-proof] PMTA error creative=%s domain=%s: %v", creativeID, sendingDomain, sendErr)
-		respondJSON(w, http.StatusOK, map[string]string{"status": "error", "error": sendErr.Error()})
-		return
+		return "", sendErr
 	}
-	messageID := ""
 	if result != nil {
-		messageID = result.MessageID
+		return result.MessageID, nil
 	}
-	log.Printf("[creative-proof] sent creative=%s to=%s via PMTA messageID=%s domain=%s profile=%s isp=%s",
-		creativeID, to, messageID, sendingDomain, profileID, recipientISP)
-	respondJSON(w, http.StatusOK, map[string]string{"status": "sent", "message_id": messageID})
+	return "", nil
 }
 
 // resolveSendingProfileByDomain looks up the active PMTA sending profile for an

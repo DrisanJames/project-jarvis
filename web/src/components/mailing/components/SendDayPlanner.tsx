@@ -135,7 +135,7 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
   return (
     <div style={{ padding: 18, color: 'rgba(220,235,250,0.92)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: '#00e5ff' }}>Send-Day Planner · Gates + Real Plan</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: '#00e5ff' }}>Send Day Planner · Gates + Plan</h2>
         <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
           Date{' '}
           <input
@@ -162,8 +162,8 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
         />
         {!gates.gateA?.passes && (
           <div style={{ marginTop: 8, fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>
-            Gate A is operator-attested in v1. {' '}
-            <button onClick={() => onAttestGateA('pass')} style={attestBtn}>I confirmed PMTA Server A + B via SSH</button>
+            Gate A is confirmed manually for now. {' '}
+            <button onClick={() => onAttestGateA('pass')} style={attestBtn}>I confirmed sending server A + B is healthy</button>
           </div>
         )}
       </div>

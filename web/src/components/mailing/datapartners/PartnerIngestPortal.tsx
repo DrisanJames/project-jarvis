@@ -115,8 +115,8 @@ export const PartnerIngestPortal: React.FC = () => {
   }, [fetchAll]);
 
   const handlePauseDataset = async (id: string) => {
-    if (!window.confirm('Emergency stop this dataset? Slicer will halt at the next slice boundary.')) return;
-    const reason = window.prompt('Reason for emergency stop:', 'operator emergency stop') ?? '';
+    if (!window.confirm('Pause this dataset? List processing will halt at the next safe point.')) return;
+    const reason = window.prompt('Reason for pause:', 'operator emergency stop') ?? '';
     await apiFetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
       method: 'POST',
       credentials: 'include',
@@ -137,7 +137,7 @@ export const PartnerIngestPortal: React.FC = () => {
     { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
     { id: 'batches', label: 'Inbound Batches', icon: faSeedling },
     { id: 'activations', label: 'Previous Activations', icon: faChartBar },
-    { id: 'creatives', label: 'Drip Creatives', icon: faSeedling },
+    { id: 'creatives', label: 'Follow-Up Creatives', icon: faSeedling },
     { id: 'audit', label: 'Audit Log', icon: faClipboardList },
   ];
 
@@ -145,9 +145,9 @@ export const PartnerIngestPortal: React.FC = () => {
     <div style={{ padding: 24, color: 'rgba(220,235,250,0.92)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
         <div>
-          <h2 style={{ margin: 0, color: '#dbeafe' }}>Data Partner Ingestion</h2>
+          <h2 style={{ margin: 0, color: '#dbeafe' }}>Data Partner Imports</h2>
           <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
-            API-key-authenticated inbound API → S3 dormant store → suppression+EO cleaning → 15-min round-robin drip across 4 mature brands. v{PAGE_VERSION}
+            Secure inbound API → list storage → suppression and email verification → 15-min round-robin automated follow-ups across 4 mature brands. v{PAGE_VERSION}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -211,7 +211,7 @@ export const PartnerIngestPortal: React.FC = () => {
           <DripPerformancePanel />
 
           <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
-            Per-post batch detail (one row per partner API call) lives in the <b>Inbound Batches</b> tab.
+            Per-submission batch detail (one row per partner API call) lives in the <b>Inbound Batches</b> tab.
           </div>
         </div>
       )}
@@ -257,9 +257,9 @@ export const PartnerIngestPortal: React.FC = () => {
                       <button
                         onClick={() => setDistributionDataset({ id: d.id, name: `${d.partner_name} / ${d.name}` })}
                         style={ghostBtn}
-                        title="ISP distribution & throughput"
+                        title="Mailbox provider distribution and throughput"
                       >
-                        <FontAwesomeIcon icon={faChartBar} /> ISP
+                        <FontAwesomeIcon icon={faChartBar} /> Providers
                       </button>
                       {d.paused_emergency ? (
                         <button onClick={() => handleResumeDataset(d.id)} style={ghostBtn}>
@@ -408,7 +408,7 @@ const CreativesPanel: React.FC = () => {
   return (
     <div>
       <div style={{ marginBottom: 12, fontSize: 13, color: 'rgba(180,210,240,0.7)' }}>
-        Hot-swappable creatives for the partner drip. One row per (vertical × brand). Updates take effect on the <b>next wave</b>.
+        Hot-swappable creatives for the partner follow-up sequences. One row per (vertical × brand). Updates take effect on the <b>next send batch</b>.
       </div>
       {Object.entries(grid).map(([vertical, rows]) => (
         <div key={vertical} style={{ marginBottom: 24 }}>
@@ -499,7 +499,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
     <div style={modalBackdrop}>
       <div style={modalBody}>
         <h3 style={{ marginTop: 0, color: '#dbeafe' }}>Edit creative — {VERTICAL_LABEL[vertical] ?? vertical} / {brand.toUpperCase()}</h3>
-        <label style={fieldLabel}>Creative filename (must exist in docs/emails/)</label>
+        <label style={fieldLabel}>Creative filename (must exist in the creative library)</label>
         <input value={filename} onChange={e => setFilename(e.target.value)} style={input} />
         <label style={fieldLabel}>Subject line</label>
         <input value={subject} onChange={e => setSubject(e.target.value)} style={input} />
@@ -511,7 +511,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
         <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={ghostBtn}>Cancel</button>
           <button onClick={handleSave} disabled={saving} style={primaryBtn}>
-            {saving && <FontAwesomeIcon icon={faSpinner} spin />} Save (next wave)
+            {saving && <FontAwesomeIcon icon={faSpinner} spin />} Save (next send batch)
           </button>
         </div>
       </div>
@@ -523,7 +523,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
 
 const StatusBadge: React.FC<{ status: string; emergencyStopped: boolean }> = ({ status, emergencyStopped }) => {
   if (emergencyStopped) {
-    return <span style={{ color: '#f59e0b', fontWeight: 600 }}>EMERGENCY STOP</span>;
+    return <span style={{ color: '#f59e0b', fontWeight: 600 }}>Paused</span>;
   }
   const colors: Record<string, string> = {
     received: '#60a5fa',

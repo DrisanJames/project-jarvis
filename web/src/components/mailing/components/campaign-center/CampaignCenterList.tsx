@@ -401,7 +401,7 @@ export const CampaignCenterList: React.FC<{
             {expandable ? (
               <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: '#6366f1' }} />
             ) : (
-              <FontAwesomeIcon icon={faLayerGroup} title="Partner-drip rollup — micro-campaigns aggregated; no inline expand" style={{ fontSize: 10, color: '#f59e0b' }} />
+              <FontAwesomeIcon icon={faLayerGroup} title="Automated follow-ups grouped — individual sends aggregated; no inline expand" style={{ fontSize: 10, color: '#f59e0b' }} />
             )}
           </td>
           <td style={{ padding: '6px 8px', maxWidth: 320, paddingLeft: indent ? 24 : 8 }}>
@@ -429,7 +429,7 @@ export const CampaignCenterList: React.FC<{
             {r.enriched || r.isRollup ? (r.domain || '—') : '…'}
           </td>
           <td style={{ padding: '6px 8px' }}><StatusPill status={r.identity.status} /></td>
-          <td style={{ ...tdNum, textAlign: 'left' }} title="First wave (Denver)">{fmtDenverTime(r.firstWaveAt)}</td>
+          <td style={{ ...tdNum, textAlign: 'left' }} title="First send (Denver)">{fmtDenverTime(r.firstWaveAt)}</td>
           <td style={{ ...tdNum, textAlign: 'left' }} title="Send window (Denver)">{fmtWindow(r.windowStart, r.windowEnd)}</td>
           <td style={tdNum} title="Planned recipients (operator plan)">{numFmt(r.planned)}</td>
           {metricCells(r)}
@@ -473,18 +473,18 @@ export const CampaignCenterList: React.FC<{
             style={{ ...inputStyle, paddingLeft: 26, width: 170 }}
           />
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: showDrips ? '#fbbf24' : '#94a3b8', cursor: 'pointer' }} title="Show partner-drip programs rolled up per vertical tag (never individual micro-campaigns)">
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: showDrips ? '#fbbf24' : '#94a3b8', cursor: 'pointer' }} title="Show automated follow-up programs grouped by category (never individual sends)">
           <input type="checkbox" checked={showDrips} onChange={e => setShowDrips(e.target.checked)} />
-          <FontAwesomeIcon icon={faLayerGroup} /> Drips
+          <FontAwesomeIcon icon={faLayerGroup} /> Follow-ups
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: groupByOffer ? '#a5b4fc' : '#94a3b8', cursor: 'pointer' }} title="Group rows by offer with rollup totals + top subjects by human CTR">
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: groupByOffer ? '#a5b4fc' : '#94a3b8', cursor: 'pointer' }} title="Group rows by offer with rollup totals + top subjects by click-through rate">
           <input type="checkbox" checked={groupByOffer} onChange={e => setGroupByOffer(e.target.checked)} />
           <FontAwesomeIcon icon={faTags} /> Group by offer
         </label>
         <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11.5, color: '#64748b' }}>
           {enriching && <span><FontAwesomeIcon icon={faSpinner} spin /> metrics…</span>}
           {dataAsOf && (
-            <span title={`Identity data as of ${new Date(dataAsOf).toLocaleString()}`}>
+            <span title={`Campaign data as of ${new Date(dataAsOf).toLocaleString()}`}>
               <FontAwesomeIcon icon={faClock} style={{ marginRight: 4 }} />
               {new Date(dataAsOf).toLocaleTimeString()}
             </span>
@@ -515,7 +515,7 @@ export const CampaignCenterList: React.FC<{
           border: '1px solid #f59e0b55', background: '#f59e0b14', color: '#fbbf24',
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
-          Row metrics unavailable: {enrichNote} (identity columns still shown)
+          Row metrics unavailable: {enrichNote} (campaign details still shown)
         </div>
       )}
 
@@ -540,12 +540,12 @@ export const CampaignCenterList: React.FC<{
                 <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('offer')}>Offer<SortIcon k="offer" /></th>
                 <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('domain')}>Domain<SortIcon k="domain" /></th>
                 <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('status')}>Status<SortIcon k="status" /></th>
-                <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('first_wave')}>1st Wave<SortIcon k="first_wave" /></th>
+                <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('first_wave')}>1st Send<SortIcon k="first_wave" /></th>
                 <th style={{ ...thStyle, textAlign: 'left', cursor: 'default' }}>Window</th>
                 <th style={thStyle} onClick={() => toggleSort('planned')}>Planned<SortIcon k="planned" /></th>
                 <th style={thStyle} onClick={() => toggleSort('attempted')}>Attempted<SortIcon k="attempted" /></th>
                 <th style={thStyle} onClick={() => toggleSort('delivered')}>Delivered<SortIcon k="delivered" /></th>
-                <th style={thStyle} onClick={() => toggleSort('opens')} title="Unique human opens (machine/MPP excluded)">Opens (h)<SortIcon k="opens" /></th>
+                <th style={thStyle} onClick={() => toggleSort('opens')} title="Unique human opens (Apple Mail privacy & automated opens excluded)">Opens (h)<SortIcon k="opens" /></th>
                 <th style={thStyle} onClick={() => toggleSort('clicks')} title="Unique clicks">Clicks (h)<SortIcon k="clicks" /></th>
                 <th style={thStyle} onClick={() => toggleSort('unsubs')}>Unsubs<SortIcon k="unsubs" /></th>
                 <th style={{ ...thStyle, color: '#ef4444' }} onClick={() => toggleSort('hard')}>Hard<SortIcon k="hard" /></th>
@@ -584,7 +584,7 @@ export const CampaignCenterList: React.FC<{
                             <tr style={{ background: 'rgba(10,15,30,0.6)' }}>
                               <td colSpan={COL_COUNT} style={{ padding: '8px 16px' }}>
                                 <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5, color: 'rgba(180,210,240,0.45)', fontWeight: 700, marginBottom: 4 }}>
-                                  Top subject lines by human CTR (clicks / delivered)
+                                  Top subject lines by click-through rate (clicks / delivered)
                                 </div>
                                 {g.subjects.map(s => (
                                   <div key={s.subject} style={{ display: 'flex', gap: 10, fontSize: 12, color: '#cbd5e1', padding: '2px 0' }}>
@@ -634,8 +634,8 @@ export const CampaignCenterList: React.FC<{
       )}
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: 'rgba(100,116,139,0.8)' }}>
-        Metrics from tracking events (source: pg) — opens are human (machine/MPP excluded), clicks unique; campaign counters never used.
-        SES-routed rows under-report in PG (lake wiring follow-up). Drips {showDrips ? 'shown rolled up per vertical tag' : 'hidden'}.
+        Opens shown are human (Apple Mail privacy & automated opens excluded), clicks unique.
+        Relayed sends may under-report here (Reporting follow-up). Follow-ups {showDrips ? 'shown grouped by category' : 'hidden'}.
       </div>
     </div>
   );

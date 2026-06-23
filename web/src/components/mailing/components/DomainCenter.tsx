@@ -415,9 +415,9 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
           <div className="domain-hero-icon"><FontAwesomeIcon icon={faRocket} /></div>
           <div>
             <div className="domain-hero-value">{stats?.sendingProfiles || 0}</div>
-            <div className="domain-hero-label">ESP Profiles</div>
+            <div className="domain-hero-label">Email Service Profiles</div>
             <div className="domain-hero-trend neutral">
-              SparkPost, SES, Mailgun
+              Multiple providers supported
             </div>
           </div>
         </div>
@@ -431,7 +431,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <div className="domain-action-icon"><FontAwesomeIcon icon={faServer} /></div>
             <div className="domain-action-content">
               <strong>Sending Domains</strong>
-              <small>ESP profiles, from addresses, sending domains &amp; rate limits</small>
+              <small>Email service profiles, from addresses, sending domains &amp; rate limits</small>
             </div>
             <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
@@ -449,7 +449,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <div className="domain-action-icon"><FontAwesomeIcon icon={faImage} /></div>
             <div className="domain-action-content">
               <strong>Image CDN</strong>
-              <small>Custom image hosting domains with S3 &amp; CloudFront</small>
+              <small>Custom image hosting domains for your emails</small>
             </div>
             <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>
@@ -553,7 +553,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
         {/* Domain Grid */}
         {recentDomains.length === 0 ? (
           <div style={{ textAlign: 'center', padding: 40, color: '#888', fontSize: 14 }}>
-            No domains configured yet. Start by adding sending profiles or provisioning tracking/image domains.
+            No domains configured yet. Start by adding sending profiles or setting up tracking/image domains.
           </div>
         ) : filteredDomains.length === 0 ? (
           <div className="domain-empty-search">
@@ -594,7 +594,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
                     e.stopPropagation();
                     setDnsHealthDomain(item.domain);
                   }}
-                  title="Run live DNS & blocklist health check"
+                  title="Run live DNS & reputation health check"
                   style={{
                     marginTop: 8,
                     display: 'inline-flex',
@@ -787,9 +787,9 @@ function formatDnsReport(data: DnsHealthData): string {
   lines.push(`A records (${data.a.length})${data.a.length === 0 ? ': none' : ':'}`);
   data.a.forEach(a => lines.push(`  ${a}`));
   lines.push('');
-  lines.push(`Blocklists${data.ip_source ? ` (IP source: ${data.ip_source})` : ''}:`);
+  lines.push(`Reputation Lists${data.ip_source ? ` (IP source: ${data.ip_source})` : ''}:`);
   if (data.blocklists.length === 0) {
-    lines.push('  No blocklist targets resolved.');
+    lines.push('  No reputation list targets resolved.');
   } else {
     data.blocklists.forEach(b =>
       lines.push(`  ${b.target} [${b.list}]: ${b.status}${b.detail ? ` — ${b.detail}` : ''}`),
@@ -940,7 +940,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
         {checking && !data && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 0', color: '#888' }}>
             <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 24 }} />
-            <div style={{ fontSize: 13 }}>Running live DNS lookups (SPF, DKIM, DMARC, NS, blocklists)...</div>
+            <div style={{ fontSize: 13 }}>Checking your email authentication and sender reputation...</div>
           </div>
         )}
 
@@ -978,7 +978,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                 NS: {data.ns.provider || (data.ns.servers.length > 0 ? `${data.ns.servers.length} servers` : 'none found')}
               </StatusChip>
               <StatusChip tone={listedCount > 0 ? 'bad' : unverifiableCount > 0 ? 'warn' : 'ok'}>
-                Blocklists:{' '}
+                Reputation:{' '}
                 {listedCount > 0
                   ? `${listedCount} LISTED`
                   : unverifiableCount > 0
@@ -1070,15 +1070,15 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             {/* Blocklists */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e' }} /> Blocklists (Spamhaus DBL/ZEN, SpamCop, Barracuda)
+                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e' }} /> Reputation Lists
               </h4>
               {data.ip_source && (
                 <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>
-                  IP source: {data.ip_source === 'db-pool' ? 'sending profile IP pool' : data.ip_source === 'a-record' ? 'domain A record (no pool found)' : data.ip_source}
+                  IP source: {data.ip_source === 'db-pool' ? 'sending route IP' : data.ip_source === 'a-record' ? 'domain A record (no route found)' : data.ip_source}
                 </div>
               )}
               {data.blocklists.length === 0 ? (
-                <div style={{ marginTop: 6, fontSize: 12, color: '#888' }}>No blocklist targets resolved.</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: '#888' }}>No reputation list targets resolved.</div>
               ) : (
                 <table style={{ width: '100%', marginTop: 8, borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
@@ -1105,7 +1105,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
               )}
               {unverifiableCount > 0 && (
                 <div style={{ marginTop: 8, fontSize: 11, color: '#fdcb6e' }}>
-                  "Unverifiable" usually means Spamhaus rejected the query because it came from a
+                  "Unverifiable" usually means the reputation list rejected the query because it came from a
                   public/open resolver — it does NOT mean listed. Verify via a dedicated resolver if needed.
                 </div>
               )}

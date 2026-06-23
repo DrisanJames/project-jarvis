@@ -37,7 +37,7 @@ export const DripStateCard: React.FC<Props> = ({
 
       <div style={statGrid}>
         <Stat label="Ready" value={readyQueue.toLocaleString()} accent="#10b981" />
-        <Stat label="Pending EO" value={pendingEO.toLocaleString()} accent="#a78bfa" />
+        <Stat label="Pending verification" value={pendingEO.toLocaleString()} accent="#a78bfa" />
         <Stat label="Mailed" value={mailedTotal.toLocaleString()} accent="#6366f1" />
       </div>
 
@@ -46,7 +46,7 @@ export const DripStateCard: React.FC<Props> = ({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
         <div>
           <FontAwesomeIcon icon={faClock} style={{ marginRight: 6 }} />
-          Last wave: {lastWaveAt ? `${new Date(lastWaveAt).toLocaleTimeString()} (${lastWaveBrand?.toUpperCase()}, ${lastWaveSize ?? 0} sent)` : '—'}
+          Last send batch: {lastWaveAt ? `${new Date(lastWaveAt).toLocaleTimeString()} (${lastWaveBrand?.toUpperCase()}, ${lastWaveSize ?? 0} sent)` : '—'}
         </div>
         <div>
           <FontAwesomeIcon icon={faPaperPlane} style={{ marginRight: 6 }} />

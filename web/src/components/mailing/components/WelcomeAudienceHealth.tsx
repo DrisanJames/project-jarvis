@@ -315,7 +315,7 @@ export const WelcomeAudienceHealth: React.FC = () => {
         <StatCard
           label="Exempt (opened ≥1)"
           value={fmt(pool.exempt_opened)}
-          sub="Not subject to saturation rule — handed off to Engager flow"
+          sub="Not subject to saturation rule — handed off to ongoing engagement"
           icon={faCheckCircle}
           color="#3b82f6"
         />
@@ -383,7 +383,7 @@ export const WelcomeAudienceHealth: React.FC = () => {
             <div>
               <h2 style={styles.panelTitle}>Sends Remaining Until Sunset</h2>
               <p style={styles.panelSubtitle}>
-                Concrete — no cadence assumption. Subscribers retire when prior_sends &gt; {saturation_segment.threshold} AND last_open_at IS NULL.
+                Concrete — no cadence assumption. Subscribers retire after more than {saturation_segment.threshold} sends with no opens.
               </p>
             </div>
           </div>

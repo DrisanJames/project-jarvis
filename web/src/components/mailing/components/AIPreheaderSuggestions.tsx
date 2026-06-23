@@ -169,7 +169,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
           <div className="ai-panel-header">
             <div className="ai-header-left">
               <FontAwesomeIcon icon={faMagic} className="ai-icon" />
-              <span>AI Preheader Suggestions</span>
+              <span>AI Preview Text Suggestions</span>
             </div>
             <div className="ai-header-actions">
               <button
@@ -239,12 +239,12 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
             {isLoading ? (
               <div className="ai-loading">
                 <FontAwesomeIcon icon={faSync} className="spinning" size="lg" />
-                <span>Generating complementary preheaders...</span>
+                <span>Generating complementary preview text...</span>
               </div>
             ) : suggestions.length === 0 ? (
               <div className="ai-empty">
                 <FontAwesomeIcon icon={faMagic} size="lg" />
-                <p>Click "AI Suggestions" to generate preheaders</p>
+                <p>Click "AI Suggestions" to generate preview text</p>
               </div>
             ) : (
               suggestions.map((suggestion, index) => {
@@ -323,7 +323,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
 
           <div className="ai-panel-footer">
             <span className="ai-tip">
-              💡 Tip: Great preheaders extend the subject line's promise without repeating it
+              💡 Tip: Great preview text extends the subject line's promise without repeating it
             </span>
           </div>
         </div>

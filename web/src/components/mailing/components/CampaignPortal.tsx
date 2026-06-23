@@ -45,6 +45,7 @@ import {
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import CampaignCenterList, { ListStatusFilter } from './campaign-center/CampaignCenterList';
+import PerformanceSnapshot from './PerformanceSnapshot';
 import './CampaignPortal.css';
 
 // ============================================================================
@@ -245,14 +246,14 @@ interface CampaignSummaryDetail {
 const FUNNEL_REASON_LABELS: Record<keyof CampaignFunnelReasonBreakdown, string> = {
   global_or_brand_suppression: 'Global/Brand Suppression',
   recently_mailed: 'Recently Mailed',
-  isp_quota_cap: 'ISP Quota Cap',
+  isp_quota_cap: 'Mailbox Provider Cap',
   dedup_or_empty: 'Dedup/Empty',
   offer_suppression: 'Offer Suppression',
   exclusion_list: 'Exclusion List',
   excluded_segment: 'Excluded Segment',
-  sds_cold_suppressed: 'SDS Cold/Suppressed',
-  sds_recent_24h: 'SDS Recently Mailed (24h)',
-  isp_not_allowed: 'ISP Not Allowed',
+  sds_cold_suppressed: 'Cold / Suppressed',
+  sds_recent_24h: 'Recently Mailed (24h)',
+  isp_not_allowed: 'Mailbox Provider Not Allowed',
 };
 
 // Minimum preparation time in minutes (must match backend)
@@ -536,7 +537,7 @@ const CampaignDetailsModal: React.FC<{
                   </div>
                   {campaign.preview_text && (
                     <div className="info-item">
-                      <span className="info-label">Preheader</span>
+                      <span className="info-label">Preview Text</span>
                       <span className="info-value" style={{ fontStyle: 'italic', opacity: 0.7 }}>{campaign.preview_text}</span>
                     </div>
                   )}
@@ -693,11 +694,11 @@ const CampaignDetailsModal: React.FC<{
               {/* Performance Metrics */}
               {stats && (
                 <div className="details-section">
-                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>legacy /stats</span></h3>
+                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>engagement counters</span></h3>
                   <p style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.55)', margin: '-4px 0 10px' }}>
-                    Engagement (opens/clicks) from the legacy counters. For the authoritative delivery &amp; bounce breakdown —
-                    including hard bounce vs reputation/system block — use <strong>Delivery Terminal State</strong> below
-                    (derived from tracking_events). The two can differ while a campaign is still settling.
+                    Engagement (opens/clicks) shown here. For the authoritative delivery &amp; bounce breakdown —
+                    including hard bounce vs provider block — see the <strong>Delivery Summary</strong> below
+                    (from our Reporting data). The two can differ while a campaign is still settling.
                   </p>
                   <div className="metrics-grid ig-stagger">
                     <div className="metric-box">
@@ -756,7 +757,7 @@ const CampaignDetailsModal: React.FC<{
                   }}
                 >
                   <FontAwesomeIcon icon={faExclamationTriangle} />
-                  <span>Audience funnel &amp; terminal-state analytics unavailable ({summaryError}). Legacy metrics above are unaffected.</span>
+                  <span>Audience funnel &amp; delivery-summary analytics unavailable ({summaryError}). Metrics above are unaffected.</span>
                 </div>
               )}
 
@@ -782,7 +783,7 @@ const CampaignDetailsModal: React.FC<{
                 return (
                   <div className="details-section">
                     <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                      <FontAwesomeIcon icon={faChartPie} /> Delivery Terminal State
+                      <FontAwesomeIcon icon={faChartPie} /> Delivery Summary
                       <span
                         style={{
                           fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
@@ -795,7 +796,7 @@ const CampaignDetailsModal: React.FC<{
                         {c.route_type}
                       </span>
                       <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>
-                        accurate
+                        from Reporting
                       </span>
                     </h3>
 
@@ -806,16 +807,15 @@ const CampaignDetailsModal: React.FC<{
                         ['Campaign ID', <code style={{ fontSize: 11 }}>{c.id}</code>],
                         ['Status', c.status],
                         ['Type', c.campaign_type || '—'],
-                        ['Route', c.route_type?.toUpperCase()],
+                        ['Sending Route', c.route_type?.toUpperCase()],
                         ['Subject', c.subject || '—'],
-                        ['Preheader', c.preheader || '—'],
+                        ['Preview Text', c.preheader || '—'],
                         ['From', c.from_name ? `${c.from_name}${c.from_email ? ` <${c.from_email}>` : ''}` : '—'],
                         ['Sending Profile', c.sending_profile || '—'],
                         ['Sending Domain', c.sending_domain || '—'],
-                        ['IP Pool', c.ip_pool || '—'],
-                        ['Vendor', c.vendor || '—'],
-                        ['Targeted (planned)', (c.targeted ?? 0).toLocaleString()],
-                        ['Sent (injected)', (c.sent ?? 0).toLocaleString()],
+                        ['Sending Server', c.ip_pool || '—'],
+                        ['Targeted', (c.targeted ?? 0).toLocaleString()],
+                        ['Sent', (c.sent ?? 0).toLocaleString()],
                         ['Scheduled', c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : '—'],
                         ['Created', c.created_at ? new Date(c.created_at).toLocaleString() : '—'],
                       ];
@@ -855,24 +855,24 @@ const CampaignDetailsModal: React.FC<{
                         >
                           <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fb923c', marginTop: 2 }} />
                           <span>
-                            <strong>{blockPct.toFixed(1)}% reputation/system blocks</strong> — the dominant failure here is the receiving ISP
-                            refusing mail from this sending IP/domain (e.g. Charter/Spectrum “5.3.2 system not accepting network messages”),
+                            <strong>{blockPct.toFixed(1)}% provider blocks</strong> — the dominant failure here is the receiving mailbox provider
+                            refusing mail from this sending server/domain (e.g. Charter/Spectrum “not accepting messages right now”),
                             <strong> not invalid addresses</strong>. These recipients are valid and were <strong>not suppressed</strong>.
-                            Action: slow the send / warm this IP pool, and verify SPF·DKIM·DMARC and blocklist status for <code>{c.sending_domain || 'the sending domain'}</code>.
+                            Action: slow the send / warm this sending server, and verify your email authentication (SPF, DKIM, DMARC) and reputation-list status for <code>{c.sending_domain || 'the sending domain'}</code>.
                           </span>
                         </div>
                       );
                     })()}
 
                     <div className="metrics-grid ig-stagger" style={{ gap: 8 }}>
-                      {tile('Recipients', c.recipients, '#94a3b8', undefined, 'Distinct recipients after audience finalization')}
-                      {isSes && tile('Relayed to SES', c.relayed_to_ses, '#c084fc', undefined, 'PMTA handoff to SES — not a delivery')}
+                      {tile('Recipients', c.recipients, '#94a3b8', undefined, 'Distinct recipients after list cleaning')}
+                      {isSes && tile('Relayed', c.relayed_to_ses, '#c084fc', undefined, 'Handed off to the relay route — not yet a delivery')}
                       {tile('Delivered', c.delivered, '#22c55e')}
-                      {tile('Hard Bounce', c.hard_bounce, '#ef4444', undefined, 'TRUE list hygiene only: invalid address, dead domain, or disabled mailbox (DSN 5.1.x / 5.2.1). These ARE suppressed.')}
-                      {tile('Reputation Block', c.reputation_block, '#fb923c', undefined, 'Sender-side ISP block of a VALID recipient — DSN 5.3/5.4/5.5/5.7 (e.g. "5.3.2 system not accepting network messages") or policy/routing/connection rejections. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
+                      {tile('Hard Bounce', c.hard_bounce, '#ef4444', undefined, 'Invalid address, dead domain, or disabled mailbox. These ARE suppressed.')}
+                      {tile('Provider Block', c.reputation_block, '#fb923c', undefined, 'Sender-side block by the mailbox provider of a VALID recipient. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
                       {tile('Soft Bounce', c.soft_bounce, '#f59e0b', undefined, 'Transient failure (mailbox full, rate-limit, timeout). Clears on retry.')}
                       {tile('Deferred / Open', c.deferred_open, '#60a5fa', undefined, 'Deferred but later observed open')}
-                      {tile('Sent Only', c.sent_only, '#64748b', undefined, 'Injected/sent with no terminal event yet')}
+                      {tile('Sent Only', c.sent_only, '#64748b', undefined, 'Sent with no delivery result yet')}
                     </div>
 
                     {/* Rates with explicit denominator labels */}
@@ -887,10 +887,10 @@ const CampaignDetailsModal: React.FC<{
                         <div className="metric-value" style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</div>
                         <div className="metric-label">Hard Bounce (of processed)</div>
                       </div>
-                      <div className="metric-box" title="Reputation/system blocks (DSN 5.3/5.4/5.5/5.7, policy/routing/connection) over processed. High here = a sender-reputation / warmup problem, not a dirty list.">
+                      <div className="metric-box" title="Provider blocks over processed. High here = a sender-reputation / warmup problem, not a dirty list.">
                         <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#fb923c' }} />
                         <div className="metric-value" style={{ color: '#fb923c' }}>{(c.reputation_block_rate ?? 0).toFixed(2)}%</div>
-                        <div className="metric-label">Reputation Block (of processed)</div>
+                        <div className="metric-label">Provider Block (of processed)</div>
                       </div>
                       <div className="metric-box" title="Transient failures over processed. Clears on retry.">
                         <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
@@ -917,7 +917,7 @@ const CampaignDetailsModal: React.FC<{
                     {c.data_as_of && (
                       <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.45)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FontAwesomeIcon icon={faClock} />
-                        <span>Source: {c.metrics_source || 'tracking_events'} · as of {new Date(c.data_as_of).toLocaleString()}</span>
+                        <span>Source: Reporting · as of {new Date(c.data_as_of).toLocaleString()}</span>
                       </div>
                     )}
                   </div>
@@ -959,7 +959,7 @@ const CampaignDetailsModal: React.FC<{
                   <div className="details-section">
                     <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {stage('Total Seen', funnel.total_seen, '#e0e6f0', 'Subscribers streamed through the finalizer')}
+                      {stage('Total Seen', funnel.total_seen, '#e0e6f0', 'Subscribers evaluated during list cleaning')}
                       <div style={{ textAlign: 'center', color: 'rgba(180,210,240,0.3)', lineHeight: 1 }}>
                         <FontAwesomeIcon icon={faArrowDown} />
                       </div>
@@ -1080,13 +1080,13 @@ const CampaignDetailsModal: React.FC<{
               {/* ISP Breakdown — Quotas & Actual Mailed */}
               {stats && stats.isp_breakdown && stats.isp_breakdown.length > 0 && (
                 <div className="details-section">
-                  <h3><FontAwesomeIcon icon={faBullseye} /> ISP Breakdown — Quotas &amp; Delivery</h3>
+                  <h3><FontAwesomeIcon icon={faBullseye} /> Mailbox Provider Breakdown — Caps &amp; Delivery</h3>
                   <div style={{ overflowX: 'auto' }}>
                     <table className="isp-breakdown-table">
                       <thead>
                         <tr>
-                          <th>ISP</th>
-                          <th>Quota</th>
+                          <th>Mailbox Provider</th>
+                          <th>Cap</th>
                           <th>Sent</th>
                           <th>Delivered</th>
                           <th>Opens</th>
@@ -1672,12 +1672,12 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
             aria-expanded={editStatsExpanded}
           >
             <FontAwesomeIcon icon={faBullseye} />
-            <span className="cb-perf-banner-title">Performance &amp; Quotas</span>
+            <span className="cb-perf-banner-title">Performance &amp; Caps</span>
             {!editStatsExpanded && editStats && (
               <span className="cb-perf-banner-summary">
                 {editStats.sent.toLocaleString()} sent · {editStats.open_rate.toFixed(1)}% opens · {editStats.click_rate.toFixed(1)}% clicks
                 {editStats.isp_breakdown && editStats.isp_breakdown.length > 0 && (
-                  <> · {editStats.isp_breakdown.length} ISPs</>
+                  <> · {editStats.isp_breakdown.length} mailbox providers</>
                 )}
               </span>
             )}
@@ -1730,8 +1730,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                       <table className="isp-breakdown-table">
                         <thead>
                           <tr>
-                            <th>ISP</th>
-                            <th>Quota</th>
+                            <th>Mailbox Provider</th>
+                            <th>Cap</th>
                             <th>Sent</th>
                             <th>Delivered</th>
                             <th>Opens</th>
@@ -1846,7 +1846,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
-                🤖 AI Agent Wizard
+                🤖 Jarvis Campaign Wizard
               </button>
               <button
                 onClick={() => setUseAgentWizard(false)}
@@ -1919,7 +1919,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                 </div>
                 <div className="cb-form-group full-width">
                   <PersonalizedInput
-                    label="Preview Text (Preheader)"
+                    label="Preview Text"
                     value={formData.preheader}
                     onChange={value => setFormData(prev => ({ ...prev, preheader: value }))}
                     placeholder="e.g., {{ first_name }}, see what's new this week..."
@@ -1941,7 +1941,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
               <h2><FontAwesomeIcon icon={faPaperPlane} /> Sending Profile</h2>
               <div className="cb-form-grid">
                 <div className="cb-form-group">
-                  <label>ESP Profile <span className="required">*</span></label>
+                  <label>Sending Profile <span className="required">*</span></label>
                   <select value={selectedProfile} onChange={e => handleProfileChange(e.target.value)} className="cb-select">
                     <option value="">Select a sending profile</option>
                     {profiles.map(p => (
@@ -2091,10 +2091,10 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                   `}</style>
                   <div className="cb-creative-toolbar">
                     <span className="cb-ct-badge">
-                      <FontAwesomeIcon icon={faCheckCircle} /> Everflow Creative Applied
+                      <FontAwesomeIcon icon={faCheckCircle} /> Offer Creative Applied
                     </span>
                     <span className="cb-ct-label">
-                      Raw email HTML preserved with tracking links intact
+                      Email HTML preserved with tracking links intact
                     </span>
                     <button
                       className={!creativeCodeView ? 'active' : ''}
@@ -2220,7 +2220,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
 
             <div className="cb-section">
               <h2><FontAwesomeIcon icon={faTachometerAlt} /> Send Speed</h2>
-              <p className="cb-section-desc">Control how quickly your campaign is delivered. Slower speeds are better for ISP reputation.</p>
+              <p className="cb-section-desc">Control how quickly your campaign is delivered. Slower speeds are better for sender reputation.</p>
               <div className="cb-throttle-grid">
                 {[
                   { value: 'instant', label: 'Instant', rate: 'Full speed' },
@@ -2509,7 +2509,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                     <span className="cb-preview-label">Via:</span>
                     <span className="cb-preview-value">
                       {profiles.find(p => p.id === selectedProfile)?.name || 'Default Profile'} 
-                      ({profiles.find(p => p.id === selectedProfile)?.vendor_type?.toUpperCase() || 'ESP'})
+                      ({profiles.find(p => p.id === selectedProfile)?.vendor_type?.toUpperCase() || 'Default Route'})
                     </span>
                   </div>
                 </div>
@@ -2816,6 +2816,10 @@ export const CampaignPortal: React.FC<{
 
       {/* Main Content */}
       <div className="portal-content ig-fade-in">
+        {view === 'campaigns' && (
+          <PerformanceSnapshot />
+        )}
+
         {view === 'campaigns' && (
           <CampaignCenterList
             rows={summaryRows}

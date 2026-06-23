@@ -202,7 +202,7 @@ export const SendingProfiles: React.FC = () => {
       <div className="profiles-header">
         <div>
           <h1>🚀 Sending Profiles</h1>
-          <p className="subtitle">Configure ESP connections (SparkPost, SES, Mailgun, etc.)</p>
+          <p className="subtitle">Configure email service connections (multiple providers supported)</p>
         </div>
         <button className="add-button" onClick={() => setShowForm(true)}>
           + Add Profile
@@ -342,7 +342,7 @@ export const SendingProfiles: React.FC = () => {
         {profiles.length === 0 ? (
           <div className="empty-state">
             <p>No sending profiles configured yet.</p>
-            <p>Add a profile to start routing emails through different ESPs.</p>
+            <p>Add a profile to route emails through different email services.</p>
           </div>
         ) : (
           profiles.map(profile => (

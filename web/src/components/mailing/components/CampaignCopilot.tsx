@@ -21,7 +21,7 @@ const INITIAL_MESSAGE: CopilotMessage = {
   suggestions: [
     'Show me scheduled campaigns',
     'List all mailing lists',
-    'Show ISP performance',
+    'Show mailbox provider performance',
     'What templates do we have?',
   ],
 };

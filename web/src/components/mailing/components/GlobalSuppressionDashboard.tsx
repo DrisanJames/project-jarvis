@@ -299,7 +299,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             Global Suppression Hub
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
-            Single source of truth — all negative signals converge here. MD5-hashed for instant comparison.
+            Single source of truth — all suppression signals converge here. Securely hashed for instant comparison.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -440,7 +440,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           <div style={{ ...card, display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               type="text"
-              placeholder="Search by email or MD5 hash..."
+              placeholder="Search by email or hash..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
@@ -460,7 +460,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               <thead>
                 <tr style={{ background: 'rgba(0,200,255,0.03)' }}>
                   <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Email</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>MD5</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Hash</th>
                   <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Reason</th>
                   <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Source</th>
                   <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Date</th>

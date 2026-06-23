@@ -156,7 +156,7 @@ const verdictBg: Record<Verdict, string> = {
 
 export const VerdictChip: React.FC<{ verdict: Verdict; compact?: boolean }> = ({ verdict, compact }) => (
   <span
-    title={compact ? `Volume verdict: ${verdict} (worst across this domain's ISP baselines)` : undefined}
+    title={compact ? `Volume recommendation: ${verdict} (worst across this domain's mailbox provider guidelines)` : undefined}
     style={{
       color: verdictColors[verdict],
       background: verdictBg[verdict],
@@ -219,10 +219,10 @@ export const BaselineVerdictBanner: React.FC<BannerProps> = ({ domain, data, loa
       background: overall === 'DECREASE' ? 'rgba(233,69,96,0.07)' : C.panel,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
-        <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Volume verdict</div>
+        <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Volume recommendation</div>
         <VerdictChip verdict={overall} />
         <span style={{ fontSize: 11.5, color: C.muted }}>
-          worst across {rows.length} route × ISP baseline{rows.length === 1 ? '' : 's'} · {data?.window_days ?? 28}d window
+          worst across {rows.length} route × mailbox provider guideline{rows.length === 1 ? '' : 's'} · {data?.window_days ?? 28}d window
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -327,7 +327,7 @@ export const TodayPaceSection: React.FC<{ domain: string }> = ({ domain }) => {
             color: C.danger, background: 'rgba(233,69,96,0.12)', border: `1px solid ${C.danger}66`,
             borderRadius: 6, padding: '3px 10px', fontSize: 11.5, fontWeight: 700,
           }}>
-            {alerts.length} ISP{alerts.length === 1 ? '' : 's'} sending ABOVE baseline on a DECREASE verdict
+            {alerts.length} mailbox provider{alerts.length === 1 ? '' : 's'} sending above the recommended volume
           </span>
         )}
       </div>
@@ -346,7 +346,7 @@ export const TodayPaceSection: React.FC<{ domain: string }> = ({ domain }) => {
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <thead>
               <tr>
-                <th style={thStyle}>ISP</th>
+                <th style={thStyle}>Provider</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Today</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Baseline /day</th>
                 <th style={{ ...thStyle, width: 220 }}>Pace vs baseline</th>
@@ -453,7 +453,7 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
   return (
     <div style={panelStyle}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ ...sectionTitleStyle, marginBottom: 0, marginRight: 4 }}>Offer × ISP scorecards</div>
+        <div style={{ ...sectionTitleStyle, marginBottom: 0, marginRight: 4 }}>Offer × Provider scorecards</div>
         {DAY_CHOICES.map(d => (
           <button
             key={d}
@@ -478,7 +478,7 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
         />
         <input
           style={{ ...inputStyle, width: 130 }}
-          placeholder="ISP (exact)…"
+          placeholder="Provider (exact)…"
           value={ispFilter}
           onChange={e => setIspFilter(e.target.value)}
         />
@@ -490,8 +490,8 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
       {!error && (
         <>
           <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 10 }}>
-            Conversions are offer-level (Everflow postbacks) credited to the day's highest-volume sending
-            domain for that offer × ISP — read them as offer performance, not domain attribution.
+            Conversions are offer-level metrics credited to the day's highest-volume sending
+            domain for that offer × mailbox provider — read them as offer performance, not domain attribution.
           </div>
 
           <div style={{ height: 260, marginBottom: 14 }}>
@@ -523,7 +523,7 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
                     <th style={thStyle}>Day</th>
                     <th style={thStyle}>Route</th>
                     <th style={thStyle}>Offer</th>
-                    <th style={thStyle}>ISP</th>
+                    <th style={thStyle}>Provider</th>
                     <th style={{ ...thStyle, textAlign: 'right' }}>Sent</th>
                     <th style={{ ...thStyle, textAlign: 'right' }}>Delivered</th>
                     <th style={{ ...thStyle, textAlign: 'right' }}>Opens</th>
@@ -618,7 +618,7 @@ export const AllDomainsBaselines: React.FC<AllDomainsProps> = ({ data, loading, 
           <thead>
             <tr>
               <th style={thStyle}>Domain</th>
-              <th style={thStyle}>ISP</th>
+              <th style={thStyle}>Provider</th>
               <th style={{ ...thStyle, textAlign: 'right' }}>Baseline /day</th>
               <th style={{ ...thStyle, textAlign: 'right' }}>Recent open</th>
               <th style={{ ...thStyle, textAlign: 'right' }}>Prior open</th>
