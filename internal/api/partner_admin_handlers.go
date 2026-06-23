@@ -2523,17 +2523,24 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		return
 	}
 
-	// Conversions: postback ground truth, by offer_id (direct on offer_suppressions).
+	// Conversions: count the SAME CSV/manual conversions the parent "Conv" column uses
+	// (mailing_cpm_manual_conversions, distinct conversion_id, parent's no-mailed-filter
+	// subscriber set) so the drill-down SUMS EXACTLY to the row — fixing the misleading
+	// split where the row showed N and the offers summed to M. The offer comes via the
+	// conversion's deal (deal_id -> mailing_cpm_deals.offer_id); conversions whose deal
+	// carries no offer land in a labeled "(unattributed)" bucket so the sum still
+	// reconciles. (Everflow postbacks in mailing_offer_suppressions are a different
+	// sink/key — the two-key reality — and would NOT reconcile with the row.)
 	vr, err := h.db.QueryContext(ctx, `
 		WITH ds_subs AS (
 			SELECT DISTINCT subscriber_id FROM partner_clean_queue
-			WHERE dataset_id = $1 AND subscriber_id IS NOT NULL AND mailed_campaign_id IS NOT NULL
+			WHERE dataset_id = $1 AND subscriber_id IS NOT NULL
 		)
-		SELECT mos.offer_id::text, COUNT(DISTINCT mos.subscriber_id)
-		FROM mailing_offer_suppressions mos
-		JOIN ds_subs s ON s.subscriber_id = mos.subscriber_id
-		WHERE mos.reason = 'converted'
-		GROUP BY mos.offer_id
+		SELECT COALESCE(d.offer_id::text, ''), COUNT(DISTINCT mc.conversion_id)
+		FROM mailing_cpm_manual_conversions mc
+		JOIN ds_subs s ON s.subscriber_id::text = mc.sub1
+		LEFT JOIN mailing_cpm_deals d ON d.id = mc.deal_id
+		GROUP BY 1
 	`, datasetID)
 	if err != nil {
 		writeJSONError(w, "dataset_offer_perf_conv_failed: "+err.Error(), http.StatusInternalServerError)
@@ -2543,6 +2550,11 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		var oid string
 		var c int
 		if err := vr.Scan(&oid, &c); err != nil {
+			continue
+		}
+		if oid == "" { // conversion's deal has no offer — keep it so the sum reconciles
+			a := get("unattributed", "(unattributed — conversion's deal has no offer)", "")
+			a.convs += c
 			continue
 		}
 		om := idToOffer[oid]
@@ -2604,7 +2616,7 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		"notes": map[string]interface{}{
 			"attribution":  "lineage: subscribers acquired/mailed from this dataset (partner_clean_queue). Captures conversions on ANY offer they were later mailed, not just partner-drip.",
 			"clicks":       "HUMAN clicks (verdict-filtered) anchored to the cratoolpro money-slug in link_url, resolved via mailing_offer_slug_map — exact offer attribution.",
-			"conversions":  "postback ground truth (mailing_offer_suppressions.reason='converted', offer_id direct). May differ from the parent 'Conv' (CSV-imported manual conversions — a separate sink with no offer_id).",
+			"conversions":  "CSV-imported CPM conversions (mailing_cpm_manual_conversions), the SAME source as the parent row's 'Conv', attributed to offer via the conversion's deal — sums exactly to the row. '(unattributed)' = a conversion whose deal carries no offer.",
 			"rate_basis":   "CTR and Conv% are over the dataset's distinct mailed reach (per-offer mailed isn't recoverable — campaigns carry no offer_id); click→conv is conversions/clickers.",
 		},
 	})

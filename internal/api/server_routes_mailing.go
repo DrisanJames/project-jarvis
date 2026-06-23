@@ -339,6 +339,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				c.Patch("/{id}", offerProofs.HandleUpdate)
 				c.Post("/{id}/approve", offerProofs.HandleApprove)
 				c.Post("/{id}/reject", offerProofs.HandleReject)
+				c.Post("/{id}/rehost", offerProofs.HandleRehostProof)
 				c.Post("/{id}/send", offerProofs.HandleSend)
 			})
 			r.Route("/proof-recipients", func(c chi.Router) {

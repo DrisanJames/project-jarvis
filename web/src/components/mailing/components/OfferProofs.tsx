@@ -39,6 +39,24 @@ interface ProofRecipient {
 
 interface SendingDomain { domain: string; from_name?: string }
 
+interface RehostDetail { url: string; outcome: string; reason?: string; cdn_url?: string }
+interface RehostSummary { rehosted: number; cached: number; skipped: number; failed: number; details?: RehostDetail[] }
+
+// rehostToast turns a rehost summary into a toast — and surfaces the first
+// failure reason so a "0 rehosted" is never silent (download 404, S3 error, etc).
+function rehostToast(rh: RehostSummary): { type: 'success' | 'warning'; title: string; message?: string } {
+  const parts = [`${rh.rehosted} rehosted`];
+  if (rh.cached) parts.push(`${rh.cached} cached`);
+  if (rh.failed) parts.push(`${rh.failed} failed`);
+  if (rh.skipped) parts.push(`${rh.skipped} skipped`);
+  const firstFail = (rh.details ?? []).find((d) => d.outcome === 'failed');
+  return {
+    type: rh.failed > 0 ? 'warning' : 'success',
+    title: `Images — ${parts.join(', ')}`,
+    message: firstFail ? `${firstFail.url}: ${firstFail.reason}` : undefined,
+  };
+}
+
 const badge = (fg: string): React.CSSProperties => ({
   display: 'inline-block', padding: '2px 8px', borderRadius: 999, fontSize: 11,
   fontWeight: 600, color: fg, background: `${fg}1f`, border: `1px solid ${fg}55`,
@@ -155,10 +173,10 @@ export const OfferProofs: React.FC = () => {
       });
       const json = await res.json();
       if (!res.ok) { addToast({ type: 'error', title: 'Upload failed', message: json.error }); return; }
-      addToast({ type: 'success', title: `Proof created — ${json.images_rehosted} image(s) rehosted` });
+      if (json.rehost) addToast(rehostToast(json.rehost as RehostSummary));
       setUpName(''); setUpOffer(''); setUpHtml('');
       await fetchProofs();
-      setSelected(json);
+      if (json.proof) setSelected(json.proof);
     } catch (e) {
       addToast({ type: 'error', title: 'Upload failed', message: e instanceof Error ? e.message : String(e) });
     } finally { setBusy(false); }
@@ -270,6 +288,19 @@ export const OfferProofs: React.FC = () => {
     addToast({ type: 'info', title: 'Rejected' });
     refreshSelected();
   }, [selected, addToast, refreshSelected]);
+
+  const rehostProof = useCallback(async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const res = await apiFetch(`/api/mailing/offer-proofs/${selected.id}/rehost`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok) { addToast({ type: 'error', title: 'Re-rehost failed', message: json.error }); return; }
+      if (json.rehost) addToast(rehostToast(json.rehost as RehostSummary));
+      if (json.proof) setSelected(json.proof);
+      fetchProofs();
+    } finally { setBusy(false); }
+  }, [selected, addToast, fetchProofs]);
 
   const toggleActive = useCallback(async (p: OfferProof) => {
     await apiFetch(`/api/mailing/offer-proofs/${p.id}`, {
@@ -432,6 +463,10 @@ export const OfferProofs: React.FC = () => {
                 </div>
               </div>
               <span style={badge(statusColor(selected.approval_status))}>{selected.approval_status}</span>
+              <button style={btn('#1e293b', '#334155')} disabled={busy} onClick={rehostProof}
+                title="Re-run image rehosting + footer on the stored creative">
+                <FontAwesomeIcon icon={faRotate} /> Re-rehost images
+              </button>
               <button style={btn('#1e293b', '#334155')} onClick={() => toggleActive(selected)}>
                 <FontAwesomeIcon icon={selected.is_active ? faToggleOn : faToggleOff}
                   style={{ color: selected.is_active ? '#22c55e' : '#64748b' }} /> {selected.is_active ? 'Active' : 'Inactive'}

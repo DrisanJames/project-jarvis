@@ -277,16 +277,25 @@ type createProofRequest struct {
 }
 
 // processHTML rehosts external images (when S3 is wired) then injects our
-// footer/unsubscribe. Returns the processed html + count of images rehosted.
-func (s *OfferProofsService) processHTML(ctx context.Context, orgID, html string, rehost bool) (string, int) {
-	rehosted := 0
+// footer/unsubscribe. Returns the processed html + the full rehost outcome so the
+// caller can surface failed/skipped images (a "0 rehosted" must not be silent).
+func (s *OfferProofsService) processHTML(ctx context.Context, orgID, html string, rehost bool) (string, RehostCounts) {
+	var counts RehostCounts
 	if rehost && s.imageCDN != nil {
-		processed, counts := s.imageCDN.RehostHTML(ctx, orgID, html)
+		var processed string
+		processed, counts = s.imageCDN.RehostHTML(ctx, orgID, html)
 		html = processed
-		rehosted = counts.Rehosted
 	}
 	html = injectUnsubDisclaimer(html)
-	return html, rehosted
+	return html, counts
+}
+
+// rehostSummary is the per-create/per-rehost outcome surfaced to the operator.
+func rehostSummary(c RehostCounts) map[string]interface{} {
+	return map[string]interface{}{
+		"rehosted": c.Rehosted, "cached": c.Cached, "skipped": c.Skipped,
+		"failed": c.Failed, "details": c.Details,
+	}
 }
 
 func (s *OfferProofsService) HandleCreate(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +319,7 @@ func (s *OfferProofsService) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	rehost := req.Rehost == nil || *req.Rehost
-	processed, rehosted := s.processHTML(r.Context(), orgID.String(), req.HTML, rehost)
+	processed, counts := s.processHTML(r.Context(), orgID.String(), req.HTML, rehost)
 
 	var id string
 	err = s.db.QueryRowContext(r.Context(),
@@ -319,7 +328,7 @@ func (s *OfferProofsService) HandleCreate(w http.ResponseWriter, r *http.Request
 			 variants, from_names, approval_status, is_active)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,'pending',TRUE)
 		 RETURNING id::text`,
-		orgID.String(), req.Name, strings.TrimSpace(req.OfferKey), processed, req.HTML, rehosted,
+		orgID.String(), req.Name, strings.TrimSpace(req.OfferKey), processed, req.HTML, counts.Rehosted,
 		marshalJSONArray(req.Variants), marshalJSONArray(cleanStrings(req.FromNames)),
 	).Scan(&id)
 	if err != nil {
@@ -335,7 +344,46 @@ func (s *OfferProofsService) HandleCreate(w http.ResponseWriter, r *http.Request
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	respondJSON(w, http.StatusOK, p)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"proof": p, "rehost": rehostSummary(counts)})
+}
+
+// HandleRehostProof re-runs image rehosting + footer injection on an existing
+// proof's STORED raw html (html_raw) and updates html_content + images_rehosted.
+// Lets the operator fix a proof whose images didn't rehost on first upload
+// without re-pasting the creative. Returns the refreshed proof + rehost summary.
+func (s *OfferProofsService) HandleRehostProof(w http.ResponseWriter, r *http.Request) {
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "organization not resolved"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var raw string
+	err = s.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(NULLIF(html_raw,''), html_content) FROM mailing_offer_proofs
+		 WHERE id = $1 AND organization_id = $2`, id, orgID.String()).Scan(&raw)
+	if err == sql.ErrNoRows {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "proof not found"})
+		return
+	}
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	processed, counts := s.processHTML(r.Context(), orgID.String(), raw, true)
+	if _, err := s.db.ExecContext(r.Context(),
+		`UPDATE mailing_offer_proofs SET html_content=$1, images_rehosted=$2, updated_at=NOW()
+		 WHERE id=$3 AND organization_id=$4`,
+		processed, counts.Rehosted, id, orgID.String()); err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	p, err := s.loadProof(r.Context(), orgID.String(), id, true)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"proof": p, "rehost": rehostSummary(counts)})
 }
 
 type updateProofRequest struct {
@@ -379,10 +427,10 @@ func (s *OfferProofsService) HandleUpdate(w http.ResponseWriter, r *http.Request
 		add("offer_key", strings.TrimSpace(*req.OfferKey))
 	}
 	if req.HTML != nil {
-		processed, rehosted := s.processHTML(r.Context(), orgID.String(), *req.HTML, true)
+		processed, counts := s.processHTML(r.Context(), orgID.String(), *req.HTML, true)
 		add("html_content", processed)
 		add("html_raw", *req.HTML)
-		add("images_rehosted", rehosted)
+		add("images_rehosted", counts.Rehosted)
 	}
 	if req.Variants != nil {
 		add("variants", marshalJSONArray(*req.Variants))

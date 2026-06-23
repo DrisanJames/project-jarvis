@@ -57,9 +57,12 @@ const (
 	VersionAudienceCadenceKPIs = "1.0"
 
 	// cadenceEngagedSampleLimit caps the messages-to-first-engagement cohort.
-	// The grouped tracking-event scan is window-bounded, but the message_log
-	// join is per-subscriber — 50k keeps it to bounded index lookups.
-	cadenceEngagedSampleLimit = 50000
+	// The per-subscriber LEFT JOIN to mailing_message_log (LOWER(email)) scales
+	// super-linearly as the table grows: measured 2026-06-23 on prod — 5k≈9s,
+	// 10k≈38s, 50k TIMED OUT past the 60s budget (the "messages-to-engage query
+	// failed" screen-blocker). 5k samples is statistically ample for the per-ISP
+	// percentiles and leaves headroom under load.
+	cadenceEngagedSampleLimit = 5000
 
 	// cadenceMaxDays bounds the ?days= window.
 	cadenceMaxDays     = 90

@@ -494,9 +494,49 @@ func (h *ImageCDNHandlers) DeleteImageDomain(w http.ResponseWriter, r *http.Requ
 // rewrites <img src> attributes so emails serve images from our domain.
 // =============================================================================
 
-// imgSrcRegex matches <img ... src="..." ...> patterns in HTML
-// Captures the full src attribute value (URL) in group 1
-var imgSrcRegex = regexp.MustCompile(`(?i)<img[^>]+src=["']([^"']+)["']`)
+// imageURLPatterns capture every way an email creative embeds an external image,
+// not just <img src>. Network/affiliate creatives (e.g. imageports.com) routinely
+// put icons/spacers/heroes in <td background="...">, CSS background-image:url(...),
+// unquoted src=, and Outlook VML <v:fill>/<v:image> — all of which the old
+// img-src-only regex silently passed through unrehosted. Each pattern captures the
+// URL in group 1. Results are deduped by collectImageURLs; the per-URL skip rules
+// (data:/relative/already-on-CDN) and the image-validating upload keep stray
+// matches (e.g. a web-font url()) safe — they just fail and the URL is left as-is.
+var imageURLPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)<img\b[^>]*?\bsrc\s*=\s*"([^"]+)"`),
+	regexp.MustCompile(`(?i)<img\b[^>]*?\bsrc\s*=\s*'([^']+)'`),
+	regexp.MustCompile(`(?i)<img\b[^>]*?\bsrc\s*=\s*([^"'\s>]+)`),
+	regexp.MustCompile(`(?i)\bbackground\s*=\s*"([^"]+)"`),
+	regexp.MustCompile(`(?i)\bbackground\s*=\s*'([^']+)'`),
+	regexp.MustCompile(`(?i)url\(\s*"([^"]+)"\s*\)`),
+	regexp.MustCompile(`(?i)url\(\s*'([^']+)'\s*\)`),
+	regexp.MustCompile(`(?i)url\(\s*([^"')\s]+)\s*\)`),
+	regexp.MustCompile(`(?i)<v:(?:fill|image)\b[^>]*?\bsrc\s*=\s*"([^"]+)"`),
+	regexp.MustCompile(`(?i)<v:(?:fill|image)\b[^>]*?\bsrc\s*=\s*'([^']+)'`),
+}
+
+// collectImageURLs returns the unique, in-order set of candidate image URLs found
+// across all imageURLPatterns. Dedup is by exact URL string so the same image
+// referenced via both <img src> and a CSS url() is fetched once and every
+// occurrence rewritten.
+func collectImageURLs(html string) []string {
+	seen := map[string]bool{}
+	var urls []string
+	for _, rx := range imageURLPatterns {
+		for _, m := range rx.FindAllStringSubmatch(html, -1) {
+			if len(m) < 2 {
+				continue
+			}
+			u := strings.TrimSpace(m[1])
+			if u == "" || seen[u] {
+				continue
+			}
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	return urls
+}
 
 // rehostHTMLRequest is the JSON body for POST /api/mailing/images/rehost-html
 type rehostHTMLRequest struct {
@@ -506,11 +546,22 @@ type rehostHTMLRequest struct {
 
 // rehostHTMLResponse is the JSON response from the rehost endpoint
 type rehostHTMLResponse struct {
-	HTML           string `json:"html"`
-	ImagesRehosted int    `json:"images_rehosted"`
-	ImagesCached   int    `json:"images_cached"`
-	ImagesSkipped  int    `json:"images_skipped"`
-	ImagesFailed   int    `json:"images_failed"`
+	HTML           string         `json:"html"`
+	ImagesRehosted int            `json:"images_rehosted"`
+	ImagesCached   int            `json:"images_cached"`
+	ImagesSkipped  int            `json:"images_skipped"`
+	ImagesFailed   int            `json:"images_failed"`
+	Details        []RehostDetail `json:"details,omitempty"`
+}
+
+// RehostDetail is the per-image outcome so a "0 rehosted" result is never
+// ambiguous — the caller (and the operator) can see exactly which URL was
+// rehosted, cached, skipped (and why), or failed (with the error).
+type RehostDetail struct {
+	URL     string `json:"url"`
+	Outcome string `json:"outcome"` // rehosted | cached | skipped | failed
+	Reason  string `json:"reason,omitempty"`
+	CDNURL  string `json:"cdn_url,omitempty"`
 }
 
 // RehostCounts tallies the outcome of a RehostHTML pass.
@@ -519,6 +570,7 @@ type RehostCounts struct {
 	Cached   int
 	Skipped  int
 	Failed   int
+	Details  []RehostDetail
 }
 
 // RehostHTML downloads every external <img> in html, uploads each to our S3/CDN
@@ -549,57 +601,50 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 	cdnDomain := h.imageCDN.GetCDNDomain()
 	s3Bucket := h.imageCDN.GetBucket()
 
-	// Find all <img src="..."> in the HTML
-	matches := imgSrcRegex.FindAllStringSubmatch(html, -1)
-	if len(matches) == 0 {
-		log.Printf("[ImageRehost] No <img> tags found in HTML (%d bytes)", len(html))
+	// Collect candidate image URLs across ALL embed patterns (img src, td/table
+	// background, CSS url(), unquoted src, Outlook VML), deduped.
+	urls := collectImageURLs(html)
+	if len(urls) == 0 {
+		log.Printf("[ImageRehost] No image URLs found in HTML (%d bytes)", len(html))
 		return html, counts
 	}
 
-	log.Printf("[ImageRehost] Found %d <img> tags in HTML, processing for org %s", len(matches), orgID)
+	log.Printf("[ImageRehost] Found %d candidate image URL(s) in HTML, processing for org %s", len(urls), orgID)
 
 	processedHTML := html
+	record := func(url, outcome, reason, cdn string) {
+		counts.Details = append(counts.Details, RehostDetail{URL: url, Outcome: outcome, Reason: reason, CDNURL: cdn})
+	}
 
 	// HTTP client with timeout for downloading external images
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	// Track already-processed URLs to avoid duplicate work in same request
-	urlToCDN := make(map[string]string)
-
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-		originalURL := match[1]
-
+	for _, originalURL := range urls {
 		// Skip data URIs
 		if strings.HasPrefix(originalURL, "data:") {
 			counts.Skipped++
+			record(originalURL, "skipped", "data URI", "")
 			continue
 		}
 
-		// Skip relative URLs (no host)
+		// Skip relative / protocol-relative URLs (no fetchable host)
 		if !strings.HasPrefix(originalURL, "http://") && !strings.HasPrefix(originalURL, "https://") {
 			counts.Skipped++
+			record(originalURL, "skipped", "non-absolute URL", "")
 			continue
 		}
 
 		// Skip images already on our CDN
 		if cdnDomain != "" && strings.Contains(originalURL, cdnDomain) {
 			counts.Skipped++
+			record(originalURL, "skipped", "already on CDN", "")
 			continue
 		}
 
 		// Skip images already on our S3 bucket
 		if s3Bucket != "" && strings.Contains(originalURL, s3Bucket) {
 			counts.Skipped++
-			continue
-		}
-
-		// Check if we already processed this URL in this request
-		if cdnURL, ok := urlToCDN[originalURL]; ok {
-			processedHTML = strings.Replace(processedHTML, originalURL, cdnURL, 1)
-			counts.Cached++
+			record(originalURL, "skipped", "already on S3", "")
 			continue
 		}
 
@@ -612,6 +657,7 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 		if err != nil {
 			log.Printf("[ImageRehost] WARNING: Failed to download %s: %v", downloadURL, err)
 			counts.Failed++
+			record(originalURL, "failed", "download error: "+err.Error(), "")
 			continue
 		}
 
@@ -619,6 +665,7 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 			resp.Body.Close()
 			log.Printf("[ImageRehost] WARNING: Download returned HTTP %d for %s", resp.StatusCode, downloadURL)
 			counts.Failed++
+			record(originalURL, "failed", fmt.Sprintf("download HTTP %d", resp.StatusCode), "")
 			continue
 		}
 
@@ -628,12 +675,14 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 		if err != nil {
 			log.Printf("[ImageRehost] WARNING: Failed to read image data from %s: %v", downloadURL, err)
 			counts.Failed++
+			record(originalURL, "failed", "read error: "+err.Error(), "")
 			continue
 		}
 
 		if len(imageData) == 0 {
 			log.Printf("[ImageRehost] WARNING: Empty image data from %s", downloadURL)
 			counts.Failed++
+			record(originalURL, "failed", "empty image", "")
 			continue
 		}
 
@@ -668,6 +717,7 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 			if err != nil {
 				log.Printf("[ImageRehost] WARNING: Failed to upload %s: %v", originalURL, err)
 				counts.Failed++
+				record(originalURL, "failed", "upload error: "+err.Error(), "")
 				continue
 			}
 
@@ -681,11 +731,13 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 			cdnURL = rewriteToCustomDomain(cdnURL, orgImageDomain, cdnDomain)
 		}
 
-		// Replace the original URL with the CDN URL in the HTML
+		// Replace EVERY occurrence of the original URL with the CDN URL.
 		processedHTML = strings.ReplaceAll(processedHTML, originalURL, cdnURL)
-
-		// Cache for dedup within this request
-		urlToCDN[originalURL] = cdnURL
+		if existingImage != nil {
+			record(originalURL, "cached", "checksum match", cdnURL)
+		} else {
+			record(originalURL, "rehosted", "", cdnURL)
+		}
 	}
 
 	log.Printf("[ImageRehost] Complete: rehosted=%d, cached=%d, skipped=%d, failed=%d",
@@ -734,6 +786,7 @@ func (h *ImageCDNHandlers) HandleRehostCreativeImages(w http.ResponseWriter, r *
 		ImagesCached:   counts.Cached,
 		ImagesSkipped:  counts.Skipped,
 		ImagesFailed:   counts.Failed,
+		Details:        counts.Details,
 	})
 }
 
