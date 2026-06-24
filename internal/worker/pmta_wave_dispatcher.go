@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,46 @@ func setBasedEnqueueDisabled() bool {
 	return os.Getenv("DISABLE_SETBASED_ENQUEUE") == "true"
 }
 
+// perWaveTouchCap is the max number of times a subscriber may be enqueued
+// across ALL campaigns sharing the same wave slot (campaign.scheduled_at
+// bucketed by perWaveWindowHours). The cross-campaign dedup the operator
+// asked for: a person engaged with N brands gets ONE touch per wave instead
+// of N. Enforced at enqueue via CapChecker.ClaimWaveSlot (one owner per
+// slot), so it only applies to campaign waves (the partner-drip sender uses
+// a separate dispatch path, untouched).
+//
+// Treated as an ON/OFF switch: >0 enables strict one-touch-per-wave (the
+// owner-claim model is inherently 1-per-slot); 0 disables it. Default 1 (ON).
+// Requires Redis; with Redis down the cap fails open (ClaimWaveSlot returns
+// allowed) and the send proceeds uncapped.
+func perWaveTouchCap() int {
+	v := strings.TrimSpace(os.Getenv("PER_WAVE_TOUCH_CAP"))
+	if v == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 1
+	}
+	return n
+}
+
+// perWaveWindowHours is the bucket width for the per-wave slot key. The
+// campaign's scheduled_at is truncated to this many hours so every campaign
+// in the same wave shares one slot bucket. Default 1h — fine when waves are
+// spaced ≥1h apart (board waves are 4h apart). Min 1.
+func perWaveWindowHours() int {
+	v := strings.TrimSpace(os.Getenv("PER_WAVE_WINDOW_HOURS"))
+	if v == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 1
+	}
+	return n
+}
+
 // EnqueuePMTAWave materializes one due PMTA wave into the existing recipient queue.
 //
 // Logging (SA-7, per-domain engagement engine, 2026-05-09): the function
@@ -60,16 +101,18 @@ func setBasedEnqueueDisabled() bool {
 func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker *mailing.CapChecker) (enqueued int, retErr error) {
 	start := time.Now()
 	var (
-		campaignID         uuid.UUID
-		ispPlanID          uuid.UUID
-		orgID              uuid.UUID
-		waveStatus         string
-		campaignStatus     string
-		planStatus         string
-		scheduledAt        time.Time
-		plannedRecipients  int
-		enqueuedRecipients int
-		sendingDomain      string
+		campaignID          uuid.UUID
+		ispPlanID           uuid.UUID
+		orgID               uuid.UUID
+		waveStatus          string
+		campaignStatus      string
+		planStatus          string
+		scheduledAt         time.Time
+		campaignScheduledAt sql.NullTime
+		plannedRecipients   int
+		enqueuedRecipients  int
+		sendingDomain       string
+		partnerDripTag      sql.NullString
 	)
 	defer func() {
 		durationMs := time.Since(start).Milliseconds()
@@ -91,13 +134,13 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	err = tx.QueryRowContext(ctx, `
 		SELECT w.campaign_id, w.isp_plan_id, COALESCE(p.organization_id, c.organization_id),
 		       w.status, COALESCE(c.status, 'draft'),
-		       COALESCE(p.status, 'planned'), w.scheduled_at, w.planned_recipients, w.enqueued_recipients
+		       COALESCE(p.status, 'planned'), w.scheduled_at, c.scheduled_at, w.planned_recipients, w.enqueued_recipients, c.partner_drip_tag
 		FROM mailing_campaign_waves w
 		JOIN mailing_campaigns c ON c.id = w.campaign_id
 		JOIN mailing_campaign_isp_plans p ON p.id = w.isp_plan_id
 		WHERE w.id = $1
 		FOR UPDATE
-	`, waveID).Scan(&campaignID, &ispPlanID, &orgID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &plannedRecipients, &enqueuedRecipients)
+	`, waveID).Scan(&campaignID, &ispPlanID, &orgID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &campaignScheduledAt, &plannedRecipients, &enqueuedRecipients, &partnerDripTag)
 	if err != nil {
 		return 0, err
 	}
@@ -218,21 +261,41 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		log.Printf("[WaveEnqueue] wave %s campaign %s ROUTED to Kafka send.commands.v1 (SK-4 primary transport)", waveID, campaignID)
 	}
 
+	// Per-wave 1-touch slot key: bucket the CAMPAIGN's scheduled_at (the slot
+	// anchor — identical for every brand's campaign in this wave, and stable
+	// across this campaign's sub-waves, unlike w.scheduled_at which staggers).
+	// Falls back to the wave's own scheduled_at if the campaign has none.
+	slotAnchor := scheduledAt
+	if campaignScheduledAt.Valid && !campaignScheduledAt.Time.IsZero() {
+		slotAnchor = campaignScheduledAt.Time
+	}
+	waveSlotBucket := slotAnchor.UTC().Truncate(time.Duration(perWaveWindowHours()) * time.Hour).Format("20060102T15")
+	perWaveCap := perWaveTouchCap()
+	// Scope: the per-wave 1-touch cap is for the operator's campaign BOARD
+	// only. Partner-drip campaigns (partner_drip_tag set) run their own
+	// per-dataset cadence and must NOT be deduped against each other or the
+	// board, so disable the cap for them.
+	if partnerDripTag.Valid && strings.TrimSpace(partnerDripTag.String) != "" {
+		perWaveCap = 0
+	}
+
 	params := waveEnqueueParams{
-		waveID:       waveID,
-		waveUUID:     waveUUID,
-		campaignID:   campaignID,
-		ispPlanID:    ispPlanID,
-		orgID:        orgID,
-		scheduledAt:  scheduledAt,
-		remaining:    remaining,
-		baseHTML:     baseHTML,
-		baseSubject:  baseSubject,
-		plainContent: campaignPlain.String,
-		isLocked:     isContentLocked,
-		brandKey:     brandKey,
-		useCapAware:  useCapAware,
-		routeToKafka: routeToKafka,
+		waveID:         waveID,
+		waveUUID:       waveUUID,
+		campaignID:     campaignID,
+		ispPlanID:      ispPlanID,
+		orgID:          orgID,
+		scheduledAt:    scheduledAt,
+		remaining:      remaining,
+		baseHTML:       baseHTML,
+		baseSubject:    baseSubject,
+		plainContent:   campaignPlain.String,
+		isLocked:       isContentLocked,
+		brandKey:       brandKey,
+		useCapAware:    useCapAware,
+		routeToKafka:   routeToKafka,
+		waveSlotBucket: waveSlotBucket,
+		perWaveCap:     perWaveCap,
 	}
 
 	var queuedCount, skippedCount, capSkippedCount, reserveUsedCount int
@@ -306,6 +369,11 @@ type waveEnqueueParams struct {
 	// routeToKafka (SK-4) routes this wave's queue rows through Kafka
 	// (send.commands.v1) instead of the direct INSERT. Default false (dark).
 	routeToKafka bool
+	// waveSlotBucket identifies this wave's slot (campaign.scheduled_at
+	// bucketed to perWaveWindowHours); shared by every campaign in the wave.
+	// perWaveCap is the max touches per subscriber per slot (0 = disabled).
+	waveSlotBucket string
+	perWaveCap     int
 }
 
 // enqueueWaveRowAtATime is the legacy enqueue path (pre set-based cutover):
@@ -371,6 +439,7 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 		candidates = append(candidates, rec)
 	}
 
+	var waveSlotSkipped int
 	for _, rec := range candidates {
 		// Stop as soon as we've satisfied the wave's planned size. The
 		// cap-aware path over-pulls candidates so this is the early-exit
@@ -420,6 +489,25 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 					return 0, 0, 0, 0, execErr
 				}
 				capSkippedCount++
+				continue
+			}
+		}
+
+		// Per-wave 1-touch claim: if another campaign in this same wave slot
+		// already claimed this subscriber, mark cap_skipped (freeing the slot
+		// for the next reserve in line) so the person is mailed once per wave
+		// across all brands, not once per brand. Fail-open inside ClaimWaveSlot.
+		if p.perWaveCap > 0 && capChecker != nil {
+			allowed, _ := capChecker.ClaimWaveSlot(ctx, rec.subscriberID.String(), p.waveSlotBucket, p.waveID)
+			if !allowed {
+				if _, execErr := tx.ExecContext(ctx,
+					`UPDATE mailing_campaign_plan_recipients SET status = 'cap_skipped' WHERE id = $1 AND status IN ('selected','reserve')`,
+					rec.recordID,
+				); execErr != nil {
+					return 0, 0, 0, 0, execErr
+				}
+				capSkippedCount++
+				waveSlotSkipped++
 				continue
 			}
 		}
@@ -500,6 +588,11 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 		if rec.planRecStatus == "reserve" {
 			reserveUsedCount++
 		}
+	}
+
+	if waveSlotSkipped > 0 {
+		log.Printf("[WaveEnqueue] wave %s slot=%s: per_wave_skipped=%d (1-touch-per-wave, cap=%d)",
+			p.waveID, p.waveSlotBucket, waveSlotSkipped, p.perWaveCap)
 	}
 
 	return queuedCount, skippedCount, capSkippedCount, reserveUsedCount, nil
@@ -609,6 +702,7 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		ranks                                                                         []int64
 		sourceIDs                                                                     []sql.NullString
 		skippedPlanIDs, capSkippedPlanIDs                                             []string
+		waveSlotSkipped                                                               int
 	)
 	for _, rec := range candidates {
 		if queuedCount >= p.remaining {
@@ -631,6 +725,19 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 			if peekErr == nil && overCap {
 				capSkippedPlanIDs = append(capSkippedPlanIDs, rec.recordID.String())
 				capSkippedCount++
+				continue
+			}
+		}
+
+		// Per-wave 1-touch claim (see enqueueWaveRowAtATime for rationale):
+		// the first campaign in this wave slot to reach a subscriber claims
+		// them; siblings see the slot full and skip → one touch per wave.
+		if p.perWaveCap > 0 && capChecker != nil {
+			allowed, _ := capChecker.ClaimWaveSlot(ctx, rec.subscriberID.String(), p.waveSlotBucket, p.waveID)
+			if !allowed {
+				capSkippedPlanIDs = append(capSkippedPlanIDs, rec.recordID.String())
+				capSkippedCount++
+				waveSlotSkipped++
 				continue
 			}
 		}
@@ -741,6 +848,11 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		`, pq.Array(queuedPlanIDs), p.waveUUID); err != nil {
 			return 0, 0, 0, 0, err
 		}
+	}
+
+	if waveSlotSkipped > 0 {
+		log.Printf("[WaveEnqueue] wave %s slot=%s: per_wave_skipped=%d (1-touch-per-wave, cap=%d)",
+			p.waveID, p.waveSlotBucket, waveSlotSkipped, p.perWaveCap)
 	}
 
 	return queuedCount, skippedCount, capSkippedCount, reserveUsedCount, nil

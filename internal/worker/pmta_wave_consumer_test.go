@@ -30,9 +30,9 @@ func TestProcessWaveMessage_ValidMessage(t *testing.T) {
 		WithArgs("wave-valid").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-			"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+			"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-			testScheduledAt, 100, 100))
+			testScheduledAt, testScheduledAt, 100, 100, nil))
 	mock.ExpectCommit()
 
 	shouldDelete := processWaveMessage(context.Background(), db, string(body), nil)

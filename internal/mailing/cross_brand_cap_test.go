@@ -419,3 +419,72 @@ func TestCapChecker_Reserve_ZeroCapAllowsEverything(t *testing.T) {
 		t.Errorf("sql expectations: %v", err)
 	}
 }
+
+// --- Per-wave 1-touch cap (ClaimWaveSlot) -----------------------------------
+
+// TestCapChecker_ClaimWaveSlot_OneTouchPerSlot is the headline invariant for
+// "one email per wave": within a single wave slot, the owning wave's claim is
+// allowed and a DIFFERENT wave (a sibling brand's campaign in the same slot)
+// is denied. A different slot or a different subscriber is independent.
+func TestCapChecker_ClaimWaveSlot_OneTouchPerSlot(t *testing.T) {
+	cc, _, _ := newCapCheckerWithMiniredis(t, 2)
+	ctx := context.Background()
+	sub := "sub-wave-1"
+	slot := "20260624T11"
+	waveA, waveB := "wave-A", "wave-B"
+
+	if ok, err := cc.ClaimWaveSlot(ctx, sub, slot, waveA); err != nil || !ok {
+		t.Fatalf("A first claim = (ok=%v err=%v), want allowed", ok, err)
+	}
+	// Different wave (brand B) in the SAME slot for the same sub — denied.
+	if ok, err := cc.ClaimWaveSlot(ctx, sub, slot, waveB); err != nil || ok {
+		t.Errorf("B claim same slot = (ok=%v err=%v), want denied", ok, err)
+	}
+	// Different wave slot — independent, allowed for B.
+	if ok, err := cc.ClaimWaveSlot(ctx, sub, "20260624T15", waveB); err != nil || !ok {
+		t.Errorf("B claim different slot = (ok=%v err=%v), want allowed", ok, err)
+	}
+	// Different subscriber, same slot — allowed for B.
+	if ok, err := cc.ClaimWaveSlot(ctx, "sub-wave-2", slot, waveB); err != nil || !ok {
+		t.Errorf("B claim different sub = (ok=%v err=%v), want allowed", ok, err)
+	}
+}
+
+// TestCapChecker_ClaimWaveSlot_IdempotentRetry is the retry-safety invariant:
+// the SAME owning wave re-claiming the same slot (e.g. after a rolled-back
+// enqueue TX is re-dispatched) MUST still be allowed — the claim is keyed to
+// the wave, not a counter, so a retry never suppresses its own recipients.
+func TestCapChecker_ClaimWaveSlot_IdempotentRetry(t *testing.T) {
+	cc, _, _ := newCapCheckerWithMiniredis(t, 2)
+	ctx := context.Background()
+	sub, slot, wave := "sub-r", "20260624T11", "wave-A"
+	for i := 0; i < 3; i++ {
+		if ok, err := cc.ClaimWaveSlot(ctx, sub, slot, wave); err != nil || !ok {
+			t.Errorf("retry %d = (ok=%v err=%v), want allowed (same owner)", i, ok, err)
+		}
+	}
+	// A foreign wave is still denied after the retries.
+	if ok, err := cc.ClaimWaveSlot(ctx, sub, slot, "wave-B"); err != nil || ok {
+		t.Errorf("foreign claim after retries = (ok=%v err=%v), want denied", ok, err)
+	}
+}
+
+// TestCapChecker_ClaimWaveSlot_FailsOpen covers the degradation/disable paths:
+// no Redis, empty bucket, or empty owner MUST return allowed so the per-wave
+// cap never blocks a send when it cannot be enforced.
+func TestCapChecker_ClaimWaveSlot_FailsOpen(t *testing.T) {
+	ctx := context.Background()
+	// nil Redis
+	ccNil, _, _ := newCapCheckerMock(t)
+	if ok, err := ccNil.ClaimWaveSlot(ctx, "s", "20260624T11", "w"); err != nil || !ok {
+		t.Errorf("nil-Redis claim = (ok=%v err=%v), want allowed", ok, err)
+	}
+	// empty bucket / empty owner — even with Redis present
+	cc, _, _ := newCapCheckerWithMiniredis(t, 2)
+	if ok, err := cc.ClaimWaveSlot(ctx, "s", "", "w"); err != nil || !ok {
+		t.Errorf("empty-bucket claim = (ok=%v err=%v), want allowed", ok, err)
+	}
+	if ok, err := cc.ClaimWaveSlot(ctx, "s", "20260624T11", ""); err != nil || !ok {
+		t.Errorf("empty-owner claim = (ok=%v err=%v), want allowed", ok, err)
+	}
+}

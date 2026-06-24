@@ -195,6 +195,55 @@ func (c *CapChecker) Release(ctx context.Context, subscriberID string) {
 	}
 }
 
+// waveSlotKey returns the per-wave cap key: `wave1t:{subID}:{slotBucket}`,
+// where slotBucket identifies a single wave slot (e.g. the campaign's
+// scheduled_at truncated to the hour). Distinct from the daily todayKey so
+// the two caps never collide on the same Redis key.
+func waveSlotKey(subscriberID, slotBucket string) string {
+	return fmt.Sprintf("wave1t:%s:%s", subscriberID, slotBucket)
+}
+
+// ClaimWaveSlot claims a subscriber's SINGLE slot within a wave for the
+// given ownerToken (the claiming wave's ID), enforcing "one email per wave"
+// across ALL campaigns sharing slotBucket. Returns true if this owner holds
+// the slot (claimed it now, or already owns it).
+//
+// Why an owner-token SET-NX instead of a counter: the claim is written to
+// Redis from inside the enqueue's Postgres transaction, and Redis is not
+// transactional with Postgres. A plain INCR would NOT roll back if the
+// enqueue TX fails, so a transient error + wave re-dispatch would re-INCR
+// every recipient over the limit and permanently suppress the whole wave.
+// SET key=ownerToken NX makes the claim IDEMPOTENT for the owning wave: a
+// retry of the SAME wave reads back its own token and is allowed, while a
+// DIFFERENT campaign's wave in the same slot reads a foreign token and is
+// denied. Cross-campaign dedup holds; retries are safe.
+//
+// Redis-only and FAIL-OPEN: with rdb == nil, an empty subscriber/bucket/
+// owner, or any Redis error it returns (true, nil) — the per-wave cap
+// degrades to OFF rather than blocking the send pool (same safe direction
+// as the daily cap). The key self-expires (26h TTL); a slot is never reused.
+func (c *CapChecker) ClaimWaveSlot(ctx context.Context, subscriberID, slotBucket, ownerToken string) (bool, error) {
+	if c.rdb == nil || subscriberID == "" || slotBucket == "" || ownerToken == "" {
+		return true, nil
+	}
+	key := waveSlotKey(subscriberID, slotBucket)
+	ok, err := c.rdb.SetNX(ctx, key, ownerToken, 26*time.Hour).Result()
+	if err != nil {
+		log.Printf("[cap] per-wave SetNX error: %v — allowing (cap degrades off)", err)
+		return true, nil
+	}
+	if ok {
+		return true, nil // freshly claimed by this wave
+	}
+	// Slot already owned — allowed only if WE own it (an idempotent retry of
+	// the same wave); a foreign owner means another campaign already took it.
+	cur, err := c.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return true, nil // fail-open on read error
+	}
+	return cur == ownerToken, nil
+}
+
 // reservePostgres is the non-Redis fallback. It counts today's 'sent'
 // events from mailing_tracking_events and denies if already at cap.
 // NOT race-safe — concurrent workers can each see the same count and

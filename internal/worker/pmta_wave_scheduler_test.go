@@ -79,9 +79,9 @@ func TestDispatchDueWaves_DueWavesFound(t *testing.T) {
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
 				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+				"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-				testScheduledAt, 100, 100))
+				testScheduledAt, testScheduledAt, 100, 100, nil))
 		mock.ExpectCommit()
 	}
 
@@ -169,9 +169,9 @@ func TestDispatchDueWaves_EnqueueError(t *testing.T) {
 		WithArgs(wave2.String()).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-			"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+			"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-			testScheduledAt, 100, 100))
+			testScheduledAt, testScheduledAt, 100, 100, nil))
 	mock.ExpectCommit()
 
 	s := testScheduler(db, rdb)
@@ -244,9 +244,9 @@ func TestDispatchDueWaves_RoundRobinFairness(t *testing.T) {
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
 				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+				"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-				testScheduledAt, 100, 100))
+				testScheduledAt, testScheduledAt, 100, 100, nil))
 		mock.ExpectCommit()
 	}
 
@@ -298,9 +298,9 @@ func TestDispatchDueWaves_KillSwitch(t *testing.T) {
 		WithArgs(wave1.String()).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-			"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+			"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-			testScheduledAt, 100, 100))
+			testScheduledAt, testScheduledAt, 100, 100, nil))
 	mock.ExpectCommit()
 
 	buf := captureLogs(t)
@@ -366,9 +366,9 @@ func TestDispatchDueWaves_LogsPerDomainCounts(t *testing.T) {
 			WithArgs(w.String()).
 			WillReturnRows(sqlmock.NewRows([]string{
 				"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-				"plan_status", "scheduled_at", "planned_recipients", "enqueued_recipients",
+				"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
 			}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-				testScheduledAt, 100, 100))
+				testScheduledAt, testScheduledAt, 100, 100, nil))
 		mock.ExpectCommit()
 	}
 
