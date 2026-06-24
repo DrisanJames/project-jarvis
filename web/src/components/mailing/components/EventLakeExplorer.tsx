@@ -737,6 +737,32 @@ function totalsFromBreakdown(rows: BreakdownRow[]): MetricRow {
   return makeMetricRow('TOTAL', m);
 }
 
+// transportSources maps the toolbar Transport selector to the lake `source`
+// values it covers. combined = pmta + ses (the headline excludes the duplicate
+// 'app' source by construction); mta = pmta; ses = ses.
+function transportSources(t: Transport): Set<string> {
+  if (t === 'mta') return new Set(['pmta']);
+  if (t === 'ses') return new Set(['ses']);
+  return new Set(['pmta', 'ses']);
+}
+
+// routeRowsForTransport projects the route-funnel breakdown (local_dt × source ×
+// route_type × event_type) down to the transport-filtered (local_dt, event_type)
+// rows that drive the headline KPIs + trend. SINGLE SOURCE OF TRUTH: the
+// headline and the route funnel are now derived from the SAME query, so they can
+// never disagree. (They used to be two separate breakdown fetches with separate
+// cache keys — the headline could serve a stale "cached" value while the funnel
+// was fresh, so Delivered differed by thousands on the same screen.)
+function routeRowsForTransport(rows: BreakdownRow[], transport: Transport): BreakdownRow[] {
+  const srcs = transportSources(transport);
+  return rows
+    .filter((r) => srcs.has(r.keys['source'] ?? ''))
+    .map((r) => ({
+      keys: { local_dt: r.keys['local_dt'] ?? '', event_type: r.keys['event_type'] ?? '' },
+      count: r.count,
+    }));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS — recent-campaign localStorage + filter plumbing
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1307,7 +1333,6 @@ const Toolbar: React.FC<{
 
 const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
-  const [rows, setRows] = useState<BreakdownRow[]>([]);
   const [routeRows, setRouteRows] = useState<BreakdownRow[]>([]);
   const [ispRows, setIspRows] = useState<BreakdownRow[]>([]);
   const [humanClicks, setHumanClicks] = useState<number>(0);
@@ -1331,24 +1356,19 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     setLoading(true);
     setError('');
     try {
-      // v2.2: days are America/Denver (local_dt); two companion queries power
-      // the per-route funnel (source,route_type) and the human-verdict click
-      // count (is_machine_click=false). They share the abort signal.
-      const [res, routeRes, humanRes, ispRes] = await Promise.all([
+      // SINGLE SOURCE OF TRUTH: ONE breakdown (local_dt × source × route_type ×
+      // event_type) drives BOTH the headline KPIs and the route funnel, so they
+      // can never disagree. The headline is this query's rows filtered to the
+      // toolbar transport (routeRowsForTransport); the funnel reads the same rows
+      // split by source/route_type. (Previously the headline was a SEPARATE
+      // breakdown with its own cache key — it could serve a stale "cached" value
+      // while the funnel was fresh, so Delivered differed by thousands.) limit
+      // 5000 covers multi-day ranges (days × sources × routes × event_types).
+      // Two companion queries power the human-verdict click count and the
+      // per-ISP table; all share the abort signal.
+      const [routeRes, humanRes, ispRes] = await Promise.all([
         fetchBreakdown(
-          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: filterParams(applied) },
-          applied.nonce,
-          { signal: ctl.signal, bypass }
-        ),
-        fetchBreakdown(
-          // Route funnel is the MTA-vs-SES comparison panel — it must ALWAYS
-          // read both transports, so it uses the transport-agnostic params
-          // regardless of the toolbar's transport selector. It ALSO buckets by
-          // local_dt now so we can drop the backend's ±1-day partition widening
-          // and reconcile this funnel to the headline's America/Denver day —
-          // without local_dt it read the raw UTC dt partition and over-counted
-          // (last night's Denver send leaks into the next UTC day, ~55% high).
-          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'source', 'route_type', 'event_type'], limit: 500, filters: filterParamsNoTransport(applied) },
+          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'source', 'route_type', 'event_type'], limit: 5000, filters: filterParamsNoTransport(applied) },
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
@@ -1369,19 +1389,17 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           { signal: ctl.signal, bypass }
         ),
       ]);
-      setRows(res.data.rows);
       setRouteRows(routeRes.data.rows);
       setIspRows(ispRes.data.rows);
       setHumanClicks(humanRes.data.rows.reduce((a, x) => a + x.count, 0));
-      setTruncated(!!res.data.truncated);
-      setMeta(res.meta);
+      setTruncated(!!routeRes.data.truncated);
+      setMeta(routeRes.meta);
       setLoaded(true);
     } catch (e) {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
       // Clear stale data — old numbers must never render under the
       // newly-applied range/filter labels after the toast fades.
-      setRows([]);
       setRouteRows([]);
       setIspRows([]);
       setHumanClicks(0);
@@ -1435,9 +1453,6 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     return () => ctl.abort();
   }, [trendGrain, rangeDays, loaded, applied, addToast]);
 
-  const totals = useMemo(() => totalsFromBreakdown(rows), [rows]);
-  const daily = useMemo(() => dailySeries(rows), [rows]);
-
   // Route funnel reads across the backend's widened dt window (06-23..06-25),
   // so filter to in-range Denver days before pivoting — this is what makes the
   // funnel's TOTAL reconcile to the headline Delivered. RouteFunnelPanel.get()
@@ -1450,6 +1465,16 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     }),
     [routeRows, applied.from, applied.to]
   );
+
+  // Headline KPIs + trend derive from the SAME route-funnel rows, filtered to
+  // the toolbar transport — so the Range Overview Delivered and the route funnel
+  // TOTAL reconcile by construction (one query, one cache key).
+  const headlineRows = useMemo(
+    () => routeRowsForTransport(routeRowsInRange, applied.transport),
+    [routeRowsInRange, applied.transport]
+  );
+  const totals = useMemo(() => totalsFromBreakdown(headlineRows), [headlineRows]);
+  const daily = useMemo(() => dailySeries(headlineRows), [headlineRows]);
 
   // Per-ISP deliverability rows (group_by=isp_group,event_type), grouped into
   // one MetricRow per isp_group, sorted by derived Attempted desc, with a TOTAL.
