@@ -123,11 +123,16 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"variant":            tokenRe,
 	"campaign_id":        uuidRe,
 	// v2.2 (2026-06-12): operating-day buckets + human/machine click split.
-	"local_dt":         dtRe,   // America/Denver calendar day (computed)
-	"is_machine_click": boolRe, // boolean column — rendered unquoted in SQL
+	"local_dt":         dtRe,        // America/Denver calendar day (computed)
+	"local_hour":       localHourRe, // America/Denver calendar hour bucket "YYYY-MM-DD HH:00" (computed)
+	"is_machine_click": boolRe,      // boolean column — rendered unquoted in SQL
 }
 
 var boolRe = regexp.MustCompile(`^(true|false)$`)
+
+// localHourRe validates a local_hour value used as an Eq filter and documents
+// the bucket shape "YYYY-MM-DD HH:00" (Denver calendar hour).
+var localHourRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:00$`)
 
 // srcAllow is the fixed allowlist for the SourceIn ("Combined" transport)
 // filter. Only the two real transports may appear in the source IN (...) clause;
@@ -137,6 +142,12 @@ var srcAllow = map[string]bool{"pmta": true, "ses": true}
 // localDtExpr converts event_epoch_ms to the America/Denver calendar day.
 // The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
 const localDtExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE 'America/Denver', '%Y-%m-%d')"
+
+// localHourExpr converts event_epoch_ms to the America/Denver calendar HOUR
+// bucket ("YYYY-MM-DD HH:00"). Like localDtExpr it is Denver-derived, so it
+// triggers the same ±1-day dt-partition widening (an hour bucket can straddle a
+// UTC day boundary).
+const localHourExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE 'America/Denver', '%Y-%m-%d %H:00')"
 
 // ispExpr is the CLEAN ISP classification — computed from the REAL recipient domain
 // (parsed from the `email` field), NOT the stored `isp_group`/`email_domain`. The stored
@@ -166,6 +177,8 @@ func dimSelect(d string) string {
 	switch d {
 	case "local_dt":
 		return localDtExpr + " AS local_dt"
+	case "local_hour":
+		return localHourExpr + " AS local_hour"
 	case "isp":
 		return ispExpr + " AS isp"
 	}
@@ -176,6 +189,8 @@ func dimGroup(d string) string {
 	switch d {
 	case "local_dt":
 		return localDtExpr
+	case "local_hour":
+		return localHourExpr
 	case "isp":
 		return ispExpr
 	}
@@ -538,12 +553,14 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		return "", err
 	}
 
-	// local_dt semantics: From/To are AMERICA/DENVER days. Widen the UTC dt
-	// partition bound by ±1 day (a Denver day spans two UTC partitions) and
-	// add the precise local-day predicate.
-	usesLocal := f.Eq["local_dt"] != ""
+	// local_dt / local_hour semantics: From/To are AMERICA/DENVER days. Both are
+	// Denver-derived buckets, so widen the UTC dt partition bound by ±1 day (a
+	// Denver day — and any hour bucket inside it — spans two UTC partitions) and
+	// add the precise local-day predicate. local_hour must trigger this too:
+	// without it, hour buckets at the UTC day boundary would be dropped.
+	usesLocal := f.Eq["local_dt"] != "" || f.Eq["local_hour"] != ""
 	for _, d := range dims {
-		if d == "local_dt" {
+		if d == "local_dt" || d == "local_hour" {
 			usesLocal = true
 		}
 	}
@@ -622,6 +639,10 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 			b.WriteString(f.Eq[col]) // validated true|false — unquoted boolean
 		case "local_dt":
 			b.WriteString(localDtExpr)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		case "local_hour":
+			b.WriteString(localHourExpr)
 			b.WriteString(" = ")
 			b.WriteString(sqlStr(f.Eq[col]))
 		case "isp":

@@ -649,7 +649,7 @@ const heatDel = (p: number | null): string | undefined =>
   p == null ? undefined : p < 90 ? 'rgba(239,68,68,0.14)' : p < 97 ? 'rgba(245,158,11,0.11)' : undefined;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PIVOT — breakdown rows → metric rows / daily series / event mix
+// PIVOT — breakdown rows → metric rows / daily + hourly series
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Pivot group_by=<dim>,event_type rows into one MetricRow per dim value + totals.
@@ -698,16 +698,33 @@ function dailySeries(rows: BreakdownRow[]): DailyPoint[] {
   });
 }
 
-// Total per raw event_type (including unknown types), sorted desc — for the mix panel.
-function eventMix(rows: BreakdownRow[]): Array<{ type: string; count: number }> {
-  const m = new Map<string, number>();
+// Pivot group_by=local_hour,event_type rows into a sorted hourly series for
+// charting. Same shape as dailySeries but bucketed on the local_hour key
+// ('YYYY-MM-DD HH:00', already America/Denver). Sorted ascending.
+function hourlySeries(rows: BreakdownRow[]): DailyPoint[] {
+  const byHr = new Map<string, Record<string, number>>();
   for (const r of rows) {
-    const et = (r.keys['event_type'] ?? '(none)') || '(none)';
-    m.set(et, (m.get(et) || 0) + r.count);
+    const hrKey = r.keys['local_hour'] ?? '';
+    const et = (r.keys['event_type'] ?? '').toLowerCase();
+    let m = byHr.get(hrKey);
+    if (!m) { m = {}; byHr.set(hrKey, m); }
+    m[et] = (m[et] || 0) + r.count;
   }
-  return Array.from(m.entries())
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
+  const hrs = Array.from(byHr.keys()).sort();
+  return hrs.map((hrKey) => {
+    const c = countsFromTypeMap(byHr.get(hrKey) || {});
+    const r = computeRates(c);
+    return {
+      day: hrKey,
+      attempted: c.attempted,
+      delivered: c.delivered,
+      opens: c.opens,
+      clicks: c.clicks,
+      hardPct: r.hard,
+      softPct: r.soft,
+      compPct: r.complaint,
+    };
+  });
 }
 
 // Sum the per-dt series back into overall counts (Overview KPI strip).
@@ -1292,7 +1309,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
   const [rows, setRows] = useState<BreakdownRow[]>([]);
   const [routeRows, setRouteRows] = useState<BreakdownRow[]>([]);
+  const [ispRows, setIspRows] = useState<BreakdownRow[]>([]);
   const [humanClicks, setHumanClicks] = useState<number>(0);
+  const [trendGrain, setTrendGrain] = useState<'day' | 'hour'>('day');
+  const [hourlyRows, setHourlyRows] = useState<BreakdownRow[]>([]);
   const [meta, setMeta] = useState<FetchMeta | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1302,6 +1322,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     () => new Set(['delivered', 'hardPct', 'softPct', 'compPct'])
   );
   const abortRef = useRef<AbortController | null>(null);
+  const hourlyAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async (bypass: boolean) => {
     abortRef.current?.abort();
@@ -1313,7 +1334,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // v2.2: days are America/Denver (local_dt); two companion queries power
       // the per-route funnel (source,route_type) and the human-verdict click
       // count (is_machine_click=false). They share the abort signal.
-      const [res, routeRes, humanRes] = await Promise.all([
+      const [res, routeRes, humanRes, ispRes] = await Promise.all([
         fetchBreakdown(
           { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: filterParams(applied) },
           applied.nonce,
@@ -1322,8 +1343,12 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
         fetchBreakdown(
           // Route funnel is the MTA-vs-SES comparison panel — it must ALWAYS
           // read both transports, so it uses the transport-agnostic params
-          // regardless of the toolbar's transport selector.
-          { from: applied.from, to: applied.to, groupBy: ['source', 'route_type', 'event_type'], limit: 500, filters: filterParamsNoTransport(applied) },
+          // regardless of the toolbar's transport selector. It ALSO buckets by
+          // local_dt now so we can drop the backend's ±1-day partition widening
+          // and reconcile this funnel to the headline's America/Denver day —
+          // without local_dt it read the raw UTC dt partition and over-counted
+          // (last night's Denver send leaks into the next UTC day, ~55% high).
+          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'source', 'route_type', 'event_type'], limit: 500, filters: filterParamsNoTransport(applied) },
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
@@ -1335,9 +1360,18 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
+        fetchBreakdown(
+          // Per-ISP deliverability table. Uses the transport-aware filterParams
+          // so it honors the toolbar brand=sending-domain AND transport selectors
+          // (the operator's "filterable by sending domain" requirement).
+          { from: applied.from, to: applied.to, groupBy: ['isp_group', 'event_type'], limit: 100, filters: filterParams(applied) },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
       ]);
       setRows(res.data.rows);
       setRouteRows(routeRes.data.rows);
+      setIspRows(ispRes.data.rows);
       setHumanClicks(humanRes.data.rows.reduce((a, x) => a + x.count, 0));
       setTruncated(!!res.data.truncated);
       setMeta(res.meta);
@@ -1349,6 +1383,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // newly-applied range/filter labels after the toast fades.
       setRows([]);
       setRouteRows([]);
+      setIspRows([]);
       setHumanClicks(0);
       setMeta(null);
       setTruncated(false);
@@ -1365,10 +1400,77 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     return () => abortRef.current?.abort();
   }, [load]);
 
+  // Inclusive range length in days. Parse 'YYYY-MM-DD' at UTC noon so DST never
+  // shifts the day count. Hourly trend is only allowed for ≤72h ranges.
+  const rangeDays = useMemo(() => {
+    const a = Date.parse(`${applied.from}T12:00:00Z`);
+    const b = Date.parse(`${applied.to}T12:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b)) return 1;
+    return Math.round((b - a) / 86400000) + 1;
+  }, [applied.from, applied.to]);
+
+  // Separate hourly fetch — kept OUT of the main Promise.all so we never scan
+  // hourly partitions while on the Day grain. Only fires for ≤72h ranges once
+  // the day-grain load has succeeded. Mirrors load()'s abort discipline.
+  useEffect(() => {
+    if (trendGrain !== 'hour' || rangeDays > 3 || !loaded) return;
+    hourlyAbortRef.current?.abort();
+    const ctl = new AbortController();
+    hourlyAbortRef.current = ctl;
+    (async () => {
+      try {
+        const hres = await fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: ['local_hour', 'event_type'], limit: 5000, filters: filterParams(applied) },
+          applied.nonce,
+          { signal: ctl.signal }
+        );
+        setHourlyRows(hres.data.rows);
+      } catch (e) {
+        if (isAbortError(e)) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setHourlyRows([]);
+        addToast({ type: 'error', title: 'Hourly trend failed', message: msg });
+      }
+    })();
+    return () => ctl.abort();
+  }, [trendGrain, rangeDays, loaded, applied, addToast]);
+
   const totals = useMemo(() => totalsFromBreakdown(rows), [rows]);
   const daily = useMemo(() => dailySeries(rows), [rows]);
-  const mix = useMemo(() => eventMix(rows), [rows]);
-  const mixTotal = useMemo(() => mix.reduce((a, m) => a + m.count, 0), [mix]);
+
+  // Route funnel reads across the backend's widened dt window (06-23..06-25),
+  // so filter to in-range Denver days before pivoting — this is what makes the
+  // funnel's TOTAL reconcile to the headline Delivered. RouteFunnelPanel.get()
+  // ignores keys it doesn't read, so summing across the kept local_dt rows is
+  // correct with no change inside the panel.
+  const routeRowsInRange = useMemo(
+    () => routeRows.filter((r) => {
+      const d = r.keys['local_dt'] ?? '';
+      return d >= applied.from && d <= applied.to;
+    }),
+    [routeRows, applied.from, applied.to]
+  );
+
+  // Per-ISP deliverability rows (group_by=isp_group,event_type), grouped into
+  // one MetricRow per isp_group, sorted by derived Attempted desc, with a TOTAL.
+  const ispMetrics = useMemo(() => {
+    const byIsp = new Map<string, Record<string, number>>();
+    const totalMap: Record<string, number> = {};
+    for (const r of ispRows) {
+      const k = (r.keys['isp_group'] ?? '') || '(unknown)';
+      const et = (r.keys['event_type'] ?? '').toLowerCase();
+      let m = byIsp.get(k);
+      if (!m) { m = {}; byIsp.set(k, m); }
+      m[et] = (m[et] || 0) + r.count;
+      totalMap[et] = (totalMap[et] || 0) + r.count;
+    }
+    const out: MetricRow[] = [];
+    byIsp.forEach((m, k) => out.push(makeMetricRow(k, m)));
+    out.sort((a, b) => b.rates.denom - a.rates.denom);
+    return { rows: out, totals: makeMetricRow('TOTAL', totalMap) };
+  }, [ispRows]);
+
+  const hourly = useMemo(() => hourlySeries(hourlyRows), [hourlyRows]);
 
   const toggleSeries = (id: string) => setVisible((v) => {
     const next = new Set(v);
@@ -1379,6 +1481,11 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const c = totals.counts;
   const r = totals.rates;
   const dn = denomTitle(r);
+
+  // ISP table cell styling — mirrors RouteFunnelPanel's tabular-nums idiom.
+  const ispCell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+  const ispHead: React.CSSProperties = { ...ispCell, color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 };
+  const ispRowLabel: React.CSSProperties = { ...ispCell, textAlign: 'left', fontWeight: 600 };
 
   return (
     <div>
@@ -1439,36 +1546,98 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                 dimension; bounce numbers read pmta+ses sources ONLY (the
                 'app' source carries engagement; its 2026-06-11 bounce rows
                 are known duplicates). */}
-            <RouteFunnelPanel rows={routeRows} />
+            <RouteFunnelPanel rows={routeRowsInRange} />
 
 
-            {/* Daily trend */}
+            {/* Trend — Day | Hour (hourly only for ≤72h ranges) */}
             <div style={{ marginTop: 20 }}>
-              <div style={styles.subPanelTitle}>Daily trend</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                <div style={{ ...styles.subPanelTitle, marginBottom: 0 }}>Trend</div>
+                <div style={styles.segmented}>
+                  {([
+                    { id: 'day' as const, label: 'Day' },
+                    { id: 'hour' as const, label: 'Hour' },
+                  ]).map((opt) => {
+                    const active = trendGrain === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setTrendGrain(opt.id)}
+                        style={{
+                          ...styles.segmentedBtn,
+                          color: active ? COLORS.accent : COLORS.textSecondary,
+                          background: active ? COLORS.accent + '1f' : 'transparent',
+                          fontWeight: active ? 600 : 400,
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <SeriesToggles visible={visible} onToggle={toggleSeries} />
-              {daily.length === 0 ? <EmptyRow label="No daily datapoints." /> : (
-                <TrendChart data={daily} visible={visible} height={300} />
+              {trendGrain === 'day' ? (
+                daily.length === 0 ? <EmptyRow label="No daily datapoints." /> : (
+                  <TrendChart data={daily} visible={visible} height={300} />
+                )
+              ) : rangeDays > 3 ? (
+                <EmptyRow label="3 day ranges only" />
+              ) : hourly.length === 0 ? (
+                <EmptyRow label="No hourly datapoints." />
+              ) : (
+                <TrendChart data={hourly} visible={visible} height={300} />
               )}
             </div>
 
-            {/* Event mix */}
+            {/* Deliverability by ISP — respects the brand (sending domain) and
+                transport filters via filterParams on the companion query. */}
             <div style={{ marginTop: 20 }}>
-              <div style={styles.subPanelTitle}>Event mix ({fmt(mixTotal)} events)</div>
-              <div style={styles.mixList}>
-                {mix.map((m) => {
-                  const color = eventTypeColor(m.type);
-                  const share = mixTotal > 0 ? (m.count / mixTotal) * 100 : 0;
-                  return (
-                    <div key={m.type} style={styles.mixRow}>
-                      <div style={{ ...styles.mixType, color }}>{m.type}</div>
-                      <div style={styles.mixBarTrack}>
-                        <div style={{ ...styles.mixBarFill, width: `${Math.max(share, 0.5)}%`, background: color }} />
-                      </div>
-                      <div style={styles.mixCount}>{fmt(m.count)}</div>
-                      <div style={styles.mixShare}>{share.toFixed(1)}%</div>
-                    </div>
-                  );
-                })}
+              <div style={{ ...styles.subPanelTitle, marginBottom: 4 }}>Deliverability by ISP</div>
+              <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 10 }}>
+                Respects the brand (sending domain) and transport filters above.
+              </div>
+              {ispMetrics.rows.length === 0 ? <EmptyRow label="No ISP rows in this range." /> : (
+                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...ispHead, textAlign: 'left' }}>ISP</th>
+                      <th style={ispHead}>Attempted*</th>
+                      <th style={ispHead}>Delivered</th>
+                      <th style={ispHead}>Delivery%</th>
+                      <th style={ispHead}>Hard%</th>
+                      <th style={ispHead}>Soft%</th>
+                      <th style={ispHead}>Deferral events</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ispMetrics.rows.map((m) => (
+                      <tr key={m.key}>
+                        <td style={ispRowLabel}>{m.key}</td>
+                        <td style={ispCell} title="derived: delivered + bounces">{fmt(m.rates.denom)}</td>
+                        <td style={ispCell}>{fmt(m.counts.delivered)}</td>
+                        <td style={{ ...ispCell, background: heatDel(m.rates.delivery) }} title={denomTitle(m.rates)}>{fmtPct(m.rates.delivery)}</td>
+                        <td style={{ ...ispCell, color: HARD_RED, background: heatHard(m.rates.hard) }} title={denomTitle(m.rates)}>{fmtPct(m.rates.hard)}</td>
+                        <td style={{ ...ispCell, color: SOFT_AMBER }} title={denomTitle(m.rates)}>{fmtPct(m.rates.soft)}</td>
+                        <td style={ispCell}>{fmt(m.counts.delays)}</td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td style={{ ...ispRowLabel, borderTop: '1px solid #374151' }}>TOTAL</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.rates.denom)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delivered)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151', background: heatDel(ispMetrics.totals.rates.delivery) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.delivery)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151', color: HARD_RED, background: heatHard(ispMetrics.totals.rates.hard) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.hard)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+              <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 6 }}>
+                * Attempted is derived (delivered + bounces) — direct sends record no separate attempted event.
+                {' '}Deferral events are raw per-retry delay events, not unique messages.
               </div>
             </div>
           </>
@@ -2579,13 +2748,19 @@ export const EventLakeExplorer: React.FC = () => {
 
       {/* ─── Status strip ───────────────────────────────────────── */}
       {status && (
-        <div style={styles.statusStrip}>
-          <EnableBadge label="Write" enabled={status.enabled_write} />
-          <EnableBadge label="Read" enabled={status.enabled_read} />
-          <div style={styles.statusDivider} />
-          <Counter label="Sent" value={status.sent} color={COLORS.good} />
-          <Counter label="Failed" value={status.failed} color={COLORS.danger} />
-          <Counter label="Dropped" value={status.dropped} color={COLORS.warn} />
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ ...styles.subPanelTitle, marginBottom: 4 }}>Analytics lake ingestion</div>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 10 }}>
+            Live Firehose pipeline feeding this screen — if writing is off, the numbers below go stale.
+          </div>
+          <div style={{ ...styles.statusStrip, marginBottom: 0 }}>
+            <EnableBadge label="Writing events" enabled={status.enabled_write} />
+            <EnableBadge label="Read layer" enabled={status.enabled_read} />
+            <div style={styles.statusDivider} />
+            <Counter label="Ingested" value={status.sent} color={COLORS.good} />
+            <Counter label="Failed" value={status.failed} color={COLORS.danger} />
+            <Counter label="Dropped" value={status.dropped} color={COLORS.warn} />
+          </div>
         </div>
       )}
 
@@ -2901,18 +3076,6 @@ const styles: Record<string, React.CSSProperties> = {
   chartTipTitle: { color: COLORS.textPrimary, fontWeight: 700, marginBottom: 6, fontVariantNumeric: 'tabular-nums' },
   chartTipRow: { display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' },
   chartTipDot: { width: 8, height: 8, borderRadius: 999, flexShrink: 0 },
-
-  // ── Event mix ──
-  mixList: { display: 'flex', flexDirection: 'column', gap: 6 },
-  mixRow: { display: 'flex', alignItems: 'center', gap: 12 },
-  mixType: { width: 140, fontFamily: 'monospace', fontSize: 12, textAlign: 'right', flexShrink: 0 },
-  mixBarTrack: {
-    flex: 1, height: 16, background: 'rgba(255,255,255,0.04)',
-    borderRadius: 4, overflow: 'hidden',
-  },
-  mixBarFill: { height: '100%', borderRadius: 4, opacity: 0.8, minWidth: 2 },
-  mixCount: { width: 110, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: 12, color: COLORS.textPrimary, flexShrink: 0 },
-  mixShare: { width: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: 11, color: COLORS.textMuted, flexShrink: 0 },
 
   // ── Tables ──
   tableWrap: { overflowX: 'auto' },

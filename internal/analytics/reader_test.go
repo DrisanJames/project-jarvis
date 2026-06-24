@@ -266,6 +266,113 @@ func TestBuildBreakdownSQL(t *testing.T) {
 	}
 }
 
+func TestBuildBreakdownSQLLocalHour(t *testing.T) {
+	// local_hour mirrors local_dt: Denver-derived bucket, so it must (a) render
+	// the computed localHourExpr in SELECT and GROUP BY, and (b) trigger the
+	// ±1-day dt partition widening (hour buckets straddle the UTC day boundary).
+	cases := []struct {
+		name string
+		f    BreakdownFilter
+		want string
+	}{
+		{
+			// local_hour in GroupBy: widened dt BETWEEN + precise local-day predicate.
+			"local-hour-group-by",
+			BreakdownFilter{From: "2026-06-02", To: "2026-06-07", GroupBy: []string{"local_hour"}},
+			"SELECT " + localHourExpr + " AS local_hour, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
+				" GROUP BY " + localHourExpr + " ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// local_hour + event_type: the frontend's groupBy=local_hour,event_type
+			// hourly-trend contract. Widening still fires off local_hour.
+			"local-hour-plus-event-type",
+			BreakdownFilter{From: "2026-06-02", To: "2026-06-07", GroupBy: []string{"local_hour", "event_type"}},
+			"SELECT " + localHourExpr + " AS local_hour, event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
+				" GROUP BY " + localHourExpr + ", event_type ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// local_hour in GroupBy coexisting with an Eq predicate on isp_group.
+			"local-hour-with-eq-isp",
+			BreakdownFilter{
+				From: "2026-06-02", To: "2026-06-07",
+				GroupBy: []string{"local_hour"},
+				Eq:      map[string]string{"isp_group": "gmail"},
+			},
+			"SELECT " + localHourExpr + " AS local_hour, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
+				" AND isp_group = 'gmail'" +
+				" GROUP BY " + localHourExpr + " ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// local_hour as an Eq value: rendered through the computed expression,
+			// NOT a raw column; widening fires off the Eq too (no GroupBy local_hour).
+			"local-hour-eq-value",
+			BreakdownFilter{
+				From: "2026-06-02", To: "2026-06-07",
+				GroupBy: []string{"event_type"},
+				Eq:      map[string]string{"local_hour": "2026-06-04 09:00"},
+			},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
+				" AND " + localHourExpr + " = '2026-06-04 09:00'" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+		},
+	}
+	for _, tc := range cases {
+		got, err := buildBreakdownSQL(tc.f)
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s:\n got  %s\n want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildBreakdownSQLLocalHourValidation(t *testing.T) {
+	base := func() BreakdownFilter {
+		return BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}}
+	}
+	// Valid "YYYY-MM-DD HH:00" passes the localHourRe wired into breakdownDims.
+	f := base()
+	f.Eq = map[string]string{"local_hour": "2026-06-24 09:00"}
+	if _, err := buildBreakdownSQL(f); err != nil {
+		t.Errorf("valid local_hour Eq value should be accepted, got %v", err)
+	}
+
+	// Invalid local_hour Eq values must be rejected by validation (proves the
+	// regex is wired): a non-:00 minute and a bogus string.
+	bad := []struct {
+		name string
+		f    BreakdownFilter
+	}{
+		{"local-hour-bad-minute", func() BreakdownFilter {
+			f := base()
+			f.Eq = map[string]string{"local_hour": "2026-06-24 09:30"}
+			return f
+		}()},
+		{"local-hour-bogus", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"local_hour": "bogus"}; return f }()},
+		{"local-hour-day-only", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"local_hour": "2026-06-24"}; return f }()},
+		{"local-hour-injection", func() BreakdownFilter {
+			f := base()
+			f.Eq = map[string]string{"local_hour": "2026-06-24 09:00' OR 1=1"}
+			return f
+		}()},
+	}
+	for _, tc := range bad {
+		if _, err := buildBreakdownSQL(tc.f); err == nil {
+			t.Errorf("%s: expected validation error, got nil", tc.name)
+		}
+	}
+}
+
 func TestBuildBreakdownSQLRejections(t *testing.T) {
 	base := func() BreakdownFilter {
 		return BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}}
