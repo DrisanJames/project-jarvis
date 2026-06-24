@@ -501,8 +501,11 @@ func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
 	if len(dims) == 0 {
 		return nil, fmt.Errorf("group_by requires at least one dimension")
 	}
-	if len(dims) > 3 {
-		return nil, fmt.Errorf("group_by allows at most 3 dimensions, got %d", len(dims))
+	// Up to 4 dims: the route-funnel companion query groups by
+	// local_dt × source × route_type × event_type (all low-cardinality, so the
+	// result stays far under the 5000-row LIMIT). 4 is the ceiling.
+	if len(dims) > 4 {
+		return nil, fmt.Errorf("group_by allows at most 4 dimensions, got %d", len(dims))
 	}
 
 	// Eq: keys must be whitelisted dims; values must match that dim's pattern.

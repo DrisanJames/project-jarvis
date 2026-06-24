@@ -382,7 +382,7 @@ func TestBuildBreakdownSQLRejections(t *testing.T) {
 		f    BreakdownFilter
 	}{
 		{"unknown-dim", BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"email"}}},
-		{"too-many-dims", BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"dt", "brand", "isp_group", "event_type"}}},
+		{"too-many-dims", BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"dt", "brand", "isp_group", "event_type", "source"}}},
 		{"empty-group-by", BreakdownFilter{From: "2026-06-01", To: "2026-06-08"}},
 		{"missing-from", BreakdownFilter{To: "2026-06-08", GroupBy: []string{"event_type"}}},
 		// An inverted range would make BETWEEN silently return zero rows.
