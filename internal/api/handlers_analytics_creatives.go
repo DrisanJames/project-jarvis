@@ -270,7 +270,10 @@ func (s *Server) resolveOfferSlugs(r *http.Request, offer string) (slugs []strin
 // unattributed = offer-tagged conversions.
 //
 // Every table is scoped on organization_id = $1. The slug patterns ride in via
-// pq.Array($4); the everflow ids (when present) via pq.Array($7).
+// pq.Array($4); the everflow ids (when present) via pq.Array($6). offerName is a
+// Go-side label (creativeLabel) — it is NOT a SQL parameter (passing an
+// unreferenced $N makes Postgres reject the statement: "could not determine data
+// type of parameter").
 func (s *Server) creativesBreakdown(
 	r *http.Request, orgID interface{}, start, end interface{}, patterns, efids []string, view, offerName string,
 ) ([]map[string]interface{}, float64, int, bool, error) {
@@ -282,18 +285,18 @@ func (s *Server) creativesBreakdown(
 	}
 
 	// Offer-tagged conversion scoping (only when the offer's everflow ids are
-	// known). $7 = everflow id array. Without it the ledger stays broad and the
+	// known). $6 = everflow id array. Without it the ledger stays broad and the
 	// LATERAL slug-match still restricts attribution to this offer's creatives.
 	suppScope, cpmScope := "", ""
-	args := []interface{}{orgID, start, end, pq.Array(patterns), offerName, creativesAnalyticsRowLimit + 1}
+	args := []interface{}{orgID, start, end, pq.Array(patterns), creativesAnalyticsRowLimit + 1}
 	if len(efids) > 0 {
-		suppScope = " AND s.offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($7))"
-		cpmScope = " AND cm.deal_id IN (SELECT id FROM mailing_cpm_deals WHERE organization_id = $1 AND (everflow_offer_id = ANY($7) OR offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($7))))"
+		suppScope = " AND s.offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($6))"
+		cpmScope = " AND cm.deal_id IN (SELECT id FROM mailing_cpm_deals WHERE organization_id = $1 AND (everflow_offer_id = ANY($6) OR offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($6))))"
 		args = append(args, pq.Array(efids))
 	}
 
-	// $1 org, $2 start, $3 end, $4 slug patterns, $5 offer label, $6 row limit,
-	// $7 everflow ids (only when offer-scoped).
+	// $1 org, $2 start, $3 end, $4 slug patterns, $5 row limit,
+	// $6 everflow ids (only when offer-scoped).
 	q := `
 		WITH money_clicks AS (
 			SELECT t.campaign_id,
@@ -394,7 +397,7 @@ func (s *Server) creativesBreakdown(
 		 AND cv.subject = COALESCE(cg.subject, dg.subject)
 		 AND cv.sending_domain = COALESCE(cg.sending_domain, dg.sending_domain)
 		ORDER BY clicks DESC, conversions DESC
-		LIMIT $6
+		LIMIT $5
 	`
 
 	rows, err := s.mailingDB.QueryContext(r.Context(), q, args...)
