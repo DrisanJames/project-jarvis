@@ -121,8 +121,11 @@ func (s *Server) HandleLakeEvents(w http.ResponseWriter, r *http.Request) {
 // (comma-separated whitelisted dims, 1..3, default "event_type"), limit
 // (1..5000, default 1000), plus optional equality filters: campaign_id,
 // isp_group, event_type, brand, email_domain, route_type, source, bounce_cat,
-// vmta, pool, variant. Validation (dim whitelist, per-column value patterns)
-// lives in analytics.Breakdown — bad input comes back as a 400 {"error":...}.
+// vmta, pool, variant. Also accepts source_in (comma-separated "Combined"
+// transport filter, allowed values pmta|ses) which emits a source IN (...)
+// clause rather than a source= equality. Validation (dim whitelist, per-column
+// value patterns, source_in allowlist) lives in analytics.Breakdown — bad input
+// comes back as a 400 {"error":...}.
 // When the reader is disabled it returns 200 with {"disabled":true,"rows":[]}.
 func (s *Server) HandleLakeBreakdown(w http.ResponseWriter, r *http.Request) {
 	_, _ = GetOrgIDFromRequest(r)
@@ -177,12 +180,25 @@ func (s *Server) HandleLakeBreakdown(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// source_in: the "Combined" transport view (comma-separated; allowed values
+	// pmta|ses only, validated in analytics.Breakdown). NOT an Eq column — it
+	// emits "source IN (...)" rather than a source= equality.
+	var sourceIn []string
+	if v := q.Get("source_in"); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				sourceIn = append(sourceIn, s)
+			}
+		}
+	}
+
 	rows, err := analytics.Breakdown(r.Context(), analytics.BreakdownFilter{
-		From:    from,
-		To:      to,
-		GroupBy: groupBy,
-		Eq:      eq,
-		Limit:   limit,
+		From:     from,
+		To:       to,
+		GroupBy:  groupBy,
+		Eq:       eq,
+		SourceIn: sourceIn,
+		Limit:    limit,
 	})
 	if err != nil {
 		if analytics.IsDisabledErr(err) {

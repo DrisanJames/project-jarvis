@@ -209,6 +209,50 @@ func TestBuildBreakdownSQL(t *testing.T) {
 				" AND isp_group = 'gmail'" +
 				" GROUP BY event_type ORDER BY c DESC LIMIT 10",
 		},
+		{
+			// (a) Combined transport: source IN (...) present, COUNT(DISTINCT) intact.
+			"source-in-combined",
+			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, SourceIn: []string{"pmta", "ses"}},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND source IN ('pmta', 'ses')" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// (b) SourceIn + an Eq filter: the IN clause precedes the Eq predicate.
+			"source-in-precedes-eq",
+			BreakdownFilter{
+				From: "2026-06-01", To: "2026-06-08",
+				GroupBy:  []string{"event_type"},
+				Eq:       map[string]string{"isp_group": "gmail"},
+				SourceIn: []string{"pmta", "ses"},
+			},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND source IN ('pmta', 'ses')" +
+				" AND isp_group = 'gmail'" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// (c) SourceIn + local_dt in GroupBy: BOTH the widened dt BETWEEN and
+			// the source IN clause are present (widening gates only on local_dt).
+			"source-in-with-local-dt",
+			BreakdownFilter{From: "2026-06-02", To: "2026-06-07", GroupBy: []string{"local_dt"}, SourceIn: []string{"pmta", "ses"}},
+			"SELECT " + localDtExpr + " AS local_dt, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
+				" AND source IN ('pmta', 'ses')" +
+				" GROUP BY " + localDtExpr + " ORDER BY c DESC LIMIT 1000",
+		},
+		{
+			// (e) Dedupe: duplicated SourceIn values render each once.
+			"source-in-dedupe",
+			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, SourceIn: []string{"pmta", "pmta", "ses"}},
+			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" AND source IN ('pmta', 'ses')" +
+				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+		},
 	}
 	for _, tc := range cases {
 		got, err := buildBreakdownSQL(tc.f)
@@ -249,6 +293,9 @@ func TestBuildBreakdownSQLRejections(t *testing.T) {
 		{"eq-dotted-semicolon", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"email_domain": "b.com;DROP"}; return f }()},
 		// isp_group is token-validated: dots are NOT allowed there.
 		{"eq-isp-dot-rejected", func() BreakdownFilter { f := base(); f.Eq = map[string]string{"isp_group": "gmail.com"}; return f }()},
+		// (d) source_in is allowlist-validated: only pmta|ses; anything else rejects.
+		{"source-in-bogus", func() BreakdownFilter { f := base(); f.SourceIn = []string{"pmta", "bogus"}; return f }()},
+		{"source-in-injection", func() BreakdownFilter { f := base(); f.SourceIn = []string{"'; DROP"}; return f }()},
 	}
 	for _, tc := range bad {
 		if _, err := buildBreakdownSQL(tc.f); err == nil {

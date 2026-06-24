@@ -229,7 +229,7 @@ interface MetricRow {
 }
 
 interface DailyPoint {
-  dt: string;
+  day: string; // America/Denver operating day (populated from local_dt)
   attempted: number;
   delivered: number;
   opens: number;
@@ -252,12 +252,19 @@ interface CachedPayload<T> {
 
 type RouteTypeFilter = '' | 'pmta_direct' | 'ses' | 'ses_tenant';
 
+// Transport selector — which sending transport(s) the data covers.
+//   combined → both MTA + SES (source_in=pmta,ses)
+//   mta      → PMTA only (source=pmta)
+//   ses      → SES only (source=ses)
+type Transport = 'combined' | 'mta' | 'ses';
+
 interface DraftFilters {
   from: string;
   to: string;
   ispGroup: string;
   brand: string;
   routeType: RouteTypeFilter;
+  transport: Transport;
 }
 
 interface AppliedFilters extends DraftFilters {
@@ -435,8 +442,26 @@ const fmtPct = (v: number | null, digits = 2): string => (v == null ? '—' : `$
 const fmtCompact = (n: number) => Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const fmtClock = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour12: false });
 
+// UTC day helper — addresses the PHYSICAL UTC partition (the Raw Events tab's
+// dt= filter targets the lake's UTC partition column). Do NOT use it for
+// operating-day reporting; use the Denver helpers below for that. (The former
+// daysAgoUTC helper was removed once the Denver sweep left it with no callers —
+// the Raw tab only ever used todayUTC() for its max= bound.)
 const todayUTC = () => new Date().toISOString().slice(0, 10);
-const daysAgoUTC = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+
+// Operating-day helpers — report the day in America/Denver (MST/MDT), the
+// operator's send-day timezone. denverToday() returns the current Denver day as
+// 'YYYY-MM-DD'; daysAgoDenver(n) walks back n Denver days. The noon-UTC anchor
+// in daysAgoDenver keeps the arithmetic DST-safe (no day-boundary slips).
+const denverToday = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
+const daysAgoDenver = (n: number) => {
+  const t = new Date();
+  const denver = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(t);
+  const base = new Date(denver + 'T12:00:00Z');
+  base.setUTCDate(base.getUTCDate() - n);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(base);
+};
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUUID = (s: string) => UUID_RE.test(s.trim());
@@ -661,7 +686,7 @@ function dailySeries(rows: BreakdownRow[]): DailyPoint[] {
     const c = countsFromTypeMap(byDt.get(dtKey) || {});
     const r = computeRates(c);
     return {
-      dt: dtKey,
+      day: dtKey,
       attempted: c.attempted,
       delivered: c.delivered,
       opens: c.opens,
@@ -725,12 +750,28 @@ function saveRecentCampaign(id: string): RecentCampaign[] {
   return next;
 }
 
-// Global toolbar filters → breakdown filter params.
-function filterParams(f: AppliedFilters): Record<string, string> {
+// Global toolbar filters → breakdown filter params, WITHOUT the transport→source
+// mapping. Used only by the RouteFunnelPanel companion query, which shows MTA vs
+// SES side by side and must always read both transports regardless of the
+// selector (otherwise picking MTA would empty the SES side).
+function filterParamsNoTransport(f: AppliedFilters): Record<string, string> {
   const out: Record<string, string> = {};
   if (f.ispGroup.trim()) out.isp_group = f.ispGroup.trim();
   if (f.brand.trim()) out.brand = f.brand.trim();
   if (f.routeType) out.route_type = f.routeType;
+  return out;
+}
+
+// Global toolbar filters → breakdown filter params (transport-aware). The
+// transport selector maps to the backend source contract: a single
+// source=pmta|ses, or source_in=pmta,ses for Combined. Threading transport
+// through here keeps the cache key (built from the serialized URL) correct
+// automatically — no separate cache field is needed.
+function filterParams(f: AppliedFilters): Record<string, string> {
+  const out = filterParamsNoTransport(f);
+  if (f.transport === 'mta') out.source = 'pmta';
+  else if (f.transport === 'ses') out.source = 'ses';
+  else out.source_in = 'pmta,ses'; // combined
   return out;
 }
 
@@ -891,7 +932,7 @@ const TrendChart: React.FC<{
     <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
       <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
       <XAxis
-        dataKey="dt"
+        dataKey="day"
         tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
         tick={{ fill: COLORS.textMuted, fontSize: 10 }}
         axisLine={{ stroke: COLORS.borderStrong }}
@@ -1121,11 +1162,11 @@ const MetricsTable: React.FC<{
 // ─── Shared toolbar (applies to Overview + Dimensions) ─────────────────────
 
 const PRESETS: Array<{ label: string; from: () => string; to: () => string }> = [
-  { label: 'Today', from: () => todayUTC(), to: () => todayUTC() },
-  { label: 'Yesterday', from: () => daysAgoUTC(1), to: () => daysAgoUTC(1) },
-  { label: '7D', from: () => daysAgoUTC(6), to: () => todayUTC() },
-  { label: '14D', from: () => daysAgoUTC(13), to: () => todayUTC() },
-  { label: '30D', from: () => daysAgoUTC(29), to: () => todayUTC() },
+  { label: 'Today', from: () => denverToday(), to: () => denverToday() },
+  { label: 'Yesterday', from: () => daysAgoDenver(1), to: () => daysAgoDenver(1) },
+  { label: '7D', from: () => daysAgoDenver(6), to: () => denverToday() },
+  { label: '14D', from: () => daysAgoDenver(13), to: () => denverToday() },
+  { label: '30D', from: () => daysAgoDenver(29), to: () => denverToday() },
 ];
 
 const Toolbar: React.FC<{
@@ -1148,6 +1189,10 @@ const Toolbar: React.FC<{
   if (applied.routeType) chips.push({
     label: `route_type=${applied.routeType}`, tone: INFO_BLUE,
     onRemove: () => { const next = { ...draft, routeType: '' as RouteTypeFilter }; setDraft(next); onRun(next); },
+  });
+  if (applied.transport !== 'combined') chips.push({
+    label: `transport=${applied.transport === 'mta' ? 'MTA' : 'SES'}`, tone: COLORS.good,
+    onRemove: () => { const next = { ...draft, transport: 'combined' as Transport }; setDraft(next); onRun(next); },
   });
 
   return (
@@ -1177,7 +1222,7 @@ const Toolbar: React.FC<{
             onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))} style={styles.input} />
         </label>
         <label style={styles.fieldLabel}>To
-          <input type="date" value={draft.to} min={draft.from} max={todayUTC()}
+          <input type="date" value={draft.to} min={draft.from} max={denverToday()}
             onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))} style={styles.input} />
         </label>
         <label style={styles.fieldLabel}>isp_group
@@ -1203,6 +1248,32 @@ const Toolbar: React.FC<{
             <option value="ses_tenant">ses_tenant</option>
           </select>
         </label>
+        <div style={styles.fieldLabel}>Transport
+          <div style={styles.segmented}>
+            {([
+              { id: 'combined' as Transport, label: 'Combined' },
+              { id: 'mta' as Transport, label: 'MTA' },
+              { id: 'ses' as Transport, label: 'SES' },
+            ]).map((opt) => {
+              const active = draft.transport === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setDraft((d) => ({ ...d, transport: opt.id }))}
+                  style={{
+                    ...styles.segmentedBtn,
+                    color: active ? COLORS.accent : COLORS.textSecondary,
+                    background: active ? COLORS.accent + '1f' : 'transparent',
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         <button style={styles.primaryBtn} onClick={() => onRun(draft)}>
           <FontAwesomeIcon icon={faSearch} /> Run
         </button>
@@ -1249,7 +1320,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           { signal: ctl.signal, bypass }
         ),
         fetchBreakdown(
-          { from: applied.from, to: applied.to, groupBy: ['source', 'route_type', 'event_type'], limit: 500, filters: filterParams(applied) },
+          // Route funnel is the MTA-vs-SES comparison panel — it must ALWAYS
+          // read both transports, so it uses the transport-agnostic params
+          // regardless of the toolbar's transport selector.
+          { from: applied.from, to: applied.to, groupBy: ['source', 'route_type', 'event_type'], limit: 500, filters: filterParamsNoTransport(applied) },
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
@@ -1422,7 +1496,7 @@ const RowTrendExpansion: React.FC<{
     setLoading(true);
     fetchBreakdown(
       {
-        from: applied.from, to: applied.to, groupBy: ['dt', 'event_type'], limit: 5000,
+        from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000,
         filters: { ...filterParams(applied), [dim]: value },
       },
       applied.nonce,
@@ -1687,8 +1761,8 @@ const CampaignTab: React.FC<{
 }> = ({ request }) => {
   const { addToast } = useToast();
   const [input, setInput] = useState('');
-  const [from, setFrom] = useState(daysAgoUTC(29));
-  const [to, setTo] = useState(todayUTC());
+  const [from, setFrom] = useState(daysAgoDenver(29));
+  const [to, setTo] = useState(denverToday());
   const [recent, setRecent] = useState<RecentCampaign[]>(() => loadRecentCampaigns());
   const [result, setResult] = useState<LookupResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1925,7 +1999,7 @@ const CampaignTab: React.FC<{
             <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={styles.input} />
           </label>
           <label style={styles.fieldLabel}>To
-            <input type="date" value={to} min={from} max={todayUTC()} onChange={(e) => setTo(e.target.value)} style={styles.input} />
+            <input type="date" value={to} min={from} max={denverToday()} onChange={(e) => setTo(e.target.value)} style={styles.input} />
           </label>
           <button style={styles.primaryBtn} onClick={() => runLookup(input)} disabled={loading}>
             <FontAwesomeIcon icon={loading ? faSpinner : faSearch} spin={loading} /> Lookup
@@ -2266,7 +2340,7 @@ const RawEventsTab: React.FC<{
       </div>
 
       <div style={styles.eventFilterBar}>
-        <label style={styles.fieldLabel}>dt (day)
+        <label style={styles.fieldLabel} title="Physical UTC partition column — intentionally NOT the Denver operating day">dt (UTC partition)
           <input type="date" value={dt} max={todayUTC()} onChange={(e) => setDt(e.target.value)} style={styles.input} />
         </label>
         <label style={styles.fieldLabel}>campaign_id
@@ -2416,10 +2490,10 @@ export const EventLakeExplorer: React.FC = () => {
   const [visited, setVisited] = useState<Set<TabId>>(() => new Set<TabId>(['overview']));
 
   const [draft, setDraft] = useState<DraftFilters>(() => ({
-    from: daysAgoUTC(6), to: todayUTC(), ispGroup: '', brand: '', routeType: '',
+    from: daysAgoDenver(6), to: denverToday(), ispGroup: '', brand: '', routeType: '', transport: 'combined',
   }));
   const [applied, setApplied] = useState<AppliedFilters>(() => ({
-    from: daysAgoUTC(6), to: todayUTC(), ispGroup: '', brand: '', routeType: '', nonce: 0,
+    from: daysAgoDenver(6), to: denverToday(), ispGroup: '', brand: '', routeType: '', transport: 'combined', nonce: 0,
   }));
 
   const [lookupReq, setLookupReq] = useState<{ id: string; nonce: number } | null>(null);
@@ -2773,6 +2847,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: COLORS.bgDeep, color: COLORS.textPrimary,
     border: `1px solid ${COLORS.borderStrong}`, borderRadius: 6,
     padding: '7px 10px', fontSize: 13, outline: 'none',
+  },
+  segmented: {
+    display: 'inline-flex', background: COLORS.bgDeep,
+    border: `1px solid ${COLORS.borderStrong}`, borderRadius: 6, overflow: 'hidden',
+  },
+  segmentedBtn: {
+    border: 'none', borderRight: `1px solid ${COLORS.border}`,
+    padding: '7px 12px', fontSize: 13, cursor: 'pointer',
+    outline: 'none', whiteSpace: 'nowrap',
   },
   primaryBtn: {
     background: COLORS.accent, color: '#0a0e1a',

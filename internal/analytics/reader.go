@@ -94,11 +94,12 @@ type BreakdownRow struct {
 // dt bounds; GroupBy must name 1..3 whitelisted dimensions; Eq holds optional
 // equality predicates (empty values are skipped, not applied).
 type BreakdownFilter struct {
-	From    string            // YYYY-MM-DD, required
-	To      string            // YYYY-MM-DD, required
-	GroupBy []string          // 1..3 dims from breakdownDims
-	Eq      map[string]string // optional equality predicates, column -> value
-	Limit   int               // clamped to [1,5000], default 1000 if <=0
+	From     string            // YYYY-MM-DD, required
+	To       string            // YYYY-MM-DD, required
+	GroupBy  []string          // 1..3 dims from breakdownDims
+	Eq       map[string]string // optional equality predicates, column -> value
+	SourceIn []string          // optional; values must be in srcAllow {pmta,ses}; emits source IN (...)
+	Limit    int               // clamped to [1,5000], default 1000 if <=0
 }
 
 // breakdownDims is the closed set of columns Breakdown may GROUP BY or filter
@@ -109,7 +110,7 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"dt":                 dtRe,
 	"event_type":         tokenRe,
 	"isp_group":          tokenRe,
-	"isp":                tokenRe, // CLEAN ISP — computed from the real recipient domain (see ispExpr)
+	"isp":                tokenRe,  // CLEAN ISP — computed from the real recipient domain (see ispExpr)
 	"brand":              dottedRe, // brands are apex domains ("discountblog.com")
 	"email_domain":       dottedRe, // recipient domains contain dots
 	"route_type":         tokenRe,
@@ -122,11 +123,16 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"variant":            tokenRe,
 	"campaign_id":        uuidRe,
 	// v2.2 (2026-06-12): operating-day buckets + human/machine click split.
-	"local_dt":         dtRe,  // America/Denver calendar day (computed)
+	"local_dt":         dtRe,   // America/Denver calendar day (computed)
 	"is_machine_click": boolRe, // boolean column — rendered unquoted in SQL
 }
 
 var boolRe = regexp.MustCompile(`^(true|false)$`)
+
+// srcAllow is the fixed allowlist for the SourceIn ("Combined" transport)
+// filter. Only the two real transports may appear in the source IN (...) clause;
+// anything else is rejected before SQL construction.
+var srcAllow = map[string]bool{"pmta": true, "ses": true}
 
 // localDtExpr converts event_epoch_ms to the America/Denver calendar day.
 // The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
@@ -500,6 +506,14 @@ func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
 			return nil, fmt.Errorf("invalid value for %s", col)
 		}
 	}
+
+	// SourceIn: the "Combined" transport filter. Every value must be in the
+	// fixed allowlist {pmta,ses} — no caller text reaches SQL otherwise.
+	for _, s := range f.SourceIn {
+		if !srcAllow[s] {
+			return nil, fmt.Errorf("invalid source_in value %q", s)
+		}
+	}
 	return dims, nil
 }
 
@@ -561,6 +575,30 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		b.WriteString(sqlStr(f.From))
 		b.WriteString(" AND ")
 		b.WriteString(sqlStr(f.To))
+	}
+
+	// SourceIn ("Combined" transport): emit "AND source IN (v1, v2)". Values are
+	// allowlist-validated above; dedupe + sort for stable SQL, render each
+	// through sqlStr. Placed before the Eq loop so existing Eq ordering and the
+	// tests that assert it are unchanged.
+	if len(f.SourceIn) > 0 {
+		seenSrc := make(map[string]bool, len(f.SourceIn))
+		vals := make([]string, 0, len(f.SourceIn))
+		for _, s := range f.SourceIn {
+			if seenSrc[s] {
+				continue
+			}
+			seenSrc[s] = true
+			vals = append(vals, s)
+		}
+		sort.Strings(vals)
+		quoted := make([]string, len(vals))
+		for i, v := range vals {
+			quoted[i] = sqlStr(v)
+		}
+		b.WriteString(" AND source IN (")
+		b.WriteString(strings.Join(quoted, ", "))
+		b.WriteString(")")
 	}
 
 	// Equality predicates: validated above, rendered as quoted literals in
