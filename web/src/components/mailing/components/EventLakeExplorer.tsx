@@ -387,6 +387,39 @@ async function fetchBreakdown(
   return payload;
 }
 
+// ── Engagement summary (HUMAN opens/clicks from PG + verdict) ────────────────
+// The Range Overview KPI strip sources its open/click tiles from THIS endpoint,
+// not the lake breakdown. Internal-tracking opens/clicks live only in Postgres
+// (mailing_tracking_events); the lake carries only SES-webhook engagement and
+// its is_machine_* columns are inert, so the lake read reported ~3 clicks for a
+// day that actually had hundreds of human clicks. The backend classifies humans
+// with ignite_event_verdict() and excludes asset-CDN link rows.
+// See internal/api/handlers_analytics_engagement.go.
+interface EngSummary {
+  raw_opens: number;
+  human_opens: number;
+  human_openers: number;
+  raw_clicks: number;
+  human_clicks: number;
+  human_clickers: number;
+}
+
+// Honors the toolbar brand (sending-domain) filter; transport/ISP are not
+// applied (engagement is not a transport property). Not cached — it is one cheap
+// aggregate per Run, and staleness here would silently misreport conversions.
+async function fetchEngagement(
+  from: string,
+  to: string,
+  brand: string,
+  signal?: AbortSignal
+): Promise<EngSummary> {
+  const qs = new URLSearchParams({ from, to });
+  if (brand.trim()) qs.set('brand', brand.trim());
+  const res = await apiFetch(`/api/mailing/analytics/engagement?${qs.toString()}`, { signal });
+  if (!res.ok) await throwHttpError(res);
+  return res.json();
+}
+
 interface EventsParams {
   dt?: string;
   campaign_id?: string;
@@ -1335,7 +1368,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
   const [routeRows, setRouteRows] = useState<BreakdownRow[]>([]);
   const [ispRows, setIspRows] = useState<BreakdownRow[]>([]);
-  const [humanClicks, setHumanClicks] = useState<number>(0);
+  const [eng, setEng] = useState<EngSummary | null>(null);
   const [trendGrain, setTrendGrain] = useState<'day' | 'hour'>('day');
   const [hourlyRows, setHourlyRows] = useState<BreakdownRow[]>([]);
   const [meta, setMeta] = useState<FetchMeta | null>(null);
@@ -1364,19 +1397,14 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // breakdown with its own cache key — it could serve a stale "cached" value
       // while the funnel was fresh, so Delivered differed by thousands.) limit
       // 5000 covers multi-day ranges (days × sources × routes × event_types).
-      // Two companion queries power the human-verdict click count and the
-      // per-ISP table; all share the abort signal.
-      const [routeRes, humanRes, ispRes] = await Promise.all([
+      // Companion query powers the per-ISP table; the engagement summary powers
+      // the open/click KPIs from Postgres+verdict (the lake's open/click slice is
+      // ~3 orders of magnitude low and its is_machine_* flags are inert — see
+      // fetchEngagement). The engagement fetch is FAIL-SOFT: a failure degrades
+      // the two KPI tiles to "—" without breaking the delivery card.
+      const [routeRes, ispRes, engRes] = await Promise.all([
         fetchBreakdown(
           { from: applied.from, to: applied.to, groupBy: ['local_dt', 'source', 'route_type', 'event_type'], limit: 5000, filters: filterParamsNoTransport(applied) },
-          applied.nonce,
-          { signal: ctl.signal, bypass }
-        ),
-        fetchBreakdown(
-          {
-            from: applied.from, to: applied.to, groupBy: ['event_type'], limit: 10,
-            filters: { ...filterParams(applied), event_type: 'click', is_machine_click: 'false' },
-          },
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
@@ -1388,10 +1416,17 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
+        fetchEngagement(applied.from, applied.to, applied.brand, ctl.signal).catch((e) => {
+          if (isAbortError(e)) throw e; // let the outer catch swallow aborts uniformly
+          // fail-soft — KPIs show "—", card still renders; log so a persistently
+          // failing engagement endpoint is visible in the console.
+          console.warn('[Overview] engagement summary failed:', e instanceof Error ? e.message : e);
+          return null;
+        }),
       ]);
       setRouteRows(routeRes.data.rows);
       setIspRows(ispRes.data.rows);
-      setHumanClicks(humanRes.data.rows.reduce((a, x) => a + x.count, 0));
+      setEng(engRes);
       setTruncated(!!routeRes.data.truncated);
       setMeta(routeRes.meta);
       setLoaded(true);
@@ -1402,7 +1437,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // newly-applied range/filter labels after the toast fades.
       setRouteRows([]);
       setIspRows([]);
-      setHumanClicks(0);
+      setEng(null);
       setMeta(null);
       setTruncated(false);
       setLoaded(false);
@@ -1525,7 +1560,8 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               Days are <b>America/Denver</b> over {applied.from} → {applied.to}. Counts are de-duplicated per event.
               Attempted is DERIVED (delivered+bounces) — direct sends do not record a separate attempted event;
               recorded attempted events exist on the relay route only. Relayed is a relay handoff,
-              not a recipient delivery. <TimingNote meta={meta} />
+              not a recipient delivery. Open/Click KPIs are HUMAN (verdict-filtered, from tracking) — the
+              Trend chart's open/click series are still raw lake counts. <TimingNote meta={meta} />
             </p>
           </div>
           <button style={styles.refreshBtn} onClick={() => load(true)} disabled={loading}>
@@ -1557,12 +1593,18 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                 extra="per-RETRY events, not unique messages — throttle ISPs emit dozens per message" />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
-              <KpiCard label="Opens (raw)" value={c.opens} color={OPEN_CYAN}
-                rate={r.open} rateLabel="open" denomNote={deliveredTitle(c)}
-                extra="raw events — machine traffic included" />
-              <KpiCard label="Clicks (raw)" value={c.clicks} color={CLICK_VIOLET}
-                rate={r.click} rateLabel="click" denomNote={deliveredTitle(c)}
-                extra={`human-flagged: ${fmt(humanClicks)} · CTOR(raw): ${fmtPct(r.ctor)}`} />
+              {/* Opens/Clicks are HUMAN (verdict-filtered) from Postgres, NOT the
+                  lake — the lake's open/click slice is ~3 orders of magnitude low
+                  and its is_machine_* flags are inert. Raw (machine incl.) is shown
+                  in the subtext for contrast. */}
+              <KpiCard label="Opens (human)" value={eng ? eng.human_opens : 0} color={OPEN_CYAN}
+                rate={eng && c.delivered > 0 ? (eng.human_opens / c.delivered) * 100 : null}
+                rateLabel="open" denomNote={deliveredTitle(c)}
+                extra={eng ? `${fmt(eng.human_openers)} openers · raw ${fmt(eng.raw_opens)} (machine incl.)` : 'engagement unavailable'} />
+              <KpiCard label="Clicks (human)" value={eng ? eng.human_clicks : 0} color={CLICK_VIOLET}
+                rate={eng && c.delivered > 0 ? (eng.human_clicks / c.delivered) * 100 : null}
+                rateLabel="click" denomNote={deliveredTitle(c)}
+                extra={eng ? `${fmt(eng.human_clickers)} clickers · CTOR ${fmtPct(eng.human_opens > 0 ? (eng.human_clicks / eng.human_opens) * 100 : null)} · raw ${fmt(eng.raw_clicks)}` : 'engagement unavailable'} />
               <KpiCard label="Relayed" value={c.relayed} color={INFO_BLUE}
                 extra="relay handoff — not a delivery" />
             </div>

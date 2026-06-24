@@ -646,6 +646,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
 			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
 
+			// Engagement KPIs (READ ONLY) — HUMAN opens/clicks from Postgres
+			// mailing_tracking_events via the ignite_event_verdict() function.
+			// The lake only carries SES-webhook engagement and its is_machine_*
+			// columns are inert, so the Range Overview KPI strip sources its
+			// open/click tiles here. See handlers_analytics_engagement.go.
+			r.Get("/analytics/engagement", s.HandleEngagementSummary)
+
 			// Creatives reporting (READ ONLY) — which creative × subject ×
 			// sending-domain combos drive money-link clicks & conversions for
 			// a chosen offer. Identity FK columns are inert; keys are the
