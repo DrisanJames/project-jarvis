@@ -454,8 +454,10 @@ func (s *Server) creativesBreakdown(
 			row["creative_key"] = creativeKey
 			row["creative_label"] = creativeLabel(offerName, subject, creativeKey)
 		} else {
-			row["creative_key"] = nil
-			row["creative_label"] = nil
+			// subject view: keep these as empty strings (not null) so the JSON
+			// contract stays string-typed and React keys never read "null|…".
+			row["creative_key"] = ""
+			row["creative_label"] = ""
 		}
 		out = append(out, row)
 	}

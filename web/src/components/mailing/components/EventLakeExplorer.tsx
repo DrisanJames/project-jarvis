@@ -2801,10 +2801,13 @@ const CreativesTab: React.FC = () => {
     const subject = row.subject || '(no subject)';
     const fromName = row.from_name || '';
     if (!row.has_html || !row.sample_campaign_id) {
-      // Drip reminders store no html on the campaign row (they reuse the
-      // clicked creative at send time) — nothing to render.
-      setPreview({ open: true, loading: false, subject, from_name: fromName, html: '',
-        note: 'This is a drip reminder — it reuses the clicked creative at send time, so there is no stored HTML to preview.', error: '' });
+      // Two distinct cases: a drip reminder (has a sample campaign but NULL html —
+      // it reuses the clicked creative at send time), or a row with no in-range
+      // campaign to point at (e.g. a conversion-only row from the full outer join).
+      const note = !row.sample_campaign_id
+        ? 'No in-range campaign to preview for this row (e.g. a conversion attributed from outside the selected window).'
+        : 'This is a drip reminder — it reuses the clicked creative at send time, so there is no stored HTML to preview.';
+      setPreview({ open: true, loading: false, subject, from_name: fromName, html: '', note, error: '' });
       return;
     }
     const ctl = new AbortController();
