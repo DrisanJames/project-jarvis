@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -515,6 +518,23 @@ var imageURLPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<v:(?:fill|image)\b[^>]*?\bsrc\s*=\s*'([^']+)'`),
 }
 
+// isTLSCertError reports whether err is a TLS certificate-verification failure
+// (untrusted/incomplete chain, invalid cert, or hostname mismatch). Used to scope
+// the cert-skipping download fallback to ONLY genuine cert problems.
+func isTLSCertError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ua x509.UnknownAuthorityError
+	var ci x509.CertificateInvalidError
+	var he x509.HostnameError
+	if errors.As(err, &ua) || errors.As(err, &ci) || errors.As(err, &he) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "x509:") || strings.Contains(msg, "tls: failed to verify certificate")
+}
+
 // collectImageURLs returns the unique, in-order set of candidate image URLs found
 // across all imageURLPatterns. Dedup is by exact URL string so the same image
 // referenced via both <img src> and a CSS url() is fetched once and every
@@ -616,8 +636,30 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 		counts.Details = append(counts.Details, RehostDetail{URL: url, Outcome: outcome, Reason: reason, CDNURL: cdn})
 	}
 
-	// HTTP client with timeout for downloading external images
+	// HTTP client with timeout for downloading external images. A second client
+	// skips TLS verification — used ONLY as a fallback when the source host serves
+	// an untrusted/incomplete cert chain (affiliate image hosts like
+	// imageports.com commonly omit the intermediate cert; Go's TLS stack, unlike
+	// browsers/curl, does not AIA-chase it and rejects "unknown authority"). We
+	// only re-host PUBLIC marketing images onto our own valid-cert CDN and the
+	// operator reviews the proof visually, so relaxing verification for that one
+	// fetch is an acceptable tradeoff vs. silently dropping the image. Normal
+	// HTTPS stays fully verified — the insecure client is reached only on a cert
+	// error from the primary client.
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	insecureClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	getImage := func(u string) (*http.Response, bool, error) {
+		resp, err := httpClient.Get(u)
+		if err != nil && isTLSCertError(err) {
+			log.Printf("[ImageRehost] untrusted TLS chain for %s; retrying without cert verification", u)
+			resp, err = insecureClient.Get(u)
+			return resp, true, err
+		}
+		return resp, false, err
+	}
 
 	for _, originalURL := range urls {
 		// Skip data URIs
@@ -651,14 +693,17 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 		// URL-encode spaces for the download URL
 		downloadURL := strings.ReplaceAll(originalURL, " ", "%20")
 
-		// Download the image
+		// Download the image (with a cert-skipping fallback for untrusted chains)
 		log.Printf("[ImageRehost] Downloading: %s", downloadURL)
-		resp, err := httpClient.Get(downloadURL)
+		resp, insecure, err := getImage(downloadURL)
 		if err != nil {
 			log.Printf("[ImageRehost] WARNING: Failed to download %s: %v", downloadURL, err)
 			counts.Failed++
 			record(originalURL, "failed", "download error: "+err.Error(), "")
 			continue
+		}
+		if insecure {
+			log.Printf("[ImageRehost] NOTE: %s fetched with TLS verification relaxed (untrusted source chain)", downloadURL)
 		}
 
 		if resp.StatusCode != http.StatusOK {
