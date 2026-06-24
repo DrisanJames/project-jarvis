@@ -66,7 +66,7 @@ import {
   faSpinner, faSyncAlt, faExclamationTriangle, faDatabase,
   faCircle, faSearch, faMoon, faInfoCircle, faTable, faLayerGroup,
   faChartLine, faChevronDown, faChevronRight, faTimes,
-  faCheckCircle, faTimesCircle, faBullseye, faHistory,
+  faCheckCircle, faTimesCircle, faBullseye, faHistory, faImages,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
@@ -276,7 +276,7 @@ interface RecentCampaign {
   at: string; // ISO timestamp of last lookup
 }
 
-type TabId = 'overview' | 'dimensions' | 'campaign' | 'raw';
+type TabId = 'overview' | 'dimensions' | 'campaign' | 'raw' | 'creatives';
 
 type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
@@ -2637,6 +2637,407 @@ const RawEventsTab: React.FC<{
   );
 };
 
+// ─── Tab 5: Creatives ───────────────────────────────────────────────────────
+//
+// PG-backed (NOT the Athena lake) creative-performance reporting. For a chosen
+// offer it lists every creative × subject × sending-domain combo with money-link
+// clicks & conversions, so creative×domain combos are directly comparable.
+//
+// Backend (both READ ONLY, called via apiFetch):
+//   GET /api/mailing/analytics/creatives/offers?start_date=&end_date=
+//       → { offers: CreativeOfferOpt[] }   (sorted by money_clicks desc)
+//   GET /api/mailing/analytics/creatives?offer=&start_date=&end_date=&view=creative|subject
+//       → CreativesReport
+// Dates are sent as start_date / end_date (YYYY-MM-DD, America/Denver).
+
+interface CreativeOfferOpt {
+  slug: string;
+  offer_name: string | null;
+  everflow_offer_id: number;
+  money_clicks: number;
+}
+
+interface CreativeRow {
+  creative_key: string;
+  creative_label: string;
+  subject: string;
+  sending_domain: string;
+  delivered: number;
+  clicks: number;
+  clickers: number;
+  click_rate: number;   // fraction (0–1)
+  conversions: number;
+  conv_rate: number;    // fraction (0–1)
+  revenue: number;
+}
+
+interface CreativesReport {
+  view: 'creative' | 'subject';
+  offer: string;
+  from: string;
+  to: string;
+  delivered_source: string;
+  truncated: boolean;
+  unattributed_conversions: number;
+  rows: CreativeRow[];
+}
+
+interface CreativesMeta {
+  unattributed_conversions: number;
+  truncated: boolean;
+  delivered_source: string;
+}
+
+type CreativeView = 'creative' | 'subject';
+
+// Sortable numeric columns (left text col sorts on label/subject separately).
+const CREATIVE_NUM_COLS: Array<{ id: keyof CreativeRow; label: string }> = [
+  { id: 'delivered', label: 'Delivered' },
+  { id: 'clicks', label: 'Clicks' },
+  { id: 'click_rate', label: 'Click-rate' },
+  { id: 'conversions', label: 'Conversions' },
+  { id: 'conv_rate', label: 'Conv-rate' },
+  { id: 'revenue', label: 'Revenue' },
+];
+
+const fmtMoney = (n: number): string =>
+  (n ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function fetchCreativeOffers(
+  from: string,
+  to: string,
+  signal?: AbortSignal
+): Promise<CreativeOfferOpt[]> {
+  const qs = new URLSearchParams({ start_date: from, end_date: to });
+  const res = await apiFetch(`/api/mailing/analytics/creatives/offers?${qs.toString()}`, { signal });
+  if (!res.ok) await throwHttpError(res);
+  const json: { offers?: CreativeOfferOpt[] } = await res.json();
+  return Array.isArray(json.offers) ? json.offers : [];
+}
+
+async function fetchCreativesReport(
+  offer: string,
+  view: CreativeView,
+  from: string,
+  to: string,
+  signal?: AbortSignal
+): Promise<CreativesReport> {
+  const qs = new URLSearchParams({ offer, start_date: from, end_date: to, view });
+  const res = await apiFetch(`/api/mailing/analytics/creatives?${qs.toString()}`, { signal });
+  if (!res.ok) await throwHttpError(res);
+  const json: CreativesReport = await res.json();
+  return { ...json, rows: Array.isArray(json.rows) ? json.rows : [] };
+}
+
+const CreativesTab: React.FC = () => {
+  const { addToast } = useToast();
+
+  const [offers, setOffers] = useState<CreativeOfferOpt[]>([]);
+  const [offer, setOffer] = useState('');
+  const [view, setView] = useState<CreativeView>('creative');
+  const [from, setFrom] = useState(daysAgoDenver(13)); // 14-day window inclusive
+  const [to, setTo] = useState(denverToday());
+  const [rows, setRows] = useState<CreativeRow[]>([]);
+  const [meta, setMeta] = useState<CreativesMeta | null>(null);
+  const [sort, setSort] = useState<SortState>({ col: 'clicks', dir: 'desc' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const offersAbortRef = useRef<AbortController | null>(null);
+  const reportAbortRef = useRef<AbortController | null>(null);
+  // Track the selected offer without re-triggering the offers fetch when it changes.
+  const offerRef = useRef(offer);
+  offerRef.current = offer;
+
+  // ── Load the offers list (on mount + whenever the window changes) ──
+  const loadOffers = useCallback(async () => {
+    offersAbortRef.current?.abort();
+    const ctl = new AbortController();
+    offersAbortRef.current = ctl;
+    try {
+      const list = await fetchCreativeOffers(from, to, ctl.signal);
+      if (ctl.signal.aborted) return;
+      setOffers(list);
+      // Auto-select the highest-volume offer when none is selected (or the
+      // current selection vanished from the new window's list).
+      const cur = offerRef.current;
+      if (list.length > 0 && (!cur || !list.some((o) => o.slug === cur))) {
+        setOffer(list[0].slug);
+      } else if (list.length === 0) {
+        setOffer('');
+      }
+    } catch (e) {
+      if (isAbortError(e)) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      addToast({ type: 'error', title: 'Creative offers list failed', message: msg });
+    }
+  }, [from, to, addToast]);
+
+  useEffect(() => {
+    loadOffers();
+    return () => offersAbortRef.current?.abort();
+  }, [loadOffers]);
+
+  // ── Load the creatives report (offer/view/from/to) ──
+  const loadReport = useCallback(async () => {
+    if (!offer) {
+      setRows([]);
+      setMeta(null);
+      setError('');
+      return;
+    }
+    reportAbortRef.current?.abort();
+    const ctl = new AbortController();
+    reportAbortRef.current = ctl;
+    setLoading(true);
+    setError('');
+    try {
+      const rep = await fetchCreativesReport(offer, view, from, to, ctl.signal);
+      if (ctl.signal.aborted) return;
+      setRows(rep.rows);
+      setMeta({
+        unattributed_conversions: rep.unattributed_conversions ?? 0,
+        truncated: !!rep.truncated,
+        delivered_source: rep.delivered_source || '',
+      });
+    } catch (e) {
+      if (isAbortError(e)) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      // Clear stale rows so the error shell isn't shown over an old offer's data.
+      setRows([]);
+      setMeta(null);
+      setError(msg);
+      addToast({ type: 'error', title: 'Creative report failed', message: msg });
+    } finally {
+      if (reportAbortRef.current === ctl) setLoading(false);
+    }
+  }, [offer, view, from, to, addToast]);
+
+  useEffect(() => {
+    loadReport();
+    return () => reportAbortRef.current?.abort();
+  }, [loadReport]);
+
+  const onSort = (col: string) => setSort((s) =>
+    s.col === col ? { col, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
+
+  // Client-side sort. The left text column sorts by label (creative view) or
+  // subject (subject view); numeric columns sort by their raw value.
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    const dir = sort.dir === 'desc' ? -1 : 1;
+    copy.sort((a, b) => {
+      let av: number | string;
+      let bv: number | string;
+      if (sort.col === '__label') {
+        av = view === 'creative' ? a.creative_label : a.subject;
+        bv = view === 'creative' ? b.creative_label : b.subject;
+      } else if (sort.col === '__domain') {
+        av = a.sending_domain;
+        bv = b.sending_domain;
+      } else {
+        av = (a[sort.col as keyof CreativeRow] as number) ?? 0;
+        bv = (b[sort.col as keyof CreativeRow] as number) ?? 0;
+      }
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return av.localeCompare(bv) * dir;
+      }
+      return ((av as number) - (bv as number)) * dir;
+    });
+    return copy;
+  }, [rows, sort, view]);
+
+  const totals = useMemo(() => rows.reduce(
+    (acc, r) => {
+      acc.delivered += r.delivered;
+      acc.clicks += r.clicks;
+      acc.conversions += r.conversions;
+      acc.revenue += r.revenue;
+      return acc;
+    },
+    { delivered: 0, clicks: 0, conversions: 0, revenue: 0 }
+  ), [rows]);
+
+  const sortIndicator = (col: string) => (sort.col === col ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : '');
+  const today = denverToday();
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.panelHeader}>
+        <div>
+          <h2 style={styles.panelTitle}>
+            <FontAwesomeIcon icon={faImages} style={{ marginRight: 8, color: COLORS.accentAlt }} />
+            Creative Performance
+          </h2>
+          <p style={styles.panelSubtitle}>
+            Clicks = money-link clicks (source_id=email). Conversions use last-click attribution (~58% of
+            conversions tie to a money click; the rest are shown as Unattributed). Delivered is summed from
+            campaign counters and under-counts SES relay — treat click-rate as directional. Days are America/Denver.
+          </p>
+        </div>
+        <button style={styles.refreshBtn} onClick={() => { loadOffers(); loadReport(); }} disabled={loading}>
+          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh
+        </button>
+      </div>
+
+      {/* ── Controls ── */}
+      <div style={styles.eventFilterBar}>
+        <label style={styles.fieldLabel}>Offer
+          <select
+            value={offer}
+            onChange={(e) => setOffer(e.target.value)}
+            style={{ ...styles.input, width: 320 }}
+          >
+            {offers.length === 0 && <option value="">(no offers in range)</option>}
+            {offers.map((o) => (
+              <option key={o.slug} value={o.slug}>
+                {(o.offer_name ?? `(unmapped) ${o.slug}`) + ` (${fmt(o.money_clicks)})`}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={styles.fieldLabel}>View
+          <div style={styles.segmented}>
+            {(['creative', 'subject'] as CreativeView[]).map((v, i) => {
+              const active = view === v;
+              return (
+                <button
+                  key={v}
+                  style={{
+                    ...styles.segmentedBtn,
+                    borderRight: i === 0 ? `1px solid ${COLORS.border}` : 'none',
+                    color: active ? COLORS.accent : COLORS.textSecondary,
+                    background: active ? COLORS.accent + '14' : 'transparent',
+                    fontWeight: active ? 700 : 500,
+                  }}
+                  onClick={() => setView(v)}
+                >
+                  {v === 'creative' ? 'Creative' : 'Subject'}
+                </button>
+              );
+            })}
+          </div>
+        </label>
+
+        <label style={styles.fieldLabel}>From
+          <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={styles.input} />
+        </label>
+        <label style={styles.fieldLabel}>To
+          <input type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} style={styles.input} />
+        </label>
+        <button style={styles.primaryBtn} onClick={() => loadReport()} disabled={loading || !offer}>
+          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh report
+        </button>
+      </div>
+
+      {/* ── Unattributed badge + truncation ── */}
+      {meta && meta.unattributed_conversions > 0 && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 12, borderRadius: 8,
+          background: COLORS.accent + '12', border: `1px solid ${COLORS.accent}33`,
+          color: COLORS.textSecondary, fontSize: 12,
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+        }}>
+          <FontAwesomeIcon icon={faInfoCircle} style={{ color: COLORS.accent }} />
+          {fmt(meta.unattributed_conversions)} conversion{meta.unattributed_conversions === 1 ? '' : 's'} could not be tied to a money click — not shown below.
+        </div>
+      )}
+      <TruncationBanner truncated={!!meta?.truncated} limit={5000} />
+
+      {/* ── Body ── */}
+      {error ? (
+        <div style={styles.errorShell}>
+          <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
+          Creative report failed: {error}
+          <button style={styles.inlineRetry} onClick={() => loadReport()}>Retry</button>
+        </div>
+      ) : loading ? (
+        <LoadingRow label="Loading creative performance…" />
+      ) : !offer ? (
+        <EmptyRow label="No offers had money-link clicks in this range." />
+      ) : sortedRows.length === 0 ? (
+        <EmptyRow label="No creatives for this offer in the selected range." />
+      ) : (
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={{ ...styles.th, textAlign: 'left', cursor: 'pointer' }} onClick={() => onSort('__label')}>
+                  {view === 'creative' ? 'Creative' : 'Subject'}{sortIndicator('__label')}
+                </th>
+                <th style={{ ...styles.th, textAlign: 'left', cursor: 'pointer' }} onClick={() => onSort('__domain')}>
+                  Sending domain{sortIndicator('__domain')}
+                </th>
+                {CREATIVE_NUM_COLS.map((c) => (
+                  <th key={c.id} style={{ ...styles.th, textAlign: 'right', cursor: 'pointer' }} onClick={() => onSort(c.id)}>
+                    {c.label}{sortIndicator(c.id)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRows.map((r, idx) => {
+                // For the creative view, draw a subtle top rule whenever the
+                // creative_key changes so the operator scans one creative across
+                // its sending domains. (Only meaningful when not sorted away from
+                // the natural grouping, but harmless otherwise.)
+                const prev = idx > 0 ? sortedRows[idx - 1] : null;
+                const groupBreak = view === 'creative' && prev !== null && prev.creative_key !== r.creative_key;
+                const rowStyle: React.CSSProperties = {
+                  ...styles.tr,
+                  ...(groupBreak ? { borderTop: `2px solid ${COLORS.borderStrong}` } : {}),
+                };
+                const leftLabel = view === 'creative' ? r.creative_label : r.subject;
+                return (
+                  <tr key={`${r.creative_key}|${r.sending_domain}|${idx}`} style={rowStyle}>
+                    <td style={{
+                      ...styles.td, maxWidth: 360,
+                      borderLeft: view === 'creative' ? `2px solid ${COLORS.accentAlt}33` : undefined,
+                    }} title={leftLabel}>
+                      {leftLabel || '—'}
+                    </td>
+                    <td style={{ ...styles.td, whiteSpace: 'nowrap', color: COLORS.textSecondary }} title={r.sending_domain}>
+                      {r.sending_domain || '—'}
+                    </td>
+                    <td style={{ ...styles.td, textAlign: 'right' }}>{fmt(r.delivered)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: CLICK_VIOLET }}>{fmt(r.clicks)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmtPct(r.click_rate * 100)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.good }}>{fmt(r.conversions)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmtPct(r.conv_rate * 100)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right' }}>{fmtMoney(r.revenue)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr style={{ ...styles.tr, borderTop: `2px solid ${COLORS.borderStrong}` }}>
+                <td style={{ ...styles.td, fontWeight: 700, color: COLORS.textPrimary }}>Total</td>
+                <td style={{ ...styles.td, color: COLORS.textMuted }}>{sortedRows.length} row{sortedRows.length === 1 ? '' : 's'}</td>
+                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmt(totals.delivered)}</td>
+                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: CLICK_VIOLET }}>{fmt(totals.clicks)}</td>
+                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>
+                  {fmtPct(totals.delivered > 0 ? (totals.clicks / totals.delivered) * 100 : null)}
+                </td>
+                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: COLORS.good }}>{fmt(totals.conversions)}</td>
+                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>
+                  {fmtPct(totals.clicks > 0 ? (totals.conversions / totals.clicks) * 100 : null)}
+                </td>
+                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(totals.revenue)}</td>
+              </tr>
+            </tfoot>
+          </table>
+          {meta?.delivered_source && (
+            <div style={styles.tableFooterNote}>
+              Delivered source: {meta.delivered_source}. Click-rate = clicks ÷ delivered; conv-rate = conversions ÷ clicks (last-click).
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2646,6 +3047,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof faChartLine }> = [
   { id: 'dimensions', label: 'Dimensions', icon: faLayerGroup },
   { id: 'campaign', label: 'Campaign Lookup', icon: faBullseye },
   { id: 'raw', label: 'Raw Events', icon: faTable },
+  { id: 'creatives', label: 'Creatives', icon: faImages },
 ];
 
 export const EventLakeExplorer: React.FC = () => {
@@ -2765,6 +3167,9 @@ export const EventLakeExplorer: React.FC = () => {
       )}
 
       {/* ─── DARK empty state ──────────────────────────────────── */}
+      {/* Even when the Athena read layer is off the Creatives tab still works
+          (it is PG-backed, not lake-backed), so the dark card now reads as a
+          notice scoped to the lake tabs rather than the whole screen. */}
       {status && !readEnabled && (
         <div style={styles.darkCard}>
           <FontAwesomeIcon icon={faMoon} style={{ fontSize: 28, color: COLORS.accentAlt }} />
@@ -2772,8 +3177,9 @@ export const EventLakeExplorer: React.FC = () => {
             <div style={styles.darkTitle}>Event reporting read layer is off</div>
             <div style={styles.darkBody}>
               The analytics database read layer is not configured. Enable the analytics results location on the
-              server to turn on breakdown &amp; event queries. Until then this screen shows the write-side
-              counters above; query controls stay disabled.
+              server to turn on breakdown &amp; event queries. Until then the lake tabs show the write-side
+              counters above; their query controls stay disabled. The Creatives tab is database-backed and works
+              regardless.
             </div>
             <div style={styles.darkHint}>
               <FontAwesomeIcon icon={faInfoCircle} style={{ color: COLORS.textMuted, marginRight: 6 }} />
@@ -2783,31 +3189,36 @@ export const EventLakeExplorer: React.FC = () => {
         </div>
       )}
 
-      {/* ─── Toolbar + tabs (only when read enabled) ───────────── */}
+      {/* ─── Tab nav (always rendered once status loads) ───────── */}
+      {/* The nav strip is NOT gated on readEnabled so the PG-backed Creatives
+          tab stays reachable when the lake read layer is dark. */}
+      {status && (
+        <div style={styles.tabNav}>
+          {TABS.map((t) => {
+            const active = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                style={{
+                  ...styles.tabBtn,
+                  color: active ? COLORS.textPrimary : COLORS.textSecondary,
+                  borderBottomColor: active ? COLORS.accent : 'transparent',
+                  background: active ? 'rgba(129,140,248,0.07)' : 'transparent',
+                }}
+                onClick={() => selectTab(t.id)}
+              >
+                <FontAwesomeIcon icon={t.icon} style={{ marginRight: 8, color: active ? COLORS.accent : COLORS.textMuted }} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ─── Lake tabs + their Toolbar (only when read enabled) ── */}
       {status && readEnabled && (
         <>
           <Toolbar draft={draft} setDraft={setDraft} applied={applied} onRun={onRun} />
-
-          <div style={styles.tabNav}>
-            {TABS.map((t) => {
-              const active = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  style={{
-                    ...styles.tabBtn,
-                    color: active ? COLORS.textPrimary : COLORS.textSecondary,
-                    borderBottomColor: active ? COLORS.accent : 'transparent',
-                    background: active ? 'rgba(129,140,248,0.07)' : 'transparent',
-                  }}
-                  onClick={() => selectTab(t.id)}
-                >
-                  <FontAwesomeIcon icon={t.icon} style={{ marginRight: 8, color: active ? COLORS.accent : COLORS.textMuted }} />
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
 
           {/* Visited tabs stay mounted (state + cache preserved); only the active one is visible. */}
           {visited.has('overview') && (
@@ -2831,6 +3242,13 @@ export const EventLakeExplorer: React.FC = () => {
             </div>
           )}
         </>
+      )}
+
+      {/* ─── Creatives tab — PG-backed, NOT gated on readEnabled ── */}
+      {status && visited.has('creatives') && (
+        <div style={{ display: activeTab === 'creatives' ? 'block' : 'none' }}>
+          <CreativesTab />
+        </div>
       )}
 
       {/* ─── Footer / version stripe ───────────────────────────── */}

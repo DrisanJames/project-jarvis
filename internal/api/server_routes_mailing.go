@@ -646,6 +646,17 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
 			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
 
+			// Creatives reporting (READ ONLY) — which creative × subject ×
+			// sending-domain combos drive money-link clicks & conversions for
+			// a chosen offer. Identity FK columns are inert; keys are the
+			// cratoolpro money-slug in link_url + campaign_id, creative identity
+			// = md5(html_content). /offers lists offers that actually ran (by
+			// money_clicks); the base route is the per-creative|subject
+			// breakdown. Org-scoped on every table. See
+			// handlers_analytics_creatives.go.
+			r.Get("/analytics/creatives/offers", s.HandleAnalyticsCreativeOffers)
+			r.Get("/analytics/creatives", s.HandleAnalyticsCreatives)
+
 			// AUDIENCE LAKE read layer — Athena queries over the
 			// ignite_analytics.audience table (daily full-replace snapshot
 			// of mailing_subscribers, dt-partitioned). Same degradation
