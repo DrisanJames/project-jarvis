@@ -656,6 +656,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// handlers_analytics_creatives.go.
 			r.Get("/analytics/creatives/offers", s.HandleAnalyticsCreativeOffers)
 			r.Get("/analytics/creatives", s.HandleAnalyticsCreatives)
+			r.Get("/analytics/creatives/preview", s.HandleAnalyticsCreativePreview)
 
 			// AUDIENCE LAKE read layer — Athena queries over the
 			// ignite_analytics.audience table (daily full-replace snapshot

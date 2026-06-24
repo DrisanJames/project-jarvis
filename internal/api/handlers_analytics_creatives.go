@@ -34,6 +34,7 @@ package api
 //	GET /analytics/creatives        — per (creative|subject) × sending-domain breakdown for one offer
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
@@ -279,7 +280,10 @@ func (s *Server) creativesBreakdown(
 ) ([]map[string]interface{}, float64, int, bool, error) {
 	// creativeKeyExpr is md5(html_content) for view=creative, or '' (collapsed)
 	// for view=subject so the GROUP BY / JOIN keys reduce to (subject, domain).
-	creativeKeyExpr := "md5(c.html_content)"
+	// COALESCE to 'no-html' is REQUIRED: drip campaigns store NULL html_content,
+	// and md5(NULL)=NULL would (a) crash the Go string scan and (b) break the
+	// FULL OUTER JOIN (NULL = NULL never matches), splitting a group into dup rows.
+	creativeKeyExpr := "COALESCE(md5(c.html_content), 'no-html')"
 	if view == "subject" {
 		creativeKeyExpr = "''::text"
 	}
@@ -314,8 +318,11 @@ func (s *Server) creativesBreakdown(
 			SELECT ` + creativeKeyExpr + ` AS creative_key,
 			       c.subject,
 			       mc.sending_domain,
-			       COUNT(*)                          AS clicks,
-			       COUNT(DISTINCT mc.subscriber_id)  AS clickers
+			       COUNT(*)                            AS clicks,
+			       COUNT(DISTINCT mc.subscriber_id)    AS clickers,
+			       min(c.id::text)                     AS sample_campaign_id,
+			       min(c.from_name)                    AS from_name,
+			       bool_or(c.html_content IS NOT NULL) AS has_html
 			FROM money_clicks mc
 			JOIN mailing_campaigns c
 			  ON c.id = mc.campaign_id AND c.organization_id = $1
@@ -381,14 +388,17 @@ func (s *Server) creativesBreakdown(
 			WHERE creative_key IS NOT NULL   -- attributed (LATERAL found a click)
 			GROUP BY creative_key, subject, sending_domain
 		)
-		SELECT COALESCE(cg.creative_key, dg.creative_key, cv.creative_key)        AS creative_key,
-		       COALESCE(cg.subject, dg.subject, cv.subject)                       AS subject,
-		       COALESCE(cg.sending_domain, dg.sending_domain, cv.sending_domain)  AS sending_domain,
-		       COALESCE(dg.delivered, 0)                                          AS delivered,
-		       COALESCE(cg.clicks, 0)                                             AS clicks,
-		       COALESCE(cg.clickers, 0)                                           AS clickers,
-		       COALESCE(cv.conversions, 0)                                        AS conversions,
-		       COALESCE(cv.revenue, 0)                                            AS revenue
+		SELECT COALESCE(cg.creative_key, dg.creative_key, cv.creative_key, 'no-html') AS creative_key,
+		       COALESCE(cg.subject, dg.subject, cv.subject, '')                       AS subject,
+		       COALESCE(cg.sending_domain, dg.sending_domain, cv.sending_domain, '')  AS sending_domain,
+		       COALESCE(dg.delivered, 0)                                              AS delivered,
+		       COALESCE(cg.clicks, 0)                                                 AS clicks,
+		       COALESCE(cg.clickers, 0)                                               AS clickers,
+		       COALESCE(cv.conversions, 0)                                            AS conversions,
+		       COALESCE(cv.revenue, 0)                                                AS revenue,
+		       cg.sample_campaign_id                                                  AS sample_campaign_id,
+		       cg.from_name                                                           AS from_name,
+		       COALESCE(cg.has_html, false)                                           AS has_html
 		FROM clicks_grp cg
 		FULL OUTER JOIN delivered_grp dg
 		  ON dg.creative_key = cg.creative_key AND dg.subject = cg.subject AND dg.sending_domain = cg.sending_domain
@@ -413,8 +423,11 @@ func (s *Server) creativesBreakdown(
 			creativeKey, subject, sendingDomain string
 			delivered, clicks, clickers, convs  int
 			revenue                             float64
+			sampleCampaignID, fromName          sql.NullString
+			hasHTML                             bool
 		)
-		if err := rows.Scan(&creativeKey, &subject, &sendingDomain, &delivered, &clicks, &clickers, &convs, &revenue); err != nil {
+		if err := rows.Scan(&creativeKey, &subject, &sendingDomain, &delivered, &clicks, &clickers, &convs, &revenue,
+			&sampleCampaignID, &fromName, &hasHTML); err != nil {
 			return nil, 0, 0, false, err
 		}
 		totalRevenue += revenue
@@ -422,13 +435,20 @@ func (s *Server) creativesBreakdown(
 		row := map[string]interface{}{
 			"subject":        subject,
 			"sending_domain": sendingDomain,
+			"from_name":      nullStr(fromName),
 			"delivered":      delivered,
 			"clicks":         clicks,
 			"clickers":       clickers,
 			"click_rate":     rate(clicks, delivered),
 			"conversions":    convs,
-			"conv_rate":      rate(convs, clicks),
-			"revenue":        revenue,
+			// conv_rate denominator is CLICKERS (unique people), not raw clicks:
+			// raw clicks are inflated by repeat-clicks (~1.7x) and unflagged bots
+			// (is_machine_click is inert), so conversions-per-clicker is the honest
+			// efficiency signal for ranking creatives.
+			"conv_rate":          rate(convs, clickers),
+			"revenue":            revenue,
+			"sample_campaign_id": nullStr(sampleCampaignID), // for the HTML preview
+			"has_html":           hasHTML,                   // false ⇒ drip (no stored html to preview)
 		}
 		if view == "creative" {
 			row["creative_key"] = creativeKey
@@ -521,6 +541,44 @@ func rate(num, den int) float64 {
 		return 0
 	}
 	return float64(num) / float64(den)
+}
+
+// HandleAnalyticsCreativePreview returns the rendered HTML (+ subject, from_name)
+// of a single campaign so the Creatives tab can SHOW the actual creative behind a
+// row. The campaign id comes from the breakdown's sample_campaign_id. Org-scoped
+// and read-only.
+//
+// GET /api/mailing/analytics/creatives/preview?campaign_id=<uuid>
+func (s *Server) HandleAnalyticsCreativePreview(w http.ResponseWriter, r *http.Request) {
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cid := strings.TrimSpace(r.URL.Query().Get("campaign_id"))
+	if !isValidUUID(cid) {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign_id must be a uuid"})
+		return
+	}
+	var html, subject, fromName sql.NullString
+	err = s.mailingDB.QueryRowContext(r.Context(),
+		`SELECT html_content, subject, from_name FROM mailing_campaigns WHERE id = $1 AND organization_id = $2`,
+		cid, orgID).Scan(&html, &subject, &fromName)
+	if err == sql.ErrNoRows {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "campaign not found"})
+		return
+	}
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"campaign_id": cid,
+		"subject":     nullStr(subject),
+		"from_name":   nullStr(fromName),
+		"html":        nullStr(html), // "" for drip campaigns (no stored html)
+		"has_html":    html.Valid && html.String != "",
+	})
 }
 
 // creativeLabel = offer_name · subject · left(creative_key,8).

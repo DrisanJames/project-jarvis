@@ -2687,13 +2687,16 @@ interface CreativeRow {
   creative_label: string;
   subject: string;
   sending_domain: string;
+  from_name: string;
   delivered: number;
   clicks: number;
   clickers: number;
-  click_rate: number;   // fraction (0–1)
+  click_rate: number;   // fraction (0–1) — clicks/delivered, approximate
   conversions: number;
-  conv_rate: number;    // fraction (0–1)
+  conv_rate: number;    // fraction (0–1) — conversions/clickers (efficiency)
   revenue: number;
+  sample_campaign_id: string; // a campaign carrying this creative, for the HTML preview
+  has_html: boolean;          // false ⇒ drip reminder (no stored html to preview)
 }
 
 interface CreativesReport {
@@ -2716,12 +2719,16 @@ interface CreativesMeta {
 type CreativeView = 'creative' | 'subject';
 
 // Sortable numeric columns (left text col sorts on label/subject separately).
+// Clickers (unique people) leads over raw Clicks; Conv/clicker is the honest
+// efficiency metric. Delivered is marked approximate (campaign-counter rollup);
+// the old Click-rate column was dropped — it divided by that approximate
+// Delivered and misled.
 const CREATIVE_NUM_COLS: Array<{ id: keyof CreativeRow; label: string }> = [
-  { id: 'delivered', label: 'Delivered' },
+  { id: 'delivered', label: 'Delivered*' },
   { id: 'clicks', label: 'Clicks' },
-  { id: 'click_rate', label: 'Click-rate' },
+  { id: 'clickers', label: 'Clickers' },
   { id: 'conversions', label: 'Conversions' },
-  { id: 'conv_rate', label: 'Conv-rate' },
+  { id: 'conv_rate', label: 'Conv/clicker' },
   { id: 'revenue', label: 'Revenue' },
 ];
 
@@ -2754,6 +2761,21 @@ async function fetchCreativesReport(
   return { ...json, rows: Array.isArray(json.rows) ? json.rows : [] };
 }
 
+interface CreativePreviewData {
+  campaign_id: string;
+  subject: string;
+  from_name: string;
+  html: string;
+  has_html: boolean;
+}
+
+async function fetchCreativePreview(campaignId: string, signal?: AbortSignal): Promise<CreativePreviewData> {
+  const qs = new URLSearchParams({ campaign_id: campaignId });
+  const res = await apiFetch(`/api/mailing/analytics/creatives/preview?${qs.toString()}`, { signal });
+  if (!res.ok) await throwHttpError(res);
+  return (await res.json()) as CreativePreviewData;
+}
+
 const CreativesTab: React.FC = () => {
   const { addToast } = useToast();
 
@@ -2764,9 +2786,42 @@ const CreativesTab: React.FC = () => {
   const [to, setTo] = useState(denverToday());
   const [rows, setRows] = useState<CreativeRow[]>([]);
   const [meta, setMeta] = useState<CreativesMeta | null>(null);
-  const [sort, setSort] = useState<SortState>({ col: 'clicks', dir: 'desc' });
+  const [sort, setSort] = useState<SortState>({ col: 'clickers', dir: 'desc' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Creative HTML preview modal ("see the creative").
+  const [preview, setPreview] = useState<{
+    open: boolean; loading: boolean; subject: string; from_name: string; html: string; note: string; error: string;
+  } | null>(null);
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  const openPreview = useCallback((row: CreativeRow) => {
+    previewAbortRef.current?.abort();
+    const subject = row.subject || '(no subject)';
+    const fromName = row.from_name || '';
+    if (!row.has_html || !row.sample_campaign_id) {
+      // Drip reminders store no html on the campaign row (they reuse the
+      // clicked creative at send time) — nothing to render.
+      setPreview({ open: true, loading: false, subject, from_name: fromName, html: '',
+        note: 'This is a drip reminder — it reuses the clicked creative at send time, so there is no stored HTML to preview.', error: '' });
+      return;
+    }
+    const ctl = new AbortController();
+    previewAbortRef.current = ctl;
+    setPreview({ open: true, loading: true, subject, from_name: fromName, html: '', note: '', error: '' });
+    fetchCreativePreview(row.sample_campaign_id, ctl.signal)
+      .then((p) => {
+        if (ctl.signal.aborted) return;
+        setPreview({ open: true, loading: false, subject: p.subject || subject, from_name: p.from_name || fromName,
+          html: p.html || '', note: p.has_html ? '' : 'No stored HTML for this campaign.', error: '' });
+      })
+      .catch((e) => {
+        if (isAbortError(e)) return;
+        setPreview({ open: true, loading: false, subject, from_name: fromName, html: '', note: '',
+          error: e instanceof Error ? e.message : String(e) });
+      });
+  }, []);
 
   const offersAbortRef = useRef<AbortController | null>(null);
   const reportAbortRef = useRef<AbortController | null>(null);
@@ -2876,11 +2931,12 @@ const CreativesTab: React.FC = () => {
     (acc, r) => {
       acc.delivered += r.delivered;
       acc.clicks += r.clicks;
+      acc.clickers += r.clickers;
       acc.conversions += r.conversions;
       acc.revenue += r.revenue;
       return acc;
     },
-    { delivered: 0, clicks: 0, conversions: 0, revenue: 0 }
+    { delivered: 0, clicks: 0, clickers: 0, conversions: 0, revenue: 0 }
   ), [rows]);
 
   const sortIndicator = (col: string) => (sort.col === col ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : '');
@@ -2895,9 +2951,11 @@ const CreativesTab: React.FC = () => {
             Creative Performance
           </h2>
           <p style={styles.panelSubtitle}>
-            Clicks = money-link clicks (source_id=email). Conversions use last-click attribution (~58% of
-            conversions tie to a money click; the rest are shown as Unattributed). Delivered is summed from
-            campaign counters and under-counts SES relay — treat click-rate as directional. Days are America/Denver.
+            Clicks = money-link clicks (source_id=email); <b>Clickers</b> = unique people (the trustworthy
+            denominator — raw clicks include repeat-clicks &amp; unflagged bots). Conversions use last-click
+            attribution (~58% tie to a money click; the rest shown as Unattributed). <b>Conv/clicker</b> =
+            conversions ÷ clickers. Delivered* is approximate (campaign counters, under-counts SES). Click any
+            creative to preview its HTML. Days are America/Denver.
           </p>
         </div>
         <button style={styles.refreshBtn} onClick={() => { loadOffers(); loadReport(); }} disabled={loading}>
@@ -3017,18 +3075,34 @@ const CreativesTab: React.FC = () => {
                 return (
                   <tr key={`${r.creative_key}|${r.sending_domain}|${idx}`} style={rowStyle}>
                     <td style={{
-                      ...styles.td, maxWidth: 360,
+                      ...styles.td, maxWidth: 380,
                       borderLeft: view === 'creative' ? `2px solid ${COLORS.accentAlt}33` : undefined,
                     }} title={leftLabel}>
-                      {leftLabel || '—'}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{leftLabel || '—'}</span>
+                        {r.from_name ? (
+                          <span style={{ fontSize: 11, color: COLORS.textMuted }}>from: {r.from_name}</span>
+                        ) : null}
+                        <button
+                          onClick={() => openPreview(r)}
+                          style={{
+                            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                            color: r.has_html ? COLORS.accent : COLORS.textMuted, fontSize: 11,
+                            textAlign: 'left', width: 'fit-content',
+                          }}
+                        >
+                          <FontAwesomeIcon icon={faImages} style={{ marginRight: 4 }} />
+                          {r.has_html ? 'View creative' : 'Drip — no stored html'}
+                        </button>
+                      </div>
                     </td>
                     <td style={{ ...styles.td, whiteSpace: 'nowrap', color: COLORS.textSecondary }} title={r.sending_domain}>
                       {r.sending_domain || '—'}
                     </td>
-                    <td style={{ ...styles.td, textAlign: 'right' }}>{fmt(r.delivered)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }} title="approximate (campaign counters)">{fmt(r.delivered)}</td>
                     <td style={{ ...styles.td, textAlign: 'right', color: CLICK_VIOLET }}>{fmt(r.clicks)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmtPct(r.click_rate * 100)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.good }}>{fmt(r.conversions)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmt(r.clickers)}</td>
+                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.good, fontWeight: r.conversions > 0 ? 700 : 400 }}>{fmt(r.conversions)}</td>
                     <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmtPct(r.conv_rate * 100)}</td>
                     <td style={{ ...styles.td, textAlign: 'right' }}>{fmtMoney(r.revenue)}</td>
                   </tr>
@@ -3039,24 +3113,65 @@ const CreativesTab: React.FC = () => {
               <tr style={{ ...styles.tr, borderTop: `2px solid ${COLORS.borderStrong}` }}>
                 <td style={{ ...styles.td, fontWeight: 700, color: COLORS.textPrimary }}>Total</td>
                 <td style={{ ...styles.td, color: COLORS.textMuted }}>{sortedRows.length} row{sortedRows.length === 1 ? '' : 's'}</td>
-                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmt(totals.delivered)}</td>
+                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>{fmt(totals.delivered)}</td>
                 <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: CLICK_VIOLET }}>{fmt(totals.clicks)}</td>
-                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>
-                  {fmtPct(totals.delivered > 0 ? (totals.clicks / totals.delivered) * 100 : null)}
-                </td>
+                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmt(totals.clickers)}</td>
                 <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: COLORS.good }}>{fmt(totals.conversions)}</td>
                 <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>
-                  {fmtPct(totals.clicks > 0 ? (totals.conversions / totals.clicks) * 100 : null)}
+                  {fmtPct(totals.clickers > 0 ? (totals.conversions / totals.clickers) * 100 : null)}
                 </td>
                 <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(totals.revenue)}</td>
               </tr>
             </tfoot>
           </table>
-          {meta?.delivered_source && (
-            <div style={styles.tableFooterNote}>
-              Delivered source: {meta.delivered_source}. Click-rate = clicks ÷ delivered; conv-rate = conversions ÷ clicks (last-click).
+          <div style={styles.tableFooterNote}>
+            *Delivered is approximate — summed from campaign counters (under-counts SES relay; a campaign carrying
+            multiple offers counts once per offer). Clicks = raw money-link clicks; Clickers = unique people;
+            Conv/clicker = conversions ÷ clickers (last-click attributed). Click each creative to preview its HTML.
+            {meta?.delivered_source ? ` Source: ${meta.delivered_source}.` : ''}
+          </div>
+        </div>
+      )}
+
+      {/* ── Creative HTML preview modal ("see the creative") ── */}
+      {preview?.open && (
+        <div
+          onClick={() => setPreview(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: COLORS.bgDeep, border: `1px solid ${COLORS.borderStrong}`, borderRadius: 10,
+            width: 'min(760px, 95vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}>
+            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${COLORS.borderStrong}`, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, color: COLORS.textPrimary, fontSize: 14 }}>{preview.subject || '(no subject)'}</div>
+                {preview.from_name ? <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>from: {preview.from_name}</div> : null}
+              </div>
+              <button onClick={() => setPreview(null)} style={{ background: 'none', border: 'none', color: COLORS.textSecondary, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>×</button>
             </div>
-          )}
+            <div style={{ flex: 1, overflow: 'auto', background: '#fff', minHeight: 200 }}>
+              {preview.loading ? (
+                <div style={{ padding: 40, textAlign: 'center', color: '#666' }}>
+                  <FontAwesomeIcon icon={faSpinner} spin /> Loading creative…
+                </div>
+              ) : preview.error ? (
+                <div style={{ padding: 24, color: HARD_RED }}>Preview failed: {preview.error}</div>
+              ) : preview.note ? (
+                <div style={{ padding: 24, color: '#444', fontSize: 13 }}>{preview.note}</div>
+              ) : (
+                <iframe
+                  title="creative-preview"
+                  sandbox=""
+                  srcDoc={preview.html}
+                  style={{ width: '100%', height: '72vh', border: 'none', background: '#fff' }}
+                />
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
