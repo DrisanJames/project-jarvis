@@ -149,12 +149,17 @@ const localDtExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE
 // UTC day boundary).
 const localHourExpr = "date_format(from_unixtime(event_epoch_ms/1000) AT TIME ZONE 'America/Denver', '%Y-%m-%d %H:00')"
 
-// ispExpr is the CLEAN ISP classification — computed from the REAL recipient domain
-// (parsed from the `email` field), NOT the stored `isp_group`/`email_domain`. The stored
-// fields carry PMTA *.queue names (aol.queue/att.queue/yahoo.queue) that mis-bucket aol/yahoo
-// (operator stats deep-dive 2026-06-20). Mirrors gen_cap_planner.ISP_CASE so the analytics UI,
-// the cap sheets, and ad-hoc queries all agree. Grain is granular (verizon/sbcglobal kept distinct).
-const ispDomainExpr = "lower(split_part(email, '@', 2))"
+// ispExpr is the CLEAN ISP classification — computed from the REAL recipient domain.
+// Primary source is the `email` field (set on every pmta/ses send row); when it is
+// BLANK we fall back to `email_domain`. This matters for engagement: source='app'
+// open/click rows (the open-pixel / clicker-tracker stream) carry NO `email` but DO
+// carry a clean `email_domain` (verified 2026-06-24: hotmail/icloud/gmail/… — no
+// *.queue pollution), so without the fallback every app open collapsed into 'other'
+// (151k opens, 2790% open rate on the ISP matrix). The fallback only fires when email
+// is empty, so pmta/ses delivery rows (email set) NEVER touch the polluted email_domain
+// path — the *.queue mis-bucketing the stored fields suffer (aol.queue/att.queue/…) is
+// avoided exactly because email is present on those rows. Mirrors gen_cap_planner.ISP_CASE.
+const ispDomainExpr = "lower(COALESCE(NULLIF(split_part(email, '@', 2), ''), email_domain))"
 const ispExpr = "CASE" +
 	" WHEN " + ispDomainExpr + " IN ('outlook.com','hotmail.com','live.com','msn.com','hotmail.co.uk','windowslive.com','passport.com','outlook.co.uk') THEN 'microsoft'" +
 	" WHEN " + ispDomainExpr + " IN ('gmail.com','googlemail.com') THEN 'gmail'" +
