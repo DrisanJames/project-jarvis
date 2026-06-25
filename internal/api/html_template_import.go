@@ -163,8 +163,13 @@ func classifyAndRewriteHTML(
 		return match
 	})
 
-	// Step 4: Inject "do not reply / unsubscribe" disclaimer at the top of the email body
-	html = injectUnsubDisclaimer(html)
+	// Step 4: Append the compliance footer (do-not-reply + unsubscribe + brand ·
+	// postal address) at the BOTTOM of the email — never the header, never the
+	// corporate identity. The brand is the {{ brand.domain }} merge tag, which the
+	// send worker resolves per-recipient to the ACTUAL sending brand domain
+	// (item.BrandRoot, e.g. ratesbazar.com / historythinking.com) — so a creative
+	// reused across brands always shows the brand it was actually mailed from.
+	html = appendUnsubDisclaimer(html, "{{ brand.domain }}", "")
 
 	result.RewrittenHTML = html
 	return result
@@ -173,9 +178,12 @@ func classifyAndRewriteHTML(
 const unsubDisclaimerMarker = `<!-- unsub-disclaimer -->`
 
 func buildUnsubDisclaimerHTML(brandName, physicalAddress string) string {
-	addrLine := "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801"
+	// Postal address only — the corporate identity ("James Ventures Corp") must
+	// never appear in a recipient-facing email. The sender shown is the brand
+	// (senderLine), and a valid physical postal address satisfies CAN-SPAM.
+	addrLine := "30 N Gould St, Ste R, Sheridan, WY 82801"
 	if physicalAddress != "" {
-		addrLine = physicalAddress
+		addrLine = stripJVCName(physicalAddress)
 	}
 	senderLine := ""
 	if brandName != "" {
@@ -191,16 +199,30 @@ func buildUnsubDisclaimerHTML(brandName, physicalAddress string) string {
 		`</p>`
 }
 
-func injectUnsubDisclaimer(html string) string {
-	return injectUnsubDisclaimerBrand(html, "", "")
+// stripJVCName removes the corporate identity ("James Ventures Corp") from a
+// caller-supplied postal address so it can never reach a recipient-facing email,
+// while preserving the legally-required street/postal address. Idempotent.
+func stripJVCName(addr string) string {
+	for _, prefix := range []string{
+		"James Ventures Corp, ",
+		"James Ventures Corp · ",
+		"James Ventures Corp &bull; ",
+		"James Ventures Corp ",
+		"James Ventures Corp",
+	} {
+		if strings.HasPrefix(addr, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(addr, prefix))
+		}
+	}
+	return addr
 }
 
-// appendUnsubDisclaimer inserts the do-not-reply / unsubscribe + postal-address
-// block at the BOTTOM of the email — before </body>, or appended to the end when
-// the creative is a fragment with no body tag (network creatives usually are,
-// which is why the top-injecting injectUnsubDisclaimer landed it in the header).
-// brandName identifies the sender (e.g. the sending brand/domain); the postal
-// address still defaults to the JVC address (CAN-SPAM). Used by offer proofs.
+// appendUnsubDisclaimer inserts the do-not-reply / unsubscribe + brand · postal-
+// address block at the BOTTOM of the email — before </body>, or appended to the
+// end when the creative is a fragment with no body tag (network creatives usually
+// are). brandName identifies the sender (the sending brand/domain); the postal
+// address shows only the street address, never the corporate identity (CAN-SPAM).
+// This is the ONLY compliance-footer injector — always bottom, never the header.
 func appendUnsubDisclaimer(html, brandName, physicalAddress string) string {
 	if strings.Contains(html, unsubDisclaimerMarker) {
 		return html
@@ -211,24 +233,6 @@ func appendUnsubDisclaimer(html, brandName, physicalAddress string) string {
 		return html[:idx] + disclaimer + html[idx:]
 	}
 	return html + disclaimer
-}
-
-func injectUnsubDisclaimerBrand(html, brandName, physicalAddress string) string {
-	if strings.Contains(html, unsubDisclaimerMarker) {
-		return html
-	}
-	disclaimer := buildUnsubDisclaimerHTML(brandName, physicalAddress)
-	lower := strings.ToLower(html)
-	bodyIdx := strings.Index(lower, "<body")
-	if bodyIdx < 0 {
-		return disclaimer + html
-	}
-	closeIdx := strings.Index(html[bodyIdx:], ">")
-	if closeIdx < 0 {
-		return disclaimer + html
-	}
-	insertAt := bodyIdx + closeIdx + 1
-	return html[:insertAt] + disclaimer + html[insertAt:]
 }
 
 type rehostResult struct {

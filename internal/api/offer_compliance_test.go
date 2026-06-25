@@ -50,18 +50,25 @@ func TestBuildUnsubDisclaimerHTML_IncludesPhysicalAddress(t *testing.T) {
 			wantAddress:     "456 Elm St",
 		},
 		{
-			name:            "empty address falls back to default",
+			name:            "empty address falls back to default postal (no JVC)",
 			brandName:       "QuizFiesta",
 			physicalAddress: "",
 			wantBrand:       "QuizFiesta",
-			wantAddress:     "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
+			wantAddress:     "30 N Gould St, Ste R, Sheridan, WY 82801",
 		},
 		{
-			name:            "both empty uses fallback address no brand prefix",
+			name:            "both empty uses fallback postal, no brand prefix, no JVC",
 			brandName:       "",
 			physicalAddress: "",
 			wantBrand:       "",
-			wantAddress:     "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
+			wantAddress:     "30 N Gould St, Ste R, Sheridan, WY 82801",
+		},
+		{
+			name:            "JVC name in caller address is stripped",
+			brandName:       "DiscountBlog",
+			physicalAddress: "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801",
+			wantBrand:       "DiscountBlog",
+			wantAddress:     "30 N Gould St, Ste R, Sheridan, WY 82801",
 		},
 	}
 
@@ -78,6 +85,10 @@ func TestBuildUnsubDisclaimerHTML_IncludesPhysicalAddress(t *testing.T) {
 			if !strings.Contains(html, tc.wantAddress) {
 				t.Errorf("missing physical address %q in output: %s", tc.wantAddress, html)
 			}
+			// The corporate identity must NEVER appear in a recipient-facing footer.
+			if strings.Contains(html, "James Ventures Corp") {
+				t.Errorf("JVC corporate identity leaked into footer: %s", html)
+			}
 			if tc.wantBrand != "" && !strings.Contains(html, tc.wantBrand+" · ") {
 				t.Errorf("missing brand prefix %q in output: %s", tc.wantBrand, html)
 			}
@@ -88,10 +99,10 @@ func TestBuildUnsubDisclaimerHTML_IncludesPhysicalAddress(t *testing.T) {
 	}
 }
 
-func TestInjectUnsubDisclaimerBrand_Idempotency(t *testing.T) {
+func TestAppendUnsubDisclaimer_Idempotency(t *testing.T) {
 	html := `<html><body><p>Hello</p></body></html>`
 
-	first := injectUnsubDisclaimerBrand(html, "DiscountBlog", "123 Main St")
+	first := appendUnsubDisclaimer(html, "DiscountBlog", "123 Main St")
 	if !strings.Contains(first, unsubDisclaimerMarker) {
 		t.Fatal("first injection should contain marker")
 	}
@@ -99,7 +110,7 @@ func TestInjectUnsubDisclaimerBrand_Idempotency(t *testing.T) {
 		t.Fatal("first injection should contain address")
 	}
 
-	second := injectUnsubDisclaimerBrand(first, "DiscountBlog", "123 Main St")
+	second := appendUnsubDisclaimer(first, "DiscountBlog", "123 Main St")
 	if first != second {
 		t.Error("second injection should be a no-op (idempotency)")
 	}
@@ -115,46 +126,56 @@ func TestInjectUnsubDisclaimerBrand_Idempotency(t *testing.T) {
 	}
 }
 
-func TestInjectUnsubDisclaimerBrand_InsertsAfterBodyTag(t *testing.T) {
+func TestAppendUnsubDisclaimer_InsertsBeforeBodyClose(t *testing.T) {
 	html := `<html><body class="dark"><p>Content</p></body></html>`
-	result := injectUnsubDisclaimerBrand(html, "TestBrand", "789 Oak Ave")
+	result := appendUnsubDisclaimer(html, "TestBrand", "789 Oak Ave")
 
-	bodyClose := strings.Index(result, `class="dark">`)
-	markerIdx := strings.Index(result, unsubDisclaimerMarker)
 	contentIdx := strings.Index(result, "<p>Content</p>")
+	markerIdx := strings.Index(result, unsubDisclaimerMarker)
+	bodyCloseIdx := strings.Index(result, "</body>")
 
-	if bodyClose < 0 || markerIdx < 0 || contentIdx < 0 {
-		t.Fatalf("missing expected elements: bodyClose=%d marker=%d content=%d", bodyClose, markerIdx, contentIdx)
+	if contentIdx < 0 || markerIdx < 0 || bodyCloseIdx < 0 {
+		t.Fatalf("missing expected elements: content=%d marker=%d bodyClose=%d", contentIdx, markerIdx, bodyCloseIdx)
 	}
-	if markerIdx < bodyClose {
-		t.Error("disclaimer should appear after <body> tag close")
+	// Footer must be in the FOOTER: after existing content, before </body>.
+	if markerIdx < contentIdx {
+		t.Error("disclaimer should appear AFTER existing content (footer, not header)")
 	}
-	if markerIdx > contentIdx {
-		t.Error("disclaimer should appear before existing content")
+	if markerIdx > bodyCloseIdx {
+		t.Error("disclaimer should appear before </body>")
 	}
 }
 
-func TestInjectUnsubDisclaimerBrand_NoBodyTag(t *testing.T) {
+func TestAppendUnsubDisclaimer_NoBodyTag(t *testing.T) {
 	html := `<div>No body tag here</div>`
-	result := injectUnsubDisclaimerBrand(html, "", "")
+	result := appendUnsubDisclaimer(html, "", "")
 
-	if !strings.HasPrefix(result, unsubDisclaimerMarker) {
-		t.Error("without <body>, disclaimer should be prepended")
+	if !strings.HasSuffix(result, unsubDisclaimerMarker+
+		`<p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">`+
+		`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please `+
+		`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.`+
+		`</p>`+
+		`<p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">`+
+		`30 N Gould St, Ste R, Sheridan, WY 82801`+
+		`</p>`) {
+		t.Errorf("without <body>, disclaimer should be appended at the end: %s", result)
 	}
-	if !strings.Contains(result, "James Ventures Corp") {
-		t.Error("default address should appear when no address given")
+	if strings.Contains(result, "James Ventures Corp") {
+		t.Error("JVC corporate identity must not appear")
 	}
 }
 
-func TestInjectUnsubDisclaimer_DefaultSignature(t *testing.T) {
-	html := `<html><body><p>Test</p></body></html>`
-	result := injectUnsubDisclaimer(html)
-
-	if !strings.Contains(result, "James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801") {
-		t.Error("default wrapper should include fallback physical address")
+func TestStripJVCName(t *testing.T) {
+	cases := map[string]string{
+		"James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801": "30 N Gould St, Ste R, Sheridan, WY 82801",
+		"James Ventures Corp · Post Falls, ID 83854":                    "Post Falls, ID 83854",
+		"30 N Gould St, Ste R, Sheridan, WY 82801":                      "30 N Gould St, Ste R, Sheridan, WY 82801",
+		"":                                                              "",
 	}
-	if strings.Contains(result, " · ") {
-		t.Error("default wrapper should not include brand prefix separator")
+	for in, want := range cases {
+		if got := stripJVCName(in); got != want {
+			t.Errorf("stripJVCName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -255,7 +276,7 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		`Please do not reply, this email box is not monitored. To stop email subscriptions at any time please ` +
 		`<a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.</p>` +
 		`<p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">` +
-		`DiscountBlog · James Ventures Corp, 30 N Gould St, Ste R, Sheridan, WY 82801</p>` +
+		`DiscountBlog · 30 N Gould St, Ste R, Sheridan, WY 82801</p>` +
 		`<h1>Big Sale!</h1><a href="https://discountblog.com/deal">Shop Now</a></body></html>`
 
 	mock.ExpectQuery(`SELECT COALESCE\(html_content,''\) FROM mailing_offer_creatives`).
@@ -355,12 +376,15 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		t.Errorf("wrong List-Unsubscribe-Post: %s", msg.Headers["List-Unsubscribe-Post"])
 	}
 
-	// Physical address present (CAN-SPAM)
-	if !strings.Contains(msg.HTMLContent, "James Ventures Corp") {
+	// Physical address present (CAN-SPAM) — but the corporate identity must NOT be.
+	if !strings.Contains(msg.HTMLContent, "30 N Gould St") {
 		t.Error("HTML missing physical address (CAN-SPAM violation)")
 	}
 	if !strings.Contains(msg.HTMLContent, "Sheridan, WY") {
 		t.Error("HTML missing city/state in physical address")
+	}
+	if strings.Contains(msg.HTMLContent, "James Ventures Corp") {
+		t.Error("JVC corporate identity leaked into sent HTML")
 	}
 
 	// Proof headers

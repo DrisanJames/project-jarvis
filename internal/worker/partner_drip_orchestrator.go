@@ -1121,7 +1121,8 @@ type creativeRec struct {
 //      + a from-name from mailing_offer_from_names. Subject + from-name rotate
 //      deterministically by wave time so the partner sees the full pool. The
 //      HTML lives in mailing_offer_creatives.html_content (already CAN-SPAM
-//      footer-injected at upload time by injectUnsubDisclaimer).
+//      footer-injected at upload time by appendUnsubDisclaimer — brand footer at
+//      the bottom, never the corporate identity).
 //
 //   2. Drip-pool datasets (offerID empty) — legacy path, looks up
 //      partner_drip_creatives keyed by (vertical, brand) and reads HTML from

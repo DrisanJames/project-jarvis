@@ -260,7 +260,7 @@ You MUST return valid JSON matching the exact schema provided. No markdown fence
 		id := uuid.New().String()
 		now := time.Now()
 
-		htmlWithUnsub := injectUnsubDisclaimerBrand(c.HTML, kit.SiteName, kit.PhysicalAddress)
+		htmlWithUnsub := appendUnsubDisclaimer(c.HTML, kit.SiteName, kit.PhysicalAddress)
 		_, err := och.db.ExecContext(ctx,
 			`INSERT INTO mailing_offer_creatives
 			 (id, offer_id, version, html_content, status, approval_notes, created_at, updated_at)

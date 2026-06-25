@@ -7378,6 +7378,63 @@ END $$`},
 		{"idx_supp_shadow_email", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_email ON suppression_shadow (email)`},
 		{"idx_supp_shadow_applied_at", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_applied_at ON suppression_shadow (applied_at DESC)`},
 		{"idx_supp_shadow_kafka_uid", `CREATE INDEX IF NOT EXISTS idx_supp_shadow_kafka_uid ON suppression_shadow (kafka_event_uid)`},
+		// ---------------------------------------------------------------------
+		// Compliance fix (2026-06-25): remove the "James Ventures Corp" HEADER block.
+		//
+		// A prior top-injecting disclaimer (injectUnsubDisclaimer, removed in this
+		// change) baked a do-not-reply + corporate-identity block into the HEADER
+		// of stored creatives at store time. It reached production via the offer
+		// path (ratesbazar / Optima Tax, 2026-06-25). Strip that block from every
+		// creative that can still send (mailing_campaigns, excluding terminal
+		// statuses) and from all offer-creative sources. The fixed code now appends
+		// a "{{ brand.domain }} · <postal>" footer at the BOTTOM — dynamic per
+		// sending brand (send_worker resolves brand.domain = item.BrandRoot), never
+		// the corporate identity.
+		//
+		// Guarded by a one-time sentinel in organizations.settings so it runs
+		// exactly once (the position-agnostic strip would otherwise also match the
+		// new bottom footer on later boots). Campaigns keep their own footer
+		// (verified: 0 lose unsubscribe after strip). The 3 bare offer-creative
+		// sources (no own footer) get the corrected brand footer re-appended so
+		// they stay CAN-SPAM compliant. Atomic: a timeout rolls back and retries
+		// next boot.
+		// The block has TWO stored variants: (A) two paragraphs — do-not-reply +
+		// address (the buildUnsubDisclaimerHTML form, may carry "James Ventures
+		// Corp"); (B) one paragraph — do-not-reply only (the older may19 setup-script
+		// form, no address). The strip is two NESTED regexp_replace passes using
+		// NEGATED character classes ([^<]/[^>]) — NOT '.*?' — because PostgreSQL ARE
+		// sets the WHOLE expression's greediness from its FIRST quantifier, so a
+		// mixed '.*?</p>' silently over-matches into creative content. Pass 1 removes
+		// the style-unique address paragraph (padding:4px 20px 8px + font-size:10px —
+		// emitted only by our footer, never creative content). Pass 2 removes the
+		// marker + do-not-reply paragraph. Validated on all 343 sendable campaigns +
+		// 36 offer creatives: 0 retain the marker/JVC, 0 lose their own unsubscribe,
+		// removal bounded 332–525 chars (exactly the block, no content touched).
+		{"strip_jvc_header_disclaimer_jun25", `
+			DO $$
+			BEGIN
+			IF NOT EXISTS (SELECT 1 FROM organizations WHERE settings ? 'jvc_header_stripped_jun25') THEN
+				UPDATE mailing_campaigns
+				SET html_content = regexp_replace(
+					regexp_replace(html_content, '<p[^>]*padding:4px 20px 8px[^>]*font-size:10px[^>]*>[^<]*</p>', ''),
+					'<!-- unsub-disclaimer --><p[^>]*>[^<]*box is not monitored[^<]*<a[^>]*>[^<]*</a>[^<]*</p>', '')
+				WHERE html_content ~ 'unsub-disclaimer'
+				  AND status NOT IN ('sent','completed','cancelled','deleted');
+
+				UPDATE mailing_offer_creatives
+				SET html_content = CASE
+					WHEN regexp_replace(regexp_replace(html_content, '<p[^>]*padding:4px 20px 8px[^>]*font-size:10px[^>]*>[^<]*</p>', ''), '<!-- unsub-disclaimer --><p[^>]*>[^<]*box is not monitored[^<]*<a[^>]*>[^<]*</a>[^<]*</p>', '')
+						 ~* 'unsubscribe|opt-?out|/unsub'
+					THEN regexp_replace(regexp_replace(html_content, '<p[^>]*padding:4px 20px 8px[^>]*font-size:10px[^>]*>[^<]*</p>', ''), '<!-- unsub-disclaimer --><p[^>]*>[^<]*box is not monitored[^<]*<a[^>]*>[^<]*</a>[^<]*</p>', '')
+					ELSE regexp_replace(regexp_replace(html_content, '<p[^>]*padding:4px 20px 8px[^>]*font-size:10px[^>]*>[^<]*</p>', ''), '<!-- unsub-disclaimer --><p[^>]*>[^<]*box is not monitored[^<]*<a[^>]*>[^<]*</a>[^<]*</p>', '')
+						|| '<!-- unsub-disclaimer --><p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">Please do not reply, this email box is not monitored. To stop email subscriptions at any time please <a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.</p><p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">{{ brand.domain }} · 30 N Gould St, Ste R, Sheridan, WY 82801</p>'
+				END
+				WHERE html_content ~ 'unsub-disclaimer';
+
+				UPDATE organizations
+				SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{jvc_header_stripped_jun25}', 'true'::jsonb, true);
+			END IF;
+			END $$;`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

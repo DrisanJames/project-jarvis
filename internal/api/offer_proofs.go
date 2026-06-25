@@ -4,7 +4,7 @@ package api
 //
 // The operator uploads a network-approved HTML creative (usually image-heavy).
 // On create we REHOST its images to our CDN (reusing ImageCDNHandlers.RehostHTML)
-// and inject our footer/unsubscribe block (injectUnsubDisclaimer), then store the
+// and append our brand footer/unsubscribe block (appendUnsubDisclaimer), then store the
 // proof in a manual approval lifecycle. The operator emails the proof to selected
 // account managers through a chosen sending domain (reusing the proof-send
 // machinery), then manually approves it — recording the approved sending domains,

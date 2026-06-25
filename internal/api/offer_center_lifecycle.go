@@ -1284,7 +1284,9 @@ func (och *OfferCenterHandlers) HandleCreateOfferCreative(w http.ResponseWriter,
 
 	htmlToStore := req.HTMLContent
 	if htmlToStore != "" {
-		htmlToStore = injectUnsubDisclaimer(htmlToStore)
+		// {{ brand.domain }} resolves at send to the actual sending brand (item.BrandRoot),
+		// so the footer reads the brand it was mailed from, never a baked-in/wrong brand.
+		htmlToStore = appendUnsubDisclaimer(htmlToStore, "{{ brand.domain }}", "")
 	}
 
 	var version int
@@ -1336,7 +1338,7 @@ func (och *OfferCenterHandlers) HandleUpdateOfferCreative(w http.ResponseWriter,
 	if req.HTMLContent != nil {
 		html := *req.HTMLContent
 		if html != "" {
-			html = injectUnsubDisclaimer(html)
+			html = appendUnsubDisclaimer(html, "{{ brand.domain }}", "")
 		}
 		args = append(args, html)
 		sets = append(sets, fmt.Sprintf("html_content = $%d", len(args)))

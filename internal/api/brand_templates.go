@@ -80,7 +80,7 @@ const DiscountBlogHTMLTemplate = `<!DOCTYPE html>
 <tr><td style="background-color:#FAFAFA;padding:24px 32px;border-top:1px solid #E5E7EB;">
   <p style="margin:0 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:800;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></p>
   <p style="margin:0 0 12px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
-  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">James Ventures Corp &bull; Post Falls, ID 83854</p>
+  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">discountblog.com &bull; Post Falls, ID 83854</p>
   <p style="margin:0;font-size:12px;color:#9CA3AF;">
     You received this at {{ email }}.<br>
     <a href="{{ system.unsubscribe_url }}" style="color:#9CA3AF;text-decoration:underline;">Unsubscribe</a> &nbsp;|&nbsp;
@@ -174,7 +174,7 @@ const DiscountBlogWelcomeHTMLTemplate = `<!DOCTYPE html>
 <tr><td style="background-color:#FAFAFA;padding:24px 32px;border-top:1px solid #E5E7EB;">
   <p style="margin:0 0 8px 0;font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:800;"><span style="color:#FF6B6B;">discount</span><span style="color:#2EC4B6;">blog</span></p>
   <p style="margin:0 0 12px 0;font-size:13px;color:#9CA3AF;line-height:1.5;">Smart savings for busy families. Real deals from real stores.</p>
-  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">James Ventures Corp &bull; Post Falls, ID 83854</p>
+  <p style="margin:0 0 8px 0;font-size:11px;color:#9CA3AF;">discountblog.com &bull; Post Falls, ID 83854</p>
   <p style="margin:0;font-size:12px;color:#9CA3AF;">
     You received this at {{ email }}.<br>
     <a href="{{ system.unsubscribe_url }}" style="color:#9CA3AF;text-decoration:underline;">Unsubscribe</a> &nbsp;|&nbsp;
