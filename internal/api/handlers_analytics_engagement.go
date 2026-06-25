@@ -26,6 +26,19 @@ package api
 //   - human = ignite_verdict_is_human(ignite_event_verdict(user_agent,
 //     ip_address)); evaluated ONCE per row in the CTE.
 //   - Org-scoped via GetOrgIDFromRequest. READ ONLY (no writes, no send path).
+//
+// Performance — partition pruning (the bug v1.2 fixes):
+//   mailing_tracking_events is RANGE-partitioned by month on event_at. Filtering
+//   ONLY on (event_at AT TIME ZONE 'America/Denver')::date wraps the partition key
+//   in a function, so the planner cannot prune — it scans ALL monthly partitions
+//   (tens of millions of rows) before the verdict aggregate, blowing the 15s
+//   budget once the rolling window grew past ~1M opened/clicked rows (the Range
+//   Overview then showed "engagement unavailable"). Fix mirrors the lake reader
+//   (buildBreakdownSQL): add a raw event_at timestamptz bound with a ±1-day margin
+//   so the planner prunes to the touched month(s) + uses the event_at index, while
+//   the precise Denver-date predicate still does the exact day selection. The
+//   margin is non-excluding — a Denver day is always inside [from-1, to+2) UTC —
+//   so counts are byte-identical (verified against the unbounded query).
 
 import (
 	"context"
@@ -41,9 +54,39 @@ import (
 //	1.1 (2026-06-24): raw = ALL recorded events (machine incl.). Dropped the
 //	    asset-host exclusion layer — the verdict IS the click filter; per
 //	    operator, no additional layer.
-const VersionEngagementSummary = "1.1"
+//	1.2 (2026-06-25): partition-prune fix — bound event_at to a ±1-day UTC margin
+//	    so the monthly partitions prune instead of a full-table scan. Fixes the
+//	    15s timeout / "engagement unavailable" once the rolling set passed ~1M
+//	    opened/clicked rows. Counts unchanged (margin is non-excluding).
+const VersionEngagementSummary = "1.2"
 
 const engagementSummaryTimeout = 15 * time.Second
+
+// engagementSummaryQuery — see the package doc above. The event_at >= / < bound
+// is what enables partition pruning; do NOT remove it (a function-wrapped
+// partition key defeats pruning and reintroduces the full-table-scan timeout).
+const engagementSummaryQuery = `
+		WITH ev AS (
+			SELECT
+				event_type,
+				subscriber_id,
+				ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address)) AS is_human
+			FROM mailing_tracking_events
+			WHERE organization_id = $1
+			  AND event_at >= ($2::date - 1)::timestamptz
+			  AND event_at <  ($3::date + 2)::timestamptz
+			  AND (event_at AT TIME ZONE 'America/Denver')::date BETWEEN $2::date AND $3::date
+			  AND event_type IN ('opened', 'clicked')
+			  AND ($4 = '' OR sending_domain ILIKE '%' || $4 || '%')
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'opened')                                    AS raw_opens,
+			COUNT(*) FILTER (WHERE event_type = 'opened' AND is_human)                        AS human_opens,
+			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'opened' AND is_human)   AS human_openers,
+			COUNT(*) FILTER (WHERE event_type = 'clicked')                                    AS raw_clicks,
+			COUNT(*) FILTER (WHERE event_type = 'clicked' AND is_human)                       AS human_clicks,
+			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'clicked' AND is_human)  AS human_clickers
+		FROM ev`
 
 // HandleEngagementSummary returns verdict-human opens/clicks (plus raw and
 // distinct openers/clickers) for [from,to] Denver days.
@@ -76,34 +119,15 @@ func (s *Server) HandleEngagementSummary(w http.ResponseWriter, r *http.Request)
 
 	// One pass: classify each event once in the CTE (verdict fn is the only
 	// working human filter — the is_machine_* columns are inert), then aggregate.
-	const q = `
-		WITH ev AS (
-			SELECT
-				event_type,
-				subscriber_id,
-				ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address)) AS is_human
-			FROM mailing_tracking_events
-			WHERE organization_id = $1
-			  AND (event_at AT TIME ZONE 'America/Denver')::date BETWEEN $2::date AND $3::date
-			  AND event_type IN ('opened', 'clicked')
-			  AND ($4 = '' OR sending_domain ILIKE '%' || $4 || '%')
-		)
-		SELECT
-			COUNT(*) FILTER (WHERE event_type = 'opened')                                    AS raw_opens,
-			COUNT(*) FILTER (WHERE event_type = 'opened' AND is_human)                        AS human_opens,
-			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'opened' AND is_human)   AS human_openers,
-			COUNT(*) FILTER (WHERE event_type = 'clicked')                                    AS raw_clicks,
-			COUNT(*) FILTER (WHERE event_type = 'clicked' AND is_human)                       AS human_clicks,
-			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'clicked' AND is_human)  AS human_clickers
-		FROM ev`
-
+	// Query is a package const (engagementSummaryQuery) so the partition-prune
+	// bound is covered by a regression test.
 	ctx, cancel := context.WithTimeout(r.Context(), engagementSummaryTimeout)
 	defer cancel()
 
 	var rawOpens, humanOpens, humanOpeners, rawClicks, humanClicks, humanClickers int64
 	// Scan order MUST match the final SELECT column order: raw_opens, human_opens,
 	// human_openers, raw_clicks, human_clicks, human_clickers.
-	if err := s.mailingDB.QueryRowContext(ctx, q, orgID, from, to, brand).Scan(
+	if err := s.mailingDB.QueryRowContext(ctx, engagementSummaryQuery, orgID, from, to, brand).Scan(
 		&rawOpens, &humanOpens, &humanOpeners, &rawClicks, &humanClicks, &humanClickers,
 	); err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
