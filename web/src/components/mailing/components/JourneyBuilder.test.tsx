@@ -150,7 +150,7 @@ describe('JourneyBuilder Phase 1 UI', () => {
     expect(segmentSelect.value).toBe(CLEANED_NEVER_MAILED_PRESET_ID);
 
     // Helper text appears when preset is chosen.
-    expect(screen.getByText(/computed_fields\.first_email_at/i)).toBeInTheDocument();
+    expect(screen.getByText(/never received an email/i)).toBeInTheDocument();
   });
 
   it('email node: picking a sending profile prepopulates from-name, from-email, and badge', async () => {

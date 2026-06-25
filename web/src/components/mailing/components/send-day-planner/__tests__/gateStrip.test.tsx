@@ -23,9 +23,9 @@ describe('GateStrip', () => {
   it('renders all six gate labels', () => {
     const state = fullPass();
     render(<GateStrip state={state} onToggleAuditReviewed={() => {}} onRefresh={() => {}} loading={false} />);
-    expect(screen.getByText(/PMTA Stability/)).toBeInTheDocument();
-    expect(screen.getByText(/Wave Dispatcher/)).toBeInTheDocument();
-    expect(screen.getByText(/Dead-Letter SHA/)).toBeInTheDocument();
+    expect(screen.getByText(/Sending Server Stability/)).toBeInTheDocument();
+    expect(screen.getByText(/Send Batch Dispatcher/)).toBeInTheDocument();
+    expect(screen.getByText(/Delivery Build Check/)).toBeInTheDocument();
     expect(screen.getByText(/Sending Profiles/)).toBeInTheDocument();
     expect(screen.getByText(/Audit Reviewed/)).toBeInTheDocument();
     expect(screen.getByText(/Volume Ramp/)).toBeInTheDocument();
