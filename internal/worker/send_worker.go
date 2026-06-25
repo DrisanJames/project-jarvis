@@ -96,6 +96,13 @@ type SendWorkerPool struct {
 	profileTrackingDomainCache map[string]string // profileID -> resolved tracking base URL
 	ptdMu                      sync.RWMutex
 
+	// Per-profile brand image-host cache. Keyed by profileID; maps to the
+	// sending brand's provisioned img.<apex> host, or "" when none is set up
+	// (in which case creative images stay on the neutral platform CDN). One
+	// DB lookup per profile, like the tracking domain. See resolveImageHost.
+	profileImageHostCache map[string]string
+	pihMu                 sync.RWMutex
+
 	// SES tenant-aware routing cache. Keyed by profileID; populated lazily
 	// on first send for a profile. profileSESInfo.viaSES gates internal
 	// /track/click + /track/open injection (SES is the sole tracker on
@@ -388,6 +395,7 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 	p.trackingSecret = trackingSecret
 	p.orgID = orgID
 	p.profileTrackingDomainCache = make(map[string]string)
+	p.profileImageHostCache = make(map[string]string)
 	p.profileSESCache = make(map[string]profileSESInfo)
 }
 
@@ -522,6 +530,106 @@ func (p *SendWorkerPool) resolveTrackingURL(ctx context.Context, profileID strin
 	p.profileTrackingDomainCache[profileID] = resolved
 	p.ptdMu.Unlock()
 	return resolved
+}
+
+// neutralImageHost is the platform CDN host that rehosted creative images
+// carry at create time (RehostHTML in internal/api/image_cdn_handlers.go). The
+// send path rewrites it to the sending brand's img.<apex> host when that domain
+// is provisioned (lookupBrandImageHost). Brand-matching moved out of the rehost
+// step in commit 5a160f4 but was only wired into the proof-send path — this
+// restores it for real campaign + click-drip sends.
+const neutralImageHost = "https://img.projectjarvis.io"
+
+// brandImageHostSwapDisabled is the kill switch: set
+// DISABLE_BRAND_IMAGE_HOST_SWAP=1 to ship the neutral platform CDN host on
+// every send without a redeploy (instant revert to pre-fix behavior).
+func brandImageHostSwapDisabled() bool {
+	return os.Getenv("DISABLE_BRAND_IMAGE_HOST_SWAP") == "1"
+}
+
+// apexFromSendingDomain reduces a sending domain to its apex brand by stripping
+// the known ESP subdomain label: em.ratesbazar.com / m.ratesbazar.com ->
+// ratesbazar.com. Only known prefixes are stripped, so a bare apex is returned
+// unchanged and an unexpected host fails closed (its img.<host> simply won't be
+// provisioned -> no swap -> neutral). Prefixes are ordered longest-first so
+// "em." wins over "m." on em.<brand>.
+func apexFromSendingDomain(d string) string {
+	d = strings.ToLower(strings.TrimSpace(d))
+	for _, pfx := range []string{"mail.", "send.", "trk.", "em.", "m."} {
+		if strings.HasPrefix(d, pfx) {
+			return strings.TrimPrefix(d, pfx)
+		}
+	}
+	return d
+}
+
+// lookupBrandImageHost returns the sending brand's provisioned image host
+// (img.<apex>) for a profile, or "" when none is set up + verified — in which
+// case creative images stay on the neutral platform CDN (never a broken or
+// wrong-brand host). The S3 object/path is identical across brands (every
+// img.<brand> CloudFront alias fronts the same bucket), so the send-time swap
+// is a pure, brand-correct host rewrite. Scoped to the profile's org so a
+// future multi-tenant split can't cross brands. ssl_status 'issued' is accepted
+// alongside 'active' — issued brands serve identically (same alias); requiring
+// 'active' would leave provisioned brands stuck on the neutral host. Shared by
+// the campaign send worker (cached) and the click-drip sender (direct).
+// NB: mailing_sending_profiles uses organization_id; mailing_image_domains uses
+// org_id — different column names, intentionally.
+func lookupBrandImageHost(ctx context.Context, db *sql.DB, profileID string) string {
+	if profileID == "" {
+		return ""
+	}
+	var sendingDomain, orgID sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(sending_domain,''), organization_id::text FROM mailing_sending_profiles WHERE id = $1`,
+		profileID).Scan(&sendingDomain, &orgID); err != nil {
+		log.Printf("lookupBrandImageHost: error loading profile %s: %v", profileID, err)
+		return "" // fail safe: no swap, stay on the (working) neutral host
+	}
+	apex := apexFromSendingDomain(sendingDomain.String)
+	if apex == "" {
+		return ""
+	}
+	candidate := "img." + apex
+	var got string
+	err := db.QueryRowContext(ctx,
+		`SELECT domain FROM mailing_image_domains
+		 WHERE org_id::text = $1 AND lower(domain) = lower($2) AND verified = true
+		   AND ssl_status IN ('active', 'issued')
+		 LIMIT 1`, orgID.String, candidate).Scan(&got)
+	switch {
+	case err == nil:
+		return got
+	case err == sql.ErrNoRows:
+		return "" // not provisioned for this brand — stay neutral
+	default:
+		log.Printf("lookupBrandImageHost: lookup error for %s: %v", candidate, err)
+		return ""
+	}
+}
+
+// resolveImageHost is the per-profile cached wrapper over lookupBrandImageHost
+// (one DB lookup per profile, like resolveTrackingURL). Empty results are cached
+// too so an unprovisioned brand doesn't re-query on every message.
+func (p *SendWorkerPool) resolveImageHost(ctx context.Context, profileID string) string {
+	if profileID == "" {
+		return ""
+	}
+	p.pihMu.RLock()
+	if cached, ok := p.profileImageHostCache[profileID]; ok {
+		p.pihMu.RUnlock()
+		return cached
+	}
+	p.pihMu.RUnlock()
+
+	host := lookupBrandImageHost(ctx, p.db, profileID)
+
+	if p.profileImageHostCache != nil {
+		p.pihMu.Lock()
+		p.profileImageHostCache[profileID] = host
+		p.pihMu.Unlock()
+	}
+	return host
 }
 
 func ensureHTTPSWorker(domainOrURL string) string {
@@ -1471,6 +1579,21 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	if htmlErr != nil {
 		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=html_content err=%v", item.CampaignID, htmlErr)
 	}
+
+	// Brand-match creative image hosts to the sending brand's img.<apex> CDN
+	// (neutral img.projectjarvis.io -> img.<apex>) when that domain is
+	// provisioned for this profile's sending brand; otherwise the neutral host
+	// is left in place (still serves). Applied here — after render, before the
+	// text/preview/tracking steps — so it covers EVERY body source (queue
+	// inline, content snapshot, offer-creative override) in one place. Pure host
+	// rewrite (same S3 path); idempotent; never touches money/tracking/beacon
+	// URLs (those don't carry the img. host).
+	if !brandImageHostSwapDisabled() {
+		if imgHost := p.resolveImageHost(ctx, item.ProfileID); imgHost != "" {
+			htmlContent = strings.ReplaceAll(htmlContent, neutralImageHost, "https://"+imgHost)
+		}
+	}
+
 	textContent, textErr := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
 	if textErr != nil {
 		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=text_content err=%v", item.CampaignID, textErr)

@@ -112,6 +112,17 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 	emailID := uuid.NewString()
 	html := p.HTMLContent
 
+	// Brand-match creative image hosts to the sending brand's img.<apex> CDN,
+	// same as the campaign send worker (send_worker.go). The reused clicked
+	// creative carries the neutral img.projectjarvis.io host; swap it to
+	// img.<brand> when provisioned for this profile, else leave neutral. Done
+	// before tracking/merge-tag rewrites so the bare creative host is matched.
+	if !brandImageHostSwapDisabled() {
+		if imgHost := lookupBrandImageHost(ctx, s.db, p.ProfileID); imgHost != "" {
+			html = strings.ReplaceAll(html, neutralImageHost, "https://"+imgHost)
+		}
+	}
+
 	// Merge tags + tracking rewrite, mirroring send_worker's ordering.
 	// replaceMoneyMergeTags FIRST: the scheduler bakes lowercase
 	// {{subscriber.id}}/{{brand.domain}} into every money URL
