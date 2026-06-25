@@ -902,6 +902,12 @@ func (po *PartnerDripOrchestrator) deployWaveGroup(ctx context.Context, v vertic
 		input.SendingProfileID = g.profileID
 		if d, ok := brandSESSendingDomain[strings.ToLower(strings.TrimSpace(brand))]; ok {
 			input.SendingDomain = d
+		} else if strings.HasPrefix(input.SendingDomain, "em.") {
+			// Every brand's SES tenant is m.<apex> (mirrors em.<apex> PMTA); derive it
+			// so ALL brands route through the SES relay when pinned — not just the
+			// two static ht/mh entries above (2026-06-25: relay ISPs were still
+			// hitting PMTA because the SES profile was set but the domain stayed em.).
+			input.SendingDomain = "m." + strings.TrimPrefix(input.SendingDomain, "em.")
 		}
 		// Disambiguate the name: PMTA + SES groups of one wave share the same
 		// creative (and thus the same base name); tag SES groups so the two
