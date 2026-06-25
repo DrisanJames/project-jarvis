@@ -1102,11 +1102,16 @@ const MetricsTable: React.FC<{
   expandedKey?: string | null;
   onToggleExpand?: (key: string) => void;
   renderExpanded?: (key: string) => React.ReactNode;
-}> = ({ dimLabel, rows, totals, sort, onSort, expandedKey, onToggleExpand, renderExpanded }) => {
+  // Optional trailing columns (e.g. the deferral funnel, keyed off MetricRow.key
+  // — which is the dim value). Their value/render read external state via the
+  // ColDef closure; not in METRIC_COLS so they never leak to other tables.
+  extraCols?: ColDef[];
+}> = ({ dimLabel, rows, totals, sort, onSort, expandedKey, onToggleExpand, renderExpanded, extraCols }) => {
+  const cols = useMemo(() => [...METRIC_COLS, ...(extraCols ?? [])], [extraCols]);
   const sorted = useMemo(() => sortMetricRows(rows, sort), [rows, sort]);
   const expandable = !!onToggleExpand;
   const arrow = (col: string) => sort.col === col ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : '';
-  const renderCells = (r: MetricRow, isTotal: boolean) => METRIC_COLS.map((c) => (
+  const renderCells = (r: MetricRow, isTotal: boolean) => cols.map((c) => (
     <td
       key={c.id}
       style={{
@@ -1127,7 +1132,7 @@ const MetricsTable: React.FC<{
             <th style={{ ...styles.th, textAlign: 'left', cursor: 'pointer' }} onClick={() => onSort('__key')}>
               {dimLabel}{arrow('__key')}
             </th>
-            {METRIC_COLS.map((c) => (
+            {cols.map((c) => (
               <th key={c.id} style={{ ...styles.th, textAlign: 'right', cursor: 'pointer' }} onClick={() => onSort(c.id)}>
                 {c.label}{arrow(c.id)}
               </th>
@@ -1165,7 +1170,7 @@ const MetricsTable: React.FC<{
                 </tr>
                 {isOpen && renderExpanded && (
                   <tr style={styles.tr}>
-                    <td colSpan={METRIC_COLS.length + 1} style={styles.expandCell}>
+                    <td colSpan={cols.length + 1} style={styles.expandCell}>
                       {renderExpanded(r.key)}
                     </td>
                   </tr>
@@ -1556,16 +1561,18 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                 rate={r.hard} rateLabel="hard" denomNote={dn} />
               <KpiCard label="Soft Bounce" value={c.soft} color={SOFT_AMBER}
                 rate={r.soft} rateLabel="soft" denomNote={dn} />
-              <KpiCard label="Deferral Retry Events" value={c.delays} color={COLORS.warn}
-                extra="per-RETRY events, not unique messages — throttle ISPs emit dozens per message" />
+              <KpiCard label="Retry attempts" value={c.delays} color={COLORS.warn}
+                extra="every retry attempt — a deferred message retries several times; see Deferred for unique messages" />
               {/* Deferral lifecycle — sibling to the per-retry KPI above (this one
                   is per-MESSAGE: deferred messages → recovered/pending/bounced).
-                  Fail-soft: funnel===null shows 0 / "deferral funnel unavailable". */}
+                  Recovery % is on RESOLVED deferrals (recovered/(recovered+bounced))
+                  — many deferrals are still retrying, so recovered/deferred reads a
+                  misleadingly low %. Fail-soft: funnel===null shows 0 / "unavailable". */}
               <KpiCard label="Deferred → Recovered" value={funnel ? funnel.total.recovered : 0} color={COLORS.good}
-                rate={funnel && funnel.total.deferred > 0 ? (funnel.total.recovered / funnel.total.deferred) * 100 : null}
-                rateLabel="recovered"
+                rate={funnel && (funnel.total.recovered + funnel.total.bounced) > 0 ? (funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100 : null}
+                rateLabel="recovered (of resolved)"
                 extra={funnel
-                  ? `${fmt(funnel.total.deferred)} deferred · ${fmtPct(funnel.total.deferred > 0 ? (funnel.total.recovered / funnel.total.deferred) * 100 : null)} recovered · ${fmt(funnel.total.pending)} pending · ${fmt(funnel.total.bounced)} bounced`
+                  ? `${fmt(funnel.total.deferred)} deferred · ${fmt(funnel.total.recovered)} delivered (${fmtPct((funnel.total.recovered + funnel.total.bounced) > 0 ? (funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100 : null)} of resolved) · ${fmt(funnel.total.pending)} in flight · ${fmt(funnel.total.bounced)} bounced`
                   : 'deferral funnel unavailable'} />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
@@ -1663,10 +1670,11 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                         <td style={ispCell}>{fmt(funnelByIsp.get(m.key)?.deferred ?? 0)}</td>
                         {(() => {
                           const f = funnelByIsp.get(m.key);
+                          const resolved = f ? f.recovered + f.bounced : 0;
                           return (
-                            <td style={ispCell}>
-                              {f && f.deferred > 0
-                                ? `${fmt(f.recovered)} (${fmtPct((f.recovered / f.deferred) * 100)})`
+                            <td style={ispCell} title="recovered / (recovered + bounced) — resolved deferrals only">
+                              {f && resolved > 0
+                                ? `${fmt(f.recovered)} (${fmtPct((f.recovered / resolved) * 100)})`
                                 : '—'}
                             </td>
                           );
@@ -1682,9 +1690,9 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                       <td style={{ ...ispCell, borderTop: '1px solid #374151', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(funnel?.total.deferred ?? 0)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>
-                        {funnel && funnel.total.deferred > 0
-                          ? `${fmt(funnel.total.recovered)} (${fmtPct((funnel.total.recovered / funnel.total.deferred) * 100)})`
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }} title="recovered / (recovered + bounced) — resolved deferrals only">
+                        {funnel && (funnel.total.recovered + funnel.total.bounced) > 0
+                          ? `${fmt(funnel.total.recovered)} (${fmtPct((funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100)})`
                           : '—'}
                       </td>
                     </tr>
@@ -1799,11 +1807,17 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const { addToast } = useToast();
   const [dim, setDim] = useState('isp');
   const [fetched, setFetched] = useState<DimFetched | null>(null);
+  const [funnel, setFunnel] = useState<DeferralFunnel | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [sort, setSort] = useState<SortState>({ col: 'attempted', dir: 'desc' });
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // The deferral funnel is only meaningful when the rows ARE mailbox providers
+  // (the funnel is keyed by isp_group). Other dims (brand, vmta, …) get no
+  // funnel columns.
+  const ispDim = dim === 'isp' || dim === 'isp_group';
 
   const load = useCallback(async (bypass: boolean) => {
     abortRef.current?.abort();
@@ -1824,7 +1838,11 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       const engFilters: Record<string, string> = { source: 'app' };
       if (applied.brand.trim()) engFilters.brand = applied.brand.trim();
       if (applied.ispGroup.trim()) engFilters.isp_group = applied.ispGroup.trim();
-      const [delivRes, engRes] = await Promise.all([
+      // Deferral funnel only for mailbox-provider dims (keyed by isp_group).
+      // Same fail-soft contract as OverviewTab's funnel fetch: a failure degrades
+      // the two funnel columns to "—" / 0 without breaking the matrix.
+      const wantFunnel = dim === 'isp' || dim === 'isp_group';
+      const [delivRes, engRes, funnelRes] = await Promise.all([
         fetchBreakdown(
           { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: filterParams(applied) },
           applied.nonce,
@@ -1835,11 +1853,19 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
+        wantFunnel
+          ? fetchDeferralFunnel(applied.from, applied.to, applied.brand, ctl.signal).catch((e) => {
+              if (isAbortError(e)) throw e; // let the outer catch swallow aborts uniformly
+              console.warn('[Dimensions] deferral funnel failed:', e instanceof Error ? e.message : e);
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
       const appEng = engRes.data.rows.filter((r) => {
         const et = (r.keys['event_type'] ?? '').toLowerCase();
         return et === 'open' || et === 'click';
       });
+      setFunnel(funnelRes);
       setFetched({ rows: [...delivRes.data.rows, ...appEng], dim, meta: delivRes.meta, truncated: !!(delivRes.data.truncated || engRes.data.truncated) });
     } catch (e) {
       if (isAbortError(e)) return;
@@ -1870,6 +1896,42 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     s.col === col ? { col, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
 
   const dimLabel = ROW_DIMS.find((d) => d.id === dim)?.label || dim;
+
+  // Deferral funnel keyed by isp_group, joined into the matrix by MetricRow.key
+  // (= the dim value, identical to isp_group for the main providers). The TOTAL
+  // row (key 'TOTAL') reads funnel.total. Recovery % is RESOLVED-based
+  // (recovered/(recovered+bounced)) — same formula as the Overview funnel.
+  const funnelByIsp = useMemo(
+    () => new Map((funnel?.rows ?? []).map((r) => [r.isp_group, r])),
+    [funnel]
+  );
+  const funnelCols: ColDef[] = useMemo(() => {
+    const lookup = (r: MetricRow) =>
+      r.key === 'TOTAL' ? (funnel?.total ?? null) : (funnelByIsp.get(r.key) ?? null);
+    const resolvedPct = (f: { recovered: number; bounced: number } | null): number | null => {
+      if (!f) return null;
+      const resolved = f.recovered + f.bounced;
+      return resolved > 0 ? (f.recovered / resolved) * 100 : null;
+    };
+    return [
+      {
+        id: 'deferred', label: 'Deferred',
+        value: (r) => lookup(r)?.deferred ?? null,
+        render: (r) => numCell(lookup(r)?.deferred ?? 0, SOFT_AMBER),
+      },
+      {
+        id: 'recovered_pct', label: 'Recovered%',
+        value: (r) => resolvedPct(lookup(r)),
+        render: (r) => {
+          const f = lookup(r);
+          return f && (f.recovered + f.bounced) > 0
+            ? rateCell(resolvedPct(f), COLORS.good)
+            : rateCell(null);
+        },
+        title: () => 'recovered / (recovered + bounced) — resolved deferrals only',
+      },
+    ];
+  }, [funnel, funnelByIsp]);
 
   return (
     <div style={styles.panel}>
@@ -1937,6 +1999,7 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           expandedKey={expandedKey}
           onToggleExpand={(k) => setExpandedKey((cur) => (cur === k ? null : k))}
           renderExpanded={(k) => <RowTrendExpansion dim={dim} value={k} applied={applied} />}
+          extraCols={ispDim ? funnelCols : undefined}
         />
       )}
     </div>
