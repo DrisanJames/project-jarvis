@@ -1648,15 +1648,32 @@ const RowTrendExpansion: React.FC<{
     const ctl = new AbortController();
     abortRef.current = ctl;
     setLoading(true);
-    fetchBreakdown(
-      {
-        from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000,
-        filters: { ...filterParams(applied), [dim]: value },
-      },
-      applied.nonce,
-      { signal: ctl.signal }
-    ).then((res) => {
-      setData({ rows: res.data.rows, meta: res.meta, truncated: !!res.data.truncated });
+    // Mirror the matrix: delivery from pmta+ses, engagement (open/click) from the
+    // RAW source='app' stream (MPP/machine included), scoped to this row's value.
+    const engFilters: Record<string, string> = { source: 'app' };
+    if (applied.brand.trim()) engFilters.brand = applied.brand.trim();
+    if (applied.ispGroup.trim()) engFilters.isp_group = applied.ispGroup.trim();
+    engFilters[dim] = value; // the row's dimension value is authoritative
+    Promise.all([
+      fetchBreakdown(
+        {
+          from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000,
+          filters: { ...filterParams(applied), [dim]: value },
+        },
+        applied.nonce,
+        { signal: ctl.signal }
+      ),
+      fetchBreakdown(
+        { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: engFilters },
+        applied.nonce,
+        { signal: ctl.signal }
+      ),
+    ]).then(([delivRes, engRes]) => {
+      const appEng = engRes.data.rows.filter((r) => {
+        const et = (r.keys['event_type'] ?? '').toLowerCase();
+        return et === 'open' || et === 'click';
+      });
+      setData({ rows: [...delivRes.data.rows, ...appEng], meta: delivRes.meta, truncated: !!(delivRes.data.truncated || engRes.data.truncated) });
     }).catch((e) => {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -1725,12 +1742,34 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     setError('');
     setExpandedKey(null);
     try {
-      const res = await fetchBreakdown(
-        { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: filterParams(applied) },
-        applied.nonce,
-        { signal: ctl.signal, bypass }
-      );
-      setFetched({ rows: res.data.rows, dim, meta: res.meta, truncated: !!res.data.truncated });
+      // Delivery (delivered/bounce/delays) reads pmta+ses. Engagement
+      // (open/click) reads source='app' — the open-pixel + clicker-tracker
+      // stream where MPP and everything that survives the UPSTREAM filtering
+      // (segments, pixel, clicker) lands. We merge ONLY the app open/click rows
+      // (app's 'delivered'/'bounce' are duplicates) so the matrix shows the RAW
+      // engagement signal, machine traffic included — no verdict/MPP filter. The
+      // recipient-side filters (brand, isp_group) carry over; route_type does not
+      // (app engagement rows have no sending route).
+      const engFilters: Record<string, string> = { source: 'app' };
+      if (applied.brand.trim()) engFilters.brand = applied.brand.trim();
+      if (applied.ispGroup.trim()) engFilters.isp_group = applied.ispGroup.trim();
+      const [delivRes, engRes] = await Promise.all([
+        fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: filterParams(applied) },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
+        fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: engFilters },
+          applied.nonce,
+          { signal: ctl.signal, bypass }
+        ),
+      ]);
+      const appEng = engRes.data.rows.filter((r) => {
+        const et = (r.keys['event_type'] ?? '').toLowerCase();
+        return et === 'open' || et === 'click';
+      });
+      setFetched({ rows: [...delivRes.data.rows, ...appEng], dim, meta: delivRes.meta, truncated: !!(delivRes.data.truncated || engRes.data.truncated) });
     } catch (e) {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -1771,7 +1810,9 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           </h2>
           <p style={styles.panelSubtitle}>
             group_by={dim},event_type over {applied.from} → {applied.to}. Rate heat: Hard%&gt;1 / Comp%&gt;0.1 / Del%&lt;90 red ·
-            Hard%&gt;0.5 / Comp%&gt;0.05 / Del%&lt;97 amber. Click a row for its daily trend. <TimingNote meta={fresh && fetched ? fetched.meta : null} />
+            Hard%&gt;0.5 / Comp%&gt;0.05 / Del%&lt;97 amber. Opens/Clicks are RAW (open-pixel + clicker
+            tracker, machine/MPP included — no verdict filter); delivery reads pmta+ses. Click a row for
+            its daily trend. <TimingNote meta={fresh && fetched ? fetched.meta : null} />
           </p>
         </div>
         <button style={styles.refreshBtn} onClick={() => load(true)} disabled={loading}>
