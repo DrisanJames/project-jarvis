@@ -262,9 +262,18 @@ func (s *OfferProofsService) HandlePreview(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Show the footer as it will render at send: bottom of the email, branded
+	// with the first approved domain (or neutral if none approved yet). The
+	// unsubscribe merge tag has no send context here, so point it at "#".
+	brand := ""
+	if len(p.ApprovedDomains) > 0 {
+		brand = brandFromSendingDomain(p.ApprovedDomains[0])
+	}
+	preview := appendUnsubDisclaimer(p.HTMLContent, brand, "")
+	preview = strings.ReplaceAll(preview, "{{ system.unsubscribe_url }}", "#")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(p.HTMLContent))
+	_, _ = w.Write([]byte(preview))
 }
 
 type createProofRequest struct {
@@ -276,9 +285,12 @@ type createProofRequest struct {
 	Rehost    *bool          `json:"rehost"` // default true
 }
 
-// processHTML rehosts external images (when S3 is wired) then injects our
-// footer/unsubscribe. Returns the processed html + the full rehost outcome so the
-// caller can surface failed/skipped images (a "0 rehosted" must not be silent).
+// processHTML rehosts external images (when S3 is wired). The footer/unsub block
+// is NOT injected here — it is appended at SEND time (and preview), at the bottom
+// of the email, carrying the actual sending brand (the domain isn't known at
+// create/rehost time, and a fragment creative with no <body> would otherwise get
+// the footer prepended into the header). Returns the processed html + the full
+// rehost outcome so the caller can surface failed/skipped images.
 func (s *OfferProofsService) processHTML(ctx context.Context, orgID, html string, rehost bool) (string, RehostCounts) {
 	var counts RehostCounts
 	if rehost && s.imageCDN != nil {
@@ -286,8 +298,49 @@ func (s *OfferProofsService) processHTML(ctx context.Context, orgID, html string
 		processed, counts = s.imageCDN.RehostHTML(ctx, orgID, html)
 		html = processed
 	}
-	html = injectUnsubDisclaimer(html)
 	return html, counts
+}
+
+// brandFromSendingDomain turns a sending domain into the recipient-facing brand
+// shown in the footer: em.discountblog.com -> discountblog.com.
+func brandFromSendingDomain(d string) string {
+	d = strings.ToLower(strings.TrimSpace(d))
+	d = strings.TrimPrefix(d, "em.")
+	return d
+}
+
+// brandImageHost returns the provisioned per-brand image domain (img.<brand>) for
+// a sending brand, or "" if it isn't set up + verified — in which case images
+// stay on the neutral platform CDN (never a wrong brand). e.g. "discountblog.com"
+// -> "img.discountblog.com" when that domain exists in mailing_image_domains.
+func (s *OfferProofsService) brandImageHost(ctx context.Context, orgID, brand string) string {
+	if strings.TrimSpace(brand) == "" {
+		return ""
+	}
+	candidate := "img." + brand
+	var got string
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT domain FROM mailing_image_domains
+		 WHERE org_id = $1 AND lower(domain) = lower($2) AND verified = true AND ssl_status = 'active'
+		 LIMIT 1`,
+		orgID, candidate).Scan(&got)
+	return got
+}
+
+// brandMatchImageHosts rewrites neutral-CDN image hosts to the sending brand's
+// img.<brand> host when that domain is provisioned; otherwise returns html
+// unchanged (neutral). The S3 object/path is identical across brands — only the
+// hostname differs — so this is a pure host find-and-replace.
+func (s *OfferProofsService) brandMatchImageHosts(ctx context.Context, orgID, brand, html string) string {
+	if s.imageCDN == nil {
+		return html
+	}
+	neutral := s.imageCDN.CDNDomain()
+	bh := s.brandImageHost(ctx, orgID, brand)
+	if neutral == "" || bh == "" {
+		return html
+	}
+	return strings.ReplaceAll(html, "https://"+neutral, "https://"+bh)
 }
 
 // rehostSummary is the per-create/per-rehost outcome surfaced to the operator.
@@ -620,6 +673,14 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Append the footer/unsub at the bottom, branded with the actual sending
+	// domain (resolved only now, at send time). sendProofMessage renders the
+	// {{ system.unsubscribe_url }} merge tag inside it.
+	brand := brandFromSendingDomain(req.SendingDomain)
+	htmlForSend := appendUnsubDisclaimer(p.HTMLContent, brand, "")
+	// Brand-match image hosts to img.<brand> when provisioned; else stay neutral.
+	htmlForSend = s.brandMatchImageHosts(r.Context(), orgID.String(), brand, htmlForSend)
+
 	// Resolve recipients from the curated account-manager table only.
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT name, email FROM mailing_proof_recipients
@@ -655,7 +716,7 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		msgID, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain,
-			subject, strings.TrimSpace(req.FromName), strings.TrimSpace(req.Preheader), p.HTMLContent, rc.email, id,
+			subject, strings.TrimSpace(req.FromName), strings.TrimSpace(req.Preheader), htmlForSend, rc.email, id,
 			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id})
 		if sendErr != nil {
 			res.Status = "error"

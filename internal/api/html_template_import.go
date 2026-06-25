@@ -195,6 +195,24 @@ func injectUnsubDisclaimer(html string) string {
 	return injectUnsubDisclaimerBrand(html, "", "")
 }
 
+// appendUnsubDisclaimer inserts the do-not-reply / unsubscribe + postal-address
+// block at the BOTTOM of the email — before </body>, or appended to the end when
+// the creative is a fragment with no body tag (network creatives usually are,
+// which is why the top-injecting injectUnsubDisclaimer landed it in the header).
+// brandName identifies the sender (e.g. the sending brand/domain); the postal
+// address still defaults to the JVC address (CAN-SPAM). Used by offer proofs.
+func appendUnsubDisclaimer(html, brandName, physicalAddress string) string {
+	if strings.Contains(html, unsubDisclaimerMarker) {
+		return html
+	}
+	disclaimer := buildUnsubDisclaimerHTML(brandName, physicalAddress)
+	lower := strings.ToLower(html)
+	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
+		return html[:idx] + disclaimer + html[idx:]
+	}
+	return html + disclaimer
+}
+
 func injectUnsubDisclaimerBrand(html, brandName, physicalAddress string) string {
 	if strings.Contains(html, unsubDisclaimerMarker) {
 		return html

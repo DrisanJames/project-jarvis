@@ -96,6 +96,7 @@ export const OfferProofs: React.FC = () => {
   const [isps, setIsps] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<OfferProof | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string>('');
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
@@ -151,6 +152,14 @@ export const OfferProofs: React.FC = () => {
       setSendSubject(p.variants[0]?.subject ?? '');
       setSendFromName(p.from_names[0] ?? '');
       setSendRcpts({});
+      // Preview via the /preview endpoint so it shows the footer exactly as it
+      // renders at send (bottom of the email, branded). apiFetch carries the org
+      // header; an iframe src cannot.
+      setPreviewHtml('');
+      try {
+        const pv = await apiFetch(`/api/mailing/offer-proofs/${id}/preview`);
+        if (pv.ok) setPreviewHtml(await pv.text());
+      } catch { /* fall back to html_content below */ }
     }
   }, []);
 
@@ -477,7 +486,7 @@ export const OfferProofs: React.FC = () => {
               {/* preview */}
               <div style={{ ...card, flex: '1 1 340px', minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Preview</div>
-                <iframe title="proof-preview" srcDoc={selected.html_content ?? ''}
+                <iframe title="proof-preview" srcDoc={previewHtml || selected.html_content || ''}
                   style={{ width: '100%', height: 360, border: '1px solid #1f2937', borderRadius: 6, background: '#fff' }} />
               </div>
 

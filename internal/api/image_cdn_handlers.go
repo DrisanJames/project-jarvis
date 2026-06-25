@@ -574,6 +574,16 @@ type rehostHTMLResponse struct {
 	Details        []RehostDetail `json:"details,omitempty"`
 }
 
+// CDNDomain returns the neutral platform CDN domain (img.projectjarvis.io)
+// rehosted image URLs are built on. Used by brand-matching callers to find-and-
+// replace the neutral host with a provisioned per-brand img.<brand> host.
+func (h *ImageCDNHandlers) CDNDomain() string {
+	if h.imageCDN == nil {
+		return ""
+	}
+	return h.imageCDN.GetCDNDomain()
+}
+
 // RehostDetail is the per-image outcome so a "0 rehosted" result is never
 // ambiguous — the caller (and the operator) can see exactly which URL was
 // rehosted, cached, skipped (and why), or failed (with the error).
@@ -609,15 +619,12 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 		return html, counts
 	}
 
-	// Check for org-specific verified image domain (e.g., img.horoscopeinfo.com)
-	var orgImageDomain string
-	h.db.QueryRowContext(ctx, `
-		SELECT domain FROM mailing_image_domains
-		WHERE org_id = $1 AND verified = true AND ssl_status = 'active'
-		ORDER BY created_at ASC LIMIT 1
-	`, orgID).Scan(&orgImageDomain)
-
-	// Get CDN domain to skip images already on our CDN
+	// Rehosted images are stored on the NEUTRAL platform CDN domain. We no longer
+	// rewrite to a per-org "first verified" custom domain here — with one org
+	// holding many brands that applied an arbitrary brand's domain (e.g.
+	// img.businessweeklypro.com) to EVERY brand's images. Brand-matching is now a
+	// host-rewrite applied at the point the SENDING brand is known (proof send /
+	// campaign build), gated on that brand's img.<brand> being provisioned.
 	cdnDomain := h.imageCDN.GetCDNDomain()
 	s3Bucket := h.imageCDN.GetBucket()
 
@@ -769,11 +776,6 @@ func (h *ImageCDNHandlers) RehostHTML(ctx context.Context, orgID, html string) (
 			cdnURL = hostedImage.CDNURL
 			log.Printf("[ImageRehost] Rehosted: %s -> %s (%d bytes)", originalURL, cdnURL, len(imageData))
 			counts.Rehosted++
-		}
-
-		// If an org-specific image domain is active, rewrite CDN URL to use it
-		if orgImageDomain != "" && cdnURL != "" {
-			cdnURL = rewriteToCustomDomain(cdnURL, orgImageDomain, cdnDomain)
 		}
 
 		// Replace EVERY occurrence of the original URL with the CDN URL.
