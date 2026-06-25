@@ -67,7 +67,13 @@ func buildDeferralFunnelSQL(from, to, brand string) (string, error) {
 	b.WriteString(sqlStr(to))
 	b.WriteString(" THEN 1 ELSE 0 END) AS deferred,")
 	b.WriteString(" max(CASE WHEN event_type='delivered' THEN 1 ELSE 0 END) AS delivered,")
-	b.WriteString(" max(CASE WHEN event_type IN ('hard_bounce','soft_bounce') THEN 1 ELSE 0 END) AS bounced")
+	b.WriteString(" max(CASE WHEN event_type IN ('hard_bounce','soft_bounce') THEN 1 ELSE 0 END) AS bounced,")
+	// flushed: operator `pmta flush` cancellation (diagnostic 'deleted by
+	// administrator'). These are administrative cancellations, not deliverability
+	// outcomes, so flushed messages are dropped from the cohort entirely (WHERE
+	// flushed=0 below) — a deferred-then-flushed message is neither recovered nor a
+	// real bounce. Keeps the funnel consistent with the soft-bounce reclass.
+	b.WriteString(" max(CASE WHEN lower(dsn_diag) LIKE '%deleted by administrator%' THEN 1 ELSE 0 END) AS flushed")
 	b.WriteString(" FROM ")
 	b.WriteString(lakeTable)
 	b.WriteString(" WHERE dt BETWEEN ")
@@ -86,7 +92,7 @@ func buildDeferralFunnelSQL(from, to, brand string) (string, error) {
 	b.WriteString(" count(*) FILTER (WHERE deferred=1 AND delivered=1) AS recovered,")
 	b.WriteString(" count(*) FILTER (WHERE deferred=1 AND delivered=0 AND bounced=0) AS pending,")
 	b.WriteString(" count(*) FILTER (WHERE deferred=1 AND delivered=0 AND bounced=1) AS bounced")
-	b.WriteString(" FROM msg WHERE deferred=1")
+	b.WriteString(" FROM msg WHERE deferred=1 AND flushed=0")
 	b.WriteString(" GROUP BY isp_group ORDER BY deferred DESC")
 	return b.String(), nil
 }

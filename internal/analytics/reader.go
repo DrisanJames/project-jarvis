@@ -186,8 +186,17 @@ const ispExpr = "CASE" +
 // Only bounce rows are touched; every other event_type passes through unchanged.
 // Applied in the projection (SELECT/GROUP BY); event_type Eq filters still match
 // the stored value, but no breakdown caller filters event_type on bounce rows.
-const eventTypeExpr = "CASE WHEN event_type IN ('hard_bounce','soft_bounce','reputation_block') THEN " +
+const eventTypeExpr = "CASE WHEN event_type IN ('hard_bounce','soft_bounce','reputation_block','administrative') THEN " +
 	"(CASE" +
+	// Administrative queue flush (operator `pmta flush`): PMTA stamps every flushed
+	// message with diagnostic 'x-pmta;deleted by administrator' (bounce_cat='other',
+	// 5.0.0). These are NOT recipient bounces — they're operator cancellations, and
+	// they dominate the raw soft-bounce number (~99.9% on flush days). Re-class to a
+	// distinct 'administrative' bucket the dashboards count in NEITHER soft, hard,
+	// reputation, NOR attempted (the UI's countsFromTypeMap only sums the known
+	// types, so 'administrative' is excluded everywhere). MUST be tested first so a
+	// flush with bounce_cat='other' doesn't fall through to soft_bounce.
+	" WHEN lower(dsn_diag) LIKE '%deleted by administrator%' THEN 'administrative'" +
 	" WHEN bounce_cat IN ('hard','bad-mailbox','bad-domain','inactive-mailbox') THEN 'hard_bounce'" +
 	" WHEN bounce_cat IN ('spam-related','policy-related','routing-errors','no-answer-from-host','bad-connection') THEN 'reputation_block'" +
 	" ELSE 'soft_bounce' END)" +
