@@ -7414,12 +7414,15 @@ END $$`},
 			DO $$
 			BEGIN
 			IF NOT EXISTS (SELECT 1 FROM organizations WHERE settings ? 'jvc_header_stripped_jun25') THEN
+				-- status IN (...) FIRST so idx_campaigns_status narrows the 103k-row /
+				-- 2GB table to ~2.5k sendable rows before the html regex runs; a
+				-- NOT IN / unscoped scan times out the 5s startup-migration budget.
 				UPDATE mailing_campaigns
 				SET html_content = regexp_replace(
 					regexp_replace(html_content, '<p[^>]*padding:4px 20px 8px[^>]*font-size:10px[^>]*>[^<]*</p>', ''),
 					'<!-- unsub-disclaimer --><p[^>]*>[^<]*box is not monitored[^<]*<a[^>]*>[^<]*</a>[^<]*</p>', '')
-				WHERE html_content ~ 'unsub-disclaimer'
-				  AND status NOT IN ('sent','completed','cancelled','deleted');
+				WHERE status IN ('scheduled','draft','sending','finalizing_audience','preparing','paused','failed')
+				  AND html_content ~ 'unsub-disclaimer';
 
 				UPDATE mailing_offer_creatives
 				SET html_content = CASE
