@@ -174,6 +174,25 @@ const ispExpr = "CASE" +
 	" WHEN " + ispDomainExpr + " = 'verizon.net' THEN 'verizon'" +
 	" ELSE 'other' END"
 
+// eventTypeExpr re-derives bounce classification from the raw `bounce_cat` at
+// READ time so hard / reputation / soft is consistent with the canonical
+// taxonomy (api.HardBounceCategories / api.ReputationBlockCategories) regardless
+// of what the historical ingest-time ClassifyBounce stamped. ONLY hard is true
+// list hygiene (invalid/dead/disabled mailbox). Reputation/policy/connection
+// blocks (Apple HM08, per-IP 5.7.1 rejections, etc.) become 'reputation_block'
+// — a DISTINCT event_type the dashboards count in NEITHER hard nor soft (the
+// operator's flush forces the deferred-blocked queue to bounce, which used to
+// inflate "hard" ~10x: 30,929 policy-related vs 2,678 true hard on 2026-06-24).
+// Only bounce rows are touched; every other event_type passes through unchanged.
+// Applied in the projection (SELECT/GROUP BY); event_type Eq filters still match
+// the stored value, but no breakdown caller filters event_type on bounce rows.
+const eventTypeExpr = "CASE WHEN event_type IN ('hard_bounce','soft_bounce','reputation_block') THEN " +
+	"(CASE" +
+	" WHEN bounce_cat IN ('hard','bad-mailbox','bad-domain','inactive-mailbox') THEN 'hard_bounce'" +
+	" WHEN bounce_cat IN ('spam-related','policy-related','routing-errors','no-answer-from-host','bad-connection') THEN 'reputation_block'" +
+	" ELSE 'soft_bounce' END)" +
+	" ELSE event_type END"
+
 // dimSelect / dimGroup render a dimension for the SELECT and GROUP BY lists.
 // Plain columns pass through; local_dt is computed (aliased in SELECT, raw
 // expression in GROUP BY — Athena does not allow grouping by the alias when
@@ -186,6 +205,8 @@ func dimSelect(d string) string {
 		return localHourExpr + " AS local_hour"
 	case "isp":
 		return ispExpr + " AS isp"
+	case "event_type":
+		return eventTypeExpr + " AS event_type"
 	}
 	return d
 }
@@ -198,6 +219,8 @@ func dimGroup(d string) string {
 		return localHourExpr
 	case "isp":
 		return ispExpr
+	case "event_type":
+		return eventTypeExpr
 	}
 	return d
 }

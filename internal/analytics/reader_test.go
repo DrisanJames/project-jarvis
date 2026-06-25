@@ -178,16 +178,16 @@ func TestBuildBreakdownSQL(t *testing.T) {
 		{
 			"one-dim",
 			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 		{
 			"two-dims",
 			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"isp_group", "event_type"}, Limit: 50},
-			"SELECT isp_group, event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT isp_group, " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
-				" GROUP BY isp_group, event_type ORDER BY c DESC LIMIT 50",
+				" GROUP BY isp_group, " + eventTypeExpr + " ORDER BY c DESC LIMIT 50",
 		},
 		{
 			"with-eq-filters",
@@ -202,21 +202,21 @@ func TestBuildBreakdownSQL(t *testing.T) {
 				},
 				Limit: 10,
 			},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND brand = 'discountblog.com'" +
 				" AND campaign_id = '550e8400-e29b-41d4-a716-446655440000'" +
 				" AND isp_group = 'gmail'" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 10",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 10",
 		},
 		{
 			// (a) Combined transport: source IN (...) present, COUNT(DISTINCT) intact.
 			"source-in-combined",
 			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, SourceIn: []string{"pmta", "ses"}},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND source IN ('pmta', 'ses')" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 		{
 			// (b) SourceIn + an Eq filter: the IN clause precedes the Eq predicate.
@@ -227,11 +227,11 @@ func TestBuildBreakdownSQL(t *testing.T) {
 				Eq:       map[string]string{"isp_group": "gmail"},
 				SourceIn: []string{"pmta", "ses"},
 			},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND source IN ('pmta', 'ses')" +
 				" AND isp_group = 'gmail'" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 		{
 			// (c) SourceIn + local_dt in GroupBy: BOTH the widened dt BETWEEN and
@@ -248,10 +248,10 @@ func TestBuildBreakdownSQL(t *testing.T) {
 			// (e) Dedupe: duplicated SourceIn values render each once.
 			"source-in-dedupe",
 			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, SourceIn: []string{"pmta", "pmta", "ses"}},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND source IN ('pmta', 'ses')" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 	}
 	for _, tc := range cases {
@@ -289,10 +289,10 @@ func TestBuildBreakdownSQLLocalHour(t *testing.T) {
 			// hourly-trend contract. Widening still fires off local_hour.
 			"local-hour-plus-event-type",
 			BreakdownFilter{From: "2026-06-02", To: "2026-06-07", GroupBy: []string{"local_hour", "event_type"}},
-			"SELECT " + localHourExpr + " AS local_hour, event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + localHourExpr + " AS local_hour, " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
-				" GROUP BY " + localHourExpr + ", event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + localHourExpr + ", " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 		{
 			// local_hour in GroupBy coexisting with an Eq predicate on isp_group.
@@ -317,11 +317,11 @@ func TestBuildBreakdownSQLLocalHour(t *testing.T) {
 				GroupBy: []string{"event_type"},
 				Eq:      map[string]string{"local_hour": "2026-06-04 09:00"},
 			},
-			"SELECT event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
 				" AND " + localDtExpr + " BETWEEN '2026-06-02' AND '2026-06-07'" +
 				" AND " + localHourExpr + " = '2026-06-04 09:00'" +
-				" GROUP BY event_type ORDER BY c DESC LIMIT 1000",
+				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 	}
 	for _, tc := range cases {
