@@ -420,6 +420,31 @@ async function fetchEngagement(
   return res.json();
 }
 
+// ── Deferral funnel (deferred → recovered / pending / bounced, per ISP) ──────
+// Tells the lifecycle of throttle-deferred messages, NOT the raw retry-event
+// count (the "Deferral Retry Events" KPI is per-RETRY and one message emits
+// dozens). FAIL-SOFT like fetchEngagement: a failure degrades the readout +
+// the two ISP columns to "—" without breaking the screen.
+interface DeferralFunnel {
+  total: { deferred: number; recovered: number; pending: number; bounced: number };
+  rows: { isp_group: string; deferred: number; recovered: number; pending: number; bounced: number }[];
+}
+
+// Honors the toolbar brand (sending-domain) filter (same qs idiom as
+// fetchEngagement). Not cached — one cheap aggregate per Run.
+async function fetchDeferralFunnel(
+  from: string,
+  to: string,
+  brand: string,
+  signal?: AbortSignal
+): Promise<DeferralFunnel> {
+  const qs = new URLSearchParams({ from, to });
+  if (brand.trim()) qs.set('brand', brand.trim());
+  const res = await apiFetch(`/api/mailing/analytics/deferral-funnel?${qs.toString()}`, { signal });
+  if (!res.ok) await throwHttpError(res);
+  return res.json();
+}
+
 interface EventsParams {
   dt?: string;
   campaign_id?: string;
@@ -1292,6 +1317,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const [routeRows, setRouteRows] = useState<BreakdownRow[]>([]);
   const [ispRows, setIspRows] = useState<BreakdownRow[]>([]);
   const [eng, setEng] = useState<EngSummary | null>(null);
+  const [funnel, setFunnel] = useState<DeferralFunnel | null>(null);
   const [trendGrain, setTrendGrain] = useState<'day' | 'hour'>('day');
   const [hourlyRows, setHourlyRows] = useState<BreakdownRow[]>([]);
   const [meta, setMeta] = useState<FetchMeta | null>(null);
@@ -1325,7 +1351,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // ~3 orders of magnitude low and its is_machine_* flags are inert — see
       // fetchEngagement). The engagement fetch is FAIL-SOFT: a failure degrades
       // the two KPI tiles to "—" without breaking the delivery card.
-      const [routeRes, ispRes, engRes] = await Promise.all([
+      const [routeRes, ispRes, engRes, funnelRes] = await Promise.all([
         fetchBreakdown(
           { from: applied.from, to: applied.to, groupBy: ['local_dt', 'source', 'route_type', 'event_type'], limit: 5000, filters: filterParamsNoTransport(applied) },
           applied.nonce,
@@ -1346,10 +1372,19 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           console.warn('[Overview] engagement summary failed:', e instanceof Error ? e.message : e);
           return null;
         }),
+        // Deferral funnel — same fail-soft contract as the engagement fetch: a
+        // failure degrades the readout + the two ISP columns to "—", the card
+        // and table still render.
+        fetchDeferralFunnel(applied.from, applied.to, applied.brand, ctl.signal).catch((e) => {
+          if (isAbortError(e)) throw e; // let the outer catch swallow aborts uniformly
+          console.warn('[Overview] deferral funnel failed:', e instanceof Error ? e.message : e);
+          return null;
+        }),
       ]);
       setRouteRows(routeRes.data.rows);
       setIspRows(ispRes.data.rows);
       setEng(engRes);
+      setFunnel(funnelRes);
       setTruncated(!!routeRes.data.truncated);
       setMeta(routeRes.meta);
       setLoaded(true);
@@ -1361,6 +1396,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       setRouteRows([]);
       setIspRows([]);
       setEng(null);
+      setFunnel(null);
       setMeta(null);
       setTruncated(false);
       setLoaded(false);
@@ -1453,6 +1489,13 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     return { rows: out, totals: makeMetricRow('TOTAL', totalMap) };
   }, [ispRows]);
 
+  // Deferral funnel keyed by isp_group, joined into the per-ISP table by m.key
+  // (= the isp_group value). Missing entry → the row shows "—" / 0.
+  const funnelByIsp = useMemo(
+    () => new Map((funnel?.rows ?? []).map((r) => [r.isp_group, r])),
+    [funnel]
+  );
+
   const hourly = useMemo(() => hourlySeries(hourlyRows), [hourlyRows]);
 
   const toggleSeries = (id: string) => setVisible((v) => {
@@ -1515,6 +1558,15 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                 rate={r.soft} rateLabel="soft" denomNote={dn} />
               <KpiCard label="Deferral Retry Events" value={c.delays} color={COLORS.warn}
                 extra="per-RETRY events, not unique messages — throttle ISPs emit dozens per message" />
+              {/* Deferral lifecycle — sibling to the per-retry KPI above (this one
+                  is per-MESSAGE: deferred messages → recovered/pending/bounced).
+                  Fail-soft: funnel===null shows 0 / "deferral funnel unavailable". */}
+              <KpiCard label="Deferred → Recovered" value={funnel ? funnel.total.recovered : 0} color={COLORS.good}
+                rate={funnel && funnel.total.deferred > 0 ? (funnel.total.recovered / funnel.total.deferred) * 100 : null}
+                rateLabel="recovered"
+                extra={funnel
+                  ? `${fmt(funnel.total.deferred)} deferred · ${fmtPct(funnel.total.deferred > 0 ? (funnel.total.recovered / funnel.total.deferred) * 100 : null)} recovered · ${fmt(funnel.total.pending)} pending · ${fmt(funnel.total.bounced)} bounced`
+                  : 'deferral funnel unavailable'} />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
               {/* Opens/Clicks are RAW recorded events (machine traffic included),
@@ -1594,6 +1646,8 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                       <th style={ispHead}>Hard%</th>
                       <th style={ispHead}>Soft%</th>
                       <th style={ispHead}>Deferral events</th>
+                      <th style={ispHead}>Deferred</th>
+                      <th style={ispHead}>Recovered%</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1606,6 +1660,17 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                         <td style={{ ...ispCell, color: HARD_RED, background: heatHard(m.rates.hard) }} title={denomTitle(m.rates)}>{fmtPct(m.rates.hard)}</td>
                         <td style={{ ...ispCell, color: SOFT_AMBER }} title={denomTitle(m.rates)}>{fmtPct(m.rates.soft)}</td>
                         <td style={ispCell}>{fmt(m.counts.delays)}</td>
+                        <td style={ispCell}>{fmt(funnelByIsp.get(m.key)?.deferred ?? 0)}</td>
+                        {(() => {
+                          const f = funnelByIsp.get(m.key);
+                          return (
+                            <td style={ispCell}>
+                              {f && f.deferred > 0
+                                ? `${fmt(f.recovered)} (${fmtPct((f.recovered / f.deferred) * 100)})`
+                                : '—'}
+                            </td>
+                          );
+                        })()}
                       </tr>
                     ))}
                     <tr>
@@ -1616,6 +1681,12 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                       <td style={{ ...ispCell, borderTop: '1px solid #374151', color: HARD_RED, background: heatHard(ispMetrics.totals.rates.hard) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.hard)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(funnel?.total.deferred ?? 0)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>
+                        {funnel && funnel.total.deferred > 0
+                          ? `${fmt(funnel.total.recovered)} (${fmtPct((funnel.total.recovered / funnel.total.deferred) * 100)})`
+                          : '—'}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
