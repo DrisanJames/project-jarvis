@@ -593,83 +593,6 @@ function makeMetricRow(key: string, typeMap: Record<string, number>): MetricRow 
   return { key, counts, rates: computeRates(counts) };
 }
 
-// ── Route funnel (v2.2) ─────────────────────────────────────────────────────
-// Pivots the group_by=source,route_type,event_type companion query into the
-// per-route funnel: PMTA-direct (attempted derived) vs SES relay (attempted
-// native). Bounce figures here come from pmta+ses sources only by
-// construction — the 'app' source never enters this pivot's funnel rows.
-function RouteFunnelPanel({ rows }: { rows: BreakdownRow[] }) {
-  const get = (src: string, rt: string | null, et: string): number =>
-    rows.reduce((a, r) => {
-      if ((r.keys['source'] ?? '') !== src) return a;
-      if (rt !== null && (r.keys['route_type'] ?? '') !== rt) return a;
-      return (r.keys['event_type'] ?? '') === et ? a + r.count : a;
-    }, 0);
-
-  const pmtaDelivered = get('pmta', 'pmta_direct', 'delivered');
-  const pmtaHard = get('pmta', 'pmta_direct', 'hard_bounce');
-  const pmtaSoft = get('pmta', 'pmta_direct', 'soft_bounce');
-  const pmtaAttempted = pmtaDelivered + pmtaHard + pmtaSoft;
-  const handoffs = get('pmta', null, 'relayed_to_ses');
-  const sesAttempted = get('ses', null, 'attempted');
-  const sesDelivered = get('ses', null, 'delivered');
-  const sesBounced = get('ses', null, 'bounced') + get('ses', null, 'hard_bounce') + get('ses', null, 'soft_bounce');
-  if (pmtaAttempted === 0 && sesAttempted === 0) return null;
-
-  const pct = (n: number, d: number) => (d > 0 ? `${((n / d) * 100).toFixed(1)}%` : '—');
-  const cell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
-  const head: React.CSSProperties = { ...cell, color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 };
-  const rowLabel: React.CSSProperties = { ...cell, textAlign: 'left', fontWeight: 600 };
-
-  return (
-    <div style={{ marginTop: 20 }}>
-      <div style={styles.subPanelTitle}>
-        Route funnel — performance coupled per sending route
-      </div>
-      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
-        <thead>
-          <tr>
-            <th style={{ ...head, textAlign: 'left' }}>Route</th>
-            <th style={head}>Attempted</th>
-            <th style={head}>Delivered</th>
-            <th style={head}>Hard</th>
-            <th style={head}>Soft / Bounced</th>
-            <th style={head}>Accept rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style={rowLabel}>Direct</td>
-            <td style={cell} title="derived: delivered + bounces (direct sends do not record a separate attempted event)">{fmt(pmtaAttempted)}*</td>
-            <td style={cell}>{fmt(pmtaDelivered)}</td>
-            <td style={cell}>{fmt(pmtaHard)}</td>
-            <td style={cell}>{fmt(pmtaSoft)}</td>
-            <td style={cell}>{pct(pmtaDelivered, pmtaAttempted)}</td>
-          </tr>
-          <tr>
-            <td style={rowLabel}>Relay route</td>
-            <td style={cell} title={`recorded attempted; cross-check: ${fmt(handoffs)} relay handoffs`}>{fmt(sesAttempted)}</td>
-            <td style={cell}>{fmt(sesDelivered)}</td>
-            <td style={cell} colSpan={2}>{fmt(sesBounced)}</td>
-            <td style={cell}>{pct(sesDelivered, sesAttempted)}</td>
-          </tr>
-          <tr>
-            <td style={{ ...rowLabel, borderTop: '1px solid #374151' }}>TOTAL</td>
-            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{fmt(pmtaAttempted + sesAttempted)}</td>
-            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{fmt(pmtaDelivered + sesDelivered)}</td>
-            <td style={{ ...cell, borderTop: '1px solid #374151' }} colSpan={2}>{fmt(pmtaHard + pmtaSoft + sesBounced)}</td>
-            <td style={{ ...cell, borderTop: '1px solid #374151' }}>{pct(pmtaDelivered + sesDelivered, pmtaAttempted + sesAttempted)}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
-        * Direct-route attempted is derived (delivered+bounces) until a separate attempted event is recorded.
-        {' '}Relay-route attempted ≈ handoffs ({fmt(handoffs)}) is the pipeline-consistency check.
-      </div>
-    </div>
-  );
-}
-
 const denomTitle = (r: Rates): string => `denominator: ${r.denomLabel} (${fmt(r.denom)})`;
 const deliveredTitle = (c: EventCounts): string => `denominator: delivered (${fmt(c.delivered)})`;
 
@@ -1560,8 +1483,9 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               Days are <b>America/Denver</b> over {applied.from} → {applied.to}. Counts are de-duplicated per event.
               Attempted is DERIVED (delivered+bounces) — direct sends do not record a separate attempted event;
               recorded attempted events exist on the relay route only. Relayed is a relay handoff,
-              not a recipient delivery. Open/Click KPIs are HUMAN (verdict-filtered, from tracking) — the
-              Trend chart's open/click series are still raw lake counts. <TimingNote meta={meta} />
+              not a recipient delivery. Open/Click KPIs are RAW recorded events (machine incl.; human
+              verdict counts in subtext) from tracking — the Trend chart's open/click series are
+              separate raw lake counts. <TimingNote meta={meta} />
             </p>
           </div>
           <button style={styles.refreshBtn} onClick={() => load(true)} disabled={loading}>
@@ -1593,28 +1517,22 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                 extra="per-RETRY events, not unique messages — throttle ISPs emit dozens per message" />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
-              {/* Opens/Clicks are HUMAN (verdict-filtered) from Postgres, NOT the
-                  lake — the lake's open/click slice is ~3 orders of magnitude low
-                  and its is_machine_* flags are inert. Raw (machine incl.) is shown
-                  in the subtext for contrast. */}
-              <KpiCard label="Opens (human)" value={eng ? eng.human_opens : 0} color={OPEN_CYAN}
-                rate={eng && c.delivered > 0 ? (eng.human_opens / c.delivered) * 100 : null}
+              {/* Opens/Clicks are RAW recorded events (machine traffic included),
+                  sourced from Postgres tracking — NOT the lake (whose open/click
+                  slice is ~3 orders of magnitude low and whose is_machine_* flags
+                  are inert). Human (verdict-filtered) counts are in the subtext;
+                  the verdict is the only click filter — no asset-host layer. */}
+              <KpiCard label="Opens (raw)" value={eng ? eng.raw_opens : 0} color={OPEN_CYAN}
+                rate={eng && c.delivered > 0 ? (eng.raw_opens / c.delivered) * 100 : null}
                 rateLabel="open" denomNote={deliveredTitle(c)}
-                extra={eng ? `${fmt(eng.human_openers)} openers · raw ${fmt(eng.raw_opens)} (machine incl.)` : 'engagement unavailable'} />
-              <KpiCard label="Clicks (human)" value={eng ? eng.human_clicks : 0} color={CLICK_VIOLET}
-                rate={eng && c.delivered > 0 ? (eng.human_clicks / c.delivered) * 100 : null}
+                extra={eng ? `machine incl. · human ${fmt(eng.human_opens)} (${fmt(eng.human_openers)} openers)` : 'engagement unavailable'} />
+              <KpiCard label="Clicks (raw)" value={eng ? eng.raw_clicks : 0} color={CLICK_VIOLET}
+                rate={eng && c.delivered > 0 ? (eng.raw_clicks / c.delivered) * 100 : null}
                 rateLabel="click" denomNote={deliveredTitle(c)}
-                extra={eng ? `${fmt(eng.human_clickers)} clickers · CTOR ${fmtPct(eng.human_opens > 0 ? (eng.human_clicks / eng.human_opens) * 100 : null)} · raw ${fmt(eng.raw_clicks)}` : 'engagement unavailable'} />
+                extra={eng ? `machine incl. · human ${fmt(eng.human_clicks)} (${fmt(eng.human_clickers)} clickers) · CTOR ${fmtPct(eng.human_opens > 0 ? (eng.human_clicks / eng.human_opens) * 100 : null)}` : 'engagement unavailable'} />
               <KpiCard label="Relayed" value={c.relayed} color={INFO_BLUE}
                 extra="relay handoff — not a delivery" />
             </div>
-
-            {/* Route funnel — attempted/delivered/bounces with route as a
-                dimension; bounce numbers read pmta+ses sources ONLY (the
-                'app' source carries engagement; its 2026-06-11 bounce rows
-                are known duplicates). */}
-            <RouteFunnelPanel rows={routeRowsInRange} />
-
 
             {/* Trend — Day | Hour (hourly only for ≤72h ranges) */}
             <div style={{ marginTop: 20 }}>

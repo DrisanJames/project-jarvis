@@ -20,9 +20,9 @@ package api
 // Semantics:
 //   - Denver-day window: (event_at AT TIME ZONE 'America/Denver')::date BETWEEN
 //     from AND to — matches the lake breakdown's local_dt buckets exactly.
-//   - "raw" clicks EXCLUDE asset-CDN hosts (fonts/css/js the link-rewriter wraps
-//     and scanners prefetch) so a "click" means a real destination click; raw
-//     opens are all opened events (machine traffic included, as labelled).
+//   - "raw" opens/clicks are ALL recorded events (machine traffic included, as
+//     labelled) — no asset-host exclusion. The verdict IS the click filter; per
+//     operator there is no additional layer.
 //   - human = ignite_verdict_is_human(ignite_event_verdict(user_agent,
 //     ip_address)); evaluated ONCE per row in the CTE.
 //   - Org-scoped via GetOrgIDFromRequest. READ ONLY (no writes, no send path).
@@ -38,16 +38,12 @@ import (
 //
 //	1.0 (2026-06-24): initial — PG+verdict human opens/clicks for the Range
 //	    Overview KPIs (replaces the lake's inert is_machine_click read).
-const VersionEngagementSummary = "1.0"
+//	1.1 (2026-06-24): raw = ALL recorded events (machine incl.). Dropped the
+//	    asset-host exclusion layer — the verdict IS the click filter; per
+//	    operator, no additional layer.
+const VersionEngagementSummary = "1.1"
 
 const engagementSummaryTimeout = 15 * time.Second
-
-// engagementAssetExclude matches resource-CDN hosts the link rewriter wraps as
-// trackable redirects; scanners prefetch them, inflating "clicks" ~20x (verified
-// 2026-06-24: 7,974 of 8,366 click rows were these hosts). Excluded from every
-// click count so "clicks" means a real destination click. POSIX regex, used with
-// the case-insensitive !~* operator. Constant — never interpolated from input.
-const engagementAssetExclude = `(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com)`
 
 // HandleEngagementSummary returns verdict-human opens/clicks (plus raw and
 // distinct openers/clickers) for [from,to] Denver days.
@@ -85,9 +81,6 @@ func (s *Server) HandleEngagementSummary(w http.ResponseWriter, r *http.Request)
 			SELECT
 				event_type,
 				subscriber_id,
-				(event_type = 'clicked'
-					AND link_url IS NOT NULL
-					AND link_url !~* '` + engagementAssetExclude + `') AS real_click,
 				ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address)) AS is_human
 			FROM mailing_tracking_events
 			WHERE organization_id = $1
@@ -96,12 +89,12 @@ func (s *Server) HandleEngagementSummary(w http.ResponseWriter, r *http.Request)
 			  AND ($4 = '' OR sending_domain ILIKE '%' || $4 || '%')
 		)
 		SELECT
-			COUNT(*) FILTER (WHERE event_type = 'opened')                                   AS raw_opens,
-			COUNT(*) FILTER (WHERE event_type = 'opened' AND is_human)                       AS human_opens,
-			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'opened' AND is_human)  AS human_openers,
-			COUNT(*) FILTER (WHERE real_click)                                               AS raw_clicks,
-			COUNT(*) FILTER (WHERE real_click AND is_human)                                  AS human_clicks,
-			COUNT(DISTINCT subscriber_id) FILTER (WHERE real_click AND is_human)             AS human_clickers
+			COUNT(*) FILTER (WHERE event_type = 'opened')                                    AS raw_opens,
+			COUNT(*) FILTER (WHERE event_type = 'opened' AND is_human)                        AS human_opens,
+			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'opened' AND is_human)   AS human_openers,
+			COUNT(*) FILTER (WHERE event_type = 'clicked')                                    AS raw_clicks,
+			COUNT(*) FILTER (WHERE event_type = 'clicked' AND is_human)                       AS human_clicks,
+			COUNT(DISTINCT subscriber_id) FILTER (WHERE event_type = 'clicked' AND is_human)  AS human_clickers
 		FROM ev`
 
 	ctx, cancel := context.WithTimeout(r.Context(), engagementSummaryTimeout)
