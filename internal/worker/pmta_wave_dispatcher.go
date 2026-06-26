@@ -44,24 +44,38 @@ func setBasedEnqueueDisabled() bool {
 
 // perWaveTouchCap is the max number of times a subscriber may be enqueued
 // across ALL campaigns sharing the same wave slot (campaign.scheduled_at
-// bucketed by perWaveWindowHours). The cross-campaign dedup the operator
-// asked for: a person engaged with N brands gets ONE touch per wave instead
-// of N. Enforced at enqueue via CapChecker.ClaimWaveSlot (one owner per
-// slot), so it only applies to campaign waves (the partner-drip sender uses
-// a separate dispatch path, untouched).
+// bucketed by perWaveWindowHours). When >0 it is the cross-campaign dedup: a
+// person engaged with N brands gets ONE touch per wave instead of N. Enforced
+// at enqueue via CapChecker.ClaimWaveSlot (one owner per slot), so it only
+// applies to campaign waves (the partner-drip sender uses a separate dispatch
+// path, untouched).
 //
 // Treated as an ON/OFF switch: >0 enables strict one-touch-per-wave (the
-// owner-claim model is inherently 1-per-slot); 0 disables it. Default 1 (ON).
-// Requires Redis; with Redis down the cap fails open (ClaimWaveSlot returns
-// allowed) and the send proceeds uncapped.
+// owner-claim model is inherently 1-per-slot); 0 disables it.
+//
+// ───────────────────────────────────────────────────────────────────────────
+// DEFAULT 0 (OFF) — cross-marketing ENABLED. Operator decision 2026-06-26:
+// lane isolation (one-touch-per-wave) cut daily volume from ~500k to ~100k and
+// lowered conversions, so we are back to cap-based sending and cross-market our
+// engagers. BEFORE re-enabling this limiter, check back with the user (operator)
+// first: this audience member engaged with the brand and it's THEIR
+// responsibility to unsubscribe, not ours — and the ISPs are only going to get
+// mad at the brand the audience member complains to. So an engager appearing in
+// multiple brands' audiences SHOULD be mailed by each; do not silently restore
+// the per-wave cap. Override via env PER_WAVE_TOUCH_CAP only on explicit
+// operator instruction.
+// ───────────────────────────────────────────────────────────────────────────
+//
+// Requires Redis when ON; with Redis down the cap fails open (ClaimWaveSlot
+// returns allowed) and the send proceeds uncapped.
 func perWaveTouchCap() int {
 	v := strings.TrimSpace(os.Getenv("PER_WAVE_TOUCH_CAP"))
 	if v == "" {
-		return 1
+		return 0
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
-		return 1
+		return 0
 	}
 	return n
 }
