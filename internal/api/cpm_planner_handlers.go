@@ -77,6 +77,16 @@ func (h *CpmPlannerHandlers) ensureTables() {
 			PRIMARY KEY (deal_id, campaign_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_campaigns_deal ON mailing_cpm_deal_campaigns(deal_id)`,
+		// Per-deal name match (operator 2026-06-27): broadcasts + daily-board sends
+		// carry offer_id=NULL, so the offer_id auto-match misses them and they only
+		// count if hand-earmarked. A name pattern (ILIKE) attributes them to the deal
+		// DYNAMICALLY — no manual earmarking, no generator changes. Empty = off.
+		`ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS campaign_name_pattern TEXT DEFAULT ''`,
+		// Seed the Sam's Club deal so its ~27% of delivered (broadcast + board) volume
+		// counts toward pacing. Every Sam's send carries "sam" in the campaign name
+		// ([partner-drip] samsclub_internal…, jun27 - … - sams-club, SPICY-COLD … SAMS).
+		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sam%'
+		   WHERE lower(name) ~ 'sam' AND COALESCE(campaign_name_pattern,'') = ''`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
@@ -113,20 +123,23 @@ type cpmDealProgress struct {
 }
 
 type cpmDeal struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	OfferID         string    `json:"offer_id"` // effective offer id ('' when unmapped)
-	OfferName       string    `json:"offer_name"`
-	EverflowOfferID string    `json:"everflow_offer_id"`
-	Budget          float64   `json:"budget"`
-	EcpmGoal        float64   `json:"ecpm_goal"`
-	EcpaGoal        float64   `json:"ecpa_goal"`
-	AvgCampaignSize int       `json:"avg_campaign_size"`
-	StartDate       string    `json:"start_date"` // YYYY-MM-DD
-	Status          string    `json:"status"`
-	Notes           string    `json:"notes"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	OfferID         string  `json:"offer_id"` // effective offer id ('' when unmapped)
+	OfferName       string  `json:"offer_name"`
+	EverflowOfferID string  `json:"everflow_offer_id"`
+	Budget          float64 `json:"budget"`
+	EcpmGoal        float64 `json:"ecpm_goal"`
+	EcpaGoal        float64 `json:"ecpa_goal"`
+	AvgCampaignSize int     `json:"avg_campaign_size"`
+	StartDate       string  `json:"start_date"` // YYYY-MM-DD
+	Status          string  `json:"status"`
+	Notes           string  `json:"notes"`
+	// CampaignNamePattern: ILIKE pattern that attributes offer_id=NULL broadcasts/
+	// board sends to this deal (operator 2026-06-27). '' = off.
+	CampaignNamePattern string    `json:"campaign_name_pattern"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 
 	PlannedVolume     int64 `json:"planned_volume"`
 	ConversionsNeeded int64 `json:"conversions_needed"`
@@ -147,16 +160,17 @@ type cpmCapacity struct {
 }
 
 type cpmDealInput struct {
-	Name            *string  `json:"name"`
-	OfferID         *string  `json:"offer_id"`
-	EverflowOfferID *string  `json:"everflow_offer_id"`
-	Budget          *float64 `json:"budget"`
-	EcpmGoal        *float64 `json:"ecpm_goal"`
-	EcpaGoal        *float64 `json:"ecpa_goal"`
-	AvgCampaignSize *int     `json:"avg_campaign_size"`
-	StartDate       *string  `json:"start_date"`
-	Status          *string  `json:"status"`
-	Notes           *string  `json:"notes"`
+	Name                *string  `json:"name"`
+	OfferID             *string  `json:"offer_id"`
+	EverflowOfferID     *string  `json:"everflow_offer_id"`
+	Budget              *float64 `json:"budget"`
+	EcpmGoal            *float64 `json:"ecpm_goal"`
+	EcpaGoal            *float64 `json:"ecpa_goal"`
+	AvgCampaignSize     *int     `json:"avg_campaign_size"`
+	StartDate           *string  `json:"start_date"`
+	Status              *string  `json:"status"`
+	Notes               *string  `json:"notes"`
+	CampaignNamePattern *string  `json:"campaign_name_pattern"`
 }
 
 // ─── Core math ──────────────────────────────────────────────────────────────
@@ -186,6 +200,7 @@ const cpmDealSelect = `
 	       COALESCE(d.everflow_offer_id, ''),
 	       d.budget, d.ecpm_goal, COALESCE(d.ecpa_goal, 0),
 	       d.avg_campaign_size, d.start_date, d.status, COALESCE(d.notes, ''),
+	       COALESCE(d.campaign_name_pattern, ''),
 	       d.created_at, d.updated_at,
 	       COALESCE(o.payout, o2.payout, 0) AS payout
 	FROM mailing_cpm_deals d
@@ -202,7 +217,7 @@ func scanCpmDeal(rows interface{ Scan(...interface{}) error }) (cpmDeal, float64
 	var start time.Time
 	err := rows.Scan(&d.ID, &d.Name, &d.OfferID, &d.OfferName, &d.EverflowOfferID,
 		&d.Budget, &d.EcpmGoal, &d.EcpaGoal, &d.AvgCampaignSize, &start,
-		&d.Status, &d.Notes, &d.CreatedAt, &d.UpdatedAt, &payout)
+		&d.Status, &d.Notes, &d.CampaignNamePattern, &d.CreatedAt, &d.UpdatedAt, &payout)
 	if err != nil {
 		return d, 0, err
 	}
@@ -263,8 +278,14 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 				WHERE organization_id = $1 AND offer_id = NULLIF($3,'')::uuid AND created_at >= $2
 				UNION
 				SELECT campaign_id FROM mailing_cpm_deal_campaigns WHERE deal_id = $4
+				UNION
+				-- Name-pattern branch (operator 2026-06-27): captures offer_id=NULL
+				-- broadcasts/board sends. Inert when the deal has no pattern set.
+				SELECT id FROM mailing_campaigns
+				WHERE organization_id = $1 AND NULLIF($5,'') IS NOT NULL
+				  AND name ILIKE $5 AND created_at >= $2
 			  )`
-		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID).Scan(
+		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern).Scan(
 			&p.Sent, &p.Delivered, &p.Opened, &p.Clicked, &p.HardBounces, &p.SoftBounces); err != nil {
 			log.Printf("[CpmPlanner] progress events for deal %s: %v", d.ID, err)
 		}
@@ -457,16 +478,20 @@ func (h *CpmPlannerHandlers) HandleCreateDeal(w http.ResponseWriter, r *http.Req
 	if in.Notes != nil {
 		notes = *in.Notes
 	}
+	namePattern := ""
+	if in.CampaignNamePattern != nil {
+		namePattern = strings.TrimSpace(*in.CampaignNamePattern)
+	}
 
 	var id string
 	err := h.db.QueryRow(`
 		INSERT INTO mailing_cpm_deals
 			(organization_id, name, offer_id, everflow_offer_id, budget, ecpm_goal,
-			 ecpa_goal, avg_campaign_size, start_date, notes)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			 ecpa_goal, avg_campaign_size, start_date, notes, campaign_name_pattern)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id`,
 		orgID, strings.TrimSpace(*in.Name), offerID, everflowID, *in.Budget, *in.EcpmGoal,
-		ecpaGoal, avgSize, startDate, notes).Scan(&id)
+		ecpaGoal, avgSize, startDate, notes, namePattern).Scan(&id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("create deal: %v", err))
 		return
@@ -557,6 +582,9 @@ func (h *CpmPlannerHandlers) HandleUpdateDeal(w http.ResponseWriter, r *http.Req
 	}
 	if in.Notes != nil {
 		add("notes", *in.Notes)
+	}
+	if in.CampaignNamePattern != nil {
+		add("campaign_name_pattern", strings.TrimSpace(*in.CampaignNamePattern))
 	}
 	if len(sets) == 0 {
 		respondError(w, http.StatusBadRequest, "no fields to update")
@@ -1393,12 +1421,12 @@ func (h *CpmPlannerHandlers) HandleListDealCampaigns(w http.ResponseWriter, r *h
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"campaigns": out,
 		"volume_to_goal": map[string]interface{}{
-			"planned_volume":      d.PlannedVolume,
-			"delivered_total":     d.Progress.Sent,        // offer-match ∪ associated
-			"delivered_associated": assocDelivered,         // associated campaigns only
-			"remaining":           remaining,
-			"actual_daily":        d.Progress.ActualDaily,
-			"days_to_goal":        daysToGoal,
+			"planned_volume":       d.PlannedVolume,
+			"delivered_total":      d.Progress.Sent, // offer-match ∪ associated
+			"delivered_associated": assocDelivered,  // associated campaigns only
+			"remaining":            remaining,
+			"actual_daily":         d.Progress.ActualDaily,
+			"days_to_goal":         daysToGoal,
 		},
 	})
 }
