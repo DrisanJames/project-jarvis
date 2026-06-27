@@ -62,6 +62,8 @@ var OwnedDomains = []string{
 	"yourfinancialblog.com",
 	"homeloansbyjaime.com",
 	"firsttimebuyerhomeloan.com",
+	// Jun 2026 — additional Kumo brand (htm), IPs 16.217.96.186-207.
+	"hometracmortgage.com",
 }
 
 // Root maps a sending domain to its brand root.
