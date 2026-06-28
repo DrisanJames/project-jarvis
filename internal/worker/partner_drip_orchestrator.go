@@ -218,6 +218,16 @@ var brandSendingDomain = map[string]string{
 	"mpf": "em.mypersonalfinancial.com",
 	"pmd": "em.paymydebit.com",
 	"trb": "em.theretirementblog.com",
+	// KumoMTA Colo1 ISP-pool expansion 2026-06 (per-ISP IPs on 16.217.96.0/24).
+	// These 6 had governor rows + active kumo profiles but were missing here, so
+	// pausedBrandFn (no sending domain => paused) skipped them and only 3 of 9
+	// governed brands warmed. Added so all 9 resolve a sending domain and send.
+	"bcc": "em.bestcreditcare.com",
+	"usf": "em.us-finance.com",
+	"yfb": "em.yourfinancialblog.com",
+	"hlj": "em.homeloansbyjaime.com",
+	"fth": "em.firsttimebuyerhomeloan.com",
+	"htm": "em.hometracmortgage.com",
 }
 
 // BrandSendingDomain exposes the orchestrator's brand → sending-domain
