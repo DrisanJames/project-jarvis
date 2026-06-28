@@ -343,7 +343,11 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		//   att 225/brand × 4 mature (routed) = ~900/day
 		//   aol 225/brand × 4 mature (routed 2026-06-13) = ~900/day
 		// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
-		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0, "yahoo": 100, "aol": 225, "att": 225}
+		// Operator 2026-06-27: drain the non-gmail backlog GLOBALLY (shared across all
+		// feeds). gmail HELD at 0; yahoo/aol/att daily budgets removed so the 7-day
+		// drain-horizon (PerISPDrainDays below) paces the drain, not a flat per-brand
+		// ceiling. ("Share across all feeds. Also expand across all brands.")
+		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0}
 		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
 			parsed := map[string]int{}
 			for _, pair := range strings.Split(v, ",") {
@@ -379,24 +383,26 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			}
 			return m
 		}
+		// Operator 2026-06-27: "expand across all brands" — yahoo/apple/att/aol now
+		// ship from ALL 16 brands (removed from this map = unrestricted routing). Only
+		// gmail stays mature-4-restricted, and it is held at per-wave cap 0 regardless.
 		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{
 			"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
-			"yahoo": parseAllow("PARTNER_DRIP_YAHOO_NEW_BRANDS", matureBrands),
-			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", matureBrands),
-			"att":   parseAllow("PARTNER_DRIP_ATT_NEW_BRANDS", matureBrands),
-			"aol":   parseAllow("PARTNER_DRIP_AOL_NEW_BRANDS", matureBrands), // 2026-06-13: AOL routed to mature-4 (best placement, 36.9% on HT)
 		}
 	}
 	if cfg.PerISPDrainDays == nil {
 		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
 		// refilling ingest queue drains over multiple days. Caps float with
 		// live ready depth — see ispCapForDrainHorizon.
+		// Operator 2026-06-27: 7-day drain horizon for the non-gmail sensitive ISPs —
+		// spreads each vertical's backlog over ~7 days at the wave cadence (shared
+		// across all feeds, all 16 brands). gmail held at cap 0 (drain-days moot).
 		cfg.PerISPDrainDays = map[string]int{
 			"gmail":     3,
-			"yahoo":     3,
-			"sbcglobal": 3,
-			"aol":       3,
-			"att":       2,
+			"yahoo":     7,
+			"sbcglobal": 7,
+			"aol":       7,
+			"att":       7,
 		}
 	}
 	if !cfg.ThrottleDeferralDisabled && cfg.ThrottledISPRateThreshold <= 0 {
