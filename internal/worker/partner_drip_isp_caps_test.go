@@ -156,7 +156,11 @@ func TestBrandISPSESProfiles(t *testing.T) {
 	m := dripBrandISPSESProfiles()
 	assert.Equal(t, "c24a8455-e893-4895-a8ad-4556d9013003", m["ht"]["microsoft"], "default ht microsoft → HT SES tenant")
 	assert.Empty(t, m["ht"]["apple"], "ht apple not pinned by default")
-	assert.Nil(t, m["db"], "db has no SES pins by default")
+	// operator 2026-06-27 uncap: all 16 brands now pin gmail → SES by default
+	// (uncapped gmail must ride SES, never PMTA). db/ht gmail are pinned too.
+	assert.Equal(t, "93938919-2df7-40c4-ba68-4f3e301e5b05", m["db"]["gmail"], "default db gmail → DB SES tenant")
+	assert.Equal(t, "c24a8455-e893-4895-a8ad-4556d9013003", m["ht"]["gmail"], "default ht gmail → HT SES tenant")
+	assert.Empty(t, m["db"]["microsoft"], "db microsoft not pinned by default")
 
 	// Env override REPLACES the default (must re-list ht to keep it).
 	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=AAA,mh=microsoft=BBB")
