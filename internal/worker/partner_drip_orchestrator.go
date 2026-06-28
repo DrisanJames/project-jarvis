@@ -319,20 +319,19 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		//             (×4 mature = ~900/day) — "loving the growth, 480->900/d"
 		//   aol       30 ceiling, true rate set by NewRecordDailyISPCaps aol=56/brand
 		//             (×16 brands = ~900/day)
-		// ALL ISPs uncapped (operator 2026-06-27: "EVERYTHING can be uncapped" across all 16 domains). Real ceiling is now MaxWaveSize. gmail must be >0 (0=suppress) and routes via SES (dripBrandISPSESProfiles).
 		cfg.PerISPCapPerWave = map[string]int{
-			"gmail":     100000,
-			"yahoo":     100000,
-			"aol":       100000,
+			"gmail":     0,
+			"yahoo":     16,
+			"aol":       30,
 			"microsoft": 100000,
 			"apple":     100000,
-			"comcast":   100000,
-			"charter":   100000,
-			"att":       100000,
-			"sbcglobal": 100000,
-			"cox":       100000,
-			"verizon":   100000,
-			"other":     100000,
+			"comcast":   30,
+			"charter":   30,
+			"att":       50,
+			"sbcglobal": 20,
+			"cox":       20,
+			"verizon":   20,
+			"other":     40,
 		}
 	}
 	if cfg.NewRecordDailyISPCaps == nil {
@@ -344,7 +343,7 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		//   att 225/brand × 4 mature (routed) = ~900/day
 		//   aol 225/brand × 4 mature (routed 2026-06-13) = ~900/day
 		// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
-		cfg.NewRecordDailyISPCaps = map[string]int{} // uncapped daily (operator 2026-06-27)
+		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0, "yahoo": 100, "aol": 225, "att": 225}
 		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
 			parsed := map[string]int{}
 			for _, pair := range strings.Split(v, ",") {
@@ -362,12 +361,43 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		}
 	}
 	if cfg.NewRecordISPBrandAllow == nil {
-		// all 16 domains may send every ISP (operator 2026-06-27)
-		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{}
+		// Deliverability routing (operator 2026-06-13): the engagement-priced /
+		// reputation-sensitive ISPs ship only from the warmed mature-4 domains
+		// (db/ht/mh/qf own the isolated per-ISP IP pools). Per-ISP env override:
+		// PARTNER_DRIP_<ISP>_NEW_BRANDS (e.g. PARTNER_DRIP_YAHOO_NEW_BRANDS).
+		matureBrands := "db,ht,mh,qf"
+		parseAllow := func(envKey, def string) map[string]bool {
+			v := strings.TrimSpace(os.Getenv(envKey))
+			if v == "" {
+				v = def
+			}
+			m := map[string]bool{}
+			for _, b := range strings.Split(v, ",") {
+				if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
+					m[b] = true
+				}
+			}
+			return m
+		}
+		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{
+			"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
+			"yahoo": parseAllow("PARTNER_DRIP_YAHOO_NEW_BRANDS", matureBrands),
+			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", matureBrands),
+			"att":   parseAllow("PARTNER_DRIP_ATT_NEW_BRANDS", matureBrands),
+			"aol":   parseAllow("PARTNER_DRIP_AOL_NEW_BRANDS", matureBrands), // 2026-06-13: AOL routed to mature-4 (best placement, 36.9% on HT)
+		}
 	}
 	if cfg.PerISPDrainDays == nil {
-		// no drain-horizon throttle (operator 2026-06-27 uncap)
-		cfg.PerISPDrainDays = map[string]int{}
+		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
+		// refilling ingest queue drains over multiple days. Caps float with
+		// live ready depth — see ispCapForDrainHorizon.
+		cfg.PerISPDrainDays = map[string]int{
+			"gmail":     3,
+			"yahoo":     3,
+			"sbcglobal": 3,
+			"aol":       3,
+			"att":       2,
+		}
 	}
 	if !cfg.ThrottleDeferralDisabled && cfg.ThrottledISPRateThreshold <= 0 {
 		cfg.ThrottledISPRateThreshold = 50.0
@@ -783,8 +813,7 @@ var brandSESSendingDomain = map[string]string{
 func dripBrandISPSESProfiles() map[string]map[string]string {
 	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES"))
 	if v == "" {
-		// + all-16-brand gmail SES pins (operator 2026-06-27): uncapped gmail must ride SES, never PMTA (PMTA gmail defers ~98%).
-		v = "ht=microsoft=c24a8455-e893-4895-a8ad-4556d9013003,db=gmail=93938919-2df7-40c4-ba68-4f3e301e5b05,ht=gmail=c24a8455-e893-4895-a8ad-4556d9013003,mh=gmail=81b1e46b-b0cc-4f1a-9667-e09452ad6fa4,qf=gmail=85cb59ed-b45a-427b-b5c9-ad7a67142697,bwp=gmail=651cff33-beb5-49a9-bd75-70f11c4043a7,rru=gmail=9a66ef56-0b35-4ab6-8ea1-af482671c441,fc=gmail=d0e552fd-21d8-4aaa-85e5-358577874ab8,cp=gmail=d34e6b74-7d92-47ab-bc10-9f929b2cc135,hws=gmail=c9e5e308-9c8b-481e-b6ee-5843a45fe148,tot=gmail=7da27070-d17a-4475-8564-1ded7bbaea8e,yih=gmail=9fffe735-a57c-4d02-adca-d49bfeb94da6,mrd=gmail=5b1aa1f5-e38e-4c79-8f81-45345b59f2d1,ci=gmail=80d254e6-4aa3-4e45-baed-353b5319efd5,lpl=gmail=d93a31f4-1daa-40a3-9c27-926a8e7e4c65,rb=gmail=c58d1939-eaf1-4f5e-9922-6f9b59d9be6d,wfy=gmail=98888308-ebe2-4ba8-b618-eaa2215c26b1"
+		v = "ht=microsoft=c24a8455-e893-4895-a8ad-4556d9013003"
 	}
 	m := map[string]map[string]string{}
 	for _, trip := range strings.Split(v, ",") {
