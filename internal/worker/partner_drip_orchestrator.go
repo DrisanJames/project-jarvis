@@ -841,6 +841,48 @@ func dripBrandISPSESProfiles() map[string]map[string]string {
 	return m
 }
 
+// dripBrandSESProfiles maps each of the 16 drip brands to its m.<apex> SES tenant
+// profile. When PARTNER_DRIP_ROUTE_ALL_SES is on (default), every claimed record
+// that isn't otherwise pinned defaults to its brand's SES profile, so the ENTIRE
+// partner-drip ships through the SES relay (operator 2026-06-27: "all of these
+// drips should route through SES"). gmail is held at per-wave cap 0 and never
+// claims, so it is unaffected. Override an id via PARTNER_DRIP_BRAND_SES_PROFILES
+// (comma-separated brand=profileUUID).
+func dripBrandSESProfiles() map[string]string {
+	m := map[string]string{
+		"db": "93938919-2df7-40c4-ba68-4f3e301e5b05", "ht": "c24a8455-e893-4895-a8ad-4556d9013003",
+		"mh": "81b1e46b-b0cc-4f1a-9667-e09452ad6fa4", "qf": "85cb59ed-b45a-427b-b5c9-ad7a67142697",
+		"bwp": "651cff33-beb5-49a9-bd75-70f11c4043a7", "ci": "80d254e6-4aa3-4e45-baed-353b5319efd5",
+		"cp": "d34e6b74-7d92-47ab-bc10-9f929b2cc135", "fc": "d0e552fd-21d8-4aaa-85e5-358577874ab8",
+		"hws": "c9e5e308-9c8b-481e-b6ee-5843a45fe148", "lpl": "d93a31f4-1daa-40a3-9c27-926a8e7e4c65",
+		"mrd": "5b1aa1f5-e38e-4c79-8f81-45345b59f2d1", "rb": "c58d1939-eaf1-4f5e-9922-6f9b59d9be6d",
+		"rru": "9a66ef56-0b35-4ab6-8ea1-af482671c441", "tot": "7da27070-d17a-4475-8564-1ded7bbaea8e",
+		"wfy": "98888308-ebe2-4ba8-b618-eaa2215c26b1", "yih": "9fffe735-a57c-4d02-adca-d49bfeb94da6",
+	}
+	if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_BRAND_SES_PROFILES")); v != "" {
+		for _, pair := range strings.Split(v, ",") {
+			kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(kv) == 2 {
+				if b, id := strings.ToLower(strings.TrimSpace(kv[0])), strings.TrimSpace(kv[1]); b != "" && id != "" {
+					m[b] = id
+				}
+			}
+		}
+	}
+	return m
+}
+
+// dripRouteAllSES reports whether the whole drip defaults to the SES relay
+// (operator 2026-06-27). Default ON; set PARTNER_DRIP_ROUTE_ALL_SES=false to
+// restore the per-(brand,ISP)-pin PMTA-default behavior.
+func dripRouteAllSES() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_ROUTE_ALL_SES"))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true
+}
+
 // claimGroup is a subset of a wave's claimed records routed to one campaign.
 // recs and subIDs are index-aligned. profileID == "" means the default PMTA
 // route (resolve by SendingDomain); a non-empty UUID pins an SES tenant profile.
@@ -857,17 +899,22 @@ type claimGroup struct {
 // pinned the result is a single group identical to the pre-split behavior.
 // Groups are returned PMTA-first, then SES groups in deterministic profile order.
 func partitionWaveBySESProfile(brand string, recs []claimedRecord, subIDs []string) []claimGroup {
-	pins := dripBrandISPSESProfiles()[strings.ToLower(strings.TrimSpace(brand))]
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	pins := dripBrandISPSESProfiles()[lb]
+	defaultSES := ""
+	if dripRouteAllSES() {
+		defaultSES = dripBrandSESProfiles()[lb] // whole drip defaults to the brand's SES relay
+	}
 	byProfile := map[string]*claimGroup{}
 	order := []string{}
 	for i, r := range recs {
 		if i >= len(subIDs) {
 			break
 		}
-		pid := ""
+		pid := defaultSES
 		if pins != nil {
 			if p, ok := pins[strings.ToLower(strings.TrimSpace(r.ispFamily))]; ok {
-				pid = p
+				pid = p // explicit (brand,ISP) pin still wins
 			}
 		}
 		g, ok := byProfile[pid]

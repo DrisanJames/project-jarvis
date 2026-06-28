@@ -167,6 +167,7 @@ func TestBrandISPSESProfiles(t *testing.T) {
 
 func TestPartitionWaveBySESProfile(t *testing.T) {
 	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=PROF_HT_MS")
+	t.Setenv("PARTNER_DRIP_ROUTE_ALL_SES", "false") // test the per-pin PMTA-default behavior
 	recs := []claimedRecord{
 		{id: "1", ispFamily: "microsoft"},
 		{id: "2", ispFamily: "apple"},
@@ -189,6 +190,30 @@ func TestPartitionWaveBySESProfile(t *testing.T) {
 	require.Len(t, groups, 1)
 	assert.Equal(t, "", groups[0].profileID)
 	assert.Len(t, groups[0].recs, 4)
+}
+
+// TestPartitionWaveBySESProfile_RouteAllSES: with the route-all-SES default ON
+// (operator 2026-06-27), every record defaults to the brand's SES profile; an
+// explicit (brand,ISP) pin still wins, and there is NO PMTA group.
+func TestPartitionWaveBySESProfile_RouteAllSES(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_BRAND_ISP_SES_PROFILES", "ht=microsoft=PROF_HT_MS")
+	t.Setenv("PARTNER_DRIP_ROUTE_ALL_SES", "") // default ON
+	htSES := dripBrandSESProfiles()["ht"]
+	require.NotEmpty(t, htSES)
+	recs := []claimedRecord{
+		{id: "1", ispFamily: "microsoft"},
+		{id: "2", ispFamily: "apple"},
+		{id: "3", ispFamily: "yahoo"},
+	}
+	subs := []string{"s1", "s2", "s3"}
+	groups := partitionWaveBySESProfile("ht", recs, subs)
+	byProf := map[string][]string{}
+	for _, g := range groups {
+		byProf[g.profileID] = idsOf(g.recs)
+	}
+	assert.NotContains(t, byProf, "", "no PMTA group when route-all-SES is on")
+	assert.ElementsMatch(t, []string{"1"}, byProf["PROF_HT_MS"], "microsoft uses the explicit pin")
+	assert.ElementsMatch(t, []string{"2", "3"}, byProf[htSES], "apple+yahoo default to the brand SES relay")
 }
 
 func idsOf(recs []claimedRecord) []string {
