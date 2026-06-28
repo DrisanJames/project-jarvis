@@ -72,6 +72,7 @@ interface Deal {
   start_date: string;
   status: string;
   notes: string;
+  conversions_override: number | null;
   planned_volume: number;
   conversions_needed: number;
   days_to_finish: number;
@@ -280,6 +281,7 @@ interface FormState {
   start_date: string;
   status: string;
   notes: string;
+  conversions_override: string;
 }
 
 const emptyForm = (): FormState => ({
@@ -293,6 +295,7 @@ const emptyForm = (): FormState => ({
   start_date: new Date().toISOString().slice(0, 10),
   status: 'active',
   notes: '',
+  conversions_override: '',
 });
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -404,6 +407,7 @@ export const CpmPlanner: React.FC = () => {
       start_date: d.start_date,
       status: d.status,
       notes: d.notes,
+      conversions_override: d.conversions_override != null ? String(d.conversions_override) : '',
     });
     setFormError(null);
     setShowModal(true);
@@ -429,7 +433,13 @@ export const CpmPlanner: React.FC = () => {
         start_date: form.start_date,
         notes: form.notes,
       };
-      if (editingId) body.status = form.status;
+      if (editingId) {
+        body.status = form.status;
+        // >0 pins the count; 0 (blank) clears the override → computed count.
+        body.conversions_override = form.conversions_override.trim()
+          ? parseInt(form.conversions_override, 10) || 0
+          : 0;
+      }
       const res = await apiFetch(editingId ? `${API}/deals/${editingId}` : `${API}/deals`, {
         method: editingId ? 'PUT' : 'POST',
         body: JSON.stringify(body),
@@ -1392,6 +1402,20 @@ export const CpmPlanner: React.FC = () => {
                   <option value="paused">paused</option>
                   <option value="completed">completed</option>
                 </select>
+              </div>
+            )}
+            {editingId && (
+              <div>
+                <label style={labelStyle}>Conversions (override)</label>
+                <input
+                  style={inputStyle} type="number" min="0" step="1"
+                  value={form.conversions_override} placeholder="auto (tracked + uploaded)"
+                  onChange={e => setForm({ ...form, conversions_override: e.target.value })}
+                />
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
+                  Pin the true conversion count (e.g. Everflow). Blank = use tracked + uploaded.
+                  Drives eCPA Actual = budget ÷ conversions.
+                </div>
               </div>
             )}
             <div style={{ gridColumn: '1 / -1' }}>

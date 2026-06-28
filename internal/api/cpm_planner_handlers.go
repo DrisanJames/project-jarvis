@@ -82,6 +82,12 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		// count if hand-earmarked. A name pattern (ILIKE) attributes them to the deal
 		// DYNAMICALLY — no manual earmarking, no generator changes. Empty = off.
 		`ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS campaign_name_pattern TEXT DEFAULT ''`,
+		// Operator-set conversion count of record (2026-06-28). Postback capture
+		// can lag/miss (Everflow not caught up, conversions under offer-ids the
+		// deal doesn't match), so the operator can pin the true count here; when
+		// set (>0) it overrides the tracked+uploaded total for eCPA / pacing.
+		// NULL = unset → fall back to the computed count.
+		`ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS conversions_override INTEGER`,
 		// Seed the Sam's Club deal so its ~27% of delivered (broadcast + board) volume
 		// counts toward pacing. Every Sam's send carries "sam" in the campaign name
 		// ([partner-drip] samsclub_internal…, jun27 - … - sams-club, SPICY-COLD … SAMS).
@@ -115,7 +121,7 @@ type cpmDealProgress struct {
 	PctDelivered       float64 `json:"pct_volume_delivered"` // delivered / planned_volume (0..1+)
 	Revenue            float64 `json:"revenue_earned"`
 	ActualEcpm         float64 `json:"actual_ecpm"`
-	ActualEcpa         float64 `json:"actual_ecpa"` // proportional budget spent / conversions; 0 when no conversions
+	ActualEcpa         float64 `json:"actual_ecpa"` // full budget / conversions (matches the eCPA goal basis); 0 when no conversions
 	DaysElapsed        int64   `json:"days_elapsed"`
 	RequiredDaily      float64 `json:"required_daily"`
 	ActualDaily        float64 `json:"actual_daily"`
@@ -138,6 +144,9 @@ type cpmDeal struct {
 	// CampaignNamePattern: ILIKE pattern that attributes offer_id=NULL broadcasts/
 	// board sends to this deal (operator 2026-06-27). '' = off.
 	CampaignNamePattern string    `json:"campaign_name_pattern"`
+	// ConversionsOverride: operator-pinned conversion count (Everflow truth).
+	// nil = unset; when set (>0) it overrides the tracked+uploaded total.
+	ConversionsOverride *int64    `json:"conversions_override"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 
@@ -171,6 +180,7 @@ type cpmDealInput struct {
 	Status              *string  `json:"status"`
 	Notes               *string  `json:"notes"`
 	CampaignNamePattern *string  `json:"campaign_name_pattern"`
+	ConversionsOverride *int64   `json:"conversions_override"`
 }
 
 // ─── Core math ──────────────────────────────────────────────────────────────
@@ -191,6 +201,29 @@ func cpmPlanNumbers(budget, ecpmGoal, ecpaGoal float64, avgCampaignSize int) (pl
 	return
 }
 
+// cpmEffectiveConversions is the conversion count of record for a deal. When the
+// operator has pinned a manual override (Everflow truth — postback capture can
+// lag or miss conversions landing under offer-ids the deal doesn't match), that
+// wins; otherwise fall back to the tracked + uploaded total. (operator 2026-06-28)
+func cpmEffectiveConversions(tracked, manual int64, override *int64) int64 {
+	if override != nil && *override > 0 {
+		return *override
+	}
+	return tracked + manual
+}
+
+// cpmActualEcpa is the realized cost per acquisition: full committed budget /
+// conversions. Matches how the eCPA GOAL is defined (budget / conversions
+// needed) and — unlike the prior (budget × pct_delivered) form, in which the
+// budget cancelled against planned_volume — actually responds to budget edits.
+// Returns 0 when there are no conversions. (operator 2026-06-28)
+func cpmActualEcpa(budget float64, conversions int64) float64 {
+	if conversions <= 0 {
+		return 0
+	}
+	return budget / float64(conversions)
+}
+
 // ─── Deal loading + live progress ───────────────────────────────────────────
 
 const cpmDealSelect = `
@@ -201,6 +234,7 @@ const cpmDealSelect = `
 	       d.budget, d.ecpm_goal, COALESCE(d.ecpa_goal, 0),
 	       d.avg_campaign_size, d.start_date, d.status, COALESCE(d.notes, ''),
 	       COALESCE(d.campaign_name_pattern, ''),
+	       d.conversions_override,
 	       d.created_at, d.updated_at,
 	       COALESCE(o.payout, o2.payout, 0) AS payout
 	FROM mailing_cpm_deals d
@@ -215,11 +249,16 @@ func scanCpmDeal(rows interface{ Scan(...interface{}) error }) (cpmDeal, float64
 	var d cpmDeal
 	var payout float64
 	var start time.Time
+	var convOverride sql.NullInt64
 	err := rows.Scan(&d.ID, &d.Name, &d.OfferID, &d.OfferName, &d.EverflowOfferID,
 		&d.Budget, &d.EcpmGoal, &d.EcpaGoal, &d.AvgCampaignSize, &start,
-		&d.Status, &d.Notes, &d.CampaignNamePattern, &d.CreatedAt, &d.UpdatedAt, &payout)
+		&d.Status, &d.Notes, &d.CampaignNamePattern, &convOverride, &d.CreatedAt, &d.UpdatedAt, &payout)
 	if err != nil {
 		return d, 0, err
+	}
+	if convOverride.Valid {
+		v := convOverride.Int64
+		d.ConversionsOverride = &v
 	}
 	d.startDate = start
 	d.StartDate = start.Format("2006-01-02")
@@ -328,7 +367,7 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 		orgID, d.ID, basis).Scan(&p.ConversionsManual, &p.ManualRevenue, &manualRevEffective); err != nil {
 		log.Printf("[CpmPlanner] progress manual conversions for deal %s: %v", d.ID, err)
 	}
-	p.Conversions = p.ConversionsTracked + p.ConversionsManual
+	p.Conversions = cpmEffectiveConversions(p.ConversionsTracked, p.ConversionsManual, d.ConversionsOverride)
 
 	// CPM volume is billed on DELIVERED (operator 2026-06-18: "base only on delivered").
 	// Every volume-basis metric — progress %, eCPM (revenue per 1000 delivered), eCPA,
@@ -340,9 +379,8 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	if p.Delivered > 0 {
 		p.ActualEcpm = p.Revenue / float64(p.Delivered) * 1000
 	}
-	if p.Conversions > 0 {
-		p.ActualEcpa = (d.Budget * p.PctDelivered) / float64(p.Conversions)
-	}
+	// eCPA Actual = full committed budget / conversions (operator 2026-06-28).
+	p.ActualEcpa = cpmActualEcpa(d.Budget, p.Conversions)
 
 	p.DaysElapsed = int64(time.Since(d.startDate).Hours() / 24)
 	if p.DaysElapsed < 0 {
@@ -585,6 +623,14 @@ func (h *CpmPlannerHandlers) HandleUpdateDeal(w http.ResponseWriter, r *http.Req
 	}
 	if in.CampaignNamePattern != nil {
 		add("campaign_name_pattern", strings.TrimSpace(*in.CampaignNamePattern))
+	}
+	if in.ConversionsOverride != nil {
+		// >0 pins the count; <=0 clears the override (back to computed count).
+		if *in.ConversionsOverride > 0 {
+			add("conversions_override", *in.ConversionsOverride)
+		} else {
+			add("conversions_override", nil)
+		}
 	}
 	if len(sets) == 0 {
 		respondError(w, http.StatusBadRequest, "no fields to update")
