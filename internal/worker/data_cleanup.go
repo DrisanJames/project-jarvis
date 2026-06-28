@@ -53,6 +53,13 @@ const (
 	// backlog drains over cycles instead of one marathon pass. Steady-state
 	// daily turnover is well under this.
 	planRecipMaxCampaignsPerCycle = 500
+
+	// terminalPurgeMaxRowsPerCycle bounds how many operationally-terminal queue
+	// rows one hourly cycle deletes, so a large historical backlog (StorageGuard
+	// flagged ~1.3M aged terminal rows on 2026-06-28) drains over a few cycles
+	// instead of one WAL-heavy burst on the hot send queue. Steady-state daily
+	// terminal turnover is well under this.
+	terminalPurgeMaxRowsPerCycle = 500000
 )
 
 // DataCleanupWorker periodically removes old data from the mailing tables.
@@ -146,72 +153,64 @@ func (dc *DataCleanupWorker) cleanupQueueItems(ctx context.Context) {
 // than 14 days. "Accepted" here means safe to delete for queue lifecycle —
 // not final delivery state. Handoff metadata (campaign/subscriber/message_id)
 // is retained until this TTL; HTML is nulled on send via markSent.
+//
+// Aged by the QUEUE ROW's own clock (COALESCE(updated_at, created_at)), exactly
+// matching StorageGuard.checkQueueTerminalAged — NOT by the owning campaign's
+// updated_at. The earlier campaign-driven shape gated deletion on
+// `mailing_campaigns.updated_at < NOW()-14d`, but campaign updated_at is bumped
+// on every engagement counter update (opens/clicks/deliveries/bounces); a
+// campaign still receiving long-tail engagement (MPP/Apple re-fetch opens for
+// weeks) keeps a fresh updated_at forever, so its 14-day-old terminal queue
+// rows were never eligible and accumulated unbounded (StorageGuard flagged
+// ~1.3M aged terminal rows on 2026-06-28, of which ~913k belonged to campaigns
+// whose updated_at was as recent as that day). The partial index
+// idx_mcq_terminal_cleanup (status, COALESCE(updated_at, created_at), id) makes
+// the victim SELECT index-only regardless of table size, so the row-age shape
+// no longer Seq-Scans the heap (the reason the campaign-keyed workaround
+// existed before that index).
+//
+// Safety mirrors slimAcceptedQueueHTML: defer entirely if the primary is under
+// heavy IO load, cap rows per cycle so a large backlog drains over a few cycles
+// instead of one WAL burst, and pace between batches.
 func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
-	// Campaign-driven delete (same fix as cleanupPlanRecipients/04a3044): the
-	// old `id IN (SELECT ... WHERE status ... LIMIT n)` shape has no
-	// (status, updated_at) index, so it planned as a Seq Scan over the heap —
-	// at 69 GB the subquery blew the batch timeout every cycle and the cleaner
-	// silently deleted nothing (observed 2026-06-10: 4.3M 'accepted' rows past
-	// the 14d TTL still present). Pinning each DELETE to one campaign_id
-	// forces idx_queue_campaign regardless of table size.
-	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	rows, err := dc.db.QueryContext(queryCtx, `
-		SELECT c.id
-		FROM mailing_campaigns c
-		WHERE c.status IN ('sent', 'cancelled', 'failed', 'completed')
-		  AND COALESCE(c.updated_at, c.created_at) < NOW() - INTERVAL '14 days'
-		  AND EXISTS (
-			SELECT 1 FROM mailing_campaign_queue q
-			WHERE q.campaign_id = c.id
-		  )
-		LIMIT $1
-	`, planRecipMaxCampaignsPerCycle)
-	cancel()
-	if err != nil {
-		log.Printf("[DataCleanup] queue terminal-campaign scan failed: %v", err)
+	if dc.primaryBusy(ctx) {
+		log.Printf("[DataCleanup] terminal queue purge deferred — primary under heavy IO load (>=%d backends in IO wait)", slimMaxIOWaitBackends)
+		dc.logTerminalQueueStats(ctx)
 		return
 	}
-	var campaignIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			campaignIDs = append(campaignIDs, id)
-		}
-	}
-	rows.Close()
 
 	var total int64
-	for _, id := range campaignIDs {
+	for total < terminalPurgeMaxRowsPerCycle {
 		if ctx.Err() != nil {
 			break
 		}
-		for {
-			queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			res, err := dc.db.ExecContext(queryCtx, `
-				WITH doomed AS (
-					SELECT id FROM mailing_campaign_queue
-					WHERE campaign_id = $1
-					LIMIT $2
-				)
-				DELETE FROM mailing_campaign_queue q
-				USING doomed
-				WHERE q.id = doomed.id
-			`, id, cleanupBatchSize)
-			cancel()
-			if err != nil {
-				log.Printf("[DataCleanup] queue delete for campaign %s failed: %v", id, err)
-				return
-			}
-			affected, _ := res.RowsAffected()
-			total += affected
-			if affected < int64(cleanupBatchSize) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		res, err := dc.db.ExecContext(queryCtx, `
+			WITH doomed AS (
+				SELECT id FROM mailing_campaign_queue
+				WHERE status IN ('accepted','cancelled','failed','dead_letter','dead_letter_strict')
+				  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+				LIMIT $1
+			)
+			DELETE FROM mailing_campaign_queue q
+			USING doomed
+			WHERE q.id = doomed.id
+		`, cleanupBatchSize)
+		cancel()
+		if err != nil {
+			log.Printf("[DataCleanup] terminal queue purge failed: %v", err)
+			return
 		}
+		affected, _ := res.RowsAffected()
+		total += affected
+		if affected < int64(cleanupBatchSize) {
+			break
+		}
+		// Pace between batches to keep WAL/IO pressure low on the hot queue.
+		time.Sleep(100 * time.Millisecond)
 	}
 	if total > 0 {
-		log.Printf("[DataCleanup] Removed %d queue rows across %d terminal campaigns older than 14 days (campaign-driven DELETE)", total, len(campaignIDs))
+		log.Printf("[DataCleanup] Purged %d operationally-terminal queue rows older than 14 days (row-age driven, cap %d/cycle)", total, terminalPurgeMaxRowsPerCycle)
 	}
 	dc.logTerminalQueueStats(ctx)
 }
