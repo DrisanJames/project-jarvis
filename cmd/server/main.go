@@ -1925,6 +1925,17 @@ var concurrentIndexSpecs = []struct {
 	// offer-suppression upload endpoint). Expression must stay byte-identical
 	// to the handlers' LOWER(TRIM(email)) predicate.
 	{"idx_subscribers_lower_email", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_lower_email ON mailing_subscribers (LOWER(TRIM(email)))`},
+
+	// SAFEGUARD (b) — supporting index for the Kumo governed pass's per-
+	// (property,vertical,ISP) daily count (governedDailyCount in
+	// partner_drip_orchestrator.go). That COUNT runs once per positive-cap ISP
+	// per governed wave on the >1M-row partner_clean_queue; without this it is a
+	// full heap scan. Predicate: mailed_brand=$1 AND vertical=$2 AND isp_family
+	// match AND mailed_at >= local-midnight. Partial on mailed_at IS NOT NULL
+	// (only first-touched rows carry a mailed_at). Lives here (not the 5s
+	// migration slice) because the build scans the full queue heap. Idempotent
+	// (IF NOT EXISTS); additive — no existing query depends on it.
+	{"idx_pcq_governed_daily_count", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_governed_daily_count ON partner_clean_queue (mailed_brand, vertical, isp_family, mailed_at) WHERE mailed_at IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2614,6 +2625,46 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_kumo_profile_mpf", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, pool_prefix, routing_mode, via_ses, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'MyPersonalFinancial (KumoMTA)', 'pmta', 'My Personal Financial', 'hello@em.mypersonalfinancial.com', 'reply@em.mypersonalfinancial.com', 'em.mypersonalfinancial.com', '40.160.129.116', 587, 'http://40.160.129.116:19099', 'projectjarvis.io', 3200, 25000, 'mpf', 'kumo', false, 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.mypersonalfinancial.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_kumo_profile_pmd", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, pool_prefix, routing_mode, via_ses, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'PayMyDebit (KumoMTA)', 'pmta', 'PayMyDebit', 'hello@em.paymydebit.com', 'reply@em.paymydebit.com', 'em.paymydebit.com', '40.160.129.116', 587, 'http://40.160.129.116:19099', 'projectjarvis.io', 3200, 25000, 'pmd', 'kumo', false, 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.paymydebit.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		{"seed_kumo_profile_trb", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, pool_prefix, routing_mode, via_ses, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'TheRetirementBlog (KumoMTA)', 'pmta', 'The Retirement Blog', 'hello@em.theretirementblog.com', 'reply@em.theretirementblog.com', 'em.theretirementblog.com', '40.160.129.116', 587, 'http://40.160.129.116:19099', 'projectjarvis.io', 3200, 25000, 'trb', 'kumo', false, 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.theretirementblog.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
+
+		// === Kumo property governor (partner-drip per-property volume governor) ===
+		// The 9 Kumo properties subscribe to the 3 Sam's offer-backed verticals and
+		// take a GOVERNED slice of each vertical's existing audience: 500 records per
+		// ISP per vertical per day, gmail held (cap 0), paced over a 6h window via the
+		// orchestrator's per-wave cap. Operator-settable WITHOUT a deploy (the
+		// orchestrator reloads this table every tick): change per_isp_daily_cap,
+		// window_hours, gmail_held, per_isp_overrides (JSONB isp->cap), or
+		// subscribed_verticals (TEXT[]) per brand and it takes effect next tick.
+		// App-user-owned table; idempotent INSERT...WHERE NOT EXISTS never clobbers
+		// operator edits on re-run.
+		{"create_partner_property_governor", `CREATE TABLE IF NOT EXISTS partner_property_governor (
+			brand_code           TEXT PRIMARY KEY,
+			per_isp_daily_cap    INTEGER NOT NULL DEFAULT 500,
+			window_hours         INTEGER NOT NULL DEFAULT 6,
+			gmail_held           BOOLEAN NOT NULL DEFAULT TRUE,
+			per_isp_overrides    JSONB NOT NULL DEFAULT '{}'::jsonb,
+			subscribed_verticals TEXT[] NOT NULL DEFAULT ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[],
+			active               BOOLEAN NOT NULL DEFAULT TRUE,
+			updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"seed_governor_mpf", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'mpf', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'mpf')`},
+		{"seed_governor_pmd", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'pmd', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'pmd')`},
+		{"seed_governor_trb", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'trb', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'trb')`},
+		{"seed_governor_bcc", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'bcc', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'bcc')`},
+		{"seed_governor_usf", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'usf', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'usf')`},
+		{"seed_governor_yfb", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'yfb', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'yfb')`},
+		{"seed_governor_hlj", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'hlj', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'hlj')`},
+		{"seed_governor_fth", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'fth', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'fth')`},
+		{"seed_governor_htm", `INSERT INTO partner_property_governor (brand_code, per_isp_daily_cap, window_hours, gmail_held, subscribed_verticals, active) SELECT 'htm', 500, 6, TRUE, ARRAY['samsclub_internal','direct_offer','clickers_samsclub']::text[], TRUE WHERE NOT EXISTS (SELECT 1 FROM partner_property_governor WHERE brand_code = 'htm')`},
+		// Governed-pass rotation pointers (Option B): one '<vertical>:governed'
+		// partner_drip_state row per governed-subscribed vertical, so the governed
+		// brand round-robin starts deterministically at index 0 and is fully
+		// independent of the bare-vertical (welcome) and 'followup' pointers.
+		// Idempotent: ON CONFLICT (vertical) DO NOTHING never clobbers a live
+		// pointer. (refreshGovernedVerticalState/updateDripState also create/advance
+		// these rows defensively, so the seed is belt-and-suspenders.)
+		{"seed_governed_state_samsclub_internal", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('samsclub_internal:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
+		{"seed_governed_state_direct_offer", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('direct_offer:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
+		{"seed_governed_state_clickers_samsclub", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('clickers_samsclub:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
 		// Seed em.discountblog.com PMTA profile (mirrors em.quizfiesta.com setup)
 		{"seed_pmta_discountblog_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'DiscountBlog PMTA (em)', 'pmta', 'Jamie @ Discount Blog', 'hello@em.discountblog.com', 'reply@em.discountblog.com', 'em.discountblog.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.discountblog.com', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.discountblog.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 

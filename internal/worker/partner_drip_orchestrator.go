@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
@@ -80,13 +81,87 @@ var dripBrands = []string{
 // dedicated roster. Kumo sends are now driven only via the scheduler/send-day.
 var verticalBrandRoster = map[string][]string{}
 
+// governedBrands is the set of Kumo properties (em.<apex> on the 16.217.96.0/24
+// per-ISP pools) governed by partner_property_governor. They are intentionally
+// ABSENT from dripBrands (so no vertical auto-mails them by default) AND from
+// verticalBrandRoster (so they are not warm-up-roster brands) AND from
+// brandRosterFor's output (so the welcome pass can never select them). They ride
+// a SEPARATE additive pass, tickGoverned (Option B), off their own
+// '<vertical>:governed' rotation state. Every wave they ship is clamped by
+// applyPropertyGovernor (per-(property,vertical,ISP) daily cap, gmail held,
+// 6h-paced per-wave cap, floor gate). Membership is structural (code); the
+// numbers and subscriptions are operator-settable in the table without a deploy.
+//
+// WELCOME-ONLY guarantee (enforced two ways): (1) absent from dripBrands, so
+// pickNextFollowupBrand can never select them (no follow-ups); (2) absent from
+// brandRosterFor's output, so the welcome pass can never select them. They fire
+// ONLY in tickGoverned, which produces welcome (status='ready') waves.
+var governedBrands = map[string]bool{
+	"mpf": true, "pmd": true, "trb": true, "bcc": true, "usf": true,
+	"yfb": true, "hlj": true, "fth": true, "htm": true,
+}
+
+// governedBrandsList is the deterministic rotation order for governed brands,
+// walked by tickGoverned for a vertical's subscribed governed subset. Stable,
+// append-only.
+var governedBrandsList = []string{
+	"mpf", "pmd", "trb", "bcc", "usf", "yfb", "hlj", "fth", "htm",
+}
+
 // brandRosterFor returns the brand rotation a vertical should walk: its
 // dedicated roster if one exists, else the shared dripBrands.
+//
+// Governed (Kumo) brands are NEVER appended here. They ride a separate additive
+// pass (tickGoverned) off their own '<vertical>:governed' rotation state — see
+// Option B. Keeping this function byte-identical to its pre-P1 form guarantees
+// the welcome + follow-up passes for the 16 normal brands are unchanged (zero
+// side effects on existing brands).
 func brandRosterFor(vertical string) []string {
 	if r, ok := verticalBrandRoster[strings.ToLower(strings.TrimSpace(vertical))]; ok {
 		return r
 	}
 	return dripBrands
+}
+
+// orderedSubscribedGoverned returns the governed brands subscribed to `vertical`
+// in governedBrandsList order. This is the governed pass's rotation roster
+// (distinct from brandRosterFor, which never includes governed brands).
+func (po *PartnerDripOrchestrator) orderedSubscribedGoverned(vertical string) []string {
+	subscribed := po.governedBrandsSubscribedTo(vertical)
+	if len(subscribed) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(subscribed))
+	for _, b := range governedBrandsList {
+		if subscribed[b] {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// governedBrandsSubscribedTo returns the set of governed brand codes whose
+// governor row (active) lists `vertical` in subscribed_verticals. Reads the
+// per-tick governor cache; if the cache is unloaded/empty (load error or no
+// governors), returns an empty set so no governed brand joins any rotation
+// (fail-safe — see loadGovernors).
+func (po *PartnerDripOrchestrator) governedBrandsSubscribedTo(vertical string) map[string]bool {
+	lv := strings.ToLower(strings.TrimSpace(vertical))
+	po.governorMu.RLock()
+	defer po.governorMu.RUnlock()
+	if len(po.governorCache) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for code, g := range po.governorCache {
+		if !g.active {
+			continue
+		}
+		if g.subscribed[lv] {
+			out[code] = true
+		}
+	}
+	return out
 }
 
 // warmupRosterBrands is the set of every brand that appears in a
@@ -121,10 +196,10 @@ func keepOnlyISPCaps(caps map[string]int, allowed ...string) map[string]int {
 
 var brandSendingDomain = map[string]string{
 	// Mature 4
-	"db":  "em.discountblog.com",
-	"ht":  "em.historythinking.com",
-	"mh":  "em.myownhealth.net",
-	"qf":  "em.quizfiesta.com",
+	"db": "em.discountblog.com",
+	"ht": "em.historythinking.com",
+	"mh": "em.myownhealth.net",
+	"qf": "em.quizfiesta.com",
 	// New-brand expansion 2026-05-14
 	"bwp": "em.businessweeklypro.com",
 	"ci":  "em.casainsure.com",
@@ -176,13 +251,13 @@ type CampaignDeployFn func(ctx context.Context, input engine.PMTACampaignInput) 
 
 // PartnerDripOrchestratorConfig holds runtime knobs.
 type PartnerDripOrchestratorConfig struct {
-	OrganizationID    string
-	TickInterval      time.Duration // default 15 minutes
-	MinWaveSize       int           // default 25
-	MaxWaveSize       int           // default 5000
-	WindowHours       int           // PMTA wave window in hours (default 8 — bypass the source-field sanity check)
-	CreativesDir      string        // path to docs/emails (defaults to "docs/emails")
-	DeployFn          CampaignDeployFn
+	OrganizationID       string
+	TickInterval         time.Duration // default 15 minutes
+	MinWaveSize          int           // default 25
+	MaxWaveSize          int           // default 5000
+	WindowHours          int           // PMTA wave window in hours (default 8 — bypass the source-field sanity check)
+	CreativesDir         string        // path to docs/emails (defaults to "docs/emails")
+	DeployFn             CampaignDeployFn
 	PausedBrandPredicate func(ctx context.Context, brand string) bool // optional — return true to skip brand
 	// PerISPCapPerWave caps how many records per ISP family one wave may
 	// claim. Protects ISPs from cumulative drip + Welcome + Engager volume
@@ -239,6 +314,16 @@ type PartnerDripOrchestratorConfig struct {
 	// rows with no subscriber_id and no mailed_campaign_id are touched.
 	// Default 45m. Set to 0 to disable.
 	ClaimedJanitorMaxAge time.Duration
+	// GovernedDisabled skips tickGoverned entirely (the Kumo property governed
+	// pass). Mirrors FollowupDisabled. Env: PARTNER_DRIP_GOVERNED_DISABLED=1.
+	GovernedDisabled bool
+	// GovernedBrandsPerTick (SAFEGUARD (c) — DEPLOY THROTTLE) bounds how many
+	// governed brands tickGoverned fires per vertical per tick. Kept small
+	// (default 2) and fired SEQUENTIALLY per brand so the governed pass adds at
+	// most ~GovernedBrandsPerTick deploys/vertical/tick on top of the welcome +
+	// follow-up passes — bounding the staging-burst exposure. Env:
+	// PARTNER_DRIP_GOVERNED_BRANDS_PER_TICK.
+	GovernedBrandsPerTick int
 }
 
 type PartnerDripOrchestrator struct {
@@ -251,6 +336,22 @@ type PartnerDripOrchestrator struct {
 
 	startOnce sync.Once
 	stopOnce  sync.Once
+
+	// governorCache holds the partner_property_governor rows, refreshed once
+	// per tick by loadGovernors. Keyed by brand_code. Guarded by governorMu.
+	governorMu    sync.RWMutex
+	governorCache map[string]propertyGovernor
+}
+
+// propertyGovernor is the in-memory form of a partner_property_governor row.
+type propertyGovernor struct {
+	brand          string
+	perISPDaily    int             // per_isp_daily_cap (seed 500)
+	windowHours    int             // window_hours (seed 6)
+	gmailHeld      bool            // gmail_held (seed true)
+	perISPOverride map[string]int  // per_isp_overrides JSONB (isp -> cap; replaces perISPDaily)
+	subscribed     map[string]bool // subscribed_verticals (lowercased)
+	active         bool
 }
 
 func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *PartnerDripOrchestrator {
@@ -422,6 +523,11 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 	if cfg.ClaimedJanitorMaxAge == 0 {
 		cfg.ClaimedJanitorMaxAge = 45 * time.Minute
 	}
+	// SAFEGUARD (c): small default so the governed pass never bursts. Sequential
+	// per-brand firing keeps added deploys bounded (~2/vertical/tick).
+	if cfg.GovernedBrandsPerTick <= 0 {
+		cfg.GovernedBrandsPerTick = 2
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PartnerDripOrchestrator{db: db, cfg: cfg, ctx: ctx, cancel: cancel}
 }
@@ -474,6 +580,11 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		log.Println("[PartnerDripOrchestrator] no DeployFn wired — skipping tick")
 		return
 	}
+	// Refresh the property-governor cache once per tick so operator edits to
+	// partner_property_governor (caps, subscriptions) take effect on the next
+	// tick without a deploy. Fail-safe: on load error the cache is emptied so
+	// no governed brand joins any rotation and any governed wave is cap-0.
+	po.loadGovernors(po.ctx)
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -531,6 +642,16 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// drip-state row drives brand rotation for follow-ups.
 	if !po.cfg.FollowupDisabled && po.cfg.MaxFollowupClaimPerVertical > 0 {
 		po.tickFollowups(po.ctx)
+	}
+	// Governed pass (Option B): additive third pass for the Kumo properties.
+	// Mirrors the follow-up pass's shape (own vertical enumeration + own
+	// '<vertical>:governed' rotation state + reuses the welcome wave builder).
+	// Runs LAST so it only claims what the welcome + follow-up passes leave, and
+	// the floor gate ensures it only touches huge pools (zero side effect on the
+	// 16 brands). Welcome-only: governed brands are absent from dripBrands AND
+	// brandRosterFor, so neither prior pass can select them.
+	if !po.cfg.GovernedDisabled {
+		po.tickGoverned(po.ctx)
 	}
 }
 
@@ -624,15 +745,15 @@ func (po *PartnerDripOrchestrator) refreshVerticalState(ctx context.Context, ver
 }
 
 type verticalState struct {
-	vertical       string
-	brandIndex     int
-	readyCount     int
-	oldestIngest   sql.NullTime
-	flushHours     int
-	datasetID      string // dominant dataset id (for ISP overrides + flush window) — picked by oldest ingestion
-	datasetSlug    string
-	partnerSlug    string
-	partnerName    string
+	vertical     string
+	brandIndex   int
+	readyCount   int
+	oldestIngest sql.NullTime
+	flushHours   int
+	datasetID    string // dominant dataset id (for ISP overrides + flush window) — picked by oldest ingestion
+	datasetSlug  string
+	partnerSlug  string
+	partnerName  string
 	// OfferID is set when the dominant dataset for this vertical is bound to
 	// a specific mailing_offers.id (vertical='direct_offer'). When set, the
 	// orchestrator pulls creative + subject + from-name from the offer-center
@@ -1014,12 +1135,36 @@ func (po *PartnerDripOrchestrator) deployWaveGroups(ctx context.Context, v verti
 	return lastCampaignID, deployedCount
 }
 
+// passContext parameterizes processVerticalWith so one wave builder serves both
+// the welcome pass (16 normal brands) and the additive governed pass (Kumo
+// properties). It carries (a) the rotation roster the brand is picked from and
+// (b) the partner_drip_state key the rotation pointer is read from / written to.
+// The welcome pass uses {roster: brandRosterFor(v.vertical), stateKey: v.vertical}
+// (byte-identical to the pre-refactor processVertical); the governed pass uses
+// {roster: orderedSubscribedGoverned(v.vertical), stateKey: v.vertical+":governed"}
+// so the two rotations never share a pointer.
+type passContext struct {
+	roster   []string // brands to round-robin
+	stateKey string   // partner_drip_state.vertical key for the rotation pointer
+}
+
+// processVertical preserves the original entrypoint for the welcome pass: it
+// builds the welcome passContext (roster + stateKey identical to today) and
+// delegates to processVerticalWith. This keeps the 16-brand welcome path
+// byte-identical after the Option B parameterization.
 func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v verticalState) error {
+	return po.processVerticalWith(ctx, v, passContext{
+		roster:   brandRosterFor(v.vertical),
+		stateKey: v.vertical,
+	})
+}
+
+func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v verticalState, pc passContext) error {
 	waveSize := po.computeWaveSize(v)
 	if waveSize <= 0 {
 		return nil
 	}
-	brand, newIdx, err := po.pickNextBrand(ctx, v)
+	brand, newIdx, err := po.pickNextBrand(ctx, v, pc.roster)
 	if err != nil {
 		return fmt.Errorf("pick_brand: %w", err)
 	}
@@ -1038,7 +1183,26 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
-	if warmupRosterBrands[strings.ToLower(strings.TrimSpace(brand))] {
+	if governedBrands[strings.ToLower(strings.TrimSpace(brand))] {
+		// Property governor (Kumo properties): clamp each ISP's wave cap to the
+		// property's remaining (property,vertical,ISP) daily budget, force gmail=0,
+		// and apply 6h rate-limit pacing. A governed brand not subscribed to this
+		// vertical yields an all-zero cap map (claims nothing) — belt-and-suspenders
+		// against a roster-membership/subscription mismatch. Runs BEFORE warmup /
+		// daily-budget / brand-routing so the governor is the sole ceiling for these
+		// brands (it already min()s against resolvePerISPCaps' base, so platform-wide
+		// ISP doctrine still bounds it from above).
+		//
+		// SAFEGUARD (a) — FLOOR GATE: only claim an ISP where the per-wave cap
+		// BINDS (huge pool). When resolvePerISPCaps' drain-horizon cap for an ISP
+		// is below the static PerISPCapPerWave base (thin pool → drain-horizon
+		// binds → the normal brands' caps float with ready depth), governed
+		// consumption would lower the normal brands' next caps. Force that ISP's
+		// governed cap to 0 so the governed pass NEVER competes for a thin pool.
+		// This is what makes the governed pass zero-side-effect on the 16 brands.
+		perISPCaps = po.applyGovernedFloorGate(ctx, v.vertical, v.datasetID, perISPCaps)
+		perISPCaps = po.applyPropertyGovernor(ctx, brand, v.vertical, perISPCaps)
+	} else if warmupRosterBrands[strings.ToLower(strings.TrimSpace(brand))] {
 		// Warm-up brands (fresh KumoMTA IPs on a dedicated verticalBrandRoster,
 		// e.g. samsclub_internal -> mpf/pmd/trb) send ONLY yahoo+aol — the Sam's
 		// Yahoo/AOL digest. Bypass the mature-brand allow-list (applyISPBrandRouting
@@ -1107,7 +1271,7 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	if deployedCount == 0 {
 		return fmt.Errorf("all wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 	}
-	if err := po.updateDripState(ctx, v.vertical, newIdx, brand, lastCampaignID, deployedCount); err != nil {
+	if err := po.updateDripState(ctx, pc.stateKey, newIdx, brand, lastCampaignID, deployedCount); err != nil {
 		log.Printf("[PartnerDripOrchestrator] update_state: %v", err)
 	}
 	return nil
@@ -1141,11 +1305,15 @@ func (po *PartnerDripOrchestrator) computeWaveSize(v verticalState) int {
 	return size
 }
 
-// pickNextBrand walks the round-robin starting at v.brandIndex and skips
-// any brand the operator has paused (via PausedBrandPredicate). Returns
-// the chosen brand + the next index to write to partner_drip_state.
-func (po *PartnerDripOrchestrator) pickNextBrand(ctx context.Context, v verticalState) (string, int, error) {
-	roster := brandRosterFor(v.vertical)
+// pickNextBrand walks the given roster's round-robin starting at v.brandIndex
+// and skips any brand the operator has paused (via PausedBrandPredicate).
+// Returns the chosen brand + the next index to write to partner_drip_state.
+// The roster is passed in (welcome pass: brandRosterFor; governed pass:
+// orderedSubscribedGoverned) so one walker serves both rotations.
+func (po *PartnerDripOrchestrator) pickNextBrand(ctx context.Context, v verticalState, roster []string) (string, int, error) {
+	if len(roster) == 0 {
+		return "", v.brandIndex, fmt.Errorf("empty roster — no brand available")
+	}
 	for offset := 0; offset < len(roster); offset++ {
 		idx := (v.brandIndex + offset) % len(roster)
 		brand := roster[idx]
@@ -1159,8 +1327,8 @@ func (po *PartnerDripOrchestrator) pickNextBrand(ctx context.Context, v vertical
 }
 
 type creativeRec struct {
-	filename string
-	subject  string
+	filename  string
+	subject   string
 	preheader string
 	fromName  string
 	htmlBody  string
@@ -1169,17 +1337,17 @@ type creativeRec struct {
 // resolveCreativeForVertical returns the creative the orchestrator will use
 // for the next wave. It dispatches between two backing stores:
 //
-//   1. Direct-offer datasets (verticalState.offerID set) — pull a creative
-//      from mailing_offer_creatives + a subject from mailing_offer_subject_lines
-//      + a from-name from mailing_offer_from_names. Subject + from-name rotate
-//      deterministically by wave time so the partner sees the full pool. The
-//      HTML lives in mailing_offer_creatives.html_content (already CAN-SPAM
-//      footer-injected at upload time by appendUnsubDisclaimer — brand footer at
-//      the bottom, never the corporate identity).
+//  1. Direct-offer datasets (verticalState.offerID set) — pull a creative
+//     from mailing_offer_creatives + a subject from mailing_offer_subject_lines
+//     + a from-name from mailing_offer_from_names. Subject + from-name rotate
+//     deterministically by wave time so the partner sees the full pool. The
+//     HTML lives in mailing_offer_creatives.html_content (already CAN-SPAM
+//     footer-injected at upload time by appendUnsubDisclaimer — brand footer at
+//     the bottom, never the corporate identity).
 //
-//   2. Drip-pool datasets (offerID empty) — legacy path, looks up
-//      partner_drip_creatives keyed by (vertical, brand) and reads HTML from
-//      docs/emails/<filename>.
+//  2. Drip-pool datasets (offerID empty) — legacy path, looks up
+//     partner_drip_creatives keyed by (vertical, brand) and reads HTML from
+//     docs/emails/<filename>.
 //
 // Either path returns a populated creativeRec with htmlBody pre-loaded so
 // the caller doesn't need to know which path produced it.
@@ -1549,6 +1717,217 @@ func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context
 		if out[isp] > remaining {
 			out[isp] = remaining
 		}
+	}
+	return out
+}
+
+// loadGovernors refreshes the in-memory partner_property_governor cache. Called
+// once per tick (top of tickOnce) so operator edits to caps/subscriptions take
+// effect within one tick without a deploy. Fail-safe: on any error (including a
+// missing table) the cache is set EMPTY so no governed brand joins any rotation
+// and applyPropertyGovernor returns all-zero caps — a missing/unreadable
+// governor means "we don't know the ceiling", and these are fresh-IP properties,
+// so the safe direction is to ship nothing rather than ship uncapped.
+func (po *PartnerDripOrchestrator) loadGovernors(ctx context.Context) {
+	loaded := map[string]propertyGovernor{}
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT brand_code, per_isp_daily_cap, window_hours, gmail_held,
+			       COALESCE(per_isp_overrides::text, '{}'),
+			       COALESCE(subscribed_verticals, '{}'::text[]),
+			       active
+			FROM partner_property_governor
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				g            propertyGovernor
+				overridesRaw string
+				subs         []string
+			)
+			if err := rows.Scan(&g.brand, &g.perISPDaily, &g.windowHours, &g.gmailHeld,
+				&overridesRaw, pq.Array(&subs), &g.active); err != nil {
+				continue
+			}
+			g.brand = strings.ToLower(strings.TrimSpace(g.brand))
+			g.perISPOverride = map[string]int{}
+			if overridesRaw != "" && overridesRaw != "{}" {
+				var m map[string]int
+				if jsonErr := json.Unmarshal([]byte(overridesRaw), &m); jsonErr == nil {
+					for k, v := range m {
+						g.perISPOverride[strings.ToLower(strings.TrimSpace(k))] = v
+					}
+				}
+			}
+			g.subscribed = map[string]bool{}
+			for _, s := range subs {
+				if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+					g.subscribed[s] = true
+				}
+			}
+			loaded[g.brand] = g
+		}
+		return rows.Err()
+	})
+	po.governorMu.Lock()
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] loadGovernors failed (%v) — governed brands held to cap-0 this tick", err)
+		po.governorCache = map[string]propertyGovernor{}
+	} else {
+		po.governorCache = loaded
+	}
+	po.governorMu.Unlock()
+}
+
+// applyPropertyGovernor clamps a governed brand's per-ISP wave caps to:
+//   - its subscription to this vertical (not subscribed -> all-zero, claim nothing),
+//   - the per-ISP daily cap (per_isp_overrides[isp] else per_isp_daily_cap; gmail
+//     forced to 0 when gmail_held),
+//   - the remaining (property,vertical,ISP) daily budget (dailyCap - mailed-today),
+//   - the 6h-paced per-wave cap (perWaveCapFromPacing).
+//
+// Final per-ISP cap = min(caps[isp], remaining, paceCap). It only ever clamps
+// DOWN from the resolvePerISPCaps base passed in, so platform-wide ISP doctrine
+// still bounds these brands from above. Best-effort on the daily count: a count
+// error keeps the (paced, dailyCap-bounded) cap rather than failing the wave —
+// consistent with applyNewRecordDailyBudget's degradation.
+func (po *PartnerDripOrchestrator) applyPropertyGovernor(ctx context.Context, brand, vertical string, caps map[string]int) map[string]int {
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	lv := strings.ToLower(strings.TrimSpace(vertical))
+
+	po.governorMu.RLock()
+	g, ok := po.governorCache[lb]
+	po.governorMu.RUnlock()
+
+	// Not governed, inactive, or not subscribed to this vertical -> claim nothing.
+	if !ok || !g.active || !g.subscribed[lv] {
+		return zeroAllCaps(caps)
+	}
+
+	governedWavesPerDay := po.governedWavesPerDay(lv)
+	out := cloneISPCapMap(caps)
+	for isp := range out {
+		lisp := strings.ToLower(strings.TrimSpace(isp))
+		dailyCap := g.perISPDaily
+		if ov, has := g.perISPOverride[lisp]; has {
+			dailyCap = ov
+		}
+		if g.gmailHeld && lisp == "gmail" {
+			dailyCap = 0
+		}
+		if dailyCap <= 0 {
+			out[isp] = 0
+			continue
+		}
+		used := po.governedDailyCount(ctx, lb, lv, lisp)
+		remaining := dailyCap - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		paceCap := perWaveCapFromPacing(dailyCap, g.windowHours, governedWavesPerDay)
+		// final = min(base, remaining, paceCap)
+		final := out[isp]
+		if remaining < final {
+			final = remaining
+		}
+		if paceCap < final {
+			final = paceCap
+		}
+		out[isp] = final
+	}
+	return out
+}
+
+// governedDailyCount returns how many NEW records (first touch) the property has
+// mailed today (America/Denver) for (brand, vertical, ISP). Because governed
+// brands fire WELCOME waves only (never follow-ups — they are absent from the
+// dripBrands follow-up rotation), and mailed_at/mailed_brand are written exactly
+// once on the first touch, this new-records count IS the clean per-day total for
+// the governor. Best-effort: a count error returns 0 (the dailyCap/pace bounds
+// still apply).
+func (po *PartnerDripOrchestrator) governedDailyCount(ctx context.Context, brand, vertical, isp string) int {
+	var used int
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM partner_clean_queue
+			WHERE mailed_brand = $1
+			  AND vertical = $2
+			  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $3
+			  AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
+		`, brand, vertical, isp).Scan(&used)
+	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] governor daily-count failed brand=%s vertical=%s isp=%s (%v) — treating used=0", brand, vertical, isp, err)
+		return 0
+	}
+	return used
+}
+
+// governedWavesPerDay estimates how many WELCOME waves a single governed brand
+// gets per day for `vertical` in the GOVERNED pass (Option B). The governed pass
+// fires GovernedBrandsPerTick brands/vertical/tick over the vertical's subscribed
+// governed roster, so a single brand's waves/day = ticksPerDay *
+// GovernedBrandsPerTick / len(governedRoster). At least 1. (Independent of the
+// welcome pass's BrandsPerTick / brandRosterFor — governed brands are no longer
+// in brandRosterFor.)
+func (po *PartnerDripOrchestrator) governedWavesPerDay(vertical string) int {
+	interval := po.cfg.TickInterval
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	ticksPerDay := int((24 * time.Hour) / interval)
+	if ticksPerDay < 1 {
+		ticksPerDay = 96
+	}
+	brandsPerTick := po.cfg.GovernedBrandsPerTick
+	if brandsPerTick <= 0 {
+		brandsPerTick = 2
+	}
+	rosterLen := len(po.orderedSubscribedGoverned(vertical))
+	if rosterLen < 1 {
+		rosterLen = 1
+	}
+	w := ticksPerDay * brandsPerTick / rosterLen
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// perWaveCapFromPacing sizes a per-wave cap so dailyCap is spread evenly across
+// windowHours of a single governed brand's waves. wavesInWindow = the brand's
+// governed waves/day scaled to the window; the daily cap is divided across them
+// (ceil). The remaining = dailyCap - used clamp in applyPropertyGovernor is the
+// hard backstop — pacing only smooths, it never raises the day total.
+func perWaveCapFromPacing(dailyCap, windowHours, governedWavesPerDay int) int {
+	if dailyCap <= 0 {
+		return 0
+	}
+	if windowHours <= 0 || windowHours > 24 {
+		windowHours = 24
+	}
+	if governedWavesPerDay < 1 {
+		governedWavesPerDay = 1
+	}
+	wavesInWindow := governedWavesPerDay * windowHours / 24
+	if wavesInWindow < 1 {
+		wavesInWindow = 1
+	}
+	perWave := (dailyCap + wavesInWindow - 1) / wavesInWindow // ceil
+	if perWave < 1 {
+		perWave = 1
+	}
+	return perWave
+}
+
+// zeroAllCaps returns a copy of caps with every ISP forced to 0.
+func zeroAllCaps(caps map[string]int) map[string]int {
+	out := make(map[string]int, len(caps))
+	for isp := range caps {
+		out[isp] = 0
 	}
 	return out
 }
@@ -2061,6 +2440,92 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 	return caps, nil
 }
 
+// readyCountByISP returns the ready-record count per ISP family for a vertical.
+// Same query shape resolvePerISPCaps uses for its drain-horizon recompute,
+// factored out so the governed floor gate can reuse it without duplicating SQL.
+func (po *PartnerDripOrchestrator) readyCountByISP(ctx context.Context, vertical string) (map[string]int, error) {
+	out := make(map[string]int)
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
+			FROM partner_clean_queue
+			WHERE vertical = $1 AND status = 'ready'
+			GROUP BY 1
+		`, vertical)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var n int
+			if err := rows.Scan(&isp, &n); err != nil {
+				continue
+			}
+			out[strings.ToLower(strings.TrimSpace(isp))] = n
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// governedFloorGateBinds decides SAFEGUARD (a) for one ISP: returns true (=> the
+// governed pass MUST NOT claim this ISP, force cap 0) when the drain-horizon cap
+// is below the static per-wave base — i.e. the pool is thin and the normal
+// brands' caps float with ready depth, so any governed consumption would lower
+// their next cap. When the static per-wave cap binds (huge pool, drainCap >=
+// base), governed claiming is side-effect-free and the gate allows it.
+//
+// ISPs NOT in PerISPDrainDays have no drain-horizon clamp at all (their cap is
+// always the static base), so they always bind => never gated.
+func (po *PartnerDripOrchestrator) governedFloorGateBinds(vertical, isp string, base int, readyByISP map[string]int) bool {
+	lisp := strings.ToLower(strings.TrimSpace(isp))
+	drainDays, drained := po.cfg.PerISPDrainDays[lisp]
+	if !drained {
+		return false // no drain-horizon => static cap always binds => allow
+	}
+	if base <= 0 {
+		return true // nothing to claim anyway; treat as gated
+	}
+	drainCap := ispCapForDrainHorizon(readyByISP[lisp], base, drainDays, po.wavesPerVerticalPerDay(false))
+	// Gate (force 0) when the drain horizon binds BELOW the static base.
+	return drainCap < base
+}
+
+// applyGovernedFloorGate zeroes the governed per-ISP cap for every ISP where the
+// drain-horizon binds below the static base (SAFEGUARD (a)). Reads ready depth
+// once per call (reused across all ISPs). Best-effort: if the count fails, the
+// SAFE direction is to gate ALL drain-managed ISPs (the governed pass claims
+// nothing on a vertical it can't measure) rather than risk competing for a thin
+// pool — so on error every PerISPDrainDays ISP is zeroed.
+func (po *PartnerDripOrchestrator) applyGovernedFloorGate(ctx context.Context, vertical, datasetID string, caps map[string]int) map[string]int {
+	out := cloneISPCapMap(caps)
+	// Recompute the static base the gate compares against (mirrors
+	// resolvePerISPCaps' base: global caps + any per-dataset max_per_wave
+	// override). The drain-horizon clamp in `caps` is what we're guarding
+	// against, so we compare to the UN-drained base here.
+	base := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	if datasetID != "" {
+		po.applyDatasetISPCapOverrides(ctx, datasetID, base)
+	}
+	readyByISP, err := po.readyCountByISP(ctx, vertical)
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] governed floor-gate vertical=%s: ready-count failed (%v) — gating all drain-managed ISPs", vertical, err)
+		for isp := range out {
+			if _, drained := po.cfg.PerISPDrainDays[strings.ToLower(strings.TrimSpace(isp))]; drained {
+				out[isp] = 0
+			}
+		}
+		return out
+	}
+	for isp := range out {
+		if po.governedFloorGateBinds(vertical, isp, baseISPCap(base, isp), readyByISP) {
+			out[isp] = 0
+		}
+	}
+	return out
+}
+
 // applyDatasetISPCapOverrides overlays per-ISP max_per_wave ceilings from
 // partner_isp_distribution_overrides for one dataset onto base, mutating base
 // in place. Only rows with a positive max_per_wave override the global cap;
@@ -2098,8 +2563,9 @@ func (po *PartnerDripOrchestrator) applyDatasetISPCapOverrides(ctx context.Conte
 }
 
 // applyThroughputSafety filters claimed records based on:
-//   1. Active ISP backoff in mailing_isp_throttle_state (rate < threshold).
-//   2. Per-ISP cap per wave (resolved caps passed by caller).
+//  1. Active ISP backoff in mailing_isp_throttle_state (rate < threshold).
+//  2. Per-ISP cap per wave (resolved caps passed by caller).
+//
 // Returns (keep, deferred, reasons-by-isp).
 func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, brand string, recs []claimedRecord, perISPCaps map[string]int) ([]claimedRecord, []claimedRecord, map[string]string, error) {
 	throttled, err := po.fetchThrottledISPs(ctx)
@@ -2236,7 +2702,7 @@ func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand str
 	name := fmt.Sprintf("[partner-drip] %s %s %s %s", v.vertical, brand, time.Now().UTC().Format("20060102T1504"), hex.EncodeToString(htmlSHA[:4]))
 
 	return engine.PMTACampaignInput{
-		Name:          name,
+		Name: name,
 		// OfferID is set ONLY for direct-offer datasets. The deploy
 		// pipeline uses it to apply the offer's suppression Bloom and to
 		// inherit content_locked from the offer when explicit nil; we
@@ -2442,6 +2908,270 @@ func (po *PartnerDripOrchestrator) persistFollowupBrandIndex(ctx context.Context
 	return err
 }
 
+// =========================================================================
+// GOVERNED PASS (Option B) — additive third pass for the Kumo properties
+// =========================================================================
+//
+// tickGoverned mirrors tickFollowups: it enumerates the verticals that (a) have
+// governed subscribers and (b) have ready records, and for each walks ONLY that
+// vertical's subscribed governed brands off a SEPARATE '<vertical>:governed'
+// rotation state row, firing WELCOME (status='ready') waves via the shared
+// processVerticalWith builder. It is strictly additive: it runs after the
+// welcome + follow-up passes, claims only what they leave, writes only to
+// '<vertical>:governed' state rows, and the floor gate keeps it off thin pools
+// so the 16 normal brands' caps are never lowered.
+//
+// SAFEGUARD (c) — DEPLOY THROTTLE: at most GovernedBrandsPerTick brands per
+// vertical per tick, fired SEQUENTIALLY (no burst). Post-deploy, VERIFY governed
+// campaigns persisted BY NAME (staging-burst footgun: /pmta-campaign deploy can
+// return HTTP 200 with a wrong/empty campaign_id under concurrent burst).
+func (po *PartnerDripOrchestrator) tickGoverned(ctx context.Context) {
+	verticals, err := po.governedVerticalsWithBacklog(ctx)
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] governed_verticals: %v", err)
+		return
+	}
+	if len(verticals) == 0 {
+		return
+	}
+	brandsThisTick := po.cfg.GovernedBrandsPerTick
+	if brandsThisTick <= 0 {
+		brandsThisTick = 2
+	}
+	for _, v := range verticals {
+		if ctx.Err() != nil {
+			return
+		}
+		roster := po.orderedSubscribedGoverned(v.vertical)
+		if len(roster) == 0 {
+			continue // no active governed subscribers for this vertical
+		}
+		stateKey := governedStateKey(v.vertical)
+		// Each governed wave advances the '<vertical>:governed' pointer; cap the
+		// per-tick brand count at the roster length (no point cycling past it).
+		n := brandsThisTick
+		if n > len(roster) {
+			n = len(roster)
+		}
+		for i := 0; i < n; i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			pc := passContext{roster: roster, stateKey: stateKey}
+			if err := po.processVerticalWith(ctx, v, pc); err != nil {
+				log.Printf("[PartnerDripOrchestrator] governed vertical=%s: %v", v.vertical, err)
+				// Keep advancing even on error — the next governed brand's wave
+				// is independent.
+			}
+			// Re-read the governed state (brand pointer) + ready count so the next
+			// call picks the next governed brand and bails when the pool drains.
+			fresh, err := po.refreshGovernedVerticalState(ctx, v.vertical)
+			if err != nil || fresh == nil || fresh.readyCount <= 0 {
+				break
+			}
+			v = *fresh
+		}
+	}
+}
+
+// governedStateKey returns the partner_drip_state rotation-pointer key for a
+// vertical's governed pass. Distinct from the bare vertical (welcome pass) and
+// 'followup' (follow-up pass) keys so the three rotations never collide.
+func governedStateKey(vertical string) string {
+	return strings.ToLower(strings.TrimSpace(vertical)) + ":governed"
+}
+
+// governedVerticalsWithBacklog is activeVerticalsWithBacklog restricted to the
+// verticals that have ≥1 active governed subscriber (orderedSubscribedGoverned
+// non-empty). It loads each vertical's READY backlog + dominant-dataset metadata
+// exactly like the welcome enumerator, but reads the brand-rotation pointer from
+// the '<vertical>:governed' state row (NOT the bare-vertical row), so the
+// governed rotation is fully independent of the welcome rotation.
+func (po *PartnerDripOrchestrator) governedVerticalsWithBacklog(ctx context.Context) ([]verticalState, error) {
+	var out []verticalState
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		// Phase 1 — ready aggregate per BARE vertical (the shared pool the
+		// governed pass claims), joined to the '<vertical>:governed' pointer.
+		// LEFT JOIN so a vertical with ready records but no governed state row
+		// yet still surfaces (brandIndex defaults 0; the row is auto-seeded by
+		// refreshGovernedVerticalState / governedBrandIndex on first use).
+		rows, err := tx.QueryContext(ctx, `
+			SELECT agg.vertical, COALESCE(gs.next_brand_index, 0), agg.ready_total, agg.oldest_at
+			FROM (
+				SELECT vertical, COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
+				FROM partner_clean_queue
+				WHERE status = 'ready'
+				GROUP BY vertical
+			) agg
+			LEFT JOIN partner_drip_state gs ON gs.vertical = agg.vertical || ':governed'
+			ORDER BY agg.vertical
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v verticalState
+			var (
+				readyTotal sql.NullInt64
+				oldestAt   sql.NullTime
+			)
+			if err := rows.Scan(&v.vertical, &v.brandIndex, &readyTotal, &oldestAt); err != nil {
+				continue
+			}
+			if !readyTotal.Valid || readyTotal.Int64 == 0 {
+				continue
+			}
+			// Filter: only verticals with active governed subscribers.
+			if len(po.governedBrandsSubscribedTo(v.vertical)) == 0 {
+				continue
+			}
+			v.readyCount = int(readyTotal.Int64)
+			v.oldestIngest = oldestAt
+			out = append(out, v)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		// Phase 2 — per-vertical dominant-dataset metadata (oldest ready row).
+		// Identical to activeVerticalsWithBacklog Phase 2.
+		for i := range out {
+			var (
+				datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+				flushHours                                       sql.NullInt64
+				offerID                                          string
+			)
+			err := tx.QueryRowContext(ctx, `
+				SELECT d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+				       COALESCE(d.offer_id::text, '')
+				FROM (
+					SELECT dataset_id
+					FROM partner_clean_queue
+					WHERE vertical = $1 AND status = 'ready'
+					ORDER BY ingested_at ASC
+					LIMIT 1
+				) AS dom
+				LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+				LEFT JOIN data_partners p ON p.id = d.partner_id
+			`, out[i].vertical).Scan(&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			out[i].offerID = offerID
+			if datasetID.Valid {
+				out[i].datasetID = datasetID.String
+			}
+			if datasetSlug.Valid {
+				out[i].datasetSlug = datasetSlug.String
+			}
+			if partnerSlug.Valid {
+				out[i].partnerSlug = partnerSlug.String
+			}
+			if partnerName.Valid {
+				out[i].partnerName = partnerName.String
+			}
+			if flushHours.Valid {
+				out[i].flushHours = int(flushHours.Int64)
+			}
+			if out[i].flushHours <= 0 {
+				out[i].flushHours = 24
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// refreshGovernedVerticalState re-reads a single vertical's READY backlog +
+// dataset metadata + the '<vertical>:governed' brand pointer between intra-tick
+// governed waves. Mirrors refreshVerticalState but reads the governed state row.
+func (po *PartnerDripOrchestrator) refreshGovernedVerticalState(ctx context.Context, vertical string) (*verticalState, error) {
+	var (
+		v     verticalState
+		found bool
+	)
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		var (
+			readyTotal sql.NullInt64
+			oldestAt   sql.NullTime
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(gs.next_brand_index, 0), agg.ready_total, agg.oldest_at
+			FROM (
+				SELECT COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
+				FROM partner_clean_queue
+				WHERE status = 'ready' AND vertical = $1
+			) agg
+			LEFT JOIN partner_drip_state gs ON gs.vertical = $1 || ':governed'
+		`, vertical).Scan(&v.brandIndex, &readyTotal, &oldestAt)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		v.vertical = vertical
+		if readyTotal.Valid {
+			v.readyCount = int(readyTotal.Int64)
+		}
+		v.oldestIngest = oldestAt
+
+		var (
+			datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+			flushHours                                       sql.NullInt64
+			offerID                                          string
+		)
+		err = tx.QueryRowContext(ctx, `
+			SELECT d.id, d.slug, p.slug, p.name, d.flush_window_hours,
+			       COALESCE(d.offer_id::text, '')
+			FROM (
+				SELECT dataset_id
+				FROM partner_clean_queue
+				WHERE vertical = $1 AND status = 'ready'
+				ORDER BY ingested_at ASC
+				LIMIT 1
+			) AS dom
+			LEFT JOIN partner_datasets d ON d.id = dom.dataset_id
+			LEFT JOIN data_partners p ON p.id = d.partner_id
+		`, vertical).Scan(&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		v.offerID = offerID
+		if datasetID.Valid {
+			v.datasetID = datasetID.String
+		}
+		if datasetSlug.Valid {
+			v.datasetSlug = datasetSlug.String
+		}
+		if partnerSlug.Valid {
+			v.partnerSlug = partnerSlug.String
+		}
+		if partnerName.Valid {
+			v.partnerName = partnerName.String
+		}
+		if flushHours.Valid {
+			v.flushHours = int(flushHours.Int64)
+		}
+		if v.flushHours <= 0 {
+			v.flushHours = 24
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	return &v, nil
+}
+
 func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, state *followupState) (string, error) {
 	for offset := 0; offset < len(dripBrands); offset++ {
 		idx := (state.brandIndex + offset) % len(dripBrands)
@@ -2463,7 +3193,7 @@ func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, st
 func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.Context) ([]verticalState, error) {
 	var out []verticalState
 	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `
+		rows, err := tx.QueryContext(ctx, `
 		WITH due AS (
 			SELECT q.vertical, q.dataset_id,
 			       MIN(q.next_touch_at) AS oldest_due,
@@ -2498,48 +3228,48 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 		LEFT JOIN data_partners p ON p.id = d.partner_id
 		ORDER BY v.vertical
 	`, MaxTouchCount-1)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v verticalState
-		var (
-			datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
-			flushHours                                       sql.NullInt64
-			dueCount                                         sql.NullInt64
-			offerID                                          string
-		)
-		if err := rows.Scan(&v.vertical, &dueCount,
-			&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
-			continue
+		if err != nil {
+			return err
 		}
-		v.offerID = offerID
-		if !dueCount.Valid || dueCount.Int64 == 0 {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var v verticalState
+			var (
+				datasetID, datasetSlug, partnerSlug, partnerName sql.NullString
+				flushHours                                       sql.NullInt64
+				dueCount                                         sql.NullInt64
+				offerID                                          string
+			)
+			if err := rows.Scan(&v.vertical, &dueCount,
+				&datasetID, &datasetSlug, &partnerSlug, &partnerName, &flushHours, &offerID); err != nil {
+				continue
+			}
+			v.offerID = offerID
+			if !dueCount.Valid || dueCount.Int64 == 0 {
+				continue
+			}
+			v.readyCount = int(dueCount.Int64)
+			if datasetID.Valid {
+				v.datasetID = datasetID.String
+			}
+			if datasetSlug.Valid {
+				v.datasetSlug = datasetSlug.String
+			}
+			if partnerSlug.Valid {
+				v.partnerSlug = partnerSlug.String
+			}
+			if partnerName.Valid {
+				v.partnerName = partnerName.String
+			}
+			if flushHours.Valid {
+				v.flushHours = int(flushHours.Int64)
+			}
+			if v.flushHours <= 0 {
+				v.flushHours = 24
+			}
+			out = append(out, v)
 		}
-		v.readyCount = int(dueCount.Int64)
-		if datasetID.Valid {
-			v.datasetID = datasetID.String
-		}
-		if datasetSlug.Valid {
-			v.datasetSlug = datasetSlug.String
-		}
-		if partnerSlug.Valid {
-			v.partnerSlug = partnerSlug.String
-		}
-		if partnerName.Valid {
-			v.partnerName = partnerName.String
-		}
-		if flushHours.Valid {
-			v.flushHours = int(flushHours.Int64)
-		}
-		if v.flushHours <= 0 {
-			v.flushHours = 24
-		}
-		out = append(out, v)
-	}
-	return rows.Err()
+		return rows.Err()
 	})
 	if err != nil {
 		return nil, err
