@@ -430,18 +430,24 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		//             (×4 mature = ~900/day) — "loving the growth, 480->900/d"
 		//   aol       30 ceiling, true rate set by NewRecordDailyISPCaps aol=56/brand
 		//             (×16 brands = ~900/day)
+		// 2026-06-29 operator "double the family draining and monitor": the partner
+		// ready backlog is ~76% Yahoo-family (~1.26M ready) and SES is healthy (Yahoo
+		// 99.1% / AOL 98.8% / ATT 99.6% accept, 0% complaints, ~100k headroom), so the
+		// binding per-wave ceiling — NOT data or SES — is throttling the drain. Double
+		// the Yahoo-family per-wave caps (yahoo 16->32, aol 30->60, att 50->100,
+		// sbcglobal 20->40, verizon 20->40). Watch deferral/complaint and step again.
 		cfg.PerISPCapPerWave = map[string]int{
 			"gmail":     0,
-			"yahoo":     16,
-			"aol":       30,
+			"yahoo":     32,
+			"aol":       60,
 			"microsoft": 100000,
 			"apple":     100000,
 			"comcast":   30,
 			"charter":   30,
-			"att":       50,
-			"sbcglobal": 20,
+			"att":       100,
+			"sbcglobal": 40,
 			"cox":       20,
-			"verizon":   20,
+			"verizon":   40,
 			"other":     40,
 		}
 	}
