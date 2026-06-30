@@ -63,6 +63,8 @@ import {
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
+import { colors as theme } from '../shared/theme';
+import { EmptyState } from '../shared/ui';
 
 const PAGE_VERSION = '1.0';
 
@@ -259,24 +261,30 @@ type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STYLE TOKENS (identical palette to EventLakeExplorer — sibling screens)
+// STYLE TOKENS — mapped onto the shared indigo design system (shared/theme.ts)
+// so this screen matches the Delivery Queue gold standard. The local key names
+// are kept (the styles object + per-tab code reference COLORS.*), but every
+// value now resolves to a canonical indigo token. accent/accentAlt/good/warn/
+// danger stay 6-digit hex because some call sites append a hex-alpha suffix
+// (e.g. COLORS.accent + '66'); border/borderStrong are full rgba values used
+// directly. HARD_RED / SOFT_AMBER below remain separate per the hard rule.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const COLORS = {
-  bgDeep:        '#0a0e1a',
-  bgPanel:       '#0f1424',
-  bgPanelAlt:    '#131a2e',
-  border:        'rgba(255,255,255,0.06)',
-  borderStrong:  'rgba(255,255,255,0.12)',
-  textPrimary:   '#e2e8f0',
-  textSecondary: '#94a3b8',
-  textMuted:     '#64748b',
-  accent:        '#818cf8',
-  accentAlt:     '#a78bfa',
-  accentPink:    '#f472b6',
-  good:          '#34d399',
-  warn:          '#fbbf24',
-  danger:        '#f87171',
+  bgDeep:        theme.appBgSolid,          // #0a0e1c
+  bgPanel:       theme.panelBgSolid,        // #0f1629
+  bgPanelAlt:    '#131a2e',                 // slightly lifted indigo-slate surface
+  border:        theme.hairline,            // rgba(99,102,241,0.15)
+  borderStrong:  theme.panelBorderStrong,   // rgba(99,102,241,0.30)
+  textPrimary:   theme.text,                // #e5e7eb
+  textSecondary: theme.textMuted,           // #94a3b8
+  textMuted:     theme.textFaint,           // #64748b
+  accent:        theme.indigo400,           // #818cf8
+  accentAlt:     theme.indigo300,           // #a5b4fc
+  accentPink:    theme.indigo200,           // #c7d2fe (was pink → indigo light)
+  good:          theme.success,             // #22c55e
+  warn:          theme.warning,             // #f59e0b
+  danger:        theme.danger,              // #ef4444
 };
 
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber. Always.
@@ -725,14 +733,23 @@ const ErrorPanel: React.FC<{ label: string; error: string; onRetry: () => void }
 );
 
 // {disabled:true} / {empty:true} friendly states (never rendered as errors).
-const FriendlyState: React.FC<{ kind: 'disabled' | 'empty' }> = ({ kind }) => (
-  <div style={styles.lakeOnlyNotice}>
-    <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 8, color: COLORS.warn }} />
-    {kind === 'disabled'
-      ? 'Audience analytics read layer is disabled on the server — this panel will populate once it is enabled.'
-      : 'The audience snapshot returned no rows for this query.'}
-  </div>
-);
+// Uses the shared indigo EmptyState so a degraded panel reads as a clean empty
+// state, not an error dump — backend now degrades missing-table / type / empty
+// cases to a 200 {empty|disabled} body, and this is what renders for them.
+const FriendlyState: React.FC<{ kind: 'disabled' | 'empty' }> = ({ kind }) =>
+  kind === 'disabled' ? (
+    <EmptyState
+      icon={faMoon}
+      title="Read layer disabled"
+      hint="Audience analytics read layer is disabled on the server — this panel will populate once it is enabled."
+    />
+  ) : (
+    <EmptyState
+      icon={faUsers}
+      title="No audience data"
+      hint="The audience snapshot returned no rows for this query."
+    />
+  );
 
 const RefreshBtn: React.FC<{ loading: boolean; onClick: () => void }> = ({ loading, onClick }) => (
   <button style={styles.refreshBtn} onClick={onClick} disabled={loading}>

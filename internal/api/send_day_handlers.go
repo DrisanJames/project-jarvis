@@ -42,10 +42,14 @@ const (
 // Per `.cursor/rules/send-day-process.mdc` §2 Gate F:
 //   today's planned total ≥ (yesterday's planned × 1.20 × 0.95)
 //
-// "Planned" = sum(total_recipients) across mailing_campaigns whose
-// scheduled_at falls in the target MDT day, EXCLUDING status=cancelled
-// or status=failed (those count against execution-quality, not the
-// forward-looking ramp).
+// "Planned" = the GREATEST (union) of (a) sum(total_recipients) across
+// committed mailing_campaigns whose scheduled_at falls in the target MDT
+// day and (b) the sum of the staged Draft-Board per-ISP quotas for that
+// same day — because draft campaigns carry total_recipients=0 until audience
+// finalization, so the committed sum alone undercounts a send-day that is
+// still staged as drafts. Both branches EXCLUDE status=cancelled/failed
+// (those count against execution-quality, not the forward-looking ramp).
+// See sumPlannedRecipientsForMDTDate for the full rationale.
 //
 // Returns:
 //   {
@@ -124,24 +128,66 @@ func (s *AdvancedMailingService) HandleSendDayVolumeReconciliation(w http.Respon
 		"gap":               gap,
 		"percent_to_target": percentToTarget,
 		"passes":            passes,
+		// planned_basis documents what today_planned/yesterday_planned now
+		// measure: the GREATEST of committed recipient counts and staged
+		// Draft-Board per-ISP quotas, so a send-day still staged as drafts
+		// (total_recipients=0) is no longer under-counted. See
+		// sumPlannedRecipientsForMDTDate.
+		"planned_basis": "max(committed total_recipients, staged draft ISP quotas) per MDT date",
 	})
 }
 
-// sumPlannedRecipientsForMDTDate sums total_recipients for campaigns whose
-// scheduled_at falls on the supplied MDT calendar date and that have NOT
-// been cancelled or failed. The MDT boundary is enforced by casting
-// scheduled_at AT TIME ZONE 'America/Denver' before truncating to date.
+// sumPlannedRecipientsForMDTDate returns the TRUE planned recipient volume for
+// the supplied MDT calendar date. It is the per-date GREATEST (union) of two
+// signals, because a send-day plan is split across two representations in
+// mailing_campaigns:
+//
+//   1. committed — SUM(total_recipients) over scheduled campaigns whose
+//      audience has already been materialized.
+//   2. staged    — SUM of the per-ISP Draft-Board quotas
+//      (pmta_config -> 'campaign_input' -> 'isp_quotas'[].volume). Draft
+//      campaigns are persisted with total_recipients = 0 until audience
+//      finalization (see savePMTADraftCampaign), so the committed sum alone
+//      misses the operator's staged plan for an upcoming send-day — that is
+//      the root cause of Gate F's misleading low percentage (e.g. 85k/900k).
+//
+// Taking the per-date GREATEST means an upcoming send-day (drafts dominate,
+// committed≈0) reports its staged quota total, while a fully-finalized day
+// reports its materialized recipient total — never under-reporting either,
+// and never double-counting. cancelled/failed campaigns are excluded; the MDT
+// boundary is enforced by casting scheduled_at AT TIME ZONE 'America/Denver'
+// before truncating to a date.
+//
+// NOTE: the committed branch deliberately keeps the literal SUM(total_recipients)
+// aggregate — it is the contract the backend tests assert on, and remains the
+// floor of the planned volume.
 func (s *AdvancedMailingService) sumPlannedRecipientsForMDTDate(ctx context.Context, day time.Time) (int, error) {
 	mdt, _ := time.LoadLocation("America/Denver")
 	d := day.In(mdt)
 	dayStr := d.Format("2006-01-02")
 	var total int
 	row := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(total_recipients), 0)
-		FROM mailing_campaigns
-		WHERE scheduled_at IS NOT NULL
-		  AND (scheduled_at AT TIME ZONE 'America/Denver')::date = $1::date
-		  AND status NOT IN ('cancelled','failed')
+		SELECT GREATEST(
+			COALESCE((
+				SELECT SUM(total_recipients)
+				FROM mailing_campaigns
+				WHERE scheduled_at IS NOT NULL
+				  AND (scheduled_at AT TIME ZONE 'America/Denver')::date = $1::date
+				  AND status NOT IN ('cancelled','failed')
+			), 0),
+			COALESCE((
+				SELECT SUM((q->>'volume')::numeric)::bigint
+				FROM mailing_campaigns mc,
+				     LATERAL jsonb_array_elements(
+				         CASE WHEN jsonb_typeof(mc.pmta_config->'campaign_input'->'isp_quotas') = 'array'
+				              THEN mc.pmta_config->'campaign_input'->'isp_quotas'
+				              ELSE '[]'::jsonb END
+				     ) AS q
+				WHERE mc.scheduled_at IS NOT NULL
+				  AND (mc.scheduled_at AT TIME ZONE 'America/Denver')::date = $1::date
+				  AND mc.status NOT IN ('cancelled','failed')
+			), 0)
+		)::bigint
 	`, dayStr)
 	if err := row.Scan(&total); err != nil {
 		return 0, err

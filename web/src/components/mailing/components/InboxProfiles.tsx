@@ -1,16 +1,24 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
   faBrain, faSearch, faChevronLeft, faChevronRight, faSort,
   faSortUp, faSortDown, faEnvelope, faEye, faMousePointer,
   faExclamationTriangle, faClock, faCalendarAlt, faShieldAlt,
   faBullseye, faChartLine, faArrowUp, faArrowDown, faMinus,
   faRobot, faCheck, faTimes, faSpinner, faSyncAlt,
-  faUserSecret, faFingerprint, faNetworkWired, faFire,
-  faStar, faDatabase
+  faUserSecret, faFingerprint, faNetworkWired, faStar,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
+import { usePolling } from '../shared/usePolling';
+import {
+  Panel, SectionHeader, Stat, Pill, EmptyState, LivePill, PortalKeyframes,
+} from '../shared/ui';
+import {
+  colors, alpha, pageStyle, panelStyle, btnStyle,
+  thStyle, numTh, tdStyle, numTd, tableStyle,
+} from '../shared/theme';
 import './InboxProfiles.css';
 
 const orgFetch = async (url: string, orgId?: string, options?: RequestInit) => {
@@ -114,51 +122,61 @@ type SortField = 'engagement' | 'sent' | 'opens' | 'clicks' | 'recent';
 type SortOrder = 'asc' | 'desc';
 type TierFilter = '' | 'high' | 'medium' | 'low' | 'inactive';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+const STATS_POLL_MS = 30_000;
 
-const getEngagementColor = (score: number): string => {
-  if (score >= 70) return '#10b981';
-  if (score >= 40) return '#f59e0b';
-  if (score > 0) return '#ef4444';
-  return '#6b7280';
+// ─── Engagement scoring helpers ────────────────────────────────────────────────
+//
+// SCALE NOTE: the underlying mailing_inbox_profiles.engagement_score column is
+// DECIMAL(3,2) on a 0–1 scale (DB thresholds 0.70 / 0.40). The API layer
+// (HandleGetProfiles / HandleGetProfile / HandleGetProfileStats) already returns
+// it pre-scaled to 0–100 via round2(score * 100), and avg_engagement the same
+// way. So every score value arriving here is on a 0–100 band — render it as such
+// and DO NOT divide again. Tier cutoffs below mirror the DB cutoffs ×100.
+
+const tierFromScore = (score: number): TierFilter =>
+  score >= 70 ? 'high' : score >= 40 ? 'medium' : score > 0 ? 'low' : 'inactive';
+
+interface TierMeta { key: Exclude<TierFilter, ''>; label: string; color: string; icon: IconDefinition }
+
+// Indigo → amber → slate band scale.
+const TIER_META: Record<Exclude<TierFilter, ''>, TierMeta> = {
+  high: { key: 'high', label: 'High', color: colors.indigo400, icon: faStar },
+  medium: { key: 'medium', label: 'Medium', color: colors.warning, icon: faChartLine },
+  low: { key: 'low', label: 'Low', color: colors.idle, icon: faArrowDown },
+  inactive: { key: 'inactive', label: 'Inactive', color: colors.textFaint, icon: faMinus },
 };
 
-const getTierLabel = (tier: string): string => {
-  switch (tier) {
-    case 'high': return 'High';
-    case 'medium': return 'Medium';
-    case 'low': return 'Low';
-    case 'inactive': return 'Inactive';
-    default: return 'Unknown';
-  }
+const tierMeta = (tier: string): TierMeta =>
+  (TIER_META as Record<string, TierMeta>)[tier] ?? TIER_META.inactive;
+
+// A labeled engagement band: tier word + the 0–100 numeric, color-coded.
+const EngagementBand: React.FC<{ score: number; tier?: string; showValue?: boolean }> = ({
+  score, tier, showValue = true,
+}) => {
+  const meta = tierMeta(tier || tierFromScore(score));
+  return (
+    <Pill color={meta.color}>
+      <FontAwesomeIcon icon={meta.icon} />
+      {meta.label}
+      {showValue && (
+        <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.85 }}>{Math.round(score)}</span>
+      )}
+    </Pill>
+  );
 };
 
-const getTierIcon = (tier: string) => {
-  switch (tier) {
-    case 'high': return faStar;
-    case 'medium': return faChartLine;
-    case 'low': return faArrowDown;
-    case 'inactive': return faMinus;
-    default: return faMinus;
-  }
-};
+const scoreColor = (score: number): string => tierMeta(tierFromScore(score)).color;
 
-const getTrendIcon = (trend: string) => {
-  switch (trend) {
-    case 'rising': return faArrowUp;
-    case 'falling': return faArrowDown;
-    default: return faMinus;
-  }
-};
+const getTrendIcon = (trend: string): IconDefinition =>
+  trend === 'rising' ? faArrowUp : trend === 'falling' ? faArrowDown : faMinus;
 
-const getTrendColor = (trend: string): string => {
-  switch (trend) {
-    case 'rising': return '#10b981';
-    case 'falling': return '#ef4444';
-    default: return '#6b7280';
-  }
-};
+const getTrendColor = (trend: string): string =>
+  trend === 'rising' ? colors.success : trend === 'falling' ? colors.danger : colors.textMuted;
 
+const openRateColor = (r: number): string =>
+  r >= 20 ? colors.successText : r >= 10 ? colors.warningText : colors.dangerText;
+
+// ISP brand colors (kept: brand identity is meaningful here, not chrome).
 const getISPColor = (isp: string): string => {
   switch (isp) {
     case 'Gmail': return '#ea4335';
@@ -168,7 +186,7 @@ const getISPColor = (isp: string): string => {
     case 'Apple': return '#a2aaad';
     case 'Comcast': return '#e60000';
     case 'Proton': return '#6d4aff';
-    default: return '#64748b';
+    default: return colors.textFaint;
   }
 };
 
@@ -188,17 +206,17 @@ const timeAgo = (dateStr?: string): string => {
 const formatNumber = (n: number): string => {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
   if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return n.toLocaleString();
+  return Math.round(n).toLocaleString();
 };
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export const InboxProfiles: React.FC = () => {
   const { organization } = useAuth();
+  const orgId = organization?.id;
 
   // Data state
   const [profiles, setProfiles] = useState<InboxProfile[]>([]);
-  const [stats, setStats] = useState<ProfileStats | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<ProfileDetail | null>(null);
   const [selectedDecision, setSelectedDecision] = useState<SendDecision | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,24 +235,24 @@ export const InboxProfiles: React.FC = () => {
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ─── Fetch Stats ─────────────────────────────────────────────────────────
-  const fetchStats = useCallback(async () => {
-    try {
-      const res = await orgFetch('/api/mailing/profiles/stats', organization?.id);
-      const data = await res.json();
-      setStats(data);
-    } catch (err) {
-      console.error('Failed to load profile stats:', err);
-      setStats({
-        total_profiles: 0, recently_active: 0, avg_engagement: 0, avg_open_rate: 0,
-        new_this_week: 0, total_sends: 0, total_opens: 0, total_clicks: 0,
-        tier_distribution: { high: 0, medium: 0, low: 0, inactive: 0 },
-        isp_distribution: {},
-      });
-    }
-  }, [organization]);
+  // ─── Stats (anti-jank polling) ─────────────────────────────────────────────
+  // The KPI hero refreshes on an interval without ever blanking the screen:
+  // usePolling replaces stats atomically and only on success, keeping the last
+  // good values mounted if a refresh fails (surfaced as a stale banner).
+  const statsPoll = usePolling<ProfileStats>(
+    async (signal) => {
+      const res = await orgFetch('/api/mailing/profiles/stats', orgId, { signal });
+      if (!res.ok) throw new Error(`stats HTTP ${res.status}`);
+      return (await res.json()) as ProfileStats;
+    },
+    STATS_POLL_MS,
+    [orgId],
+  );
+  const stats = statsPoll.data;
 
   // ─── Fetch Profiles ──────────────────────────────────────────────────────
+  // Driven by user-controlled filters/sort/page (not an interval), so it keeps
+  // the prior rows mounted while loading and only shows a spinner on first paint.
   const fetchProfiles = useCallback(async () => {
     setLoading(true);
     try {
@@ -247,7 +265,7 @@ export const InboxProfiles: React.FC = () => {
       params.set('page', String(page));
       params.set('limit', '50');
 
-      const res = await orgFetch(`/api/mailing/profiles?${params}`, organization?.id);
+      const res = await orgFetch(`/api/mailing/profiles?${params}`, orgId);
       const data = await res.json();
       setProfiles(data.profiles || []);
       setTotalPages(data.total_pages || 1);
@@ -258,15 +276,15 @@ export const InboxProfiles: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [organization, search, ispFilter, tierFilter, sortField, sortOrder, page]);
+  }, [orgId, search, ispFilter, tierFilter, sortField, sortOrder, page]);
 
   // ─── Fetch Profile Detail ────────────────────────────────────────────────
   const fetchDetail = async (email: string) => {
     setDetailLoading(true);
     try {
       const [profileRes, decisionRes] = await Promise.all([
-        orgFetch(`/api/mailing/profiles/${encodeURIComponent(email)}`, organization?.id),
-        orgFetch(`/api/mailing/analytics/decision/${encodeURIComponent(email)}`, organization?.id),
+        orgFetch(`/api/mailing/profiles/${encodeURIComponent(email)}`, orgId),
+        orgFetch(`/api/mailing/analytics/decision/${encodeURIComponent(email)}`, orgId),
       ]);
       const profile = await profileRes.json();
       const decision = await decisionRes.json();
@@ -323,20 +341,19 @@ export const InboxProfiles: React.FC = () => {
   // ─── Fetch Managed Agent Domains ──────────────────────────────────────
   const fetchManagedAgents = useCallback(async () => {
     try {
-      const res = await orgFetch('/api/mailing/isp-agents/managed', organization?.id);
+      const res = await orgFetch('/api/mailing/isp-agents/managed', orgId);
       const data = await res.json();
       const domains = new Set<string>((data.agents || data || []).map((a: { domain: string }) => a.domain));
       setManagedAgentDomains(domains);
     } catch {
       // Silently ignore — badge just won't show
     }
-  }, [organization]);
+  }, [orgId]);
 
   // ─── Effects ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    fetchStats();
     fetchManagedAgents();
-  }, [fetchStats, fetchManagedAgents]);
+  }, [fetchManagedAgents]);
 
   useEffect(() => {
     fetchProfiles();
@@ -362,129 +379,176 @@ export const InboxProfiles: React.FC = () => {
     setPage(1);
   };
 
-  const getSortIcon = (field: SortField) => {
+  const getSortIcon = (field: SortField): IconDefinition => {
     if (sortField !== field) return faSort;
     return sortOrder === 'desc' ? faSortDown : faSortUp;
   };
 
+  // "Top scored" — surface the highest-engagement profiles using params the
+  // /profiles endpoint already supports (sort=engagement&order=desc). This is the
+  // first lightweight step toward the CDP converter-signal vision.
+  //
+  // FUTURE ENHANCEMENT (converter signal): once a backend cohort endpoint exists,
+  // contrast how the system scored eventual CONVERTERS *prior* to converting vs.
+  // non-converters, to derive a leading signal. Do not fabricate that here — it
+  // needs real labeled conversion data the current endpoints don't expose.
+  const handleTopScored = () => {
+    setTierFilter('');
+    setSortField('engagement');
+    setSortOrder('desc');
+    setPage(1);
+  };
+
+  const isTopScored = sortField === 'engagement' && sortOrder === 'desc';
+  const hasFilters = !!(search || ispFilter || tierFilter);
+
   // ─── Render ──────────────────────────────────────────────────────────────
+  const tierOrder: Exclude<TierFilter, ''>[] = ['high', 'medium', 'low', 'inactive'];
+
   return (
-    <div className="ii-container ig-scan-line">
+    <div style={pageStyle}>
+      <PortalKeyframes />
+
       {/* ─── Header ─────────────────────────────────────────────────────── */}
-      <div className="ii-header">
-        <div className="ii-header-left">
-          <div className="ii-header-icon">
-            <FontAwesomeIcon icon={faBrain} />
-            <span className="ii-pulse" />
-          </div>
-          <div>
-            <h1>Inbox Intel</h1>
-            <p>AI-powered inbox profiling &middot; Learning from every send, open &amp; click</p>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, color: colors.heading, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FontAwesomeIcon icon={faBrain} style={{ color: colors.indigo400 }} />
+            Inbox Intel
+          </h1>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            Per-recipient engagement profiling · learning from every send, open &amp; click · stats refresh every {STATS_POLL_MS / 1000}s
           </div>
         </div>
-        <button className="ii-refresh-btn ig-btn-glow ig-ripple" onClick={() => { fetchStats(); fetchProfiles(); }} disabled={loading}>
-          <FontAwesomeIcon icon={faSyncAlt} spin={loading} /> Refresh
-        </button>
-      </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <LivePill live={statsPoll.live} agoSeconds={statsPoll.secondsSinceUpdate} />
+          <button
+            onClick={() => { statsPoll.refresh(); fetchProfiles(); }}
+            disabled={loading}
+            style={{ ...btnStyle, display: 'flex', alignItems: 'center', gap: 6, cursor: loading ? 'not-allowed' : 'pointer' }}
+          >
+            <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh
+          </button>
+        </div>
+      </header>
 
-      {/* ─── Stats Bar ──────────────────────────────────────────────────── */}
-      <div className="ii-stats-bar ig-stagger">
-        <div className="ii-stat-card ig-card-hover">
-          <div className="ii-stat-icon" style={{ background: 'rgba(0, 200, 255, 0.12)', color: '#00e5ff' }}>
-            <FontAwesomeIcon icon={faFingerprint} />
-          </div>
-          <div className="ii-stat-body">
-            <AnimatedCounter value={stats?.total_profiles || 0} formatFn={formatNumber} className="ii-stat-value" />
-            <span className="ii-stat-label">Profiles Built</span>
-          </div>
-        </div>
-        <div className="ii-stat-card ig-card-hover">
-          <div className="ii-stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
-            <FontAwesomeIcon icon={faFire} />
-          </div>
-          <div className="ii-stat-body">
-            <AnimatedCounter value={stats?.recently_active || 0} formatFn={formatNumber} className="ii-stat-value" />
-            <span className="ii-stat-label">Active (30d)</span>
-          </div>
-        </div>
-        <div className="ii-stat-card ig-card-hover">
-          <div className="ii-stat-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
-            <FontAwesomeIcon icon={faChartLine} />
-          </div>
-          <div className="ii-stat-body">
-            <AnimatedCounter value={stats?.avg_engagement || 0} decimals={1} suffix="%" className="ii-stat-value" />
-            <span className="ii-stat-label">Avg Engagement</span>
-          </div>
-        </div>
-        <div className="ii-stat-card ig-card-hover">
-          <div className="ii-stat-icon" style={{ background: 'rgba(0, 176, 255, 0.12)', color: '#00b0ff' }}>
-            <FontAwesomeIcon icon={faEye} />
-          </div>
-          <div className="ii-stat-body">
-            <AnimatedCounter value={stats?.avg_open_rate || 0} decimals={1} suffix="%" className="ii-stat-value" />
-            <span className="ii-stat-label">Avg Open Rate</span>
-          </div>
-        </div>
-        <div className="ii-stat-card ig-card-hover">
-          <div className="ii-stat-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899' }}>
-            <FontAwesomeIcon icon={faDatabase} />
-          </div>
-          <div className="ii-stat-body">
-            <AnimatedCounter value={stats?.new_this_week || 0} formatFn={formatNumber} className="ii-stat-value" />
-            <span className="ii-stat-label">New This Week</span>
-          </div>
-        </div>
-      </div>
-
-      {/* ─── Tier Distribution ──────────────────────────────────────────── */}
-      {stats && (
-        <div className="ii-tier-bar ig-fade-in">
-          <span className="ii-tier-label">AI Classification:</span>
-          <div className="ii-tier-chips">
-            <button
-              className={`ii-tier-chip ii-tier-high ${tierFilter === 'high' ? 'active' : ''}`}
-              onClick={() => { setTierFilter(tierFilter === 'high' ? '' : 'high'); setPage(1); }}
-            >
-              <FontAwesomeIcon icon={faStar} /> High <span>{stats.tier_distribution.high}</span>
-            </button>
-            <button
-              className={`ii-tier-chip ii-tier-medium ${tierFilter === 'medium' ? 'active' : ''}`}
-              onClick={() => { setTierFilter(tierFilter === 'medium' ? '' : 'medium'); setPage(1); }}
-            >
-              <FontAwesomeIcon icon={faChartLine} /> Medium <span>{stats.tier_distribution.medium}</span>
-            </button>
-            <button
-              className={`ii-tier-chip ii-tier-low ${tierFilter === 'low' ? 'active' : ''}`}
-              onClick={() => { setTierFilter(tierFilter === 'low' ? '' : 'low'); setPage(1); }}
-            >
-              <FontAwesomeIcon icon={faArrowDown} /> Low <span>{stats.tier_distribution.low}</span>
-            </button>
-            <button
-              className={`ii-tier-chip ii-tier-inactive ${tierFilter === 'inactive' ? 'active' : ''}`}
-              onClick={() => { setTierFilter(tierFilter === 'inactive' ? '' : 'inactive'); setPage(1); }}
-            >
-              <FontAwesomeIcon icon={faMinus} /> Inactive <span>{stats.tier_distribution.inactive}</span>
-            </button>
-          </div>
+      {statsPoll.error && (
+        <div style={{ background: alpha(colors.danger, '22'), border: `1px solid ${alpha(colors.danger, '66')}`, color: colors.dangerFaint, padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
+          Could not refresh profiling stats: {statsPoll.error} — showing last known values.
         </div>
       )}
 
+      {/* ─── KPI Hero ───────────────────────────────────────────────────── */}
+      <Panel accent={colors.indigo500} style={{ marginBottom: 14 }}>
+        <SectionHeader title="Audience Intelligence" icon={faFingerprint} />
+        <div style={{ display: 'flex', gap: 36, flexWrap: 'wrap', rowGap: 16 }}>
+          <Stat
+            label="Profiles Built"
+            value={<AnimatedCounter value={stats?.total_profiles ?? 0} formatFn={formatNumber} />}
+            color={colors.indigo200}
+          />
+          <Stat
+            label="Active (30d)"
+            value={<AnimatedCounter value={stats?.recently_active ?? 0} formatFn={formatNumber} />}
+            sub="opened in last 30 days"
+            color={colors.successText}
+          />
+          <Stat
+            label="Avg Engagement"
+            value={<AnimatedCounter value={stats?.avg_engagement ?? 0} decimals={1} />}
+            sub="score · 0–100 band"
+            color={scoreColor(stats?.avg_engagement ?? 0)}
+            title="Mean engagement score across all profiles, 0–100 (High ≥70 · Medium ≥40)"
+          />
+          <Stat
+            label="Avg Open Rate"
+            value={<AnimatedCounter value={stats?.avg_open_rate ?? 0} decimals={1} suffix="%" />}
+            color={colors.indigo300}
+          />
+          <Stat
+            label="New This Week"
+            value={<AnimatedCounter value={stats?.new_this_week ?? 0} formatFn={formatNumber} />}
+            sub="last 7 days"
+            color={colors.warningText}
+          />
+        </div>
+      </Panel>
+
+      {/* ─── Engagement Scoring distribution (clickable band filters) ──────── */}
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader
+          title="Engagement Scoring"
+          icon={faChartLine}
+          right={
+            <button
+              onClick={handleTopScored}
+              title="Sort by highest engagement score"
+              style={{
+                ...btnStyle,
+                display: 'flex', alignItems: 'center', gap: 6,
+                ...(isTopScored ? { background: alpha(colors.indigo500, '33'), borderColor: alpha(colors.indigo500, '66') } : {}),
+              }}
+            >
+              <FontAwesomeIcon icon={faStar} /> Top scored
+            </button>
+          }
+        />
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          {tierOrder.map((key) => {
+            const meta = TIER_META[key];
+            const count = stats?.tier_distribution?.[key] ?? 0;
+            const active = tierFilter === key;
+            return (
+              <button
+                key={key}
+                onClick={() => { setTierFilter(active ? '' : key); setPage(1); }}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                title={`Filter to ${meta.label} engagement profiles`}
+              >
+                <Pill
+                  color={meta.color}
+                  style={{
+                    opacity: !tierFilter || active ? 1 : 0.4,
+                    boxShadow: active ? `0 0 0 1px ${meta.color}` : 'none',
+                  }}
+                >
+                  <FontAwesomeIcon icon={meta.icon} />
+                  {meta.label}
+                  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{count.toLocaleString()}</span>
+                </Pill>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 10 }}>
+          Bands on a 0–100 engagement score: High ≥70 · Medium 40–69 · Low 1–39 · Inactive 0
+        </div>
+      </Panel>
+
       {/* ─── Filter Bar ─────────────────────────────────────────────────── */}
-      <div className="ii-filter-bar ig-fade-in">
-        <div className="ii-search-wrap">
-          <FontAwesomeIcon icon={faSearch} className="ii-search-icon" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+        <div style={{ position: 'relative', flex: '1 1 280px', minWidth: 220 }}>
+          <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: colors.textFaint, fontSize: 12 }} />
           <input
             type="text"
-            placeholder="Search by email address..."
+            placeholder="Search by email address…"
             value={search}
             onChange={(e) => handleSearchChange(e.target.value)}
-            className="ii-search-input"
+            style={{
+              width: '100%', boxSizing: 'border-box', padding: '8px 12px 8px 32px',
+              background: colors.panelBg, border: `1px solid ${colors.panelBorder}`,
+              borderRadius: 8, color: colors.text, fontSize: 13, outline: 'none',
+            }}
           />
         </div>
         <select
           value={ispFilter}
           onChange={(e) => { setIspFilter(e.target.value); setPage(1); }}
-          className="ii-filter-select"
+          style={{
+            padding: '8px 12px', background: colors.panelBg, border: `1px solid ${colors.panelBorder}`,
+            borderRadius: 8, color: colors.text, fontSize: 13, cursor: 'pointer',
+          }}
         >
           <option value="">All Providers</option>
           <option value="gmail">Gmail</option>
@@ -494,12 +558,15 @@ export const InboxProfiles: React.FC = () => {
           <option value="apple">Apple</option>
           <option value="comcast">Comcast</option>
         </select>
-        {(search || ispFilter || tierFilter) && (
-          <button className="ii-clear-btn" onClick={() => { setSearch(''); setIspFilter(''); setTierFilter(''); setPage(1); }}>
+        {hasFilters && (
+          <button
+            onClick={() => { setSearch(''); setIspFilter(''); setTierFilter(''); setPage(1); }}
+            style={{ ...btnStyle, color: colors.textMuted, background: 'none', borderColor: colors.panelBorder }}
+          >
             Clear Filters
           </button>
         )}
-        <div className="ii-result-count">
+        <div style={{ marginLeft: 'auto', fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
           {totalProfiles.toLocaleString()} profile{totalProfiles !== 1 ? 's' : ''}
         </div>
       </div>
@@ -507,123 +574,115 @@ export const InboxProfiles: React.FC = () => {
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div className="ii-main">
         {/* ─── Profile Table ────────────────────────────────────────────── */}
-        <div className="ii-table-wrap ig-data-stream">
+        <div style={{ ...panelStyle, padding: 0, overflow: 'hidden' }}>
           {loading && profiles.length === 0 ? (
-            <div className="ii-loading">
+            <div style={{ textAlign: 'center', padding: 60, color: colors.textMuted }}>
               <FontAwesomeIcon icon={faSpinner} spin size="2x" />
-              <p>Loading inbox profiles...</p>
+              <p style={{ marginTop: 12, fontSize: 13 }}>Loading inbox profiles…</p>
             </div>
           ) : profiles.length === 0 ? (
-            <div className="ii-empty">
-              <FontAwesomeIcon icon={faUserSecret} size="3x" />
-              <h3>No Profiles Found</h3>
-              <p>
-                {search || ispFilter || tierFilter
-                  ? 'Try adjusting your filters or search term.'
-                  : 'AI will build profiles as emails are sent and engagement is tracked.'}
-              </p>
-            </div>
+            <EmptyState
+              icon={faUserSecret}
+              title="No Profiles Found"
+              hint={hasFilters
+                ? 'Try adjusting your filters or search term.'
+                : 'Profiles build automatically as emails are sent and engagement is tracked.'}
+            />
           ) : (
             <>
-              <table className="ii-table">
-                <thead>
-                  <tr>
-                    <th className="ii-th-email">Inbox</th>
-                    <th className="ii-th-isp">Provider</th>
-                    <th className="ii-th-score" onClick={() => handleSort('engagement')}>
-                      Score <FontAwesomeIcon icon={getSortIcon('engagement')} className="ii-sort-icon" />
-                    </th>
-                    <th className="ii-th-trend">Trend</th>
-                    <th className="ii-th-num" onClick={() => handleSort('sent')}>
-                      Sent <FontAwesomeIcon icon={getSortIcon('sent')} className="ii-sort-icon" />
-                    </th>
-                    <th className="ii-th-num" onClick={() => handleSort('opens')}>
-                      Opens <FontAwesomeIcon icon={getSortIcon('opens')} className="ii-sort-icon" />
-                    </th>
-                    <th className="ii-th-num" onClick={() => handleSort('clicks')}>
-                      Clicks <FontAwesomeIcon icon={getSortIcon('clicks')} className="ii-sort-icon" />
-                    </th>
-                    <th className="ii-th-rate">Open %</th>
-                    <th className="ii-th-time" onClick={() => handleSort('recent')}>
-                      Last Activity <FontAwesomeIcon icon={getSortIcon('recent')} className="ii-sort-icon" />
-                    </th>
-                    <th className="ii-th-time">First Seen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {profiles.map((p) => (
-                    <tr
-                      key={p.email}
-                      role="button"
-                      tabIndex={0}
-                      className={`ii-row ${selectedDetail?.email === p.email ? 'ii-row-active' : ''}`}
-                      onClick={() => fetchDetail(p.email)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') fetchDetail(p.email); }}
-                    >
-                      <td className="ii-td-email">
-                        <div className="ii-email-cell">
-                          <span className={`ii-activity-dot ii-dot-${p.engagement_tier}`} />
-                          <div>
-                            <div className="ii-email-text">{p.email}</div>
-                            <div className="ii-domain-text">
-                              {p.domain}
-                              {managedAgentDomains.has(p.domain) && (
-                                <span className="ii-agent-badge" title="Managed mailbox provider agent active for this domain">🤖 Agent Active</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <span className="ii-isp-badge" style={{ background: getISPColor(p.isp) + '22', color: getISPColor(p.isp), borderColor: getISPColor(p.isp) + '44' }}>
-                          {p.isp || 'Other'}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="ii-score-cell">
-                          <div className="ii-score-ring" style={{ '--score-color': getEngagementColor(p.engagement_score), '--score-pct': `${p.engagement_score}%` } as React.CSSProperties}>
-                            <span>{Math.round(p.engagement_score)}</span>
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <FontAwesomeIcon
-                          icon={getTrendIcon(p.engagement_trend)}
-                          style={{ color: getTrendColor(p.engagement_trend) }}
-                          title={p.engagement_trend}
-                        />
-                      </td>
-                      <td className="ii-td-num">{formatNumber(p.total_sent)}</td>
-                      <td className="ii-td-num">{formatNumber(p.total_opens)}</td>
-                      <td className="ii-td-num">{formatNumber(p.total_clicks)}</td>
-                      <td className="ii-td-num">
-                        <span style={{ color: p.open_rate >= 20 ? '#10b981' : p.open_rate >= 10 ? '#f59e0b' : '#ef4444' }}>
-                          {p.open_rate.toFixed(1)}%
-                        </span>
-                      </td>
-                      <td className="ii-td-time">{timeAgo(p.last_open_at || p.last_sent_at || p.updated_at)}</td>
-                      <td className="ii-td-time">{timeAgo(p.first_seen_at)}</td>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Inbox</th>
+                      <th style={thStyle}>Provider</th>
+                      <th style={{ ...thStyle, cursor: 'pointer' }} onClick={() => handleSort('engagement')} title="0–100 engagement score">
+                        Engagement <FontAwesomeIcon icon={getSortIcon('engagement')} style={{ fontSize: 10, opacity: 0.7 }} />
+                      </th>
+                      <th style={thStyle}>Trend</th>
+                      <th style={{ ...numTh, cursor: 'pointer' }} onClick={() => handleSort('sent')}>
+                        Sent <FontAwesomeIcon icon={getSortIcon('sent')} style={{ fontSize: 10, opacity: 0.7 }} />
+                      </th>
+                      <th style={{ ...numTh, cursor: 'pointer' }} onClick={() => handleSort('opens')}>
+                        Opens <FontAwesomeIcon icon={getSortIcon('opens')} style={{ fontSize: 10, opacity: 0.7 }} />
+                      </th>
+                      <th style={{ ...numTh, cursor: 'pointer' }} onClick={() => handleSort('clicks')}>
+                        Clicks <FontAwesomeIcon icon={getSortIcon('clicks')} style={{ fontSize: 10, opacity: 0.7 }} />
+                      </th>
+                      <th style={numTh}>Open %</th>
+                      <th style={{ ...thStyle, cursor: 'pointer' }} onClick={() => handleSort('recent')}>
+                        Last Activity <FontAwesomeIcon icon={getSortIcon('recent')} style={{ fontSize: 10, opacity: 0.7 }} />
+                      </th>
+                      <th style={thStyle}>First Seen</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {profiles.map((p) => {
+                      const isActive = selectedDetail?.email === p.email;
+                      const ispColor = getISPColor(p.isp);
+                      return (
+                        <tr
+                          key={p.email}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => fetchDetail(p.email)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') fetchDetail(p.email); }}
+                          style={{ cursor: 'pointer', background: isActive ? colors.hover : undefined }}
+                        >
+                          <td style={tdStyle}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: scoreColor(p.engagement_score), flexShrink: 0 }} />
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ color: colors.text, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 240 }}>{p.email}</div>
+                                <div style={{ fontSize: 11, color: colors.textFaint, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {p.domain}
+                                  {managedAgentDomains.has(p.domain) && (
+                                    <span style={{ color: colors.indigo300, fontSize: 10 }} title="Managed mailbox provider agent active for this domain">
+                                      <FontAwesomeIcon icon={faRobot} /> Agent
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td style={tdStyle}>
+                            <Pill color={ispColor}>{p.isp || 'Other'}</Pill>
+                          </td>
+                          <td style={tdStyle}>
+                            <EngagementBand score={p.engagement_score} tier={p.engagement_tier} />
+                          </td>
+                          <td style={tdStyle}>
+                            <FontAwesomeIcon icon={getTrendIcon(p.engagement_trend)} style={{ color: getTrendColor(p.engagement_trend) }} title={p.engagement_trend} />
+                          </td>
+                          <td style={numTd}>{formatNumber(p.total_sent)}</td>
+                          <td style={numTd}>{formatNumber(p.total_opens)}</td>
+                          <td style={numTd}>{formatNumber(p.total_clicks)}</td>
+                          <td style={{ ...numTd, color: openRateColor(p.open_rate) }}>{p.open_rate.toFixed(1)}%</td>
+                          <td style={{ ...tdStyle, color: colors.textMuted, whiteSpace: 'nowrap' }}>{timeAgo(p.last_open_at || p.last_sent_at || p.updated_at)}</td>
+                          <td style={{ ...tdStyle, color: colors.textMuted, whiteSpace: 'nowrap' }}>{timeAgo(p.first_seen_at)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
               {/* Pagination */}
-              <div className="ii-pagination">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, padding: '12px 16px', borderTop: `1px solid ${colors.hairline}` }}>
                 <button
                   disabled={page <= 1}
                   onClick={() => setPage(p => Math.max(1, p - 1))}
-                  className="ii-page-btn"
+                  style={{ ...btnStyle, opacity: page <= 1 ? 0.4 : 1, cursor: page <= 1 ? 'not-allowed' : 'pointer' }}
                 >
                   <FontAwesomeIcon icon={faChevronLeft} />
                 </button>
-                <span className="ii-page-info">
+                <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
                   Page {page} of {totalPages}
                 </span>
                 <button
                   disabled={page >= totalPages}
                   onClick={() => setPage(p => p + 1)}
-                  className="ii-page-btn"
+                  style={{ ...btnStyle, opacity: page >= totalPages ? 0.4 : 1, cursor: page >= totalPages ? 'not-allowed' : 'pointer' }}
                 >
                   <FontAwesomeIcon icon={faChevronRight} />
                 </button>
@@ -642,25 +701,23 @@ export const InboxProfiles: React.FC = () => {
             {detailLoading ? (
               <div className="ii-detail-loading">
                 <FontAwesomeIcon icon={faSpinner} spin size="2x" />
-                <p>Loading AI profile...</p>
+                <p>Loading profile…</p>
               </div>
             ) : (
               <>
                 {/* Profile Header */}
                 <div className="ii-detail-header">
-                  <div className="ii-detail-score-ring" style={{ '--score-color': getEngagementColor(selectedDetail.engagement_score), '--score-pct': `${selectedDetail.engagement_score}%` } as React.CSSProperties}>
+                  <div className="ii-detail-score-ring" style={{ '--score-color': scoreColor(selectedDetail.engagement_score), '--score-pct': `${selectedDetail.engagement_score}%` } as React.CSSProperties}>
                     <span className="ii-detail-score-num">{Math.round(selectedDetail.engagement_score)}</span>
                     <span className="ii-detail-score-label">Score</span>
                   </div>
                   <div className="ii-detail-identity">
                     <h3>{selectedDetail.email}</h3>
-                    <div className="ii-detail-badges">
-                      <span className="ii-isp-badge" style={{ background: getISPColor(detectISPFrontend(selectedDetail.domain)) + '22', color: getISPColor(detectISPFrontend(selectedDetail.domain)), borderColor: getISPColor(detectISPFrontend(selectedDetail.domain)) + '44' }}>
+                    <div className="ii-detail-badges" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Pill color={getISPColor(detectISPFrontend(selectedDetail.domain))}>
                         {detectISPFrontend(selectedDetail.domain)}
-                      </span>
-                      <span className={`ii-tier-badge ii-tier-${selectedDetail.engagement_tier}`}>
-                        <FontAwesomeIcon icon={getTierIcon(selectedDetail.engagement_tier)} /> {getTierLabel(selectedDetail.engagement_tier)}
-                      </span>
+                      </Pill>
+                      <EngagementBand score={selectedDetail.engagement_score} tier={selectedDetail.engagement_tier} showValue={false} />
                     </div>
                   </div>
                 </div>
@@ -837,9 +894,11 @@ export const InboxProfiles: React.FC = () => {
                       <FontAwesomeIcon icon={faRobot} />
                       <h4>AI Send Decision</h4>
                     </div>
-                    <div className="ii-decision-verdict">
-                      <FontAwesomeIcon icon={selectedDecision.should_send ? faCheck : faTimes} />
-                      <span>{selectedDecision.should_send ? 'SHOULD SEND' : 'DO NOT SEND'}</span>
+                    <div className="ii-decision-verdict" style={{ marginBottom: 10 }}>
+                      <Pill color={selectedDecision.should_send ? colors.success : colors.danger}>
+                        <FontAwesomeIcon icon={selectedDecision.should_send ? faCheck : faTimes} />
+                        {selectedDecision.should_send ? 'Should Send' : 'Do Not Send'}
+                      </Pill>
                     </div>
                     <div className="ii-decision-confidence">
                       <span>Confidence: {(selectedDecision.confidence * 100).toFixed(0)}%</span>

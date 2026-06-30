@@ -39,6 +39,34 @@ var audienceEqParams = []string{
 	"churned_dt", "list_id",
 }
 
+// isAudienceAbsentErr reports whether an Athena error means the audience Glue
+// table / partition simply isn't present in this deployment, or that a column
+// has the wrong physical type (the "three engagement scales" footgun, where
+// engagement_score lands as a STRING). Both are environment/data-shape
+// conditions, not bad user input, so handlers degrade them to a friendly empty
+// state (HTTP 200) instead of a hard 400 that reads as a broken screen.
+// Genuinely unexpected errors fall through and still surface as 400.
+func isAudienceAbsentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(m, "table_not_found"),
+		strings.Contains(m, "schema_not_found"),
+		strings.Contains(m, "entity_not_found"),
+		strings.Contains(m, "does not exist"),
+		strings.Contains(m, "not found"),
+		strings.Contains(m, "no such table"),
+		// Presto/Athena type errors from a string-typed numeric column.
+		strings.Contains(m, "type_mismatch"),
+		strings.Contains(m, "cannot be cast"),
+		strings.Contains(m, "cannot cast"):
+		return true
+	}
+	return false
+}
+
 // audienceEqFromQuery collects the non-empty equality-filter params.
 func audienceEqFromQuery(q map[string][]string) map[string]string {
 	eq := map[string]string{}
@@ -64,6 +92,12 @@ func (s *Server) HandleAudienceLakeStatus(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		if analytics.IsDisabledErr(err) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"enabled_read": false, "latest_dt": "", "rows": 0})
+			return
+		}
+		// Audience table not present yet → report "no snapshot" (enabled but
+		// empty) rather than 400, so the screen renders its empty state.
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"enabled_read": true, "latest_dt": "", "rows": 0})
 			return
 		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -109,6 +143,12 @@ func (s *Server) HandleAudienceLakeBreakdown(w http.ResponseWriter, r *http.Requ
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "rows": []interface{}{}})
 			return
 		}
+		// Missing audience table/partition (or a string-typed column) → degrade
+		// to a friendly empty state rather than a 400 that breaks the screen.
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"dt": "", "rows": []interface{}{}, "empty": true})
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -147,6 +187,12 @@ func (s *Server) HandleAudienceLakeBreakdown(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		if analytics.IsDisabledErr(err) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "rows": []interface{}{}})
+			return
+		}
+		// Table-absent or column-type Athena errors degrade to an empty payload
+		// (HTTP 200) so the Overview tab shows a clean empty state, not an error.
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"dt": dt, "rows": []interface{}{}, "empty": true})
 			return
 		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -196,6 +242,10 @@ func (s *Server) HandleAudienceLakeSourcePerformance(w http.ResponseWriter, r *h
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "rows": []interface{}{}})
 			return
 		}
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"audience_dt": "", "rows": []interface{}{}, "empty": true})
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -223,6 +273,10 @@ func (s *Server) HandleAudienceLakeSourcePerformance(w http.ResponseWriter, r *h
 	if err != nil {
 		if analytics.IsDisabledErr(err) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "rows": []interface{}{}})
+			return
+		}
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"audience_dt": dt, "rows": []interface{}{}, "empty": true})
 			return
 		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -271,6 +325,10 @@ func (s *Server) HandleAudienceLakeFirstTouch(w http.ResponseWriter, r *http.Req
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "rows": []interface{}{}})
 			return
 		}
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{"from": from, "to": to, "rows": []interface{}{}, "empty": true})
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -304,6 +362,13 @@ func (s *Server) HandleAudienceLakeMember(w http.ResponseWriter, r *http.Request
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "profiles": []interface{}{}, "events": []interface{}{}})
 			return
 		}
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"email": strings.ToLower(strings.TrimSpace(email)), "audience_dt": "",
+				"profiles": []interface{}{}, "events": []interface{}{}, "empty": true,
+			})
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -326,6 +391,13 @@ func (s *Server) HandleAudienceLakeMember(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		if analytics.IsDisabledErr(err) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"disabled": true, "profiles": []interface{}{}, "events": []interface{}{}})
+			return
+		}
+		if isAudienceAbsentErr(err) {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"email": strings.ToLower(strings.TrimSpace(email)), "audience_dt": dt,
+				"profiles": []interface{}{}, "events": []interface{}{}, "empty": true,
+			})
 			return
 		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

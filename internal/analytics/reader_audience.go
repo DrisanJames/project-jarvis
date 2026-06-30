@@ -367,7 +367,7 @@ func validateAudienceBreakdownFilter(f AudienceBreakdownFilter) ([]string, error
 //
 // SQL shape (validated literals only, via sqlStr):
 //
-//	SELECT <dims...>, COUNT(*) c, ROUND(AVG(engagement_score), 2) FROM audience
+//	SELECT <dims...>, COUNT(*) c, ROUND(AVG(TRY_CAST(engagement_score AS double)), 2) FROM audience
 //	WHERE dt = '<dt>' [AND <col> = '<val>'...]
 //	[AND acquired_dt >= '..'] [AND acquired_dt <= '..']
 //	[AND churned_dt <> '' AND churned_dt >= '..' AND churned_dt <= '..']
@@ -394,7 +394,11 @@ func buildAudienceBreakdownSQL(f AudienceBreakdownFilter) (string, error) {
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	b.WriteString(strings.Join(dims, ", "))
-	b.WriteString(", COUNT(*) c, ROUND(AVG(engagement_score), 2) FROM ")
+	// TRY_CAST guards against engagement_score landing as a STRING in the Glue
+	// snapshot (the "three engagement scales" footgun): a bad cast yields NULL
+	// (ignored by AVG) instead of throwing an Athena type error that would 400
+	// the whole breakdown query.
+	b.WriteString(", COUNT(*) c, ROUND(AVG(TRY_CAST(engagement_score AS double)), 2) FROM ")
 	b.WriteString(audienceTable)
 	b.WriteString(" WHERE dt = ")
 	b.WriteString(sqlStr(f.Dt))

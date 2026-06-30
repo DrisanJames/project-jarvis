@@ -44,7 +44,10 @@ import (
 // VersionPerformanceSnapshot is bumped on every behaviour change (testing.mdc).
 //
 //	1.0 (2026-06-21): initial — domain + offer current-day snapshot.
-const VersionPerformanceSnapshot = "1.0"
+//	1.1 (2026-06-29): offer view falls back to the campaign name-derived offer
+//	    (clicks + volume) when mailing_offer_slug_map is empty/sparse, so the
+//	    Offer breakdown is populated instead of collapsing to (unattributed).
+const VersionPerformanceSnapshot = "1.1"
 
 const perfSnapshotTimeout = 8 * time.Second
 
@@ -408,6 +411,35 @@ func (s *AdvancedMailingService) snapshotByOffer(ctx context.Context, orgID stri
 	label := map[string]string{}  // offer key -> display label
 	label[unattribKey] = "(unattributed)"
 
+	// campFallback maps a campaign -> an offer identity DERIVED FROM THE CAMPAIGN
+	// NAME suffix (the operator " - <Offer>" convention). It is the graceful
+	// degrade for deployments where mailing_offer_slug_map is empty/sparse: with
+	// no slug dictionary the click + volume loops would otherwise collapse EVERY
+	// row into (unattributed) and the Offer view would look broken. Resolving
+	// both loops through the same name-derived key keeps clicks and volume on the
+	// SAME offer row. Loaded once for today-MT campaigns; "name:" prefix keeps
+	// these keys from colliding with everflow/drip keys.
+	campFallback := map[string]offerMeta{}
+	fbSQL := `
+		SELECT c.id::text, COALESCE(c.name,'')
+		FROM mailing_campaigns c
+		WHERE c.organization_id = $1::uuid
+		  AND c.scheduled_at >= ` + todayMT
+	if rows, err := s.db.QueryContext(ctx, fbSQL, orgID); err != nil {
+		notes = append(notes, "offer name fallback unavailable: "+err.Error())
+	} else {
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				continue
+			}
+			if suffix := nameSuffixOffer(name); suffix != "" {
+				campFallback[id] = offerMeta{key: "name:" + strings.ToLower(suffix), label: suffix}
+			}
+		}
+		rows.Close()
+	}
+
 	// campaignToOffer maps a campaign -> the offer its clicks landed on, so the
 	// VOLUME loop below can follow the SAME offer as the clicks for any campaign
 	// that got >=1 mapped click. This closes the "clicks with no volume" gap
@@ -445,6 +477,17 @@ func (s *AdvancedMailingService) snapshotByOffer(ctx context.Context, orgID stri
 			key := unattribKey
 			if slug != "" {
 				if om, ok := slugToOffer[slug]; ok {
+					key = om.key
+					if _, ok := label[key]; !ok {
+						label[key] = om.label
+					}
+				}
+			}
+			// Graceful degrade: no slug-map hit (empty dictionary or unmapped
+			// slug) — attribute the click to the campaign's name-derived offer so
+			// it lands on a real offer row instead of (unattributed).
+			if key == unattribKey {
+				if om, ok := campFallback[camp]; ok {
 					key = om.key
 					if _, ok := label[key]; !ok {
 						label[key] = om.label
@@ -570,6 +613,15 @@ func (s *AdvancedMailingService) snapshotByOffer(ctx context.Context, orgID stri
 						key = k
 						if _, ok := label[key]; !ok {
 							label[key] = lbl
+						}
+					} else if om, ok := campFallback[campID]; ok {
+						// No slug-map / everflow label match — fall back to the
+						// name-derived offer so this campaign's volume lands on the
+						// same offer row its clicks did (keeps the Offer view
+						// populated when mailing_offer_slug_map is empty).
+						key = om.key
+						if _, ok := label[key]; !ok {
+							label[key] = om.label
 						}
 					}
 				}

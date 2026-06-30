@@ -34,6 +34,8 @@ import {
   Tooltip as RechartsTooltip,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
+import { colors } from '../shared/theme';
+import { EmptyState, SectionError, PortalKeyframes } from '../shared/ui';
 
 const PAGE_VERSION = '3.0';
 
@@ -71,6 +73,10 @@ interface CadenceKPIResponse {
   engaged_sample_total: number;
   method_note: string;
   isps: CadenceISPKPI[];
+  // Partial / degraded-response signalling (backend may omit on older builds).
+  computing?: boolean;
+  engage_available?: boolean;
+  partial_errors?: string[];
 }
 
 interface ISPDoctrine {
@@ -109,22 +115,28 @@ interface LegacyResponse {
 }
 
 // ─── Style tokens ───────────────────────────────────────────────────────────
+//
+// Mapped onto the canonical indigo design system (shared/theme.ts) so this
+// screen matches the Delivery Queue gold standard. The local C.* names are kept
+// (the JSX below references them throughout) but now resolve to theme tokens —
+// note the hex accents (indigo/green/amber/red/heading) feed the `${color}NN`
+// alpha-suffix trick used in the styles, so they must stay hex.
 
 const C = {
-  bgDeep:     '#0a0e1a',
-  bgPanel:    '#0f1424',
-  bgTable:    'rgba(15,30,60,0.35)',
-  border:     'rgba(255,255,255,0.06)',
-  borderStrong: 'rgba(255,255,255,0.12)',
-  heading:    '#dbeafe',
-  text:       '#e2e8f0',
-  textSec:    '#94a3b8',
-  textMuted:  '#64748b',
-  indigo:     '#818cf8',
-  indigoDeep: '#6366f1',
-  green:      '#34d399',
-  amber:      '#f59e0b',
-  red:        '#ef4444',
+  bgDeep:       colors.appBgSolid,         // deep slate-blue page
+  bgPanel:      colors.panelBgSolid,       // solid panel (inputs, tooltips)
+  bgTable:      colors.panelBg,            // translucent slate-blue surface
+  border:       colors.divider,            // indigo-tinted hairline
+  borderStrong: colors.panelBorderStrong,  // stronger indigo border
+  heading:      colors.heading,            // #dbeafe
+  text:         colors.text,
+  textSec:      colors.textMuted,
+  textMuted:    colors.textFaint,
+  indigo:       colors.indigo400,          // #818cf8
+  indigoDeep:   colors.indigo500,          // #6366f1
+  green:        colors.success,            // #22c55e
+  amber:        colors.warning,            // #f59e0b
+  red:          colors.danger,             // #ef4444
 };
 
 const ISP_LABEL: Record<string, string> = {
@@ -208,10 +220,16 @@ const RangeBar: React.FC<{ p25: number; p50: number; p75: number; max: number; c
 
 const MIN_CONVERTERS = 5;
 
-function ispHeadline(r: CadenceISPKPI): string {
+function ispHeadline(r: CadenceISPKPI, engageComputing: boolean): string {
   const name = label(r.isp);
   if (r.converters >= MIN_CONVERTERS) {
+    if (engageComputing) {
+      return `${name} converts at message ~${Math.round(r.msgs_to_convert_p50)} (p50); engagement cadence still computing (large dataset). ${fmt2(r.conversion_per_10k_sends)} conversions per 10k sends.`;
+    }
     return `${name} converts at message ~${Math.round(r.msgs_to_convert_p50)} (p50), engages at ~${Math.round(r.msgs_to_engage_p50)}; ${fmt2(r.conversion_per_10k_sends)} conversions per 10k sends.`;
+  }
+  if (engageComputing) {
+    return `${name}: engagement cadence still computing (large dataset)…`;
   }
   if (r.engaged_sample > 0) {
     return `${name} engages at message ~${Math.round(r.msgs_to_engage_p50)} (p50); only ${r.converters} converter${r.converters === 1 ? '' : 's'} in window — convert read not yet stable.`;
@@ -336,16 +354,24 @@ export const AudienceCadenceByCell: React.FC = () => {
   if (loading && !data) {
     return (
       <div style={styles.loadingShell}>
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading cadence KPIs…
+        <PortalKeyframes />
+        <FontAwesomeIcon icon={faSpinner} spin style={{ color: C.indigo }} /> Loading cadence KPIs…
       </div>
     );
   }
   if (error || !data) {
     return (
       <div style={styles.errorShell}>
-        <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
-        {error || 'No data available.'}
-        <button style={styles.btn} onClick={() => fetchKPIs(days)}>Retry</button>
+        {error ? (
+          <div style={{ width: '100%', maxWidth: 520 }}>
+            <SectionError label="Audience cadence KPIs" error={error} />
+          </div>
+        ) : (
+          <EmptyState icon={faChartLine} title="No cadence data yet" hint="No KPI sample is available for this window." />
+        )}
+        <button style={styles.btn} onClick={() => fetchKPIs(days)}>
+          <FontAwesomeIcon icon={faSyncAlt} /> Retry
+        </button>
       </div>
     );
   }
@@ -362,8 +388,21 @@ export const AudienceCadenceByCell: React.FC = () => {
   const maxConvertP75 = Math.max(1, ...data.isps.map((r) => r.msgs_to_convert_p75));
   const headline = globalHeadline(data.isps);
 
+  // The messages-to-first-engagement cohort scan is the heavy section; the
+  // backend reports engage_available=false (with computing=true) while it is
+  // still being computed on a large dataset. Show a friendly placeholder for
+  // the engage columns instead of a hard error or misleading zeros.
+  const engageComputing = data.engage_available === false;
+  // Small inline indigo "computing" chip reused in the engage cells.
+  const computingChip = (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: C.indigo, fontSize: 11 }}>
+      <FontAwesomeIcon icon={faSpinner} spin /> computing…
+    </span>
+  );
+
   return (
     <div style={styles.page}>
+      <PortalKeyframes />
       {/* ── Header ── */}
       <div style={styles.header}>
         <div>
@@ -402,6 +441,16 @@ export const AudienceCadenceByCell: React.FC = () => {
         <div style={styles.headlineStrip}>
           <FontAwesomeIcon icon={faChartLine} style={{ color: C.green, marginRight: 8 }} />
           {headline}
+        </div>
+      )}
+
+      {/* ── Computing (partial / degraded) banner ── */}
+      {engageComputing && (
+        <div style={styles.computingStrip}>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ color: C.indigo, marginRight: 8 }} />
+          Engagement cadence is <strong>still computing</strong> over a large dataset — the
+          messages-to-engage distribution will appear once the scan completes. Conversion,
+          trend, and send KPIs below are live in the meantime.
         </div>
       )}
 
@@ -449,11 +498,12 @@ export const AudienceCadenceByCell: React.FC = () => {
                         )}
                       </div>
                       <div style={{ fontSize: 10.5, color: C.textSec, maxWidth: 360, marginTop: 2 }}>
-                        {r ? ispHeadline(r) : 'No reportable sample in window — best practices only.'}
+                        {r ? ispHeadline(r, engageComputing) : 'No reportable sample in window — best practices only.'}
                       </div>
                     </td>
                     <td style={{ ...styles.td, textAlign: 'left' }}>
-                      {r && r.engaged_sample > 0 ? (
+                      {engageComputing ? computingChip
+                        : r && r.engaged_sample > 0 ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <span style={{ fontWeight: 700, color: C.indigo, minWidth: 30, textAlign: 'right' }}>
                             {fmt1(r.msgs_to_engage_p50)}
@@ -471,7 +521,9 @@ export const AudienceCadenceByCell: React.FC = () => {
                     <td style={{ ...styles.tdNum, color: r && r.conversion_per_10k_sends > 0 ? C.amber : C.textMuted, fontWeight: 600 }}>
                       {r && r.window_sends > 0 ? fmt2(r.conversion_per_10k_sends) : '—'}
                     </td>
-                    <td style={styles.tdNum}>{r ? fmt(r.engaged_sample) : '—'}</td>
+                    <td style={styles.tdNum}>
+                      {engageComputing ? <FontAwesomeIcon icon={faSpinner} spin style={{ color: C.indigo }} /> : r ? fmt(r.engaged_sample) : '—'}
+                    </td>
                     <td style={{ ...styles.tdNum, color: r && r.converters >= MIN_CONVERTERS ? C.text : C.textMuted }}>
                       {r ? fmt(r.converters) : '—'}
                     </td>
@@ -522,11 +574,19 @@ export const AudienceCadenceByCell: React.FC = () => {
                                   <tbody>
                                     <tr>
                                       <td style={{ ...styles.miniTd, textAlign: 'left', color: C.indigo, fontWeight: 600 }}>Messages → first engagement</td>
-                                      <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_p25)}</td>
-                                      <td style={{ ...styles.miniTd, fontWeight: 700, color: C.heading }}>{fmt1(r.msgs_to_engage_p50)}</td>
-                                      <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_p75)}</td>
-                                      <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_avg)}</td>
-                                      <td style={styles.miniTd}>{fmt(r.engaged_sample)}</td>
+                                      {engageComputing ? (
+                                        <td style={{ ...styles.miniTd, textAlign: 'center', color: C.indigo }} colSpan={5}>
+                                          {computingChip}
+                                        </td>
+                                      ) : (
+                                        <>
+                                          <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_p25)}</td>
+                                          <td style={{ ...styles.miniTd, fontWeight: 700, color: C.heading }}>{fmt1(r.msgs_to_engage_p50)}</td>
+                                          <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_p75)}</td>
+                                          <td style={styles.miniTd}>{fmt1(r.msgs_to_engage_avg)}</td>
+                                          <td style={styles.miniTd}>{fmt(r.engaged_sample)}</td>
+                                        </>
+                                      )}
                                     </tr>
                                     <tr>
                                       <td style={{ ...styles.miniTd, textAlign: 'left', color: C.green, fontWeight: 600 }}>Messages → conversion</td>
@@ -541,7 +601,9 @@ export const AudienceCadenceByCell: React.FC = () => {
                                 <div style={{ marginTop: 10 }}>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                                     <span style={{ fontSize: 11, color: C.textSec, minWidth: 64 }}>engage</span>
-                                    <RangeBar p25={r.msgs_to_engage_p25} p50={r.msgs_to_engage_p50} p75={r.msgs_to_engage_p75} max={Math.max(maxEngageP75, maxConvertP75)} color={C.indigo} />
+                                    {engageComputing
+                                      ? computingChip
+                                      : <RangeBar p25={r.msgs_to_engage_p25} p50={r.msgs_to_engage_p50} p75={r.msgs_to_engage_p75} max={Math.max(maxEngageP75, maxConvertP75)} color={C.indigo} />}
                                   </div>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                     <span style={{ fontSize: 11, color: C.textSec, minWidth: 64 }}>convert</span>
@@ -753,7 +815,7 @@ export const AudienceCadenceByCell: React.FC = () => {
 
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    background: C.bgDeep,
+    background: colors.appBg,
     minHeight: '100%',
     padding: 24,
     color: C.text,
@@ -805,6 +867,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     color: C.heading,
     fontWeight: 600,
+    marginBottom: 10,
+  },
+  computingStrip: {
+    background: `${C.indigoDeep}14`,
+    border: `1px solid ${C.indigoDeep}44`,
+    borderRadius: 8,
+    padding: '10px 14px',
+    fontSize: 12.5,
+    color: C.heading,
+    lineHeight: 1.5,
     marginBottom: 10,
   },
   captionStrip: {

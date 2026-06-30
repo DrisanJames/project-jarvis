@@ -1,0 +1,51 @@
+-- Migration 051: functional index on mailing_message_log (LOWER(email), sent_at DESC)
+-- ============================================================================
+-- WHY THIS EXISTS
+--   The Send Frequency / Audience Cadence screen
+--   (GET /api/mailing/audience-cadence/kpis) runs a per-subscriber join in its
+--   "messages-to-first-engagement" query (internal/api/audience_cadence_kpis.go,
+--   qEngage) that matches the sampled cohort against the send log via
+--       LOWER(m.email) = c.email   ON mailing_message_log
+--   Without a functional index on LOWER(email) that join degrades to repeated
+--   sequential scans over the ~13M-row mailing_message_log heap. Under prod load
+--   it overruns the handler's 60s budget, QueryContext returns
+--   context-deadline-exceeded, and the screen 500s with
+--   {"error":"messages-to-engage query failed"}. The same index is the dominant
+--   read amplifier called out in the 2026-06-09 IO-saturation incident.
+--
+--   The index is ALSO declared in cmd/server/main.go's concurrentIndexSpecs
+--   (idx_message_log_lower_email_sent), but that builder only fires inside a
+--   "calm IO window" (ensureConcurrentIndexes, io_wait_backends < 8). On a busy
+--   production primary that window never opens, so the index never gets built
+--   and the 500 persists. This migration is the operator-applied escape hatch.
+--
+-- ============================================================================
+-- !! IMPORTANT — APPLY OUT-OF-BAND (NOT through cmd/migrate) !!
+--
+--   CREATE INDEX CONCURRENTLY cannot run inside a transaction block, and this
+--   repo's file-migration runner (cmd/migrate/main.go) wraps EVERY .sql file in
+--   a single db.Begin()/tx.Exec()/tx.Commit() transaction. If this file is run
+--   through `cmd/migrate`, Postgres rejects it with:
+--       ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+--   (the runner logs the error and moves on — the index is NOT created).
+--
+--   CONCURRENTLY is required (not a plain CREATE INDEX) because a blocking build
+--   on a ~13M-row table would hold a lock against the live send path. So this
+--   migration is intentionally NOT applied by the standard runner. An operator
+--   applies it out-of-band, in autocommit, on a dedicated connection, e.g.:
+--
+--       psql "$DATABASE_URL" -c "SET statement_timeout = 0;" \
+--         -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_lower_email_sent \
+--             ON mailing_message_log (LOWER(email), sent_at DESC);"
+--
+--   It is idempotent (IF NOT EXISTS): safe to re-run, and a no-op once the
+--   concurrentIndexSpecs builder eventually lands the same index. If a prior
+--   CONCURRENTLY attempt was interrupted it can leave an INVALID index; drop it
+--   first (DROP INDEX IF EXISTS idx_message_log_lower_email_sent) then re-run.
+--
+--   Until the index exists the handler now degrades gracefully (HTTP 200 +
+--   "computing" partial payload) instead of 500ing, so the screen stays usable.
+-- ============================================================================
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_lower_email_sent
+  ON mailing_message_log (LOWER(email), sent_at DESC);

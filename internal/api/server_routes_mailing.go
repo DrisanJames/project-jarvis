@@ -857,6 +857,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// === ENTERPRISE SEGMENTATION ENGINE ===
 			segmentationAPI := NewSegmentationAPI(db)
 			segmentationAPI.RegisterRoutes(r)
+			r.Get("/v2/segments/engagement-growth", segmentationAPI.HandleEngagementGrowth) // brand-grouped engagement growth board (read-only)
 
 			// === SEGMENT CLEANUP & HYGIENE ===
 			segmentCleanupAPI := NewSegmentCleanupAPI(db)

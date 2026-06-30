@@ -22,11 +22,24 @@ import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
   Tooltip, Legend, CartesianGrid,
 } from 'recharts';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../../shared/apiFetch';
 import {
   C, panelStyle, sectionTitleStyle, thStyle, tdStyle, btnStyle, inputStyle,
   Loading, ErrorState, fmtInt,
 } from './ui';
+// Indigo design-system tokens (gold standard = OutboxDashboard). Aliased so they
+// don't collide with the cyan `./ui` tokens the other sections in this file use.
+import {
+  panelStyle as iPanel,
+  panelTitleStyle as iTitle,
+  thStyle as iTh,
+  tdStyle as iTd,
+  numTd as iNumTd,
+  numTh as iNumTh,
+  colors as iC,
+} from '../../shared/theme';
 
 // ── Types (mirror internal/api/send_baselines.go JSON) ──────────────────────
 
@@ -574,21 +587,89 @@ interface AllDomainsProps {
   onSelectDomain: (canonical: string) => void;
 }
 
-export const AllDomainsBaselines: React.FC<AllDomainsProps> = ({ data, loading, error, onRetry, onSelectDomain }) => {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+// One rolled-up row per canonical sending domain; the per-ISP BaselineRows
+// become its expandable detail (mirrors the OutboxDashboard ISP→VMTA drill-down).
+interface DomainRollup {
+  canonical: string;
+  rows: BaselineRow[];          // per-ISP rows feeding this domain
+  ispCount: number;             // distinct mailbox providers
+  totalBaseline: number;        // Σ baseline_daily_sends
+  recentOpen: number;           // volume-weighted recent open rate
+  priorOpen: number;            // volume-weighted prior open rate
+  hard: number;                 // volume-weighted recent hard-bounce rate
+  soft: number;                 // volume-weighted recent soft-bounce rate
+  complaint: number;            // volume-weighted recent complaint rate
+  verdict: Verdict;             // worst verdict across the domain's ISP pairs
+}
 
-  const toggle = (key: string) => {
-    setExpanded(prev => {
+export const AllDomainsBaselines: React.FC<AllDomainsProps> = ({ data, loading, error, onRetry, onSelectDomain }) => {
+  // Two independent expansion sets: domains (the rollup rows) and ISP rows
+  // (the verdict-reasons drill-down nested inside an expanded domain).
+  const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
+  const [expandedIsp, setExpandedIsp] = useState<Set<string>>(new Set());
+
+  const toggleDomain = (key: string) =>
+    setExpandedDomains(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
-  };
+  const toggleIsp = (key: string) =>
+    setExpandedIsp(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
 
-  if (loading) return <div style={panelStyle}><Loading label="Loading baselines…" /></div>;
+  // Group rows by canonical domain (folds em.+m. routes together, same as the
+  // rail), then aggregate. Rates are volume-weighted by recent send volume
+  // (falling back to baseline_daily_sends when a pair has no recent sends);
+  // baseline/day is a straight sum. Worst-verdict-wins per domain.
+  const rollups = useMemo<DomainRollup[]>(() => {
+    const byDomain = new Map<string, BaselineRow[]>();
+    for (const r of data?.rows ?? []) {
+      const key = canonicalDomain(r.sending_domain);
+      const list = byDomain.get(key);
+      if (list) list.push(r); else byDomain.set(key, [r]);
+    }
+
+    const wavg = (rows: BaselineRow[], pick: (r: BaselineRow) => number, weight: (r: BaselineRow) => number): number => {
+      let num = 0, den = 0;
+      for (const r of rows) {
+        const w = weight(r);
+        num += pick(r) * w;
+        den += w;
+      }
+      return den > 0 ? num / den : 0;
+    };
+    const recentW = (r: BaselineRow) => (r.recent.sends > 0 ? r.recent.sends : r.baseline_daily_sends);
+    const priorW = (r: BaselineRow) => (r.prior.sends > 0 ? r.prior.sends : r.baseline_daily_sends);
+
+    const out: DomainRollup[] = [];
+    for (const [canonical, rows] of byDomain) {
+      out.push({
+        canonical,
+        rows: [...rows].sort((a, b) =>
+          VERDICT_RANK[a.verdict] - VERDICT_RANK[b.verdict] || b.baseline_daily_sends - a.baseline_daily_sends),
+        ispCount: new Set(rows.map(r => r.isp)).size,
+        totalBaseline: rows.reduce((s, r) => s + r.baseline_daily_sends, 0),
+        recentOpen: wavg(rows, r => r.recent.human_open_rate, recentW),
+        priorOpen: wavg(rows, r => r.prior.human_open_rate, priorW),
+        hard: wavg(rows, r => r.recent.hard_bounce_rate, recentW),
+        soft: wavg(rows, r => r.recent.soft_bounce_rate, recentW),
+        complaint: wavg(rows, r => r.recent.complaint_rate, recentW),
+        verdict: worstVerdict(rows.map(r => r.verdict)) ?? 'MAINTAIN',
+      });
+    }
+    // Surface the domains that need attention first: worst verdict, then volume.
+    return out.sort((a, b) =>
+      VERDICT_RANK[a.verdict] - VERDICT_RANK[b.verdict] || b.totalBaseline - a.totalBaseline);
+  }, [data]);
+
+  if (loading) return <div style={iPanel}><Loading label="Loading baselines…" /></div>;
   if (error) {
     return (
-      <div style={panelStyle}>
+      <div style={iPanel}>
         <ErrorState message={`Failed to load baselines: ${error}`} onRetry={onRetry} />
       </div>
     );
@@ -596,10 +677,12 @@ export const AllDomainsBaselines: React.FC<AllDomainsProps> = ({ data, loading, 
   if (!data) return null;
 
   return (
-    <div style={panelStyle}>
+    <div style={iPanel}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>All domains — baselines &amp; verdicts</div>
-        <span style={{ fontSize: 11.5, color: C.muted }}>{data.window_days}d window · click a row for verdict reasons</span>
+        <h3 style={iTitle}>All domains — baselines &amp; verdicts</h3>
+        <span style={{ fontSize: 11.5, color: iC.textMuted }}>
+          {data.window_days}d window · click a domain to expand its mailbox providers
+        </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 14 }}>
           {([
             ['DECREASE', data.summary.decrease],
@@ -617,66 +700,129 @@ export const AllDomainsBaselines: React.FC<AllDomainsProps> = ({ data, loading, 
         <table style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
             <tr>
-              <th style={thStyle}>Domain</th>
-              <th style={thStyle}>Provider</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Baseline /day</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Recent open</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Prior open</th>
-              <th style={{ ...thStyle, textAlign: 'right', color: C.danger }}>Hard</th>
-              <th style={{ ...thStyle, textAlign: 'right', color: C.warning }}>Soft</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Complaints</th>
-              <th style={thStyle}>Verdict</th>
+              <th style={iTh}>Domain</th>
+              <th style={iTh}>Providers</th>
+              <th style={iNumTh}>Baseline /day</th>
+              <th style={iNumTh}>Recent open</th>
+              <th style={iNumTh}>Prior open</th>
+              <th style={{ ...iNumTh, color: iC.dangerText }}>Hard</th>
+              <th style={{ ...iNumTh, color: iC.warningText }}>Soft</th>
+              <th style={iNumTh}>Complaints</th>
+              <th style={iTh}>Verdict</th>
             </tr>
           </thead>
           <tbody>
-            {data.rows.map(r => {
-              const key = `${r.sending_domain}|${r.isp}`;
-              const isOpen = expanded.has(key);
+            {rollups.map(d => {
+              const isOpen = expandedDomains.has(d.canonical);
               return (
-                <React.Fragment key={key}>
-                  <tr onClick={() => toggle(key)} style={{ cursor: 'pointer' }} title="Click for verdict reasons">
-                    <td style={{ ...tdStyle, fontWeight: 600 }}>
+                <React.Fragment key={d.canonical}>
+                  <tr
+                    onClick={() => toggleDomain(d.canonical)}
+                    title="Click to expand mailbox providers"
+                    style={{ cursor: 'pointer', background: isOpen ? iC.hover : undefined }}
+                  >
+                    <td style={{ ...iTd, fontWeight: 600, color: iC.heading }}>
+                      <FontAwesomeIcon
+                        icon={isOpen ? faChevronDown : faChevronRight}
+                        style={{ color: iC.indigo500, fontSize: 11, marginRight: 7 }}
+                      />
                       <span
-                        onClick={e => { e.stopPropagation(); onSelectDomain(canonicalDomain(r.sending_domain)); }}
-                        title={`Open the ${canonicalDomain(r.sending_domain)} domain agent`}
-                        style={{ color: C.accent, cursor: 'pointer' }}
+                        onClick={e => { e.stopPropagation(); onSelectDomain(d.canonical); }}
+                        title={`Open the ${d.canonical} domain agent`}
+                        style={{ color: iC.indigo300, cursor: 'pointer' }}
                       >
-                        {r.sending_domain}
+                        {d.canonical}
                       </span>
                     </td>
-                    <td style={tdStyle}>{r.isp}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(Math.round(r.baseline_daily_sends))}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtRate(r.recent.human_open_rate)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: C.muted }}>{fmtRate(r.prior.human_open_rate)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: C.danger }}>{fmtRate(r.recent.hard_bounce_rate)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: C.warning }}>{fmtRate(r.recent.soft_bounce_rate)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtRate(r.recent.complaint_rate)}</td>
-                    <td style={tdStyle}><VerdictChip verdict={r.verdict} compact /></td>
+                    <td style={{ ...iTd, color: iC.textMuted }}>
+                      {d.ispCount} provider{d.ispCount === 1 ? '' : 's'}
+                    </td>
+                    <td style={iNumTd}>{fmtInt(Math.round(d.totalBaseline))}</td>
+                    <td style={iNumTd}>{fmtRate(d.recentOpen)}</td>
+                    <td style={{ ...iNumTd, color: iC.textMuted }}>{fmtRate(d.priorOpen)}</td>
+                    <td style={{ ...iNumTd, color: iC.dangerText }}>{fmtRate(d.hard)}</td>
+                    <td style={{ ...iNumTd, color: iC.warningText }}>{fmtRate(d.soft)}</td>
+                    <td style={iNumTd}>{fmtRate(d.complaint)}</td>
+                    <td style={iTd}><VerdictChip verdict={d.verdict} compact /></td>
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={9} style={{ ...tdStyle, background: 'rgba(10,15,26,0.5)' }}>
-                        <div style={{ padding: '4px 8px' }}>
-                          <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>
-                            Recent 7d: {fmtInt(r.recent.sends)} sends over {r.recent.days_with_sends} active days
-                            ({fmtInt(Math.round(r.recent.daily_avg_sends))}/day) ·
-                            Prior: {fmtInt(r.prior.sends)} sends ({fmtInt(Math.round(r.prior.daily_avg_sends))}/day) ·
-                            Clicks recent {fmtRate(r.recent.click_rate)} vs prior {fmtRate(r.prior.click_rate)}
-                          </div>
-                          <ul style={{ margin: 0, paddingLeft: 18 }}>
-                            {r.reasons.map((reason, i) => (
-                              <li key={i} style={{ color: verdictColors[r.verdict], fontSize: 12, whiteSpace: 'normal' }}>{reason}</li>
-                            ))}
-                          </ul>
-                        </div>
+                      <td colSpan={9} style={{ padding: 0, background: iC.appBgSolid }}>
+                        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                          <thead>
+                            <tr>
+                              <th style={{ ...iTh, paddingLeft: 28 }}>Provider</th>
+                              <th style={iNumTh}>Baseline /day</th>
+                              <th style={iNumTh}>Recent open</th>
+                              <th style={iNumTh}>Prior open</th>
+                              <th style={{ ...iNumTh, color: iC.dangerText }}>Hard</th>
+                              <th style={{ ...iNumTh, color: iC.warningText }}>Soft</th>
+                              <th style={iNumTh}>Complaints</th>
+                              <th style={iTh}>Verdict</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {d.rows.map(r => {
+                              const ispKey = `${r.sending_domain}|${r.isp}`;
+                              const ispOpen = expandedIsp.has(ispKey);
+                              const routeDiffers = canonicalDomain(r.sending_domain) !== r.sending_domain.toLowerCase();
+                              return (
+                                <React.Fragment key={ispKey}>
+                                  <tr
+                                    onClick={() => toggleIsp(ispKey)}
+                                    title="Click for verdict reasons"
+                                    style={{ cursor: 'pointer', background: ispOpen ? iC.hover : undefined }}
+                                  >
+                                    <td style={{ ...iTd, paddingLeft: 28 }}>
+                                      <FontAwesomeIcon
+                                        icon={ispOpen ? faChevronDown : faChevronRight}
+                                        style={{ color: iC.indigo400, fontSize: 10, marginRight: 7 }}
+                                      />
+                                      {r.isp}
+                                      {routeDiffers && (
+                                        <span style={{ color: iC.textFaint, fontSize: 11, marginLeft: 6 }}>({r.sending_domain})</span>
+                                      )}
+                                    </td>
+                                    <td style={iNumTd}>{fmtInt(Math.round(r.baseline_daily_sends))}</td>
+                                    <td style={iNumTd}>{fmtRate(r.recent.human_open_rate)}</td>
+                                    <td style={{ ...iNumTd, color: iC.textMuted }}>{fmtRate(r.prior.human_open_rate)}</td>
+                                    <td style={{ ...iNumTd, color: iC.dangerText }}>{fmtRate(r.recent.hard_bounce_rate)}</td>
+                                    <td style={{ ...iNumTd, color: iC.warningText }}>{fmtRate(r.recent.soft_bounce_rate)}</td>
+                                    <td style={iNumTd}>{fmtRate(r.recent.complaint_rate)}</td>
+                                    <td style={iTd}><VerdictChip verdict={r.verdict} compact /></td>
+                                  </tr>
+                                  {ispOpen && (
+                                    <tr>
+                                      <td colSpan={8} style={{ ...iTd, background: iC.panelBgSolid }}>
+                                        <div style={{ padding: '4px 8px 4px 28px' }}>
+                                          <div style={{ color: iC.textMuted, fontSize: 11, marginBottom: 4 }}>
+                                            Recent: {fmtInt(r.recent.sends)} sends over {r.recent.days_with_sends} active days
+                                            ({fmtInt(Math.round(r.recent.daily_avg_sends))}/day) ·
+                                            Prior: {fmtInt(r.prior.sends)} sends ({fmtInt(Math.round(r.prior.daily_avg_sends))}/day) ·
+                                            Clicks recent {fmtRate(r.recent.click_rate)} vs prior {fmtRate(r.prior.click_rate)}
+                                          </div>
+                                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                                            {r.reasons.map((reason, i) => (
+                                              <li key={i} style={{ color: verdictColors[r.verdict], fontSize: 12, whiteSpace: 'normal' }}>{reason}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </td>
                     </tr>
                   )}
                 </React.Fragment>
               );
             })}
-            {data.rows.length === 0 && (
-              <tr><td colSpan={9} style={{ ...tdStyle, color: C.muted, textAlign: 'center' }}>No scorecard history for this window.</td></tr>
+            {rollups.length === 0 && (
+              <tr><td colSpan={9} style={{ ...iTd, color: iC.textMuted, textAlign: 'center' }}>No scorecard history for this window.</td></tr>
             )}
           </tbody>
         </table>

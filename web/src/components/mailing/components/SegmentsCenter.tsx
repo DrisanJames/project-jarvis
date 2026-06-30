@@ -67,10 +67,43 @@ import {
   faSort,
   faSortUp,
   faSortDown,
+  faArrowTrendUp,
+  faArrowTrendDown,
+  faChartLine,
+  faTable,
+  faChevronDown,
+  faChevronRight,
+  faMinus,
+  faExclamationTriangle,
+  faEnvelopeOpen,
+  faHandPointer,
 } from '@fortawesome/free-solid-svg-icons';
 import { SEGMENT_CATEGORIES_BY_ID, SegmentCategoryMeta } from './segCategoryMetadata';
+import {
+  colors,
+  alpha,
+  panelStyle,
+  btnStyle,
+  cardGrid,
+  thStyle,
+  tdStyle,
+  numTh,
+  numTd,
+  tableStyle,
+} from '../shared/theme';
+import { Panel, Stat, SectionError, EmptyState, Pill, LivePill, PortalKeyframes } from '../shared/ui';
+import { usePolling } from '../shared/usePolling';
 
-export const SEGMENTS_PAGE_VERSION = '3.0';
+// PAGE_VERSION 3.1 (2026-06-29) — indigo redesign. The DEFAULT view is now the
+// brand-grouped Engagement Growth board (7D Openers + 30D Clickers per brand,
+// from GET /v2/segments/engagement-growth), modeled on the Delivery Queue's
+// Stat-tile layout. The full ~350-row operated catalog (search / refresh /
+// archive / export / request-segment) is preserved behind the "All Segments"
+// toggle. The whole screen is restyled onto the shared indigo tokens.
+export const SEGMENTS_PAGE_VERSION = '3.1';
+
+// Engagement growth board polls a cheap read (ledger point-read) — slow cadence.
+const GROWTH_POLL_MS = 30_000;
 
 // ============================================================================
 // TYPES
@@ -214,11 +247,317 @@ const memberCount = (s: SegmentRow): number =>
 const builtIso = (s: SegmentRow): string | null =>
   s.last_built_at ?? s.materialized_at ?? s.last_calculated_at ?? null;
 
+const fmtInt = (n: number | null | undefined): string =>
+  n == null || Number.isNaN(n) ? '0' : Math.round(n).toLocaleString();
+
+// ============================================================================
+// ENGAGEMENT GROWTH BOARD (default view)
+// ============================================================================
+//
+// Brand-grouped current size + last-build delta for the per-brand engagement
+// segments the operator actively mails. Data from GET
+// /v2/segments/engagement-growth (segmentation_handlers.go).
+//
+// GROWTH SIGNAL: last_delta_pct is the BUILD-TO-BUILD delta (current audience
+// vs the previous build) — NOT a time-windowed trend. There is no per-day
+// segment-size history table yet, so the UI is honest about this and labels it
+// "Δ since last build", never "7-day growth".
+// TODO(growth-history): a daily segment-size snapshot table would let this
+// board draw real trend lines.
+
+interface GrowthMetric {
+  segment_id: string;
+  name: string;
+  count: number;
+  delta_pct: number | null;
+  built_at: string | null;
+  source: 'materialized' | 'cached';
+  status?: string | null;
+}
+
+interface GrowthBrand {
+  brand: string;
+  seven_day_openers: GrowthMetric | null;
+  seven_day_clickers: GrowthMetric | null;
+  thirty_day_openers: GrowthMetric | null;
+  thirty_day_clickers: GrowthMetric | null;
+  cells: Record<string, GrowthMetric | null>;
+  segment_count: number;
+  headline_count: number;
+}
+
+interface GrowthResponse {
+  brands: GrowthBrand[];
+  brand_count: number;
+  segment_count: number;
+  growth_signal: string;
+  growth_label: string;
+  note: string;
+  generated_at: string;
+  api_version: string;
+}
+
+type GrowthSort = 'size' | 'growth';
+
+/** Cell order for the expandable per-brand detail table. */
+const GROWTH_CELL_ORDER = [
+  '7D Openers', '14D Openers', '30D Openers', '60D Openers',
+  '7D Clickers', '14D Clickers', '30D Clickers', '60D Clickers',
+];
+
+/** The strongest |delta| across a brand's cells — used for the "by growth" sort. */
+const brandPeakDelta = (b: GrowthBrand): number => {
+  let peak = -Infinity;
+  Object.values(b.cells).forEach((c) => {
+    if (c && c.delta_pct != null && c.delta_pct > peak) peak = c.delta_pct;
+  });
+  return peak === -Infinity ? -Infinity : peak;
+};
+
+// Build-to-build delta badge: up = green ▲, down = red ▼, flat = idle, none = —.
+const DeltaBadge: React.FC<{ pct: number | null | undefined; size?: 'sm' | 'lg' }> = ({ pct, size = 'sm' }) => {
+  const fontSize = size === 'lg' ? 13 : 11;
+  if (pct == null) {
+    return <span style={{ fontSize, color: colors.textFaint }} title="No previous build to compare against">— new</span>;
+  }
+  const up = pct > 0.05;
+  const down = pct < -0.05;
+  const color = up ? colors.success : down ? colors.danger : colors.idle;
+  const icon = up ? faArrowTrendUp : down ? faArrowTrendDown : faMinus;
+  return (
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}
+      title="Δ since last build (current audience size vs the previous build)"
+    >
+      <FontAwesomeIcon icon={icon} style={{ fontSize: fontSize - 1 }} />
+      {pct > 0 ? '+' : ''}{pct.toFixed(1)}%
+    </span>
+  );
+};
+
+// One headline metric tile (7D Openers / 30D Clickers): count + delta.
+const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric: GrowthMetric | null }> = ({ label, icon, metric }) => (
+  <div
+    style={{
+      flex: 1,
+      minWidth: 140,
+      background: alpha(colors.indigo500, '0d'),
+      border: `1px solid ${colors.hairline}`,
+      borderRadius: 8,
+      padding: '10px 12px',
+    }}
+  >
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <FontAwesomeIcon icon={icon} style={{ color: colors.indigo400 }} />
+      {label}
+    </div>
+    {metric ? (
+      <>
+        <div style={{ fontSize: 22, fontWeight: 800, color: colors.heading, fontVariantNumeric: 'tabular-nums', marginTop: 3 }}>
+          {fmtInt(metric.count)}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 3 }}>
+          <DeltaBadge pct={metric.delta_pct} />
+          <span style={{ fontSize: 10, color: colors.textFaint }} title={metric.source === 'materialized' ? `Built ${fmtAbs(metric.built_at)}` : 'Cached estimate — not yet built via ledger'}>
+            {metric.source === 'materialized' ? fmtRel(metric.built_at) : 'cached'}
+          </span>
+        </div>
+      </>
+    ) : (
+      <div style={{ fontSize: 13, color: colors.textFaint, marginTop: 8 }}>not configured</div>
+    )}
+  </div>
+);
+
+const BrandGrowthCard: React.FC<{ brand: GrowthBrand }> = ({ brand }) => {
+  const [open, setOpen] = useState(false);
+  const detailCells = GROWTH_CELL_ORDER.map((k) => [k, brand.cells[k]] as const).filter(([, c]) => c);
+  const extraCells = detailCells.filter(([k]) => !['7D Openers', '30D Clickers'].includes(k));
+  return (
+    <Panel accent={colors.indigo500}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.heading, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={brand.brand}>
+          {brand.brand}
+        </h3>
+        <Pill color={colors.indigo400} style={{ flexShrink: 0 }}>{brand.segment_count} seg</Pill>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <MetricTile label="7D Openers" icon={faEnvelopeOpen} metric={brand.seven_day_openers} />
+        <MetricTile label="30D Clickers" icon={faHandPointer} metric={brand.thirty_day_clickers} />
+      </div>
+      {extraCells.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            style={{
+              marginTop: 10,
+              background: 'transparent',
+              border: 'none',
+              color: colors.indigo300,
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: 0,
+            }}
+          >
+            <FontAwesomeIcon icon={open ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
+            {open ? 'Hide' : 'Show'} all windows ({detailCells.length})
+          </button>
+          {open && (
+            <table style={{ ...tableStyle, marginTop: 8 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Window</th>
+                  <th style={numTh}>Members</th>
+                  <th style={numTh}>Δ build</th>
+                  <th style={numTh}>Built</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detailCells.map(([k, c]) => (
+                  <tr key={k}>
+                    <td style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }}>{k}</td>
+                    <td style={numTd}>{fmtInt(c!.count)}</td>
+                    <td style={numTd}><DeltaBadge pct={c!.delta_pct} /></td>
+                    <td style={{ ...numTd, color: colors.textMuted }}>{c!.source === 'materialized' ? fmtRel(c!.built_at) : 'cached'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+};
+
+const GrowthBoard: React.FC<{
+  orgFetchRef: React.MutableRefObject<(url: string, options?: RequestInit) => Promise<Response>>;
+  onViewAll: () => void;
+  onRequestSegment: () => void;
+}> = ({ orgFetchRef, onViewAll, onRequestSegment }) => {
+  const [sort, setSort] = useState<GrowthSort>('size');
+
+  const growth = usePolling<GrowthResponse>(
+    useCallback(async (signal: AbortSignal) => {
+      const res = await orgFetchRef.current('/api/mailing/v2/segments/engagement-growth', { signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()) as GrowthResponse;
+    }, [orgFetchRef]),
+    GROWTH_POLL_MS,
+  );
+
+  const brands = useMemo(() => {
+    const list = growth.data?.brands ? [...growth.data.brands] : [];
+    if (sort === 'growth') {
+      list.sort((a, b) => brandPeakDelta(b) - brandPeakDelta(a));
+    } else {
+      list.sort((a, b) => b.headline_count - a.headline_count);
+    }
+    return list;
+  }, [growth.data, sort]);
+
+  // Aggregate hero tiles across all brands.
+  const totals = useMemo(() => {
+    let openers = 0, clickers = 0, segs = 0;
+    (growth.data?.brands ?? []).forEach((b) => {
+      if (b.seven_day_openers) openers += b.seven_day_openers.count;
+      if (b.thirty_day_clickers) clickers += b.thirty_day_clickers.count;
+      segs += b.segment_count;
+    });
+    return { openers, clickers, segs };
+  }, [growth.data]);
+
+  const sortBtn = (key: GrowthSort): React.CSSProperties => ({
+    ...btnStyle,
+    padding: '5px 10px',
+    fontSize: 11,
+    background: sort === key ? alpha(colors.indigo500, '33') : alpha(colors.indigo500, '14'),
+    color: sort === key ? colors.indigo200 : colors.textMuted,
+    borderColor: sort === key ? colors.panelBorderStrong : colors.panelBorder,
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Hero strip */}
+      <section style={{ ...panelStyle, display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', borderLeft: `4px solid ${colors.indigo500}` }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: colors.heading, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FontAwesomeIcon icon={faChartLine} style={{ color: colors.indigo400 }} />
+            Engagement Growth by Brand
+          </div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+            7D Openers &amp; 30D Clickers per brand. Growth is{' '}
+            <span style={{ color: colors.indigo200, fontWeight: 600 }}>Δ since last build</span>{' '}
+            (build-to-build), not a daily trend — no size history exists yet.
+          </div>
+        </div>
+        <Stat label="Brands" value={fmtInt(growth.data?.brand_count ?? 0)} color={colors.indigo200} />
+        <Stat label="Tracked segments" value={fmtInt(totals.segs)} color={colors.indigo200} />
+        <Stat label="Σ 7D Openers" value={fmtInt(totals.openers)} color={colors.successText} />
+        <Stat label="Σ 30D Clickers" value={fmtInt(totals.clickers)} color={colors.successText} />
+      </section>
+
+      {/* Controls */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Sort</span>
+          <button type="button" style={sortBtn('size')} onClick={() => setSort('size')}>Largest</button>
+          <button type="button" style={sortBtn('growth')} onClick={() => setSort('growth')}>Fastest growing</button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <LivePill live={growth.live} agoSeconds={growth.secondsSinceUpdate} />
+          <button type="button" style={btnStyle} onClick={growth.refresh} title="Refresh growth board">
+            <FontAwesomeIcon icon={faSyncAlt} style={{ marginRight: 6 }} />Refresh
+          </button>
+        </div>
+      </div>
+
+      {growth.error && (
+        <SectionError label="Engagement growth" error={growth.error} />
+      )}
+
+      {growth.loading && !growth.data ? (
+        <div style={{ textAlign: 'center', padding: 60, color: colors.textMuted }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading engagement growth…
+        </div>
+      ) : brands.length === 0 ? (
+        <Panel>
+          <EmptyState
+            icon={faChartLine}
+            title="No per-brand engagement segments yet"
+            hint="Request 7D-Openers / 30D-Clickers segments (scope = Brand) to start tracking engagement growth here."
+          />
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 4 }}>
+            <button type="button" style={{ ...btnStyle, background: alpha(colors.indigo500, '33') }} onClick={onRequestSegment}>
+              <FontAwesomeIcon icon={faRocket} style={{ marginRight: 6 }} />Request Segment
+            </button>
+            <button type="button" style={btnStyle} onClick={onViewAll}>
+              <FontAwesomeIcon icon={faTable} style={{ marginRight: 6 }} />Browse all segments
+            </button>
+          </div>
+        </Panel>
+      ) : (
+        <div style={cardGrid(320)}>
+          {brands.map((b) => <BrandGrowthCard key={b.brand} brand={b} />)}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ============================================================================
 // COMPONENT
 // ============================================================================
 
 export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgFetch, animateIn }) => {
+  // --- primary view: brand-grouped growth board (default) vs the full catalog -
+  const [view, setView] = useState<'growth' | 'all'>('growth');
+
   // --- list state -----------------------------------------------------------
   const [rows, setRows] = useState<SegmentRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -759,9 +1098,38 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
     fontWeight: 600,
     cursor: 'pointer',
     whiteSpace: 'nowrap',
-    background: selected ? 'rgba(0,229,255,0.18)' : 'rgba(75,85,99,0.25)',
-    color: selected ? '#67e8f9' : '#9ca3af',
-    border: selected ? '1px solid rgba(0,229,255,0.6)' : '1px solid rgba(156,163,175,0.3)',
+    background: selected ? alpha(colors.indigo500, '33') : alpha(colors.indigo500, '14'),
+    color: selected ? colors.indigo200 : colors.textMuted,
+    border: `1px solid ${selected ? colors.panelBorderStrong : colors.panelBorder}`,
+  });
+
+  // Inline indigo replacements for the old .action-btn / input / select CSS.
+  const actionBtnStyle: React.CSSProperties = {
+    background: alpha(colors.indigo500, '14'),
+    border: `1px solid ${colors.panelBorder}`,
+    color: colors.indigo200,
+    borderRadius: 6,
+    width: 30,
+    height: 30,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 12,
+  };
+  const viewToggleStyle = (active: boolean): React.CSSProperties => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    padding: '7px 16px',
+    borderRadius: 8,
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: 0.4,
+    background: active ? 'linear-gradient(135deg,#6366f1 0%,#818cf8 100%)' : 'transparent',
+    color: active ? '#fff' : colors.textMuted,
   });
 
   // ============================================================================
@@ -769,225 +1137,273 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
   // ============================================================================
 
   return (
-    <div className={`segments-manager ${animateIn ? 'animate-in' : ''}`}>
+    <div className={`segments-manager ${animateIn ? 'animate-in' : ''}`} style={{ color: colors.text }}>
+      <PortalKeyframes />
+
       {/* 1 — Header */}
-      <div className="manager-header">
-        <div className="header-left">
-          <h2><FontAwesomeIcon icon={faCrosshairs} /> Segments</h2>
-          <p>
-            {operatedCount.toLocaleString()} segments · {machineCount.toLocaleString()} auto-generated
-            <span style={{ marginLeft: 8, fontSize: '0.7rem', opacity: 0.6 }}>v{SEGMENTS_PAGE_VERSION}</span>
-          </p>
+      <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, color: colors.heading, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FontAwesomeIcon icon={faCrosshairs} style={{ color: colors.indigo400 }} />
+            Segments
+          </h1>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            {operatedCount.toLocaleString()} operated · {machineCount.toLocaleString()} auto-generated · v{SEGMENTS_PAGE_VERSION}
+          </div>
         </div>
-        <div className="header-actions">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button
-            className="btn btn-secondary"
-            onClick={() => fetchListRef.current(0, false)}
-            disabled={loading}
-            title="Reload the segment list"
-          >
-            <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh
-          </button>
-          <button
-            className="btn btn-secondary"
+            type="button"
+            style={btnStyle}
             onClick={() => onNavigate('create-segment')}
             title="Open the dynamic condition builder (funnel / suppression segments)"
           >
-            <FontAwesomeIcon icon={faPlus} /> New Dynamic Segment
+            <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} /> New Dynamic Segment
           </button>
           <button
-            className="btn btn-primary"
+            type="button"
+            style={{ ...btnStyle, background: alpha(colors.indigo500, '33'), color: colors.indigo200 }}
             onClick={() => { setReqError(null); setShowRequestModal(true); }}
             title="Request engagement segments from analytics (open/click × windows × scope)"
           >
-            <FontAwesomeIcon icon={faRocket} /> Request Segment
+            <FontAwesomeIcon icon={faRocket} style={{ marginRight: 6 }} /> Request Segment
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Toolbar: search + status */}
-      <div className="manager-toolbar">
-        <div className="search-box">
-          <FontAwesomeIcon icon={faSearch} />
-          <input
-            type="text"
-            placeholder="Find a segment by name…"
-            value={searchInput}
-            onChange={e => setSearchInput(e.target.value)}
-          />
-        </div>
-        <div className="filter-group">
-          <select
-            value={status}
-            onChange={e => setStatus(e.target.value as StatusFilter)}
-            title="Status filter (archived hidden by default)"
-          >
-            <option value="active">Active</option>
-            <option value="archived">Archived</option>
-            <option value="all">All Statuses</option>
-          </select>
-        </div>
-      </div>
-
-      {/* 2 — Category chips */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button type="button" style={chipStyle(category === 'all')} onClick={() => setCategory('all')}>
-          All ({operatedCount.toLocaleString()})
+      {/* View toggle: brand growth board (default) vs the full catalog */}
+      <div style={{ display: 'inline-flex', background: colors.panelBg, border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: 4, marginBottom: 16, gap: 4 }}>
+        <button type="button" style={viewToggleStyle(view === 'growth')} onClick={() => setView('growth')}>
+          <FontAwesomeIcon icon={faChartLine} /> Growth
         </button>
-        {chipCategories.map(([cat, n]) => (
-          <button
-            key={cat}
-            type="button"
-            style={chipStyle(category === cat)}
-            title={categoryTitle(cat)}
-            onClick={() => setCategory(cat)}
-          >
-            {categoryLabel(cat)} ({n.toLocaleString()})
-          </button>
-        ))}
-        {machineCount > 0 && (
-          <button
-            type="button"
-            style={{ ...chipStyle(category === MACHINE_CATEGORY), opacity: category === MACHINE_CATEGORY ? 1 : 0.65, marginLeft: 'auto' }}
-            title="Auto-generated segments from promotional waves. Hidden by default."
-            onClick={() => setCategory(MACHINE_CATEGORY)}
-          >
-            Auto-generated ({machineCount.toLocaleString()})
-          </button>
-        )}
+        <button type="button" style={viewToggleStyle(view === 'all')} onClick={() => setView('all')}>
+          <FontAwesomeIcon icon={faTable} /> All Segments
+        </button>
       </div>
 
-      {/* 3 — Table */}
-      {listError ? (
-        <div className="empty-state-large">
-          <FontAwesomeIcon icon={faTimes} />
-          <h3>Couldn’t load segments</h3>
-          <p>{listError}</p>
-          <button className="btn btn-primary" onClick={() => fetchListRef.current(0, false)}>Retry</button>
-        </div>
-      ) : loading ? (
-        <div className="loading-container">
-          <div className="loading-spinner"></div>
-          <p>Loading segments…</p>
-        </div>
-      ) : sortedRows.length === 0 ? (
-        <div className="empty-state-large">
-          <FontAwesomeIcon icon={faCrosshairs} />
-          <h3>No segments found</h3>
-          <p>{q || category !== 'all' || status !== 'active' ? 'Try adjusting the search, status or category filters.' : 'Request a recency segment or create a dynamic one to get started.'}</p>
-        </div>
+      {view === 'growth' ? (
+        <GrowthBoard
+          orgFetchRef={orgFetchRef}
+          onViewAll={() => setView('all')}
+          onRequestSegment={() => { setReqError(null); setShowRequestModal(true); }}
+        />
       ) : (
         <>
-          <table className="subscribers-table" style={{ tableLayout: 'fixed' }}>
-            <thead>
-              <tr>
-                <th style={{ width: '38%', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('name')}>
-                  Name <FontAwesomeIcon icon={sortIcon('name')} style={{ opacity: sortKey === 'name' ? 0.9 : 0.35 }} />
-                </th>
-                <th style={{ width: '12%' }}>Category</th>
-                <th style={{ width: '8%' }}>Type</th>
-                <th style={{ width: '11%', cursor: 'pointer', userSelect: 'none', textAlign: 'right' }} onClick={() => toggleSort('members')}>
-                  Members <FontAwesomeIcon icon={sortIcon('members')} style={{ opacity: sortKey === 'members' ? 0.9 : 0.35 }} />
-                </th>
-                <th style={{ width: '14%', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('built')}>
-                  Built <FontAwesomeIcon icon={sortIcon('built')} style={{ opacity: sortKey === 'built' ? 0.9 : 0.35 }} />
-                </th>
-                <th style={{ width: '17%' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRows.map(segment => {
-                const st = effectiveBuildStatus(segment);
-                const busy = refreshingId === segment.id || st === 'running';
-                const archived = segment.status === 'archived';
-                return (
-                  <tr key={segment.id}>
-                    <td style={{ opacity: archived ? 0.45 : 1 }}>
-                      <span
-                        title={segment.description || segment.name}
-                        style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}
-                      >
-                        {segment.name}
-                        {archived && <span style={{ marginLeft: 6, fontSize: '0.6rem', textTransform: 'uppercase', color: '#9ca3af' }}>archived</span>}
-                      </span>
-                    </td>
-                    <td>{renderCategoryBadge(segment.category)}</td>
-                    <td>{renderTypeBadge(segment.segment_type)}</td>
-                    <td
-                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontFamily: 'monospace', fontSize: 13 }}
-                      title={segment.audience_source === 'materialized'
-                        ? 'Current audience size — the count emails are sent to'
-                        : 'Cached estimate — Refresh for the latest count'}
-                    >
-                      {memberCount(segment).toLocaleString()}
-                    </td>
-                    <td title={builtTooltip(segment)}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, color: st === 'failed' ? '#ef4444' : st === 'blocked_delta' ? '#f59e0b' : undefined }}>
-                        {renderBuildDot(segment)}
-                        {st === 'running' ? 'building…' : fmtRel(builtIso(segment))}
-                      </span>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          className="action-btn"
-                          onClick={() => copyId(segment.id)}
-                          title={copiedId === segment.id ? 'Copied!' : `Copy segment ID (${segment.id})`}
-                          style={copiedId === segment.id ? { color: '#10b981', background: 'rgba(16,185,129,0.12)' } : undefined}
-                        >
-                          <FontAwesomeIcon icon={copiedId === segment.id ? faCheck : faCopy} />
-                        </button>
-                        <button
-                          className="action-btn"
-                          onClick={() => handleRefresh(segment)}
-                          disabled={busy}
-                          title={st === 'running'
-                            ? 'A build is running for this segment'
-                            : st === 'blocked_delta'
-                              ? 'Blocked: count changed >50% — Force refresh (confirms first)'
-                              : isLakeRow(segment)
-                                ? 'Refresh — rebuilds from analytics (may take a moment)'
-                                : 'Refresh — updates the audience count instantly'}
-                          style={st === 'blocked_delta' ? { color: '#f59e0b' } : undefined}
-                        >
-                          <FontAwesomeIcon icon={busy ? faSpinner : faSyncAlt} spin={busy} />
-                        </button>
-                        <button
-                          className="action-btn"
-                          onClick={() => setDrawerId(segment.id)}
-                          title="Details — metadata, build history, member sample, export"
-                        >
-                          <FontAwesomeIcon icon={faEye} />
-                        </button>
-                        {segment.segment_type === 'dynamic' && (
-                          <button
-                            className="action-btn"
-                            onClick={() => onNavigate('edit-segment', undefined, segment)}
-                            title="Edit conditions (dynamic segment)"
-                          >
-                            <FontAwesomeIcon icon={faPencilAlt} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {/* 6 — Load more (server paging; matters for the Machine chip) */}
-          {rows.length < total && (
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <button
-                className="btn btn-secondary"
-                disabled={loadingMore}
-                onClick={() => fetchListRef.current(rows.length, true)}
-              >
-                <FontAwesomeIcon icon={loadingMore ? faSpinner : faPlus} spin={loadingMore} />
-                {loadingMore ? ' Loading…' : ` Load more (${rows.length.toLocaleString()} of ${total.toLocaleString()})`}
-              </button>
+          {/* Toolbar: search + status + refresh */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
+              <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: colors.textFaint, fontSize: 12 }} />
+              <input
+                type="text"
+                placeholder="Find a segment by name…"
+                value={searchInput}
+                onChange={e => setSearchInput(e.target.value)}
+                style={{
+                  width: '100%',
+                  background: colors.panelBg,
+                  border: `1px solid ${colors.panelBorder}`,
+                  borderRadius: 8,
+                  color: colors.text,
+                  padding: '8px 12px 8px 32px',
+                  fontSize: 13,
+                  outline: 'none',
+                }}
+              />
             </div>
+            <select
+              value={status}
+              onChange={e => setStatus(e.target.value as StatusFilter)}
+              title="Status filter (archived hidden by default)"
+              style={{
+                background: colors.panelBg,
+                border: `1px solid ${colors.panelBorder}`,
+                borderRadius: 8,
+                color: colors.text,
+                padding: '8px 12px',
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+              <option value="all">All Statuses</option>
+            </select>
+            <button
+              type="button"
+              style={btnStyle}
+              onClick={() => fetchListRef.current(0, false)}
+              disabled={loading}
+              title="Reload the segment list"
+            >
+              <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} style={{ marginRight: 6 }} /> Refresh
+            </button>
+          </div>
+
+          {/* Category chips */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+            <button type="button" style={chipStyle(category === 'all')} onClick={() => setCategory('all')}>
+              All ({operatedCount.toLocaleString()})
+            </button>
+            {chipCategories.map(([cat, n]) => (
+              <button
+                key={cat}
+                type="button"
+                style={chipStyle(category === cat)}
+                title={categoryTitle(cat)}
+                onClick={() => setCategory(cat)}
+              >
+                {categoryLabel(cat)} ({n.toLocaleString()})
+              </button>
+            ))}
+            {machineCount > 0 && (
+              <button
+                type="button"
+                style={{ ...chipStyle(category === MACHINE_CATEGORY), opacity: category === MACHINE_CATEGORY ? 1 : 0.65, marginLeft: 'auto' }}
+                title="Auto-generated segments from promotional waves. Hidden by default."
+                onClick={() => setCategory(MACHINE_CATEGORY)}
+              >
+                Auto-generated ({machineCount.toLocaleString()})
+              </button>
+            )}
+          </div>
+
+          {/* Table */}
+          {listError ? (
+            <Panel>
+              <EmptyState icon={faExclamationTriangle} title="Couldn’t load segments" hint={listError} />
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <button type="button" style={{ ...btnStyle, background: alpha(colors.indigo500, '33') }} onClick={() => fetchListRef.current(0, false)}>Retry</button>
+              </div>
+            </Panel>
+          ) : loading ? (
+            <div style={{ textAlign: 'center', padding: 60, color: colors.textMuted }}>
+              <FontAwesomeIcon icon={faSpinner} spin /> Loading segments…
+            </div>
+          ) : sortedRows.length === 0 ? (
+            <Panel>
+              <EmptyState
+                icon={faCrosshairs}
+                title="No segments found"
+                hint={q || category !== 'all' || status !== 'active' ? 'Try adjusting the search, status or category filters.' : 'Request a recency segment or create a dynamic one to get started.'}
+              />
+            </Panel>
+          ) : (
+            <Panel style={{ padding: 0, overflowX: 'auto' }}>
+              <table style={{ ...tableStyle, tableLayout: 'fixed' }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...thStyle, width: '38%', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('name')}>
+                      Name <FontAwesomeIcon icon={sortIcon('name')} style={{ opacity: sortKey === 'name' ? 0.9 : 0.35 }} />
+                    </th>
+                    <th style={{ ...thStyle, width: '12%' }}>Category</th>
+                    <th style={{ ...thStyle, width: '8%' }}>Type</th>
+                    <th style={{ ...numTh, width: '11%', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('members')}>
+                      Members <FontAwesomeIcon icon={sortIcon('members')} style={{ opacity: sortKey === 'members' ? 0.9 : 0.35 }} />
+                    </th>
+                    <th style={{ ...thStyle, width: '14%', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('built')}>
+                      Built <FontAwesomeIcon icon={sortIcon('built')} style={{ opacity: sortKey === 'built' ? 0.9 : 0.35 }} />
+                    </th>
+                    <th style={{ ...thStyle, width: '17%' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedRows.map(segment => {
+                    const st = effectiveBuildStatus(segment);
+                    const busy = refreshingId === segment.id || st === 'running';
+                    const archived = segment.status === 'archived';
+                    return (
+                      <tr key={segment.id}>
+                        <td style={{ ...tdStyle, opacity: archived ? 0.45 : 1 }}>
+                          <span
+                            title={segment.description || segment.name}
+                            style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, color: colors.heading }}
+                          >
+                            {segment.name}
+                            {archived && <span style={{ marginLeft: 6, fontSize: '0.6rem', textTransform: 'uppercase', color: colors.textFaint }}>archived</span>}
+                          </span>
+                        </td>
+                        <td style={tdStyle}>{renderCategoryBadge(segment.category)}</td>
+                        <td style={tdStyle}>{renderTypeBadge(segment.segment_type)}</td>
+                        <td
+                          style={{ ...numTd, fontFamily: 'monospace', fontSize: 13 }}
+                          title={segment.audience_source === 'materialized'
+                            ? 'Current audience size — the count emails are sent to'
+                            : 'Cached estimate — Refresh for the latest count'}
+                        >
+                          {memberCount(segment).toLocaleString()}
+                        </td>
+                        <td style={tdStyle} title={builtTooltip(segment)}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, color: st === 'failed' ? colors.danger : st === 'blocked_delta' ? colors.warning : colors.text }}>
+                            {renderBuildDot(segment)}
+                            {st === 'running' ? 'building…' : fmtRel(builtIso(segment))}
+                          </span>
+                        </td>
+                        <td style={tdStyle}>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              style={copiedId === segment.id ? { ...actionBtnStyle, color: colors.success, background: alpha(colors.success, '14') } : actionBtnStyle}
+                              onClick={() => copyId(segment.id)}
+                              title={copiedId === segment.id ? 'Copied!' : `Copy segment ID (${segment.id})`}
+                            >
+                              <FontAwesomeIcon icon={copiedId === segment.id ? faCheck : faCopy} />
+                            </button>
+                            <button
+                              type="button"
+                              style={st === 'blocked_delta' ? { ...actionBtnStyle, color: colors.warning } : actionBtnStyle}
+                              onClick={() => handleRefresh(segment)}
+                              disabled={busy}
+                              title={st === 'running'
+                                ? 'A build is running for this segment'
+                                : st === 'blocked_delta'
+                                  ? 'Blocked: count changed >50% — Force refresh (confirms first)'
+                                  : isLakeRow(segment)
+                                    ? 'Refresh — rebuilds from analytics (may take a moment)'
+                                    : 'Refresh — updates the audience count instantly'}
+                            >
+                              <FontAwesomeIcon icon={busy ? faSpinner : faSyncAlt} spin={busy} />
+                            </button>
+                            <button
+                              type="button"
+                              style={actionBtnStyle}
+                              onClick={() => setDrawerId(segment.id)}
+                              title="Details — metadata, build history, member sample, export"
+                            >
+                              <FontAwesomeIcon icon={faEye} />
+                            </button>
+                            {segment.segment_type === 'dynamic' && (
+                              <button
+                                type="button"
+                                style={actionBtnStyle}
+                                onClick={() => onNavigate('edit-segment', undefined, segment)}
+                                title="Edit conditions (dynamic segment)"
+                              >
+                                <FontAwesomeIcon icon={faPencilAlt} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* Load more (server paging; matters for the Machine chip) */}
+              {rows.length < total && (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: 14 }}>
+                  <button
+                    type="button"
+                    style={btnStyle}
+                    disabled={loadingMore}
+                    onClick={() => fetchListRef.current(rows.length, true)}
+                  >
+                    <FontAwesomeIcon icon={loadingMore ? faSpinner : faPlus} spin={loadingMore} style={{ marginRight: 6 }} />
+                    {loadingMore ? 'Loading…' : `Load more (${rows.length.toLocaleString()} of ${total.toLocaleString()})`}
+                  </button>
+                </div>
+              )}
+            </Panel>
           )}
         </>
       )}

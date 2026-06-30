@@ -70,6 +70,15 @@ const (
 
 	// cadenceTrendDays bounds the weekly msgs-to-convert trend (4 weeks).
 	cadenceTrendDays = 28
+
+	// cadenceEngageBudget bounds the heavy messages-to-first-engagement cohort
+	// scan independently of the overall 60s budget. The per-subscriber join to
+	// mailing_message_log (LOWER(email)) is the only section that can blow the
+	// budget — and does, until idx_message_log_lower_email_sent is built (see
+	// migrations/051_message_log_lower_email_index.sql). Capping it here leaves
+	// headroom for the cheap convert/trend/sends queries, so a slow engage join
+	// degrades to a "computing" partial response instead of 500ing the screen.
+	cadenceEngageBudget = 40 * time.Second
 )
 
 // cadenceISPOrder is the canonical display order for ISP families.
@@ -181,6 +190,18 @@ type cadenceKPIResponse struct {
 	EngagedSampleTotal int             `json:"engaged_sample_total"`
 	MethodNote         string          `json:"method_note"`
 	ISPs               []cadenceISPKPI `json:"isps"`
+
+	// Computing is true when one or more heavy sections degraded (timed out or
+	// errored) and the payload is partial — the client should show a friendly
+	// "still computing — large dataset" state, not an error.
+	Computing bool `json:"computing"`
+	// EngageAvailable is false when the messages-to-first-engagement cohort scan
+	// did not complete (the section that overruns the budget until
+	// idx_message_log_lower_email_sent is built). When false, every row's
+	// msgs_to_engage_* / engaged_sample fields are not meaningful.
+	EngageAvailable bool `json:"engage_available"`
+	// PartialErrors carries the per-section degradation reasons (diagnostic).
+	PartialErrors []string `json:"partial_errors,omitempty"`
 }
 
 // ─── KPI handler ────────────────────────────────────────────────────────────
@@ -249,6 +270,15 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 	ctx := r.Context()
 	subISP := ispFamilyCase(`SPLIT_PART(LOWER(s.email), '@', 2)`)
 
+	// Partial-failure accounting: each heavy section degrades to a "computing"
+	// partial response (HTTP 200) instead of a hard 500, so one slow/failed
+	// query never nukes the whole screen. engageAvailable specifically gates the
+	// messages-to-first-engagement section (the one that overruns the budget
+	// until idx_message_log_lower_email_sent exists).
+	var computing bool
+	var partialErrors []string
+	engageAvailable := true
+
 	// 1) messages-to-first-engagement (sampled cohort).
 	engagedTotal := 0
 	qEngage := `
@@ -282,30 +312,48 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 		       COALESCE(AVG(msgs), 0)
 		FROM per_sub
 		GROUP BY isp`
-	eng, err := s.db.QueryContext(ctx, qEngage, orgID, since, cadenceEngagedSampleLimit)
+	engageCtx, engageCancel := context.WithTimeout(ctx, cadenceEngageBudget)
+	eng, err := s.db.QueryContext(engageCtx, qEngage, orgID, since, cadenceEngagedSampleLimit)
 	if err != nil {
-		log.Printf("[audience-cadence-kpis] engage query: %v", err)
-		respondError(w, http.StatusInternalServerError, "messages-to-engage query failed")
-		return
-	}
-	for eng.Next() {
-		var isp string
-		var n int
-		var p25, p50, p75, avg float64
-		if err := eng.Scan(&isp, &n, &p25, &p50, &p75, &avg); err != nil {
-			eng.Close()
-			respondError(w, http.StatusInternalServerError, "messages-to-engage scan failed")
-			return
+		// DEGRADE, do not 500: without idx_message_log_lower_email_sent this
+		// per-subscriber join becomes a seq scan that overruns the budget and
+		// returns context-deadline-exceeded. Report the engage section as
+		// "computing" and keep the remaining KPIs (which run independently
+		// below in the budget this section did not consume).
+		log.Printf("[audience-cadence-kpis] engage query (degrading to computing): %v", err)
+		engageAvailable = false
+		computing = true
+		partialErrors = append(partialErrors, "messages-to-engage: "+err.Error())
+	} else {
+		for eng.Next() {
+			var isp string
+			var n int
+			var p25, p50, p75, avg float64
+			if err := eng.Scan(&isp, &n, &p25, &p50, &p75, &avg); err != nil {
+				log.Printf("[audience-cadence-kpis] engage scan (degrading): %v", err)
+				engageAvailable = false
+				computing = true
+				partialErrors = append(partialErrors, "messages-to-engage scan: "+err.Error())
+				break
+			}
+			row := getRow(isp)
+			row.EngagedSample = n
+			row.MsgsToEngageP25 = p25
+			row.MsgsToEngageP50 = p50
+			row.MsgsToEngageP75 = p75
+			row.MsgsToEngageAvg = avg
+			engagedTotal += n
 		}
-		row := getRow(isp)
-		row.EngagedSample = n
-		row.MsgsToEngageP25 = p25
-		row.MsgsToEngageP50 = p50
-		row.MsgsToEngageP75 = p75
-		row.MsgsToEngageAvg = avg
-		engagedTotal += n
+		if rerr := eng.Err(); rerr != nil {
+			// Deadline tripped mid-stream — same degradation path.
+			log.Printf("[audience-cadence-kpis] engage rows (degrading): %v", rerr)
+			engageAvailable = false
+			computing = true
+			partialErrors = append(partialErrors, "messages-to-engage: "+rerr.Error())
+		}
+		eng.Close()
 	}
-	eng.Close()
+	engageCancel()
 
 	// 2) messages-to-conversion (exact, terminal event = offer suppression
 	//    reason='converted').
@@ -342,27 +390,31 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 		GROUP BY isp`
 	conv, err := s.db.QueryContext(ctx, qConvert, orgID, since)
 	if err != nil {
-		log.Printf("[audience-cadence-kpis] convert query: %v", err)
-		respondError(w, http.StatusInternalServerError, "messages-to-convert query failed")
-		return
-	}
-	for conv.Next() {
-		var isp string
-		var n int
-		var p25, p50, p75, avg float64
-		if err := conv.Scan(&isp, &n, &p25, &p50, &p75, &avg); err != nil {
-			conv.Close()
-			respondError(w, http.StatusInternalServerError, "messages-to-convert scan failed")
-			return
+		// Degrade independently — an engage timeout (or any single section
+		// failing) must not nuke the rest of the response.
+		log.Printf("[audience-cadence-kpis] convert query (degrading): %v", err)
+		computing = true
+		partialErrors = append(partialErrors, "messages-to-convert: "+err.Error())
+	} else {
+		for conv.Next() {
+			var isp string
+			var n int
+			var p25, p50, p75, avg float64
+			if err := conv.Scan(&isp, &n, &p25, &p50, &p75, &avg); err != nil {
+				log.Printf("[audience-cadence-kpis] convert scan (degrading): %v", err)
+				computing = true
+				partialErrors = append(partialErrors, "messages-to-convert scan: "+err.Error())
+				break
+			}
+			row := getRow(isp)
+			row.Converters = n
+			row.MsgsToConvertP25 = p25
+			row.MsgsToConvertP50 = p50
+			row.MsgsToConvertP75 = p75
+			row.MsgsToConvertAvg = avg
 		}
-		row := getRow(isp)
-		row.Converters = n
-		row.MsgsToConvertP25 = p25
-		row.MsgsToConvertP50 = p50
-		row.MsgsToConvertP75 = p75
-		row.MsgsToConvertAvg = avg
+		conv.Close()
 	}
-	conv.Close()
 
 	// 3) 4-week weekly trend of msgs_to_convert_p50 (cheap — conversion
 	//    cohort is small; reruns the same CTEs over the trend window).
@@ -375,28 +427,30 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 		ORDER BY isp, wk`
 	trend, err := s.db.QueryContext(ctx, qTrend, orgID, trendSince)
 	if err != nil {
-		log.Printf("[audience-cadence-kpis] trend query: %v", err)
-		respondError(w, http.StatusInternalServerError, "weekly trend query failed")
-		return
-	}
-	for trend.Next() {
-		var isp string
-		var wk time.Time
-		var n int
-		var p50 float64
-		if err := trend.Scan(&isp, &wk, &n, &p50); err != nil {
-			trend.Close()
-			respondError(w, http.StatusInternalServerError, "weekly trend scan failed")
-			return
+		log.Printf("[audience-cadence-kpis] trend query (degrading): %v", err)
+		computing = true
+		partialErrors = append(partialErrors, "weekly-trend: "+err.Error())
+	} else {
+		for trend.Next() {
+			var isp string
+			var wk time.Time
+			var n int
+			var p50 float64
+			if err := trend.Scan(&isp, &wk, &n, &p50); err != nil {
+				log.Printf("[audience-cadence-kpis] trend scan (degrading): %v", err)
+				computing = true
+				partialErrors = append(partialErrors, "weekly-trend scan: "+err.Error())
+				break
+			}
+			row := getRow(isp)
+			row.WeeklyTrend = append(row.WeeklyTrend, cadenceWeekPoint{
+				WeekStart:        wk.Format("2006-01-02"),
+				Converters:       n,
+				MsgsToConvertP50: p50,
+			})
 		}
-		row := getRow(isp)
-		row.WeeklyTrend = append(row.WeeklyTrend, cadenceWeekPoint{
-			WeekStart:        wk.Format("2006-01-02"),
-			Converters:       n,
-			MsgsToConvertP50: p50,
-		})
+		trend.Close()
 	}
-	trend.Close()
 
 	// 4) window sends per ISP → conversion_per_10k_sends. Sourced from the
 	// daily domain-agent scorecard rollup (already ISP-family-keyed), NOT raw
@@ -410,21 +464,23 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 		GROUP BY 1`
 	sends, err := s.db.QueryContext(ctx, qSends, orgID, since)
 	if err != nil {
-		log.Printf("[audience-cadence-kpis] sends query: %v", err)
-		respondError(w, http.StatusInternalServerError, "window sends query failed")
-		return
-	}
-	for sends.Next() {
-		var isp string
-		var n int64
-		if err := sends.Scan(&isp, &n); err != nil {
-			sends.Close()
-			respondError(w, http.StatusInternalServerError, "window sends scan failed")
-			return
+		log.Printf("[audience-cadence-kpis] sends query (degrading): %v", err)
+		computing = true
+		partialErrors = append(partialErrors, "window-sends: "+err.Error())
+	} else {
+		for sends.Next() {
+			var isp string
+			var n int64
+			if err := sends.Scan(&isp, &n); err != nil {
+				log.Printf("[audience-cadence-kpis] sends scan (degrading): %v", err)
+				computing = true
+				partialErrors = append(partialErrors, "window-sends scan: "+err.Error())
+				break
+			}
+			getRow(isp).WindowSends = n
 		}
-		getRow(isp).WindowSends = n
+		sends.Close()
 	}
-	sends.Close()
 
 	out := make([]cadenceISPKPI, 0, len(rows))
 	for _, isp := range cadenceISPOrder {
@@ -449,13 +505,21 @@ func (s *AudienceCadenceKPIService) HandleAudienceCadenceKPIs(w http.ResponseWri
 			"Conversions = mailing_offer_suppressions reason='converted' (exact, no sampling). " +
 			"SES-routed traffic (all of gmail + the SES-tenant brands) is pixel-blind in Postgres, so engaged samples undercount on those routes; " +
 			"AOL is reported as its own family per operator doctrine (not folded into yahoo).",
-		ISPs: out,
+		ISPs:            out,
+		Computing:       computing,
+		EngageAvailable: engageAvailable,
+		PartialErrors:   partialErrors,
 	}
 
 	if body, err := json.Marshal(resp); err == nil {
-		cadenceKPICache.Lock()
-		cadenceKPICache.entries[cacheKey] = cadenceKPICacheEntry{body: body, expires: time.Now().Add(cadenceKPICacheTTL)}
-		cadenceKPICache.Unlock()
+		// Only cache complete responses — a partial "computing" payload must not
+		// stick for the full TTL, or the screen would keep reporting "computing"
+		// long after the index lands and the query recovers.
+		if !computing {
+			cadenceKPICache.Lock()
+			cadenceKPICache.entries[cacheKey] = cadenceKPICacheEntry{body: body, expires: time.Now().Add(cadenceKPICacheTTL)}
+			cadenceKPICache.Unlock()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(body)
 		return

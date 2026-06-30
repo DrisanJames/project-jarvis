@@ -15,6 +15,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
+import { colors } from '../shared/theme';
 
 import { GateStrip } from './send-day-planner/GateStrip';
 import { BrandWaveGrid } from './BrandWaveGrid';
@@ -132,24 +133,28 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
 
   // ── Render ────────────────────────────────────────────────────────────────
   const sendDateMemo = useMemo(() => sendDate, [sendDate]);
+  // Gate A needs the operator's attention whenever it is not already a green
+  // pass — either un-attested ("needs attestation") or an explicit failure.
+  const gateANeedsAttention = !gates.gateA?.passes;
+
   return (
-    <div style={{ padding: 18, color: 'rgba(220,235,250,0.92)' }}>
+    <div style={{ padding: 18, color: colors.text }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: '#00e5ff' }}>Send Day Planner · Gates + Plan</h2>
-        <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: colors.heading }}>Send Day Planner · Gates + Plan</h2>
+        <label style={{ fontSize: 12, color: colors.textMuted }}>
           Date{' '}
           <input
             type="date"
             value={sendDate}
             onChange={e => setSendDate(e.target.value)}
             style={{
-              background: 'rgba(13,21,38,0.9)', border: '1px solid rgba(0,200,255,0.25)',
-              color: '#cbd5f5', padding: '4px 8px', borderRadius: 6, fontSize: 12,
+              background: colors.panelBgSolid, border: `1px solid ${colors.panelBorder}`,
+              color: colors.text, padding: '5px 9px', borderRadius: 8, fontSize: 12,
             }}
           />
         </label>
         <button onClick={refreshGates} style={btnPrimary}>Refresh gates</button>
-        <div style={{ marginLeft: 'auto', fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+        <div style={{ marginLeft: 'auto', fontSize: 11, color: colors.textFaint }}>
           mirrors the live plan for {sendDate}
         </div>
       </div>
@@ -160,17 +165,36 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
           onRefresh={refreshGates}
           loading={gatesLoading}
         />
-        {!gates.gateA?.passes && (
-          <div style={{ marginTop: 8, fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>
-            Gate A is confirmed manually for now. {' '}
-            <button onClick={() => onAttestGateA('pass')} style={attestBtn}>I confirmed sending server A + B is healthy</button>
+        {gateANeedsAttention && (
+          <div
+            style={{
+              marginTop: 10,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              padding: '10px 12px',
+              background: 'rgba(245,158,11,0.08)',
+              border: `1px solid ${colors.warning}55`,
+              borderRadius: 10,
+            }}
+          >
+            <span style={{ fontSize: 12, color: colors.warningText, fontWeight: 600 }}>
+              Gate A · awaiting operator confirmation
+            </span>
+            <span style={{ fontSize: 11, color: colors.textMuted }}>
+              ECS can&apos;t reach the PMTA hosts directly — verify both sending servers over SSH, then confirm:
+            </span>
+            <button onClick={() => onAttestGateA('pass')} style={attestBtn}>
+              I confirmed sending server A + B is healthy
+            </button>
           </div>
         )}
       </div>
       {/* The REAL plan for the selected date — ALL brands as horizontally-scrollable
           columns × wave rows, read live from the campaigns endpoint. No synthesis. */}
       <BrandWaveGrid date={sendDateMemo} />
-      <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)', textAlign: 'right', marginTop: 12 }}>
+      <div style={{ fontSize: 10, color: colors.textFaint, textAlign: 'right', marginTop: 12 }}>
         SendDayPlanner v{PAGE_VERSION}
       </div>
     </div>
@@ -181,10 +205,10 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
 export default SendDayPlanner;
 
 const btnPrimary: React.CSSProperties = {
-  background: 'rgba(0,176,255,0.15)', border: '1px solid rgba(0,176,255,0.5)',
-  color: '#00e5ff', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+  background: colors.hover, border: `1px solid ${colors.panelBorderStrong}`,
+  color: colors.indigo200, padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
 };
 const attestBtn: React.CSSProperties = {
-  background: 'rgba(0,184,148,0.12)', border: '1px solid rgba(0,184,148,0.5)',
-  color: '#00b894', padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+  background: `${colors.warning}22`, border: `1px solid ${colors.warning}99`,
+  color: colors.warningText, padding: '6px 12px', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer',
 };

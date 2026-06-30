@@ -13,6 +13,8 @@ import './MailingPortal.css';
 import '../shared/animations.css';
 import { ToastProvider } from '../shared/ToastSystem';
 import { apiFetch } from '../shared/apiFetch';
+import { colors } from '../shared/theme';
+import { Panel, Stat, SectionHeader, EmptyState } from '../shared/ui';
 import { WorkerHealthWidget } from '../components/WorkerHealthDashboard';
 
 // ── Lazy-loaded heavy components (code-split into separate chunks) ──────────
@@ -71,10 +73,10 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'marketing-agent'] },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board'] },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
-  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — mailbox-provider insights, inbox intelligence and smart sending recommendations.', childIds: ['sending-plans', 'profiles', 'jarvis'] },
+  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
   { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'AI send-planning and approval for each sending domain — baselines, recommendations and scorecards.' },
   { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price and plan CPM deals — projected volume, pace, capacity risk and live earnings vs goal.' },
@@ -83,7 +85,6 @@ const tabs: Tab[] = [
   { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
   { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
-  { id: 'content-library', label: 'Content Library', icon: faEnvelope, description: 'Reusable email templates and content blocks.' },
   { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
   { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, description: 'The AI insights and strategy behind your campaigns.' },
   { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Manage inbound data-partner connections — access keys, submitted lists, automated follow-ups and creatives.' },
@@ -176,7 +177,7 @@ export const MailingPortal: React.FC = () => {
       case 'profiles':
       case 'jarvis':
       case 'ai-agents':
-        return <AIAgentsSection activeSubTab={activeTab === 'ai-agents' ? 'sending-plans' : activeTab} onSubTabChange={setActiveTab} />;
+        return <AIAgentsSection activeSubTab={activeTab === 'ai-agents' ? 'profiles' : activeTab} onSubTabChange={setActiveTab} />;
       case 'domain-center':
         return <DomainCenter />;
       case 'domain-agents':
@@ -360,12 +361,92 @@ const nextUTCDay = (ymd: string): string => {
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
 };
 
+// N days before today (YYYY-MM-DD), used for the acquisition/churn windows.
+const denverDaysAgo = (n: number): string => {
+  const [y, m, d] = denverToday().split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
+};
+
+// --- Audience growth (acquisition vs churn) + funnel membership ----------
+interface AudienceGrowth {
+  acquired7d: number;
+  churned7d: number;
+}
+interface FunnelItem {
+  id: string;
+  name: string;
+  active_enrolled: number;
+  converted: number;
+}
+interface FunnelOverview {
+  total_active_enrollments: number;
+  enrollments_today: number;
+  top_journeys: FunnelItem[];
+}
+
+const sumRows = (rows: unknown): number => {
+  if (!Array.isArray(rows)) return 0;
+  return rows.reduce((acc: number, r: any) => acc + (Number(r?.c) || 0), 0);
+};
+
 const EnhancedDashboard: React.FC = () => {
   const { organization } = useAuth();
   const [dashboard, setDashboard] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   // null = lake disabled/unavailable/errored → render the PG fallback.
   const [lakeToday, setLakeToday] = useState<LakeTodayCounts | null>(null);
+  // Audience growth (acquisition vs churn) + click-funnel membership. Both are
+  // optional/failure-tolerant — a slow or unavailable source never blocks the
+  // rest of the dashboard (mirrors the lakeToday pattern above).
+  const [growth, setGrowth] = useState<AudienceGrowth | null>(null);
+  const [funnels, setFunnels] = useState<FunnelOverview | null>(null);
+
+  // Acquisition vs churn over the trailing 7 days (analytics lake).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const from = denverDaysAgo(7);
+        const to = nextUTCDay(denverToday());
+        const [acqRes, churnRes] = await Promise.all([
+          apiFetch(`/api/mailing/analytics/lake/audience/breakdown?acquired_from=${from}&acquired_to=${to}&limit=1000`, { credentials: 'include' }),
+          apiFetch(`/api/mailing/analytics/lake/audience/breakdown?churned_from=${from}&churned_to=${to}&limit=1000`, { credentials: 'include' }),
+        ]);
+        if (!acqRes.ok || !churnRes.ok) return;
+        const acq = await acqRes.json();
+        const churn = await churnRes.json();
+        if (acq?.disabled || churn?.disabled) return;
+        if (!cancelled) {
+          setGrowth({ acquired7d: sumRows(acq?.rows), churned7d: sumRows(churn?.rows) });
+        }
+      } catch {
+        // Lake unreachable → growth stays null → friendly empty state.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Click-funnel membership (PG journey-center; reliable).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/journey-center/overview', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setFunnels({
+            total_active_enrollments: data?.total_active_enrollments || 0,
+            enrollments_today: data?.enrollments_today || 0,
+            top_journeys: Array.isArray(data?.top_journeys) ? data.top_journeys : [],
+          });
+        }
+      } catch {
+        // Journey center unreachable → funnels stays null → friendly empty state.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Lake fetch for Today's Performance. Independent of the PG dashboard fetch
   // so a slow/failed Athena query never blocks the rest of the dashboard.
@@ -661,6 +742,59 @@ const EnhancedDashboard: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Audience Growth (acquisition vs churn) + Click Funnels */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, marginTop: 18 }}>
+        <Panel accent={growth && growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
+          <SectionHeader title="Audience Growth · 7d" icon={faSeedling} />
+          {growth ? (
+            <>
+              <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
+                <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="New audience members activated in the last 7 days" />
+                <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Audience members lost in the last 7 days" />
+                <Stat
+                  label="Net"
+                  value={`${growth.acquired7d - growth.churned7d >= 0 ? '+' : ''}${(growth.acquired7d - growth.churned7d).toLocaleString()}`}
+                  color={growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}
+                  title="Net change = acquired − churned"
+                />
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
+                Activating vs losing across the trailing 7 days.
+              </div>
+            </>
+          ) : (
+            <EmptyState icon={faSeedling} title="Audience growth unavailable" hint="Acquisition vs churn appears once the analytics lake is reachable." />
+          )}
+        </Panel>
+
+        <Panel accent={colors.indigo500}>
+          <SectionHeader
+            title="Click Funnels"
+            icon={faChartPie}
+            right={funnels ? (
+              <span style={{ fontSize: 11, color: colors.textMuted }}>
+                {funnels.total_active_enrollments.toLocaleString()} active · {funnels.enrollments_today.toLocaleString()} joined today
+              </span>
+            ) : undefined}
+          />
+          {funnels && funnels.top_journeys.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {funnels.top_journeys.map((f) => (
+                <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderTop: `1px solid ${colors.divider}` }}>
+                  <span style={{ fontSize: 13, color: colors.text, fontWeight: 600 }}>{f.name}</span>
+                  <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
+                    <strong style={{ color: colors.indigo200 }}>{f.active_enrolled.toLocaleString()}</strong> members
+                    {f.converted > 0 ? <span style={{ color: colors.successText }}> · {f.converted.toLocaleString()} converted</span> : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={faChartPie} title="No active funnels" hint="Audience members in each click funnel will appear here once journeys are active." />
+          )}
+        </Panel>
       </div>
 
       {/* Quick Actions - disabled
@@ -1545,7 +1679,6 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
         <button style={subNavBtnStyle(subTab === 'send-day')} onClick={() => onSubTabChange('send-day')}>Send Day</button>
         <button style={subNavBtnStyle(subTab === 'draft-board')} onClick={() => onSubTabChange('draft-board')}>Draft Board</button>
-        <button style={subNavBtnStyle(subTab === 'marketing-agent')} onClick={() => onSubTabChange('marketing-agent')}>Marketing Agent</button>
       </div>
       <PreparationBanner campaigns={preparingCampaigns} transitions={transitions} onDismissTransition={handleDismissTransition} />
       <Suspense fallback={<ChunkLoader />}>
@@ -1591,17 +1724,15 @@ const CampaignCenterSection: React.FC<{
 };
 
 // ─── AI Agents Section ─────────────────────────────────────────────────────
-const AIAgentsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId) => void }> = ({ activeSubTab, onSubTabChange }) => {
-  const subTab = (['profiles', 'jarvis'].includes(activeSubTab)) ? activeSubTab : 'sending-plans';
+const AIAgentsSection: React.FC<{ activeSubTab: TabId; onSubTabChange: (t: TabId) => void }> = ({ activeSubTab }) => {
+  // AI Plans (sending-plans) and Jarvis are hidden from the nav for now; only
+  // Inbox Intel (profiles) is exposed. The render branches are kept so existing
+  // deep links / cross-tab events still resolve, but the buttons are gone.
+  const subTab = (['profiles', 'jarvis', 'sending-plans'].includes(activeSubTab)) ? activeSubTab : 'profiles';
   return (
     <div>
-      <div style={subNavStyle}>
-        <button style={subNavBtnStyle(subTab === 'sending-plans')} onClick={() => onSubTabChange('sending-plans')}>AI Plans</button>
-        <button style={subNavBtnStyle(subTab === 'profiles')} onClick={() => onSubTabChange('profiles')}>Inbox Intel</button>
-        <button style={subNavBtnStyle(subTab === 'jarvis')} onClick={() => onSubTabChange('jarvis')}>Jarvis</button>
-      </div>
       <Suspense fallback={<ChunkLoader />}>
-        {subTab === 'profiles' ? <InboxProfiles /> : subTab === 'jarvis' ? <JarvisDashboard /> : <ISPAgentIntelligence />}
+        {subTab === 'jarvis' ? <JarvisDashboard /> : subTab === 'sending-plans' ? <ISPAgentIntelligence /> : <InboxProfiles />}
       </Suspense>
     </div>
   );

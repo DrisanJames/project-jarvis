@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -478,6 +479,211 @@ func segmentIDArray(ids []string) string {
 	}
 	b = append(b, '}')
 	return string(b)
+}
+
+// ==========================================
+// ENGAGEMENT GROWTH BOARD
+// ==========================================
+//
+// GET /v2/segments/engagement-growth — brand-grouped current size + last-build
+// delta for the per-brand engagement segments the operator actively mails
+// (category 'engagement_brand': the seeded "<CODE> <N>D <Openers|Clickers>"
+// set, one per sending brand). This is the data source for the redesigned
+// SegmentsCenter growth board (the operator wants "7D Openers and 30D Clickers
+// by brand").
+//
+// DATA SOURCE: 100% reuse of the ListSegments read path — no new SQL against
+// unknown tables. Store().ListSegmentsFiltered(category=engagement_brand,
+// status=active) supplies the segment rows + cached subscriber_count, and
+// fetchSegmentLedgerRows (the same batched mailing_segment_build_ledger point
+// read ListSegments uses) supplies the authoritative materialized count,
+// last_built_at and last_delta_pct.
+//
+// GROWTH SIGNAL: last_delta_pct is the BUILD-TO-BUILD delta (current audience
+// size vs the previous build), NOT a time-windowed trend. There is no per-day
+// segment-size history table today, so an honest "7-day growth" line cannot be
+// computed — the UI labels this "Δ since last build".
+//
+// TODO(growth-history): a daily snapshot table (segment_id, day, count),
+// written alongside the build-ledger upsert, would let this endpoint return
+// real trend lines (true 7/30-day growth) instead of a single build delta.
+
+// engagementBrandNameRe matches the canonical seeded per-brand engagement
+// segment name "<brand> <N>D <Openers|Clickers>" (e.g. "DB 7D Openers",
+// "QF 30D Clickers"). Brand is whatever precedes the window token; in
+// production it is a 2-3 letter brand code (see
+// may29_seg_backfill_engagement_brand in cmd/server/main.go), but capturing the
+// full prefix keeps any custom-labeled rows grouping correctly.
+var engagementBrandNameRe = regexp.MustCompile(`^(.+?) (7|14|30|60)D (Openers|Clickers)$`)
+
+// engagementLakeNameRe matches the lake-builder brand form
+// "Lake-Open-14d-discountblog.com" / "Lake-Click-7d-...". Brand-scoped lake
+// segments also carry category engagement_brand (see lakeCategoryForScope in
+// lake_segment_builder.go), so they land in this endpoint too.
+var engagementLakeNameRe = regexp.MustCompile(`^Lake-(Open|Click)-(\d+)d-(.+)$`)
+
+// parseEngagementBrandName derives (brand, cellKey) from an engagement_brand
+// segment name, where cellKey is the canonical "<N>D <Openers|Clickers>" label
+// used to bucket the metric. ok is false for names that don't match either
+// known shape (those rows are skipped — they have no clean brand/kind).
+func parseEngagementBrandName(name string) (brand string, cellKey string, ok bool) {
+	if m := engagementBrandNameRe.FindStringSubmatch(name); m != nil {
+		return strings.TrimSpace(m[1]), m[2] + "D " + m[3], true
+	}
+	if m := engagementLakeNameRe.FindStringSubmatch(name); m != nil {
+		kind := "Openers"
+		if m[1] == "Click" {
+			kind = "Clickers"
+		}
+		return strings.TrimSpace(m[3]), m[2] + "D " + kind, true
+	}
+	return "", "", false
+}
+
+// engagementGrowthMetric is one brand × (window × kind) cell.
+type engagementGrowthMetric struct {
+	SegmentID string     `json:"segment_id"`
+	Name      string     `json:"name"`
+	Count     int64      `json:"count"`
+	DeltaPct  *float64   `json:"delta_pct"` // build-to-build Δ%, null when no ledger delta
+	BuiltAt   *time.Time `json:"built_at"`
+	Source    string     `json:"source"` // "materialized" | "cached"
+	Status    *string    `json:"status,omitempty"`
+}
+
+// engagementGrowthBrand groups every engagement cell for one brand. The four
+// named fields are the headline tiles; Cells carries every parsed window/kind
+// (7D/14D/30D/60D Openers/Clickers) for the expandable detail.
+type engagementGrowthBrand struct {
+	Brand             string                             `json:"brand"`
+	SevenDayOpeners   *engagementGrowthMetric            `json:"seven_day_openers"`
+	SevenDayClickers  *engagementGrowthMetric            `json:"seven_day_clickers"`
+	ThirtyDayOpeners  *engagementGrowthMetric            `json:"thirty_day_openers"`
+	ThirtyDayClickers *engagementGrowthMetric            `json:"thirty_day_clickers"`
+	Cells             map[string]*engagementGrowthMetric `json:"cells"`
+	SegmentCount      int                                `json:"segment_count"`
+	HeadlineCount     int64                              `json:"headline_count"` // largest cell, for sorting
+}
+
+type engagementGrowthResponse struct {
+	Brands       []engagementGrowthBrand `json:"brands"`
+	BrandCount   int                     `json:"brand_count"`
+	SegmentCount int                     `json:"segment_count"`
+	GrowthSignal string                  `json:"growth_signal"`
+	GrowthLabel  string                  `json:"growth_label"`
+	Note         string                  `json:"note"`
+	GeneratedAt  time.Time               `json:"generated_at"`
+	APIVersion   string                  `json:"api_version"`
+}
+
+// HandleEngagementGrowth serves GET /v2/segments/engagement-growth. Read-only.
+func (api *SegmentationAPI) HandleEngagementGrowth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
+
+	// Identical read path to ListSegments, scoped to the active per-brand
+	// engagement set in SQL so the ~31k machine rows never leave the DB.
+	filter := segmentation.SegmentListFilter{
+		Status:     "active",
+		Categories: []string{"engagement_brand"},
+	}
+	segments, err := api.engine.Store().ListSegmentsFiltered(ctx, orgID, nil, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ledger := api.fetchSegmentLedgerRows(ctx, segments)
+	now := time.Now().UTC()
+
+	brands := make(map[string]*engagementGrowthBrand)
+	order := make([]string, 0)
+	parsed := 0
+
+	for _, seg := range segments {
+		brand, cellKey, ok := parseEngagementBrandName(seg.Name)
+		if !ok {
+			continue
+		}
+		parsed++
+
+		// Mirror ListSegments' count/source resolution: ledger count when a
+		// build has completed, else the segment row's cached subscriber_count.
+		metric := &engagementGrowthMetric{
+			SegmentID: seg.ID.String(),
+			Name:      seg.Name,
+			Count:     int64(seg.SubscriberCount),
+			Source:    "cached",
+		}
+		if led, has := ledger[seg.ID.String()]; has {
+			if led.lastBuiltAt.Valid {
+				metric.Count = led.subscriberCount
+				metric.Source = "materialized"
+				t := led.lastBuiltAt.Time
+				metric.BuiltAt = &t
+			}
+			if led.deltaPct.Valid {
+				d := led.deltaPct.Float64
+				metric.DeltaPct = &d
+			}
+			st := coerceLedgerStatus(led.status, led.updatedAt, now)
+			metric.Status = &st
+		}
+
+		b := brands[brand]
+		if b == nil {
+			b = &engagementGrowthBrand{Brand: brand, Cells: make(map[string]*engagementGrowthMetric)}
+			brands[brand] = b
+			order = append(order, brand)
+		}
+		// Collisions shouldn't happen among active rows; if they do, prefer the
+		// row that has actually been built.
+		if existing := b.Cells[cellKey]; existing == nil || (existing.BuiltAt == nil && metric.BuiltAt != nil) {
+			b.Cells[cellKey] = metric
+		}
+		b.SegmentCount++
+
+		switch cellKey {
+		case "7D Openers":
+			b.SevenDayOpeners = b.Cells[cellKey]
+		case "7D Clickers":
+			b.SevenDayClickers = b.Cells[cellKey]
+		case "30D Openers":
+			b.ThirtyDayOpeners = b.Cells[cellKey]
+		case "30D Clickers":
+			b.ThirtyDayClickers = b.Cells[cellKey]
+		}
+	}
+
+	result := make([]engagementGrowthBrand, 0, len(order))
+	for _, name := range order {
+		b := brands[name]
+		var headline int64
+		for _, c := range b.Cells {
+			if c.Count > headline {
+				headline = c.Count
+			}
+		}
+		b.HeadlineCount = headline
+		result = append(result, *b)
+	}
+	// Largest brand first (by biggest active engagement cell); name tiebreak.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].HeadlineCount != result[j].HeadlineCount {
+			return result[i].HeadlineCount > result[j].HeadlineCount
+		}
+		return result[i].Brand < result[j].Brand
+	})
+
+	segmentRespondJSON(w, engagementGrowthResponse{
+		Brands:       result,
+		BrandCount:   len(result),
+		SegmentCount: parsed,
+		GrowthSignal: "last_delta_pct",
+		GrowthLabel:  "Δ since last build",
+		Note:         "delta_pct is the build-to-build change in audience size (current vs previous build), not a time-windowed trend; no per-day segment-size history exists yet.",
+		GeneratedAt:  now,
+		APIVersion:   VersionSegmentationAPI,
+	})
 }
 
 // CreateSegment creates a new segment

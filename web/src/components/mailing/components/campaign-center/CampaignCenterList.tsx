@@ -126,7 +126,15 @@ export const CampaignCenterList: React.FC<{
   // ── filtering (identity-level) ─────────────────────────────────────────────
   const baseFiltered = useMemo(() => {
     const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
+    // Scheduled campaigns are FUTURE-dated (scheduled_at > now). The default
+    // 'today' preset window ends at NOW, which would exclude every upcoming send
+    // BEFORE the status filter even runs — so the "Scheduled" tab (and the "All"
+    // view) would look empty. When the user is looking at Scheduled or All,
+    // extend the upper bound to cover upcoming sends so they actually surface.
+    const includeUpcoming = statusFilter === 'scheduled' || statusFilter === 'all';
+    const toMs = includeUpcoming
+      ? Math.max(range.to.getTime(), Date.now() + 7 * 86400_000)
+      : range.to.getTime();
     const q = offerText.trim().toLowerCase();
     return rows.filter(r => {
       const isDrip = isDripIdentityRow(r);
