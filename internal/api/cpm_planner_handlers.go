@@ -93,6 +93,28 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		// ([partner-drip] samsclub_internal…, jun27 - … - sams-club, SPICY-COLD … SAMS).
 		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sam%'
 		   WHERE lower(name) ~ 'sam' AND COALESCE(campaign_name_pattern,'') = ''`,
+		// Per-deal MONTHLY TARGETS (operator 2026-06-30): the operator commits a
+		// budget/volume/eCPM/eCPA target for a calendar month, and next month's
+		// actuals are measured against it. Only the TARGET is stored here —
+		// actuals (delivered/revenue/conversions) are computed LIVE from PG per
+		// month (mailing_tracking_events + suppressions + manual conversions), so
+		// they self-correct when a deal's attribution is later fixed. `month` is
+		// the 1st of the calendar month.
+		`CREATE TABLE IF NOT EXISTS mailing_cpm_deal_monthly_targets (
+			organization_id UUID NOT NULL,
+			deal_id         UUID NOT NULL,
+			month           DATE NOT NULL CHECK (month = date_trunc('month', month)::date),
+			target_budget   NUMERIC(12,2),
+			target_volume   BIGINT,
+			target_ecpm     NUMERIC(8,4),
+			target_ecpa     NUMERIC(10,2),
+			notes           TEXT NOT NULL DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (deal_id, month)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_monthly_targets_org_month
+			ON mailing_cpm_deal_monthly_targets(organization_id, month)`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
@@ -143,7 +165,7 @@ type cpmDeal struct {
 	Notes           string  `json:"notes"`
 	// CampaignNamePattern: ILIKE pattern that attributes offer_id=NULL broadcasts/
 	// board sends to this deal (operator 2026-06-27). '' = off.
-	CampaignNamePattern string    `json:"campaign_name_pattern"`
+	CampaignNamePattern string `json:"campaign_name_pattern"`
 	// ConversionsOverride: operator-pinned conversion count (Everflow truth).
 	// nil = unset; when set (>0) it overrides the tracked+uploaded total.
 	ConversionsOverride *int64    `json:"conversions_override"`
@@ -291,6 +313,34 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 	return deals, rows.Err()
 }
 
+// dealCampaignSetSubquery returns the parenthesized "(SELECT … UNION … UNION …)"
+// subquery that yields the campaign_id set attributed to a deal via the three
+// attribution paths: offer_id auto-match, explicit mailing_cpm_deal_campaigns
+// earmarks (operator 2026-06-13), and campaign_name_pattern ILIKE for
+// offer_id=NULL broadcasts/board sends (operator 2026-06-27). It is the single
+// source of truth for deal attribution — loadProgress, loadDailySeries, and the
+// monthly aggregate all use it so they can never diverge.
+//
+// Callers MUST bind placeholders as:
+//
+//	$1 = organization_id, $2 = membership floor (created_at >= $2),
+//	$3 = effective offer_id (text; '' when unmapped),
+//	$4 = deal id, $5 = campaign_name_pattern ('' = off).
+func dealCampaignSetSubquery() string {
+	return `(
+		SELECT id FROM mailing_campaigns
+		WHERE organization_id = $1 AND offer_id = NULLIF($3,'')::uuid AND created_at >= $2
+		UNION
+		SELECT campaign_id FROM mailing_cpm_deal_campaigns WHERE deal_id = $4
+		UNION
+		-- Name-pattern branch: captures offer_id=NULL broadcasts/board sends.
+		-- Inert when the deal has no pattern set.
+		SELECT id FROM mailing_campaigns
+		WHERE organization_id = $1 AND NULLIF($5,'') IS NOT NULL
+		  AND name ILIKE $5 AND created_at >= $2
+	)`
+}
+
 // loadProgress maps live platform delivery + conversion ground truth onto a
 // deal. Best-effort: a failed sub-query logs and leaves zeros rather than
 // failing the whole list.
@@ -312,18 +362,7 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 			FROM mailing_tracking_events
 			WHERE organization_id = $1
 			  AND event_at >= $2
-			  AND campaign_id IN (
-				SELECT id FROM mailing_campaigns
-				WHERE organization_id = $1 AND offer_id = NULLIF($3,'')::uuid AND created_at >= $2
-				UNION
-				SELECT campaign_id FROM mailing_cpm_deal_campaigns WHERE deal_id = $4
-				UNION
-				-- Name-pattern branch (operator 2026-06-27): captures offer_id=NULL
-				-- broadcasts/board sends. Inert when the deal has no pattern set.
-				SELECT id FROM mailing_campaigns
-				WHERE organization_id = $1 AND NULLIF($5,'') IS NOT NULL
-				  AND name ILIKE $5 AND created_at >= $2
-			  )`
+			  AND campaign_id IN ` + dealCampaignSetSubquery()
 		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern).Scan(
 			&p.Sent, &p.Delivered, &p.Opened, &p.Clicked, &p.HardBounces, &p.SoftBounces); err != nil {
 			log.Printf("[CpmPlanner] progress events for deal %s: %v", d.ID, err)
@@ -1179,16 +1218,17 @@ func (h *CpmPlannerHandlers) loadDailySeries(orgID string, d *cpmDeal) []cpmDail
 		return p
 	}
 
-	if d.OfferID != "" {
+	// Sent by day across the FULL attributed campaign set (offer_id ∪ earmarks ∪
+	// name-pattern) — identical set to loadProgress, so the pace chart agrees with
+	// the headline Delivered. Runs for every deal, mapped or not. (Was offer_id-
+	// only before 2026-06-30, which under-counted earmark/pattern deals like Sam's.)
+	{
 		rows, err := h.db.Query(`
 			SELECT to_char(date_trunc('day', event_at), 'YYYY-MM-DD') AS day, COUNT(*)
 			FROM mailing_tracking_events
 			WHERE organization_id = $1 AND event_type = 'sent' AND event_at >= $2
-			  AND campaign_id IN (
-				SELECT id FROM mailing_campaigns
-				WHERE organization_id = $1 AND offer_id = $3 AND created_at >= $2
-			  )
-			GROUP BY 1`, orgID, d.startDate, d.OfferID)
+			  AND campaign_id IN `+dealCampaignSetSubquery()+`
+			GROUP BY 1`, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern)
 		if err != nil {
 			log.Printf("[CpmPlanner] daily series for deal %s: %v", d.ID, err)
 		} else {
@@ -1204,7 +1244,9 @@ func (h *CpmPlannerHandlers) loadDailySeries(orgID string, d *cpmDeal) []cpmDail
 				}
 			}()
 		}
+	}
 
+	if d.OfferID != "" {
 		// Tracked conversions by day (same source as countOfferConversions).
 		convRows, err := h.db.Query(`
 			SELECT to_char(date_trunc('day', suppressed_at), 'YYYY-MM-DD') AS day, COUNT(*)
@@ -1579,4 +1621,437 @@ func (h *CpmPlannerHandlers) HandleDealCampaignCandidates(w http.ResponseWriter,
 		out = append(out, c)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"candidates": out})
+}
+
+// ─── Monthly historics & planning ───────────────────────────────────────────
+//
+// Two month-anchored capabilities the rolling-window planner lacked:
+//   1. Historics — a closed calendar month's delivered / revenue / conversions,
+//      portfolio total + per-deal.
+//   2. Planning — a per-deal TARGET (budget / volume / eCPM / eCPA) committed for
+//      a coming month, against which next month's actuals are measured.
+//
+// Only the TARGET is stored (mailing_cpm_deal_monthly_targets). Actuals compute
+// LIVE from Postgres per Denver calendar month — delivered from
+// mailing_tracking_events over the deal's attributed campaign set
+// (dealCampaignSetSubquery), conversions from suppressions + manual rows. PG is
+// the source (NOT the Athena lake): verified 2026-06-30, PG holds more delivered
+// and is 100% campaign-attributed, while the lake loses ~20% of PMTA delivered to
+// an unresolved campaign_id. Live compute also self-corrects: fixing a deal's
+// attribution retroactively corrects its historics. Revenue = delivered/1000 ×
+// eCPM. The lifetime conversions_override is NOT applied per month.
+
+type cpmMonthlyTargetInput struct {
+	Budget *float64 `json:"budget"`
+	Volume *int64   `json:"volume"`
+	Ecpm   *float64 `json:"ecpm"`
+	Ecpa   *float64 `json:"ecpa"`
+	Notes  *string  `json:"notes"`
+}
+
+type cpmMonthlyTarget struct {
+	Budget *float64 `json:"budget"`
+	Volume *int64   `json:"volume"`
+	Ecpm   *float64 `json:"ecpm"`
+	Ecpa   *float64 `json:"ecpa"`
+	Notes  string   `json:"notes"`
+}
+
+type cpmMonthDeal struct {
+	DealID             string           `json:"deal_id"`
+	Name               string           `json:"name"`
+	OfferName          string           `json:"offer_name"`
+	HasTarget          bool             `json:"has_target"`
+	Target             cpmMonthlyTarget `json:"target"`
+	Delivered          int64            `json:"delivered"`
+	Revenue            float64          `json:"revenue"`
+	Conversions        int64            `json:"conversions"`
+	ConversionsTracked int64            `json:"conversions_tracked"`
+	ConversionsManual  int64            `json:"conversions_manual"`
+	Ecpm               float64          `json:"ecpm"` // effective eCPM used for revenue (target if set, else deal goal)
+}
+
+type cpmMonthPortfolio struct {
+	Delivered    int64   `json:"delivered"`
+	Revenue      float64 `json:"revenue"`
+	Conversions  int64   `json:"conversions"`
+	TargetBudget float64 `json:"target_budget"`
+	TargetVolume int64   `json:"target_volume"`
+}
+
+type cpmMonthRow struct {
+	Month     string            `json:"month"` // YYYY-MM
+	IsCurrent bool              `json:"is_current"`
+	IsFuture  bool              `json:"is_future"`
+	Portfolio cpmMonthPortfolio `json:"portfolio"`
+	Deals     []cpmMonthDeal    `json:"deals"`
+}
+
+// cpmMonthlyRevenue is the CPM-billable revenue for a month: delivered volume
+// priced at the effective eCPM (revenue = delivered / 1000 × eCPM). This is the
+// number the advertiser is billed, distinct from the deal card's conversion-based
+// revenue_earned. Returns 0 for non-positive inputs.
+func cpmMonthlyRevenue(delivered int64, ecpm float64) float64 {
+	if delivered <= 0 || ecpm <= 0 {
+		return 0
+	}
+	return float64(delivered) / 1000.0 * ecpm
+}
+
+// cpmMonthlyConversions is the per-month conversion count: tracked + manual for
+// THAT month. Unlike the deal card's lifetime count, it deliberately takes no
+// override — conversions_override is a lifetime pin and must NOT be applied to a
+// single month (footgun, operator 2026-06-30).
+func cpmMonthlyConversions(tracked, manual int64) int64 {
+	return tracked + manual
+}
+
+// loadDealsLite loads deals WITHOUT the per-deal live progress sub-queries
+// (loadProgress) — the monthly view computes its own per-month aggregates.
+func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, error) {
+	rows, err := h.db.Query(cpmDealSelect+" ORDER BY d.created_at DESC", orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	deals := []cpmDeal{}
+	for rows.Next() {
+		d, _, err := scanCpmDeal(rows)
+		if err != nil {
+			return nil, err
+		}
+		deals = append(deals, d)
+	}
+	return deals, rows.Err()
+}
+
+// loadDealMonthlyActuals returns delivered / tracked-conversions / manual-
+// conversions for a deal, bucketed by Denver calendar month ("YYYY-MM"), from
+// windowStart ("YYYY-MM-DD") forward. Best-effort: a failing sub-query logs and
+// leaves an empty map. Delivered uses the full attributed campaign set; tracked
+// conversions need an offer_id; manual conversions are deal-scoped.
+func (h *CpmPlannerHandlers) loadDealMonthlyActuals(orgID string, d *cpmDeal, windowStart string) (delivered, tracked, manual map[string]int64) {
+	delivered = map[string]int64{}
+	tracked = map[string]int64{}
+	manual = map[string]int64{}
+
+	scan := func(q string, dst map[string]int64, args ...interface{}) {
+		rows, err := h.db.Query(q, args...)
+		if err != nil {
+			log.Printf("[CpmPlanner] monthly aggregate for deal %s: %v", d.ID, err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ym string
+			var n int64
+			if err := rows.Scan(&ym, &n); err == nil {
+				dst[ym] = n
+			}
+		}
+	}
+
+	// Delivered by Denver month across the full attributed campaign set.
+	// The bare `event_at >= …` bound is REQUIRED for partition pruning:
+	// mailing_tracking_events is RANGE-partitioned on event_at, and the Denver
+	// reprojection below buries the key in a STABLE expr the planner can't prune
+	// on — without the raw bound this scans every partition, per deal (cf. the
+	// loadCapacity C4 hazard). Widened one day so no Denver-month-boundary event
+	// (UTC is ahead of Denver) is dropped; the Denver ::date filter is exact.
+	scan(`
+		SELECT to_char(event_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
+		       COUNT(*) FILTER (WHERE event_type = 'delivered')
+		FROM mailing_tracking_events
+		WHERE organization_id = $1
+		  AND event_at >= ($6::date - INTERVAL '1 day')
+		  AND (event_at AT TIME ZONE 'America/Denver')::date >= $6::date
+		  AND campaign_id IN `+dealCampaignSetSubquery()+`
+		GROUP BY 1`,
+		delivered, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern, windowStart)
+
+	// Tracked conversions by Denver month (everflow postback suppressions).
+	if d.OfferID != "" {
+		scan(`
+			SELECT to_char(suppressed_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym, COUNT(*)
+			FROM mailing_offer_suppressions
+			WHERE organization_id = $1 AND offer_id = NULLIF($2,'')::uuid
+			  AND reason = 'converted'
+			  AND (suppressed_at AT TIME ZONE 'America/Denver')::date >= $3::date
+			GROUP BY 1`,
+			tracked, orgID, d.OfferID, windowStart)
+	}
+
+	// Manual conversions bucketed by their STORED (UTC) date, NOT reprojected to
+	// Denver: a bare-date quick-add ("2026-06-01") is timezone-naive, stored as
+	// UTC midnight; reprojecting it through Denver would shift it to the prior
+	// day/month (June 1 → May 31) and mis-bucket or drop the operator's entry.
+	// UTC bucketing recovers exactly the date the operator typed.
+	scan(`
+		SELECT to_char(converted_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym, COALESCE(SUM(count), 0)
+		FROM mailing_cpm_manual_conversions
+		WHERE organization_id = $1 AND deal_id = $2
+		  AND (converted_at AT TIME ZONE 'UTC')::date >= $3::date
+		GROUP BY 1`,
+		manual, orgID, d.ID, windowStart)
+	return
+}
+
+// HandleMonths GET /cpm-planner/months?months=N
+// Per calendar month: portfolio roll-up + per-deal TARGET vs LIVE actuals.
+// Covers the last N months (default 6, clamp 1..24) plus any month carrying a
+// target row (so a future planning month appears). Newest month first.
+func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	n := 6
+	if v := r.URL.Query().Get("months"); v != "" {
+		if k, err := strconv.Atoi(v); err == nil && k >= 1 && k <= 24 {
+			n = k
+		}
+	}
+
+	// Current Denver month from the DB (avoids a Go tzdata dependency).
+	var curMonth time.Time
+	if err := h.db.QueryRow(`SELECT (date_trunc('month', NOW() AT TIME ZONE 'America/Denver'))::date`).Scan(&curMonth); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("current month: %v", err))
+		return
+	}
+	curMonth = time.Date(curMonth.Year(), curMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastNStart := curMonth.AddDate(0, -(n - 1), 0)
+
+	// Expand the reported range to include any target month, bounded to
+	// [now-24mo, now+12mo] so a stray far-future target can't blow up the range.
+	floorM := curMonth.AddDate(0, -24, 0)
+	ceilM := curMonth.AddDate(0, 12, 0)
+	minMonth, maxMonth := lastNStart, curMonth
+	if rows, err := h.db.Query(`
+		SELECT DISTINCT month FROM mailing_cpm_deal_monthly_targets
+		WHERE organization_id = $1 AND month >= $2 AND month <= $3`, orgID, floorM, ceilM); err == nil {
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var m time.Time
+				if err := rows.Scan(&m); err != nil {
+					continue
+				}
+				m = time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC)
+				if m.Before(minMonth) {
+					minMonth = m
+				}
+				if m.After(maxMonth) {
+					maxMonth = m
+				}
+			}
+		}()
+	} else {
+		log.Printf("[CpmPlanner] months target-range scan: %v", err)
+	}
+
+	deals, err := h.loadDealsLite(orgID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deals: %v", err))
+		return
+	}
+
+	windowStart := minMonth.Format("2006-01-02")
+
+	// targets[dealID][ym] = target row
+	targets := map[string]map[string]cpmMonthlyTarget{}
+	if rows, err := h.db.Query(`
+		SELECT deal_id::text, to_char(month, 'YYYY-MM'),
+		       target_budget, target_volume, target_ecpm, target_ecpa, COALESCE(notes, '')
+		FROM mailing_cpm_deal_monthly_targets
+		WHERE organization_id = $1 AND month >= $2`, orgID, minMonth); err == nil {
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var dealID, ym, notes string
+				var budget, ecpm, ecpa sql.NullFloat64
+				var volume sql.NullInt64
+				if err := rows.Scan(&dealID, &ym, &budget, &volume, &ecpm, &ecpa, &notes); err != nil {
+					continue
+				}
+				t := cpmMonthlyTarget{Notes: notes}
+				if budget.Valid {
+					v := budget.Float64
+					t.Budget = &v
+				}
+				if volume.Valid {
+					v := volume.Int64
+					t.Volume = &v
+				}
+				if ecpm.Valid {
+					v := ecpm.Float64
+					t.Ecpm = &v
+				}
+				if ecpa.Valid {
+					v := ecpa.Float64
+					t.Ecpa = &v
+				}
+				if targets[dealID] == nil {
+					targets[dealID] = map[string]cpmMonthlyTarget{}
+				}
+				targets[dealID][ym] = t
+			}
+		}()
+	} else {
+		log.Printf("[CpmPlanner] months target load: %v", err)
+	}
+
+	// Per-deal monthly actuals.
+	type dealActuals struct{ delivered, tracked, manual map[string]int64 }
+	actuals := map[string]dealActuals{}
+	for i := range deals {
+		dv, tr, mn := h.loadDealMonthlyActuals(orgID, &deals[i], windowStart)
+		actuals[deals[i].ID] = dealActuals{delivered: dv, tracked: tr, manual: mn}
+	}
+
+	curYM := curMonth.Format("2006-01")
+	out := []cpmMonthRow{}
+	// Iterate newest month first.
+	for m := maxMonth; !m.Before(minMonth); m = m.AddDate(0, -1, 0) {
+		ym := m.Format("2006-01")
+		row := cpmMonthRow{Month: ym, IsCurrent: ym == curYM, IsFuture: m.After(curMonth)}
+		for di := range deals {
+			d := &deals[di]
+			tgt, hasTgt := targets[d.ID][ym]
+			da := actuals[d.ID]
+			delivered := da.delivered[ym]
+			tracked := da.tracked[ym]
+			manual := da.manual[ym]
+			conv := cpmMonthlyConversions(tracked, manual)
+			// Include a deal in a month only if it has a target or real activity.
+			if !hasTgt && delivered == 0 && conv == 0 {
+				continue
+			}
+			ecpm := d.EcpmGoal
+			if hasTgt && tgt.Ecpm != nil && *tgt.Ecpm > 0 {
+				ecpm = *tgt.Ecpm
+			}
+			revenue := cpmMonthlyRevenue(delivered, ecpm)
+			row.Deals = append(row.Deals, cpmMonthDeal{
+				DealID: d.ID, Name: d.Name, OfferName: d.OfferName,
+				HasTarget: hasTgt, Target: tgt,
+				Delivered: delivered, Revenue: revenue, Conversions: conv,
+				ConversionsTracked: tracked, ConversionsManual: manual, Ecpm: ecpm,
+			})
+			row.Portfolio.Delivered += delivered
+			row.Portfolio.Revenue += revenue
+			row.Portfolio.Conversions += conv
+			if hasTgt {
+				if tgt.Budget != nil {
+					row.Portfolio.TargetBudget += *tgt.Budget
+				}
+				if tgt.Volume != nil {
+					row.Portfolio.TargetVolume += *tgt.Volume
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"months": out, "current_month": curYM})
+}
+
+// parseMonthArg normalizes a {month} path param ("YYYY-MM" or "YYYY-MM-DD") to
+// the first-of-month date (UTC midnight).
+func parseMonthArg(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse("2006-01", s); err == nil {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC), nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC), nil
+	}
+	return time.Time{}, fmt.Errorf("invalid month %q (want YYYY-MM)", s)
+}
+
+// HandleUpsertMonthlyTarget PUT /cpm-planner/deals/{id}/monthly/{month}
+// Org-scoped upsert of a deal's monthly target. Numeric fields are partial-merge
+// (COALESCE keeps existing when omitted); notes is replaced.
+func (h *CpmPlannerHandlers) HandleUpsertMonthlyTarget(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	month, err := parseMonthArg(chi.URLParam(r, "month"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var exists bool
+	if err := h.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM mailing_cpm_deals WHERE id = $1 AND organization_id = $2)`,
+		dealID, orgID).Scan(&exists); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("verify deal: %v", err))
+		return
+	}
+	if !exists {
+		respondError(w, http.StatusNotFound, "deal not found")
+		return
+	}
+	var in cpmMonthlyTargetInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	// notes is partial-merge like the numeric fields: omitted (nil) leaves the
+	// stored note untouched; provided (even "") replaces it. Kept NULL when
+	// omitted so the ON CONFLICT COALESCE preserves the existing value.
+	var notes interface{}
+	if in.Notes != nil {
+		notes = strings.TrimSpace(*in.Notes)
+	}
+	var budget, volume, ecpm, ecpa interface{}
+	if in.Budget != nil {
+		budget = *in.Budget
+	}
+	if in.Volume != nil {
+		volume = *in.Volume
+	}
+	if in.Ecpm != nil {
+		ecpm = *in.Ecpm
+	}
+	if in.Ecpa != nil {
+		ecpa = *in.Ecpa
+	}
+	if _, err := h.db.Exec(`
+		INSERT INTO mailing_cpm_deal_monthly_targets
+			(organization_id, deal_id, month, target_budget, target_volume, target_ecpm, target_ecpa, notes)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, ''))
+		ON CONFLICT (deal_id, month) DO UPDATE SET
+			target_budget = COALESCE(EXCLUDED.target_budget, mailing_cpm_deal_monthly_targets.target_budget),
+			target_volume = COALESCE(EXCLUDED.target_volume, mailing_cpm_deal_monthly_targets.target_volume),
+			target_ecpm   = COALESCE(EXCLUDED.target_ecpm,   mailing_cpm_deal_monthly_targets.target_ecpm),
+			target_ecpa   = COALESCE(EXCLUDED.target_ecpa,   mailing_cpm_deal_monthly_targets.target_ecpa),
+			notes         = COALESCE($8, mailing_cpm_deal_monthly_targets.notes),
+			updated_at    = NOW()`,
+		orgID, dealID, month, budget, volume, ecpm, ecpa, notes); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("upsert target: %v", err))
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"deal_id": dealID, "month": month.Format("2006-01"), "status": "saved",
+	})
+}
+
+// HandleDeleteMonthlyTarget DELETE /cpm-planner/deals/{id}/monthly/{month}
+func (h *CpmPlannerHandlers) HandleDeleteMonthlyTarget(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	dealID := chi.URLParam(r, "id")
+	month, err := parseMonthArg(chi.URLParam(r, "month"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := h.db.Exec(
+		`DELETE FROM mailing_cpm_deal_monthly_targets WHERE organization_id = $1 AND deal_id = $2 AND month = $3`,
+		orgID, dealID, month)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("delete target: %v", err))
+		return
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		respondError(w, http.StatusNotFound, "target not found")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"deal_id": dealID, "month": month.Format("2006-01"), "status": "deleted",
+	})
 }

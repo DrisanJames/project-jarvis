@@ -1298,6 +1298,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Get("/deals/{id}/campaign-candidates", cpmPlanner.HandleDealCampaignCandidates)
 				cp.Get("/capacity", cpmPlanner.HandleCapacity)
 				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
+				// Monthly historics & planning (operator 2026-06-30): per calendar
+				// month portfolio + per-deal TARGET vs LIVE actuals; set monthly targets.
+				cp.Get("/months", cpmPlanner.HandleMonths)
+				cp.Put("/deals/{id}/monthly/{month}", cpmPlanner.HandleUpsertMonthlyTarget)
+				cp.Delete("/deals/{id}/monthly/{month}", cpmPlanner.HandleDeleteMonthlyTarget)
 			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===
