@@ -183,7 +183,7 @@ func (s *Store) createConditionGroup(ctx context.Context, tx *sql.Tx, segmentID 
 // GetSegment retrieves a segment by ID
 func (s *Store) GetSegment(ctx context.Context, orgID, segmentID uuid.UUID) (*Segment, error) {
 	query := `
-		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type, ms.conditions,
+		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, COALESCE(ms.description, ''), ms.segment_type, ms.conditions,
 			COALESCE(ms.category, 'uncategorized'),
 			ms.calculation_mode, ms.refresh_interval_minutes, ms.include_suppressed,
 			ms.global_exclusion_rules, ms.subscriber_count, ms.last_calculated_at, ms.status,
@@ -472,7 +472,7 @@ func (s *Store) ListSegments(ctx context.Context, orgID uuid.UUID, listID *uuid.
 // exactly (same SQL predicates, same ordering, no LIMIT/OFFSET).
 func (s *Store) ListSegmentsFiltered(ctx context.Context, orgID uuid.UUID, listID *uuid.UUID, f SegmentListFilter) ([]*Segment, error) {
 	query := `
-		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type,
+		SELECT ms.id, ms.organization_id, ms.list_id, ms.name, COALESCE(ms.description, ''), ms.segment_type,
 			COALESCE(ms.category, 'uncategorized'),
 			ms.subscriber_count, ms.last_calculated_at, ms.status,
 			(ss.segment_id IS NOT NULL), COALESCE(ss.system_query, ''),

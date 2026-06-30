@@ -5,10 +5,11 @@ import {
   faChartLine, faUpRightFromSquare,
 } from '@fortawesome/free-solid-svg-icons';
 import {
-  ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip,
   Legend, CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { apiFetch } from '../../shared/apiFetch';
+import { colors as theme } from '../../shared/theme';
 import {
   DetailResponse, TimeseriesResponse, fmtDenverTime, fmtWindow, numFmt,
 } from './types';
@@ -36,12 +37,12 @@ const LABEL: React.CSSProperties = {
 };
 
 const SERIES_COLORS: Record<string, string> = {
-  attempted: '#818cf8',
-  delivered: '#22c55e',
-  opens: '#38bdf8',
+  attempted: theme.indigo400,
+  delivered: theme.success,
+  opens: theme.indigo300,
   clicks: '#c084fc',
-  unsubscribes: '#f97316',
-  bounces: '#ef4444',
+  unsubscribes: theme.warning,
+  bounces: theme.danger,
 };
 
 const ISP_LABELS: Record<string, string> = {
@@ -221,36 +222,43 @@ export const CampaignExpand: React.FC<{
             No tracking events in the send window yet.
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={250}>
-            <ComposedChart data={chartData} margin={{ top: 6, right: 12, bottom: 0, left: -10 }}>
-              <CartesianGrid stroke="rgba(99,102,241,0.08)" />
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="campaignPaceFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={theme.indigo500} stopOpacity={0.55} />
+                  <stop offset="100%" stopColor={theme.indigo500} stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
               <XAxis
                 dataKey="ts" type="number" scale="time" domain={['dataMin', 'dataMax']}
-                tickFormatter={fmtTick} stroke="#475569" fontSize={11}
+                tickFormatter={fmtTick} tick={{ fill: '#94a3b8', fontSize: 11 }}
+                interval="preserveStartEnd" minTickGap={40}
               />
-              <YAxis stroke="#475569" fontSize={11} allowDecimals={false} />
+              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} width={52} allowDecimals={false} />
               <Tooltip
                 labelFormatter={(v) => fmtTick(Number(v))}
                 contentStyle={{
-                  background: '#0f1629', border: '1px solid rgba(99,102,241,0.35)',
-                  borderRadius: 8, fontSize: 12,
+                  background: '#0f172a', border: '1px solid rgba(99,102,241,0.4)',
+                  borderRadius: 8, color: '#e5e7eb', fontSize: 12,
                 }}
-                labelStyle={{ color: '#94a3b8' }}
+                labelStyle={{ color: '#dbeafe' }}
               />
-              <Legend wrapperStyle={{ fontSize: 11.5 }} />
+              <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
               {waves.map(w => (
                 <ReferenceLine
                   key={`w${w.wave_number}-${w.scheduled_at}`}
                   x={new Date(w.scheduled_at).getTime()}
-                  stroke="#6366f1" strokeDasharray="4 4" strokeOpacity={0.55}
+                  stroke={theme.indigo500} strokeDasharray="4 4" strokeOpacity={0.55}
                 />
               ))}
-              <Line type="monotone" dataKey="attempted" name="Attempted" stroke={SERIES_COLORS.attempted} dot={false} strokeWidth={1.6} />
-              <Line type="monotone" dataKey="delivered" name="Delivered" stroke={SERIES_COLORS.delivered} dot={false} strokeWidth={1.6} />
-              <Line type="monotone" dataKey="opens" name="Opens (human)" stroke={SERIES_COLORS.opens} dot={false} strokeWidth={1.4} />
-              <Line type="monotone" dataKey="clicks" name="Clicks" stroke={SERIES_COLORS.clicks} dot={false} strokeWidth={1.4} />
-              <Line type="monotone" dataKey="unsubscribes" name="Unsubs" stroke={SERIES_COLORS.unsubscribes} dot={false} strokeWidth={1.2} />
-              <Line type="monotone" dataKey="bounces" name="Bounces" stroke={SERIES_COLORS.bounces} dot={false} strokeWidth={1.2} />
+              <Area type="monotone" dataKey="attempted" name="Attempted" stroke={SERIES_COLORS.attempted} strokeWidth={2} fill="url(#campaignPaceFill)" />
+              <Line type="monotone" dataKey="delivered" name="Delivered" stroke={SERIES_COLORS.delivered} dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="opens" name="Opens (human)" stroke={SERIES_COLORS.opens} dot={false} strokeWidth={1.6} />
+              <Line type="monotone" dataKey="clicks" name="Clicks" stroke={SERIES_COLORS.clicks} dot={false} strokeWidth={1.6} />
+              <Line type="monotone" dataKey="unsubscribes" name="Unsubs" stroke={SERIES_COLORS.unsubscribes} dot={false} strokeWidth={1.4} />
+              <Line type="monotone" dataKey="bounces" name="Bounces" stroke={SERIES_COLORS.bounces} dot={false} strokeWidth={1.4} />
             </ComposedChart>
           </ResponsiveContainer>
         )}

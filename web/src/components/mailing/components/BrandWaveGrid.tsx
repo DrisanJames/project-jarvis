@@ -12,6 +12,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
+import { SideShelf } from './shared/SideShelf';
+import { colors, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
+import { SectionHeader, SectionError, EmptyState, Pill } from '../shared/ui';
 
 const DEFAULT_ORG = '00000000-0000-0000-0000-000000000001';
 const TZ = 'America/Denver';
@@ -144,32 +147,68 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
   useEffect(() => { void load(); }, [load]);
 
-  // Per-ISP drill-down: clicking a cell shows that brand×wave's declared volume broken
-  // out by ISP (summed isp_quotas across its split campaigns, fetched lazily from edit-data).
+  // Brand×wave drill-down: clicking a volume cell opens a SideShelf showing
+  //  (a) ISP COMPOSITION — summed isp_quotas across the cell's split campaigns,
+  //      read from each campaign's pmta_config.campaign_input.isp_quotas
+  //      ([{isp, volume}]) via the existing edit-data endpoint; and
+  //  (b) SEGMENTS USED — the audience (segment/list ids) the campaigns target,
+  //      with human labels pulled from GET /api/mailing/campaigns/{id}
+  //      (segment_name / list_name), falling back to ids where no name exists.
   type Sel = { wave: string; domain: string; label: string; offer: string; volume: number; ids: string[] };
+  interface Audience { id: string; name?: string }
+  interface Drill { isp: Record<string, number>; targeted: string[]; segments: Audience[]; lists: Audience[] }
+  type DrillState = 'loading' | 'error' | Drill;
   const [selected, setSelected] = useState<Sel | null>(null);
-  const [ispDetail, setIspDetail] = useState<Record<string, Record<string, number> | 'loading' | 'error'>>({});
+  const [drill, setDrill] = useState<Record<string, DrillState>>({});
   useEffect(() => { setSelected(null); }, [date]);   // clear the drill-down when the date changes
 
   const openCell = useCallback(async (sel: Sel) => {
     setSelected(sel);
     const key = `${sel.wave}|${sel.domain}`;
-    setIspDetail(prev => (prev[key] && prev[key] !== 'error' ? prev : { ...prev, [key]: 'loading' }));
+    const cached = drill[key];
+    if (cached && cached !== 'error') return;          // already loaded — just reopen the shelf
+    setDrill(prev => ({ ...prev, [key]: 'loading' }));
     try {
-      const agg: Record<string, number> = {};
+      const isp: Record<string, number> = {};
+      const targeted = new Set<string>();
+      const segMap = new Map<string, Audience>();
+      const listMap = new Map<string, Audience>();
+      const add = (m: Map<string, Audience>, id: unknown, name?: unknown) => {
+        const sid = id == null ? '' : String(id).trim();
+        if (!sid) return;
+        const nm = typeof name === 'string' && name.trim() ? name.trim() : undefined;
+        const prev = m.get(sid);
+        m.set(sid, { id: sid, name: nm ?? prev?.name });
+      };
       for (const id of sel.ids) {
-        const r = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
-        if (!r.ok) continue;
-        const j = await r.json();
-        const ci = j.campaign_input ?? j;
-        for (const q of (ci.isp_quotas ?? [])) agg[q.isp] = (agg[q.isp] || 0) + (q.volume || 0);
-        for (const isp of (ci.target_isps ?? [])) if (agg[isp] == null) agg[isp] = 0;  // show targeted ISPs even at 0/uncapped
+        // (a) ISP composition — pmta_config.campaign_input.isp_quotas (edit-data).
+        const re = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
+        if (re.ok) {
+          const je = await re.json();
+          const ci = je.campaign_input ?? je;
+          for (const q of (ci.isp_quotas ?? [])) if (q && q.isp) isp[q.isp] = (isp[q.isp] || 0) + (q.volume || 0);
+          for (const t of (ci.target_isps ?? [])) {
+            const nm = typeof t === 'string' ? t : (t?.name ?? t?.isp);
+            if (nm) targeted.add(String(nm).toLowerCase());
+          }
+          for (const s of (ci.inclusion_segments ?? [])) add(segMap, s);
+          for (const l of (ci.inclusion_lists ?? [])) add(listMap, l);
+        }
+        // (b) Human audience labels — GET /api/mailing/campaigns/{id}.
+        const rc = await fetch(`/api/mailing/campaigns/${id}`, { headers });
+        if (rc.ok) {
+          const jc = await rc.json();
+          const sids: unknown[] = Array.isArray(jc.segment_ids) ? jc.segment_ids : (jc.segment_id ? [jc.segment_id] : []);
+          sids.forEach((s, i) => add(segMap, s, i === 0 ? jc.segment_name : undefined));
+          const lids: unknown[] = Array.isArray(jc.list_ids) ? jc.list_ids : (jc.list_id ? [jc.list_id] : []);
+          lids.forEach((l, i) => add(listMap, l, i === 0 ? jc.list_name : undefined));
+        }
       }
-      setIspDetail(prev => ({ ...prev, [key]: agg }));
+      setDrill(prev => ({ ...prev, [key]: { isp, targeted: [...targeted], segments: [...segMap.values()], lists: [...listMap.values()] } }));
     } catch {
-      setIspDetail(prev => ({ ...prev, [key]: 'error' }));
+      setDrill(prev => ({ ...prev, [key]: 'error' }));
     }
-  }, [headers]);
+  }, [headers, drill]);
 
   // Build the (domain × wave) matrix. Brand IDENTITY = the authoritative from_email DOMAIN
   // (so two domains can never collapse into one column, and a stray dash in a label can't
@@ -212,6 +251,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
   return (
     <div>
+      <style>{`.bwg-cell{transition:background 120ms ease} .bwg-cell:hover{background:rgba(99,102,241,0.12)}`}</style>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(220,235,250,0.92)' }}>
           {brands.length} brands · {waves.length} send batches · {num(grandTotal)} planned
@@ -248,17 +288,29 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                     if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
                     const isSel = selected?.wave === w && selected?.domain === b.domain;
                     const st = cellStatus(cell.statuses);
-                    // Cell shows just the DECLARED VOLUME (+ offer); click to drill into per-ISP.
+                    const clickable = cell.volume > 0;
+                    // Cell shows just the DECLARED VOLUME (+ offer); click to drill into the
+                    // per-ISP composition + segments. Zero-volume cells aren't clickable.
+                    const inner = (
+                      <>
+                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
+                      </>
+                    );
                     return (
                       <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
-                        <button
-                          onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
-                          title="Click for volumes by mailbox provider"
-                          style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
-                        >
-                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
-                        </button>
+                        {clickable ? (
+                          <button
+                            className="bwg-cell"
+                            onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
+                            title="Click for ISP composition + segments"
+                            style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%', borderRadius: 4 }}
+                          >
+                            {inner}
+                          </button>
+                        ) : (
+                          <div style={{ display: 'block', width: '100%' }}>{inner}</div>
+                        )}
                       </td>
                     );
                   })}
@@ -270,29 +322,112 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
       </div>
       {selected && (() => {
         const key = `${selected.wave}|${selected.domain}`;
-        const d = ispDetail[key];
-        const obj = d && typeof d === 'object' ? d : null;
-        const total = obj ? Object.values(obj).reduce((s, n) => s + n, 0) : 0;
+        const d = drill[key];
         return (
-          <div style={detailPanel}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 13 }}>
-                <b style={{ color: '#00e5ff' }}>{selected.label}</b> · {selected.wave} · {selected.offer} · <b>{num(selected.volume)}</b> declared
+          <SideShelf
+            onClose={() => setSelected(null)}
+            title={
+              <span>
+                <span style={{ color: colors.indigo300 }}>{selected.label}</span>
+                {' · '}{selected.wave}{' · '}{selected.offer}
               </span>
-              <button onClick={() => setSelected(null)} style={closeBtn}>✕</button>
-            </div>
-            {d === 'loading' ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>loading volumes by mailbox provider…</div>
-              : d === 'error' ? <div style={{ fontSize: 12, color: '#e94560', marginTop: 6 }}>failed to load per-provider volumes</div>
-              : obj ? (
-                total === 0 ? <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', marginTop: 6 }}>uncapped (audience-bound) — targets {ISP_ORDER.filter(i => obj[i] != null).map(i => ISP_LABEL[i] ?? i).join(', ') || '—'}</div>
-                : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                    {ISP_ORDER.filter(isp => obj[isp] != null).map(isp => (
-                      <span key={isp} style={ispChip}>{ISP_LABEL[isp] ?? isp}: <b style={{ color: '#cbd5f5' }}>{num(obj[isp])}</b></span>
-                    ))}
-                    <span style={{ ...ispChip, borderColor: 'rgba(0,229,255,0.4)' }}>Σ by provider: <b style={{ color: '#00e5ff' }}>{num(total)}</b></span>
+            }
+          >
+            <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 22 }}>
+              <div style={{ fontSize: 12, color: colors.textMuted }}>
+                <b style={{ color: colors.text, fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{num(selected.volume)}</b> declared
+                {' · '}{selected.ids.length} split campaign{selected.ids.length === 1 ? '' : 's'}
+              </div>
+
+              {/* ISP COMPOSITION */}
+              <div>
+                <SectionHeader title="ISP Composition" />
+                {d === 'loading' ? (
+                  <EmptyState title="Loading volumes by mailbox provider…" />
+                ) : d === 'error' ? (
+                  <SectionError label="ISP composition" />
+                ) : (() => {
+                  const rows = Object.entries(d.isp)
+                    .filter(([, v]) => v > 0)
+                    .sort((a, b) => b[1] - a[1] || ISP_ORDER.indexOf(a[0]) - ISP_ORDER.indexOf(b[0]));
+                  const total = rows.reduce((s, [, v]) => s + v, 0);
+                  if (total === 0) {
+                    const t = d.targeted.map(i => ISP_LABEL[i] ?? i).join(', ');
+                    return <EmptyState title="Uncapped (audience-bound)" hint={t ? `Targets ${t}` : 'No per-provider quotas declared'} />;
+                  }
+                  return (
+                    <table style={tableStyle}>
+                      <thead>
+                        <tr>
+                          <th style={thStyle}>Mailbox Provider</th>
+                          <th style={numTh}>Volume</th>
+                          <th style={numTh}>Share</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(([isp, vol]) => (
+                          <tr key={isp}>
+                            <td style={{ ...tdStyle, fontWeight: 600, color: colors.heading }}>{ISP_LABEL[isp] ?? isp}</td>
+                            <td style={numTd}>{num(vol)}</td>
+                            <td style={numTd}>{((vol / total) * 100).toFixed(1)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td style={{ ...tdStyle, fontWeight: 700, color: colors.indigo200 }}>Σ by provider</td>
+                          <td style={{ ...numTd, fontWeight: 700, color: colors.indigo200 }}>{num(total)}</td>
+                          <td style={numTd}>100%</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  );
+                })()}
+              </div>
+
+              {/* SEGMENTS USED */}
+              <div>
+                <SectionHeader title="Segments Used" />
+                {d === 'loading' ? (
+                  <EmptyState title="Loading audience…" />
+                ) : d === 'error' ? (
+                  <SectionError label="Segments" />
+                ) : (d.segments.length === 0 && d.lists.length === 0) ? (
+                  <EmptyState title="No segments or lists referenced" hint="These campaigns expose no audience ids." />
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {d.segments.length > 0 && (
+                      <div>
+                        <div style={shelfLabel}>Segments</div>
+                        <div style={pillWrap}>
+                          {d.segments.map(s => (
+                            <Pill key={s.id} color={colors.indigo400} style={{ textTransform: 'none' }}>
+                              <span title={s.id}>{s.name ?? shortId(s.id)}</span>
+                            </Pill>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {d.lists.length > 0 && (
+                      <div>
+                        <div style={shelfLabel}>Inclusion lists</div>
+                        <div style={pillWrap}>
+                          {d.lists.map(l => (
+                            <Pill key={l.id} color={colors.indigo300} style={{ textTransform: 'none' }}>
+                              <span title={l.id}>{l.name ?? shortId(l.id)}</span>
+                            </Pill>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: colors.textFaint }}>
+                      Labels from campaign detail (segment_name / list_name); a short id is shown where a name isn&apos;t exposed.
+                    </div>
                   </div>
-              ) : null}
-          </div>
+                )}
+              </div>
+            </div>
+          </SideShelf>
         );
       })()}
     </div>
@@ -301,17 +436,11 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
 export default BrandWaveGrid;
 
-const detailPanel: React.CSSProperties = {
-  marginTop: 12, padding: '12px 14px', borderRadius: 8,
-  background: 'rgba(0,229,255,0.05)', border: '1px solid rgba(0,229,255,0.25)',
+const shortId = (id: string): string => (id.length > 12 ? `${id.slice(0, 8)}…` : id);
+const shelfLabel: React.CSSProperties = {
+  fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: colors.textMuted, marginBottom: 7,
 };
-const closeBtn: React.CSSProperties = {
-  background: 'transparent', border: 'none', color: 'rgba(180,210,240,0.7)', cursor: 'pointer', fontSize: 14,
-};
-const ispChip: React.CSSProperties = {
-  fontSize: 11, padding: '3px 9px', borderRadius: 999,
-  background: 'rgba(13,21,38,0.8)', border: '1px solid rgba(0,200,255,0.15)', color: 'rgba(220,235,250,0.85)',
-};
+const pillWrap: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8 };
 
 const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'rgba(180,210,240,0.75)' };
 const thBase: React.CSSProperties = {

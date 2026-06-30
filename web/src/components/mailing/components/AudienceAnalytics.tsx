@@ -76,6 +76,10 @@ interface AudienceLakeStatus {
   enabled_read: boolean;
   latest_dt: string;   // '' when no snapshot has been taken yet
   rows: number;
+  // 'pg_fallback' when the daily Glue snapshot has not been built and the
+  // server is computing the figures live from the mailing_subscribers table.
+  // latest_dt is then a synthetic "today" so the analytics tabs activate.
+  source?: 'pg_fallback' | 'athena';
 }
 
 interface AudBreakdownRow {
@@ -91,6 +95,7 @@ interface AudBreakdownResponse {
   truncated?: boolean;
   empty?: boolean;
   disabled?: boolean;
+  source?: 'pg_fallback' | 'athena';
 }
 
 interface SourcePerfRow {
@@ -2310,6 +2315,10 @@ export const AudienceAnalytics: React.FC = () => {
 
   const readEnabled = !!status?.enabled_read;
   const hasSnapshot = !!status?.latest_dt;
+  // PG fallback: the daily Glue snapshot has not been built, so the server is
+  // serving live figures computed from mailing_subscribers. latest_dt is a
+  // synthetic "today", so hasSnapshot is true and the tabs activate normally.
+  const isPgFallback = status?.source === 'pg_fallback';
 
   const fetchStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -2439,6 +2448,26 @@ export const AudienceAnalytics: React.FC = () => {
         </div>
       )}
 
+      {/* ─── Live Postgres fallback notice ─────────────────────── */}
+      {status && readEnabled && hasSnapshot && isPgFallback && (
+        <div style={styles.pgFallbackCard}>
+          <FontAwesomeIcon icon={faInfoCircle} style={{ fontSize: 22, color: COLORS.accent }} />
+          <div style={{ flex: 1 }}>
+            <div style={styles.pgFallbackTitle}>Live data from the subscribers table</div>
+            <div style={styles.pgFallbackBody}>
+              The daily per-member audience snapshot has not been built yet, so these figures are computed
+              live from <b>mailing_subscribers</b> (refreshed every load), not the 07:00 UTC snapshot.
+              Acquisition is dated by <code style={styles.pgCode}>subscribed_at</code>/<code style={styles.pgCode}>created_at</code>;
+              churn uses subscriber <code style={styles.pgCode}>status</code>; source performance uses lifetime
+              per-subscriber open/click/delivery aggregates (so the events window does not apply); engagement bands
+              are derived from <code style={styles.pgCode}>engagement_score</code>. Hard and soft bounces are never
+              combined — soft bounces are not tracked at the subscriber level, so only hard appears. Member event
+              history and the ISP / Source System breakdowns are unavailable until the snapshot lands.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── Tabs (only when read enabled + snapshot present) ──── */}
       {status && readEnabled && hasSnapshot && (
         <>
@@ -2490,8 +2519,8 @@ export const AudienceAnalytics: React.FC = () => {
       {/* ─── Footer / version stripe ───────────────────────────── */}
       <div style={styles.footer}>
         <span>Page: Audience Analytics v{PAGE_VERSION}</span>
-        <span>Source: audience snapshots + email events (analytics database)</span>
-        <span>Snapshot: {status?.latest_dt || 'none'}</span>
+        <span>Source: {isPgFallback ? 'live mailing_subscribers (PG fallback)' : 'audience snapshots + email events (analytics database)'}</span>
+        <span>Snapshot: {isPgFallback ? `pg_fallback ${status?.latest_dt || ''}` : (status?.latest_dt || 'none')}</span>
         <span>Read {readEnabled ? 'enabled' : 'off'}</span>
       </div>
     </div>
@@ -2570,6 +2599,18 @@ const styles: Record<string, React.CSSProperties> = {
   darkTitle: { fontSize: 16, fontWeight: 700, color: COLORS.textPrimary, marginBottom: 6 },
   darkBody: { fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.6, maxWidth: 760 },
   darkHint: { fontSize: 12, color: COLORS.textMuted, marginTop: 12 },
+  pgFallbackCard: {
+    display: 'flex', gap: 14, alignItems: 'flex-start',
+    padding: '14px 18px', background: COLORS.accent + '12',
+    border: `1px solid ${COLORS.accent}44`, borderRadius: 10,
+    marginBottom: 20,
+  },
+  pgFallbackTitle: { fontSize: 14, fontWeight: 700, color: COLORS.accentAlt, marginBottom: 4 },
+  pgFallbackBody: { fontSize: 12.5, color: COLORS.textSecondary, lineHeight: 1.6, maxWidth: 880 },
+  pgCode: {
+    fontFamily: 'monospace', fontSize: 11.5, color: COLORS.accentAlt,
+    background: COLORS.accent + '14', padding: '1px 5px', borderRadius: 4,
+  },
 
   // ── Tab nav ──
   tabNav: {

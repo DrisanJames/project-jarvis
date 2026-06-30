@@ -18,7 +18,7 @@
 // form — it still answers "when do I need to upload more data per ISP?".
 //
 // Backend: internal/api/audience_cadence_kpis.go
-//   GET /api/mailing/audience-cadence/kpis?days=60
+//   GET /api/mailing/audience-cadence/kpis?days=14
 //   GET /api/mailing/audience-cadence/doctrines
 //   PUT /api/mailing/audience-cadence/doctrines/{isp}
 
@@ -250,7 +250,7 @@ function globalHeadline(isps: CadenceISPKPI[]): string | null {
 // ─── Main component (export name kept — existing mount depends on it) ──────
 
 export const AudienceCadenceByCell: React.FC = () => {
-  const [days, setDays] = useState<number>(60);
+  const [days, setDays] = useState<number>(14);
   const [data, setData] = useState<CadenceKPIResponse | null>(null);
   const [doctrines, setDoctrines] = useState<Record<string, ISPDoctrine>>({});
   const [loading, setLoading] = useState(true);
@@ -417,7 +417,7 @@ export const AudienceCadenceByCell: React.FC = () => {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {[30, 60, 90].map((d) => (
+          {[7, 14, 30].map((d) => (
             <button
               key={d}
               style={{

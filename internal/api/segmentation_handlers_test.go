@@ -77,7 +77,7 @@ func TestSegmentationUpdateReturnsBadRequestForValidationErrors(t *testing.T) {
 	api.RegisterRoutes(router)
 
 	segmentID := uuid.New()
-	mock.ExpectQuery("SELECT ms.id, ms.organization_id, ms.list_id, ms.name, ms.description, ms.segment_type, ms.conditions,").
+	mock.ExpectQuery("SELECT ms.id, ms.organization_id, ms.list_id, ms.name,").
 		WithArgs(segmentID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 

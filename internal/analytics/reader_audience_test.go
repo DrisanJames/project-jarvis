@@ -32,7 +32,7 @@ func TestBuildAudienceBreakdownSQL(t *testing.T) {
 		{
 			"one-dim-defaults",
 			AudienceBreakdownFilter{Dt: "2026-06-08", GroupBy: []string{"status"}},
-			"SELECT status, COUNT(*) c, ROUND(AVG(engagement_score), 2) FROM audience" +
+			"SELECT status, COUNT(*) c, ROUND(AVG(TRY_CAST(engagement_score AS double)), 2) FROM audience" +
 				" WHERE dt = '2026-06-08'" +
 				" GROUP BY status ORDER BY c DESC LIMIT 1000",
 		},
@@ -56,7 +56,7 @@ func TestBuildAudienceBreakdownSQL(t *testing.T) {
 				ChurnedTo:    "2026-06-08",
 				Limit:        50,
 			},
-			"SELECT data_source, engagement_band, COUNT(*) c, ROUND(AVG(engagement_score), 2) FROM audience" +
+			"SELECT data_source, engagement_band, COUNT(*) c, ROUND(AVG(TRY_CAST(engagement_score AS double)), 2) FROM audience" +
 				" WHERE dt = '2026-06-08'" +
 				" AND email_domain = 'gmail.com'" +
 				" AND status = 'active'" +
@@ -80,7 +80,7 @@ func TestBuildAudienceBreakdownSQL(t *testing.T) {
 				},
 				Limit: 10,
 			},
-			"SELECT engagement_band, COUNT(*) c, ROUND(AVG(engagement_score), 2) FROM audience" +
+			"SELECT engagement_band, COUNT(*) c, ROUND(AVG(TRY_CAST(engagement_score AS double)), 2) FROM audience" +
 				" WHERE dt = '2026-06-08'" +
 				" AND data_source = 'attribits:finance:attribits_finance_001'" +
 				" AND source = 'warmup-data/2026/3M_Free_090123.csv'" +

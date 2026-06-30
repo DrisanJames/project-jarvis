@@ -25,6 +25,8 @@ import {
   faTriangleExclamation,
   faClock,
   faTags,
+  faChevronDown,
+  faChevronUp,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha } from '../shared/theme';
@@ -199,6 +201,8 @@ const Cell: React.FC<{
 
 const PerformanceSnapshot: React.FC = () => {
   const [groupBy, setGroupBy] = React.useState<GroupBy>('domain');
+  // Breakdown table is opt-in detail: collapsed by default, toggled by its header.
+  const [breakdownOpen, setBreakdownOpen] = React.useState(false);
 
   // Anti-jank polling: spinner only on first paint, atomic success-only swaps,
   // last-good data stays mounted on a failed refresh. groupBy is a dep so a
@@ -393,15 +397,39 @@ const PerformanceSnapshot: React.FC = () => {
           )}
         </Panel>
 
-        {/* ── SUBORDINATE: raw per-group breakdown (demoted beneath the hero) ── */}
+        {/* ── BOTTOM SECTION: collapsible raw per-group breakdown ───────────── */}
         {data && (
           <Panel style={{ marginTop: 12 }}>
-            <div style={subHeaderStyle}>
-              <FontAwesomeIcon icon={faTags} style={{ color: colors.indigo400 }} />
-              Breakdown by {isOffer ? 'offer' : 'sending domain'}
-            </div>
+            {/* Clickable header row — chevron points DOWN when collapsed
+                (click to expand), UP when expanded (click to collapse). */}
+            <button
+              type="button"
+              onClick={() => setBreakdownOpen((o) => !o)}
+              aria-expanded={breakdownOpen}
+              style={{
+                ...subHeaderStyle,
+                width: '100%',
+                justifyContent: 'space-between',
+                marginBottom: breakdownOpen ? 8 : 0,
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+              }}
+              title={breakdownOpen ? 'Hide breakdown' : 'Show breakdown'}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <FontAwesomeIcon icon={faTags} style={{ color: colors.indigo400 }} />
+                Breakdown by {isOffer ? 'offer' : 'sending domain'}
+              </span>
+              <FontAwesomeIcon
+                icon={breakdownOpen ? faChevronUp : faChevronDown}
+                style={{ color: colors.indigo400, fontSize: 11, transition: 'transform 150ms ease' }}
+              />
+            </button>
 
-            {data.rows.length === 0 ? (
+            {breakdownOpen &&
+              (data.rows.length === 0 ? (
               isOffer ? (
                 <EmptyState
                   icon={faTags}
@@ -498,7 +526,7 @@ const PerformanceSnapshot: React.FC = () => {
                   </div>
                 )}
               </>
-            )}
+              ))}
           </Panel>
         )}
       </div>

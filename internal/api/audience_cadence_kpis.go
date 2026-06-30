@@ -66,7 +66,7 @@ const (
 
 	// cadenceMaxDays bounds the ?days= window.
 	cadenceMaxDays     = 90
-	cadenceDefaultDays = 60
+	cadenceDefaultDays = 14
 
 	// cadenceTrendDays bounds the weekly msgs-to-convert trend (4 weeks).
 	cadenceTrendDays = 28
