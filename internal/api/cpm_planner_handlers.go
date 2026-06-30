@@ -1725,75 +1725,114 @@ func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, error) {
 	return deals, rows.Err()
 }
 
-// loadDealMonthlyActuals returns delivered / tracked-conversions / manual-
-// conversions for a deal, bucketed by Denver calendar month ("YYYY-MM"), from
-// windowStart ("YYYY-MM-DD") forward. Best-effort: a failing sub-query logs and
-// leaves an empty map. Delivered uses the full attributed campaign set; tracked
-// conversions need an offer_id; manual conversions are deal-scoped.
-func (h *CpmPlannerHandlers) loadDealMonthlyActuals(orgID string, d *cpmDeal, windowStart string) (delivered, tracked, manual map[string]int64) {
-	delivered = map[string]int64{}
-	tracked = map[string]int64{}
-	manual = map[string]int64{}
+// cpmDealMonthActuals holds a deal's per-Denver-month actuals (keyed "YYYY-MM").
+type cpmDealMonthActuals struct {
+	delivered map[string]int64
+	tracked   map[string]int64
+	manual    map[string]int64
+}
 
-	scan := func(q string, dst map[string]int64, args ...interface{}) {
+// loadAllDealMonthlyActuals computes per-deal × per-month actuals for the whole
+// org in THREE passes total (NOT 3×N): one events scan joined to the unified
+// deal→campaign map, one suppressions scan, one manual-conversions scan. The
+// earlier per-deal-loop version ran N full events scans (~65s for ~9 deals on
+// prod); this single pruned pass returns the same numbers in a fraction of that.
+// windowStart is "YYYY-MM-DD".
+func (h *CpmPlannerHandlers) loadAllDealMonthlyActuals(orgID, windowStart string) map[string]*cpmDealMonthActuals {
+	out := map[string]*cpmDealMonthActuals{}
+	at := func(dealID string) *cpmDealMonthActuals {
+		a := out[dealID]
+		if a == nil {
+			a = &cpmDealMonthActuals{delivered: map[string]int64{}, tracked: map[string]int64{}, manual: map[string]int64{}}
+			out[dealID] = a
+		}
+		return a
+	}
+	scan := func(label, q string, set func(*cpmDealMonthActuals, string, int64), args ...interface{}) {
 		rows, err := h.db.Query(q, args...)
 		if err != nil {
-			log.Printf("[CpmPlanner] monthly aggregate for deal %s: %v", d.ID, err)
+			log.Printf("[CpmPlanner] monthly %s: %v", label, err)
 			return
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var ym string
+			var dealID, ym string
 			var n int64
-			if err := rows.Scan(&ym, &n); err == nil {
-				dst[ym] = n
+			if err := rows.Scan(&dealID, &ym, &n); err == nil {
+				set(at(dealID), ym, n)
 			}
 		}
 	}
 
-	// Delivered by Denver month across the full attributed campaign set.
-	// The bare `event_at >= …` bound is REQUIRED for partition pruning:
-	// mailing_tracking_events is RANGE-partitioned on event_at, and the Denver
-	// reprojection below buries the key in a STABLE expr the planner can't prune
-	// on — without the raw bound this scans every partition, per deal (cf. the
-	// loadCapacity C4 hazard). Widened one day so no Denver-month-boundary event
-	// (UTC is ahead of Denver) is dropped; the Denver ::date filter is exact.
-	scan(`
-		SELECT to_char(event_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
-		       COUNT(*) FILTER (WHERE event_type = 'delivered')
-		FROM mailing_tracking_events
-		WHERE organization_id = $1
-		  AND event_at >= ($6::date - INTERVAL '1 day')
-		  AND (event_at AT TIME ZONE 'America/Denver')::date >= $6::date
-		  AND campaign_id IN `+dealCampaignSetSubquery()+`
-		GROUP BY 1`,
-		delivered, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern, windowStart)
+	// Unified deal→campaign attribution map (offer match ∪ earmarks ∪ name-
+	// pattern), built ONCE — same three paths as dealCampaignSetSubquery().
+	const dealCampaignMapCTE = `
+		WITH dm AS (
+			SELECT d.id AS deal_id, c.id AS campaign_id
+			FROM mailing_cpm_deals d
+			JOIN mailing_campaigns c ON c.organization_id = d.organization_id
+				AND d.offer_id IS NOT NULL AND c.offer_id = d.offer_id AND c.created_at >= d.start_date
+			WHERE d.organization_id = $1
+			UNION
+			SELECT dc.deal_id, dc.campaign_id
+			FROM mailing_cpm_deal_campaigns dc
+			JOIN mailing_cpm_deals d ON d.id = dc.deal_id AND d.organization_id = $1
+			UNION
+			SELECT d.id, c.id
+			FROM mailing_cpm_deals d
+			JOIN mailing_campaigns c ON c.organization_id = d.organization_id
+				AND COALESCE(d.campaign_name_pattern,'') <> '' AND c.name ILIKE d.campaign_name_pattern
+				AND c.created_at >= d.start_date
+			WHERE d.organization_id = $1
+		)`
 
-	// Tracked conversions by Denver month (everflow postback suppressions).
-	if d.OfferID != "" {
-		scan(`
-			SELECT to_char(suppressed_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym, COUNT(*)
-			FROM mailing_offer_suppressions
-			WHERE organization_id = $1 AND offer_id = NULLIF($2,'')::uuid
-			  AND reason = 'converted'
-			  AND (suppressed_at AT TIME ZONE 'America/Denver')::date >= $3::date
-			GROUP BY 1`,
-			tracked, orgID, d.OfferID, windowStart)
-	}
+	// Delivered — one pruned events scan joined to the map. The bare event_at
+	// bound enables partition pruning (mailing_tracking_events is range-
+	// partitioned on event_at); the Denver ::date filter is the exact month edge.
+	scan("delivered", dealCampaignMapCTE+`
+		SELECT dm.deal_id::text,
+		       to_char(te.event_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
+		       COUNT(*)
+		FROM mailing_tracking_events te
+		JOIN dm ON dm.campaign_id = te.campaign_id
+		WHERE te.organization_id = $1
+		  AND te.event_type = 'delivered'
+		  AND te.event_at >= ($2::date - INTERVAL '1 day')
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
+		GROUP BY 1, 2`,
+		func(a *cpmDealMonthActuals, ym string, n int64) { a.delivered[ym] = n },
+		orgID, windowStart)
 
-	// Manual conversions bucketed by their STORED (UTC) date, NOT reprojected to
-	// Denver: a bare-date quick-add ("2026-06-01") is timezone-naive, stored as
-	// UTC midnight; reprojecting it through Denver would shift it to the prior
-	// day/month (June 1 → May 31) and mis-bucket or drop the operator's entry.
-	// UTC bucketing recovers exactly the date the operator typed.
-	scan(`
-		SELECT to_char(converted_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym, COALESCE(SUM(count), 0)
-		FROM mailing_cpm_manual_conversions
-		WHERE organization_id = $1 AND deal_id = $2
-		  AND (converted_at AT TIME ZONE 'UTC')::date >= $3::date
-		GROUP BY 1`,
-		manual, orgID, d.ID, windowStart)
-	return
+	// Tracked conversions (everflow postback suppressions) by Denver month.
+	scan("tracked", `
+		SELECT d.id::text,
+		       to_char(s.suppressed_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
+		       COUNT(*)
+		FROM mailing_cpm_deals d
+		JOIN mailing_offer_suppressions s ON s.organization_id = d.organization_id
+			AND d.offer_id IS NOT NULL AND s.offer_id = d.offer_id
+			AND s.reason = 'converted'
+			AND (s.suppressed_at AT TIME ZONE 'America/Denver')::date >= $2::date
+		WHERE d.organization_id = $1
+		GROUP BY 1, 2`,
+		func(a *cpmDealMonthActuals, ym string, n int64) { a.tracked[ym] = n },
+		orgID, windowStart)
+
+	// Manual conversions by STORED (UTC) date — bare-date quick-adds are
+	// timezone-naive and must NOT be reprojected through Denver (June 1 → May 31).
+	scan("manual", `
+		SELECT mc.deal_id::text,
+		       to_char(mc.converted_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym,
+		       COALESCE(SUM(mc.count), 0)
+		FROM mailing_cpm_manual_conversions mc
+		JOIN mailing_cpm_deals d ON d.id = mc.deal_id
+		WHERE mc.organization_id = $1
+		  AND (mc.converted_at AT TIME ZONE 'UTC')::date >= $2::date
+		GROUP BY 1, 2`,
+		func(a *cpmDealMonthActuals, ym string, n int64) { a.manual[ym] = n },
+		orgID, windowStart)
+
+	return out
 }
 
 // HandleMonths GET /cpm-planner/months?months=N
@@ -1897,13 +1936,8 @@ func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request
 		log.Printf("[CpmPlanner] months target load: %v", err)
 	}
 
-	// Per-deal monthly actuals.
-	type dealActuals struct{ delivered, tracked, manual map[string]int64 }
-	actuals := map[string]dealActuals{}
-	for i := range deals {
-		dv, tr, mn := h.loadDealMonthlyActuals(orgID, &deals[i], windowStart)
-		actuals[deals[i].ID] = dealActuals{delivered: dv, tracked: tr, manual: mn}
-	}
+	// Per-deal monthly actuals — computed for the whole org in 3 passes total.
+	actuals := h.loadAllDealMonthlyActuals(orgID, windowStart)
 
 	curYM := curMonth.Format("2006-01")
 	out := []cpmMonthRow{}
@@ -1914,10 +1948,12 @@ func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request
 		for di := range deals {
 			d := &deals[di]
 			tgt, hasTgt := targets[d.ID][ym]
-			da := actuals[d.ID]
-			delivered := da.delivered[ym]
-			tracked := da.tracked[ym]
-			manual := da.manual[ym]
+			var delivered, tracked, manual int64
+			if da := actuals[d.ID]; da != nil {
+				delivered = da.delivered[ym]
+				tracked = da.tracked[ym]
+				manual = da.manual[ym]
+			}
 			conv := cpmMonthlyConversions(tracked, manual)
 			// Include a deal in a month only if it has a target or real activity.
 			if !hasTgt && delivered == 0 && conv == 0 {
