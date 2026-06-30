@@ -116,6 +116,7 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/clone-candidates", s.HandleCloneCandidates)
 		cr.Get("/{campaignId}/clone-data", s.HandleCloneData)
 		cr.Get("/{campaignId}/edit-data", s.HandleEditData)
+		cr.Get("/{campaignId}/isp-volume", s.HandleCampaignISPVolume)
 		cr.Get("/last-quotas", s.HandleLastQuotas)
 		cr.Get("/provider-qualification", s.HandleProviderQualification)
 		cr.Get("/source-qualification", s.HandleSourceQualification)
@@ -2234,6 +2235,58 @@ func (s *PMTACampaignService) loadCampaignData(w http.ResponseWriter, r *http.Re
 		"source_status":  status,
 		"campaign_input": json.RawMessage(clonedJSON),
 	})
+}
+
+// HandleCampaignISPVolume returns the REAL per-ISP recipient volume for a single
+// campaign, read from the relational mailing_campaign_isp_plans table.
+//
+// Why this exists: the edit-data endpoint exposes per-ISP volume only as
+// campaign_input.isp_quotas[].volume, which is the declared CAP. Segment-sourced
+// engager campaigns intentionally set volume:0 per ISP (= uncapped / audience-bound),
+// so the Send-Day board's ISP Composition drill-down had nothing to render and fell
+// back to an "Uncapped" empty state. The planner-selected audience size per ISP lives
+// in audience_selected_count (and actual sends in sent_count), which is NOT in the
+// pmta_config blob — only here. Returned per ISP: planned (audience_selected_count),
+// sent, the declared quota, and the estimate, so the UI can prefer real planned
+// volume, fall back to a non-zero quota, and still list targeted ISPs otherwise.
+func (s *PMTACampaignService) HandleCampaignISPVolume(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	campaignID := chi.URLParam(r, "campaignId")
+	orgID := getOrgID(r)
+
+	type ispVolume struct {
+		ISP       string `json:"isp"`
+		Planned   int    `json:"planned"`   // audience_selected_count — recipients the planner selected
+		Sent      int    `json:"sent"`      // sent_count — actual sends so far
+		Quota     int    `json:"quota"`     // declared per-ISP cap (0 = uncapped / audience-bound)
+		Estimated int    `json:"estimated"` // audience_estimated_count — pre-finalisation estimate
+	}
+
+	out := []ispVolume{}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT isp,
+		       COALESCE(audience_selected_count, 0),
+		       COALESCE(sent_count, 0),
+		       COALESCE(quota, 0),
+		       COALESCE(audience_estimated_count, 0)
+		FROM mailing_campaign_isp_plans
+		WHERE campaign_id = $1 AND organization_id = $2
+		ORDER BY isp
+	`, campaignID, orgID)
+	if err != nil {
+		log.Printf("[CampaignISPVolume] query error for %s: %v", campaignID, err)
+		respondJSON(w, http.StatusOK, map[string]interface{}{"isps": out})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v ispVolume
+		if err := rows.Scan(&v.ISP, &v.Planned, &v.Sent, &v.Quota, &v.Estimated); err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"isps": out})
 }
 
 // buildCloneInputFromDB reconstructs a full campaign_input map from relational

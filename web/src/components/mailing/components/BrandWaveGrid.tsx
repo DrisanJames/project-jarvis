@@ -156,7 +156,11 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
   //      (segment_name / list_name), falling back to ids where no name exists.
   type Sel = { wave: string; domain: string; label: string; offer: string; volume: number; ids: string[] };
   interface Audience { id: string; name?: string }
-  interface Drill { isp: Record<string, number>; targeted: string[]; segments: Audience[]; lists: Audience[] }
+  // ISP composition is sourced from REAL planned volume (audience_selected_count) and
+  // sent_count via /isp-volume; `quota` is the declared cap from isp_quotas (often 0 for
+  // segment-sourced engagers) kept only as a fallback; `targeted` lists every ISP the
+  // cell's campaigns aim at so the table is never empty even before audience finalisation.
+  interface Drill { planned: Record<string, number>; sent: Record<string, number>; quota: Record<string, number>; targeted: string[]; segments: Audience[]; lists: Audience[] }
   type DrillState = 'loading' | 'error' | Drill;
   const [selected, setSelected] = useState<Sel | null>(null);
   const [drill, setDrill] = useState<Record<string, DrillState>>({});
@@ -169,7 +173,9 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
     if (cached && cached !== 'error') return;          // already loaded — just reopen the shelf
     setDrill(prev => ({ ...prev, [key]: 'loading' }));
     try {
-      const isp: Record<string, number> = {};
+      const planned: Record<string, number> = {};   // real selected recipients per ISP
+      const sent: Record<string, number> = {};       // actual sends per ISP
+      const quota: Record<string, number> = {};       // declared cap (fallback; often 0)
       const targeted = new Set<string>();
       const segMap = new Map<string, Audience>();
       const listMap = new Map<string, Audience>();
@@ -181,12 +187,26 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
         m.set(sid, { id: sid, name: nm ?? prev?.name });
       };
       for (const id of sel.ids) {
-        // (a) ISP composition — pmta_config.campaign_input.isp_quotas (edit-data).
+        // (a) REAL per-ISP volume — mailing_campaign_isp_plans via /isp-volume.
+        // Uses audience_selected_count (planner-selected recipients) + sent_count, which
+        // segment-sourced engagers populate even though their isp_quotas are all 0.
+        const rv = await fetch(`/api/mailing/pmta-campaign/${id}/isp-volume`, { headers });
+        if (rv.ok) {
+          const jv = await rv.json();
+          for (const v of (jv.isps ?? [])) {
+            if (!v || !v.isp) continue;
+            const k = String(v.isp).toLowerCase();
+            planned[k] = (planned[k] || 0) + (v.planned || 0);
+            sent[k] = (sent[k] || 0) + (v.sent || 0);
+            targeted.add(k);
+          }
+        }
+        // (b) Declared caps (fallback) + targeted ISPs + segments — edit-data.
         const re = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
         if (re.ok) {
           const je = await re.json();
           const ci = je.campaign_input ?? je;
-          for (const q of (ci.isp_quotas ?? [])) if (q && q.isp) isp[q.isp] = (isp[q.isp] || 0) + (q.volume || 0);
+          for (const q of (ci.isp_quotas ?? [])) if (q && q.isp) { const k = String(q.isp).toLowerCase(); quota[k] = (quota[k] || 0) + (q.volume || 0); targeted.add(k); }
           for (const t of (ci.target_isps ?? [])) {
             const nm = typeof t === 'string' ? t : (t?.name ?? t?.isp);
             if (nm) targeted.add(String(nm).toLowerCase());
@@ -194,7 +214,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
           for (const s of (ci.inclusion_segments ?? [])) add(segMap, s);
           for (const l of (ci.inclusion_lists ?? [])) add(listMap, l);
         }
-        // (b) Human audience labels — GET /api/mailing/campaigns/{id}.
+        // (c) Human audience labels — GET /api/mailing/campaigns/{id}.
         const rc = await fetch(`/api/mailing/campaigns/${id}`, { headers });
         if (rc.ok) {
           const jc = await rc.json();
@@ -204,7 +224,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
           lids.forEach((l, i) => add(listMap, l, i === 0 ? jc.list_name : undefined));
         }
       }
-      setDrill(prev => ({ ...prev, [key]: { isp, targeted: [...targeted], segments: [...segMap.values()], lists: [...listMap.values()] } }));
+      setDrill(prev => ({ ...prev, [key]: { planned, sent, quota, targeted: [...targeted], segments: [...segMap.values()], lists: [...listMap.values()] } }));
     } catch {
       setDrill(prev => ({ ...prev, [key]: 'error' }));
     }
@@ -347,13 +367,45 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                 ) : d === 'error' ? (
                   <SectionError label="ISP composition" />
                 ) : (() => {
-                  const rows = Object.entries(d.isp)
-                    .filter(([, v]) => v > 0)
-                    .sort((a, b) => b[1] - a[1] || ISP_ORDER.indexOf(a[0]) - ISP_ORDER.indexOf(b[0]));
-                  const total = rows.reduce((s, [, v]) => s + v, 0);
+                  // Per ISP, prefer REAL planned volume (audience_selected_count), fall
+                  // back to a non-zero declared quota; an ISP that only appears as a
+                  // target still shows with vol 0 so the composition is never empty.
+                  const ispKeys = [...new Set([...Object.keys(d.planned), ...Object.keys(d.quota), ...d.targeted])];
+                  const ispRows = ispKeys
+                    .map(isp => ({ isp, vol: d.planned[isp] > 0 ? d.planned[isp] : (d.quota[isp] || 0), sent: d.sent[isp] || 0 }))
+                    .sort((a, b) => b.vol - a.vol || (b.sent - a.sent) || ISP_ORDER.indexOf(a.isp) - ISP_ORDER.indexOf(b.isp));
+                  const total = ispRows.reduce((s, r) => s + r.vol, 0);
+                  const sentTotal = ispRows.reduce((s, r) => s + r.sent, 0);
+                  if (ispRows.length === 0) {
+                    return <EmptyState title="No ISP data" hint="These campaigns declare no target providers." />;
+                  }
+                  // No per-provider volume yet (audience-bound, not finalised): still show
+                  // the composition as the targeted providers so the shelf is informative.
                   if (total === 0) {
-                    const t = d.targeted.map(i => ISP_LABEL[i] ?? i).join(', ');
-                    return <EmptyState title="Uncapped (audience-bound)" hint={t ? `Targets ${t}` : 'No per-provider quotas declared'} />;
+                    return (
+                      <table style={tableStyle}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>Mailbox Provider</th>
+                            <th style={numTh}>Volume</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ispRows.map(r => (
+                            <tr key={r.isp}>
+                              <td style={{ ...tdStyle, fontWeight: 600, color: colors.heading }}>{ISP_LABEL[r.isp] ?? r.isp}</td>
+                              <td style={{ ...numTd, color: colors.textMuted }}>audience-bound</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr>
+                            <td style={{ ...tdStyle, fontWeight: 700, color: colors.indigo200 }}>{ispRows.length} provider{ispRows.length === 1 ? '' : 's'}</td>
+                            <td style={{ ...numTd, color: colors.textFaint }}>uncapped</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    );
                   }
                   return (
                     <table style={tableStyle}>
@@ -362,14 +414,16 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                           <th style={thStyle}>Mailbox Provider</th>
                           <th style={numTh}>Volume</th>
                           <th style={numTh}>Share</th>
+                          {sentTotal > 0 && <th style={numTh}>Sent</th>}
                         </tr>
                       </thead>
                       <tbody>
-                        {rows.map(([isp, vol]) => (
-                          <tr key={isp}>
-                            <td style={{ ...tdStyle, fontWeight: 600, color: colors.heading }}>{ISP_LABEL[isp] ?? isp}</td>
-                            <td style={numTd}>{num(vol)}</td>
-                            <td style={numTd}>{((vol / total) * 100).toFixed(1)}%</td>
+                        {ispRows.filter(r => r.vol > 0).map(r => (
+                          <tr key={r.isp}>
+                            <td style={{ ...tdStyle, fontWeight: 600, color: colors.heading }}>{ISP_LABEL[r.isp] ?? r.isp}</td>
+                            <td style={numTd}>{num(r.vol)}</td>
+                            <td style={numTd}>{((r.vol / total) * 100).toFixed(1)}%</td>
+                            {sentTotal > 0 && <td style={numTd}>{num(r.sent)}</td>}
                           </tr>
                         ))}
                       </tbody>
@@ -378,11 +432,17 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                           <td style={{ ...tdStyle, fontWeight: 700, color: colors.indigo200 }}>Σ by provider</td>
                           <td style={{ ...numTd, fontWeight: 700, color: colors.indigo200 }}>{num(total)}</td>
                           <td style={numTd}>100%</td>
+                          {sentTotal > 0 && <td style={{ ...numTd, fontWeight: 700, color: colors.indigo200 }}>{num(sentTotal)}</td>}
                         </tr>
                       </tfoot>
                     </table>
                   );
                 })()}
+                {d !== 'loading' && d !== 'error' && (
+                  <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 7 }}>
+                    Volume = planner-selected recipients per provider (falls back to the declared cap, then to targeted providers).
+                  </div>
+                )}
               </div>
 
               {/* SEGMENTS USED */}

@@ -400,21 +400,35 @@ const PerformanceSnapshot: React.FC = () => {
         {/* ── BOTTOM SECTION: collapsible raw per-group breakdown ───────────── */}
         {data && (
           <Panel style={{ marginTop: 12 }}>
-            {/* Clickable header row — chevron points DOWN when collapsed
-                (click to expand), UP when expanded (click to collapse). */}
-            <button
-              type="button"
+            {/* Clickable header row — the ENTIRE row is the toggle target
+                (far left, center, far right all work). Chevron points DOWN
+                when collapsed (click to expand), UP when expanded (collapse).
+                Rendered as a div role="button" so the full-width flex layout
+                and edge-to-edge hit area are honored reliably (a native
+                <button> does not behave as a flex container in all browsers). */}
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setBreakdownOpen((o) => !o)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setBreakdownOpen((o) => !o);
+                }
+              }}
               aria-expanded={breakdownOpen}
               style={{
                 ...subHeaderStyle,
                 width: '100%',
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent: 'space-between',
                 marginBottom: breakdownOpen ? 8 : 0,
                 background: 'transparent',
                 border: 'none',
                 padding: 0,
                 cursor: 'pointer',
+                userSelect: 'none',
               }}
               title={breakdownOpen ? 'Hide breakdown' : 'Show breakdown'}
             >
@@ -426,7 +440,7 @@ const PerformanceSnapshot: React.FC = () => {
                 icon={breakdownOpen ? faChevronUp : faChevronDown}
                 style={{ color: colors.indigo400, fontSize: 11, transition: 'transform 150ms ease' }}
               />
-            </button>
+            </div>
 
             {breakdownOpen &&
               (data.rows.length === 0 ? (

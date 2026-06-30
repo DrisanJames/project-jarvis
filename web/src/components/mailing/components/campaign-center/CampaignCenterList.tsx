@@ -297,6 +297,16 @@ export const CampaignCenterList: React.FC<{
       const va = val(a); const vb = val(b);
       if (va < vb) return -1 * dir;
       if (va > vb) return 1 * dir;
+      // Deterministic tiebreaker on the STABLE row key (campaign id /
+      // "tag:<tag>"). Without this, tied rows fall through to JS's stable sort,
+      // which preserves the backend's array order — and that order is NOT
+      // guaranteed stable between the 15s background refreshes, so equal-valued
+      // rows reshuffle on every poll. Tiebreaking by id makes two refreshes
+      // over the same data set yield IDENTICAL order, keeping every row (and an
+      // expanded row the operator is reviewing) fixed in place. The tiebreaker
+      // is direction-independent so the secondary order never flips either.
+      if (a.key < b.key) return -1;
+      if (a.key > b.key) return 1;
       return 0;
     });
   }, [domainFiltered, sortKey, sortDir]);
@@ -358,7 +368,12 @@ export const CampaignCenterList: React.FC<{
         .sort((a, b) => b.ctr - a.ctr)
         .slice(0, 5);
     });
-    return Array.from(map.values()).sort((a, b) => b.metrics.delivered - a.metrics.delivered);
+    return Array.from(map.values()).sort((a, b) => {
+      if (b.metrics.delivered !== a.metrics.delivered) return b.metrics.delivered - a.metrics.delivered;
+      // Stable tiebreaker on offer name so equal-delivered groups don't reorder
+      // across refreshes (same reasoning as the row sort above).
+      return a.offer < b.offer ? -1 : a.offer > b.offer ? 1 : 0;
+    });
   }, [groupByOffer, sorted]);
 
   const SortIcon: React.FC<{ k: SortKey }> = ({ k }) => (

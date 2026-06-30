@@ -556,6 +556,7 @@ type engagementGrowthMetric struct {
 // (7D/14D/30D/60D Openers/Clickers) for the expandable detail.
 type engagementGrowthBrand struct {
 	Brand             string                             `json:"brand"`
+	Domain            string                             `json:"domain"` // full sending-domain apex (e.g. discountblog.com); "" when the code has no known mapping
 	SevenDayOpeners   *engagementGrowthMetric            `json:"seven_day_openers"`
 	SevenDayClickers  *engagementGrowthMetric            `json:"seven_day_clickers"`
 	ThirtyDayOpeners  *engagementGrowthMetric            `json:"thirty_day_openers"`
@@ -631,7 +632,10 @@ func (api *SegmentationAPI) HandleEngagementGrowth(w http.ResponseWriter, r *htt
 
 		b := brands[brand]
 		if b == nil {
-			b = &engagementGrowthBrand{Brand: brand, Cells: make(map[string]*engagementGrowthMetric)}
+			// Resolve the leading brand code (e.g. "DB") to its full sending-domain
+			// apex (discountblog.com) via the canonical brandCodeRoot map. Falls
+			// back to "" for unknown codes; the UI then shows the raw code.
+			b = &engagementGrowthBrand{Brand: brand, Domain: brandRootFromCode(brand), Cells: make(map[string]*engagementGrowthMetric)}
 			brands[brand] = b
 			order = append(order, brand)
 		}

@@ -492,9 +492,14 @@ export const CpmPlanner: React.FC = () => {
       };
       const body: Record<string, unknown> = { notes: e.notes || '' };
       const b = num(e.budget); if (b !== undefined) body.budget = b;
-      const vol = num(e.volume); if (vol !== undefined) body.volume = Math.round(vol);
       const m = num(e.ecpm); if (m !== undefined) body.ecpm = m;
       const a = num(e.ecpa); if (a !== undefined) body.ecpa = a;
+      // Volume is NOT operator-entered — it is derived from budget ÷ eCPM × 1000
+      // (the planned-volume formula). Send the computed value whenever both inputs
+      // exist so the saved monthly target's volume always matches the math.
+      if (b !== undefined && m !== undefined && m > 0) {
+        body.volume = Math.ceil((b / m) * 1000);
+      }
       const res = await apiFetch(`${API}/deals/${dealId}/monthly/${selectedMonth}`, {
         method: 'PUT', body: JSON.stringify(body),
       });
@@ -506,6 +511,25 @@ export const CpmPlanner: React.FC = () => {
       await loadMonths();
     } catch (err) {
       setMonthsError(err instanceof Error ? err.message : 'save failed');
+    } finally {
+      setTargetSaving(null);
+    }
+  };
+
+  // Delete a planned monthly target/budget for a deal in the selected month.
+  const deleteTarget = async (dealId: string) => {
+    if (!selectedMonth) return;
+    setTargetSaving(dealId);
+    try {
+      const res = await apiFetch(`${API}/deals/${dealId}/monthly/${selectedMonth}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      setTargetEdits(prev => { const n = { ...prev }; delete n[editKey(selectedMonth, dealId)]; return n; });
+      await loadMonths();
+    } catch (err) {
+      setMonthsError(err instanceof Error ? err.message : 'delete failed');
     } finally {
       setTargetSaving(null);
     }
@@ -1668,7 +1692,16 @@ export const CpmPlanner: React.FC = () => {
             {d.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{d.offer_name}</div>}
           </td>
           <td style={tdStyle}><input type="number" style={numInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder="$" /></td>
-          <td style={tdStyle}><input type="number" style={numInput} value={buf.volume} onChange={e => set('volume', e.target.value)} placeholder="vol" /></td>
+          <td style={tdStyle}>
+            {(() => {
+              // Volume is derived, not entered: budget ÷ eCPM × 1000. Shows live as
+              // the operator types a budget; blank until a budget+eCPM exist (so a
+              // coming month starts at zero, never carrying a prior month's volume).
+              const bv = parseFloat(buf.budget); const mv = parseFloat(buf.ecpm);
+              const planned = bv > 0 && mv > 0 ? Math.ceil((bv / mv) * 1000) : 0;
+              return <span style={{ color: planned > 0 ? C.heading : C.muted }} title="Derived: budget ÷ eCPM × 1000">{planned > 0 ? fmtInt(planned) : '—'}</span>;
+            })()}
+          </td>
           <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder="eCPM" /></td>
           <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder="eCPA" /></td>
           <td style={tdStyle}><input style={{ ...numInput, width: 150 }} value={buf.notes} onChange={e => set('notes', e.target.value)} placeholder="notes" /></td>
@@ -1676,14 +1709,26 @@ export const CpmPlanner: React.FC = () => {
           <td style={{ ...tdStyle, color: C.green }}>{future ? '—' : fmtMoney(d.revenue)}</td>
           <td style={tdStyle}>{future ? '—' : fmtInt(d.conversions)}</td>
           <td style={tdStyle}>
-            <button onClick={() => saveTarget(d.deal_id)} disabled={!dirty || targetSaving === d.deal_id}
-              style={{
-                padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
-                cursor: dirty ? 'pointer' : 'default',
-                background: dirty ? C.indigo : 'rgba(99,102,241,0.2)', color: '#fff', opacity: dirty ? 1 : 0.5,
-              }}>
-              {targetSaving === d.deal_id ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
-            </button>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button onClick={() => saveTarget(d.deal_id)} disabled={!dirty || targetSaving === d.deal_id}
+                style={{
+                  padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
+                  cursor: dirty ? 'pointer' : 'default',
+                  background: dirty ? C.indigo : 'rgba(99,102,241,0.2)', color: '#fff', opacity: dirty ? 1 : 0.5,
+                }}>
+                {targetSaving === d.deal_id ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
+              </button>
+              {d.has_target && (
+                <button onClick={() => deleteTarget(d.deal_id)} disabled={targetSaving === d.deal_id}
+                  title="Delete this month's planned budget"
+                  style={{
+                    padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12,
+                    cursor: 'pointer', background: 'transparent', color: C.red,
+                  }}>
+                  <FontAwesomeIcon icon={faTrash} />
+                </button>
+              )}
+            </div>
           </td>
         </tr>
       );

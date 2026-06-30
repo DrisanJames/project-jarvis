@@ -71,8 +71,6 @@ import {
   faArrowTrendDown,
   faChartLine,
   faTable,
-  faChevronDown,
-  faChevronRight,
   faMinus,
   faExclamationTriangle,
   faEnvelopeOpen,
@@ -277,6 +275,8 @@ interface GrowthMetric {
 
 interface GrowthBrand {
   brand: string;
+  /** Full sending-domain apex resolved server-side (e.g. discountblog.com); '' / absent when the brand code has no known mapping. */
+  domain?: string;
   seven_day_openers: GrowthMetric | null;
   seven_day_clickers: GrowthMetric | null;
   thirty_day_openers: GrowthMetric | null;
@@ -298,6 +298,40 @@ interface GrowthResponse {
 }
 
 type GrowthSort = 'size' | 'growth';
+
+/**
+ * Brand code → full sending-domain apex. Mirrors the authoritative server map
+ * (`brandCodeRoot` in internal/api/money_link_check.go, itself kept in sync with
+ * internal/pkg/brand.OwnedDomains + brand_metadata.py). The backend now returns
+ * `domain` per brand; this is a client-side fallback so an un-redeployed server
+ * still shows full domains. Unknown codes fall back to the raw code.
+ */
+const BRAND_CODE_TO_DOMAIN: Record<string, string> = {
+  DB: 'discountblog.com',
+  HT: 'historythinking.com',
+  MH: 'myownhealth.net',
+  QF: 'quizfiesta.com',
+  BW: 'businessweeklypro.com',
+  FC: 'financialcalculate.com',
+  CP: 'consumerpro.net',
+  HW: 'homewarrantyservices.org',
+  RR: 'refinanceratesusa.com',
+  TT: 'thingoftheday.org',
+  YI: 'yourinsurancehub.com',
+  MR: 'myrepairdiy.com',
+  CI: 'casainsure.com',
+  LP: 'learnpersonalloans.com',
+  RB: 'ratesbazar.com',
+  WF: 'warrantyforyou.com',
+  MP: 'mypersonalfinancial.com',
+  PD: 'paymydebit.com',
+  TR: 'theretirementblog.com',
+};
+
+/** Full sending domain for a brand: server `domain` first, then the local map,
+ * finally the raw code so an unmapped brand is shown (never hidden). */
+const brandDomain = (b: GrowthBrand): string =>
+  (b.domain && b.domain.trim()) || BRAND_CODE_TO_DOMAIN[b.brand.trim().toUpperCase()] || b.brand;
 
 /** Cell order for the expandable per-brand detail table. */
 const GROWTH_CELL_ORDER = [
@@ -353,6 +387,12 @@ const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric:
     </div>
     {metric ? (
       <>
+        <div
+          style={{ fontSize: 10, color: colors.textFaint, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={metric.name}
+        >
+          {metric.name}
+        </div>
         <div style={{ fontSize: 22, fontWeight: 800, color: colors.heading, fontVariantNumeric: 'tabular-nums', marginTop: 3 }}>
           {fmtInt(metric.count)}
         </div>
@@ -370,14 +410,19 @@ const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric:
 );
 
 const BrandGrowthCard: React.FC<{ brand: GrowthBrand }> = ({ brand }) => {
-  const [open, setOpen] = useState(false);
+  const domain = brandDomain(brand);
   const detailCells = GROWTH_CELL_ORDER.map((k) => [k, brand.cells[k]] as const).filter(([, c]) => c);
+  // The two headline windows are already shown as tiles above; the inline table
+  // surfaces every OTHER configured window. No click gate — details show by default.
   const extraCells = detailCells.filter(([k]) => !['7D Openers', '30D Clickers'].includes(k));
   return (
     <Panel accent={colors.indigo500}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.heading, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={brand.brand}>
-          {brand.brand}
+        <h3
+          style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.heading, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={domain === brand.brand ? brand.brand : `${domain} · ${brand.brand}`}
+        >
+          {domain}
         </h3>
         <Pill color={colors.indigo400} style={{ flexShrink: 0 }}>{brand.segment_count} seg</Pill>
       </div>
@@ -387,48 +432,29 @@ const BrandGrowthCard: React.FC<{ brand: GrowthBrand }> = ({ brand }) => {
       </div>
       {extraCells.length > 0 && (
         <>
-          <button
-            type="button"
-            onClick={() => setOpen((o) => !o)}
-            style={{
-              marginTop: 10,
-              background: 'transparent',
-              border: 'none',
-              color: colors.indigo300,
-              fontSize: 11,
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: 0,
-            }}
-          >
-            <FontAwesomeIcon icon={open ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
-            {open ? 'Hide' : 'Show'} all windows ({detailCells.length})
-          </button>
-          {open && (
-            <table style={{ ...tableStyle, marginTop: 8 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Window</th>
-                  <th style={numTh}>Members</th>
-                  <th style={numTh}>Δ build</th>
-                  <th style={numTh}>Built</th>
+          <div style={{ marginTop: 10, fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            More windows ({extraCells.length})
+          </div>
+          <table style={{ ...tableStyle, marginTop: 6 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Window</th>
+                <th style={numTh}>Members</th>
+                <th style={numTh}>Δ build</th>
+                <th style={numTh}>Built</th>
+              </tr>
+            </thead>
+            <tbody>
+              {extraCells.map(([k, c]) => (
+                <tr key={k}>
+                  <td style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }} title={c!.name}>{k}</td>
+                  <td style={numTd}>{fmtInt(c!.count)}</td>
+                  <td style={numTd}><DeltaBadge pct={c!.delta_pct} /></td>
+                  <td style={{ ...numTd, color: colors.textMuted }}>{c!.source === 'materialized' ? fmtRel(c!.built_at) : 'cached'}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {detailCells.map(([k, c]) => (
-                  <tr key={k}>
-                    <td style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }}>{k}</td>
-                    <td style={numTd}>{fmtInt(c!.count)}</td>
-                    <td style={numTd}><DeltaBadge pct={c!.delta_pct} /></td>
-                    <td style={{ ...numTd, color: colors.textMuted }}>{c!.source === 'materialized' ? fmtRel(c!.built_at) : 'cached'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              ))}
+            </tbody>
+          </table>
         </>
       )}
     </Panel>
