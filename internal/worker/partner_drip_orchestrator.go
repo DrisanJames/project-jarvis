@@ -514,12 +514,18 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// Operator 2026-06-27: 7-day drain horizon for the non-gmail sensitive ISPs —
 		// spreads each vertical's backlog over ~7 days at the wave cadence (shared
 		// across all feeds, all 16 brands). gmail held at cap 0 (drain-days moot).
+		// Operator 2026-06-29 "double the Yahoo-family drain": the per-wave cap (raised
+		// 16→32 in 41d1746) was NEVER the throttle — empirically Yahoo mailed ~8/wave,
+		// because cap = min(PerISPCapPerWave, ceil(ready/(waves×drainDays))) and the
+		// 7-day horizon binds at ~8. Halve the Yahoo-family horizon 7→3 (~2.3× the
+		// per-wave drainCap to ~16-18, which now flows under the 32 cap instead of
+		// re-clamping at 16). gmail stays 3 (cap 0 anyway). Monitor accept/bounce.
 		cfg.PerISPDrainDays = map[string]int{
 			"gmail":     3,
-			"yahoo":     7,
-			"sbcglobal": 7,
-			"aol":       7,
-			"att":       7,
+			"yahoo":     3,
+			"sbcglobal": 3,
+			"aol":       3,
+			"att":       3,
 		}
 	}
 	if !cfg.ThrottleDeferralDisabled && cfg.ThrottledISPRateThreshold <= 0 {
