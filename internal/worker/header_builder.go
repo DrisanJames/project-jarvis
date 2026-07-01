@@ -20,8 +20,13 @@ func MIMEEncodeHeader(value string) string {
 }
 
 // BuildFromHeader constructs a safe RFC 5322 From header line.
-// The display name is RFC 2047 encoded if non-ASCII; the email address is
-// always passed through as-is. Header injection characters are rejected.
+// The display name is RFC 2047 encoded if non-ASCII; a pure-ASCII name
+// containing characters outside atext+space (e.g. '@', '.', '<') is emitted
+// as a quoted-string — an unquoted special makes the header unparseable and
+// KumoMTA rejects the message at inject ("DKIM signing requires a From
+// header"), which silently dropped every send for the six '@'-styled brands
+// on 2026-07-01. The email address is always passed through as-is. Header
+// injection characters are rejected.
 func BuildFromHeader(displayName, email string) string {
 	displayName = sanitizeHeaderValue(displayName)
 	email = sanitizeHeaderValue(email)
@@ -30,7 +35,44 @@ func BuildFromHeader(displayName, email string) string {
 		return fmt.Sprintf("From: <%s>\r\n", email)
 	}
 	encoded := MIMEEncodeHeader(displayName)
+	if encoded == displayName && !isAtextPhrase(displayName) {
+		// Pure ASCII (MIMEEncodeHeader passed it through) but contains an
+		// RFC 5322 special — render as a quoted-string.
+		encoded = quotePhrase(displayName)
+	}
 	return fmt.Sprintf("From: %s <%s>\r\n", encoded, email)
+}
+
+// isAtextPhrase reports whether s consists solely of RFC 5322 atext
+// characters and spaces — i.e. it is safe to emit as an unquoted phrase in
+// an address header display name.
+func isAtextPhrase(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == ' ':
+		case strings.IndexByte("!#$%&'*+-/=?^_`{|}~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// quotePhrase renders s as an RFC 5322 quoted-string, escaping backslashes
+// and double quotes.
+func quotePhrase(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' || c == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // BuildSubjectHeader constructs a safe RFC 5322 Subject header line.

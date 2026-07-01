@@ -193,3 +193,50 @@ func TestPMTAAPISender_RecipientsField(t *testing.T) {
 		t.Errorf("expected 1 recipient, got %d", len(recList))
 	}
 }
+
+// TestPMTAAPISender_ZeroSuccessCountIsError guards the silent false-success
+// class from the 2026-07-01 incident: the inject API answers HTTP 200 with
+// {"success_count":0,...} when every recipient fails (e.g. unparseable From
+// header rejected by DKIM policy). That must surface as a send error, never
+// a success.
+func TestPMTAAPISender_ZeroSuccessCountIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"success_count":0,"fail_count":1,"failed_recipients":["u@gmail.com"],"errors":["u@gmail.com: 552 5.6.0 DKIM signing requires a From header, but it is missing from this message"]}`))
+	}))
+	defer server.Close()
+
+	sender := NewKumoAPISender(server.URL, nil, "")
+	msg := &EmailMessage{
+		Email: "u@gmail.com", FromName: "Grace @ Best Credit Care",
+		FromEmail: "hello@em.bestcreditcare.com", Subject: "Hi", HTMLContent: "<p>x</p>",
+		Headers: map[string]string{"X-Virtual-MTA": "mta-bcc-gm2"},
+	}
+	res, err := sender.Send(context.Background(), msg)
+	if err == nil {
+		t.Fatalf("want error on success_count=0, got success: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "inject accepted 0 recipients") {
+		t.Errorf("error should carry inject failure detail, got: %v", err)
+	}
+}
+
+// A body with success_count>=1 (or no success_count field at all — the PMTA
+// bridge's legacy shapes) must keep succeeding.
+func TestPMTAAPISender_SuccessCountOKAndLegacyBodies(t *testing.T) {
+	for _, body := range []string{`{"success_count":1,"fail_count":0,"errors":[]}`, `{"status":"ok"}`} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+			w.Write([]byte(body))
+		}))
+		sender := NewKumoAPISender(server.URL, nil, "")
+		msg := &EmailMessage{
+			Email: "u@gmail.com", FromName: "T", FromEmail: "t@x.com", Subject: "s", HTMLContent: "<p>x</p>",
+			Headers: map[string]string{"X-Virtual-MTA": "mta-x-gm1"},
+		}
+		if _, err := sender.Send(context.Background(), msg); err != nil {
+			t.Errorf("body %s: want success, got %v", body, err)
+		}
+		server.Close()
+	}
+}

@@ -165,3 +165,41 @@ func TestIsASCII(t *testing.T) {
 	assert.False(t, isASCII("こんにちは"))
 	assert.False(t, isASCII("🎉"))
 }
+
+// TestBuildFromHeader_QuotesSpecials guards the 2026-07-01 six-brand incident:
+// display names containing RFC 5322 specials (like '@') must be emitted as a
+// quoted-string, or KumoMTA treats the From header as unparseable/missing and
+// rejects the message at inject with HTTP 200 + success_count=0.
+func TestBuildFromHeader_QuotesSpecials(t *testing.T) {
+	tests := []struct {
+		name  string
+		disp  string
+		email string
+		want  string
+	}{
+		{"at-sign brand name", "Grace @ Best Credit Care", "hello@em.bestcreditcare.com",
+			"From: \"Grace @ Best Credit Care\" <hello@em.bestcreditcare.com>\r\n"},
+		{"plain name unquoted", "My Personal Financial", "hello@em.mypersonalfinancial.com",
+			"From: My Personal Financial <hello@em.mypersonalfinancial.com>\r\n"},
+		{"apostrophe is atext, unquoted", "Sam's Club Partner", "hello@x.com",
+			"From: Sam's Club Partner <hello@x.com>\r\n"},
+		{"dot needs quoting", "Dr. Smith", "doc@x.com",
+			"From: \"Dr. Smith\" <doc@x.com>\r\n"},
+		{"embedded quote escaped", `The "Best" Deals`, "d@x.com",
+			"From: \"The \\\"Best\\\" Deals\" <d@x.com>\r\n"},
+		{"empty name", "", "bare@x.com", "From: <bare@x.com>\r\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, BuildFromHeader(tc.disp, tc.email))
+		})
+	}
+}
+
+// Non-ASCII names keep the RFC 2047 encoded-word path (encoded-words are
+// atext-safe and must NOT be additionally quoted).
+func TestBuildFromHeader_NonASCIIStillEncoded(t *testing.T) {
+	got := BuildFromHeader("Ariana Cañas @ Deals", "a@x.com")
+	assert.True(t, strings.HasPrefix(got, "From: =?UTF-8?q?"), got)
+	assert.False(t, strings.Contains(got, `"`), "encoded-word must not be quoted: %s", got)
+}

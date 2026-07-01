@@ -217,6 +217,29 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 		return nil, fmt.Errorf("PMTA API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
+	// The inject API returns HTTP 200 even when every recipient failed
+	// ({"success_count":0,"fail_count":1,"errors":[...]}) — KumoMTA does this
+	// when message generation is rejected (e.g. an unparseable From header:
+	// the 2026-07-01 incident silently dropped ~7.9k sends across six brands
+	// this way). Treat zero accepted recipients as a hard send failure so the
+	// worker records the error instead of marking the message sent. Bodies
+	// without a success_count field (non-inject shapes) keep legacy behavior.
+	var injectResp struct {
+		SuccessCount *int     `json:"success_count"`
+		FailCount    int      `json:"fail_count"`
+		Errors       []string `json:"errors"`
+	}
+	if jsonErr := json.Unmarshal(respBody, &injectResp); jsonErr == nil &&
+		injectResp.SuccessCount != nil && *injectResp.SuccessCount == 0 {
+		detail := strings.Join(injectResp.Errors, "; ")
+		if len(detail) > 400 {
+			detail = detail[:400] + "…"
+		}
+		errMsg := fmt.Sprintf("inject accepted 0 recipients (fail_count=%d): %s", injectResp.FailCount, detail)
+		s.recordBridgeFailure(errMsg)
+		return nil, fmt.Errorf("PMTA API inject failure: %s", errMsg)
+	}
+
 	// Reset consecutive failure counter on success
 	atomic.StoreInt64(&s.consecutiveFailures, 0)
 
