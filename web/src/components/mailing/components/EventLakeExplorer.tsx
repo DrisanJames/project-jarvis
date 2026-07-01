@@ -793,6 +793,15 @@ function saveRecentCampaign(id: string): RecentCampaign[] {
 // correct automatically; the no-transport variant serves the RouteFunnelPanel
 // companion query, which must always read both transports.
 
+// Dims the app engagement stream CANNOT attribute: app open/click rows carry
+// source='app' and no sending route/vmta/pool, so grouping engagement by any
+// of these keys every open into one "(empty)" (or 'app') bucket while the real
+// rows read 0 — misleading, not informative. For these dims the matrix and the
+// row expansions show DELIVERY ONLY and skip the engagement merge entirely
+// (QA gate finding, 2026-07-01: expanding the ses row under Rows=Source
+// re-introduced the SES-webhook double count the merge exists to prevent).
+const SENDING_SIDE_DIMS = new Set(['source', 'route_type', 'vmta', 'pool']);
+
 const ROW_DIMS: Array<{ id: string; label: string }> = [
   { id: 'isp', label: 'Mailbox Provider' },          // clean — from real recipient domain (truthful)
   { id: 'isp_group', label: 'Mailbox Provider (raw)' }, // raw stored field — carries PMTA *.queue noise
@@ -1417,9 +1426,13 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   // their rate (all-ISP numerator over an ISP-scoped delivered denominator once
   // showed >100%) and say so.
   const ispScoped = applied.ispGroup.trim() !== '';
-  const funnelScope = ispScoped
-    ? (funnelByIsp.get(applied.ispGroup.trim()) ?? { deferred: 0, recovered: 0, pending: 0, bounced: 0 })
-    : funnel?.total ?? null;
+  // funnel===null (fetch failed) must read "unavailable" in BOTH branches —
+  // the isp-scoped zero-object is only for "funnel loaded, no row for this ISP".
+  const funnelScope = funnel === null
+    ? null
+    : ispScoped
+      ? (funnelByIsp.get(applied.ispGroup.trim()) ?? { deferred: 0, recovered: 0, pending: 0, bounced: 0 })
+      : funnel.total;
 
   // ISP table cell styling — mirrors RouteFunnelPanel's tabular-nums idiom.
   const ispCell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -1643,10 +1656,15 @@ const RowTrendExpansion: React.FC<{
     setLoading(true);
     // Mirror the matrix: delivery from pmta+ses, engagement (open/click) from the
     // RAW source='app' stream (MPP/machine included), scoped to this row's value.
+    // Sending-side dims skip engagement entirely (SENDING_SIDE_DIMS): app rows
+    // carry no such attribution, and for dim='source' the row value would
+    // OVERWRITE source='app' — expanding the ses row then re-fetched the
+    // SES-webhook opens the merge strips (double count).
+    const engBlind = SENDING_SIDE_DIMS.has(dim);
     const engFilters: Record<string, string> = { source: 'app' };
     if (applied.brand.trim()) engFilters.brand = applied.brand.trim();
     if (applied.ispGroup.trim()) engFilters.isp_group = applied.ispGroup.trim();
-    engFilters[dim] = value; // the row's dimension value is authoritative
+    if (!engBlind) engFilters[dim] = value; // the row's dimension value is authoritative
     Promise.all([
       fetchBreakdown(
         {
@@ -1656,16 +1674,18 @@ const RowTrendExpansion: React.FC<{
         applied.nonce,
         { signal: ctl.signal }
       ),
-      fetchBreakdown(
-        { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: engFilters },
-        applied.nonce,
-        { signal: ctl.signal }
-      ),
+      engBlind
+        ? Promise.resolve(null)
+        : fetchBreakdown(
+          { from: applied.from, to: applied.to, groupBy: ['local_dt', 'event_type'], limit: 5000, filters: engFilters },
+          applied.nonce,
+          { signal: ctl.signal }
+        ),
     ]).then(([delivRes, engRes]) => {
       setData({
-        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes.data.rows),
+        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes ? engRes.data.rows : []),
         meta: delivRes.meta,
-        truncated: !!(delivRes.data.truncated || engRes.data.truncated),
+        truncated: !!(delivRes.data.truncated || (engRes && engRes.data.truncated)),
       });
     }).catch((e) => {
       if (isAbortError(e)) return;
@@ -1747,8 +1767,12 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       // (segments, pixel, clicker) lands. We merge ONLY the app open/click rows
       // (app's 'delivered'/'bounce' are duplicates) so the matrix shows the RAW
       // engagement signal, machine traffic included — no verdict/MPP filter. The
-      // recipient-side filters (brand, isp_group) carry over; route_type does not
-      // (app engagement rows have no sending route).
+      // recipient-side filters (brand, isp_group) carry over. Sending-side
+      // dims (SENDING_SIDE_DIMS) skip engagement entirely — app rows carry no
+      // route/vmta/pool/source attribution, so grouping engagement by them
+      // dumped every open into one "(empty)"/'app' bucket while real rows
+      // read 0 (QA gate finding, 2026-07-01).
+      const engBlind = SENDING_SIDE_DIMS.has(dim);
       const engFilters: Record<string, string> = { source: 'app' };
       if (applied.brand.trim()) engFilters.brand = applied.brand.trim();
       if (applied.ispGroup.trim()) engFilters.isp_group = applied.ispGroup.trim();
@@ -1762,11 +1786,13 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
-        fetchBreakdown(
-          { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: engFilters },
-          applied.nonce,
-          { signal: ctl.signal, bypass }
-        ),
+        engBlind
+          ? Promise.resolve(null)
+          : fetchBreakdown(
+            { from: applied.from, to: applied.to, groupBy: [dim, 'event_type'], limit: 5000, filters: engFilters },
+            applied.nonce,
+            { signal: ctl.signal, bypass }
+          ),
         wantFunnel
           ? fetchDeferralFunnel(applied.from, applied.to, applied.brand, ctl.signal).catch((e) => {
               if (isAbortError(e)) throw e; // let the outer catch swallow aborts uniformly
@@ -1777,10 +1803,10 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       ]);
       setFunnel(funnelRes);
       setFetched({
-        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes.data.rows),
+        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes ? engRes.data.rows : []),
         dim,
         meta: delivRes.meta,
-        truncated: !!(delivRes.data.truncated || engRes.data.truncated),
+        truncated: !!(delivRes.data.truncated || (engRes && engRes.data.truncated)),
       });
     } catch (e) {
       if (isAbortError(e)) return;
@@ -1861,7 +1887,9 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
             Hard%&gt;0.5 / Comp%&gt;0.05 / Del%&lt;97 amber. Opens/Clicks are RAW (open-pixel + clicker
             tracker, machine/MPP included — no verdict filter); delivery reads pmta+ses. Brand is derived
             (stored brand, else the sending server's brand code) — under Brand, "(empty)" is SES-routed
-            history from before brand stamping (2026-07); new events carry it. Click a row for
+            history from before brand stamping (2026-07); new events carry it. Sending-side dims
+            (Source / Sending Route / Server / Pool) show delivery only — engagement events carry no
+            sending attribution, so their Opens/Clicks columns read 0 by design. Click a row for
             its daily trend. <TimingNote meta={fresh && fetched ? fetched.meta : null} />
           </p>
         </div>
@@ -1930,9 +1958,13 @@ interface LookupResult {
   typeTotals: MetricRow | null;        // (a) group_by=event_type
   typeTotalsMeta: FetchMeta | null;
   typeTruncated: boolean;
-  ispRows: BreakdownRow[];             // (b) group_by=isp_group,event_type
+  ispRows: BreakdownRow[];             // (b) group_by=isp,event_type
   ispMeta: FetchMeta | null;
   ispTruncated: boolean;
+  // engOk: the (a)-side app-engagement fetch succeeded. When false, opens/
+  // clicks in typeTotals are 0 because the FETCH failed, not because the lake
+  // recorded none — the recon Opens/Clicks rows are omitted in that state.
+  engOk: boolean;
   cc: CCDetail | null;                 // (c) campaign-summary — null when degraded
   ccError: string;
   events: LakeEvent[];                 // (d) recent events
@@ -2092,15 +2124,22 @@ const CampaignTab: React.FC<{
       id,
       typeTotals: null, typeTotalsMeta: null, typeTruncated: false,
       ispRows: [], ispMeta: null, ispTruncated: false,
+      engOk: false,
       cc: null, ccError: '',
       events: [], eventsMeta: null,
     };
     // Engagement fetches are FAIL-SOFT: a failure degrades opens/clicks to 0
-    // for the funnel/matrix without dropping the delivery truth.
+    // for the funnel/matrix without dropping the delivery truth — but it must
+    // be VISIBLE (toast) and the reconciliation must not render a red -100%
+    // "lake lost your opens" row off a failed fetch (QA gate, 2026-07-01).
     const aEngRows = aEng.status === 'fulfilled' ? aEng.value.data.rows : [];
     const bEngRows = bEng.status === 'fulfilled' ? bEng.value.data.rows : [];
+    res.engOk = aEng.status === 'fulfilled';
     if (aEng.status === 'rejected' && !isAbortError(aEng.reason)) {
       addToast({ type: 'error', title: 'Campaign engagement query failed', message: aEng.reason instanceof Error ? aEng.reason.message : String(aEng.reason) });
+    }
+    if (bEng.status === 'rejected' && !isAbortError(bEng.reason)) {
+      addToast({ type: 'error', title: 'Per-provider engagement query failed', message: bEng.reason instanceof Error ? bEng.reason.message : String(bEng.reason) });
     }
     if (a.status === 'fulfilled') {
       res.typeTotals = totalsFromBreakdown(mergeDeliveryAndEngagement(a.value.data.rows, aEngRows));
@@ -2168,8 +2207,13 @@ const CampaignTab: React.FC<{
     // reputation_block — so the comparable tracking number is the SUM.
     { label: 'Hard bounce *', lake: lakeC.hard, cc: cc.hard_bounce + (cc.reputation_block ?? 0), color: HARD_RED, note: 'tracking = hard bounces + provider blocks (analytics folds provider blocks into hard)' },
     { label: 'Soft bounce', lake: lakeC.soft, cc: cc.soft_bounce, color: SOFT_AMBER },
-    { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'analytics = total open events (app stream, machine incl.); tracking = unique opens' },
-    { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'analytics = total click events (app stream, machine incl.); tracking = unique clicks' },
+    // Only when the engagement fetch SUCCEEDED — otherwise lake opens/clicks
+    // are 0 because the fetch failed, and the rows would render a red -100%
+    // "divergence" that is actually a transient error (QA gate, 2026-07-01).
+    ...(result?.engOk ? [
+      { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'analytics = total open events (app stream, machine incl.); tracking = unique opens' },
+      { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'analytics = total click events (app stream, machine incl.); tracking = unique clicks' },
+    ] : []),
   ] : [];
 
   return (

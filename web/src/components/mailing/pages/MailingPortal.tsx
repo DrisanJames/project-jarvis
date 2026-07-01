@@ -600,16 +600,20 @@ const EnhancedDashboard: React.FC = () => {
   const perf = dashboard?.performance || {};
   const todayDelivered: number = lakeToday ? lakeToday.delivered : (perf.delivered || 0);
   // Opens/clicks tiles: RAW (machine incl.) counts from the engagement
-  // endpoint when it responded, else the lake's raw counts (fail-soft).
-  // Rates divide by lake delivered — the same convention as the Reporting
-  // tab's KPI strip (METRIC_CONTRACT §2/§6).
-  const todayOpens: number | null = lakeToday ? (engToday ? engToday.raw_opens : lakeToday.opens) : null;
-  const todayClicks: number | null = lakeToday ? (engToday ? engToday.raw_clicks : lakeToday.clicks) : null;
-  const todayOpenRate: number = lakeToday
-    ? (lakeToday.delivered > 0 ? ((todayOpens || 0) / lakeToday.delivered) * 100 : 0)
+  // endpoint ONLY. The lake's own open/click buckets under source_in=pmta,ses
+  // are the SES-webhook slice — a small fraction of true opens (PMTA emits
+  // none) — so falling back to them silently collapsed the tile to a large
+  // undercount with a plausible-looking rate. When the engagement fetch fails
+  // the tiles now say "unavailable", matching the Reporting tab's fail-soft
+  // (QA gate finding, 2026-07-01). Rates divide by lake delivered — the same
+  // convention as the Reporting KPI strip (METRIC_CONTRACT §2/§6).
+  const todayOpens: number | null = lakeToday && engToday ? engToday.raw_opens : null;
+  const todayClicks: number | null = lakeToday && engToday ? engToday.raw_clicks : null;
+  const todayOpenRate: number | null = lakeToday
+    ? (engToday && lakeToday.delivered > 0 ? (engToday.raw_opens / lakeToday.delivered) * 100 : null)
     : (perf.open_rate ? perf.open_rate * 100 : 0);
-  const todayClickRate: number = lakeToday
-    ? (lakeToday.delivered > 0 ? ((todayClicks || 0) / lakeToday.delivered) * 100 : 0)
+  const todayClickRate: number | null = lakeToday
+    ? (engToday && lakeToday.delivered > 0 ? (engToday.raw_clicks / lakeToday.delivered) * 100 : null)
     : (perf.click_rate ? perf.click_rate * 100 : 0);
   const todayHard: number = lakeToday ? lakeToday.hard : (perf.hard_bounces || 0);
   const todaySoft: number = lakeToday ? lakeToday.soft : (perf.soft_bounces || 0);
@@ -781,11 +785,11 @@ const EnhancedDashboard: React.FC = () => {
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faEnvelope} /></span>
             <div className="metric-content">
-              <span className="metric-value">{`${todayOpenRate.toFixed(1)}%`}</span>
+              <span className="metric-value">{todayOpenRate != null ? `${todayOpenRate.toFixed(1)}%` : '—'}</span>
               <span className="metric-label">Open Rate{todayOpens != null ? ` (${todayOpens.toLocaleString()} opens)` : ''}</span>
               {lakeToday ? (
                 <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
-                  {engToday ? `machine incl. · human ${engToday.human_opens.toLocaleString()}` : 'machine incl. (lake raw)'}
+                  {engToday ? `machine incl. · human ${engToday.human_opens.toLocaleString()}` : 'engagement unavailable'}
                 </span>
               ) : null}
             </div>
@@ -793,11 +797,11 @@ const EnhancedDashboard: React.FC = () => {
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
             <div className="metric-content">
-              <span className="metric-value">{`${todayClickRate.toFixed(1)}%`}</span>
+              <span className="metric-value">{todayClickRate != null ? `${todayClickRate.toFixed(1)}%` : '—'}</span>
               <span className="metric-label">Click Rate{todayClicks != null ? ` (${todayClicks.toLocaleString()} clicks)` : ''}</span>
               {lakeToday ? (
                 <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
-                  {engToday ? `machine incl. · human ${engToday.human_clicks.toLocaleString()}` : 'machine incl. (lake raw)'}
+                  {engToday ? `machine incl. · human ${engToday.human_clicks.toLocaleString()}` : 'engagement unavailable'}
                 </span>
               ) : null}
             </div>

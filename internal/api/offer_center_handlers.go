@@ -1209,6 +1209,13 @@ func countOfferConversions(ctx context.Context, db *sql.DB, orgID, offerID strin
 // trend from mailing_offer_suppressions; DNM list size + audience size from
 // the latest completed Optizmo scrub job.
 func loadOfferStats(ctx context.Context, db *sql.DB, orgID, offerID string, days int) (*OfferStatsResponse, error) {
+	// Statement budget: three verdict-filtered scans over mailing_tracking_events
+	// with a caller-supplied window up to 365 days had NO timeout — a full-year
+	// request could run to the server write-timeout. 15s mirrors the engagement
+	// handler's budget (QA gate, 2026-07-01).
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	windowStart := time.Now().AddDate(0, 0, -days)
 
 	resp := &OfferStatsResponse{
