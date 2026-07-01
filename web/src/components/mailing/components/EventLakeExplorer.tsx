@@ -83,6 +83,7 @@ import {
   denverToday, daysAgoDenver,
   lakeFilterParams as filterParams,
   lakeFilterParamsNoTransport as filterParamsNoTransport,
+  COMMON_ISP_GROUPS,
 } from '../shared/filters';
 import type { Transport, LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
 
@@ -2598,7 +2599,13 @@ const RawEventsTab: React.FC<{
           <input type="text" value={campaignId} placeholder="UUID" onChange={(e) => setCampaignId(e.target.value)} style={{ ...styles.input, width: 280 }} />
         </label>
         <label style={styles.fieldLabel}>isp_group
-          <input type="text" list="elx-isp-groups" value={ispGroup} placeholder="gmail" onChange={(e) => setIspGroup(e.target.value)} style={{ ...styles.input, width: 120 }} />
+          <input type="text" list="elx-raw-isp-groups" value={ispGroup} placeholder="gmail" onChange={(e) => setIspGroup(e.target.value)} style={{ ...styles.input, width: 120 }} />
+          {/* Local datalist: the old shared Toolbar provided a global
+              "elx-isp-groups" datalist this input silently depended on; the
+              shared FilterBar now generates its ids, so this tab owns its own. */}
+          <datalist id="elx-raw-isp-groups">
+            {COMMON_ISP_GROUPS.map((g) => <option key={g} value={g} />)}
+          </datalist>
         </label>
         <label style={styles.fieldLabel}>event_type
           <input type="text" value={eventType} placeholder="delivered" onChange={(e) => setEventType(e.target.value)} style={{ ...styles.input, width: 140 }} />
