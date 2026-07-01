@@ -545,10 +545,12 @@ export const CpmPlanner: React.FC = () => {
       // Planner defaults to the nearest future month; History to the most
       // recent closed month. Keep the user's pick when still valid.
       setPlannerMonth(prev => (prev && prev > curYM) ? prev : (curYM ? nextMonthKeys(curYM, 1)[0] : ''));
+      // historyMonth: '' = Lifetime (the default view); only keep a chosen
+      // month if it still exists in the response.
       setHistoryMonth(prev => {
+        if (!prev) return '';
         const past = rows.filter(r => !r.is_current && !r.is_future);
-        if (prev && past.some(r => r.month === prev)) return prev;
-        return past[0]?.month || '';
+        return past.some(r => r.month === prev) ? prev : '';
       });
     } catch (e) {
       setMonthsError(e instanceof Error ? e.message : 'failed to load months');
@@ -638,8 +640,14 @@ export const CpmPlanner: React.FC = () => {
             monthly_notes: tgt.notes, ecpm: effEcpm,
             target_budget: budget != null ? budget : p.target_budget,
             target_volume: targetVolume, target_source: 'monthly',
-            conversions_needed: budget != null && budget > 0 && effEcpa > 0 ? Math.ceil(budget / effEcpa) : p.conversions_needed,
-            actual_ecpa: budget != null && budget > 0 && p.mtd_conversions > 0 ? budget / p.mtd_conversions : p.actual_ecpa,
+            conversions_needed: (() => {
+              const eb = budget != null && budget > 0 ? budget : p.target_budget; // deal-plan fallback budget
+              return eb > 0 && effEcpa > 0 ? Math.ceil(eb / effEcpa) : p.conversions_needed;
+            })(),
+            actual_ecpa: (() => {
+              const eb = budget != null && budget > 0 ? budget : p.target_budget;
+              return eb > 0 && p.mtd_conversions > 0 ? eb / p.mtd_conversions : p.actual_ecpa;
+            })(),
           };
         } else {
           // Deleted: fall back to the deal's own plan (the server's rule).
@@ -1204,7 +1212,13 @@ export const CpmPlanner: React.FC = () => {
       const liveTarget = bv > 0 && mv > 0 ? Math.ceil((bv / mv) * 1000) : 0;
       const dealMeta = deals.find(x => x.id === p.deal_id);
       const ecpaGoal = p.monthly_ecpa != null && p.monthly_ecpa > 0 ? p.monthly_ecpa : (dealMeta?.ecpa_goal || 0);
-      const convColor = p.conversions_needed > 0 && p.mtd_conversions >= p.conversions_needed
+      // Conv-needed live-derives as the operator types (budget or eCPA):
+      // ⌈effective budget ÷ effective eCPA⌉, falling back to the saved value.
+      const av = parseFloat(buf.ecpa);
+      const effBudget = bv > 0 ? bv : p.target_budget;
+      const effEcpa = av > 0 ? av : ecpaGoal;
+      const liveConvNeeded = effBudget > 0 && effEcpa > 0 ? Math.ceil(effBudget / effEcpa) : p.conversions_needed;
+      const convColor = liveConvNeeded > 0 && p.mtd_conversions >= liveConvNeeded
         ? C.green : p.mtd_conversions > 0 ? C.amber : C.muted;
       return (
         <tr key={p.deal_id}>
@@ -1270,7 +1284,7 @@ export const CpmPlanner: React.FC = () => {
           </td>
           <td style={tdStyle}>
             <span style={{ color: convColor, fontWeight: 600 }}>{fmtInt(p.mtd_conversions)}</span>
-            <span style={{ color: C.muted }}> / {p.conversions_needed > 0 ? fmtInt(p.conversions_needed) : '—'}</span>
+            <span style={{ color: C.muted }}> / {liveConvNeeded > 0 ? fmtInt(liveConvNeeded) : '—'}</span>
           </td>
           <td style={tdStyle}>
             {p.mtd_delivered > 0 && p.actual_ecpm > 0 ? (
@@ -1315,8 +1329,6 @@ export const CpmPlanner: React.FC = () => {
             {pacingLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
           </button>
         </div>
-
-        {renderCapacityStrip()}
 
         {pacingError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{pacingError}</div>}
         {monthsError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{monthsError}</div>}
@@ -2358,102 +2370,68 @@ export const CpmPlanner: React.FC = () => {
     );
   };
 
-  // 3 · History — closed months, READ-ONLY (never editable; operator 2026-07-01).
-  const renderHistory = () => {
-    const past = months.filter(m => !m.is_current && !m.is_future);
-    const selKey = historyMonth && past.some(m => m.month === historyMonth) ? historyMonth : (past[0]?.month || '');
-    const sel = past.find(m => m.month === selKey) || null;
-
-    const actualRow = (d: MonthDeal) => {
-      const pct = d.target.volume && d.target.volume > 0 ? (d.delivered / d.target.volume) * 100 : null;
-      return (
-        <tr key={d.deal_id}>
-          <td style={tdStyle}>
-            <div style={{ color: C.heading }}>{d.name}</div>
-            {d.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{d.offer_name}</div>}
-          </td>
-          <td style={tdStyle}>{d.target.budget != null ? fmtMoney(d.target.budget) : '—'}</td>
-          <td style={tdStyle}>{d.target.volume != null ? fmtInt(d.target.volume) : '—'}</td>
-          <td style={tdStyle}>{d.ecpm > 0 ? '$' + d.ecpm.toFixed(2) : '—'}</td>
-          <td style={tdStyle}>{d.target.ecpa != null ? fmtMoney(d.target.ecpa) : '—'}</td>
-          <td style={tdStyle}>
-            {fmtInt(d.delivered)}
-            {pct != null && <span style={{ fontSize: 11, color: C.muted }}> ({Math.round(pct)}%)</span>}
-          </td>
-          <td style={{ ...tdStyle, color: C.green }}>{fmtMoney(d.revenue)}</td>
-          <td style={tdStyle}>{fmtInt(d.conversions)}</td>
-        </tr>
-      );
-    };
-
+  // Read-only month breakdown inside Deal History & Performance — replaces
+  // the old standalone Monthly History section.
+  const renderMonthBreakdown = () => {
+    const sel = months.find(m => m.month === historyMonth) || null;
+    if (!monthsLoaded && monthsLoading) {
+      return <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 30, textAlign: 'center', color: C.muted }}><FontAwesomeIcon icon={faSpinner} spin /></div>;
+    }
+    if (!sel) {
+      return <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No data for {monthLabel(historyMonth)}.</div>;
+    }
     return (
-      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-              3 · Monthly History
-            </div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-              Closed months — target vs what actually delivered. Read-only.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {past.map(m => (
-              <button key={m.month} onClick={() => setHistoryMonth(m.month)}
-                style={{
-                  padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
-                  border: `1px solid ${m.month === selKey ? C.indigo : C.border}`,
-                  background: m.month === selKey ? 'rgba(99,102,241,0.25)' : 'transparent',
-                  color: m.month === selKey ? C.heading : C.muted,
-                }}>
-                {monthLabel(m.month)}
-              </button>
-            ))}
-            <button onClick={loadMonths} disabled={monthsLoading}
-              style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 12, cursor: 'pointer' }}>
-              {monthsLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
-            </button>
-          </div>
+      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
+          <Stat label="Closed month" value={monthLabel(sel.month)} />
+          <Stat label="Delivered" value={fmtInt(sel.portfolio.delivered)} />
+          <Stat label="Revenue" value={fmtMoney(sel.portfolio.revenue)} color={C.green} />
+          <Stat label="Conversions" value={fmtInt(sel.portfolio.conversions)} />
+          <Stat label="Target budget" value={sel.portfolio.target_budget > 0 ? fmtMoney(sel.portfolio.target_budget) : '—'} />
+          <Stat label="Target volume" value={sel.portfolio.target_volume > 0 ? fmtInt(sel.portfolio.target_volume) : '—'} />
         </div>
-
-        {!monthsLoaded && monthsLoading ? (
-          <div style={{ padding: 30, textAlign: 'center', color: C.muted }}><FontAwesomeIcon icon={faSpinner} spin /></div>
-        ) : !sel ? (
-          <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>
-            No closed months yet — history accrues as months complete.
+        {sel.deals.length === 0 ? (
+          <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 13 }}>
+            No deals with activity or targets for {monthLabel(sel.month)}.
           </div>
         ) : (
-          <>
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
-              <Stat label="Closed month" value={monthLabel(sel.month)} />
-              <Stat label="Delivered" value={fmtInt(sel.portfolio.delivered)} />
-              <Stat label="Revenue" value={fmtMoney(sel.portfolio.revenue)} color={C.green} />
-              <Stat label="Conversions" value={fmtInt(sel.portfolio.conversions)} />
-              <Stat label="Target budget" value={sel.portfolio.target_budget > 0 ? fmtMoney(sel.portfolio.target_budget) : '—'} />
-              <Stat label="Target volume" value={sel.portfolio.target_volume > 0 ? fmtInt(sel.portfolio.target_volume) : '—'} />
-            </div>
-            {sel.deals.length === 0 ? (
-              <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 13 }}>
-                No deals with activity or targets for {monthLabel(sel.month)}.
-              </div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead><tr>
-                    <th style={thStyle}>Deal</th>
-                    <th style={thStyle}>Target Budget</th>
-                    <th style={thStyle}>Target Volume</th>
-                    <th style={thStyle}>eCPM</th>
-                    <th style={thStyle}>eCPA</th>
-                    <th style={thStyle}>Delivered</th>
-                    <th style={thStyle}>Revenue</th>
-                    <th style={thStyle}>Conv</th>
-                  </tr></thead>
-                  <tbody>{sel.deals.map(actualRow)}</tbody>
-                </table>
-              </div>
-            )}
-          </>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={thStyle}>Deal</th>
+                <th style={thStyle}>Target Budget</th>
+                <th style={thStyle}>Target Volume</th>
+                <th style={thStyle}>eCPM</th>
+                <th style={thStyle}>eCPA</th>
+                <th style={thStyle}>Delivered</th>
+                <th style={thStyle}>Revenue</th>
+                <th style={thStyle}>Conv</th>
+              </tr></thead>
+              <tbody>
+                {sel.deals.map(d => {
+                  const pct = d.target.volume && d.target.volume > 0 ? (d.delivered / d.target.volume) * 100 : null;
+                  return (
+                    <tr key={d.deal_id}>
+                      <td style={tdStyle}>
+                        <div style={{ color: C.heading }}>{d.name}</div>
+                        {d.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{d.offer_name}</div>}
+                      </td>
+                      <td style={tdStyle}>{d.target.budget != null ? fmtMoney(d.target.budget) : '—'}</td>
+                      <td style={tdStyle}>{d.target.volume != null ? fmtInt(d.target.volume) : '—'}</td>
+                      <td style={tdStyle}>{d.ecpm > 0 ? '$' + d.ecpm.toFixed(2) : '—'}</td>
+                      <td style={tdStyle}>{d.target.ecpa != null ? fmtMoney(d.target.ecpa) : '—'}</td>
+                      <td style={tdStyle}>
+                        {fmtInt(d.delivered)}
+                        {pct != null && <span style={{ fontSize: 11, color: C.muted }}> ({Math.round(pct)}%)</span>}
+                      </td>
+                      <td style={{ ...tdStyle, color: C.green }}>{fmtMoney(d.revenue)}</td>
+                      <td style={tdStyle}>{fmtInt(d.conversions)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     );
@@ -2495,27 +2473,58 @@ export const CpmPlanner: React.FC = () => {
         </div>
       )}
 
+      {/* 0 · Platform capacity — topmost dashboard (operator 2026-07-01) */}
+      <div style={{ marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading, marginBottom: 8 }}>
+          Platform Capacity — Last 3 Days
+        </div>
+      </div>
+      {renderCapacityStrip()}
+
       {/* 1 · Current-month pacing — the month in motion (editable) */}
       {renderPacing()}
 
       {/* 2 · Planner — future months only */}
       {renderPlanner()}
 
-      {/* 3 · History — closed months, read-only */}
-      {renderHistory()}
-
-      {/* 4 · Lifetime deal reference — totals since each deal's start date,
-          NOT this month (that's section 1). Expand a row for performance
-          detail (conversions, creatives, campaigns). */}
-      <div style={{ marginBottom: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-          4 · Deal History &amp; Performance — Lifetime
+      {/* 3 · Deal history & performance — Lifetime by default; month pills
+          drive the read-only per-month breakdown (replaces the old separate
+          Monthly History section — operator 2026-07-01). */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
+            3 · Deal History &amp; Performance
+          </div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+            {historyMonth
+              ? `${monthLabel(historyMonth)} — target vs what actually delivered (read-only).`
+              : "Lifetime totals since each deal's start date (not this month). Click a row for performance detail."}
+          </div>
         </div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 10 }}>
-          Lifetime totals since each deal's start date (not this month). Click a row for performance detail.
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button onClick={() => setHistoryMonth('')}
+            style={{
+              padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+              border: `1px solid ${historyMonth === '' ? C.indigo : C.border}`,
+              background: historyMonth === '' ? 'rgba(99,102,241,0.25)' : 'transparent',
+              color: historyMonth === '' ? C.heading : C.muted, fontWeight: 700,
+            }}>
+            Lifetime
+          </button>
+          {months.filter(m => !m.is_current && !m.is_future).map(m => (
+            <button key={m.month} onClick={() => setHistoryMonth(m.month)}
+              style={{
+                padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+                border: `1px solid ${m.month === historyMonth ? C.indigo : C.border}`,
+                background: m.month === historyMonth ? 'rgba(99,102,241,0.25)' : 'transparent',
+                color: m.month === historyMonth ? C.heading : C.muted,
+              }}>
+              {monthLabel(m.month)}
+            </button>
+          ))}
         </div>
       </div>
-      {loading ? (
+      {historyMonth ? renderMonthBreakdown() : loading ? (
         <div style={{ padding: 60, textAlign: 'center', color: C.muted }}>
           <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 22 }} />
         </div>
