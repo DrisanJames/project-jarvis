@@ -358,15 +358,38 @@ export const MailingPortal: React.FC = () => {
 //     badge; falls back to the PG numbers (badge explains SES routes are
 //     pixel-blind in PG) when the lake reader is disabled or errors.
 //     Revenue stays from the PG dashboard payload.
-const PAGE_VERSION_DASHBOARD = '1.1';
+//   1.2 (2026-07-01) — Today's Performance converges with the Reporting tab
+//     per docs/METRIC_CONTRACT.md: lake read switched from /lake/summary
+//     (unfiltered, ~48h UTC window, app-stream double count) to the canonical
+//     /lake/breakdown with local_dt=<Denver day> + source_in=pmta,ses;
+//     opens/clicks tiles now show RAW counts from /analytics/engagement with a
+//     "machine incl. · human N" subtext (fail-soft to lake raw counts); bounce
+//     denominator = delivered + hard + soft + untyped 'bounced'.
+const PAGE_VERSION_DASHBOARD = '1.2';
 
-// Today's lake counts (event_type buckets from /analytics/lake/summary).
+// Today's lake counts (reclassified event_type buckets from the canonical
+// /analytics/lake/breakdown query — Denver day, source_in=pmta,ses; see
+// docs/METRIC_CONTRACT.md §1/§4. The 'app' mirror stream double-counts
+// delivered and is excluded).
 interface LakeTodayCounts {
   delivered: number;
-  opens: number;
-  clicks: number;
+  opens: number; // raw lake open events — fallback when the engagement fetch fails
+  clicks: number; // raw lake click events — fallback when the engagement fetch fails
   hard: number;
   soft: number;
+  bouncedUntyped: number; // ses-source 'bounced' (no hard/soft split)
+}
+
+// Raw + human opens/clicks from GET /api/mailing/analytics/engagement
+// (PG mailing_tracking_events + ignite_event_verdict — METRIC_CONTRACT §6).
+// Same endpoint the Reporting tab's KPI strip uses.
+interface EngTodayCounts {
+  raw_opens: number;
+  human_opens: number;
+  human_openers: number;
+  raw_clicks: number;
+  human_clicks: number;
+  human_clickers: number;
 }
 
 // Today's date (YYYY-MM-DD) in America/Denver — mirrors the dashboard
@@ -375,7 +398,9 @@ const denverToday = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
 
 // dt partitions are UTC days; a Denver day spans dt and dt+1 (after 6pm MDT
-// events land in the next UTC partition), so the summary query covers both.
+// events land in the next UTC partition). Used by the audience-growth window
+// (Today's Performance instead passes local_dt so the backend widens
+// partitions and applies the Denver predicate itself).
 const nextUTCDay = (ymd: string): string => {
   const [y, m, d] = ymd.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
@@ -415,6 +440,9 @@ const EnhancedDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   // null = lake disabled/unavailable/errored → render the PG fallback.
   const [lakeToday, setLakeToday] = useState<LakeTodayCounts | null>(null);
+  // Raw+human engagement for today (PG + verdict). Fail-soft: null → the
+  // open/click tiles fall back to the lake's raw counts (never blank).
+  const [engToday, setEngToday] = useState<EngTodayCounts | null>(null);
   // Audience growth (acquisition vs churn) + click-funnel membership. Both are
   // optional/failure-tolerant — a slow or unavailable source never blocks the
   // rest of the dashboard (mirrors the lakeToday pattern above).
@@ -479,19 +507,24 @@ const EnhancedDashboard: React.FC = () => {
         const status = await statusRes.json();
         if (!status?.enabled_read) return;
 
-        const from = denverToday();
-        const to = nextUTCDay(from);
-        const sumRes = await apiFetch(
-          `/api/mailing/analytics/lake/summary?from=${from}&to=${to}`,
+        // Canonical Reporting-tab query (METRIC_CONTRACT §1/§4): reclassified
+        // event_type buckets over transport sources only (pmta+ses — the 'app'
+        // mirror stream double-counts delivered). from/to are UTC dt partition
+        // bounds; passing local_dt makes the backend widen partitions and apply
+        // the precise Denver-day predicate.
+        const day = denverToday();
+        const bdRes = await apiFetch(
+          `/api/mailing/analytics/lake/breakdown?from=${day}&to=${day}&group_by=event_type&local_dt=${day}&source_in=pmta,ses&limit=100`,
           { credentials: 'include' },
         );
-        if (!sumRes.ok) return;
-        const sum = await sumRes.json();
-        if (sum?.disabled || !Array.isArray(sum?.rows)) return;
+        if (!bdRes.ok) return;
+        const bd = await bdRes.json();
+        if (bd?.disabled || !Array.isArray(bd?.rows)) return;
 
         const byType: Record<string, number> = {};
-        for (const row of sum.rows as Array<{ event_type: string; count: number }>) {
-          byType[row.event_type] = (byType[row.event_type] || 0) + (row.count || 0);
+        for (const row of bd.rows as Array<{ keys?: { event_type?: string }; count?: number }>) {
+          const t = row?.keys?.event_type || '';
+          byType[t] = (byType[t] || 0) + (Number(row?.count) || 0);
         }
         if (!cancelled) {
           setLakeToday({
@@ -500,10 +533,42 @@ const EnhancedDashboard: React.FC = () => {
             clicks: byType['click'] || 0,
             hard: byType['hard_bounce'] || 0,
             soft: byType['soft_bounce'] || 0,
+            bouncedUntyped: byType['bounced'] || 0,
           });
         }
       } catch {
         // Lake unreachable → keep the PG fallback (lakeToday stays null).
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Raw + human opens/clicks for the Denver day — the same PG+verdict endpoint
+  // the Reporting tab's KPI strip uses (METRIC_CONTRACT §6). Fail-soft: on any
+  // failure engToday stays null and the tiles show the lake counts instead.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const day = denverToday();
+        const res = await apiFetch(
+          `/api/mailing/analytics/engagement?from=${day}&to=${day}`,
+          { credentials: 'include' },
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data && typeof data.raw_opens === 'number') {
+          setEngToday({
+            raw_opens: data.raw_opens || 0,
+            human_opens: data.human_opens || 0,
+            human_openers: data.human_openers || 0,
+            raw_clicks: data.raw_clicks || 0,
+            human_clicks: data.human_clicks || 0,
+            human_clickers: data.human_clickers || 0,
+          });
+        }
+      } catch {
+        // Engagement endpoint unreachable → tiles fall back to lake counts.
       }
     })();
     return () => { cancelled = true; };
@@ -534,17 +599,25 @@ const EnhancedDashboard: React.FC = () => {
   // the PG dashboard payload. Revenue ALWAYS comes from the PG payload.
   const perf = dashboard?.performance || {};
   const todayDelivered: number = lakeToday ? lakeToday.delivered : (perf.delivered || 0);
+  // Opens/clicks tiles: RAW (machine incl.) counts from the engagement
+  // endpoint when it responded, else the lake's raw counts (fail-soft).
+  // Rates divide by lake delivered — the same convention as the Reporting
+  // tab's KPI strip (METRIC_CONTRACT §2/§6).
+  const todayOpens: number | null = lakeToday ? (engToday ? engToday.raw_opens : lakeToday.opens) : null;
+  const todayClicks: number | null = lakeToday ? (engToday ? engToday.raw_clicks : lakeToday.clicks) : null;
   const todayOpenRate: number = lakeToday
-    ? (lakeToday.delivered > 0 ? (lakeToday.opens / lakeToday.delivered) * 100 : 0)
+    ? (lakeToday.delivered > 0 ? ((todayOpens || 0) / lakeToday.delivered) * 100 : 0)
     : (perf.open_rate ? perf.open_rate * 100 : 0);
   const todayClickRate: number = lakeToday
-    ? (lakeToday.delivered > 0 ? (lakeToday.clicks / lakeToday.delivered) * 100 : 0)
+    ? (lakeToday.delivered > 0 ? ((todayClicks || 0) / lakeToday.delivered) * 100 : 0)
     : (perf.click_rate ? perf.click_rate * 100 : 0);
   const todayHard: number = lakeToday ? lakeToday.hard : (perf.hard_bounces || 0);
   const todaySoft: number = lakeToday ? lakeToday.soft : (perf.soft_bounces || 0);
-  // Bounce-rate denominator mirrors the campaign-summary convention:
-  // processed = delivered + hard + soft.
-  const todayProcessed = lakeToday ? (lakeToday.delivered + lakeToday.hard + lakeToday.soft) : 0;
+  // Bounce-rate denominator = DERIVED attempted (METRIC_CONTRACT §2):
+  // delivered + hard + soft + untyped ('bounced', ses-source, no hard/soft split).
+  const todayProcessed = lakeToday
+    ? (lakeToday.delivered + lakeToday.hard + lakeToday.soft + lakeToday.bouncedUntyped)
+    : 0;
   const todayHardRate: number | null = lakeToday
     ? (todayProcessed > 0 ? (todayHard / todayProcessed) * 100 : 0)
     : (perf.hard_bounce_rate ?? null);
@@ -684,7 +757,7 @@ const EnhancedDashboard: React.FC = () => {
           {' '}
           <span
             title={lakeToday
-              ? 'Source: analytics event lake (Athena) — covers PMTA and SES routes.'
+              ? 'Source: analytics event lake (Athena) — Denver calendar day, sources pmta+ses only (the app mirror stream is excluded so delivered is not double-counted). Opens/clicks are raw (machine incl.) from the PG+verdict engagement endpoint.'
               : 'Source: Postgres tracking tables — SES routes are pixel-blind here (SES strips tracking pixels), so opens/clicks under-count on SES-routed mail.'}
             style={{
               fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
@@ -694,7 +767,7 @@ const EnhancedDashboard: React.FC = () => {
               border: `1px solid ${lakeToday ? 'rgba(99,102,241,0.4)' : 'rgba(148,163,184,0.3)'}`,
             }}
           >
-            {lakeToday ? 'lake' : 'pg — SES routes are pixel-blind here'}
+            {lakeToday ? 'lake · Denver day · pmta+ses' : 'pg — SES routes are pixel-blind here'}
           </span>
         </h3>
         <div className="metrics-grid">
@@ -709,14 +782,24 @@ const EnhancedDashboard: React.FC = () => {
             <span className="metric-icon"><FontAwesomeIcon icon={faEnvelope} /></span>
             <div className="metric-content">
               <span className="metric-value">{`${todayOpenRate.toFixed(1)}%`}</span>
-              <span className="metric-label">Open Rate{lakeToday ? ` (${lakeToday.opens.toLocaleString()} opens)` : ''}</span>
+              <span className="metric-label">Open Rate{todayOpens != null ? ` (${todayOpens.toLocaleString()} opens)` : ''}</span>
+              {lakeToday ? (
+                <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
+                  {engToday ? `machine incl. · human ${engToday.human_opens.toLocaleString()}` : 'machine incl. (lake raw)'}
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
             <div className="metric-content">
               <span className="metric-value">{`${todayClickRate.toFixed(1)}%`}</span>
-              <span className="metric-label">Click Rate{lakeToday ? ` (${lakeToday.clicks.toLocaleString()} clicks)` : ''}</span>
+              <span className="metric-label">Click Rate{todayClicks != null ? ` (${todayClicks.toLocaleString()} clicks)` : ''}</span>
+              {lakeToday ? (
+                <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
+                  {engToday ? `machine incl. · human ${engToday.human_clicks.toLocaleString()}` : 'machine incl. (lake raw)'}
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="metric-card">
