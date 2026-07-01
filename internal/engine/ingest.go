@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/eventbus"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/smtputil"
 	"github.com/redis/go-redis/v9"
 )
@@ -394,6 +395,11 @@ func (ing *Ingestor) routeToCampaignTracker(rec AccountingRecord, isp ISP) {
 		CampaignID:  rec.JobID,
 		Email:       rec.Recipient,
 		EmailDomain: rec.Domain,
+		// Brand (apex domain) from the envelope sender. Historically left
+		// blank, which collapsed the Reporting screen's Brand dimension into
+		// one "(empty)" row (reader.go brandExpr covers old rows via the VMTA
+		// brand code); setting it here makes the stored column authoritative.
+		Brand:       brand.RootFromEmail(rec.Sender),
 		ISPGroup:    string(isp),
 		RouteType:   routeType,
 		EventType:   analytics.CanonicalEventType(eventType),

@@ -25,6 +25,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/eventbus"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 )
@@ -455,6 +456,11 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		SubscriberID:    subscriberIDStr(subPtr),
 		Email:           recipientEmail,
 		EmailDomain:     recipientDomain,
+		// Brand (apex domain) from the SES envelope source. ses-source rows
+		// have no VMTA, so unlike pmta rows the reader cannot derive their
+		// brand from history — this write-time field is their only brand
+		// signal on the Reporting screen's Brand dimension.
+		Brand:           brand.RootFromEmail(note.Mail.Source),
 		ISPGroup:        isp.GroupFromDomain(recipientDomain),
 		RouteType:       "ses",
 		EventType:       analytics.CanonicalEventType(eventType),
