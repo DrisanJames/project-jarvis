@@ -83,7 +83,12 @@ func buildDeferralFunnelSQL(from, to, brand string) (string, error) {
 	b.WriteString(" AND source='pmta' AND route_type='pmta_direct'")
 	b.WriteString(" AND campaign_id <> '' AND email <> ''")
 	if brand != "" {
-		b.WriteString(" AND brand = ")
+		// brandExpr, not the raw column: pmta rows historically carry brand=''
+		// (the vmta code is the only brand signal), so a raw brand= filter
+		// silently emptied the funnel whenever a brand was selected.
+		b.WriteString(" AND ")
+		b.WriteString(brandExpr)
+		b.WriteString(" = ")
 		b.WriteString(sqlStr(brand))
 	}
 	b.WriteString(" GROUP BY isp_group, campaign_id, lower(email)")

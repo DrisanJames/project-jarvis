@@ -174,6 +174,38 @@ const ispExpr = "CASE" +
 	" WHEN " + ispDomainExpr + " = 'verizon.net' THEN 'verizon'" +
 	" ELSE 'other' END"
 
+// brandExpr is the CLEAN brand classification (apex domain). The stored `brand`
+// column is authoritative when present — but only the PG→lake backfill (source
+// 'app') has historically set it; the live pmta/ses emitters wrote brand=''
+// (verified 2026-07-01: 100% of pmta+ses rows blank), which collapsed every
+// delivery metric on the Brand dimension into one "(empty)" row. For blank
+// rows we fall back to the brand code embedded in the VMTA name — every pmta
+// row carries one ("mta-<code>-<pool>N" / "vmta-<code>-ses"; zero blank-vmta
+// pmta rows in the lake). The code→apex map mirrors the VMTA seeds in
+// cmd/server/main.go (seed rows "mta-bw-gn1.mail.em.businessweeklypro.com" …).
+// ses-source rows have no vmta, so their history stays '' — write-time
+// enrichment (Brand set at Emit) covers them from 2026-07 forward. Values are
+// apex domains, matching brand.OwnedDomains and the stored app-row values.
+const brandCodeExpr = "CASE split_part(vmta, '-', 2)" +
+	" WHEN 'db' THEN 'discountblog.com'" +
+	" WHEN 'qf' THEN 'quizfiesta.com'" +
+	" WHEN 'ht' THEN 'historythinking.com'" +
+	" WHEN 'mh' THEN 'myownhealth.net'" +
+	" WHEN 'bw' THEN 'businessweeklypro.com'" +
+	" WHEN 'fc' THEN 'financialcalculate.com'" +
+	" WHEN 'cp' THEN 'consumerpro.net'" +
+	" WHEN 'hw' THEN 'homewarrantyservices.org'" +
+	" WHEN 'rr' THEN 'refinanceratesusa.com'" +
+	" WHEN 'tt' THEN 'thingoftheday.org'" +
+	" WHEN 'yi' THEN 'yourinsurancehub.com'" +
+	" WHEN 'mr' THEN 'myrepairdiy.com'" +
+	" WHEN 'ci' THEN 'casainsure.com'" +
+	" WHEN 'lp' THEN 'learnpersonalloans.com'" +
+	" WHEN 'rb' THEN 'ratesbazar.com'" +
+	" WHEN 'wf' THEN 'warrantyforyou.com'" +
+	" ELSE '' END"
+const brandExpr = "COALESCE(NULLIF(brand, ''), " + brandCodeExpr + ")"
+
 // eventTypeExpr re-derives bounce classification from the raw `bounce_cat` at
 // READ time so hard / reputation / soft is consistent with the canonical
 // taxonomy (api.HardBounceCategories / api.ReputationBlockCategories) regardless
@@ -214,6 +246,8 @@ func dimSelect(d string) string {
 		return localHourExpr + " AS local_hour"
 	case "isp":
 		return ispExpr + " AS isp"
+	case "brand":
+		return brandExpr + " AS brand"
 	case "event_type":
 		return eventTypeExpr + " AS event_type"
 	}
@@ -228,6 +262,8 @@ func dimGroup(d string) string {
 		return localHourExpr
 	case "isp":
 		return ispExpr
+	case "brand":
+		return brandExpr
 	case "event_type":
 		return eventTypeExpr
 	}
@@ -687,6 +723,10 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 			b.WriteString(sqlStr(f.Eq[col]))
 		case "isp":
 			b.WriteString(ispExpr)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		case "brand":
+			b.WriteString(brandExpr)
 			b.WriteString(" = ")
 			b.WriteString(sqlStr(f.Eq[col]))
 		default:

@@ -204,10 +204,19 @@ func TestBuildBreakdownSQL(t *testing.T) {
 			},
 			"SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
 				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
-				" AND brand = 'discountblog.com'" +
+				" AND " + brandExpr + " = 'discountblog.com'" +
 				" AND campaign_id = '550e8400-e29b-41d4-a716-446655440000'" +
 				" AND isp_group = 'gmail'" +
 				" GROUP BY " + eventTypeExpr + " ORDER BY c DESC LIMIT 10",
+		},
+		{
+			// brand is a COMPUTED dimension: stored brand first, else the VMTA
+			// brand-code fallback (pmta rows historically carry brand='').
+			"brand-group-by",
+			BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"brand", "event_type"}},
+			"SELECT " + brandExpr + " AS brand, " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+				" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+				" GROUP BY " + brandExpr + ", " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000",
 		},
 		{
 			// (a) Combined transport: source IN (...) present, COUNT(DISTINCT) intact.
