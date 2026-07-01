@@ -65,7 +65,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faSpinner, faSyncAlt, faExclamationTriangle, faDatabase,
   faCircle, faSearch, faMoon, faInfoCircle, faTable, faLayerGroup,
-  faChartLine, faChevronDown, faChevronRight, faTimes,
+  faChartLine, faChevronDown, faChevronRight,
   faCheckCircle, faTimesCircle, faBullseye, faHistory, faImages,
 } from '@fortawesome/free-solid-svg-icons';
 import {
@@ -75,6 +75,16 @@ import {
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
 import { colors as theme } from '../shared/theme';
+// Unified filter layer (PORTAL_DESIGN_SYSTEM.md §3) — extracted FROM this
+// screen's Toolbar; this file is the first consumer. Local aliases keep the
+// original names so per-tab code reads unchanged.
+import {
+  FilterBar,
+  denverToday, daysAgoDenver,
+  lakeFilterParams as filterParams,
+  lakeFilterParamsNoTransport as filterParamsNoTransport,
+} from '../shared/filters';
+import type { Transport, LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
 
 const PAGE_VERSION = '2.2';
 
@@ -251,26 +261,11 @@ interface CachedPayload<T> {
   meta: FetchMeta;
 }
 
-type RouteTypeFilter = '' | 'pmta_direct' | 'ses' | 'ses_tenant';
-
-// Transport selector — which sending transport(s) the data covers.
-//   combined → both MTA + SES (source_in=pmta,ses)
-//   mta      → PMTA only (source=pmta)
-//   ses      → SES only (source=ses)
-type Transport = 'combined' | 'mta' | 'ses';
-
-interface DraftFilters {
-  from: string;
-  to: string;
-  ispGroup: string;
-  brand: string;
-  routeType: RouteTypeFilter;
-  transport: Transport;
-}
-
-interface AppliedFilters extends DraftFilters {
-  nonce: number; // bumped on every explicit Run — bypasses the module cache
-}
+// Filter types now live in shared/filters.tsx (Transport, RouteTypeFilter,
+// LakeFilterDraft, AppliedLakeFilters). Aliased to the original local names to
+// avoid renaming churn across the tabs.
+type DraftFilters = LakeFilterDraft;
+type AppliedFilters = AppliedLakeFilters;
 
 interface RecentCampaign {
   id: string;
@@ -515,19 +510,8 @@ const fmtClock = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour12
 // the Raw tab only ever used todayUTC() for its max= bound.)
 const todayUTC = () => new Date().toISOString().slice(0, 10);
 
-// Operating-day helpers — report the day in America/Denver (MST/MDT), the
-// operator's send-day timezone. denverToday() returns the current Denver day as
-// 'YYYY-MM-DD'; daysAgoDenver(n) walks back n Denver days. The noon-UTC anchor
-// in daysAgoDenver keeps the arithmetic DST-safe (no day-boundary slips).
-const denverToday = () =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
-const daysAgoDenver = (n: number) => {
-  const t = new Date();
-  const denver = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(t);
-  const base = new Date(denver + 'T12:00:00Z');
-  base.setUTCDate(base.getUTCDate() - n);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(base);
-};
+// Operating-day helpers (denverToday / daysAgoDenver) are imported from
+// shared/filters.tsx — the one place the Denver date math lives.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUUID = (s: string) => UUID_RE.test(s.trim());
@@ -801,32 +785,12 @@ function saveRecentCampaign(id: string): RecentCampaign[] {
   return next;
 }
 
-// Global toolbar filters → breakdown filter params, WITHOUT the transport→source
-// mapping. Used only by the RouteFunnelPanel companion query, which shows MTA vs
-// SES side by side and must always read both transports regardless of the
-// selector (otherwise picking MTA would empty the SES side).
-function filterParamsNoTransport(f: AppliedFilters): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (f.ispGroup.trim()) out.isp_group = f.ispGroup.trim();
-  if (f.brand.trim()) out.brand = f.brand.trim();
-  if (f.routeType) out.route_type = f.routeType;
-  return out;
-}
-
-// Global toolbar filters → breakdown filter params (transport-aware). The
-// transport selector maps to the backend source contract: a single
-// source=pmta|ses, or source_in=pmta,ses for Combined. Threading transport
-// through here keeps the cache key (built from the serialized URL) correct
-// automatically — no separate cache field is needed.
-function filterParams(f: AppliedFilters): Record<string, string> {
-  const out = filterParamsNoTransport(f);
-  if (f.transport === 'mta') out.source = 'pmta';
-  else if (f.transport === 'ses') out.source = 'ses';
-  else out.source_in = 'pmta,ses'; // combined
-  return out;
-}
-
-const COMMON_ISP_GROUPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast', 'charter', 'att', 'verizon', 'other'];
+// Filter → query-param mapping (filterParams / filterParamsNoTransport) is
+// imported from shared/filters.tsx (lakeFilterParams / …NoTransport) — the
+// canonical brand/isp_group/route_type/source contract lives there. The
+// transport-aware variant keeps the cache key (built from the serialized URL)
+// correct automatically; the no-transport variant serves the RouteFunnelPanel
+// companion query, which must always read both transports.
 
 const ROW_DIMS: Array<{ id: string; label: string }> = [
   { id: 'isp', label: 'Mailbox Provider' },          // clean — from real recipient domain (truthful)
@@ -893,17 +857,7 @@ const TruncationBanner: React.FC<{ truncated?: boolean; limit: number }> = ({ tr
   );
 };
 
-// Removable filter chip.
-const Chip: React.FC<{ label: string; onRemove?: () => void; tone?: string }> = ({ label, onRemove, tone }) => (
-  <span style={{ ...styles.chip, borderColor: (tone || COLORS.accent) + '55', color: tone || COLORS.accent }}>
-    {label}
-    {onRemove && (
-      <button style={styles.chipX} onClick={onRemove} title="Remove filter">
-        <FontAwesomeIcon icon={faTimes} />
-      </button>
-    )}
-  </span>
-);
+// The removable filter chip lives in shared/filters.tsx (FilterChip).
 
 // Dark-theme recharts tooltip.
 interface ChartTipProps {
@@ -1231,131 +1185,9 @@ const MetricsTable: React.FC<{
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── Shared toolbar (applies to Overview + Dimensions) ─────────────────────
-
-const PRESETS: Array<{ label: string; from: () => string; to: () => string }> = [
-  { label: 'Today', from: () => denverToday(), to: () => denverToday() },
-  { label: 'Yesterday', from: () => daysAgoDenver(1), to: () => daysAgoDenver(1) },
-  { label: '7D', from: () => daysAgoDenver(6), to: () => denverToday() },
-  { label: '14D', from: () => daysAgoDenver(13), to: () => denverToday() },
-  { label: '30D', from: () => daysAgoDenver(29), to: () => denverToday() },
-];
-
-const Toolbar: React.FC<{
-  draft: DraftFilters;
-  setDraft: React.Dispatch<React.SetStateAction<DraftFilters>>;
-  applied: AppliedFilters;
-  onRun: (next: DraftFilters) => void;
-}> = ({ draft, setDraft, applied, onRun }) => {
-  const chips: Array<{ label: string; tone?: string; onRemove?: () => void }> = [
-    { label: `${applied.from} → ${applied.to}` },
-  ];
-  if (applied.ispGroup.trim()) chips.push({
-    label: `isp_group=${applied.ispGroup.trim()}`, tone: COLORS.accentAlt,
-    onRemove: () => { const next = { ...draft, ispGroup: '' }; setDraft(next); onRun(next); },
-  });
-  if (applied.brand.trim()) chips.push({
-    label: `brand=${applied.brand.trim()}`, tone: COLORS.accentPink,
-    onRemove: () => { const next = { ...draft, brand: '' }; setDraft(next); onRun(next); },
-  });
-  if (applied.routeType) chips.push({
-    label: `route_type=${applied.routeType}`, tone: INFO_BLUE,
-    onRemove: () => { const next = { ...draft, routeType: '' as RouteTypeFilter }; setDraft(next); onRun(next); },
-  });
-  if (applied.transport !== 'combined') chips.push({
-    label: `transport=${applied.transport === 'mta' ? 'MTA' : 'SES'}`, tone: COLORS.good,
-    onRemove: () => { const next = { ...draft, transport: 'combined' as Transport }; setDraft(next); onRun(next); },
-  });
-
-  return (
-    <div style={styles.toolbar}>
-      <div style={styles.toolbarRow}>
-        <div style={styles.presetRow}>
-          {PRESETS.map((p) => {
-            const active = draft.from === p.from() && draft.to === p.to();
-            return (
-              <button
-                key={p.label}
-                style={{
-                  ...styles.presetBtn,
-                  color: active ? COLORS.accent : COLORS.textSecondary,
-                  borderColor: active ? COLORS.accent + '66' : COLORS.borderStrong,
-                  background: active ? COLORS.accent + '14' : 'transparent',
-                }}
-                onClick={() => setDraft((d) => ({ ...d, from: p.from(), to: p.to() }))}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <label style={styles.fieldLabel}>From
-          <input type="date" value={draft.from} max={draft.to}
-            onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))} style={styles.input} />
-        </label>
-        <label style={styles.fieldLabel}>To
-          <input type="date" value={draft.to} min={draft.from} max={denverToday()}
-            onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))} style={styles.input} />
-        </label>
-        <label style={styles.fieldLabel}>isp_group
-          <input type="text" list="elx-isp-groups" value={draft.ispGroup} placeholder="all"
-            onChange={(e) => setDraft((d) => ({ ...d, ispGroup: e.target.value }))}
-            style={{ ...styles.input, width: 120 }} />
-        </label>
-        <datalist id="elx-isp-groups">
-          {COMMON_ISP_GROUPS.map((g) => <option key={g} value={g} />)}
-        </datalist>
-        <label style={styles.fieldLabel}>brand
-          <input type="text" value={draft.brand} placeholder="all"
-            onChange={(e) => setDraft((d) => ({ ...d, brand: e.target.value }))}
-            style={{ ...styles.input, width: 150 }} />
-        </label>
-        <label style={styles.fieldLabel}>route_type
-          <select value={draft.routeType}
-            onChange={(e) => setDraft((d) => ({ ...d, routeType: e.target.value as RouteTypeFilter }))}
-            style={{ ...styles.input, width: 130 }}>
-            <option value="">all</option>
-            <option value="pmta_direct">pmta_direct</option>
-            <option value="ses">ses</option>
-            <option value="ses_tenant">ses_tenant</option>
-          </select>
-        </label>
-        <div style={styles.fieldLabel}>Transport
-          <div style={styles.segmented}>
-            {([
-              { id: 'combined' as Transport, label: 'Combined' },
-              { id: 'mta' as Transport, label: 'MTA' },
-              { id: 'ses' as Transport, label: 'SES' },
-            ]).map((opt) => {
-              const active = draft.transport === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setDraft((d) => ({ ...d, transport: opt.id }))}
-                  style={{
-                    ...styles.segmentedBtn,
-                    color: active ? COLORS.accent : COLORS.textSecondary,
-                    background: active ? COLORS.accent + '1f' : 'transparent',
-                    fontWeight: active ? 600 : 400,
-                  }}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <button style={styles.primaryBtn} onClick={() => onRun(draft)}>
-          <FontAwesomeIcon icon={faSearch} /> Run
-        </button>
-      </div>
-      <div style={styles.chipRow}>
-        <span style={styles.chipRowLabel}>Active (Overview &amp; Dimensions):</span>
-        {chips.map((c, i) => <Chip key={i} label={c.label} tone={c.tone} onRemove={c.onRemove} />)}
-      </div>
-    </div>
-  );
-};
+// The toolbar is now the shared FilterBar (shared/filters.tsx) — the unified
+// filter standard extracted from this screen. Rendered in the root component
+// below with all four fields enabled.
 
 // ─── Tab 1: Overview ────────────────────────────────────────────────────────
 
@@ -3586,7 +3418,8 @@ export const EventLakeExplorer: React.FC = () => {
       {/* ─── Lake tabs + their Toolbar (only when read enabled) ── */}
       {status && readEnabled && (
         <>
-          <Toolbar draft={draft} setDraft={setDraft} applied={applied} onRun={onRun} />
+          <FilterBar draft={draft} setDraft={setDraft} applied={applied} onRun={onRun}
+            activeLabel="Active (Overview & Dimensions):" />
 
           {/* Visited tabs stay mounted (state + cache preserved); only the active one is visible. */}
           {visited.has('overview') && (
@@ -3706,15 +3539,9 @@ const styles: Record<string, React.CSSProperties> = {
   darkBody: { fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.6, maxWidth: 760 },
   darkHint: { fontSize: 12, color: COLORS.textMuted, marginTop: 12 },
 
-  // ── Toolbar ──
-  toolbar: {
-    background: COLORS.bgPanel, border: `1px solid ${COLORS.border}`,
-    borderRadius: 10, padding: '14px 18px', marginBottom: 16,
-  },
-  toolbarRow: {
-    display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap',
-  },
-  presetRow: { display: 'flex', gap: 6, alignItems: 'flex-end', paddingBottom: 1 },
+  // ── Toolbar ── (toolbar/toolbarRow/presetRow/chip/chipX moved to
+  // shared/filters.tsx with the FilterBar; the keys below are still used by
+  // the per-tab filter rows)
   presetBtn: {
     border: '1px solid', borderRadius: 999, padding: '6px 12px',
     fontSize: 12, fontWeight: 600, cursor: 'pointer', background: 'transparent',
@@ -3725,15 +3552,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   chipRowLabel: {
     fontSize: 11, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: 0.5,
-  },
-  chip: {
-    display: 'inline-flex', alignItems: 'center', gap: 6,
-    border: '1px solid', borderRadius: 999, padding: '4px 10px',
-    fontSize: 12, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
-  },
-  chipX: {
-    background: 'transparent', border: 'none', color: 'inherit',
-    cursor: 'pointer', fontSize: 10, padding: 0, display: 'inline-flex',
   },
   recentChip: {
     display: 'inline-flex', alignItems: 'center',
