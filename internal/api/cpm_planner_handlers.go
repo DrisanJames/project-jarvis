@@ -1709,21 +1709,25 @@ func cpmMonthlyConversions(tracked, manual int64) int64 {
 
 // loadDealsLite loads deals WITHOUT the per-deal live progress sub-queries
 // (loadProgress) — the monthly view computes its own per-month aggregates.
-func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, error) {
+// The second return maps deal id → offer payout (the revenue basis; 0 when
+// the offer has none) for callers that price conversions.
+func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, map[string]float64, error) {
 	rows, err := h.db.Query(cpmDealSelect+" ORDER BY d.created_at DESC", orgID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	deals := []cpmDeal{}
+	payouts := map[string]float64{}
 	for rows.Next() {
-		d, _, err := scanCpmDeal(rows)
+		d, payout, err := scanCpmDeal(rows)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		deals = append(deals, d)
+		payouts[d.ID] = payout
 	}
-	return deals, rows.Err()
+	return deals, payouts, rows.Err()
 }
 
 // dealCampaignMapCTE is the unified deal→campaign attribution map (offer match
@@ -1888,7 +1892,7 @@ func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request
 		log.Printf("[CpmPlanner] months target-range scan: %v", err)
 	}
 
-	deals, err := h.loadDealsLite(orgID)
+	deals, _, err := h.loadDealsLite(orgID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deals: %v", err))
 		return
@@ -2102,18 +2106,29 @@ type cpmPacingDeal struct {
 	Name            string  `json:"name"`
 	OfferName       string  `json:"offer_name"`
 	EverflowOfferID string  `json:"everflow_offer_id"`
+	Status          string  `json:"status"`
 	TargetVolume    int64   `json:"target_volume"`
 	TargetBudget    float64 `json:"target_budget"`
 	TargetSource    string  `json:"target_source"` // "monthly" | "deal" | "none"
-	Ecpm            float64 `json:"ecpm"`          // effective (monthly target if set, else deal goal)
-	MtdDelivered    int64   `json:"mtd_delivered"`
-	MtdRevenue      float64 `json:"mtd_revenue"`
-	MtdConversions  int64   `json:"mtd_conversions"`
-	Rate3d          float64 `json:"rate_3d"` // avg delivered/day over the last 3 complete Denver days
-	RequiredDaily   float64 `json:"required_daily"`
-	Projected       int64   `json:"projected"`
-	ProjectedPct    float64 `json:"projected_pct"`
-	OnPace          bool    `json:"on_pace"`
+	// Raw monthly-target fields (null when unset) — the pacing row is the
+	// current month's EDIT surface, so the inputs need the stored values.
+	HasMonthlyTarget bool     `json:"has_monthly_target"`
+	MonthlyBudget    *float64 `json:"monthly_budget"`
+	MonthlyEcpm      *float64 `json:"monthly_ecpm"`
+	MonthlyEcpa      *float64 `json:"monthly_ecpa"`
+	MonthlyNotes     string   `json:"monthly_notes"` // PUT always replaces notes — edit surface must echo it back
+	Ecpm             float64  `json:"ecpm"` // effective (monthly target if set, else deal goal)
+	MtdDelivered     int64    `json:"mtd_delivered"`
+	MtdConversions   int64    `json:"mtd_conversions"`
+	// Month-scoped versions of the deal card's "strong metrics":
+	ConversionsNeeded int64   `json:"conversions_needed"` // ⌈month budget ÷ eCPA goal⌉
+	ActualEcpm        float64 `json:"actual_ecpm"`        // MTD conv revenue / MTD delivered × 1000
+	ActualEcpa        float64 `json:"actual_ecpa"`        // month budget / MTD conversions
+	Rate3d            float64 `json:"rate_3d"`            // avg delivered/day over the last 3 complete Denver days
+	RequiredDaily     float64 `json:"required_daily"`
+	Projected         int64   `json:"projected"`
+	ProjectedPct      float64 `json:"projected_pct"`
+	OnPace            bool    `json:"on_pace"`
 }
 
 // cpmPacingMath derives the pacing numbers for one deal-month. dayOfMonth is
@@ -2162,7 +2177,7 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 	daysInMonth := curMonth.AddDate(0, 1, -1).Day()
 	curYM := curMonth.Format("2006-01")
 
-	deals, err := h.loadDealsLite(orgID)
+	deals, payouts, err := h.loadDealsLite(orgID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deals: %v", err))
 		return
@@ -2170,12 +2185,13 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 
 	// Current month's targets.
 	type tgt struct {
-		budget, ecpm sql.NullFloat64
-		volume       sql.NullInt64
+		budget, ecpm, ecpa sql.NullFloat64
+		volume             sql.NullInt64
+		notes              string
 	}
 	targets := map[string]tgt{}
 	if rows, err := h.db.Query(`
-		SELECT deal_id::text, target_budget, target_volume, target_ecpm
+		SELECT deal_id::text, target_budget, target_volume, target_ecpm, target_ecpa, COALESCE(notes, '')
 		FROM mailing_cpm_deal_monthly_targets
 		WHERE organization_id = $1 AND month = $2`, orgID, curMonth); err == nil {
 		func() {
@@ -2183,7 +2199,7 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 			for rows.Next() {
 				var id string
 				var t tgt
-				if err := rows.Scan(&id, &t.budget, &t.volume, &t.ecpm); err == nil {
+				if err := rows.Scan(&id, &t.budget, &t.volume, &t.ecpm, &t.ecpa, &t.notes); err == nil {
 					targets[id] = t
 				}
 			}
@@ -2194,6 +2210,37 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 
 	// MTD actuals — the shared monthly loader scoped to just this month.
 	actuals := h.loadAllDealMonthlyActuals(orgID, curMonth.Format("2006-01-02"))
+
+	// MTD manual-conversion revenue components (per deal): rows carrying real
+	// revenue sum as-is; revenue-less rows are counted so they can be valued at
+	// the deal's basis (offer payout, else eCPA goal) — the same effective-
+	// revenue rule loadProgress applies (":403"). UTC month like the loader.
+	type manualRev struct {
+		posRevenue float64
+		noRevCount int64
+	}
+	manualRevs := map[string]manualRev{}
+	if rows, err := h.db.Query(`
+		SELECT deal_id::text,
+		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN revenue <= 0 THEN count ELSE 0 END), 0)
+		FROM mailing_cpm_manual_conversions
+		WHERE organization_id = $1
+		  AND (converted_at AT TIME ZONE 'UTC')::date >= $2::date
+		GROUP BY 1`, orgID, curMonth.Format("2006-01-02")); err == nil {
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var mr manualRev
+				if err := rows.Scan(&id, &mr.posRevenue, &mr.noRevCount); err == nil {
+					manualRevs[id] = mr
+				}
+			}
+		}()
+	} else {
+		log.Printf("[CpmPlanner] pacing manual revenue: %v", err)
+	}
 
 	// Trailing 3-day delivered per deal (last 3 COMPLETE Denver days — today's
 	// partial day would understate the rate). Same pruning pattern as the
@@ -2226,11 +2273,11 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 
 	out := []cpmPacingDeal{}
 	var pf struct {
-		TargetVolume  int64   `json:"target_volume"`
-		MtdDelivered  int64   `json:"mtd_delivered"`
-		MtdRevenue    float64 `json:"mtd_revenue"`
-		Projected     int64   `json:"projected"`
-		RequiredDaily float64 `json:"required_daily"`
+		TargetVolume   int64   `json:"target_volume"`
+		MtdDelivered   int64   `json:"mtd_delivered"`
+		MtdConversions int64   `json:"mtd_conversions"`
+		Projected      int64   `json:"projected"`
+		RequiredDaily  float64 `json:"required_daily"`
 	}
 	for i := range deals {
 		d := &deals[i]
@@ -2239,15 +2286,32 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 			mtd, tracked, manual = a.delivered[curYM], a.tracked[curYM], a.manual[curYM]
 		}
 
-		ecpm := d.EcpmGoal
+		ecpm, ecpaGoal := d.EcpmGoal, d.EcpaGoal
 		targetVolume, targetBudget := int64(0), 0.0
 		source := "none"
+		var hasTgt bool
+		var mBudget, mEcpm, mEcpa *float64
+		var mNotes string
 		if t, ok := targets[d.ID]; ok {
-			if t.ecpm.Valid && t.ecpm.Float64 > 0 {
-				ecpm = t.ecpm.Float64
-			}
+			hasTgt = true
+			mNotes = t.notes
 			if t.budget.Valid {
-				targetBudget = t.budget.Float64
+				v := t.budget.Float64
+				mBudget, targetBudget = &v, v
+			}
+			if t.ecpm.Valid {
+				v := t.ecpm.Float64
+				mEcpm = &v
+				if v > 0 {
+					ecpm = v
+				}
+			}
+			if t.ecpa.Valid {
+				v := t.ecpa.Float64
+				mEcpa = &v
+				if v > 0 {
+					ecpaGoal = v
+				}
 			}
 			switch {
 			case t.volume.Valid && t.volume.Int64 > 0:
@@ -2269,17 +2333,36 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 			continue // nothing to pace, nothing sent — skip the row
 		}
 
+		// Month-scoped strong metrics, same definitions as the deal card:
+		// revenue basis = offer payout, else eCPA goal (loadProgress ":386").
+		basis := payouts[d.ID]
+		if basis == 0 && ecpaGoal > 0 {
+			basis = ecpaGoal
+		}
+		mr := manualRevs[d.ID]
+		mtdRevenue := float64(tracked)*basis + mr.posRevenue + float64(mr.noRevCount)*basis
+		var actualEcpm float64
+		if mtd > 0 {
+			actualEcpm = mtdRevenue / float64(mtd) * 1000
+		}
+		var convNeeded int64
+		if targetBudget > 0 && ecpaGoal > 0 {
+			convNeeded = int64(math.Ceil(targetBudget / ecpaGoal))
+		}
+
 		requiredDaily, projected, projectedPct, onPace := cpmPacingMath(targetVolume, mtd, rate3d[d.ID], dayOfMonth, daysInMonth)
 		out = append(out, cpmPacingDeal{
 			DealID: d.ID, Name: d.Name, OfferName: d.OfferName, EverflowOfferID: d.EverflowOfferID,
-			TargetVolume: targetVolume, TargetBudget: targetBudget, TargetSource: source, Ecpm: ecpm,
-			MtdDelivered: mtd, MtdRevenue: cpmMonthlyRevenue(mtd, ecpm), MtdConversions: conv,
+			Status: d.Status, TargetVolume: targetVolume, TargetBudget: targetBudget, TargetSource: source,
+			HasMonthlyTarget: hasTgt, MonthlyBudget: mBudget, MonthlyEcpm: mEcpm, MonthlyEcpa: mEcpa, MonthlyNotes: mNotes,
+			Ecpm: ecpm, MtdDelivered: mtd, MtdConversions: conv,
+			ConversionsNeeded: convNeeded, ActualEcpm: actualEcpm, ActualEcpa: cpmActualEcpa(targetBudget, conv),
 			Rate3d: rate3d[d.ID], RequiredDaily: requiredDaily,
 			Projected: projected, ProjectedPct: projectedPct, OnPace: onPace,
 		})
 		pf.TargetVolume += targetVolume
 		pf.MtdDelivered += mtd
-		pf.MtdRevenue += cpmMonthlyRevenue(mtd, ecpm)
+		pf.MtdConversions += conv
 		pf.Projected += projected
 		pf.RequiredDaily += requiredDaily
 	}

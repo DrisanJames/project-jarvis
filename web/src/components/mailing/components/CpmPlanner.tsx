@@ -30,6 +30,16 @@ import { apiFetch } from '../shared/apiFetch';
 
 const API = '/api/mailing/cpm-planner';
 
+// Next n month keys (YYYY-MM) strictly AFTER fromYM.
+const nextMonthKeys = (fromYM: string, n: number): string[] => {
+  const [y, m] = fromYM.split('-').map(Number);
+  if (!y || !m) return [];
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(y, m - 1 + i + 1, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+};
+
 // ─── Theme ───────────────────────────────────────────────────────────────────
 const C = {
   panel: 'rgba(15,30,60,0.35)',
@@ -260,13 +270,21 @@ interface PacingDeal {
   name: string;
   offer_name: string;
   everflow_offer_id: string;
+  status: string;
   target_volume: number;
   target_budget: number;
   target_source: 'monthly' | 'deal' | 'none';
+  has_monthly_target: boolean;
+  monthly_budget: number | null;
+  monthly_ecpm: number | null;
+  monthly_ecpa: number | null;
+  monthly_notes: string;
   ecpm: number;
   mtd_delivered: number;
-  mtd_revenue: number;
   mtd_conversions: number;
+  conversions_needed: number;
+  actual_ecpm: number;
+  actual_ecpa: number;
   rate_3d: number;
   required_daily: number;
   projected: number;
@@ -281,7 +299,7 @@ interface PacingResp {
   portfolio: {
     target_volume: number;
     mtd_delivered: number;
-    mtd_revenue: number;
+    mtd_conversions: number;
     projected: number;
     required_daily: number;
   };
@@ -461,7 +479,9 @@ export const CpmPlanner: React.FC = () => {
   const [monthsLoading, setMonthsLoading] = useState(false);
   const [monthsLoaded, setMonthsLoaded] = useState(false);
   const [monthsError, setMonthsError] = useState<string | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string>('');
+  const [plannerMonth, setPlannerMonth] = useState<string>(''); // future month being planned
+  const [historyMonth, setHistoryMonth] = useState<string>(''); // past month being viewed
+  const [curMonthYM, setCurMonthYM] = useState<string>('');     // current Denver YYYY-MM (from /months)
   const [targetEdits, setTargetEdits] = useState<Record<string, TargetEdit>>({});
   const [targetSaving, setTargetSaving] = useState<string | null>(null);
   const prevShowModal = useRef(false);
@@ -520,10 +540,15 @@ export const CpmPlanner: React.FC = () => {
       setMonths(rows);
       setMonthsError(null);
       setMonthsLoaded(true);
-      setSelectedMonth(prev => {
-        if (prev && rows.some(r => r.month === prev)) return prev;
-        const cur = rows.find(r => r.is_current);
-        return cur ? cur.month : (rows[0]?.month || '');
+      const curYM: string = j.current_month || '';
+      setCurMonthYM(curYM);
+      // Planner defaults to the nearest future month; History to the most
+      // recent closed month. Keep the user's pick when still valid.
+      setPlannerMonth(prev => (prev && prev > curYM) ? prev : (curYM ? nextMonthKeys(curYM, 1)[0] : ''));
+      setHistoryMonth(prev => {
+        const past = rows.filter(r => !r.is_current && !r.is_future);
+        if (prev && past.some(r => r.month === prev)) return prev;
+        return past[0]?.month || '';
       });
     } catch (e) {
       setMonthsError(e instanceof Error ? e.message : 'failed to load months');
@@ -580,6 +605,66 @@ export const CpmPlanner: React.FC = () => {
     return { ...row, portfolio: pf };
   };
 
+  // Client mirror of the server's cpmPacingMath — lets a pacing-row save
+  // reflect instantly instead of waiting on the /pacing re-fetch.
+  const clientPacingMath = (target: number, mtd: number, rate3d: number, day: number, dim: number) => {
+    const daysIncl = Math.max(1, dim - day + 1);
+    const required = target > mtd ? (target - mtd) / daysIncl : 0;
+    const after = Math.max(0, dim - day);
+    const projected = mtd + Math.round(rate3d * after);
+    const pct = target > 0 ? projected / target : 0;
+    return { required, projected, pct, onPace: target > 0 && projected >= target };
+  };
+
+  // Optimistically patch one pacing row after a current-month target
+  // save/delete (null target fields = deleted). loadPacing() reconciles after.
+  const patchPacingDeal = (dealId: string, tgt: { budget: number | null; ecpm: number | null; ecpa: number | null; notes: string } | null) => {
+    setPacing(prev => {
+      if (!prev) return prev;
+      const dealMeta = deals.find(x => x.id === dealId);
+      const nextDeals = prev.deals.map(p => {
+        if (p.deal_id !== dealId) return p;
+        let np: PacingDeal;
+        if (tgt) {
+          // Merge like the server's COALESCE: null field = keep stored value.
+          const budget = tgt.budget != null ? tgt.budget : p.monthly_budget;
+          const ecpm = tgt.ecpm != null ? tgt.ecpm : p.monthly_ecpm;
+          const ecpa = tgt.ecpa != null ? tgt.ecpa : p.monthly_ecpa;
+          const effEcpm = ecpm != null && ecpm > 0 ? ecpm : (dealMeta?.ecpm_goal || p.ecpm);
+          const effEcpa = ecpa != null && ecpa > 0 ? ecpa : (dealMeta?.ecpa_goal || 0);
+          const targetVolume = budget != null && budget > 0 && effEcpm > 0 ? Math.ceil((budget / effEcpm) * 1000) : p.target_volume;
+          np = {
+            ...p, has_monthly_target: true, monthly_budget: budget, monthly_ecpm: ecpm, monthly_ecpa: ecpa,
+            monthly_notes: tgt.notes, ecpm: effEcpm,
+            target_budget: budget != null ? budget : p.target_budget,
+            target_volume: targetVolume, target_source: 'monthly',
+            conversions_needed: budget != null && budget > 0 && effEcpa > 0 ? Math.ceil(budget / effEcpa) : p.conversions_needed,
+            actual_ecpa: budget != null && budget > 0 && p.mtd_conversions > 0 ? budget / p.mtd_conversions : p.actual_ecpa,
+          };
+        } else {
+          // Deleted: fall back to the deal's own plan (the server's rule).
+          const planned = dealMeta && dealMeta.status === 'active' ? dealMeta.planned_volume : 0;
+          np = {
+            ...p, has_monthly_target: false, monthly_budget: null, monthly_ecpm: null, monthly_ecpa: null,
+            monthly_notes: '', ecpm: dealMeta?.ecpm_goal || p.ecpm,
+            target_budget: planned > 0 ? (dealMeta?.budget || 0) : 0,
+            target_volume: planned, target_source: planned > 0 ? 'deal' : 'none',
+          };
+        }
+        const m = clientPacingMath(np.target_volume, np.mtd_delivered, np.rate_3d, prev.day_of_month, prev.days_in_month);
+        return { ...np, required_daily: m.required, projected: m.projected, projected_pct: m.pct, on_pace: m.onPace };
+      }).filter(p => p.deal_id !== dealId || p.target_volume > 0 || p.mtd_delivered > 0 || p.mtd_conversions > 0);
+      const portfolio = nextDeals.reduce((acc, p) => ({
+        target_volume: acc.target_volume + p.target_volume,
+        mtd_delivered: acc.mtd_delivered + p.mtd_delivered,
+        mtd_conversions: acc.mtd_conversions + p.mtd_conversions,
+        projected: acc.projected + p.projected,
+        required_daily: acc.required_daily + p.required_daily,
+      }), { target_volume: 0, mtd_delivered: 0, mtd_conversions: 0, projected: 0, required_daily: 0 });
+      return { ...prev, deals: nextDeals, portfolio };
+    });
+  };
+
   // Saving/deleting a TARGET never changes the month's ACTUALS, so instead of
   // blocking on the heavy /months re-fetch (the old "save takes forever, then
   // nothing changed" symptom), patch the grid locally with the exact semantics
@@ -612,9 +697,9 @@ export const CpmPlanner: React.FC = () => {
     }));
   };
 
-  const saveTarget = async (dealId: string) => {
-    if (!selectedMonth) return;
-    const key = editKey(selectedMonth, dealId);
+  const saveTarget = async (dealId: string, month: string) => {
+    if (!month) return;
+    const key = editKey(month, dealId);
     const e = targetEdits[key];
     if (!e) return;
     setTargetSaving(dealId);
@@ -639,7 +724,7 @@ export const CpmPlanner: React.FC = () => {
         vol = Math.ceil((b / m) * 1000);
         body.volume = vol;
       }
-      const res = await apiFetch(`${API}/deals/${dealId}/monthly/${selectedMonth}`, {
+      const res = await apiFetch(`${API}/deals/${dealId}/monthly/${month}`, {
         method: 'PUT', body: JSON.stringify(body),
       });
       if (!res.ok) {
@@ -649,7 +734,7 @@ export const CpmPlanner: React.FC = () => {
       setTargetEdits(prev => { const n = { ...prev }; delete n[key]; return n; });
       // Mirror the server's COALESCE partial-merge locally: an omitted field
       // keeps its stored value; notes always replaces.
-      patchMonthDeal(selectedMonth, dealId, md => {
+      patchMonthDeal(month, dealId, md => {
         const target: MonthlyTarget = {
           budget: b !== undefined ? b : md.target.budget,
           ecpm: m !== undefined ? m : md.target.ecpm,
@@ -665,9 +750,17 @@ export const CpmPlanner: React.FC = () => {
         };
       });
       setMonthsError(null);
-      // A current-month target change moves the pacing goalposts — refresh in
-      // the background, never blocking the save.
-      if (pacing && selectedMonth === pacing.month) void loadPacing();
+      // A current-month save reflects instantly (optimistic pacing patch);
+      // the background /pacing re-fetch reconciles the derived numbers.
+      if (pacing && month === pacing.month) {
+        patchPacingDeal(dealId, {
+          budget: b !== undefined ? b : null,
+          ecpm: m !== undefined ? m : null,
+          ecpa: a !== undefined ? a : null,
+          notes: (body.notes as string) || '',
+        });
+        void loadPacing();
+      }
     } catch (err) {
       setMonthsError(err instanceof Error ? err.message : 'save failed');
     } finally {
@@ -676,19 +769,19 @@ export const CpmPlanner: React.FC = () => {
   };
 
   // Delete a planned monthly target/budget for a deal in the selected month.
-  const deleteTarget = async (dealId: string) => {
-    if (!selectedMonth) return;
+  const deleteTarget = async (dealId: string, month: string) => {
+    if (!month) return;
     setTargetSaving(dealId);
     try {
-      const res = await apiFetch(`${API}/deals/${dealId}/monthly/${selectedMonth}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API}/deals/${dealId}/monthly/${month}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 404) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${res.status}`);
       }
-      setTargetEdits(prev => { const n = { ...prev }; delete n[editKey(selectedMonth, dealId)]; return n; });
+      setTargetEdits(prev => { const n = { ...prev }; delete n[editKey(month, dealId)]; return n; });
       // Local patch: clear the target; a row with no target and no activity
       // leaves the month entirely (the server's inclusion rule).
-      patchMonthDeal(selectedMonth, dealId, md => {
+      patchMonthDeal(month, dealId, md => {
         if (md.delivered === 0 && md.conversions === 0) return null;
         const dealMeta = deals.find(x => x.id === dealId);
         const effEcpm = dealMeta?.ecpm_goal || md.ecpm;
@@ -700,7 +793,10 @@ export const CpmPlanner: React.FC = () => {
         };
       });
       setMonthsError(null);
-      if (pacing && selectedMonth === pacing.month) void loadPacing();
+      if (pacing && month === pacing.month) {
+        patchPacingDeal(dealId, null); // deleted — fall back to deal plan
+        void loadPacing();
+      }
     } catch (err) {
       setMonthsError(err instanceof Error ? err.message : 'delete failed');
     } finally {
@@ -1074,20 +1170,143 @@ export const CpmPlanner: React.FC = () => {
     );
   };
 
-  // Section 2 — current-month pacing: MTD delivered vs the month's target,
-  // the trailing-3-day rate, and where the month lands if that rate holds.
+  // 1 · Current-month pacing — the month IN MOTION (operator 2026-07-01):
+  // this is the primary, EDITABLE surface. Each row carries the month's
+  // budget/eCPM/eCPA inputs (save/delete hits the same monthly-target API the
+  // planner uses) plus the month-scoped strong metrics: MTD delivered vs
+  // target, required/day over the days left, 3-day rate, projection,
+  // conversions vs needed, actual eCPM/eCPA, status.
   const renderPacing = () => {
     const monthName = pacing ? monthLabel(pacing.month) : '';
+    const daysLeft = pacing ? pacing.days_in_month - pacing.day_of_month + 1 : 0;
+    const numInput: React.CSSProperties = {
+      width: 84, padding: '5px 7px', background: 'rgba(10,20,45,0.7)',
+      border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
+    };
+
+    const pacingRow = (p: PacingDeal) => {
+      const month = pacing!.month;
+      const key = editKey(month, p.deal_id);
+      const buf: TargetEdit = targetEdits[key] || {
+        budget: p.monthly_budget != null ? String(p.monthly_budget) : '',
+        volume: '',
+        ecpm: p.monthly_ecpm != null ? String(p.monthly_ecpm) : '',
+        ecpa: p.monthly_ecpa != null ? String(p.monthly_ecpa) : '',
+        notes: p.monthly_notes || '',
+      };
+      const set = (k: keyof TargetEdit, v: string) =>
+        setTargetEdits(prev => ({ ...prev, [key]: { ...(prev[key] || buf), [k]: v } }));
+      const dirty = !!targetEdits[key];
+      const busy = targetSaving === p.deal_id;
+      const pct = p.target_volume > 0 ? Math.min((p.mtd_delivered / p.target_volume) * 100, 100) : 0;
+      // Live-derived month target while typing; falls back to the server's number.
+      const bv = parseFloat(buf.budget); const mv = parseFloat(buf.ecpm);
+      const liveTarget = bv > 0 && mv > 0 ? Math.ceil((bv / mv) * 1000) : 0;
+      const dealMeta = deals.find(x => x.id === p.deal_id);
+      const ecpaGoal = p.monthly_ecpa != null && p.monthly_ecpa > 0 ? p.monthly_ecpa : (dealMeta?.ecpa_goal || 0);
+      const convColor = p.conversions_needed > 0 && p.mtd_conversions >= p.conversions_needed
+        ? C.green : p.mtd_conversions > 0 ? C.amber : C.muted;
+      return (
+        <tr key={p.deal_id}>
+          <td style={tdStyle}>
+            <div style={{ color: C.heading }}>{p.name}</div>
+            {p.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{p.offer_name}</div>}
+          </td>
+          <td style={tdStyle}><input type="number" style={numInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder="$" /></td>
+          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder="eCPM" /></td>
+          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder="eCPA" /></td>
+          <td style={tdStyle}>
+            <span style={{ color: C.heading }} title="budget ÷ eCPM × 1,000">
+              {liveTarget > 0 ? fmtInt(liveTarget) : p.target_volume > 0 ? fmtInt(p.target_volume) : '—'}
+            </span>
+            {liveTarget === 0 && p.target_source === 'deal' && (
+              <span style={{ fontSize: 10, color: C.amber }} title="No monthly budget saved — pacing against the deal's lifetime plan. Enter a budget + eCPM and Save to pin this month."> deal plan</span>
+            )}
+          </td>
+          <td style={tdStyle}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button onClick={() => saveTarget(p.deal_id, month)} disabled={!dirty || busy}
+                style={{
+                  padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
+                  cursor: dirty ? 'pointer' : 'default',
+                  background: dirty ? C.indigo : 'rgba(99,102,241,0.2)', color: '#fff', opacity: dirty ? 1 : 0.5,
+                }}>
+                {busy ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
+              </button>
+              {p.has_monthly_target && (
+                <button onClick={() => deleteTarget(p.deal_id, month)} disabled={busy}
+                  title="Delete this month's target"
+                  style={{ padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12, cursor: 'pointer', background: 'transparent', color: C.red }}>
+                  <FontAwesomeIcon icon={faTrash} />
+                </button>
+              )}
+            </div>
+          </td>
+          <td style={tdStyle}>
+            <div style={{ minWidth: 130 }}>
+              {p.target_volume > 0 && (
+                <div style={{ height: 7, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
+                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: p.on_pace ? C.green : C.amber }} />
+                </div>
+              )}
+              <span style={{ color: C.heading }}>{fmtInt(p.mtd_delivered)}</span>
+              {p.target_volume > 0 && <span style={{ fontSize: 11, color: C.muted }}> ({pct.toFixed(0)}%)</span>}
+            </div>
+          </td>
+          <td style={tdStyle}>{p.required_daily > 0 ? fmtInt(p.required_daily) : '—'}</td>
+          <td style={tdStyle}>{fmtInt(p.rate_3d)}/day</td>
+          <td style={tdStyle}>
+            <span style={{ color: p.target_volume > 0 ? (p.on_pace ? C.green : C.amber) : C.muted, fontWeight: 600 }}>
+              {fmtInt(p.projected)}
+            </span>
+            {p.target_volume > 0 && (
+              <span style={{
+                marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+                color: p.on_pace ? C.green : C.amber, border: `1px solid ${p.on_pace ? C.green : C.amber}`,
+              }}>
+                {p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
+              </span>
+            )}
+          </td>
+          <td style={tdStyle}>
+            <span style={{ color: convColor, fontWeight: 600 }}>{fmtInt(p.mtd_conversions)}</span>
+            <span style={{ color: C.muted }}> / {p.conversions_needed > 0 ? fmtInt(p.conversions_needed) : '—'}</span>
+          </td>
+          <td style={tdStyle}>
+            {p.mtd_delivered > 0 && p.actual_ecpm > 0 ? (
+              <>
+                <span style={{ color: p.actual_ecpm >= p.ecpm ? C.green : C.red, fontWeight: 600 }}>{fmtMoney(p.actual_ecpm)}</span>
+                <span style={{ color: C.muted, fontSize: 11 }}> vs {fmtMoney(p.ecpm)}</span>
+              </>
+            ) : <span style={{ color: C.muted }}>—</span>}
+          </td>
+          <td style={tdStyle}>
+            {p.actual_ecpa > 0 ? (
+              <span style={{ color: ecpaGoal > 0 && p.actual_ecpa <= ecpaGoal ? C.green : C.amber }}>{fmtMoney(p.actual_ecpa)}</span>
+            ) : <span style={{ color: C.muted }}>—</span>}
+          </td>
+          <td style={tdStyle}>
+            <span style={{
+              padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+              color: statusColor(p.status), border: `1px solid ${statusColor(p.status)}`,
+            }}>
+              {p.status.toUpperCase()}
+            </span>
+          </td>
+        </tr>
+      );
+    };
+
     return (
       <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 6 }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-              2 · Current-Month Pacing{pacing ? ` — ${monthName}` : ''}
+              1 · Current-Month Pacing{pacing ? ` — ${monthName}` : ''}
             </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
               {pacing
-                ? `Day ${pacing.day_of_month} of ${pacing.days_in_month} · MTD delivered vs this month's target, with the last-3-day send rate projected to month-end.`
+                ? `Day ${pacing.day_of_month} of ${pacing.days_in_month} · edit this month's budget/eCPM/eCPA per deal; Required/Day spreads the remaining target over the ${daysLeft} days left (incl. today); Projected = MTD + 3-day rate to month-end.`
                 : 'MTD delivered vs target, at the last-3-day send rate.'}
             </div>
           </div>
@@ -1100,6 +1319,7 @@ export const CpmPlanner: React.FC = () => {
         {renderCapacityStrip()}
 
         {pacingError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{pacingError}</div>}
+        {monthsError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{monthsError}</div>}
 
         {!pacing ? (
           <div style={{ padding: 24, textAlign: 'center', color: C.muted }}>
@@ -1107,80 +1327,40 @@ export const CpmPlanner: React.FC = () => {
           </div>
         ) : pacing.deals.length === 0 ? (
           <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 13 }}>
-            Nothing pacing this month yet — set a monthly budget below, or create a deal.
+            Nothing pacing this month yet — create a deal, then set its monthly budget here.
           </div>
         ) : (
           <>
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
               <Stat label="Month target" value={pacing.portfolio.target_volume > 0 ? fmtInt(pacing.portfolio.target_volume) : '—'} />
               <Stat label="MTD delivered" value={fmtInt(pacing.portfolio.mtd_delivered)} />
-              <Stat label="MTD revenue" value={fmtMoney(pacing.portfolio.mtd_revenue)} color={C.green} />
-              <Stat label="Required / day" value={fmtInt(pacing.portfolio.required_daily)} />
+              <Stat label={`Required / day (${daysLeft}d left)`} value={fmtInt(pacing.portfolio.required_daily)} />
               <Stat
                 label="Projected month-end"
                 value={fmtInt(pacing.portfolio.projected)}
                 color={pacing.portfolio.target_volume > 0 && pacing.portfolio.projected >= pacing.portfolio.target_volume ? C.green : C.amber}
               />
+              <Stat label="MTD conversions" value={fmtInt(pacing.portfolio.mtd_conversions)} />
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead><tr>
                   <th style={thStyle}>Deal</th>
+                  <th style={thStyle}>Budget</th>
+                  <th style={thStyle}>eCPM Goal</th>
+                  <th style={thStyle}>eCPA Goal</th>
                   <th style={thStyle}>Month Target</th>
+                  <th style={thStyle}></th>
                   <th style={thStyle}>MTD Delivered</th>
-                  <th style={thStyle}>Required / Day</th>
+                  <th style={thStyle} title={`Remaining target ÷ ${daysLeft} days left (incl. today)`}>Req / Day ({daysLeft}d left)</th>
                   <th style={thStyle}>3-Day Rate</th>
                   <th style={thStyle}>Projected</th>
-                  <th style={thStyle}>MTD Revenue</th>
-                  <th style={thStyle}>MTD Conv</th>
+                  <th style={thStyle}>Conv</th>
+                  <th style={thStyle}>Actual eCPM</th>
+                  <th style={thStyle}>eCPA Actual</th>
+                  <th style={thStyle}>Status</th>
                 </tr></thead>
-                <tbody>
-                  {pacing.deals.map(p => {
-                    const pct = p.target_volume > 0 ? Math.min((p.mtd_delivered / p.target_volume) * 100, 100) : 0;
-                    return (
-                      <tr key={p.deal_id}>
-                        <td style={tdStyle}>
-                          <div style={{ color: C.heading }}>{p.name}</div>
-                          {p.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{p.offer_name}</div>}
-                        </td>
-                        <td style={tdStyle}>
-                          {p.target_volume > 0 ? fmtInt(p.target_volume) : '—'}
-                          {p.target_source === 'deal' && (
-                            <span style={{ fontSize: 10, color: C.muted }} title="No monthly budget set — pacing against the deal's own plan. Set a monthly target below."> (deal plan)</span>
-                          )}
-                        </td>
-                        <td style={tdStyle}>
-                          <div style={{ minWidth: 130 }}>
-                            {p.target_volume > 0 && (
-                              <div style={{ height: 7, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
-                                <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: p.on_pace ? C.green : C.amber }} />
-                              </div>
-                            )}
-                            <span style={{ color: C.heading }}>{fmtInt(p.mtd_delivered)}</span>
-                            {p.target_volume > 0 && <span style={{ fontSize: 11, color: C.muted }}> ({pct.toFixed(0)}%)</span>}
-                          </div>
-                        </td>
-                        <td style={tdStyle}>{p.required_daily > 0 ? fmtInt(p.required_daily) : '—'}</td>
-                        <td style={tdStyle}>{fmtInt(p.rate_3d)}/day</td>
-                        <td style={tdStyle}>
-                          <span style={{ color: p.target_volume > 0 ? (p.on_pace ? C.green : C.amber) : C.muted, fontWeight: 600 }}>
-                            {fmtInt(p.projected)}
-                          </span>
-                          {p.target_volume > 0 && (
-                            <span style={{
-                              marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
-                              color: p.on_pace ? C.green : C.amber, border: `1px solid ${p.on_pace ? C.green : C.amber}`,
-                            }}>
-                              {p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ ...tdStyle, color: C.green }}>{fmtMoney(p.mtd_revenue)}</td>
-                        <td style={tdStyle}>{fmtInt(p.mtd_conversions)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                <tbody>{pacing.deals.map(pacingRow)}</tbody>
               </table>
             </div>
           </>
@@ -2046,26 +2226,31 @@ export const CpmPlanner: React.FC = () => {
     return `${names[mi] || parts[1]} ${parts[0]}`;
   };
 
-  const renderMonthly = () => {
-    const sel = months.find(m => m.month === selectedMonth) || null;
-    const editable = sel ? (sel.is_current || sel.is_future) : false;
+  // Shared bits for the planner/history month grids.
+  const monthNumInput: React.CSSProperties = {
+    width: 96, padding: '6px 8px', background: 'rgba(10,20,45,0.7)',
+    border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
+  };
+  const synthMonthDeal = (deal: Deal): MonthDeal => ({
+    deal_id: deal.id, name: deal.name, offer_name: deal.offer_name,
+    has_target: false, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
+    delivered: 0, revenue: 0, conversions: 0, conversions_tracked: 0, conversions_manual: 0, ecpm: deal.ecpm_goal,
+  });
 
-    const numInput: React.CSSProperties = {
-      width: 96, padding: '6px 8px', background: 'rgba(10,20,45,0.7)',
-      border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
-    };
-
-    // For an editable (current/future) month every existing deal gets a row so
-    // the operator can set a target on it — synthesize a zero MonthDeal when the
-    // deal has no target/activity for that month yet.
-    const synth = (deal: Deal): MonthDeal => ({
-      deal_id: deal.id, name: deal.name, offer_name: deal.offer_name,
-      has_target: false, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
-      delivered: 0, revenue: 0, conversions: 0, conversions_tracked: 0, conversions_manual: 0, ecpm: deal.ecpm_goal,
-    });
+  // 2 · Planner — FUTURE months only (operator 2026-07-01: "select future
+  // months and update, never previous"). The current month is edited in
+  // Pacing; closed months live read-only in History.
+  const renderPlanner = () => {
+    const futureKeys = (() => {
+      const keys = new Set<string>(curMonthYM ? nextMonthKeys(curMonthYM, 6) : []);
+      months.forEach(m => { if (m.is_future) keys.add(m.month); });
+      return Array.from(keys).sort();
+    })();
+    const selKey = plannerMonth && futureKeys.includes(plannerMonth) ? plannerMonth : (futureKeys[0] || '');
+    const sel = months.find(m => m.month === selKey) || null; // null = future month with no saved targets yet
 
     const targetRow = (d: MonthDeal) => {
-      const key = editKey(selectedMonth, d.deal_id);
+      const key = editKey(selKey, d.deal_id);
       const buf: TargetEdit = targetEdits[key] || {
         budget: d.target.budget != null ? String(d.target.budget) : '',
         volume: d.target.volume != null ? String(d.target.volume) : '',
@@ -2076,33 +2261,26 @@ export const CpmPlanner: React.FC = () => {
       const set = (k: keyof TargetEdit, v: string) =>
         setTargetEdits(prev => ({ ...prev, [key]: { ...(prev[key] || buf), [k]: v } }));
       const dirty = !!targetEdits[key];
-      const future = !!sel && sel.is_future;
       return (
         <tr key={d.deal_id}>
           <td style={tdStyle}>
             <div style={{ color: C.heading }}>{d.name}</div>
             {d.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{d.offer_name}</div>}
           </td>
-          <td style={tdStyle}><input type="number" style={numInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder="$" /></td>
+          <td style={tdStyle}><input type="number" style={monthNumInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder="$" /></td>
           <td style={tdStyle}>
             {(() => {
-              // Volume is derived, not entered: budget ÷ eCPM × 1000. Shows live as
-              // the operator types a budget; blank until a budget+eCPM exist (so a
-              // coming month starts at zero, never carrying a prior month's volume).
               const bv = parseFloat(buf.budget); const mv = parseFloat(buf.ecpm);
               const planned = bv > 0 && mv > 0 ? Math.ceil((bv / mv) * 1000) : 0;
               return <span style={{ color: planned > 0 ? C.heading : C.muted }} title="Derived: budget ÷ eCPM × 1000">{planned > 0 ? fmtInt(planned) : '—'}</span>;
             })()}
           </td>
-          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder="eCPM" /></td>
-          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder="eCPA" /></td>
-          <td style={tdStyle}><input style={{ ...numInput, width: 150 }} value={buf.notes} onChange={e => set('notes', e.target.value)} placeholder="notes" /></td>
-          <td style={tdStyle}>{future ? <span style={{ color: C.muted }}>—</span> : fmtInt(d.delivered)}</td>
-          <td style={{ ...tdStyle, color: C.green }}>{future ? '—' : fmtMoney(d.revenue)}</td>
-          <td style={tdStyle}>{future ? '—' : fmtInt(d.conversions)}</td>
+          <td style={tdStyle}><input type="number" step="0.01" style={monthNumInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder="eCPM" /></td>
+          <td style={tdStyle}><input type="number" step="0.01" style={monthNumInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder="eCPA" /></td>
+          <td style={tdStyle}><input style={{ ...monthNumInput, width: 150 }} value={buf.notes} onChange={e => set('notes', e.target.value)} placeholder="notes" /></td>
           <td style={tdStyle}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <button onClick={() => saveTarget(d.deal_id)} disabled={!dirty || targetSaving === d.deal_id}
+              <button onClick={() => saveTarget(d.deal_id, selKey)} disabled={!dirty || targetSaving === d.deal_id}
                 style={{
                   padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
                   cursor: dirty ? 'pointer' : 'default',
@@ -2111,12 +2289,9 @@ export const CpmPlanner: React.FC = () => {
                 {targetSaving === d.deal_id ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
               </button>
               {d.has_target && (
-                <button onClick={() => deleteTarget(d.deal_id)} disabled={targetSaving === d.deal_id}
+                <button onClick={() => deleteTarget(d.deal_id, selKey)} disabled={targetSaving === d.deal_id}
                   title="Delete this month's planned budget"
-                  style={{
-                    padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12,
-                    cursor: 'pointer', background: 'transparent', color: C.red,
-                  }}>
+                  style={{ padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12, cursor: 'pointer', background: 'transparent', color: C.red }}>
                   <FontAwesomeIcon icon={faTrash} />
                 </button>
               )}
@@ -2125,6 +2300,69 @@ export const CpmPlanner: React.FC = () => {
         </tr>
       );
     };
+
+    return (
+      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
+              2 · Planner — Future Months
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+              Set coming months' budgets ahead of time. This month is edited in Pacing above; closed months are read-only in History below.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {futureKeys.map(k => (
+              <button key={k} onClick={() => setPlannerMonth(k)}
+                style={{
+                  padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+                  border: `1px solid ${k === selKey ? C.indigo : C.border}`,
+                  background: k === selKey ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  color: k === selKey ? C.heading : C.muted,
+                }}>
+                {monthLabel(k)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {deals.length === 0 ? (
+          <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 13 }}>
+            Create a deal first — then plan its coming months here.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={thStyle}>Deal</th>
+                <th style={thStyle}>Budget</th>
+                <th style={thStyle}>Volume Goal</th>
+                <th style={thStyle}>eCPM</th>
+                <th style={thStyle}>eCPA</th>
+                <th style={thStyle}>Notes</th>
+                <th style={thStyle}></th>
+              </tr></thead>
+              <tbody>
+                {deals.map(deal => targetRow(sel?.deals.find(x => x.deal_id === deal.id) || synthMonthDeal(deal)))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <button onClick={openCreate}
+          style={{ marginTop: 12, padding: '8px 14px', borderRadius: 8, border: `1px dashed ${C.border}`, background: 'transparent', color: C.indigo, fontSize: 13, cursor: 'pointer' }}>
+          <FontAwesomeIcon icon={faPlus} /> Add deal to month
+        </button>
+      </div>
+    );
+  };
+
+  // 3 · History — closed months, READ-ONLY (never editable; operator 2026-07-01).
+  const renderHistory = () => {
+    const past = months.filter(m => !m.is_current && !m.is_future);
+    const selKey = historyMonth && past.some(m => m.month === historyMonth) ? historyMonth : (past[0]?.month || '');
+    const sel = past.find(m => m.month === selKey) || null;
 
     const actualRow = (d: MonthDeal) => {
       const pct = d.target.volume && d.target.volume > 0 ? (d.delivered / d.target.volume) * 100 : null;
@@ -2148,24 +2386,27 @@ export const CpmPlanner: React.FC = () => {
       );
     };
 
-    const rowCount = editable ? deals.length : (sel ? sel.deals.length : 0);
-
     return (
       <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-            3 · Monthly History &amp; Planning
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
+              3 · Monthly History
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+              Closed months — target vs what actually delivered. Read-only.
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {months.map(m => (
-              <button key={m.month} onClick={() => setSelectedMonth(m.month)}
+            {past.map(m => (
+              <button key={m.month} onClick={() => setHistoryMonth(m.month)}
                 style={{
                   padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
-                  border: `1px solid ${m.month === selectedMonth ? C.indigo : C.border}`,
-                  background: m.month === selectedMonth ? 'rgba(99,102,241,0.25)' : 'transparent',
-                  color: m.month === selectedMonth ? C.heading : C.muted, fontWeight: m.is_current ? 700 : 500,
+                  border: `1px solid ${m.month === selKey ? C.indigo : C.border}`,
+                  background: m.month === selKey ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  color: m.month === selKey ? C.heading : C.muted,
                 }}>
-                {monthLabel(m.month)}{m.is_current ? ' • now' : m.is_future ? ' • plan' : ''}
+                {monthLabel(m.month)}
               </button>
             ))}
             <button onClick={loadMonths} disabled={monthsLoading}
@@ -2175,26 +2416,23 @@ export const CpmPlanner: React.FC = () => {
           </div>
         </div>
 
-        {monthsError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{monthsError}</div>}
-
         {!monthsLoaded && monthsLoading ? (
           <div style={{ padding: 30, textAlign: 'center', color: C.muted }}><FontAwesomeIcon icon={faSpinner} spin /></div>
         ) : !sel ? (
           <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>
-            No monthly data yet — deals accrue here as they deliver, and you can set a coming month's targets once a deal exists.
+            No closed months yet — history accrues as months complete.
           </div>
         ) : (
           <>
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
-              <Stat label={editable ? (sel.is_future ? 'Planning' : 'Current month') : 'Closed month'} value={monthLabel(sel.month)} />
+              <Stat label="Closed month" value={monthLabel(sel.month)} />
               <Stat label="Delivered" value={fmtInt(sel.portfolio.delivered)} />
               <Stat label="Revenue" value={fmtMoney(sel.portfolio.revenue)} color={C.green} />
               <Stat label="Conversions" value={fmtInt(sel.portfolio.conversions)} />
               <Stat label="Target budget" value={sel.portfolio.target_budget > 0 ? fmtMoney(sel.portfolio.target_budget) : '—'} />
               <Stat label="Target volume" value={sel.portfolio.target_volume > 0 ? fmtInt(sel.portfolio.target_volume) : '—'} />
             </div>
-
-            {rowCount === 0 ? (
+            {sel.deals.length === 0 ? (
               <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 13 }}>
                 No deals with activity or targets for {monthLabel(sel.month)}.
               </div>
@@ -2203,30 +2441,17 @@ export const CpmPlanner: React.FC = () => {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead><tr>
                     <th style={thStyle}>Deal</th>
-                    <th style={thStyle}>{editable ? 'Budget' : 'Target Budget'}</th>
-                    <th style={thStyle}>{editable ? 'Volume Goal' : 'Target Volume'}</th>
+                    <th style={thStyle}>Target Budget</th>
+                    <th style={thStyle}>Target Volume</th>
                     <th style={thStyle}>eCPM</th>
                     <th style={thStyle}>eCPA</th>
-                    {editable && <th style={thStyle}>Notes</th>}
                     <th style={thStyle}>Delivered</th>
                     <th style={thStyle}>Revenue</th>
                     <th style={thStyle}>Conv</th>
-                    {editable && <th style={thStyle}></th>}
                   </tr></thead>
-                  <tbody>
-                    {editable
-                      ? deals.map(deal => targetRow(sel.deals.find(x => x.deal_id === deal.id) || synth(deal)))
-                      : sel.deals.map(d => actualRow(d))}
-                  </tbody>
+                  <tbody>{sel.deals.map(actualRow)}</tbody>
                 </table>
               </div>
-            )}
-
-            {editable && (
-              <button onClick={openCreate}
-                style={{ marginTop: 12, padding: '8px 14px', borderRadius: 8, border: `1px dashed ${C.border}`, background: 'transparent', color: C.indigo, fontSize: 13, cursor: 'pointer' }}>
-                <FontAwesomeIcon icon={faPlus} /> Add deal to month
-              </button>
             )}
           </>
         )}
@@ -2270,14 +2495,24 @@ export const CpmPlanner: React.FC = () => {
         </div>
       )}
 
-      {/* 1 · Deals — budget/eCPM/eCPA in, volume requirements out. Expand a
-          deal for its performance detail (conversions, creatives, campaigns). */}
+      {/* 1 · Current-month pacing — the month in motion (editable) */}
+      {renderPacing()}
+
+      {/* 2 · Planner — future months only */}
+      {renderPlanner()}
+
+      {/* 3 · History — closed months, read-only */}
+      {renderHistory()}
+
+      {/* 4 · Lifetime deal reference — totals since each deal's start date,
+          NOT this month (that's section 1). Expand a row for performance
+          detail (conversions, creatives, campaigns). */}
       <div style={{ marginBottom: 6 }}>
         <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-          1 · Deals — Budget, Goals &amp; Volume Requirements
+          4 · Deal History &amp; Performance — Lifetime
         </div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 3, marginBottom: 10 }}>
-          budget ÷ eCPM goal × 1,000 = planned volume · ⌈budget ÷ eCPA⌉ = conversions needed. Click a row for performance detail.
+          Lifetime totals since each deal's start date (not this month). Click a row for performance detail.
         </div>
       </div>
       {loading ? (
@@ -2426,12 +2661,6 @@ export const CpmPlanner: React.FC = () => {
           </table>
         </div>
       )}
-
-      {/* 2 · Current-month pacing (includes the 3-day platform capacity strip) */}
-      <div style={{ marginTop: 18 }}>{renderPacing()}</div>
-
-      {/* 3 · Monthly history & forward planning */}
-      {renderMonthly()}
 
       {renderModal()}
     </div>
