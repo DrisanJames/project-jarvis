@@ -32,7 +32,10 @@ import (
 )
 
 const (
-	VersionOfferPerformance = "1.0"
+	// 1.1: clicks/unique_clickers are HUMAN-verdict filtered via
+	// ignite_verdict_is_human(ignite_event_verdict(...)) — previously raw
+	// (machine/scanner clicks included). METRIC_CONTRACT.md §6.
+	VersionOfferPerformance = "1.1"
 	VersionOfferOverlap     = "1.0"
 	VersionSlugCoverage     = "1.0"
 )
@@ -44,6 +47,12 @@ const (
 // the requested date range. Returns clicks, unique_clickers (distinct
 // subscriber_id), and campaigns_with_slug (distinct campaign_id) per
 // offer.
+//
+// clicks / unique_clickers are HUMAN counts (canonical
+// ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
+// predicate — METRIC_CONTRACT.md §6; same shape as loadOfferStats), so this
+// panel agrees with the Offer Center stats. campaigns_with_slug stays
+// unfiltered: it measures slug coverage, not engagement.
 //
 // One query per slug keeps the per-offer index hits small. The catalog
 // is currently 7 slugs so the cost is bounded; if it grows past ~30,
@@ -68,8 +77,10 @@ func (s *AdvancedMailingService) HandleOfferPerformance(w http.ResponseWriter, r
 		var clicks, unique, campaigns int
 		err := s.db.QueryRowContext(ctx, `
 			SELECT
-				COUNT(*) FILTER (WHERE t.event_type = 'clicked')                     AS clicks,
-				COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked') AS unique_clickers,
+				COUNT(*) FILTER (WHERE t.event_type = 'clicked'
+					AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address)))            AS clicks,
+				COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked'
+					AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address)))            AS unique_clickers,
 				COUNT(DISTINCT t.campaign_id)                                       AS campaigns_with_slug
 			FROM mailing_tracking_events t
 			WHERE t.event_at >= $1 AND t.event_at < $2

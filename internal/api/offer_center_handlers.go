@@ -1200,8 +1200,11 @@ func countOfferConversions(ctx context.Context, db *sql.DB, orgID, offerID strin
 // implementation, two endpoints).
 //
 // Ground truth: mailing_tracking_events for the offer's campaigns (campaign
-// counter columns are STALE and never used); opens/clicks are HUMAN counts
-// (machine/MPP events excluded via is_machine_open / is_machine_click);
+// counter columns are STALE and never used); opens/clicks are HUMAN counts —
+// machine/MPP events excluded via the canonical verdict predicate
+// ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
+// (METRIC_CONTRACT.md §6; the legacy is_machine_open/is_machine_click columns
+// are INERT and must never be used as a filter);
 // conversions come from countOfferConversions; suppression totals + weekly
 // trend from mailing_offer_suppressions; DNM list size + audience size from
 // the latest completed Optizmo scrub job.
@@ -1253,10 +1256,16 @@ func loadOfferStats(ctx context.Context, db *sql.DB, orgID, offerID string, days
 	resp.CampaignCount = len(campaignIDs)
 
 	hb := HardBounceSQL("t")
-	// Human engagement only: machine/MPP fetches and scanner clicks are
-	// flagged at ingest and excluded here on every surface.
-	const humanOpen = `t.event_type = 'opened' AND NOT COALESCE(t.is_machine_open, FALSE)`
-	const humanClick = `t.event_type = 'clicked' AND NOT COALESCE(t.is_machine_click, FALSE)`
+	// Human engagement only. The is_machine_open/is_machine_click columns are
+	// INERT (never populated at ingest — filtering on them was a no-op that
+	// let machine/MPP traffic through). The canonical ignite_event_verdict()
+	// SQL function is the ONLY working human filter (METRIC_CONTRACT.md §6;
+	// precedent: performance_snapshot.go v1.2, handlers_analytics_engagement.go).
+	// mailing_tracking_events exposes user_agent + ip_address directly, so the
+	// verdict is computable on every query below. Partition pruning is
+	// preserved: every query keeps its raw t.event_at bound.
+	const humanOpen = `t.event_type = 'opened' AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))`
+	const humanClick = `t.event_type = 'clicked' AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))`
 
 	// Maps for the per-day series (filled below, emitted as a dense range).
 	dailyEvents := make(map[string]*OfferStatsDaily)

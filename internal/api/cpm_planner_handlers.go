@@ -128,8 +128,8 @@ func (h *CpmPlannerHandlers) ensureTables() {
 type cpmDealProgress struct {
 	Sent        int64 `json:"sent"`
 	Delivered   int64 `json:"delivered"`
-	Opened      int64 `json:"opened"`
-	Clicked     int64 `json:"clicked"`
+	Opened      int64 `json:"opened"`  // RAW (machine/MPP incl.) — see loadProgress; METRIC_CONTRACT §6
+	Clicked     int64 `json:"clicked"` // RAW (machine/MPP incl.) — see loadProgress; METRIC_CONTRACT §6
 	HardBounces int64 `json:"hard_bounces"`
 	SoftBounces int64 `json:"soft_bounces"`
 	// Conversions is the TOTAL (tracked + manual) — the field name predates
@@ -351,6 +351,16 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	// associated campaigns (operator 2026-06-13). Associated campaigns count
 	// regardless of offer_id, so an operator can attribute any send to the deal.
 	{
+		// opened/clicked are deliberately RAW (machine/MPP included) — NOT the
+		// human-verdict counts the Offer Center stats use (METRIC_CONTRACT.md
+		// §6: raw is the operational signal, labeled as such). CPM deals bill
+		// on DELIVERED; opens/clicks here are informational pacing context, and
+		// the progress struct surfaces a single opened/clicked pair, so we do
+		// not shrink a billing-adjacent surface by silently switching it to
+		// human-only. If a human companion is ever needed, add opened_human /
+		// clicked_human via ignite_verdict_is_human(ignite_event_verdict(
+		// user_agent, ip_address)) alongside — never replace the raw pair.
+		// The raw event_at >= $2 bound below is the partition-pruning predicate.
 		evQ := `
 			SELECT
 				COUNT(*) FILTER (WHERE event_type = 'sent'),
