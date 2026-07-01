@@ -74,6 +74,7 @@ import {
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
+import { colors as theme } from '../shared/theme';
 
 const PAGE_VERSION = '2.2';
 
@@ -282,24 +283,31 @@ type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STYLE TOKENS (match Welcome Audience Health / Analytics dark theme)
+// STYLE TOKENS — mapped onto the shared indigo design system (shared/theme.ts)
+// so this screen matches the Delivery Queue gold standard (same pattern as
+// AudienceAnalytics / AudienceCadenceByCell). The local key names are kept
+// (the styles object + per-tab code reference COLORS.*), but every value now
+// resolves to a canonical indigo token. accent/accentAlt/good/warn/danger stay
+// 6-digit hex because call sites append hex-alpha suffixes (COLORS.accent +
+// '66'); border/borderStrong are full rgba values used directly. HARD_RED /
+// SOFT_AMBER below remain separate per the hard bounce-color rule.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const COLORS = {
-  bgDeep:        '#0a0e1a',
-  bgPanel:       '#0f1424',
-  bgPanelAlt:    '#131a2e',
-  border:        'rgba(255,255,255,0.06)',
-  borderStrong:  'rgba(255,255,255,0.12)',
-  textPrimary:   '#e2e8f0',
-  textSecondary: '#94a3b8',
-  textMuted:     '#64748b',
-  accent:        '#818cf8',
-  accentAlt:     '#a78bfa',
-  accentPink:    '#f472b6',
-  good:          '#34d399',
-  warn:          '#fbbf24',
-  danger:        '#f87171',
+  bgDeep:        theme.appBgSolid,          // #0a0e1c
+  bgPanel:       theme.panelBgSolid,        // #0f1629
+  bgPanelAlt:    '#131a2e',                 // slightly lifted indigo-slate surface
+  border:        theme.hairline,            // rgba(99,102,241,0.15)
+  borderStrong:  theme.panelBorderStrong,   // rgba(99,102,241,0.30)
+  textPrimary:   theme.text,                // #e5e7eb
+  textSecondary: theme.textMuted,           // #94a3b8
+  textMuted:     theme.textFaint,           // #64748b
+  accent:        theme.indigo400,           // #818cf8
+  accentAlt:     theme.indigo300,           // #a5b4fc
+  accentPink:    theme.indigo200,           // #c7d2fe (was pink → indigo light)
+  good:          theme.success,             // #22c55e
+  warn:          theme.warning,             // #f59e0b
+  danger:        theme.danger,              // #ef4444
 };
 
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber. Always.
@@ -668,7 +676,7 @@ function dailySeries(rows: BreakdownRow[]): DailyPoint[] {
     const r = computeRates(c);
     return {
       day: dtKey,
-      attempted: c.attempted,
+      attempted: r.denom, // derived (delivered+bounces) — raw attempted is SES-only
       delivered: c.delivered,
       opens: c.opens,
       clicks: c.clicks,
@@ -697,7 +705,7 @@ function hourlySeries(rows: BreakdownRow[]): DailyPoint[] {
     const r = computeRates(c);
     return {
       day: hrKey,
-      attempted: c.attempted,
+      attempted: r.denom, // derived (delivered+bounces) — raw attempted is SES-only
       delivered: c.delivered,
       opens: c.opens,
       clicks: c.clicks,
@@ -1038,7 +1046,18 @@ const rateCell = (v: number | null, color?: string): React.ReactNode => (
 );
 
 const METRIC_COLS: ColDef[] = [
-  { id: 'attempted', label: 'Attempted', value: (r) => r.counts.attempted, render: (r) => numCell(r.counts.attempted) },
+  // DERIVED attempted (= rates.denom = delivered + hard + soft + untyped
+  // bounces), NOT the raw 'attempted' event count: raw attempted events exist
+  // on the SES pipe ONLY (PMTA emits none), so the raw count read as an
+  // undercount whenever PMTA traffic was in view — microsoft showed
+  // "attempted 187,824 / delivered 522,526", delivered ≫ attempted. The
+  // Overview KPI strip already displays the derived number; this makes the
+  // matrix agree with it and with its own Del% denominator.
+  {
+    id: 'attempted', label: 'Attempted*', value: (r) => r.rates.denom,
+    render: (r) => numCell(r.rates.denom),
+    title: () => 'derived: delivered + bounces — raw attempted events exist on the relay route only',
+  },
   { id: 'delivered', label: 'Delivered', value: (r) => r.counts.delivered, render: (r) => numCell(r.counts.delivered, COLORS.good) },
   {
     id: 'del_pct', label: 'Del%', value: (r) => r.rates.delivery,
@@ -1771,7 +1790,7 @@ const RowTrendExpansion: React.FC<{
     <div>
       <div style={styles.expandHeader}>
         <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{dim}={value}</span>
-        <span style={styles.expandStat}>attempted {fmt(tc.attempted)}</span>
+        <span style={styles.expandStat} title="derived: delivered + bounces">attempted {fmt(tr.denom)}</span>
         <span style={styles.expandStat}>delivered {fmt(tc.delivered)} ({fmtPct(tr.delivery)})</span>
         <span style={{ ...styles.expandStat, color: HARD_RED }} title={denomTitle(tr)}>hard {fmtPct(tr.hard)}</span>
         <span style={{ ...styles.expandStat, color: SOFT_AMBER }} title={denomTitle(tr)}>soft {fmtPct(tr.soft)}</span>
@@ -1944,7 +1963,9 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           <p style={styles.panelSubtitle}>
             group_by={dim},event_type over {applied.from} → {applied.to}. Rate heat: Hard%&gt;1 / Comp%&gt;0.1 / Del%&lt;90 red ·
             Hard%&gt;0.5 / Comp%&gt;0.05 / Del%&lt;97 amber. Opens/Clicks are RAW (open-pixel + clicker
-            tracker, machine/MPP included — no verdict filter); delivery reads pmta+ses. Click a row for
+            tracker, machine/MPP included — no verdict filter); delivery reads pmta+ses. Brand is derived
+            (stored brand, else the sending server's brand code) — under Brand, "(empty)" is SES-routed
+            history from before brand stamping (2026-07); new events carry it. Click a row for
             its daily trend. <TimingNote meta={fresh && fetched ? fetched.meta : null} />
           </p>
         </div>
@@ -2410,7 +2431,8 @@ const CampaignTab: React.FC<{
             {lakeC && lakeR ? (
               lakeC.total === 0 ? <EmptyRow label="No analytics events for this campaign in the selected range — widen the date range." /> : (
                 <div style={styles.kpiGrid}>
-                  <KpiCard label="Attempted" value={lakeC.attempted} color={COLORS.accent} />
+                  <KpiCard label="Attempted (derived)" value={lakeR.denom} color={COLORS.accent}
+                    extra="delivered + bounces; direct sends do not record a separate attempted event" />
                   <KpiCard label="Delivered" value={lakeC.delivered} color={COLORS.good} rate={lakeR.delivery} rateLabel="delivery" denomNote={denomTitle(lakeR)} />
                   <KpiCard label="Hard Bounce" value={lakeC.hard} color={HARD_RED} rate={lakeR.hard} rateLabel="hard" denomNote={denomTitle(lakeR)} />
                   <KpiCard label="Soft Bounce" value={lakeC.soft} color={SOFT_AMBER} rate={lakeR.soft} rateLabel="soft" denomNote={denomTitle(lakeR)} />
@@ -2431,7 +2453,8 @@ const CampaignTab: React.FC<{
               <div>
                 <h2 style={styles.panelTitle}>Per-Provider Matrix</h2>
                 <p style={styles.panelSubtitle}>
-                  group_by=isp_group,event_type scoped to this campaign. <TimingNote meta={result.ispMeta} />
+                  group_by=isp,event_type (clean provider, classified from the real recipient domain)
+                  scoped to this campaign. <TimingNote meta={result.ispMeta} />
                 </p>
               </div>
             </div>
