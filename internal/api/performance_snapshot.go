@@ -13,10 +13,16 @@ package api
 //     (sent_count / delivered_count / hard_bounce_count / soft_bounce_count /
 //     unsubscribe_count), bounded to TODAY-MT by scheduled_at.
 //   - HUMAN opens/clicks come from mailing_tracking_events ONLY, as
-//     COUNT(DISTINCT subscriber_id) FILTER (event_type AND NOT machine-flag),
+//     COUNT(DISTINCT subscriber_id) FILTER (event_type AND human-verdict),
 //     bounded to TODAY-MT by event_at. Apple-MPP / scanner traffic is excluded
-//     via is_machine_open / is_machine_click (both columns confirmed present:
-//     migration 046 + cmd/server/main.go add_is_machine_click_col).
+//     via ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
+//     — the ONLY working human classifier (METRIC_CONTRACT.md §6). The legacy
+//     is_machine_open / is_machine_click columns are INERT (never populated;
+//     verified 2026-06-24) and MUST NOT be used as a filter. Same predicate as
+//     handlers_analytics_engagement.go (engagementSummaryQuery).
+//   - Partition pruning: every mailing_tracking_events query keeps a RAW
+//     (unwrapped) event_at >= <timestamptz> bound so the planner prunes the
+//     monthly partitions — do not wrap event_at in AT TIME ZONE in WHERE.
 //   - "today-MT" = >= date_trunc('day', now() AT TIME ZONE 'America/Denver'),
 //     re-localised back to TIMESTAMPTZ, exactly as the acq reporter does.
 //   - Sending domain is normalised to its brand root (strip leading em./m.).
@@ -47,7 +53,12 @@ import (
 //	1.1 (2026-06-29): offer view falls back to the campaign name-derived offer
 //	    (clicks + volume) when mailing_offer_slug_map is empty/sparse, so the
 //	    Offer breakdown is populated instead of collapsing to (unattributed).
-const VersionPerformanceSnapshot = "1.1"
+//	1.2 (2026-07-01): human opens/clicks now filtered via
+//	    ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
+//	    instead of the INERT is_machine_open/is_machine_click columns (whose
+//	    NOT COALESCE(...) filter was a no-op — machine traffic passed through).
+//	    METRIC_CONTRACT.md §6.
+const VersionPerformanceSnapshot = "1.2"
 
 const perfSnapshotTimeout = 8 * time.Second
 
@@ -199,7 +210,7 @@ func (s *AdvancedMailingService) HandlePerformanceSnapshot(w http.ResponseWriter
 	}
 
 	baseNotes := []string{
-		"opens exclude machine traffic where flagged; flagging is strongest on PMTA routes — SES opens may still include machine/MPP traffic",
+		"opens/clicks are HUMAN-verdict filtered (ignite_event_verdict on user_agent+ip); Apple-MPP/scanner traffic excluded",
 		"volume & bounces from campaign counters (can lag live in-flight sends); rates capped at 100%",
 		"offer volume is best-effort campaign→offer; clicks are exact (slug-anchored)",
 		"for per-ISP placement, deferral & bounce detail, see the Domain Agent scorecard",
@@ -301,11 +312,11 @@ func (s *AdvancedMailingService) snapshotByDomain(ctx context.Context, orgID str
 	engSQL := `
 		SELECT COALESCE(sending_domain,'(none)') AS dom,
 		       COUNT(DISTINCT subscriber_id) FILTER (
-		         WHERE event_type='opened'  AND NOT COALESCE(is_machine_open,false))  AS opens,
+		         WHERE event_type='opened'  AND ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address)))  AS opens,
 		       COUNT(*) FILTER (
-		         WHERE event_type='clicked' AND NOT COALESCE(is_machine_click,false)) AS clicks,
+		         WHERE event_type='clicked' AND ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))) AS clicks,
 		       COUNT(DISTINCT subscriber_id) FILTER (
-		         WHERE event_type='clicked' AND NOT COALESCE(is_machine_click,false)) AS clickers
+		         WHERE event_type='clicked' AND ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))) AS clickers
 		FROM mailing_tracking_events
 		WHERE organization_id = $1::uuid
 		  AND event_at >= ` + todayMT + `
@@ -461,7 +472,7 @@ func (s *AdvancedMailingService) snapshotByOffer(ctx context.Context, orgID stri
 		WHERE organization_id = $1::uuid
 		  AND event_at >= ` + todayMT + `
 		  AND event_type = 'clicked'
-		  AND NOT COALESCE(is_machine_click,false)`
+		  AND ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))`
 	if rows, err := s.db.QueryContext(ctx, clickSQL, orgID); err != nil {
 		notes = append(notes, "exact clicks unavailable: "+err.Error())
 	} else {
@@ -570,7 +581,7 @@ func (s *AdvancedMailingService) snapshotByOffer(ctx context.Context, orgID stri
 		            AND t.organization_id = c.organization_id
 		            AND t.event_at >= ` + todayMT + `
 		            AND t.event_type = 'opened'
-		            AND NOT COALESCE(t.is_machine_open,false)
+		            AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))
 		       ),0) AS human_opens
 		FROM mailing_campaigns c
 		WHERE c.organization_id = $1::uuid
