@@ -406,9 +406,15 @@ func (r *Reader) Summary(ctx context.Context, fromDt, toDt string) ([]SummaryRow
 	if fromDt == "" || toDt == "" {
 		return nil, fmt.Errorf("from and to dates are required")
 	}
-	sql := "SELECT event_type, COUNT(*) c FROM " + lakeTable +
+	// Mirror Breakdown's counting semantics exactly: COUNT(DISTINCT event_uid)
+	// (the PMTA bridge redelivers events; a plain COUNT(*) inflates by the
+	// redelivery factor) and the read-time bounce reclassification
+	// (eventTypeExpr) — otherwise Summary's hard/soft buckets include the
+	// policy-block and admin-flush inflation Breakdown strips out, and the two
+	// endpoints disagree over the same range.
+	sql := "SELECT " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM " + lakeTable +
 		" WHERE dt BETWEEN " + sqlStr(fromDt) + " AND " + sqlStr(toDt) +
-		" GROUP BY event_type ORDER BY c DESC"
+		" GROUP BY " + eventTypeExpr + " ORDER BY c DESC"
 	_, rows, err := r.runQuery(ctx, sql)
 	if err != nil {
 		return nil, err

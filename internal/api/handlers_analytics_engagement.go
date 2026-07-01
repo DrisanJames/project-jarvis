@@ -43,9 +43,15 @@ package api
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// engagementBrandRe admits domain-shaped brand filters only (letters, digits,
+// dots, hyphens). Deliberately excludes '_' and '%': both are LIKE wildcards
+// and neither is legal in a hostname.
+var engagementBrandRe = regexp.MustCompile(`^[a-zA-Z0-9.\-]{1,255}$`)
 
 // VersionEngagementSummary is bumped on every behaviour change (testing.mdc).
 //
@@ -58,7 +64,10 @@ import (
 //	    so the monthly partitions prune instead of a full-table scan. Fixes the
 //	    15s timeout / "engagement unavailable" once the rolling set passed ~1M
 //	    opened/clicked rows. Counts unchanged (margin is non-excluding).
-const VersionEngagementSummary = "1.2"
+//	1.3 (2026-07-01): brand filter anchored (exact or dot-suffix, was substring
+//	    ILIKE) + validated domain-shaped — scope now matches the lake tiles'
+//	    exact brand match beside it.
+const VersionEngagementSummary = "1.3"
 
 const engagementSummaryTimeout = 15 * time.Second
 
@@ -77,7 +86,8 @@ const engagementSummaryQuery = `
 			  AND event_at <  ($3::date + 2)::timestamptz
 			  AND (event_at AT TIME ZONE 'America/Denver')::date BETWEEN $2::date AND $3::date
 			  AND event_type IN ('opened', 'clicked')
-			  AND ($4 = '' OR sending_domain ILIKE '%' || $4 || '%')
+			  AND ($4 = '' OR lower(sending_domain) = lower($4)
+			       OR lower(sending_domain) LIKE '%.' || lower($4))
 		)
 		SELECT
 			COUNT(*) FILTER (WHERE event_type = 'opened')                                    AS raw_opens,
@@ -110,12 +120,20 @@ func (s *Server) HandleEngagementSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Optional brand (sending-domain) filter — honors the Range Overview toolbar.
-	// Contains-match is format-tolerant: the toolbar may pass a brand root
+	// Suffix-anchored match, format-tolerant: the toolbar may pass a brand root
 	// ("quizfiesta.com") while the stored sending_domain is prefixed
-	// ("em.quizfiesta.com"). Empty -> all brands. Transport and ISP filters are
-	// intentionally NOT applied: engagement is not a transport property, and the
-	// ISP table is delivery-only.
+	// ("em.quizfiesta.com") — exact OR dot-suffix. The old substring ILIKE
+	// matched infixes (a brand apex inside ANOTHER brand's sending domain) and
+	// treated %/_ as wildcards, so its scope could differ from the lake tiles'
+	// exact brandExpr match beside it. Reject non-domain input outright (mirrors
+	// the lake's dottedRe, minus '_' which is a LIKE wildcard and never legal in
+	// a hostname). Empty -> all brands. Transport is intentionally NOT applied
+	// (engagement is not a transport property).
 	brand := strings.TrimSpace(r.URL.Query().Get("brand"))
+	if brand != "" && !engagementBrandRe.MatchString(brand) {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid value for brand"})
+		return
+	}
 
 	// One pass: classify each event once in the CTE (verdict fn is the only
 	// working human filter — the is_machine_* columns are inert), then aggregate.

@@ -174,6 +174,11 @@ func (s *Server) HandleLakeBreakdown(w http.ResponseWriter, r *http.Request) {
 		"campaign_id", "isp_group", "event_type", "brand", "email_domain",
 		"route_type", "source", "bounce_cat", "vmta", "pool", "variant",
 		"is_machine_click", "local_dt", // v2.2: human-click split + Denver days
+		// Every remaining breakdown dim. "isp" matters most: it is the
+		// Explorer's DEFAULT row dimension, and its row-expansion trend sends
+		// isp=<value> — omitting it here silently dropped the filter, so every
+		// per-provider drill-down rendered GLOBAL totals labeled as that ISP.
+		"isp", "local_hour", "suppression_reason", "dsn_code",
 	} {
 		if v := q.Get(col); v != "" {
 			eq[col] = v

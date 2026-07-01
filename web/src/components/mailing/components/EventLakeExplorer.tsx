@@ -726,6 +726,25 @@ function totalsFromBreakdown(rows: BreakdownRow[]): MetricRow {
   return makeMetricRow('TOTAL', m);
 }
 
+// mergeDeliveryAndEngagement combines a DELIVERY breakdown (source pmta+ses)
+// with an ENGAGEMENT breakdown (source='app', the PG-tracking mirror) into one
+// row set with each event counted exactly once:
+//   - open/click are taken ONLY from the app stream. The delivery rows' own
+//     open/click slice (the SES webhook's) is STRIPPED first — SES opens are
+//     persisted to PG and mirrored into the app stream, so keeping both counted
+//     every SES open twice (verified 2026-07-01: campaign 4d3bd63f had open=616
+//     under source=ses AND open=616 under source=app for the same sends).
+//   - everything else (delivered/bounces/delays/complaints/…) comes ONLY from
+//     the delivery rows; the app stream's delivered/attempted/bounce rows are
+//     PG-mirror duplicates and are dropped.
+function mergeDeliveryAndEngagement(deliveryRows: BreakdownRow[], engRows: BreakdownRow[]): BreakdownRow[] {
+  const isEng = (r: BreakdownRow) => {
+    const et = (r.keys['event_type'] ?? '').toLowerCase();
+    return et === 'open' || et === 'click';
+  };
+  return [...deliveryRows.filter((r) => !isEng(r)), ...engRows.filter(isEng)];
+}
+
 // transportSources maps the toolbar Transport selector to the lake `source`
 // values it covers. combined = pmta + ses (the headline excludes the duplicate
 // 'app' source by construction); mta = pmta; ses = ses.
@@ -1094,8 +1113,12 @@ const METRIC_COLS: ColDef[] = [
   },
 ];
 
-function sortMetricRows(rows: MetricRow[], sort: SortState): MetricRow[] {
-  const col = METRIC_COLS.find((c) => c.id === sort.col);
+// cols must be the table's FULL column list (METRIC_COLS + any extraCols):
+// resolving sort.col against METRIC_COLS alone silently fell through to the
+// name sort whenever an extra column's header (Deferred / Recovered%) was
+// clicked — the arrow toggled but rows ordered alphabetically.
+function sortMetricRows(rows: MetricRow[], sort: SortState, cols: ColDef[]): MetricRow[] {
+  const col = cols.find((c) => c.id === sort.col);
   const sorted = [...rows];
   sorted.sort((a, b) => {
     let cmp: number;
@@ -1127,7 +1150,7 @@ const MetricsTable: React.FC<{
   extraCols?: ColDef[];
 }> = ({ dimLabel, rows, totals, sort, onSort, expandedKey, onToggleExpand, renderExpanded, extraCols }) => {
   const cols = useMemo(() => [...METRIC_COLS, ...(extraCols ?? [])], [extraCols]);
-  const sorted = useMemo(() => sortMetricRows(rows, sort), [rows, sort]);
+  const sorted = useMemo(() => sortMetricRows(rows, sort, cols), [rows, sort, cols]);
   const expandable = !!onToggleExpand;
   const arrow = (col: string) => sort.col === col ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : '';
   const renderCells = (r: MetricRow, isTotal: boolean) => cols.map((c) => (
@@ -1354,6 +1377,14 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   );
   const abortRef = useRef<AbortController | null>(null);
   const hourlyAbortRef = useRef<AbortController | null>(null);
+  // Refresh must also refresh the HOURLY trend: load(true) bypasses the cache
+  // for its own fetches, but the hourly series lives in a separate effect whose
+  // deps don't change on Refresh (nonce only bumps on Run) and whose fetch
+  // never bypassed — so hourly bars stayed frozen at first-fetch values.
+  // Bumping this counter re-triggers the effect; the ref carries the one-shot
+  // bypass across to it.
+  const [hourlyRefresh, setHourlyRefresh] = useState(0);
+  const hourlyBypassRef = useRef(false);
 
   const load = useCallback(async (bypass: boolean) => {
     abortRef.current?.abort();
@@ -1361,6 +1392,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     abortRef.current = ctl;
     setLoading(true);
     setError('');
+    if (bypass) {
+      hourlyBypassRef.current = true;
+      setHourlyRefresh((n) => n + 1);
+    }
     try {
       // SINGLE SOURCE OF TRUTH: ONE breakdown (local_dt × source × route_type ×
       // event_type) drives BOTH the headline KPIs and the route funnel, so they
@@ -1385,7 +1420,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
           // Per-ISP deliverability table. Uses the transport-aware filterParams
           // so it honors the toolbar brand=sending-domain AND transport selectors
           // (the operator's "filterable by sending domain" requirement).
-          { from: applied.from, to: applied.to, groupBy: ['isp_group', 'event_type'], limit: 100, filters: filterParams(applied) },
+          // limit 1000, not 100: raw isp_group carries dozens of PMTA *.queue
+          // values × ~8 event types — 100 buckets truncated the tail and
+          // silently under-reported some providers' rows.
+          { from: applied.from, to: applied.to, groupBy: ['isp_group', 'event_type'], limit: 1000, filters: filterParams(applied) },
           applied.nonce,
           { signal: ctl.signal, bypass }
         ),
@@ -1453,12 +1491,16 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
     hourlyAbortRef.current?.abort();
     const ctl = new AbortController();
     hourlyAbortRef.current = ctl;
+    // One-shot: consume the Refresh-initiated bypass so grain flips and other
+    // re-runs still serve the cache.
+    const bypass = hourlyBypassRef.current;
+    hourlyBypassRef.current = false;
     (async () => {
       try {
         const hres = await fetchBreakdown(
           { from: applied.from, to: applied.to, groupBy: ['local_hour', 'event_type'], limit: 5000, filters: filterParams(applied) },
           applied.nonce,
-          { signal: ctl.signal }
+          { signal: ctl.signal, bypass }
         );
         setHourlyRows(hres.data.rows);
       } catch (e) {
@@ -1469,7 +1511,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
       }
     })();
     return () => ctl.abort();
-  }, [trendGrain, rangeDays, loaded, applied, addToast]);
+  }, [trendGrain, rangeDays, loaded, applied, addToast, hourlyRefresh]);
 
   // Route funnel reads across the backend's widened dt window (06-23..06-25),
   // so filter to in-range Denver days before pivoting — this is what makes the
@@ -1514,9 +1556,12 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   }, [ispRows]);
 
   // Deferral funnel keyed by isp_group, joined into the per-ISP table by m.key
-  // (= the isp_group value). Missing entry → the row shows "—" / 0.
+  // (= the isp_group value). Missing entry → the row shows "—" / 0. Blank
+  // isp_group is normalized to '(unknown)' to match ispMetrics' row key —
+  // without it the (unknown) row's deferrals silently read 0 while the TOTAL
+  // still included them.
   const funnelByIsp = useMemo(
-    () => new Map((funnel?.rows ?? []).map((r) => [r.isp_group, r])),
+    () => new Map((funnel?.rows ?? []).map((r) => [r.isp_group || '(unknown)', r])),
     [funnel]
   );
 
@@ -1531,6 +1576,17 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   const c = totals.counts;
   const r = totals.rates;
   const dn = denomTitle(r);
+
+  // The engagement summary (PG) and deferral funnel are brand-scoped but NOT
+  // isp-scoped, while every delivery tile honors the isp_group filter. With an
+  // ISP filter active: the deferral KPI narrows to that ISP's funnel row (the
+  // funnel is per-ISP, so this is exact), and the open/click tiles suppress
+  // their rate (all-ISP numerator over an ISP-scoped delivered denominator once
+  // showed >100%) and say so.
+  const ispScoped = applied.ispGroup.trim() !== '';
+  const funnelScope = ispScoped
+    ? (funnelByIsp.get(applied.ispGroup.trim()) ?? { deferred: 0, recovered: 0, pending: 0, bounced: 0 })
+    : funnel?.total ?? null;
 
   // ISP table cell styling — mirrors RouteFunnelPanel's tabular-nums idiom.
   const ispCell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -1587,11 +1643,11 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                   Recovery % is on RESOLVED deferrals (recovered/(recovered+bounced))
                   — many deferrals are still retrying, so recovered/deferred reads a
                   misleadingly low %. Fail-soft: funnel===null shows 0 / "unavailable". */}
-              <KpiCard label="Deferred → Recovered" value={funnel ? funnel.total.recovered : 0} color={COLORS.good}
-                rate={funnel && (funnel.total.recovered + funnel.total.bounced) > 0 ? (funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100 : null}
+              <KpiCard label="Deferred → Recovered" value={funnelScope ? funnelScope.recovered : 0} color={COLORS.good}
+                rate={funnelScope && (funnelScope.recovered + funnelScope.bounced) > 0 ? (funnelScope.recovered / (funnelScope.recovered + funnelScope.bounced)) * 100 : null}
                 rateLabel="recovered (of resolved)"
-                extra={funnel
-                  ? `${fmt(funnel.total.deferred)} deferred · ${fmt(funnel.total.recovered)} delivered (${fmtPct((funnel.total.recovered + funnel.total.bounced) > 0 ? (funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100 : null)} of resolved) · ${fmt(funnel.total.pending)} in flight · ${fmt(funnel.total.bounced)} bounced`
+                extra={funnelScope
+                  ? `${fmt(funnelScope.deferred)} deferred · ${fmt(funnelScope.recovered)} delivered (${fmtPct((funnelScope.recovered + funnelScope.bounced) > 0 ? (funnelScope.recovered / (funnelScope.recovered + funnelScope.bounced)) * 100 : null)} of resolved) · ${fmt(funnelScope.pending)} in flight · ${fmt(funnelScope.bounced)} bounced${ispScoped ? ` · ${applied.ispGroup.trim()} only` : ''}`
                   : 'deferral funnel unavailable'} />
               <KpiCard label="Complaints" value={c.complaints} color={COMPLAINT_ROSE}
                 rate={r.complaint} rateLabel="complaint" denomNote={dn} />
@@ -1600,14 +1656,18 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                   slice is ~3 orders of magnitude low and whose is_machine_* flags
                   are inert). Human (verdict-filtered) counts are in the subtext;
                   the verdict is the only click filter — no asset-host layer. */}
+              {/* With an isp_group filter active the rate is SUPPRESSED: the
+                  engagement numerator is all-ISP (the PG summary has no ISP
+                  scope) while c.delivered is ISP-scoped — that ratio once
+                  rendered open rates over 100%. */}
               <KpiCard label="Opens (raw)" value={eng ? eng.raw_opens : 0} color={OPEN_CYAN}
-                rate={eng && c.delivered > 0 ? (eng.raw_opens / c.delivered) * 100 : null}
-                rateLabel="open" denomNote={deliveredTitle(c)}
-                extra={eng ? `machine incl. · human ${fmt(eng.human_opens)} (${fmt(eng.human_openers)} openers)` : 'engagement unavailable'} />
+                rate={!ispScoped && eng && c.delivered > 0 ? (eng.raw_opens / c.delivered) * 100 : null}
+                rateLabel="open" denomNote={ispScoped ? 'rate n/a — opens are all-ISP, delivered is isp-filtered' : deliveredTitle(c)}
+                extra={eng ? `machine incl. · human ${fmt(eng.human_opens)} (${fmt(eng.human_openers)} openers)${ispScoped ? ' · ALL ISPs (isp filter not applied)' : ''}` : 'engagement unavailable'} />
               <KpiCard label="Clicks (raw)" value={eng ? eng.raw_clicks : 0} color={CLICK_VIOLET}
-                rate={eng && c.delivered > 0 ? (eng.raw_clicks / c.delivered) * 100 : null}
-                rateLabel="click" denomNote={deliveredTitle(c)}
-                extra={eng ? `machine incl. · human ${fmt(eng.human_clicks)} (${fmt(eng.human_clickers)} clickers) · CTOR ${fmtPct(eng.human_opens > 0 ? (eng.human_clicks / eng.human_opens) * 100 : null)}` : 'engagement unavailable'} />
+                rate={!ispScoped && eng && c.delivered > 0 ? (eng.raw_clicks / c.delivered) * 100 : null}
+                rateLabel="click" denomNote={ispScoped ? 'rate n/a — clicks are all-ISP, delivered is isp-filtered' : deliveredTitle(c)}
+                extra={eng ? `machine incl. · human ${fmt(eng.human_clicks)} (${fmt(eng.human_clickers)} clickers) · CTOR ${fmtPct(eng.human_opens > 0 ? (eng.human_clicks / eng.human_opens) * 100 : null)}${ispScoped ? ' · ALL ISPs (isp filter not applied)' : ''}` : 'engagement unavailable'} />
               <KpiCard label="Relayed" value={c.relayed} color={INFO_BLUE}
                 extra="relay handoff — not a delivery" />
             </div>
@@ -1708,10 +1768,12 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                       <td style={{ ...ispCell, borderTop: '1px solid #374151', color: HARD_RED, background: heatHard(ispMetrics.totals.rates.hard) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.hard)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(funnel?.total.deferred ?? 0)}</td>
+                      {/* funnelScope, not funnel.total: with an isp_group filter
+                          the rows above are one ISP — an all-ISP TOTAL wouldn't foot. */}
+                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(funnelScope?.deferred ?? 0)}</td>
                       <td style={{ ...ispCell, borderTop: '1px solid #374151' }} title="recovered / (recovered + bounced) — resolved deferrals only">
-                        {funnel && (funnel.total.recovered + funnel.total.bounced) > 0
-                          ? `${fmt(funnel.total.recovered)} (${fmtPct((funnel.total.recovered / (funnel.total.recovered + funnel.total.bounced)) * 100)})`
+                        {funnelScope && (funnelScope.recovered + funnelScope.bounced) > 0
+                          ? `${fmt(funnelScope.recovered)} (${fmtPct((funnelScope.recovered / (funnelScope.recovered + funnelScope.bounced)) * 100)})`
                           : '—'}
                       </td>
                     </tr>
@@ -1767,11 +1829,11 @@ const RowTrendExpansion: React.FC<{
         { signal: ctl.signal }
       ),
     ]).then(([delivRes, engRes]) => {
-      const appEng = engRes.data.rows.filter((r) => {
-        const et = (r.keys['event_type'] ?? '').toLowerCase();
-        return et === 'open' || et === 'click';
+      setData({
+        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes.data.rows),
+        meta: delivRes.meta,
+        truncated: !!(delivRes.data.truncated || engRes.data.truncated),
       });
-      setData({ rows: [...delivRes.data.rows, ...appEng], meta: delivRes.meta, truncated: !!(delivRes.data.truncated || engRes.data.truncated) });
     }).catch((e) => {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -1880,12 +1942,13 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
             })
           : Promise.resolve(null),
       ]);
-      const appEng = engRes.data.rows.filter((r) => {
-        const et = (r.keys['event_type'] ?? '').toLowerCase();
-        return et === 'open' || et === 'click';
-      });
       setFunnel(funnelRes);
-      setFetched({ rows: [...delivRes.data.rows, ...appEng], dim, meta: delivRes.meta, truncated: !!(delivRes.data.truncated || engRes.data.truncated) });
+      setFetched({
+        rows: mergeDeliveryAndEngagement(delivRes.data.rows, engRes.data.rows),
+        dim,
+        meta: delivRes.meta,
+        truncated: !!(delivRes.data.truncated || engRes.data.truncated),
+      });
     } catch (e) {
       if (isAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -2175,10 +2238,18 @@ const CampaignTab: React.FC<{
     abortRef.current = ctl;
     setLoading(true);
     const { from: f, to: t } = rangeRef.current;
-    const lakeFilters = { campaign_id: id };
-    const [a, b, c, d] = await Promise.allSettled([
-      fetchBreakdown({ from: f, to: t, groupBy: ['event_type'], limit: 5000, filters: lakeFilters }, 0, { signal: ctl.signal, bypass: true }),
-      fetchBreakdown({ from: f, to: t, groupBy: ['isp', 'event_type'], limit: 5000, filters: lakeFilters }, 0, { signal: ctl.signal, bypass: true }),
+    // Delivery reads pmta+ses ONLY; engagement (open/click) reads the source='app'
+    // PG-tracking mirror — same split as the Dimensions matrix. An unfiltered
+    // campaign query counted every event twice wherever the app mirror exists
+    // (verified 2026-07-01: campaign ec245ce4 showed delivered=17,448 under BOTH
+    // source=pmta and source=app — the old funnel displayed 34,896).
+    const delivFilters = { campaign_id: id, source_in: 'pmta,ses' };
+    const engLakeFilters = { campaign_id: id, source: 'app' };
+    const [a, aEng, b, bEng, c, d] = await Promise.allSettled([
+      fetchBreakdown({ from: f, to: t, groupBy: ['event_type'], limit: 5000, filters: delivFilters }, 0, { signal: ctl.signal, bypass: true }),
+      fetchBreakdown({ from: f, to: t, groupBy: ['event_type'], limit: 5000, filters: engLakeFilters }, 0, { signal: ctl.signal, bypass: true }),
+      fetchBreakdown({ from: f, to: t, groupBy: ['isp', 'event_type'], limit: 5000, filters: delivFilters }, 0, { signal: ctl.signal, bypass: true }),
+      fetchBreakdown({ from: f, to: t, groupBy: ['isp', 'event_type'], limit: 5000, filters: engLakeFilters }, 0, { signal: ctl.signal, bypass: true }),
       fetchCampaignSummary(id, ctl.signal),
       fetchLakeEvents({ campaign_id: id, limit: 100 }, { signal: ctl.signal }),
     ]);
@@ -2191,17 +2262,24 @@ const CampaignTab: React.FC<{
       cc: null, ccError: '',
       events: [], eventsMeta: null,
     };
+    // Engagement fetches are FAIL-SOFT: a failure degrades opens/clicks to 0
+    // for the funnel/matrix without dropping the delivery truth.
+    const aEngRows = aEng.status === 'fulfilled' ? aEng.value.data.rows : [];
+    const bEngRows = bEng.status === 'fulfilled' ? bEng.value.data.rows : [];
+    if (aEng.status === 'rejected' && !isAbortError(aEng.reason)) {
+      addToast({ type: 'error', title: 'Campaign engagement query failed', message: aEng.reason instanceof Error ? aEng.reason.message : String(aEng.reason) });
+    }
     if (a.status === 'fulfilled') {
-      res.typeTotals = totalsFromBreakdown(a.value.data.rows);
+      res.typeTotals = totalsFromBreakdown(mergeDeliveryAndEngagement(a.value.data.rows, aEngRows));
       res.typeTotalsMeta = a.value.meta;
-      res.typeTruncated = !!a.value.data.truncated;
+      res.typeTruncated = !!(a.value.data.truncated || (aEng.status === 'fulfilled' && aEng.value.data.truncated));
     } else if (!isAbortError(a.reason)) {
       addToast({ type: 'error', title: 'Campaign funnel query failed', message: a.reason instanceof Error ? a.reason.message : String(a.reason) });
     }
     if (b.status === 'fulfilled') {
-      res.ispRows = b.value.data.rows;
+      res.ispRows = mergeDeliveryAndEngagement(b.value.data.rows, bEngRows);
       res.ispMeta = b.value.meta;
-      res.ispTruncated = !!b.value.data.truncated;
+      res.ispTruncated = !!(b.value.data.truncated || (bEng.status === 'fulfilled' && bEng.value.data.truncated));
     } else if (!isAbortError(b.reason)) {
       addToast({ type: 'error', title: 'Campaign per-provider query failed', message: b.reason instanceof Error ? b.reason.message : String(b.reason) });
     }
@@ -2245,12 +2323,9 @@ const CampaignTab: React.FC<{
   const lakeC = result?.typeTotals?.counts || null;
   const lakeR = result?.typeTotals?.rates || null;
 
-  // The lake's ONLY open/click emit site is the SES events webhook — PMTA-direct
-  // campaigns have NO lake open/click events (the internal tracking pixel does
-  // not emit to the lake), so lake 0 < tracking is expected, not a mismatch.
-  // Opens/Clicks recon rows are therefore only rendered for SES-routed mail.
-  const sesRouted = cc?.route_type === 'ses' || cc?.route_type === 'ses_tenant';
-
+  // Opens/Clicks now come from the source='app' engagement stream (the
+  // PG-tracking mirror), so they exist for EVERY route — the old "SES-routed
+  // only" gate dated from before the tracking→lake mirror carried engagement.
   // No Complaints row: the campaign-summary DETAIL endpoint has no complaints
   // field, so it could never reconcile (lake complaints live in the funnel KPIs).
   const reconRows: ReconRow[] = (lakeC && cc) ? [
@@ -2260,10 +2335,8 @@ const CampaignTab: React.FC<{
     // reputation_block — so the comparable tracking number is the SUM.
     { label: 'Hard bounce *', lake: lakeC.hard, cc: cc.hard_bounce + (cc.reputation_block ?? 0), color: HARD_RED, note: 'tracking = hard bounces + provider blocks (analytics folds provider blocks into hard)' },
     { label: 'Soft bounce', lake: lakeC.soft, cc: cc.soft_bounce, color: SOFT_AMBER },
-    ...(sesRouted ? [
-      { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'analytics = total open events; tracking = unique opens' },
-      { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'analytics = total click events; tracking = unique clicks' },
-    ] : []),
+    { label: 'Opens *', lake: lakeC.opens, cc: cc.unique_opens, color: OPEN_CYAN, note: 'analytics = total open events (app stream, machine incl.); tracking = unique opens' },
+    { label: 'Clicks *', lake: lakeC.clicks, cc: cc.unique_clicks, color: CLICK_VIOLET, note: 'analytics = total click events (app stream, machine incl.); tracking = unique clicks' },
   ] : [];
 
   return (
@@ -2423,7 +2496,9 @@ const CampaignTab: React.FC<{
               <div>
                 <h2 style={styles.panelTitle}>Analytics Funnel</h2>
                 <p style={styles.panelSubtitle}>
-                  group_by=event_type, campaign_id={truncate(result.id, 14)}, {from} → {to}. <TimingNote meta={result.typeTotalsMeta} />
+                  group_by=event_type, campaign_id={truncate(result.id, 14)}, {from} → {to}.
+                  Delivery reads pmta+ses; Opens/Clicks are RAW recorded events from the tracking
+                  stream (machine incl.). <TimingNote meta={result.typeTotalsMeta} />
                 </p>
               </div>
             </div>
@@ -2530,19 +2605,11 @@ const CampaignTab: React.FC<{
                     </tbody>
                   </table>
                   <div style={styles.tableFooterNote}>
-                    {sesRouted ? (
-                      <>
-                        * Opens/clicks compare different units by design: analytics counts <em>total</em> open/click events
-                        (every pixel fire / link hit is its own event), while Campaign Center reports <em>unique</em> opens/clicks
-                        (deduped per recipient) — expect analytics ≥ tracking; a large gap usually means heavy re-opens or bot scanning,
-                        not data loss. CC total opens={fmt(cc.total_opens)} · total clicks={fmt(cc.total_clicks)} for reference.
-                      </>
-                    ) : (
-                      <>
-                        Open/click events for direct-route mail are tracked in Campaign Center only (the internal
-                        tracking pixel does not feed analytics), so Opens/Clicks rows are omitted here.
-                      </>
-                    )}
+                    * Opens/clicks compare different units by design: analytics counts <em>total</em> open/click events
+                    (every pixel fire / link hit is its own event, machine traffic included), while Campaign Center reports
+                    <em> unique</em> opens/clicks (deduped per recipient) — expect analytics ≥ tracking; a large gap usually
+                    means heavy re-opens or bot scanning, not data loss. CC total opens={fmt(cc.total_opens)} · total
+                    clicks={fmt(cc.total_clicks)} for reference.
                   </div>
                 </div>
               )}

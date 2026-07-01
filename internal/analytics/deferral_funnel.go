@@ -54,7 +54,13 @@ func buildDeferralFunnelSQL(from, to, brand string) (string, error) {
 		return "", fmt.Errorf("invalid value for brand")
 	}
 
-	dtFrom, dtTo := shiftDt(from, -1), shiftDt(to, 1)
+	// Cohort anchor (the deferral event) needs only the ±1-day Denver↔UTC skew,
+	// but the FATE events (delivered/bounced/flushed) land on any later dt —
+	// PMTA retries throttle-deferred mail for up to ~72h. Scanning only to+1
+	// classified late recoveries as "pending" (delivered=0 in the scanned
+	// window), overstating pending and understating recovered at the tail of
+	// every historical range. +4 covers the retry horizon plus the skew day.
+	dtFrom, dtTo := shiftDt(from, -1), shiftDt(to, 4)
 
 	var b strings.Builder
 	b.WriteString("WITH msg AS (")
