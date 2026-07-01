@@ -520,12 +520,18 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		// 7-day horizon binds at ~8. Halve the Yahoo-family horizon 7→3 (~2.3× the
 		// per-wave drainCap to ~16-18, which now flows under the 32 cap instead of
 		// re-clamping at 16). gmail stays 3 (cap 0 anyway). Monitor accept/bounce.
+		// Operator 2026-06-30 "push it further": Yahoo/SES is healthy (99% accept, deferrals
+		// negligible — the jun30 deferral pressure was PMTA-only, NOT SES/Yahoo) and ~1.26M
+		// family records still ready, so cut the Yahoo-family horizon 3→2 (drainCap ~16→~24,
+		// still under the 32 per-wave cap). Expect a MODEST further lift — many waves are
+		// audience-limited (jun30 per-wave avg ~8-9 << the ~16 cap), so only cap-bound waves
+		// gain. gmail stays 3. Monitor SES accept/deferral; next step 2→1 hits the 32 cap.
 		cfg.PerISPDrainDays = map[string]int{
 			"gmail":     3,
-			"yahoo":     3,
-			"sbcglobal": 3,
-			"aol":       3,
-			"att":       3,
+			"yahoo":     2,
+			"sbcglobal": 2,
+			"aol":       2,
+			"att":       2,
 		}
 	}
 	if !cfg.ThrottleDeferralDisabled && cfg.ThrottledISPRateThreshold <= 0 {
