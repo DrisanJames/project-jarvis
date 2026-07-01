@@ -1303,6 +1303,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Get("/months", cpmPlanner.HandleMonths)
 				cp.Put("/deals/{id}/monthly/{month}", cpmPlanner.HandleUpsertMonthlyTarget)
 				cp.Delete("/deals/{id}/monthly/{month}", cpmPlanner.HandleDeleteMonthlyTarget)
+				// Current-month pacing (operator 2026-07-01): MTD vs target with a
+				// trailing-3-day rate + month-end projection. On-demand only (QA C4).
+				cp.Get("/pacing", cpmPlanner.HandleCurrentMonthPacing)
 			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===

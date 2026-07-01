@@ -99,9 +99,23 @@ interface VersionInfo {
   deployed_at: string;
 }
 
+// The portal has no router, so a browser refresh would otherwise always land
+// on the dashboard — persist the active tab and restore it on mount. Stored
+// ids are validated against the live tab set (top-level ids + childIds) so a
+// renamed/removed tab falls back to the dashboard instead of a blank view.
+const ACTIVE_TAB_KEY = 'jarvis.portal.activeTab';
+const validTabIds = new Set<string>(tabs.flatMap(t => [t.id, ...(t.childIds || [])]));
+const restoreActiveTab = (): TabId => {
+  try {
+    const saved = localStorage.getItem(ACTIVE_TAB_KEY);
+    if (saved && validTabIds.has(saved)) return saved as TabId;
+  } catch { /* storage unavailable (private mode) — default */ }
+  return 'dashboard';
+};
+
 export const MailingPortal: React.FC = () => {
   const { organization } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const [activeTab, setActiveTab] = useState<TabId>(restoreActiveTab);
   const [realTimeStats, setRealTimeStats] = useState<any>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
 
@@ -117,6 +131,12 @@ export const MailingPortal: React.FC = () => {
     }
     setActiveTab(tab);
   };
+
+  // Persist every tab change (both handleTabChange and the jarvis:navigate
+  // event path land here) so a refresh restores the operator's screen.
+  useEffect(() => {
+    try { localStorage.setItem(ACTIVE_TAB_KEY, activeTab); } catch { /* non-fatal */ }
+  }, [activeTab]);
 
   // Cross-tab deep links — components rendered without portal props (e.g.
   // Offer Center → CPM Planner) navigate by dispatching a 'jarvis:navigate'

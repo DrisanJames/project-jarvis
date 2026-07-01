@@ -442,14 +442,15 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 func (h *CpmPlannerHandlers) loadCapacity(orgID string) cpmCapacity {
 	c := cpmCapacity{Risk: "LOW"}
 
-	// 14-day average daily sends — from the daily domain-agent scorecard
-	// rollup, NOT raw tracking events (a 14-day event scan per poll was a
-	// prod hazard — QA finding C4, 2026-06-12).
+	// 3-day average daily sends — from the daily domain-agent scorecard
+	// rollup, NOT raw tracking events (an event scan per poll was a prod
+	// hazard — QA finding C4, 2026-06-12). Window was 14d; operator 2026-07-01:
+	// capacity/sending is evaluated on the last 3 days, not two weeks.
 	trendQ := `
 		SELECT COALESCE(AVG(cnt), 0) FROM (
 			SELECT day, SUM(sends) AS cnt
 			FROM mailing_domain_agent_scorecard
-			WHERE organization_id = $1 AND day >= CURRENT_DATE - 14 AND day < CURRENT_DATE
+			WHERE organization_id = $1 AND day >= CURRENT_DATE - 3 AND day < CURRENT_DATE
 			GROUP BY 1
 		) t`
 	if err := h.db.QueryRow(trendQ, orgID).Scan(&c.PlatformDaily); err != nil {
@@ -1725,6 +1726,30 @@ func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, error) {
 	return deals, rows.Err()
 }
 
+// dealCampaignMapCTE is the unified deal→campaign attribution map (offer match
+// ∪ earmarks ∪ name-pattern) for ALL of an org's deals at once — the whole-org
+// analogue of dealCampaignSetSubquery() (same three paths). $1 = org id; queries
+// appending to it may use $2+ freely.
+const dealCampaignMapCTE = `
+	WITH dm AS (
+		SELECT d.id AS deal_id, c.id AS campaign_id
+		FROM mailing_cpm_deals d
+		JOIN mailing_campaigns c ON c.organization_id = d.organization_id
+			AND d.offer_id IS NOT NULL AND c.offer_id = d.offer_id AND c.created_at >= d.start_date
+		WHERE d.organization_id = $1
+		UNION
+		SELECT dc.deal_id, dc.campaign_id
+		FROM mailing_cpm_deal_campaigns dc
+		JOIN mailing_cpm_deals d ON d.id = dc.deal_id AND d.organization_id = $1
+		UNION
+		SELECT d.id, c.id
+		FROM mailing_cpm_deals d
+		JOIN mailing_campaigns c ON c.organization_id = d.organization_id
+			AND COALESCE(d.campaign_name_pattern,'') <> '' AND c.name ILIKE d.campaign_name_pattern
+			AND c.created_at >= d.start_date
+		WHERE d.organization_id = $1
+	)`
+
 // cpmDealMonthActuals holds a deal's per-Denver-month actuals (keyed "YYYY-MM").
 type cpmDealMonthActuals struct {
 	delivered map[string]int64
@@ -1763,28 +1788,6 @@ func (h *CpmPlannerHandlers) loadAllDealMonthlyActuals(orgID, windowStart string
 			}
 		}
 	}
-
-	// Unified deal→campaign attribution map (offer match ∪ earmarks ∪ name-
-	// pattern), built ONCE — same three paths as dealCampaignSetSubquery().
-	const dealCampaignMapCTE = `
-		WITH dm AS (
-			SELECT d.id AS deal_id, c.id AS campaign_id
-			FROM mailing_cpm_deals d
-			JOIN mailing_campaigns c ON c.organization_id = d.organization_id
-				AND d.offer_id IS NOT NULL AND c.offer_id = d.offer_id AND c.created_at >= d.start_date
-			WHERE d.organization_id = $1
-			UNION
-			SELECT dc.deal_id, dc.campaign_id
-			FROM mailing_cpm_deal_campaigns dc
-			JOIN mailing_cpm_deals d ON d.id = dc.deal_id AND d.organization_id = $1
-			UNION
-			SELECT d.id, c.id
-			FROM mailing_cpm_deals d
-			JOIN mailing_campaigns c ON c.organization_id = d.organization_id
-				AND COALESCE(d.campaign_name_pattern,'') <> '' AND c.name ILIKE d.campaign_name_pattern
-				AND c.created_at >= d.start_date
-			WHERE d.organization_id = $1
-		)`
 
 	// Delivered — one pruned events scan joined to the map. The bare event_at
 	// bound enables partition pruning (mailing_tracking_events is range-
@@ -2089,5 +2092,203 @@ func (h *CpmPlannerHandlers) HandleDeleteMonthlyTarget(w http.ResponseWriter, r 
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"deal_id": dealID, "month": month.Format("2006-01"), "status": "deleted",
+	})
+}
+
+// ─── Current-month pacing ────────────────────────────────────────────────────
+
+type cpmPacingDeal struct {
+	DealID          string  `json:"deal_id"`
+	Name            string  `json:"name"`
+	OfferName       string  `json:"offer_name"`
+	EverflowOfferID string  `json:"everflow_offer_id"`
+	TargetVolume    int64   `json:"target_volume"`
+	TargetBudget    float64 `json:"target_budget"`
+	TargetSource    string  `json:"target_source"` // "monthly" | "deal" | "none"
+	Ecpm            float64 `json:"ecpm"`          // effective (monthly target if set, else deal goal)
+	MtdDelivered    int64   `json:"mtd_delivered"`
+	MtdRevenue      float64 `json:"mtd_revenue"`
+	MtdConversions  int64   `json:"mtd_conversions"`
+	Rate3d          float64 `json:"rate_3d"` // avg delivered/day over the last 3 complete Denver days
+	RequiredDaily   float64 `json:"required_daily"`
+	Projected       int64   `json:"projected"`
+	ProjectedPct    float64 `json:"projected_pct"`
+	OnPace          bool    `json:"on_pace"`
+}
+
+// cpmPacingMath derives the pacing numbers for one deal-month. dayOfMonth is
+// today's Denver day (1-based); requiredDaily spreads the remaining volume over
+// the days left INCLUDING today (today's sending can still count toward it);
+// the projection adds the trailing 3-day rate over the days AFTER today only,
+// since today's partial sends are already inside mtd.
+func cpmPacingMath(target, mtd int64, rate3d float64, dayOfMonth, daysInMonth int) (requiredDaily float64, projected int64, projectedPct float64, onPace bool) {
+	daysInclToday := daysInMonth - dayOfMonth + 1
+	if daysInclToday < 1 {
+		daysInclToday = 1
+	}
+	if target > mtd {
+		requiredDaily = float64(target-mtd) / float64(daysInclToday)
+	}
+	daysAfterToday := daysInMonth - dayOfMonth
+	if daysAfterToday < 0 {
+		daysAfterToday = 0
+	}
+	projected = mtd + int64(math.Round(rate3d*float64(daysAfterToday)))
+	if target > 0 {
+		projectedPct = float64(projected) / float64(target)
+		onPace = projected >= target
+	}
+	return
+}
+
+// HandleCurrentMonthPacing GET /cpm-planner/pacing
+// Per-deal pacing for the CURRENT Denver month: the month's target (monthly
+// target row if set, else derived from the deal's own budget/eCPM plan), MTD
+// actuals, the trailing-3-day delivered rate, and the month-end projection
+// (operator 2026-07-01: pacing reads the current month; capacity/sending reads
+// the last 3 days). Month-scoped events scan — serve on demand (mount /
+// explicit refresh / after a target save), never on a poll timer (QA C4).
+func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+
+	// Current Denver date from the DB (same tz source as HandleMonths).
+	var curDate time.Time
+	if err := h.db.QueryRow(`SELECT (NOW() AT TIME ZONE 'America/Denver')::date`).Scan(&curDate); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("current date: %v", err))
+		return
+	}
+	curMonth := time.Date(curDate.Year(), curDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+	dayOfMonth := curDate.Day()
+	daysInMonth := curMonth.AddDate(0, 1, -1).Day()
+	curYM := curMonth.Format("2006-01")
+
+	deals, err := h.loadDealsLite(orgID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("load deals: %v", err))
+		return
+	}
+
+	// Current month's targets.
+	type tgt struct {
+		budget, ecpm sql.NullFloat64
+		volume       sql.NullInt64
+	}
+	targets := map[string]tgt{}
+	if rows, err := h.db.Query(`
+		SELECT deal_id::text, target_budget, target_volume, target_ecpm
+		FROM mailing_cpm_deal_monthly_targets
+		WHERE organization_id = $1 AND month = $2`, orgID, curMonth); err == nil {
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var t tgt
+				if err := rows.Scan(&id, &t.budget, &t.volume, &t.ecpm); err == nil {
+					targets[id] = t
+				}
+			}
+		}()
+	} else {
+		log.Printf("[CpmPlanner] pacing targets: %v", err)
+	}
+
+	// MTD actuals — the shared monthly loader scoped to just this month.
+	actuals := h.loadAllDealMonthlyActuals(orgID, curMonth.Format("2006-01-02"))
+
+	// Trailing 3-day delivered per deal (last 3 COMPLETE Denver days — today's
+	// partial day would understate the rate). Same pruning pattern as the
+	// monthly loader: bare event_at bound for partitions, Denver ::date edges.
+	rate3d := map[string]float64{}
+	if rows, err := h.db.Query(dealCampaignMapCTE+`
+		SELECT dm.deal_id::text, COUNT(*)
+		FROM mailing_tracking_events te
+		JOIN dm ON dm.campaign_id = te.campaign_id
+		WHERE te.organization_id = $1
+		  AND te.event_type = 'delivered'
+		  AND te.event_at >= ($2::date - INTERVAL '1 day')
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date < $3::date
+		GROUP BY 1`,
+		orgID, curDate.AddDate(0, 0, -3).Format("2006-01-02"), curDate.Format("2006-01-02")); err == nil {
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var n int64
+				if err := rows.Scan(&id, &n); err == nil {
+					rate3d[id] = float64(n) / 3.0
+				}
+			}
+		}()
+	} else {
+		log.Printf("[CpmPlanner] pacing 3d rate: %v", err)
+	}
+
+	out := []cpmPacingDeal{}
+	var pf struct {
+		TargetVolume  int64   `json:"target_volume"`
+		MtdDelivered  int64   `json:"mtd_delivered"`
+		MtdRevenue    float64 `json:"mtd_revenue"`
+		Projected     int64   `json:"projected"`
+		RequiredDaily float64 `json:"required_daily"`
+	}
+	for i := range deals {
+		d := &deals[i]
+		var mtd, tracked, manual int64
+		if a := actuals[d.ID]; a != nil {
+			mtd, tracked, manual = a.delivered[curYM], a.tracked[curYM], a.manual[curYM]
+		}
+
+		ecpm := d.EcpmGoal
+		targetVolume, targetBudget := int64(0), 0.0
+		source := "none"
+		if t, ok := targets[d.ID]; ok {
+			if t.ecpm.Valid && t.ecpm.Float64 > 0 {
+				ecpm = t.ecpm.Float64
+			}
+			if t.budget.Valid {
+				targetBudget = t.budget.Float64
+			}
+			switch {
+			case t.volume.Valid && t.volume.Int64 > 0:
+				targetVolume, source = t.volume.Int64, "monthly"
+			case targetBudget > 0 && ecpm > 0:
+				targetVolume, source = int64(math.Ceil(targetBudget/ecpm*1000)), "monthly"
+			}
+		}
+		if source == "none" && d.Status == "active" {
+			// No monthly target — fall back to the deal's own plan so an
+			// untargeted active deal still paces against SOMETHING visible.
+			if planned, _, _ := cpmPlanNumbers(d.Budget, d.EcpmGoal, d.EcpaGoal, d.AvgCampaignSize); planned > 0 {
+				targetVolume, targetBudget, source = planned, d.Budget, "deal"
+			}
+		}
+
+		conv := cpmMonthlyConversions(tracked, manual)
+		if targetVolume == 0 && mtd == 0 && conv == 0 {
+			continue // nothing to pace, nothing sent — skip the row
+		}
+
+		requiredDaily, projected, projectedPct, onPace := cpmPacingMath(targetVolume, mtd, rate3d[d.ID], dayOfMonth, daysInMonth)
+		out = append(out, cpmPacingDeal{
+			DealID: d.ID, Name: d.Name, OfferName: d.OfferName, EverflowOfferID: d.EverflowOfferID,
+			TargetVolume: targetVolume, TargetBudget: targetBudget, TargetSource: source, Ecpm: ecpm,
+			MtdDelivered: mtd, MtdRevenue: cpmMonthlyRevenue(mtd, ecpm), MtdConversions: conv,
+			Rate3d: rate3d[d.ID], RequiredDaily: requiredDaily,
+			Projected: projected, ProjectedPct: projectedPct, OnPace: onPace,
+		})
+		pf.TargetVolume += targetVolume
+		pf.MtdDelivered += mtd
+		pf.MtdRevenue += cpmMonthlyRevenue(mtd, ecpm)
+		pf.Projected += projected
+		pf.RequiredDaily += requiredDaily
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"month":         curYM,
+		"day_of_month":  dayOfMonth,
+		"days_in_month": daysInMonth,
+		"deals":         out,
+		"portfolio":     pf,
 	})
 }
