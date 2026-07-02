@@ -300,13 +300,20 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
 
   const grandTotal = useMemo(() => Object.values(totalsByBrand).reduce((s, n) => s + n, 0), [totalsByBrand]);
 
-  // Column indices where a new volume-category band begins (for the left divider between bands).
-  const catStartIdx = useMemo(() => {
-    const set = new Set<number>();
-    let prev: VolCategory | null = null;
-    brands.forEach((b, i) => { if (b.category !== prev) { set.add(i); prev = b.category; } });
-    return set;
-  }, [brands]);
+  // Volume-category bands are STACKED VERTICALLY (operator 2026-07-02): each band
+  // (Mature → Warming → New) is its own titled section with that band's domains
+  // as columns and the wave rows below — instead of one wide matrix with the
+  // bands laid out horizontally. brands is already category-ordered, so slice it
+  // by each contiguous categoryGroups run to get the section's domains.
+  const sections = useMemo(() => {
+    const out: { category: VolCategory; brands: typeof brands }[] = [];
+    let off = 0;
+    for (const g of categoryGroups) {
+      out.push({ category: g.category, brands: brands.slice(off, off + g.count) });
+      off += g.count;
+    }
+    return out;
+  }, [brands, categoryGroups]);
 
   if (loading) return <div style={msg}>Loading the plan for {date}…</div>;
   if (error) return <div style={{ ...msg, color: '#e94560' }}>Failed to load plan: {error}</div>;
@@ -319,98 +326,94 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
         <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(220,235,250,0.92)' }}>
           {brands.length} brands · {waves.length} send batches · {num(grandTotal)} planned
         </span>
-        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>← scroll horizontally for all brands →</span>
+        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>Mature → Warming → New · scroll down through the bands</span>
       </div>
-      <div style={{ overflowX: 'auto', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 8, background: 'rgba(13,21,38,0.45)' }}>
-        <table style={{ borderCollapse: 'separate', borderSpacing: 0, minWidth: '100%' }}>
-          <thead>
-            {/* Volume-category band row: one header spanning each contiguous group of brand
-                columns (Mature → Warming → New) with the count of domains in that band. */}
-            <tr>
-              <th style={{ ...thBase, ...stickyLeft, textAlign: 'left', borderBottom: 'none', padding: '5px 12px' }} aria-hidden />
-              {categoryGroups.map((g, gi) => {
-                const meta = CATEGORY_META[g.category];
-                return (
-                  <th
-                    key={`${g.category}-${gi}`}
-                    colSpan={g.count}
-                    style={{
-                      padding: '5px 12px', textAlign: 'left', whiteSpace: 'nowrap',
-                      background: meta.bg, color: meta.color,
-                      borderBottom: `1px solid ${meta.border}`,
-                      borderLeft: gi > 0 ? `2px solid ${meta.border}` : undefined,
-                      fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6,
-                    }}
-                  >
-                    {meta.label} · {g.count} {g.count === 1 ? 'domain' : 'domains'}
-                  </th>
-                );
-              })}
-            </tr>
-            <tr>
-              <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Send batch</th>
-              {brands.map((b, i) => (
-                <th
-                  key={b.domain}
-                  style={{ ...thBase, ...(catStartIdx.has(i) && i > 0 ? { borderLeft: `2px solid ${CATEGORY_META[b.category].border}` } : {}) }}
-                >
-                  <div style={{ fontWeight: 700, color: '#00e5ff', fontSize: 12 }}>{b.label}</div>
-                  <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)' }}>{b.domain}</div>
-                  <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.7)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {waves.map(w => {
-              // representative time for the wave row label = earliest scheduled in that wave
-              const times = brands.map(b => matrix[w]?.[b.domain]?.firstScheduled).filter(Boolean) as string[];
-              const repTime = times.sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0] ?? null;
-              return (
-                <tr key={w}>
-                  <td style={{ ...tdBase, ...stickyLeft }}>
-                    <div style={{ fontWeight: 700, fontSize: 12, color: 'rgba(220,235,250,0.92)' }}>{w}</div>
-                    <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}>{mtTime(repTime)} MT</div>
-                  </td>
-                  {brands.map((b, i) => {
-                    // Left divider at the start of each volume-category band (mirrors the header).
-                    const catDivider = catStartIdx.has(i) && i > 0 ? { borderLeft: `2px solid ${CATEGORY_META[b.category].border}` } : {};
-                    const cell = matrix[w]?.[b.domain];
-                    if (!cell) return <td key={b.domain} style={{ ...tdBase, ...catDivider, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
-                    const isSel = selected?.wave === w && selected?.domain === b.domain;
-                    const st = cellStatus(cell.statuses);
-                    const clickable = cell.volume > 0;
-                    // Cell shows just the DECLARED VOLUME (+ offer); click to drill into the
-                    // per-ISP composition + segments. Zero-volume cells aren't clickable.
-                    const inner = (
-                      <>
-                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
-                      </>
-                    );
+
+      {/* One titled, stacked section per volume-category band. */}
+      {sections.map(({ category, brands: secBrands }) => {
+        const meta = CATEGORY_META[category];
+        const secTotal = secBrands.reduce((s, b) => s + (totalsByBrand[b.domain] || 0), 0);
+        // Only the waves (send batches) that actually have a cell in this band.
+        const secWaves = waves.filter(w => secBrands.some(b => matrix[w]?.[b.domain]));
+        return (
+          <div key={category} style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '4px 2px 8px' }}>
+              <span style={{
+                fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8,
+                color: meta.color, padding: '3px 11px', background: meta.bg,
+                border: `1px solid ${meta.border}`, borderRadius: 6,
+              }}>
+                {meta.label}
+              </span>
+              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                {secBrands.length} {secBrands.length === 1 ? 'domain' : 'domains'} · {num(secTotal)} planned
+              </span>
+            </div>
+            <div style={{ overflowX: 'auto', border: `1px solid ${meta.border}`, borderRadius: 8, background: 'rgba(13,21,38,0.45)' }}>
+              <table style={{ borderCollapse: 'separate', borderSpacing: 0, minWidth: '100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Send batch</th>
+                    {secBrands.map(b => (
+                      <th key={b.domain} style={thBase}>
+                        <div style={{ fontWeight: 700, color: '#00e5ff', fontSize: 12 }}>{b.label}</div>
+                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)' }}>{b.domain}</div>
+                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.7)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {secWaves.map(w => {
+                    // representative time for the wave row label = earliest scheduled in that wave
+                    const times = secBrands.map(b => matrix[w]?.[b.domain]?.firstScheduled).filter(Boolean) as string[];
+                    const repTime = times.sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0] ?? null;
                     return (
-                      <td key={b.domain} style={{ ...tdBase, ...catDivider, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
-                        {clickable ? (
-                          <button
-                            className="bwg-cell"
-                            onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
-                            title="Click for ISP composition + segments"
-                            style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%', borderRadius: 4 }}
-                          >
-                            {inner}
-                          </button>
-                        ) : (
-                          <div style={{ display: 'block', width: '100%' }}>{inner}</div>
-                        )}
-                      </td>
+                      <tr key={w}>
+                        <td style={{ ...tdBase, ...stickyLeft }}>
+                          <div style={{ fontWeight: 700, fontSize: 12, color: 'rgba(220,235,250,0.92)' }}>{w}</div>
+                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}>{mtTime(repTime)} MT</div>
+                        </td>
+                        {secBrands.map(b => {
+                          const cell = matrix[w]?.[b.domain];
+                          if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
+                          const isSel = selected?.wave === w && selected?.domain === b.domain;
+                          const st = cellStatus(cell.statuses);
+                          const clickable = cell.volume > 0;
+                          // Cell shows just the DECLARED VOLUME (+ offer); click to drill into the
+                          // per-ISP composition + segments. Zero-volume cells aren't clickable.
+                          const inner = (
+                            <>
+                              <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
+                            </>
+                          );
+                          return (
+                            <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
+                              {clickable ? (
+                                <button
+                                  className="bwg-cell"
+                                  onClick={() => openCell({ wave: w, domain: b.domain, label: b.label, offer: cell.offer, volume: cell.volume, ids: cell.ids })}
+                                  title="Click for ISP composition + segments"
+                                  style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%', borderRadius: 4 }}
+                                >
+                                  {inner}
+                                </button>
+                              ) : (
+                                <div style={{ display: 'block', width: '100%' }}>{inner}</div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
                     );
                   })}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
       {selected && (() => {
         const key = `${selected.wave}|${selected.domain}`;
         const d = drill[key];
