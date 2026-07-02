@@ -67,14 +67,13 @@ import {
   faSort,
   faSortUp,
   faSortDown,
-  faArrowTrendUp,
-  faArrowTrendDown,
   faChartLine,
   faTable,
-  faMinus,
   faExclamationTriangle,
   faEnvelopeOpen,
   faHandPointer,
+  faChevronRight,
+  faServer,
 } from '@fortawesome/free-solid-svg-icons';
 import { SEGMENT_CATEGORIES_BY_ID, SegmentCategoryMeta } from './segCategoryMetadata';
 import {
@@ -90,23 +89,29 @@ import {
 } from '../shared/theme';
 import { Panel, Stat, SectionError, EmptyState, Pill, LivePill, PortalKeyframes } from '../shared/ui';
 import { usePolling, PollingState } from '../shared/usePolling';
+import { apiFetch } from '../shared/apiFetch';
+import { denverToday, daysAgoDenver } from '../shared/filters';
 
-// PAGE_VERSION 3.2 (2026-07-02) — "lifeblood" flow pass. The engagement summary
-// (Σ 7D Openers + Σ 30D Clickers across all brands, each with its aggregate
-// build-to-build Δ) is now PINNED at the very top, ABOVE the view toggle, so the
-// lifeblood numbers are the first thing seen in EITHER view. Growth polling is
-// lifted to the parent so the pinned bar and the board share one poll. The
-// Growth board reads top-down: pinned summary → per-brand cards → All Segments
-// drill-down. Δ is honestly labeled "Δ since last build" (build-to-build, NOT a
-// time-windowed acquisition/churn trend — no per-day size history exists yet;
-// see TODO(growth-history)).
+// PAGE_VERSION 3.3 (2026-07-02) — "segment management" pass (operator directive).
+// The DEFAULT view is now the per-sending-domain SEGMENTS board: one card per
+// brand showing its CURRENT segment sizes (7D Openers, 30D Clickers, + the other
+// configured windows) — a management surface, NOT a growth/trend surface. The
+// historical build-to-build framing is GONE: no delta_pct badges, no "Δ since
+// last build", no DeltaBadge, no growth-sort control, no portfolioDelta() helper.
+// Sizes are presented as plain current counts. Clicking a domain card opens a
+// RIGHT slide-out drawer with a per-ISP audience breakdown (Audience/delivered ·
+// Open% · Click%) computed live from GET /analytics/lake/breakdown over the last
+// 7 Denver days (two calls: source_in=pmta,ses for delivered/bounces + source=app
+// for open/click — the METRIC_CONTRACT delivery-vs-engagement source split). The
+// full ~350-row operated catalog (search / refresh / archive / export /
+// request-segment) is preserved as the SECONDARY "All Segments" view behind the
+// toggle. The pinned summary keeps the portfolio totals as plain current counts.
 //
-// 3.1 (2026-06-29) — indigo redesign. The DEFAULT view is the brand-grouped
-// Engagement Growth board (7D Openers + 30D Clickers per brand, from GET
-// /v2/segments/engagement-growth), modeled on the Delivery Queue's Stat-tile
-// layout. The full ~350-row operated catalog (search / refresh / archive /
-// export / request-segment) is preserved behind the "All Segments" toggle.
-export const SEGMENTS_PAGE_VERSION = '3.2';
+// 3.2/3.1 history: the pinned "lifeblood" summary + brand-grouped board landed as
+// an Engagement GROWTH board (build-to-build Δ). That growth framing is removed
+// here per operator ("default = domain segment-management cards, not the growth
+// board"); the catalog table + detail drawer are unchanged and now secondary.
+export const SEGMENTS_PAGE_VERSION = '3.3';
 
 // Engagement growth board polls a cheap read (ledger point-read) — slow cadence.
 const GROWTH_POLL_MS = 30_000;
@@ -269,19 +274,16 @@ const fmtInt = (n: number | null | undefined): string =>
   n == null || Number.isNaN(n) ? '0' : Math.round(n).toLocaleString();
 
 // ============================================================================
-// ENGAGEMENT GROWTH BOARD (default view)
+// SENDING-DOMAINS SEGMENTS BOARD (default view)
 // ============================================================================
 //
-// Brand-grouped current size + last-build delta for the per-brand engagement
-// segments the operator actively mails. Data from GET
-// /v2/segments/engagement-growth (segmentation_handlers.go).
-//
-// GROWTH SIGNAL: last_delta_pct is the BUILD-TO-BUILD delta (current audience
-// vs the previous build) — NOT a time-windowed trend. There is no per-day
-// segment-size history table yet, so the UI is honest about this and labels it
-// "Δ since last build", never "7-day growth".
-// TODO(growth-history): a daily segment-size snapshot table would let this
-// board draw real trend lines.
+// Brand-grouped CURRENT segment sizes for the per-brand engagement segments the
+// operator actively mails. Data from GET /v2/segments/engagement-growth
+// (segmentation_handlers.go). This is a SEGMENT-MANAGEMENT surface: it shows the
+// current size of each window (7D Openers, 30D Clickers, …) as a plain count —
+// NOT build-to-build deltas or trends (that historical "growth" framing was
+// removed in v3.3 per operator directive). Clicking a card opens a right
+// slide-out with the per-ISP audience breakdown (see IspBreakdownDrawer).
 
 interface GrowthMetric {
   segment_id: string;
@@ -316,8 +318,6 @@ interface GrowthResponse {
   generated_at: string;
   api_version: string;
 }
-
-type GrowthSort = 'size' | 'growth';
 
 /**
  * Brand code → full sending-domain apex. Mirrors the authoritative server map
@@ -364,67 +364,7 @@ const GROWTH_CELL_ORDER = [
   '7D Clickers', '14D Clickers', '30D Clickers', '60D Clickers',
 ];
 
-/** The strongest |delta| across a brand's cells — used for the "by growth" sort. */
-const brandPeakDelta = (b: GrowthBrand): number => {
-  let peak = -Infinity;
-  Object.values(b.cells).forEach((c) => {
-    if (c && c.delta_pct != null && c.delta_pct > peak) peak = c.delta_pct;
-  });
-  return peak === -Infinity ? -Infinity : peak;
-};
-
-/**
- * Portfolio build-to-build Δ for one metric selector (Σ 7D Openers / Σ 30D
- * Clickers) across all brands. HONEST derivation: each brand only exposes its
- * current count + a per-cell build-to-build delta_pct (no size history), so we
- * reconstruct each brand's PREVIOUS-build size as count / (1 + delta_pct/100)
- * and aggregate Δ = (ΣcurrentWithDelta − Σprevious) / Σprevious. Brands whose
- * cell has a null delta ("new", no prior build) are excluded from the Δ base
- * but still counted in the headline sum. Returns pct=null when no brand has a
- * prior build to compare against. `coverage` = how many brands fed the Δ.
- */
-const portfolioDelta = (
-  brands: GrowthBrand[],
-  pick: (b: GrowthBrand) => GrowthMetric | null,
-): { pct: number | null; coverage: number; total: number } => {
-  let curSum = 0, prevSum = 0, withDelta = 0, total = 0;
-  brands.forEach((b) => {
-    const m = pick(b);
-    if (!m) return;
-    total += 1;
-    if (m.delta_pct == null) return;
-    const prev = m.count / (1 + m.delta_pct / 100);
-    if (!Number.isFinite(prev) || prev <= 0) return;
-    curSum += m.count;
-    prevSum += prev;
-    withDelta += 1;
-  });
-  if (withDelta === 0 || prevSum <= 0) return { pct: null, coverage: 0, total };
-  return { pct: ((curSum - prevSum) / prevSum) * 100, coverage: withDelta, total };
-};
-
-// Build-to-build delta badge: up = green ▲, down = red ▼, flat = idle, none = —.
-const DeltaBadge: React.FC<{ pct: number | null | undefined; size?: 'sm' | 'lg' }> = ({ pct, size = 'sm' }) => {
-  const fontSize = size === 'lg' ? 13 : 11;
-  if (pct == null) {
-    return <span style={{ fontSize, color: colors.textFaint }} title="No previous build to compare against">— new</span>;
-  }
-  const up = pct > 0.05;
-  const down = pct < -0.05;
-  const color = up ? colors.success : down ? colors.danger : colors.idle;
-  const icon = up ? faArrowTrendUp : down ? faArrowTrendDown : faMinus;
-  return (
-    <span
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}
-      title="Δ since last build (current audience size vs the previous build)"
-    >
-      <FontAwesomeIcon icon={icon} style={{ fontSize: fontSize - 1 }} />
-      {pct > 0 ? '+' : ''}{pct.toFixed(1)}%
-    </span>
-  );
-};
-
-// One headline metric tile (7D Openers / 30D Clickers): count + delta.
+// One headline metric tile (7D Openers / 30D Clickers): current count + freshness.
 const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric: GrowthMetric | null }> = ({ label, icon, metric }) => (
   <div
     style={{
@@ -451,8 +391,7 @@ const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric:
         <div style={{ fontSize: 22, fontWeight: 800, color: colors.heading, fontVariantNumeric: 'tabular-nums', marginTop: 3 }}>
           {fmtInt(metric.count)}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 3 }}>
-          <DeltaBadge pct={metric.delta_pct} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: 3 }}>
           <span style={{ fontSize: 10, color: colors.textFaint }} title={metric.source === 'materialized' ? `Built ${fmtAbs(metric.built_at)}` : 'Cached estimate — not yet built via ledger'}>
             {metric.source === 'materialized' ? fmtRel(metric.built_at) : 'cached'}
           </span>
@@ -464,63 +403,322 @@ const MetricTile: React.FC<{ label: string; icon: typeof faEnvelopeOpen; metric:
   </div>
 );
 
-const BrandGrowthCard: React.FC<{ brand: GrowthBrand }> = ({ brand }) => {
+// One per-sending-domain segment-management card. Shows the domain's CURRENT
+// segment sizes (headline 7D Openers / 30D Clickers tiles + every other
+// configured window). The WHOLE card is a button: clicking it opens the right
+// slide-out per-ISP audience breakdown for this brand.
+const BrandSegmentCard: React.FC<{ brand: GrowthBrand; onOpen: (b: GrowthBrand) => void }> = ({ brand, onOpen }) => {
   const domain = brandDomain(brand);
+  const [hover, setHover] = useState(false);
   const detailCells = GROWTH_CELL_ORDER.map((k) => [k, brand.cells[k]] as const).filter(([, c]) => c);
   // The two headline windows are already shown as tiles above; the inline table
-  // surfaces every OTHER configured window. No click gate — details show by default.
+  // surfaces the CURRENT size of every OTHER configured window.
   const extraCells = detailCells.filter(([k]) => !['7D Openers', '30D Clickers'].includes(k));
   return (
-    <Panel accent={colors.indigo500}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-        <h3
-          style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.heading, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          title={domain === brand.brand ? brand.brand : `${domain} · ${brand.brand}`}
-        >
-          {domain}
-        </h3>
-        <Pill color={colors.indigo400} style={{ flexShrink: 0 }}>{brand.segment_count} seg</Pill>
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <MetricTile label="7D Openers" icon={faEnvelopeOpen} metric={brand.seven_day_openers} />
-        <MetricTile label="30D Clickers" icon={faHandPointer} metric={brand.thirty_day_clickers} />
-      </div>
-      {extraCells.length > 0 && (
-        <>
-          <div style={{ marginTop: 10, fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            More windows ({extraCells.length})
-          </div>
-          <table style={{ ...tableStyle, marginTop: 6 }}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Window</th>
-                <th style={numTh}>Members</th>
-                <th style={numTh}>Δ build</th>
-                <th style={numTh}>Built</th>
-              </tr>
-            </thead>
-            <tbody>
-              {extraCells.map(([k, c]) => (
-                <tr key={k}>
-                  <td style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }} title={c!.name}>{k}</td>
-                  <td style={numTd}>{fmtInt(c!.count)}</td>
-                  <td style={numTd}><DeltaBadge pct={c!.delta_pct} /></td>
-                  <td style={{ ...numTd, color: colors.textMuted }}>{c!.source === 'materialized' ? fmtRel(c!.built_at) : 'cached'}</td>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(brand)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(brand); } }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ cursor: 'pointer', outline: 'none' }}
+      title={`${domain} — open per-ISP audience breakdown`}
+    >
+      <Panel accent={colors.indigo500} style={hover ? { borderColor: colors.panelBorderStrong, background: alpha(colors.indigo500, '14') } : undefined}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+          <h3
+            style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.heading, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={domain === brand.brand ? brand.brand : `${domain} · ${brand.brand}`}
+          >
+            {domain}
+          </h3>
+          <Pill color={colors.indigo400} style={{ flexShrink: 0 }}>{brand.segment_count} seg</Pill>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <MetricTile label="7D Openers" icon={faEnvelopeOpen} metric={brand.seven_day_openers} />
+          <MetricTile label="30D Clickers" icon={faHandPointer} metric={brand.thirty_day_clickers} />
+        </div>
+        {extraCells.length > 0 && (
+          <>
+            <div style={{ marginTop: 10, fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              More windows ({extraCells.length})
+            </div>
+            <table style={{ ...tableStyle, marginTop: 6 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Window</th>
+                  <th style={numTh}>Members</th>
+                  <th style={numTh}>Built</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-    </Panel>
+              </thead>
+              <tbody>
+                {extraCells.map(([k, c]) => (
+                  <tr key={k}>
+                    <td style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }} title={c!.name}>{k}</td>
+                    <td style={numTd}>{fmtInt(c!.count)}</td>
+                    <td style={{ ...numTd, color: colors.textMuted }}>{c!.source === 'materialized' ? fmtRel(c!.built_at) : 'cached'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, fontSize: 11, fontWeight: 600, color: hover ? colors.indigo200 : colors.textFaint }}>
+          Per-ISP audience breakdown
+          <FontAwesomeIcon icon={faChevronRight} style={{ fontSize: 10 }} />
+        </div>
+      </Panel>
+    </div>
+  );
+};
+
+// ============================================================================
+// PER-ISP AUDIENCE BREAKDOWN DRAWER (opened from a domain card)
+// ============================================================================
+//
+// Right slide-out for a single sending domain. Runs TWO lake breakdowns over the
+// last 7 Denver days for the brand's apex domain and pivots them per ISP:
+//   delivery   (source_in=pmta,ses) → delivered + hard/soft bounces
+//   engagement (source=app)         → open + click counts
+// per METRIC_CONTRACT §1 (delivery truth = pmta/ses; engagement = the app
+// mirror). Open% = open/delivered·100, Click% = click/delivered·100; ISPs sort
+// by delivered desc. Fail-soft: the two calls are independent (allSettled) so a
+// single failing slice still renders what we have.
+
+interface IspAudienceRow {
+  isp: string;
+  delivered: number;
+  hard: number;
+  soft: number;
+  open: number;
+  click: number;
+}
+
+interface IspDrawerData {
+  loading: boolean;
+  error?: string;
+  rows: IspAudienceRow[];
+  fetchedAt?: string;
+  ms?: number;
+}
+
+type LakeRow = { keys?: Record<string, string>; count?: number };
+interface LakeBreakdownResp { rows?: LakeRow[]; disabled?: boolean }
+
+/** Pivot delivery + engagement breakdown rows into one row per ISP, sorted by
+ *  delivered desc. Empty ISP keys fold into '(unknown)'. */
+const pivotIspRows = (deliveryRows: LakeRow[], engRows: LakeRow[]): IspAudienceRow[] => {
+  const byIsp = new Map<string, IspAudienceRow>();
+  const get = (isp: string): IspAudienceRow => {
+    let r = byIsp.get(isp);
+    if (!r) { r = { isp, delivered: 0, hard: 0, soft: 0, open: 0, click: 0 }; byIsp.set(isp, r); }
+    return r;
+  };
+  deliveryRows.forEach((row) => {
+    const isp = (row.keys?.isp ?? '').trim() || '(unknown)';
+    const et = (row.keys?.event_type ?? '').toLowerCase();
+    const n = row.count ?? 0;
+    const r = get(isp);
+    if (et === 'delivered') r.delivered += n;
+    else if (et === 'hard_bounce') r.hard += n;
+    else if (et === 'soft_bounce') r.soft += n;
+  });
+  engRows.forEach((row) => {
+    const isp = (row.keys?.isp ?? '').trim() || '(unknown)';
+    const et = (row.keys?.event_type ?? '').toLowerCase();
+    const n = row.count ?? 0;
+    const r = get(isp);
+    if (et === 'open') r.open += n;
+    else if (et === 'click') r.click += n;
+  });
+  return Array.from(byIsp.values()).sort((a, b) => b.delivered - a.delivered);
+};
+
+const IspBreakdownDrawer: React.FC<{ brand: GrowthBrand; onClose: () => void }> = ({ brand, onClose }) => {
+  const domain = brandDomain(brand);
+  const [data, setData] = useState<IspDrawerData>({ loading: true, rows: [] });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    setData({ loading: true, rows: [] });
+    const from = daysAgoDenver(6);
+    const to = denverToday();
+    const base = `/api/mailing/analytics/lake/breakdown?from=${from}&to=${to}&group_by=isp,event_type&brand=${encodeURIComponent(domain)}`;
+    const started = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    (async () => {
+      const [delRes, engRes] = await Promise.allSettled([
+        apiFetch(`${base}&source_in=pmta,ses`, { signal: controller.signal }),
+        apiFetch(`${base}&source=app`, { signal: controller.signal }),
+      ]);
+      if (cancelled) return;
+      const parse = async (r: PromiseSettledResult<Response>): Promise<LakeBreakdownResp> => {
+        if (r.status !== 'fulfilled') throw r.reason;
+        if (!r.value.ok) throw new Error(`HTTP ${r.value.status}`);
+        return (await r.value.json()) as LakeBreakdownResp;
+      };
+      let delJson: LakeBreakdownResp = { rows: [] };
+      let engJson: LakeBreakdownResp = { rows: [] };
+      let delErr: unknown = null, engErr: unknown = null;
+      try { delJson = await parse(delRes); } catch (e) { delErr = e; }
+      try { engJson = await parse(engRes); } catch (e) { engErr = e; }
+      if (cancelled) return;
+      if (delErr && engErr) {
+        setData({ loading: false, rows: [], error: 'per-ISP breakdown unavailable — retry shortly' });
+        return;
+      }
+      const rows = pivotIspRows(delJson.rows ?? [], engJson.rows ?? []);
+      setData({
+        loading: false,
+        rows,
+        error: delErr
+          ? 'delivery slice failed — audience/open%/click% incomplete'
+          : engErr
+            ? 'engagement slice failed — open%/click% unavailable'
+            : undefined,
+        fetchedAt: new Date().toLocaleTimeString(),
+        ms: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - started),
+      });
+    })();
+    return () => { cancelled = true; controller.abort(); };
+  }, [brand, domain]);
+
+  // Esc closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const totals = useMemo(
+    () => data.rows.reduce(
+      (a, r) => ({ delivered: a.delivered + r.delivered, hard: a.hard + r.hard, soft: a.soft + r.soft, open: a.open + r.open, click: a.click + r.click }),
+      { delivered: 0, hard: 0, soft: 0, open: 0, click: 0 },
+    ),
+    [data.rows],
+  );
+
+  const pct = (num: number, denom: number): string => (denom > 0 ? `${((num / denom) * 100).toFixed(1)}%` : '—');
+
+  return createPortal(
+    <>
+      <style>{`@keyframes segDrawerIn{from{transform:translateX(24px);opacity:0}to{transform:translateX(0);opacity:1}}`}</style>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000 }} />
+      <aside
+        style={{
+          position: 'fixed', top: 0, right: 0, bottom: 0, width: 440, maxWidth: '94vw',
+          background: colors.panelBgSolid, borderLeft: `1px solid ${colors.panelBorderStrong}`,
+          boxShadow: '-12px 0 40px rgba(0,0,0,0.5)', zIndex: 1001, display: 'flex', flexDirection: 'column',
+          animation: 'segDrawerIn 180ms ease-out',
+        }}
+      >
+        {/* header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: `1px solid ${colors.hairline}` }}>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ margin: 0, fontSize: 16, color: colors.heading, display: 'flex', alignItems: 'center', gap: 8, wordBreak: 'break-word' }}>
+              <FontAwesomeIcon icon={faServer} style={{ color: colors.indigo400, fontSize: 13 }} />
+              {domain}
+            </h3>
+            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+              Per-ISP audience · last 7 Denver days ({daysAgoDenver(6)} → {denverToday()})
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close (Esc)"
+            style={{ background: alpha(colors.indigo500, '14'), border: `1px solid ${colors.panelBorder}`, color: colors.indigo200, borderRadius: 6, width: 30, height: 30, cursor: 'pointer', flexShrink: 0 }}
+          >
+            <FontAwesomeIcon icon={faTimes} />
+          </button>
+        </div>
+
+        {/* body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
+          {data.loading ? (
+            <div style={{ padding: '24px 4px', color: colors.textMuted, fontSize: 13 }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} />Loading per-ISP breakdown…
+            </div>
+          ) : data.error && data.rows.length === 0 ? (
+            <SectionError label="Per-ISP breakdown" error={data.error} />
+          ) : data.rows.length === 0 ? (
+            <EmptyState
+              icon={faServer}
+              title="No delivery in the last 7 days"
+              hint="This sending domain has no pmta/ses delivery events in the window."
+            />
+          ) : (
+            <>
+              {data.error && (
+                <div style={{ marginBottom: 10 }}><SectionError label="Partial breakdown" error={data.error} /></div>
+              )}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>ISP</th>
+                      <th style={numTh} title="Delivered (pmta+ses) — the reachable audience">Audience</th>
+                      <th style={numTh} title="open ÷ delivered — RAW (machine incl.)">Open%</th>
+                      <th style={numTh} title="click ÷ delivered — RAW (machine incl.)">Click%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.rows.map((r) => (
+                      <tr key={r.isp}>
+                        <td
+                          style={{ ...tdStyle, fontWeight: 600, color: colors.indigo200 }}
+                          title={`hard ${fmtInt(r.hard)} · soft ${fmtInt(r.soft)} bounces`}
+                        >
+                          {r.isp}
+                        </td>
+                        <td style={numTd} title={`delivered ${fmtInt(r.delivered)}`}>{fmtInt(r.delivered)}</td>
+                        <td style={{ ...numTd, color: r.delivered > 0 ? colors.text : colors.textFaint }}>{pct(r.open, r.delivered)}</td>
+                        <td style={{ ...numTd, color: r.delivered > 0 ? colors.text : colors.textFaint }}>{pct(r.click, r.delivered)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td style={{ ...tdStyle, fontWeight: 700, color: colors.heading, borderTop: `1px solid ${colors.panelBorderStrong}` }}>TOTAL</td>
+                      <td style={{ ...numTd, fontWeight: 700, color: colors.heading, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{fmtInt(totals.delivered)}</td>
+                      <td style={{ ...numTd, fontWeight: 700, color: colors.heading, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{pct(totals.open, totals.delivered)}</td>
+                      <td style={{ ...numTd, fontWeight: 700, color: colors.heading, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{pct(totals.click, totals.delivered)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: colors.textFaint, flexWrap: 'wrap' }}>
+                <span>
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.danger, marginRight: 5 }} />
+                  hard bounce
+                </span>
+                <span>
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.warning, marginRight: 5 }} />
+                  soft bounce
+                </span>
+                <span style={{ marginLeft: 'auto' }}>
+                  Open%/Click% denominator = delivered · RAW (machine incl.)
+                </span>
+              </div>
+              {data.fetchedAt && (
+                <div style={{ marginTop: 6, fontSize: 10, color: colors.textFaint }}>
+                  fetched {data.fetchedAt}{data.ms != null ? ` · ${data.ms}ms` : ''} · 2 lake breakdowns (delivery + engagement)
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </aside>
+    </>,
+    document.body,
   );
 };
 
 /**
- * The always-visible "lifeblood" bar. Rendered ABOVE the view toggle so the
- * portfolio engagement numbers are the first thing seen in EITHER view. Uses
- * the shared Panel + Stat kit; each engagement tile carries its aggregate
- * build-to-build Δ (honestly labeled — see portfolioDelta / the note below).
+ * The always-visible engagement summary bar. Rendered ABOVE the view toggle so
+ * the portfolio segment totals are the first thing seen in EITHER view. Uses the
+ * shared Panel + Stat kit; totals are plain CURRENT counts (no build-to-build Δ).
  */
 const PinnedEngagementSummary: React.FC<{ growth: PollingState<GrowthResponse> }> = ({ growth }) => {
   const brands = growth.data?.brands ?? [];
@@ -534,30 +732,6 @@ const PinnedEngagementSummary: React.FC<{ growth: PollingState<GrowthResponse> }
     });
     return { openers, clickers, segs };
   }, [brands]);
-
-  const openersDelta = useMemo(() => portfolioDelta(brands, (b) => b.seven_day_openers), [brands]);
-  const clickersDelta = useMemo(() => portfolioDelta(brands, (b) => b.thirty_day_clickers), [brands]);
-
-  const deltaSub = (d: { pct: number | null; coverage: number; total: number }) => {
-    if (d.pct == null) {
-      return <span style={{ fontSize: 11, color: colors.textFaint }}>— no prior build · Δ since last build</span>;
-    }
-    const up = d.pct > 0.05, down = d.pct < -0.05;
-    const color = up ? colors.success : down ? colors.danger : colors.idle;
-    const icon = up ? faArrowTrendUp : down ? faArrowTrendDown : faMinus;
-    return (
-      <span
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontVariantNumeric: 'tabular-nums' }}
-        title={`Δ since last build — Σ current vs Σ previous build across ${d.coverage}/${d.total} brands that have a prior build. Build-to-build, NOT a time-windowed acquisition/churn trend.`}
-      >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700, color }}>
-          <FontAwesomeIcon icon={icon} style={{ fontSize: 10 }} />
-          {d.pct > 0 ? '+' : ''}{d.pct.toFixed(1)}%
-        </span>
-        <span style={{ color: colors.textFaint }}>Δ since last build</span>
-      </span>
-    );
-  };
 
   return (
     <Panel accent={colors.indigo500} style={{ marginBottom: 16 }}>
@@ -589,20 +763,17 @@ const PinnedEngagementSummary: React.FC<{ growth: PollingState<GrowthResponse> }
               label="Σ 7D Openers"
               value={fmtInt(totals.openers)}
               color={colors.successText}
-              sub={deltaSub(openersDelta)}
-              title="Sum of every brand's 7-day opener segment (seven_day_openers.count)"
+              title="Sum of every brand's current 7-day opener segment size (seven_day_openers.count)"
             />
             <Stat
               label="Σ 30D Clickers"
               value={fmtInt(totals.clickers)}
               color={colors.successText}
-              sub={deltaSub(clickersDelta)}
-              title="Sum of every brand's 30-day clicker segment (thirty_day_clickers.count)"
+              title="Sum of every brand's current 30-day clicker segment size (thirty_day_clickers.count)"
             />
           </div>
           <div style={{ marginTop: 10, fontSize: 11, color: colors.textFaint, lineHeight: 1.5 }}>
-            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6, color: colors.warning, opacity: 0.8 }} />
-            <strong style={{ color: colors.textMuted }}>Δ since last build</strong> is the build-to-build change (current audience vs the previous build) — <em>not</em> time-windowed acquisition/churn. No per-day size history exists yet; per-day trend coming soon.
+            Current segment sizes across all sending domains. Click a domain card below for its per-ISP audience breakdown (open% / click%).
             {growth.error && <span style={{ color: colors.warningText }}> · showing last good data (refresh failed)</span>}
           </div>
         </>
@@ -611,60 +782,47 @@ const PinnedEngagementSummary: React.FC<{ growth: PollingState<GrowthResponse> }
   );
 };
 
-const GrowthBoard: React.FC<{
+// Default view: one segment-management card per sending domain (largest first).
+// No sort/growth controls — this is a management surface, not a trend board.
+const DomainSegmentsBoard: React.FC<{
   growth: PollingState<GrowthResponse>;
   onViewAll: () => void;
   onRequestSegment: () => void;
-}> = ({ growth, onViewAll, onRequestSegment }) => {
-  const [sort, setSort] = useState<GrowthSort>('size');
-
+  onOpenBrand: (b: GrowthBrand) => void;
+}> = ({ growth, onViewAll, onRequestSegment, onOpenBrand }) => {
   const brands = useMemo(() => {
     const list = growth.data?.brands ? [...growth.data.brands] : [];
-    if (sort === 'growth') {
-      list.sort((a, b) => brandPeakDelta(b) - brandPeakDelta(a));
-    } else {
-      list.sort((a, b) => b.headline_count - a.headline_count);
-    }
+    list.sort((a, b) => b.headline_count - a.headline_count);
     return list;
-  }, [growth.data, sort]);
-
-  const sortBtn = (key: GrowthSort): React.CSSProperties => ({
-    ...btnStyle,
-    padding: '5px 10px',
-    fontSize: 11,
-    background: sort === key ? alpha(colors.indigo500, '33') : alpha(colors.indigo500, '14'),
-    color: sort === key ? colors.indigo200 : colors.textMuted,
-    borderColor: sort === key ? colors.panelBorderStrong : colors.panelBorder,
-  });
+  }, [growth.data]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Controls — the portfolio hero now lives in the pinned summary above. */}
+      {/* Section header — a segment-management surface, not a growth board. */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Sort</span>
-          <button type="button" style={sortBtn('size')} onClick={() => setSort('size')}>Largest</button>
-          <button type="button" style={sortBtn('growth')} onClick={() => setSort('growth')}>Fastest growing</button>
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.heading, textTransform: 'uppercase', letterSpacing: 0.6, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <FontAwesomeIcon icon={faServer} style={{ color: colors.indigo400 }} />
+          Sending Domains · Segments
         </div>
         <div style={{ fontSize: 11, color: colors.textFaint }}>
-          Each card: size · <span style={{ color: colors.textMuted }}>Δ since last build</span> · freshness. Per-day trend coming soon.
+          Each card: current segment sizes · click for the per-ISP audience breakdown.
         </div>
       </div>
 
       {growth.error && growth.data && (
-        <SectionError label="Engagement growth" error={growth.error} />
+        <SectionError label="Segments board" error={growth.error} />
       )}
 
       {growth.loading && !growth.data ? (
         <div style={{ textAlign: 'center', padding: 60, color: colors.textMuted }}>
-          <FontAwesomeIcon icon={faSpinner} spin /> Loading engagement growth…
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading sending-domain segments…
         </div>
       ) : brands.length === 0 ? (
         <Panel>
           <EmptyState
-            icon={faChartLine}
-            title="No per-brand engagement segments yet"
-            hint="Request 7D-Openers / 30D-Clickers segments (scope = Brand) to start tracking engagement growth here."
+            icon={faServer}
+            title="No per-domain engagement segments yet"
+            hint="Request 7D-Openers / 30D-Clickers segments (scope = Brand) to populate each sending domain here."
           />
           <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 4 }}>
             <button type="button" style={{ ...btnStyle, background: alpha(colors.indigo500, '33') }} onClick={onRequestSegment}>
@@ -678,12 +836,12 @@ const GrowthBoard: React.FC<{
       ) : (
         <>
           <div style={cardGrid(320)}>
-            {brands.map((b) => <BrandGrowthCard key={b.brand} brand={b} />)}
+            {brands.map((b) => <BrandSegmentCard key={b.brand} brand={b} onOpen={onOpenBrand} />)}
           </div>
-          {/* Drill-down: the full operated catalog is the next level of detail. */}
+          {/* Drill-down: the full operated catalog is the secondary view. */}
           <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
-            <button type="button" style={btnStyle} onClick={onViewAll} title="Drill into the full operated segment catalog">
-              <FontAwesomeIcon icon={faTable} style={{ marginRight: 6 }} />Drill down · All Segments
+            <button type="button" style={btnStyle} onClick={onViewAll} title="Open the full operated segment catalog">
+              <FontAwesomeIcon icon={faTable} style={{ marginRight: 6 }} />All Segments · catalog
             </button>
           </div>
         </>
@@ -697,8 +855,11 @@ const GrowthBoard: React.FC<{
 // ============================================================================
 
 export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgFetch, animateIn }) => {
-  // --- primary view: brand-grouped growth board (default) vs the full catalog -
-  const [view, setView] = useState<'growth' | 'all'>('growth');
+  // --- primary view: per-sending-domain segment cards (default) vs the catalog -
+  const [view, setView] = useState<'domains' | 'all'>('domains');
+
+  // --- per-ISP audience breakdown drawer (opened from a domain card) ----------
+  const [ispBrand, setIspBrand] = useState<GrowthBrand | null>(null);
 
   // --- list state -----------------------------------------------------------
   const [rows, setRows] = useState<SegmentRow[]>([]);
@@ -1355,25 +1516,26 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
       </header>
 
       {/* Pinned engagement summary — ALWAYS visible, above the view toggle, so
-          the lifeblood numbers (Σ 7D Openers / Σ 30D Clickers + Δ) are the first
-          thing seen in EITHER view. */}
+          the portfolio segment totals (Σ 7D Openers / Σ 30D Clickers) are the
+          first thing seen in EITHER view. */}
       <PinnedEngagementSummary growth={growth} />
 
-      {/* View toggle: brand growth board (default) vs the full catalog */}
+      {/* View toggle: per-domain segment cards (default) vs the full catalog */}
       <div style={{ display: 'inline-flex', background: colors.panelBg, border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: 4, marginBottom: 16, gap: 4 }}>
-        <button type="button" style={viewToggleStyle(view === 'growth')} onClick={() => setView('growth')}>
-          <FontAwesomeIcon icon={faChartLine} /> Growth
+        <button type="button" style={viewToggleStyle(view === 'domains')} onClick={() => setView('domains')}>
+          <FontAwesomeIcon icon={faServer} /> Sending Domains
         </button>
         <button type="button" style={viewToggleStyle(view === 'all')} onClick={() => setView('all')}>
           <FontAwesomeIcon icon={faTable} /> All Segments
         </button>
       </div>
 
-      {view === 'growth' ? (
-        <GrowthBoard
+      {view === 'domains' ? (
+        <DomainSegmentsBoard
           growth={growth}
           onViewAll={() => setView('all')}
           onRequestSegment={() => { setReqError(null); setShowRequestModal(true); }}
+          onOpenBrand={setIspBrand}
         />
       ) : (
         <>
@@ -1763,6 +1925,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         </>,
         document.body,
       )}
+
+      {/* 4b — Per-ISP audience breakdown drawer (opened from a domain card). */}
+      {ispBrand && <IspBreakdownDrawer brand={ispBrand} onClose={() => setIspBrand(null)} />}
 
       {/* 5 — Request Segment modal (POST /v2/segments/build-request).
           Portaled to document.body (see drawer note); the .list-portal wrapper
