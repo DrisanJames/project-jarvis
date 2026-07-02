@@ -936,7 +936,9 @@ func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[
 		       -- distinct recipients, NOT raw events: deferral retries emit a fresh
 		       -- 'sent' per attempt (~1.6x inflation). delivered is counted DISTINCT
 		       -- on the SAME (campaign,subscriber) basis as sent, so the delivery
-		       -- rate is a true per-recipient rate that can never exceed 100%.
+		       -- rate is a true per-recipient ratio (bounded at 1.0). NOTE: this SQL
+		       -- is a fmt.Sprintf format string (bounce predicate injected below) —
+		       -- keep literal percent signs out of comments or go vet flags them.
 		       COUNT(DISTINCT (t.campaign_id, t.subscriber_id)) FILTER (WHERE t.event_type = 'sent'),
 		       COUNT(DISTINCT (t.campaign_id, t.subscriber_id)) FILTER (WHERE t.event_type = 'delivered'),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
