@@ -8,6 +8,7 @@ import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
 import { DripPerformancePanel } from './DripPerformancePanel';
+import { FeedFunnelBoard } from './FeedFunnelBoard';
 import { WarmupProgressPanel } from './WarmupProgressPanel';
 import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
@@ -196,8 +197,15 @@ export const PartnerIngestPortal: React.FC = () => {
 
       {activeTab === 'overview' && dashboard && (
         <div>
-          {/* Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
+          {/* Decision surface: which feeds → which funnels, ranked by value. */}
+          <FeedFunnelBoard />
+
+          {/* Operational queue state per funnel (ready / pending / rotation).
+              Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
               below content min-width so a long label can't distort the row. */}
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.5)', fontWeight: 700, margin: '4px 0 10px' }}>
+            Funnel queue state
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16, marginBottom: 24 }}>
             {dashboard.verticals.filter(isRealLandingVertical).map(v => (
               <DripStateCard
