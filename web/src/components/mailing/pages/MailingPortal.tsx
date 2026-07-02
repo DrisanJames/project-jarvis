@@ -375,7 +375,26 @@ export const MailingPortal: React.FC = () => {
 //     Deferring ISPs + reason codes (polled 45s), Trending Offers (24h
 //     conversions), Click Funnels (live click-drip lanes — replaces the dead
 //     /journey-center/overview source), and a shared-table Recent Campaigns.
-const PAGE_VERSION_DASHBOARD = '1.3';
+//   1.4 (2026-07-02) — dashboard audit fixes (METRIC_CONTRACT / PORTAL_DESIGN_SYSTEM):
+//     * In-Transit hero now passes exclude_drip=true so it shows the operator's
+//       real broadcast waves (was 100% partner-drip micro-campaigns) and labels
+//       the true "N sending" total from the paginated envelope (BUG-4/5/6).
+//     * Open/Click rate capped at 100% + denominator/approximation tooltip
+//       (was 84.5% uncapped, same-day-opens ÷ same-day-delivered cohort skew) (BUG-1).
+//     * Soft-bounce tile marked `*` with a "transient, later retried/delivered"
+//       tooltip — number unchanged, disclosed per DESIGN_SYSTEM §1.5 (BUG-2).
+//     * Audience Growth reads the NEW GET /dashboard/audience-growth (PG
+//       mailing_subscribers, 7 Denver days) instead of the stale Athena audience
+//       table that reported a false +0 net (BUG-10/11).
+//     * Deferring-ISPs panel relabeled "Deferrals · transient retries" with
+//       neutral accent + raised danger thresholds so transient PMTA retries no
+//       longer read as an outage; top reason skips the generic '4.0.0' noise
+//       bucket (BUG-7/8, latter server-side).
+//     * System-health status pills derived from live data (was hardcoded
+//       Active/Learning/Protected/Running) (BUG-12).
+//     * SectionError gains a Retry button; the one-shot Growth/Trending/Funnels
+//       fetches are re-callable so a failed panel isn't stuck until reload (BUG-15).
+const PAGE_VERSION_DASHBOARD = '1.4';
 
 // Today's lake counts (reclassified event_type buckets from the canonical
 // /analytics/lake/breakdown query — Denver day, source_in=pmta,ses; see
@@ -407,22 +426,11 @@ interface EngTodayCounts {
 const denverToday = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
 
-// dt partitions are UTC days; a Denver day spans dt and dt+1 (after 6pm MDT
-// events land in the next UTC partition). Used by the audience-growth window
-// (Today's Performance instead passes local_dt so the backend widens
-// partitions and applies the Denver predicate itself).
-const nextUTCDay = (ymd: string): string => {
-  const [y, m, d] = ymd.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
-};
-
-// N days before today (YYYY-MM-DD), used for the acquisition/churn windows.
-const denverDaysAgo = (n: number): string => {
-  const [y, m, d] = denverToday().split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
-};
-
 // --- Audience growth (acquisition vs churn) ------------------------------
+// Now sourced from GET /dashboard/audience-growth (PG mailing_subscribers over
+// the last 7 Denver days). The prior lake-window helpers (nextUTCDay /
+// denverDaysAgo) and the sumRows reducer were removed with the stale Athena
+// audience-table fetch (BUG-10).
 interface AudienceGrowth {
   acquired7d: number;
   churned7d: number;
@@ -466,14 +474,6 @@ interface ClickFunnelsOverview {
   total_enrolled: number;
 }
 
-// Bug fix (2026-07-02): the backend serializes AudienceRow as json:"count"
-// (internal/analytics/reader_audience.go), NOT "c" — reading r.c always
-// summed 0, which is why Audience Growth showed 0/0. Read r.count.
-const sumRows = (rows: unknown): number => {
-  if (!Array.isArray(rows)) return 0;
-  return rows.reduce((acc: number, r: any) => acc + (Number(r?.count) || 0), 0);
-};
-
 // Short "HH:MM" Denver clock for a timestamp (in-transit "started" column).
 const denverClock = (iso?: string): string => {
   if (!iso) return '—';
@@ -498,7 +498,11 @@ const EnhancedDashboard: React.FC = () => {
   // (fail-soft, PORTAL_DESIGN_SYSTEM §1.6). `null` = still loading / no data;
   // the paired *Err string flips a panel into its SectionError shell.
   const [growth, setGrowth] = useState<AudienceGrowth | null>(null);
+  const [growthErr, setGrowthErr] = useState<string | null>(null);
   const [inTransit, setInTransit] = useState<InTransitCampaign[] | null>(null);
+  // Total count of non-drip campaigns in the `sending` state (from the paginated
+  // envelope), so the panel can say "N sending" rather than just "top 5".
+  const [inTransitTotal, setInTransitTotal] = useState<number>(0);
   const [inTransitErr, setInTransitErr] = useState<string | null>(null);
   const [deferring, setDeferring] = useState<DeferringISP[] | null>(null);
   const [deferringErr, setDeferringErr] = useState<string | null>(null);
@@ -507,124 +511,145 @@ const EnhancedDashboard: React.FC = () => {
   const [funnels, setFunnels] = useState<ClickFunnelsOverview | null>(null);
   const [funnelsErr, setFunnelsErr] = useState<string | null>(null);
 
-  // Acquisition vs churn over the trailing 7 days (analytics lake).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const from = denverDaysAgo(7);
-        const to = nextUTCDay(denverToday());
-        const [acqRes, churnRes] = await Promise.all([
-          apiFetch(`/api/mailing/analytics/lake/audience/breakdown?acquired_from=${from}&acquired_to=${to}&limit=1000`, { credentials: 'include' }),
-          apiFetch(`/api/mailing/analytics/lake/audience/breakdown?churned_from=${from}&churned_to=${to}&limit=1000`, { credentials: 'include' }),
-        ]);
-        if (!acqRes.ok || !churnRes.ok) return;
-        const acq = await acqRes.json();
-        const churn = await churnRes.json();
-        if (acq?.disabled || churn?.disabled) return;
-        if (!cancelled) {
-          setGrowth({ acquired7d: sumRows(acq?.rows), churned7d: sumRows(churn?.rows) });
-        }
-      } catch {
-        // Lake unreachable → growth stays null → friendly empty state.
+  // Acquisition vs churn over the last 7 America/Denver days. BUG-10/11 fix:
+  // reads the NEW GET /dashboard/audience-growth (PG mailing_subscribers, org-
+  // scoped, exactly 7 Denver days) instead of the stale Athena audience table
+  // (last refresh 2026-06-09) that reported a false "+0 net". Membership truth
+  // (who was acquired/churned) lives in PG, not the delivery lake. Re-callable
+  // (BUG-15) so a failed one-shot fetch can be retried without a page reload.
+  const loadGrowth = useCallback(async (signal?: AbortSignal) => {
+    setGrowthErr(null);
+    try {
+      const res = await apiFetch('/api/mailing/dashboard/audience-growth', { credentials: 'include', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      if (data && typeof data.acquired_7d === 'number') {
+        setGrowth({ acquired7d: data.acquired_7d || 0, churned7d: data.churned_7d || 0 });
+      } else {
+        throw new Error('unexpected payload');
       }
-    })();
-    return () => { cancelled = true; };
+    } catch (e: any) {
+      if (signal?.aborted) return;
+      // Leave growth=null so the panel shows its unavailable state (never a
+      // misleading green +0). Record the error to offer a Retry affordance.
+      setGrowth(null);
+      setGrowthErr(e?.message || 'unreachable');
+    }
   }, []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadGrowth(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadGrowth]);
 
   // Click funnels — LIVE click-drip lanes (replaces the dead journey-center
-  // overview). One-shot; the lane membership changes slowly.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch('/api/mailing/dashboard/click-funnels', { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setFunnels({
-            lanes: Array.isArray(data?.lanes) ? data.lanes : [],
-            total_active_lanes: Number(data?.total_active_lanes) || 0,
-            total_enrolled: Number(data?.total_enrolled) || 0,
-          });
-          setFunnelsErr(null);
-        }
-      } catch (e: any) {
-        if (!cancelled) setFunnelsErr(e?.message || 'unreachable');
-      }
-    })();
-    return () => { cancelled = true; };
+  // overview). One-shot (lane membership changes slowly) but re-callable so a
+  // failed fetch can be retried without a page reload (BUG-15).
+  const loadFunnels = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiFetch('/api/mailing/dashboard/click-funnels', { credentials: 'include', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      setFunnels({
+        lanes: Array.isArray(data?.lanes) ? data.lanes : [],
+        total_active_lanes: Number(data?.total_active_lanes) || 0,
+        total_enrolled: Number(data?.total_enrolled) || 0,
+      });
+      setFunnelsErr(null);
+    } catch (e: any) {
+      if (signal?.aborted) return;
+      setFunnelsErr(e?.message || 'unreachable');
+    }
   }, []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadFunnels(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadFunnels]);
 
-  // In-transit campaigns — the "what's mailing right now" hero. Polled every
-  // 45s so the console feels live. Sort client-side by started_at desc (fall
-  // back to scheduled_at) and keep the 5 most-recently-started.
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await apiFetch('/api/mailing/campaigns?status=sending&limit=50', { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const rows: InTransitCampaign[] = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.campaigns) ? data.campaigns : []);
-        const startedMs = (c: InTransitCampaign) => {
-          const t = c.started_at || c.scheduled_at;
-          const ms = t ? new Date(t).getTime() : 0;
-          return isNaN(ms) ? 0 : ms;
-        };
-        const top5 = [...rows].sort((a, b) => startedMs(b) - startedMs(a)).slice(0, 5);
-        if (!cancelled) { setInTransit(top5); setInTransitErr(null); }
-      } catch (e: any) {
-        if (!cancelled) setInTransitErr(e?.message || 'unreachable');
-      }
-    };
-    load();
-    const id = window.setInterval(load, 45000);
-    return () => { cancelled = true; window.clearInterval(id); };
+  // In-transit campaigns — the "what's mailing right now" hero. BUG-4 fix:
+  // exclude_drip=true hides the continuous partner-drip micro-campaigns (which,
+  // being the most-recently-CREATED rows, were 100% of the unfiltered window and
+  // hid the operator's real broadcast waves). Polled every 45s so the console
+  // feels live. Sort client-side by started_at desc (fall back to scheduled_at)
+  // and keep the 5 most-recently-started. BUG-5: the paginated envelope's
+  // pagination.total is the count of ALL non-drip sending campaigns (same
+  // filters), surfaced as "N sending" in the header. Re-callable for BUG-15.
+  const loadInTransit = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiFetch('/api/mailing/campaigns?status=sending&exclude_drip=true&limit=50', { credentials: 'include', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      const rows: InTransitCampaign[] = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.campaigns) ? data.campaigns : []);
+      const total = Number(data?.pagination?.total);
+      const startedMs = (c: InTransitCampaign) => {
+        const t = c.started_at || c.scheduled_at;
+        const ms = t ? new Date(t).getTime() : 0;
+        return isNaN(ms) ? 0 : ms;
+      };
+      const top5 = [...rows].sort((a, b) => startedMs(b) - startedMs(a)).slice(0, 5);
+      setInTransit(top5);
+      setInTransitTotal(Number.isFinite(total) ? total : rows.length);
+      setInTransitErr(null);
+    } catch (e: any) {
+      if (signal?.aborted) return;
+      setInTransitErr(e?.message || 'unreachable');
+    }
   }, []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadInTransit(ctrl.signal);
+    const id = window.setInterval(() => loadInTransit(), 45000);
+    return () => { ctrl.abort(); window.clearInterval(id); };
+  }, [loadInTransit]);
 
-  // Deferring ISPs + reason codes (last 24h). Polled every 45s.
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await apiFetch('/api/mailing/dashboard/deferring-isps?hours=24', { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setDeferring(Array.isArray(data?.rows) ? data.rows : []);
-          setDeferringErr(null);
-        }
-      } catch (e: any) {
-        if (!cancelled) setDeferringErr(e?.message || 'unreachable');
-      }
-    };
-    load();
-    const id = window.setInterval(load, 45000);
-    return () => { cancelled = true; window.clearInterval(id); };
+  // Deferring ISPs + reason codes (last 24h). Polled every 45s; re-callable (BUG-15).
+  const loadDeferring = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiFetch('/api/mailing/dashboard/deferring-isps?hours=24', { credentials: 'include', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      setDeferring(Array.isArray(data?.rows) ? data.rows : []);
+      setDeferringErr(null);
+    } catch (e: any) {
+      if (signal?.aborted) return;
+      setDeferringErr(e?.message || 'unreachable');
+    }
   }, []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadDeferring(ctrl.signal);
+    const id = window.setInterval(() => loadDeferring(), 45000);
+    return () => { ctrl.abort(); window.clearInterval(id); };
+  }, [loadDeferring]);
 
   // Trending offers (24h conversions). One-shot — conversions are sparse.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch('/api/mailing/dashboard/trending-offers?hours=24', { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setTrending({
-            rows: Array.isArray(data?.rows) ? data.rows : [],
-            total: Number(data?.total_conversions) || 0,
-          });
-          setTrendingErr(null);
-        }
-      } catch (e: any) {
-        if (!cancelled) setTrendingErr(e?.message || 'unreachable');
-      }
-    })();
-    return () => { cancelled = true; };
+  // Re-callable so a failed fetch can be retried without a reload (BUG-15).
+  const loadTrending = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiFetch('/api/mailing/dashboard/trending-offers?hours=24', { credentials: 'include', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      setTrending({
+        rows: Array.isArray(data?.rows) ? data.rows : [],
+        total: Number(data?.total_conversions) || 0,
+      });
+      setTrendingErr(null);
+    } catch (e: any) {
+      if (signal?.aborted) return;
+      setTrendingErr(e?.message || 'unreachable');
+    }
   }, []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadTrending(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadTrending]);
 
   // Lake fetch for Today's Performance. Independent of the PG dashboard fetch
   // so a slow/failed Athena query never blocks the rest of the dashboard.
@@ -739,12 +764,19 @@ const EnhancedDashboard: React.FC = () => {
   // convention as the Reporting KPI strip (METRIC_CONTRACT §2/§6).
   const todayOpens: number | null = lakeToday && engToday ? engToday.raw_opens : null;
   const todayClicks: number | null = lakeToday && engToday ? engToday.raw_clicks : null;
+  // BUG-1: cap at 100%. The numerator (same-day open/click events) and the
+  // denominator (same-day delivered) are DIFFERENT cohorts — opens today may be
+  // against mail delivered on a prior day — so the ratio can legitimately exceed
+  // 100% (prod showed 84.5%+ and could top 100). Capping keeps the tile honest;
+  // the metric-card tooltip discloses the same-day-over-same-day approximation.
   const todayOpenRate: number | null = lakeToday
-    ? (engToday && lakeToday.delivered > 0 ? (engToday.raw_opens / lakeToday.delivered) * 100 : null)
-    : (perf.open_rate ? perf.open_rate * 100 : 0);
+    ? (engToday && lakeToday.delivered > 0 ? Math.min(100, (engToday.raw_opens / lakeToday.delivered) * 100) : null)
+    : (perf.open_rate ? Math.min(100, perf.open_rate * 100) : 0);
   const todayClickRate: number | null = lakeToday
-    ? (engToday && lakeToday.delivered > 0 ? (engToday.raw_clicks / lakeToday.delivered) * 100 : null)
-    : (perf.click_rate ? perf.click_rate * 100 : 0);
+    ? (engToday && lakeToday.delivered > 0 ? Math.min(100, (engToday.raw_clicks / lakeToday.delivered) * 100) : null)
+    : (perf.click_rate ? Math.min(100, perf.click_rate * 100) : 0);
+  // Same-day approximation note reused as the open/click tile tooltip (BUG-1).
+  const rateApproxNote = 'Approximate: same-day open/click events ÷ same-day delivered. These are different cohorts — today\'s opens may be against mail delivered on a prior day — so the raw ratio can exceed 100% and is capped at 100% here. Human counts are verdict-filtered.';
   const todayHard: number = lakeToday ? lakeToday.hard : (perf.hard_bounces || 0);
   const todaySoft: number = lakeToday ? lakeToday.soft : (perf.soft_bounces || 0);
   // Bounce-rate denominator = DERIVED attempted (METRIC_CONTRACT §2):
@@ -759,9 +791,12 @@ const EnhancedDashboard: React.FC = () => {
     ? (todayProcessed > 0 ? (todaySoft / todayProcessed) * 100 : 0)
     : (perf.soft_bounce_rate ?? null);
 
-  // Deferring-ISP count severity accent (magnitude bands).
+  // Deferring-ISP count severity accent (BUG-7). Deferrals are TRANSIENT retry
+  // events (many per message), NOT failures — so the old >=5000/>=500 red/amber
+  // bands lit every ISP red on a normal prod day and read like an outage. Red is
+  // now reserved for genuinely extreme volume; most counts render neutral.
   const deferSeverity = (n: number): string =>
-    n >= 5000 ? colors.danger : n >= 500 ? colors.warning : colors.text;
+    n >= 200000 ? colors.danger : n >= 50000 ? colors.warning : colors.text;
 
   return (
     <div className="enhanced-dashboard ig-fade-in">
@@ -793,11 +828,11 @@ const EnhancedDashboard: React.FC = () => {
               <span className="metric-label">Delivered</span>
             </div>
           </div>
-          <div className="metric-card">
+          <div className="metric-card" title={rateApproxNote}>
             <span className="metric-icon"><FontAwesomeIcon icon={faEnvelope} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayOpenRate != null ? `${todayOpenRate.toFixed(1)}%` : '—'}</span>
-              <span className="metric-label">Open Rate{todayOpens != null ? ` (${todayOpens.toLocaleString()} opens)` : ''}</span>
+              <span className="metric-label">Open Rate*{todayOpens != null ? ` (${todayOpens.toLocaleString()} opens)` : ''}</span>
               {lakeToday ? (
                 <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
                   {engToday ? `machine incl. · human ${engToday.human_opens.toLocaleString()}` : 'engagement unavailable'}
@@ -805,11 +840,11 @@ const EnhancedDashboard: React.FC = () => {
               ) : null}
             </div>
           </div>
-          <div className="metric-card">
+          <div className="metric-card" title={rateApproxNote}>
             <span className="metric-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayClickRate != null ? `${todayClickRate.toFixed(1)}%` : '—'}</span>
-              <span className="metric-label">Click Rate{todayClicks != null ? ` (${todayClicks.toLocaleString()} clicks)` : ''}</span>
+              <span className="metric-label">Click Rate*{todayClicks != null ? ` (${todayClicks.toLocaleString()} clicks)` : ''}</span>
               {lakeToday ? (
                 <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
                   {engToday ? `machine incl. · human ${engToday.human_clicks.toLocaleString()}` : 'engagement unavailable'}
@@ -846,7 +881,10 @@ const EnhancedDashboard: React.FC = () => {
               </span>
             </div>
           </div>
-          <div className="metric-card">
+          <div
+            className="metric-card"
+            title="Soft bounces from the analytics lake include transient failures (greylisting, throttling, temporary defers) that were later RETRIED and delivered — so this is NOT a final-undelivered rate and reads higher than the mail that actually failed. Hard bounces (list-hygiene failures) are the reputation signal."
+          >
             <span className="metric-icon" style={{ color: todaySoft > 0 ? '#f59e0b' : '#475569' }}>
               <FontAwesomeIcon icon={faBan} />
             </span>
@@ -855,7 +893,7 @@ const EnhancedDashboard: React.FC = () => {
                 {todaySoft.toLocaleString()}
               </span>
               <span className="metric-label">
-                Soft Bounce {todaySoftRate != null && todaySoftRate > 0 ? `(${todaySoftRate.toFixed(2)}%)` : ''}
+                Soft Bounce {todaySoftRate != null && todaySoftRate > 0 ? `(${todaySoftRate.toFixed(2)}%)*` : '*'}
               </span>
             </div>
           </div>
@@ -869,10 +907,12 @@ const EnhancedDashboard: React.FC = () => {
           <SectionHeader
             title="In Transit · Now Mailing"
             icon={faTruckFast}
-            right={<span style={{ fontSize: 11, color: colors.textMuted }}>top 5 most recently started · live 45s</span>}
+            right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Broadcast waves only — continuous partner-drip micro-campaigns are excluded (exclude_drip). Count = all non-drip campaigns in the sending state; the list shows the most recently started of them.">
+              {inTransitTotal.toLocaleString()} sending{inTransit && inTransit.length < inTransitTotal ? ` · top ${inTransit.length} by start` : ''} · live 45s
+            </span>}
           />
           {inTransitErr ? (
-            <SectionError label="In-transit campaigns" error={inTransitErr} />
+            <SectionError label="In-transit campaigns" error={inTransitErr} onRetry={() => loadInTransit()} />
           ) : inTransit == null ? (
             <div style={{ fontSize: 12, color: colors.textMuted, padding: '18px 4px' }}>
               <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading in-transit campaigns…
@@ -910,7 +950,15 @@ const EnhancedDashboard: React.FC = () => {
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <h3>Email Sending</h3>
-            <span className="status-badge active">Active</span>
+            {/* BUG-12: derive the pill from live utilization instead of a static
+                green "Active" that reassured even when the cap was maxed or idle. */}
+            {(() => {
+              const util = dashboard?.platform_daily_utilization || 0;
+              const sent = dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0;
+              if (util > 90) return <span className="status-badge scheduled" title={`${util.toFixed(1)}% of daily cap used`}>Near cap</span>;
+              if (sent > 0) return <span className="status-badge active" title={`${Number(sent).toLocaleString()} sent today`}>Active</span>;
+              return <span className="status-badge draft" title="No sends recorded yet today">Idle</span>;
+            })()}
           </div>
           {/* Daily Cap Gauge */}
           <div className="daily-cap-section">
@@ -954,14 +1002,14 @@ const EnhancedDashboard: React.FC = () => {
       {/* ── Row 3 · Deferring ISPs · Trending Offers · Click Funnels ──────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 18, alignItems: 'start' }}>
         {/* Deferring ISPs + reason codes (last 24h, live 45s) */}
-        <Panel accent={colors.warning}>
+        <Panel accent={colors.indigo500}>
           <SectionHeader
-            title="Deferring ISPs · 24h"
+            title="Deferrals · transient retries · 24h"
             icon={faTriangleExclamation}
-            right={<span style={{ fontSize: 11, color: colors.textMuted }}>PMTA · live 45s</span>}
+            right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Deferrals are TRANSIENT retry events (greylisting, throttling, temporary defers) — the ISP asked us to try again later, not a failure. Many retries occur per message; a high count on a healthy day is normal.">PMTA · retries, not failures · live 45s</span>}
           />
           {deferringErr ? (
-            <SectionError label="Deferring ISPs" error={deferringErr} />
+            <SectionError label="Deferring ISPs" error={deferringErr} onRetry={() => loadDeferring()} />
           ) : deferring == null ? (
             <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
               <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading deferrals…
@@ -974,7 +1022,7 @@ const EnhancedDashboard: React.FC = () => {
                 <thead>
                   <tr>
                     <th style={thStyle}>ISP</th>
-                    <th style={numTh}>Deferred</th>
+                    <th style={numTh} title="Transient retry events in the last 24h — not failures">Retries</th>
                     <th style={thStyle}>Top reason</th>
                   </tr>
                 </thead>
@@ -1009,7 +1057,7 @@ const EnhancedDashboard: React.FC = () => {
             ) : undefined}
           />
           {trendingErr ? (
-            <SectionError label="Trending offers" error={trendingErr} />
+            <SectionError label="Trending offers" error={trendingErr} onRetry={() => loadTrending()} />
           ) : trending == null ? (
             <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
               <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading conversions…
@@ -1042,7 +1090,7 @@ const EnhancedDashboard: React.FC = () => {
             ) : undefined}
           />
           {funnelsErr ? (
-            <SectionError label="Click funnels" error={funnelsErr} />
+            <SectionError label="Click funnels" error={funnelsErr} onRetry={() => loadFunnels()} />
           ) : funnels == null ? (
             <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
               <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading lanes…
@@ -1080,12 +1128,12 @@ const EnhancedDashboard: React.FC = () => {
       {/* ── Row 4 · Audience Growth + Recent Campaigns ───────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(0, 1.4fr)', gap: 14, marginBottom: 18, alignItems: 'start' }}>
         <Panel accent={!growth ? undefined : growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
-          <SectionHeader title="Audience Growth · 7d" icon={faSeedling} />
+          <SectionHeader title="Audience Growth · 7 Denver days" icon={faSeedling} />
           {growth ? (
             <>
               <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-                <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="New audience members activated in the last 7 days" />
-                <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Audience members lost in the last 7 days" />
+                <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="Subscribers acquired in the last 7 Denver days (COALESCE(subscribed_at, created_at))" />
+                <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Subscribers who unsubscribed or reached a terminal status (bounced/complained/blacklisted/unsubscribed) in the last 7 Denver days" />
                 <Stat
                   label="Net"
                   value={`${growth.acquired7d - growth.churned7d >= 0 ? '+' : ''}${(growth.acquired7d - growth.churned7d).toLocaleString()}`}
@@ -1094,11 +1142,13 @@ const EnhancedDashboard: React.FC = () => {
                 />
               </div>
               <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
-                Activating vs losing across the trailing 7 days (analytics lake).
+                Acquired vs churned across the last 7 America/Denver days (PG mailing_subscribers — membership truth, not the delivery lake).
               </div>
             </>
+          ) : growthErr ? (
+            <SectionError label="Audience growth" error={growthErr} onRetry={() => loadGrowth()} />
           ) : (
-            <EmptyState icon={faSeedling} title="Audience growth unavailable" hint="Acquisition vs churn appears once the analytics lake is reachable." />
+            <EmptyState icon={faSeedling} title="Audience growth unavailable" hint="Acquisition vs churn appears once the subscriber store is reachable." />
           )}
         </Panel>
 
@@ -1143,7 +1193,10 @@ const EnhancedDashboard: React.FC = () => {
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBrain} /></span>
             <h3>Inbox Intelligence</h3>
-            <span className="status-badge active">Learning</span>
+            {/* BUG-12: "Learning" only when profiles were actually built today. */}
+            {(dashboard?.platform_intelligence?.inbox_profiles_today || 0) > 0
+              ? <span className="status-badge active" title={`${Number(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()} profiles built today`}>Learning</span>
+              : <span className="status-badge draft" title="No inbox profiles built yet today">Idle</span>}
           </div>
           <div className="system-stats">
             <div className="stat">
@@ -1161,7 +1214,10 @@ const EnhancedDashboard: React.FC = () => {
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBan} /></span>
             <h3>Deliverability Protection</h3>
-            <span className="status-badge active">Protected</span>
+            {/* BUG-12: "Protected" only when a suppression list actually exists. */}
+            {(dashboard?.global_suppressions_total || 0) > 0
+              ? <span className="status-badge active" title={`${Number(dashboard?.global_suppressions_total || 0).toLocaleString()} addresses blocked`}>Protected</span>
+              : <span className="status-badge draft" title="No suppression entries loaded">Inactive</span>}
           </div>
           <div className="system-description">
             <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: 0 }}>
@@ -1184,7 +1240,10 @@ const EnhancedDashboard: React.FC = () => {
           <div className="system-header">
             <span className="system-icon"><FontAwesomeIcon icon={faBolt} /></span>
             <h3>Automation Engine</h3>
-            <span className="status-badge active">Running</span>
+            {/* BUG-12: "Running" only when there are active workflows. */}
+            {(dashboard?.active_automations || 0) > 0
+              ? <span className="status-badge active" title={`${Number(dashboard?.active_automations || 0).toLocaleString()} active workflows`}>Running</span>
+              : <span className="status-badge draft" title="No active workflows">Idle</span>}
           </div>
           <div className="system-stats">
             <div className="stat">

@@ -1170,6 +1170,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/dashboard/deferring-isps", s.HandleDashboardDeferringISPs)
 			r.Get("/dashboard/trending-offers", s.HandleDashboardTrendingOffers)
 			r.Get("/dashboard/click-funnels", s.HandleDashboardClickFunnels)
+			r.Get("/dashboard/audience-growth", s.HandleDashboardAudienceGrowth)
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)

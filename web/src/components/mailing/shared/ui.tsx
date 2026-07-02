@@ -70,9 +70,15 @@ export const Stat: React.FC<{
 )
 
 // Graceful per-section degradation chip (keeps layout stable on partial failure).
-export const SectionError: React.FC<{ label: string; error?: string }> = ({ label, error }) => (
+// When `onRetry` is provided, renders a small inline Retry button so a one-shot
+// panel that failed isn't stuck until a full page reload (PORTAL_DESIGN_SYSTEM §1.6).
+export const SectionError: React.FC<{ label: string; error?: string; onRetry?: () => void }> = ({ label, error, onRetry }) => (
   <div
     style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
       fontSize: 12,
       color: colors.dangerText,
       background: "rgba(239,68,68,0.08)",
@@ -81,8 +87,29 @@ export const SectionError: React.FC<{ label: string; error?: string }> = ({ labe
       padding: "8px 10px",
     }}
   >
-    <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
-    {label} unavailable{error ? `: ${error}` : ""}
+    <span>
+      <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
+      {label} unavailable{error ? `: ${error}` : ""}
+    </span>
+    {onRetry && (
+      <button
+        type="button"
+        onClick={onRetry}
+        style={{
+          flexShrink: 0,
+          fontSize: 11,
+          fontWeight: 600,
+          color: colors.dangerText,
+          background: "rgba(239,68,68,0.12)",
+          border: "1px solid rgba(239,68,68,0.35)",
+          borderRadius: 5,
+          padding: "3px 10px",
+          cursor: "pointer",
+        }}
+      >
+        Retry
+      </button>
+    )}
   </div>
 )
 

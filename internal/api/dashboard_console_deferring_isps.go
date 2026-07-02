@@ -38,6 +38,18 @@ import (
 // over pmta_acct_raw, reusing deferredFilterSQL + ispCoalesceSQL.
 const VersionDashboardDeferringISPs = "1.0"
 
+// isGenericDeferReason reports whether a DSN code is the generic, non-actionable
+// transient bucket ('4.0.0' = "other/undefined status") or a placeholder for a
+// missing dsn_status. These dominate PMTA transient traffic but tell the
+// operator nothing, so they're deprioritized behind specific codes (BUG-8).
+func isGenericDeferReason(code string) bool {
+	switch code {
+	case "", "4.0.0", "unspecified":
+		return true
+	}
+	return false
+}
+
 type deferReason struct {
 	Code   string `json:"code"`   // dsn_status, e.g. "4.7.1"
 	Count  int    `json:"count"`  // deferral rows for this ISP+code in the window
@@ -107,8 +119,16 @@ func (s *Server) HandleDashboardDeferringISPs(w http.ResponseWriter, r *http.Req
 	out := make([]deferISPRow, 0, len(byISP))
 	for _, row := range byISP {
 		// Reasons come out of the query in global count-desc order; re-sort
-		// per-ISP to be safe, then cap to the top 3.
+		// per-ISP so the FIRST (displayed "top") reason is the most meaningful
+		// specific DSN code. The generic '4.0.0'/unspecified bucket is transient
+		// no-status noise (BUG-8) — deprioritize it below any real code so it
+		// never masks the actionable reason, but keep it truthfully as a lesser
+		// entry (and its count still rolls into the ISP's total Deferred).
 		sort.SliceStable(row.Reasons, func(i, j int) bool {
+			gi, gj := isGenericDeferReason(row.Reasons[i].Code), isGenericDeferReason(row.Reasons[j].Code)
+			if gi != gj {
+				return !gi // non-generic reasons sort ahead of generic ones
+			}
 			return row.Reasons[i].Count > row.Reasons[j].Count
 		})
 		if len(row.Reasons) > 3 {
