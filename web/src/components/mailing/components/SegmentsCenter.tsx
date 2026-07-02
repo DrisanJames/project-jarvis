@@ -104,8 +104,9 @@ import { denverToday, daysAgoDenver } from '../shared/filters';
 // 7 Denver days (two calls: source_in=pmta,ses for delivered/bounces + source=app
 // for open/click — the METRIC_CONTRACT delivery-vs-engagement source split). The
 // full ~350-row operated catalog (search / refresh / archive / export /
-// request-segment) is preserved as the SECONDARY "All Segments" view behind the
-// toggle. The pinned summary keeps the portfolio totals as plain current counts.
+// request-segment) is the DEFAULT "All Segments · catalog" view (operator
+// 2026-07-02); the per-domain segment-card board is the secondary view behind
+// the toggle. The pinned summary keeps the portfolio totals as plain current counts.
 //
 // 3.2/3.1 history: the pinned "lifeblood" summary + brand-grouped board landed as
 // an Engagement GROWTH board (build-to-build Δ). That growth framing is removed
@@ -855,8 +856,9 @@ const DomainSegmentsBoard: React.FC<{
 // ============================================================================
 
 export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgFetch, animateIn }) => {
-  // --- primary view: per-sending-domain segment cards (default) vs the catalog -
-  const [view, setView] = useState<'domains' | 'all'>('domains');
+  // --- default view: the full "All Segments · catalog" (operator 2026-07-02);
+  //     the per-sending-domain segment-card board is the secondary view. -------
+  const [view, setView] = useState<'domains' | 'all'>('all');
 
   // --- per-ISP audience breakdown drawer (opened from a domain card) ----------
   const [ispBrand, setIspBrand] = useState<GrowthBrand | null>(null);
