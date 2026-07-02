@@ -821,6 +821,13 @@ const EnhancedDashboard: React.FC = () => {
           </span>
         </h3>
         <div className="metrics-grid">
+          <div className="metric-card" title="Today's send volume — total mail attempted (delivered + hard + soft + untyped bounces), the Denver-day count of everything that left. Delivered is the subset that landed.">
+            <span className="metric-icon"><FontAwesomeIcon icon={faTruckFast} /></span>
+            <div className="metric-content">
+              <span className="metric-value">{todayProcessed.toLocaleString()}</span>
+              <span className="metric-label">Volume{todayProcessed > 0 ? ` · ${((todayDelivered / todayProcessed) * 100).toFixed(1)}% delivered` : ''}</span>
+            </div>
+          </div>
           <div className="metric-card">
             <span className="metric-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <div className="metric-content">

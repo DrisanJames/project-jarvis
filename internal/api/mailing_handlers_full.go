@@ -384,6 +384,10 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		  -- ([partner-drip] waves) that would otherwise fill all 5 rows.
 		  AND partner_drip_tag IS NULL
 		  AND COALESCE(campaign_type, '') <> 'click_drip'
+		  -- COMPLETED campaigns only (operator 2026-07-02): the card is a
+		  -- "what finished" recap, not a queue view — exclude draft/scheduled/
+		  -- preparing/sending/paused/cancelled/failed.
+		  AND status IN ('sent', 'completed', 'completed_with_errors')
 		ORDER BY created_at DESC LIMIT 5
 	`, orgID); qErr != nil {
 		log.Printf("[dashboard] recent_campaigns error org=%s: %v", orgStr, qErr)

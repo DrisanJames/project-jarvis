@@ -1004,13 +1004,15 @@
   color: #e5e7eb;
 }
 
-/* 6 KPI tiles divide evenly into two tidy rows of 3 (was repeat(4,1fr),
-   which orphaned the last 2 cards). min-height keeps rows even when the
-   Open/Click cards carry an extra "machine incl. · human N" subtext line. */
+/* KPI tiles span the FULL row as one even strip (operator 2026-07-02: the
+   fixed 3-col grid left them "out of place"). auto-fit + minmax fills the row
+   with as many equal tiles as fit (7 tiles ≈ one row on a desktop cockpit) and
+   reflows on narrow widths. min-height keeps rows even when the Open/Click
+   cards carry an extra "machine incl. · human N" subtext line. */
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
 }
 
 .metric-card {

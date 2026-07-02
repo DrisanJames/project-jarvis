@@ -1908,6 +1908,14 @@ var concurrentIndexSpecs = []struct {
 	// build scans the full multi-GB queue heap — far beyond the runner's
 	// 5s statement budget.
 	{"idx_queue_content_snapshot_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_content_snapshot_id ON mailing_campaign_queue (content_snapshot_id) WHERE content_snapshot_id IS NOT NULL`},
+	// Dashboard audience-growth card (dashboard_console_audience_growth.go v1.1):
+	// acquisition = COUNT(created_at >= floor) per org, churn = COUNT(
+	// unsubscribed_at >= floor). Without these the counts seq-scan the ~13M-row
+	// subscriber table (~25s) and 500 on the 8s handler timeout. Composite
+	// (org, ts) → range scan within the org; the churn index is partial (only
+	// the small set of unsubscribed rows).
+	{"idx_subscribers_org_created", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_org_created ON mailing_subscribers (organization_id, created_at)`},
+	{"idx_subscribers_churn_updated", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_churn_updated ON mailing_subscribers (organization_id, updated_at) WHERE status IN ('bounced','complained','blacklisted','unsubscribed')`},
 
 	// ── Repairs for the five INVALID leftovers from interrupted ad-hoc
 	// CONCURRENTLY builds (prod inventory 2026-06-10, AAR action item 5;

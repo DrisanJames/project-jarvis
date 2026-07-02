@@ -35,7 +35,19 @@ import (
 //
 // 1.0 (2026-07-02): initial — PG mailing_subscribers acquisition vs churn over
 // the last 7 Denver days, org-scoped (replaces the stale Athena audience table).
-const VersionDashboardAudienceGrowth = "1.0"
+// 1.1 (2026-07-02): SARGABLE rewrite. v1.0 wrapped the date columns in
+//     (col AT TIME ZONE 'America/Denver')::date, which is not index-usable, so
+//     each of the two counts was a full seq scan of ~13M rows (~25s total) and
+//     the 8s handler timeout returned 500 "database query failed". Now the
+//     Denver-day floor is computed in Go as a UTC timestamptz and compared
+//     against the raw columns (created_at / unsubscribed_at), which the new
+//     concurrent indexes (idx_subscribers_org_created / _org_unsubscribed) serve
+//     as range scans. Acquisition keys on created_at (row-creation = acquired);
+//     churn keys on terminal status + updated_at (unsubscribed_at is unpopulated
+//     in this DB — it returns 0; the real "left" signal is a terminal status
+//     whose row was last changed in-window), served by a partial index over the
+//     small terminal-status subset (~21k rows).
+const VersionDashboardAudienceGrowth = "1.1"
 
 // HandleDashboardAudienceGrowth serves GET /api/mailing/dashboard/audience-growth.
 func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Request) {
@@ -48,33 +60,27 @@ func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Single round-trip: two scalar subqueries over the same Denver-day floor.
-	// bounds computes the floor once so both counts share exactly one 7-day
-	// window (today + the prior 6 Denver days).
+	// Denver-day floor as a UTC timestamptz: midnight (America/Denver) of
+	// (today - 6 days) = exactly 7 Denver days inclusive of today. Computed in
+	// Go so the SQL predicate is a plain `col >= $2` range the indexes can serve.
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		loc = time.UTC
+	}
+	nowD := time.Now().In(loc)
+	floor := time.Date(nowD.Year(), nowD.Month(), nowD.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -6)
+
 	const query = `
-		WITH bounds AS (
-			SELECT ((NOW() AT TIME ZONE 'America/Denver')::date - 6) AS floor_date
-		)
 		SELECT
-			(SELECT COUNT(*)
-			   FROM mailing_subscribers s, bounds b
-			  WHERE s.organization_id = $1
-			    AND (COALESCE(s.subscribed_at, s.created_at) AT TIME ZONE 'America/Denver')::date >= b.floor_date
-			) AS acquired,
-			(SELECT COUNT(*)
-			   FROM mailing_subscribers s, bounds b
-			  WHERE s.organization_id = $1
-			    AND (
-			        (s.unsubscribed_at IS NOT NULL
-			         AND (s.unsubscribed_at AT TIME ZONE 'America/Denver')::date >= b.floor_date)
-			     OR (s.unsubscribed_at IS NULL
-			         AND s.status IN ('bounced','complained','blacklisted','unsubscribed')
-			         AND (s.updated_at AT TIME ZONE 'America/Denver')::date >= b.floor_date)
-			    )
-			) AS churned`
+			(SELECT COUNT(*) FROM mailing_subscribers
+			  WHERE organization_id = $1 AND created_at >= $2) AS acquired,
+			(SELECT COUNT(*) FROM mailing_subscribers
+			  WHERE organization_id = $1
+			    AND status IN ('bounced','complained','blacklisted','unsubscribed')
+			    AND updated_at >= $2) AS churned`
 
 	var acquired, churned int64
-	if err := s.mailingDB.QueryRowContext(ctx, query, orgID).Scan(&acquired, &churned); err != nil {
+	if err := s.mailingDB.QueryRowContext(ctx, query, orgID, floor).Scan(&acquired, &churned); err != nil {
 		respondError(w, http.StatusInternalServerError, "database query failed")
 		return
 	}
